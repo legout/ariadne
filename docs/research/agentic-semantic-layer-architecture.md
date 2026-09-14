@@ -1,6 +1,16 @@
-# Architecture Blueprint: 3-Tier Agentic Data Intelligence
+# Design Study: 3-Tier Agentic Data Intelligence
 
 ### *Ontology, Context Layer (OKF v0.2), Semantic Layer (Apache Ossie / DOSI), and Unified Execution*
+
+| | |
+| :--- | :--- |
+| **Type** | Research — design study (evidence per `docs/agents/artifacts.md`) |
+| **Status** | Proposed — owner-reviewed brainstorming findings |
+| **Date** | 2026-09-14 |
+| **Question** | How should autonomous AI agents query heterogeneous storage (Delta Lake, Iceberg, DuckDB, SQLite) with governed metrics — beyond raw text-to-SQL? |
+| **Contract** | planning-contract v1; skill provenance: `legout/skills` via `npx skills` (per-skill hashes in `skills-lock.json`; catalog revision unknown) |
+
+> **Approval boundary:** This note is evidence, even where the owner accepts its findings. Acceptance is not authorization to build. Behavioral contracts with acceptance criteria belong in `docs/specs/` (shaped by `shape-design`); consequential approved choices belong in `docs/adr/`. No specification or ADR currently owns or links this study.
 
 ---
 
@@ -52,7 +62,7 @@ flowchart TD
 | Layer | Responsibility | Format / Standard | Role in Agentic Workflow |
 | :--- | :--- | :--- | :--- |
 | **1. Ontology** | *The World Model* | Entity definitions & relations (YAML / OKF Entities) | Establishes the conceptual entities (e.g., `Customer`, `Order`, `Asset`) and how they link across distinct databases. |
-| **2. Context Layer** | *The Business Guide* | **[OKF v0.2](https://github.com/google/open-knowledge-format)** (Markdown + YAML Frontmatter) | Ingests tribal knowledge, caveats, filter conditions, and routes questions to the appropriate semantic models. |
+| **2. Context Layer** | *The Business Guide* | **[OKF v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format)** (Markdown + YAML Frontmatter) | Ingests tribal knowledge, caveats, filter conditions, and routes questions to the appropriate semantic models. |
 | **3. Semantic Layer** | *The Calculation Engine* | **[Apache Ossie](https://github.com/open-semantic-interchange/OSI)** + **[DOSI Engine](https://dosi.datus.ai)** | Compiles deterministic, multi-dialect SQL; guarantees join safety and prevents metric divergence. |
 | **4. Storage & Execution** | *The Unified Hub* | **DuckDB** + Native Lakehouse Extensions | Mounts Delta, Iceberg, DuckDB, and SQLite into a single in-process SQL execution engine. |
 
@@ -60,7 +70,7 @@ flowchart TD
 
 ## 3. Specification & Tool Index
 
-* **[Open Knowledge Format (OKF v0.2)](https://github.com/google/open-knowledge-format)**: Open specification by Google Cloud for storing context, trust tiers, lifecycle states, and domain caveats in version-controlled Markdown.
+* **[Open Knowledge Format (OKF v0.2)](https://github.com/GoogleCloudPlatform/open-knowledge-format)**: Open specification by Google Cloud for storing context, trust tiers, lifecycle states, and domain caveats in version-controlled Markdown.
 * **[Apache Ossie / OSI Specification](https://github.com/open-semantic-interchange/OSI)**: Vendor-neutral, declarative YAML specification for defining datasets, metrics, dimensions, and joins.
 * **[DOSI Engine (Datus)](https://dosi.datus.ai)**: Rust-based compiler and Model Context Protocol (MCP) server that transforms Apache Ossie models into optimized dialect SQL (DuckDB, Snowflake, BigQuery, Postgres).
 * **[Wren AI / Wren MDL](https://github.com/Canner/Wren-Engine)**: AI-native semantic modeling engine designed for LLM text-to-SQL workflows.
@@ -292,14 +302,14 @@ Effort scale: **S** = days, **M** = 1–2 weeks, **L** = month+ (one engineer, o
 | :--- | :--- | :--- |
 | **Cube** | Strongest fallback. Mature and production-proven, but it is a serving layer to *operate* (API gateway, caching, refresh workers) — more infrastructure than the MVP needs, and its model format is vendor-specific rather than the neutral interchange spec. | **S.** YAML→YAML, near 1:1: model→cube, joins, measures. |
 | **dbt MetricFlow** | Mature and open source, but adopting it pulls in the dbt project/workflow — heavy if you are not already a dbt shop. Fallback #2. | **S–M.** dataset→semantic model; `gross_margin`-style ratios map to MetricFlow `ratio` metrics; entity/join semantics need care. |
-| **Wren MDL** | Overlaps DOSI's role but is a second startup's spec instead of an Apache-incubating one; weaker governance and fan-out story. | **M.** Wren projects are YAML (models, relationships, cubes) — mechanical, but semantics differ. |
+| **Wren MDL** | Overlaps DOSI's role but is a second startup's spec instead of an Apache-incubating one; weaker governance and fan-out story. | **M.** Wren projects are YAML ([models, relationships, cubes](https://docs.getwren.ai/oss/reference/mdl)) — mechanical, but semantics differ. |
 | **Malloy** | A language, not a config format: no governed-metric registry concept, and it requires adopting a compiler/VS Code toolchain. Native DuckDB support noted for ad-hoc work. | **M export / L import.** Generating Malloy sources is feasible; importing *from* Malloy requires its TypeScript parser and is lossy for nested views. |
-| **nao** | An analytics *agent* (open source, dbt + nao-core context CLI), not a semantic-layer spec — a complementary category, not an alternative. Could sit on top of this stack. | **N/A.** No model format to compile to; interop would run through dbt models. |
+| **nao** | An analytics *agent* ([open source](https://github.com/getnao/nao), dbt + nao-core context CLI), not a semantic-layer spec — a complementary category, not an alternative. Could sit on top of this stack. | **N/A.** No model format to compile to; interop would run through dbt models. |
 
 ## 10. Import/Export Strategy
 
 * **One-way emitters only, never bidirectional sync.** OSI is the source of truth; target formats are disposable projections. Bidirectional sync requires identity mapping and round-trip fidelity, which multiplies effort 3–5× and is almost never worth it.
-* **OSI is designed to be this hub.** dbt Labs is a founding OSI member alongside Snowflake and Salesforce, so native OSI import in MetricFlow-class tools is plausible within the spec's lifetime — adapters written today may become obsolete.
+* **OSI is designed to be this hub.** dbt Labs is a founding OSI member [alongside Snowflake and Salesforce](https://www.businesswire.com/news/home/20250923902448/en/Snowflake-Salesforce-dbt-Labs-and-More-Revolutionize-Data-Readiness-for-AI-with-Open-Semantic-Interchange-Initiative) ([working group roster](https://ossie.apache.org/ecosystem/)), so native OSI import in MetricFlow-class tools is plausible within the spec's lifetime — adapters written today may become obsolete.
 * **YAGNI for MVP:** build zero adapters now. If DOSI disappoints, write the Cube emitter first (S effort, mature target).
 
 ## 11. Dependency Risk & Version Pins
@@ -318,3 +328,21 @@ Deliberately out of scope for the MVP/PoC to protect pace — both are mandatory
 
 * **Access control & governance** (authZ, row/column security, PII masking, audit): deferred — single-user PoC on trusted data. **Revisit before any multi-user access or production data.**
 * **Semantic-correctness evaluation** (golden question→metric test sets, fan-out/chasm-trap proofs): deferred — compilation and execution checks only for MVP. **Revisit before agents author models unsupervised.**
+
+---
+
+## Appendix: Primary Sources
+
+Each load-bearing claim above was followed back to the source that owns it:
+
+* **OKF v0.2 spec & trust signals:** [google/open-knowledge-format](https://github.com/GoogleCloudPlatform/open-knowledge-format) (`SPEC.md`); [OKF v0.2 announcement](https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals)
+* **Apache Ossie (incubating) / OSI spec:** [ossie.apache.org](https://ossie.apache.org/); [open-semantic-interchange/OSI](https://github.com/open-semantic-interchange/OSI)
+* **OSI founding coalition:** [BusinessWire launch release](https://www.businesswire.com/news/home/20250923902448/en/Snowflake-Salesforce-dbt-Labs-and-More-Revolutionize-Data-Readiness-for-AI-with-Open-Semantic-Interchange-Initiative); [ecosystem roster](https://ossie.apache.org/ecosystem/)
+* **DOSI engine:** [Datus.ai DOSI docs](https://dosi.datus.ai)
+* **Cube:** [cube.dev](https://cube.dev) (data modeling docs)
+* **dbt MetricFlow:** [Semantic models](https://docs.getdbt.com/docs/build/semantic-models)
+* **Wren MDL:** [Wren project YAML reference](https://docs.getwren.ai/oss/reference/mdl)
+* **Malloy:** [malloydata.dev](https://www.malloydata.dev/)
+* **nao:** [getnao/nao](https://github.com/getnao/nao)
+* **DuckDB extensions:** [duckdb.org docs](https://duckdb.org/docs/stable/extensions/overview) (`delta`, `iceberg`, `sqlite_scanner`)
+* **Layer-separation framing:** [MotherDuck: Context Layer vs. Semantic Layer vs. Ontology](https://motherduck.com/blog/context-layer-vs-semantic-layer-ontology/)
