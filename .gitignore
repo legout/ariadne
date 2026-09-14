@@ -7,3 +7,6 @@ data/*.db
 staging/
 .env
 .orchestrator/
+.pytest_cache/
+.hermes/
+.pi/prompts/
