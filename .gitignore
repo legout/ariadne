@@ -1,4 +1,6 @@
 .pi/npm/
+.venv/
+*.egg-info/
 __pycache__/
 *.pyc
 data/*.db
