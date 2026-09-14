@@ -1,0 +1,5 @@
+.pi/npm/
+__pycache__/
+*.pyc
+data/*.db
+staging/
