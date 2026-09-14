@@ -14,10 +14,10 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:  # ariadne/ is not pip-installed (metadata-only dist)
+if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne.author import author  # noqa: E402
+from ariadne.author import MAX_ROUNDS, author, main  # noqa: E402
 from ariadne.validate import ValidationResult  # noqa: E402
 
 GOTCHA_1 = "CANCELLED and RETURNED orders are not revenue"
@@ -153,15 +153,21 @@ def staged(staging: Path) -> dict[str, Path]:
     return {str(p.relative_to(staging)): p for p in staging.rglob("*") if p.is_file()}
 
 
-def run_author(tmp_path: Path, complete, validate_fn):
-    staging = tmp_path / "staging"
-    paths = author(
+def run_author_rounds(tmp_path: Path, complete, validate_fn, *, staging=None, rounds=MAX_ROUNDS):
+    staging = staging if staging is not None else tmp_path / "staging"
+    return author(
         make_demo_db(tmp_path / "demo.db"),
         make_notes(tmp_path),
         staging_dir=staging,
         complete=complete,
         validate_fn=validate_fn,
+        rounds=rounds,
     )
+
+
+def run_author(tmp_path: Path, complete, validate_fn):
+    staging = tmp_path / "staging"
+    paths = run_author_rounds(tmp_path, complete, validate_fn, staging=staging)
     return staging, paths
 
 
@@ -197,6 +203,47 @@ def test_author_parses_reasoning_model_response(tmp_path):
 
     assert len(complete_calls) == 1
     assert "context_layer/metrics/gross_margin.md" in staged(staging)
+
+
+def test_author_rejects_rounds_above_spec_cap(tmp_path):
+    complete, complete_calls = fake_complete([llm_response()])
+    validate_fn, validate_calls = fake_validate([ValidationResult(True, [])])
+    with pytest.raises(ValueError, match="hard cap of 3"):
+        run_author_rounds(tmp_path, complete, validate_fn, rounds=MAX_ROUNDS + 1)
+    assert complete_calls == [] and validate_calls == []  # rejected before any round ran
+
+
+def test_author_cli_rejects_rounds_above_spec_cap(tmp_path, capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--db", str(tmp_path / "demo.db"), "--notes", "x", "--rounds", "4"])
+    assert excinfo.value.code == 2
+    assert "hard cap" in capsys.readouterr().err  # clear error, never silently clamped
+
+
+def test_author_rejects_repo_root_as_staging(tmp_path):
+    complete, complete_calls = fake_complete([llm_response()])
+    validate_fn, _ = fake_validate([ValidationResult(True, [])])
+    with pytest.raises(ValueError, match="repo root"):
+        run_author_rounds(tmp_path, complete, validate_fn, staging=Path.cwd())
+    assert complete_calls == []  # guard fires before any LLM call, nothing written
+
+
+def test_author_rejects_served_layer_as_staging(tmp_path):
+    db, notes = make_demo_db(tmp_path / "demo.db"), make_notes(tmp_path)
+    complete, _ = fake_complete([llm_response()])
+    validate_fn, _ = fake_validate([ValidationResult(True, [])])
+    for layer in ("context_layer", "semantic_layer"):
+        with pytest.raises(ValueError, match="served"):
+            author(
+                db, notes, staging_dir=tmp_path / layer, complete=complete, validate_fn=validate_fn
+            )
+
+
+def test_author_cli_rejects_repo_root_staging(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--db", "x", "--notes", "y", "--staging", "."])
+    assert excinfo.value.code == 2
+    assert "spec §6" in capsys.readouterr().err  # the invariant is named in the error
 
 
 def test_author_never_writes_outside_staging(tmp_path):
@@ -243,3 +290,28 @@ def test_author_second_round_recovers(tmp_path):
         staged(staging)["context_layer/metrics/gross_margin.md"].read_text().split("---")[1]
     )
     assert front["status"] == "draft"  # recovered, not marked
+
+
+def staged_page(staging: Path, status: str) -> Path:
+    page = staging / "context_layer" / "metrics" / "gross_margin.md"
+    page.parent.mkdir(parents=True)
+    page.write_text(OKF_PAGE.replace("status: draft", f"status: {status}"), encoding="utf-8")
+    return page
+
+
+def test_main_exits_nonzero_when_staged_review_needed(tmp_path, monkeypatch):
+    import ariadne.author as author_module
+
+    page = staged_page(tmp_path / "staging", "review_needed")
+    monkeypatch.setattr(author_module, "author", lambda *args, **kwargs: [page])
+    code = author_module.main(["--db", "x", "--notes", "y", "--staging", str(tmp_path / "s")])
+    assert code == 1  # spec §6/§7: review_needed artifacts must not look promotable
+
+
+def test_main_exits_zero_when_staged_clean(tmp_path, monkeypatch):
+    import ariadne.author as author_module
+
+    page = staged_page(tmp_path / "staging", "draft")
+    monkeypatch.setattr(author_module, "author", lambda *args, **kwargs: [page])
+    code = author_module.main(["--db", "x", "--notes", "y", "--staging", str(tmp_path / "s")])
+    assert code == 0

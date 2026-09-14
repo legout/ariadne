@@ -32,6 +32,7 @@ import argparse
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -40,7 +41,9 @@ import yaml
 from ariadne.validate import validate
 
 ENV_PATH = Path(os.environ.get("ARIADNE_ENV", "/home/volker/coding/ariadne/.env"))
-MAX_ROUNDS = 3
+MAX_ROUNDS = 3  # spec §5 hard cap on the validate/error loop
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SERVED_LAYERS = ("context_layer", "semantic_layer")  # only ever human-promoted (spec §6)
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)\Z", re.DOTALL)
 
@@ -210,7 +213,9 @@ def _default_complete(messages: list[dict[str, str]]) -> str:
             f"OPENAI_API_KEY/OPENAI_MODEL not set; expected in {ENV_PATH} "
             "(or the environment) — never commit secrets"
         )
-    from openai import OpenAI
+    # Lazy import: analysis environments without the SDK installed cannot resolve
+    # it statically; at runtime openai is a hard dependency (pyproject).
+    from openai import OpenAI  # pyright: ignore[reportMissingImports]
 
     client = OpenAI(base_url=os.environ.get("OPENAI_BASE_URL") or None, api_key=api_key)
     response = client.chat.completions.create(
@@ -233,6 +238,25 @@ def _parse_files(raw: str) -> list[tuple[str, str]]:
     if not files:
         raise ValueError("response contained no files")
     return files
+
+
+def _validate_staging(staging: Path) -> None:
+    """Spec §6: staging must be a dedicated directory — never the repo root or a
+    served layer. From the repo root, LLM-supplied paths like
+    ``context_layer/...`` would overwrite the served dirs directly, bypassing
+    the human promotion gate."""
+    resolved = staging.resolve()
+    if resolved == _REPO_ROOT:
+        raise ValueError(
+            f"staging directory {resolved} is the repo root: authored content would "
+            "overwrite the served context_layer//semantic_layer/ — spec §6 requires a "
+            "dedicated staging directory"
+        )
+    if resolved.name in _SERVED_LAYERS:
+        raise ValueError(
+            f"staging directory {resolved} is a served layer ({resolved.name}): served "
+            "artifacts arrive only by human promotion from staging/ — spec §6"
+        )
 
 
 def _safe_path(staging: Path, rel_path: str) -> Path:
@@ -313,7 +337,13 @@ def author(
     OpenAI-compatible endpoint); ``validate_fn(staging_dir) -> ValidationResult``
     is the compile gate (default: real Datus compile).
     """
+    if rounds > MAX_ROUNDS:
+        raise ValueError(
+            f"rounds={rounds} exceeds the spec §5 hard cap of {MAX_ROUNDS} "
+            "(reject, not clamp: a silent cap would hide that the request was invalid)"
+        )
     staging = Path(staging_dir)
+    _validate_staging(staging)
     staging.mkdir(parents=True, exist_ok=True)
     complete = complete or _default_complete
 
@@ -363,6 +393,11 @@ def author(
     return _staged_paths(staging)
 
 
+def _needs_human_review(paths: list[Path]) -> bool:
+    """True when any staged file carries the spec §7 ``review_needed`` marker."""
+    return any("review_needed" in path.read_text(encoding="utf-8") for path in paths)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m ariadne.author",
@@ -374,9 +409,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rounds", type=int, default=MAX_ROUNDS)
     args = parser.parse_args(argv)
 
+    if not 1 <= args.rounds <= MAX_ROUNDS:
+        parser.error(f"--rounds must be between 1 and {MAX_ROUNDS} (spec §5 hard cap)")
+    try:
+        _validate_staging(Path(args.staging))
+    except ValueError as exc:
+        parser.error(str(exc))
+
     paths = author(args.db, args.notes, staging_dir=Path(args.staging), rounds=args.rounds)
     for path in paths:
         print(f"staged: {path}")
+    if _needs_human_review(paths):  # spec §6/§7: review_needed artifacts are not promotable
+        print(
+            "error: staged files carry status: review_needed — human review required "
+            "before promotion",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

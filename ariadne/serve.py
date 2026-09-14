@@ -29,23 +29,26 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import duckdb
-from datus_semantic_osi.adapter import DatusOSIAdapter
-from datus_semantic_osi.config import DatusOSIConfig
+import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+
+# Captured when datus is missing so startup can fail fast with a hint (spec §7).
+# The imports live inside the try: a missing datus must not abort the module import
+# itself — the CLI fails fast with INSTALL_HINT instead of a raw ImportError.
+# Tests exercise the branch offline via monkeypatching / blocked imports.
+try:
+    from datus_semantic_osi.adapter import DatusOSIAdapter  # pyright: ignore[reportMissingImports]
+    from datus_semantic_osi.config import DatusOSIConfig  # pyright: ignore[reportMissingImports]
+
+    _DATUS_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:
+    DatusOSIAdapter = None  # type: ignore[assignment, misc]
+    DatusOSIConfig = None  # type: ignore[assignment, misc]
+    _DATUS_IMPORT_ERROR = exc
 
 INSTALL_HINT = (
     "datus-semantic-osi is required to serve governed metrics "
     "(uv pip install 'datus-semantic-osi[metricflow]' on Python 3.12)"
 )
-
-# Captured when datus is missing so startup can fail fast with a hint (spec §7).
-# Tests set this attribute to exercise the branch offline.
-try:
-    _DATUS_IMPORT_ERROR: ImportError | None = None
-except ImportError as exc:  # pragma: no cover - exercised via monkeypatch in tests
-    DatusOSIAdapter = None  # type: ignore[assignment]
-    DatusOSIConfig = None  # type: ignore[assignment]
-    _DATUS_IMPORT_ERROR = exc
 
 
 class Facade:
@@ -92,14 +95,14 @@ class Facade:
         if name not in self._metrics:  # spec §7: discovery before failure
             available = ", ".join(sorted(self._metrics))
             raise ValueError(f"unknown metric {name!r}; available metrics: {available}")
-        compile_kwargs: dict[str, str] = {}
-        if range:
-            if range.get("start"):
-                compile_kwargs["time_start"] = range["start"]
-            if range.get("end"):
-                compile_kwargs["time_end"] = range["end"]
+        time_start = range.get("start") if range else None
+        time_end = range.get("end") if range else None
         result = await self.adapter.query_metrics(
-            metrics=[name], dimensions=dimensions or [], dry_run=True, **compile_kwargs
+            metrics=[name],
+            dimensions=dimensions or [],
+            time_start=time_start,
+            time_end=time_end,
+            dry_run=True,
         )
         sql = (result.metadata or {}).get("sql")
         if not sql:
@@ -139,7 +142,7 @@ class Facade:
 
 def build_app(facade: Facade):
     """Wire the facade onto an MCP stdio server: exactly three tools (spec §4)."""
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.fastmcp import FastMCP  # pyright: ignore[reportMissingImports]
 
     app: FastMCP = FastMCP("ariadne")
 

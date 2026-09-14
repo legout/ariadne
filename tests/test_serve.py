@@ -16,10 +16,10 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
+import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:  # ariadne/ is not pip-installed (metadata-only dist)
+if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
 from ariadne.author import author  # noqa: E402
@@ -288,3 +288,29 @@ def test_startup_fails_fast_when_datus_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(serve_module, "_DATUS_IMPORT_ERROR", ImportError("no datus"))
     with pytest.raises(RuntimeError, match="datus-semantic-osi"):
         Facade(tmp_path / "semantic_layer", tmp_path / "context_layer", tmp_path / "demo.db")
+
+
+def test_serve_cli_fails_fast_with_hint_when_datus_missing(tmp_path):
+    """Spec §7 for real: in a fresh interpreter with the datus imports blocked,
+    the module must still import and the CLI must exit 1 with INSTALL_HINT —
+    not abort with a raw ImportError."""
+    import os
+    import subprocess
+
+    code = "\n".join(
+        [
+            "import sys",
+            "sys.modules['datus_semantic_osi'] = None",
+            "sys.modules['datus_semantic_osi.adapter'] = None",
+            "sys.modules['datus_semantic_osi.config'] = None",
+            "import ariadne.serve  # must not raise",
+            "sys.exit(ariadne.serve.main(['--semantic', 'x', '--context', 'y', '--db', 'z']))",
+        ]
+    )
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
+    proc = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, env=env, timeout=120, check=False
+    )
+    assert proc.returncode == 1  # fail-fast exit, not a traceback
+    assert b"datus-semantic-osi is required" in proc.stderr
+    assert b"Traceback" not in proc.stderr

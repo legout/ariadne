@@ -37,7 +37,19 @@ echo "== 1/4 seed: data/demo.db (deterministic)"
 
 echo "== 2/4 author: profile + seed notes -> live LLM drafts -> staging/"
 rm -rf staging
-"$PY" -m ariadne.author --db data/demo.db --notes data/seed_notes.md
+author_rc=0
+"$PY" -m ariadne.author --db data/demo.db --notes data/seed_notes.md || author_rc=$?
+# Spec §6/§7: review_needed artifacts must never be auto-promoted — the human gate
+# holds even under --yes (and even if an older author exited 0 despite review_needed).
+if grep -rq 'status: review_needed' staging 2>/dev/null; then
+  echo "   staged files carry status: review_needed"
+  author_rc=1
+fi
+if [ "$author_rc" -ne 0 ]; then
+  echo "error: authoring ended in review_needed — the human promotion gate applies (spec §6/§7)" >&2
+  echo "  review staging/ yourself; --yes does not promote review_needed artifacts" >&2
+  exit 1
+fi
 
 echo "== 3/4 promotion gate (spec §6: served artifacts arrive only by human promotion)"
 echo "   staged files:"
