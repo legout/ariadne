@@ -41,3 +41,7 @@ _Avoid_: drafts, sandbox
 **Promotion**:
 The human act of moving a staged artifact into the served layers, marking it verified. Served artifacts only ever arrive by Promotion.
 _Avoid_: publish, deploy
+
+**Seed Notes**:
+The human-written data dictionary (`data/seed_notes.md`) carrying the business rules that statistics cannot derive; an input to the Authoring Agent alongside the statistical profile.
+_Avoid_: hints file
