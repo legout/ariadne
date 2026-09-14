@@ -1,13 +1,15 @@
 # Architecture Blueprint: 3-Tier Agentic Data Intelligence
+
 ### *Ontology, Context Layer (OKF v0.2), Semantic Layer (Apache Ossie / DOSI), and Unified Execution*
 
 ---
 
 ## 1. Executive Summary & Core Paradigm
 
-Querying diverse, multi-engine data environments (**Delta Lake, Apache Iceberg, DuckDB, SQLite**) with autonomous AI agents requires moving beyond raw text-to-SQL. 
+Querying diverse, multi-engine data environments (**Delta Lake, Apache Iceberg, DuckDB, SQLite**) with autonomous AI agents requires moving beyond raw text-to-SQL.
 
 Direct text-to-SQL fails in enterprise settings because it conflates three fundamentally different responsibilities:
+
 1. **Understanding what real-world entities exist** (*Ontology*).
 2. **Understanding business rules, routing, and operational caveats** (*Context Layer*).
 3. **Calculating governed, fan-out-safe metrics deterministically** (*Semantic Layer*).
@@ -63,6 +65,9 @@ flowchart TD
 * **[DOSI Engine (Datus)](https://dosi.datus.ai)**: Rust-based compiler and Model Context Protocol (MCP) server that transforms Apache Ossie models into optimized dialect SQL (DuckDB, Snowflake, BigQuery, Postgres).
 * **[Wren AI / Wren MDL](https://github.com/Canner/Wren-Engine)**: AI-native semantic modeling engine designed for LLM text-to-SQL workflows.
 * **[Malloy Language](https://www.malloydata.dev/)**: Embedded semantic data modeling DSL from the original Looker team, with native DuckDB integration.
+* **[Cube](https://cube.dev)**: Mature headless semantic layer (YAML/JS cubes) — primary fallback for the semantic layer (see §9).
+* **[dbt MetricFlow](https://docs.getdbt.com/docs/build/semantic-models)**: dbt-native semantic layer — fallback #2 (see §9).
+* **[nao](https://github.com/getnao/nao)**: Open-source analytics agent (dbt + nao-core context CLI) — complementary category, not a semantic-layer alternative (see §9).
 * **[MotherDuck Blog: Context Layer vs. Semantic Layer vs. Ontology](https://motherduck.com/blog/context-layer-vs-semantic-layer-ontology/)**: Conceptual blueprint for separating business reasoning from deterministic calculation.
 
 ---
@@ -110,6 +115,7 @@ flowchart TD
 ## 5. Concrete Artifact Examples
 
 ### A. Context Layer: `okf/metrics/gross_margin.md` (OKF v0.2)
+
 ```markdown
 ---
 type: metric_context
@@ -135,6 +141,7 @@ Gross Margin represents total billed revenue less direct cost of goods sold (COG
 ```
 
 ### B. Semantic Layer: `osi/models/orders.yml` (Apache Ossie)
+
 ```yaml
 name: orders
 source: iceberg_catalog.finance.orders
@@ -171,6 +178,37 @@ joins:
     to: customers
     type: many_to_one
     on: customer_id = customers.id
+```
+
+### C. Ontology Layer: `context_layer/ontology/order.md` (OKF Entity)
+
+```markdown
+---
+type: entity
+status: stable
+verified: true
+sources:
+  - iceberg_catalog.finance.orders
+  - db/sqlite/legacy_orders.db
+generated: 2026-09-11
+stale_after: 2027-01-01
+---
+
+# Order
+
+### Definition
+A single billed transaction header. One Order has many Order Lines and belongs to exactly one Customer.
+
+### Identity & Keys
+- Primary key: `order_id` (Iceberg `finance.orders`)
+- Legacy equivalent: pre-2024 orders in SQLite, mapped via `legacy_id_map`
+
+### Relationships
+- `many_to_one` → [[Customer]] via `customer_id`
+- `one_to_many` → Order Lines via `order_id`
+
+### Semantic Binding
+All governed measures for this entity live in the OSI model `osi/models/orders.yml`.
 ```
 
 ---
@@ -234,9 +272,49 @@ flowchart LR
     └── metrics/                 # Governed measures & rollups for DOSI execution
 ```
 
+**Deployment topology:** DuckDB is in-process and single-writer. One MCP server process owns the DuckDB connection; agents profile through it read-only; generated artifacts flow through git, not the database. If concurrent writes ever become necessary, the MCP server stays the single writer — do not add application-level locking.
+
 ---
 
 ## 8. Managing Drift and Staleness
 
 * **Lifecycle Tracking:** When an agent encounters an OKF file where `today() > stale_after`, it marks the context as `status: review_needed` and notifies the maintainers.
 * **Automated Drift Detection:** Scheduled CI runs re-execute DuckDB profiling across Iceberg/Delta tables. If new columns appear or null percentages spike, the agent updates the corresponding OKF/OSI files and sets `verified: machine-confirmed` pending human review.
+* **Human Review Gate:** Agent-generated OKF/OSI changes land as pull requests against this repository. Human merge is what sets `verified: true`; `machine-confirmed` artifacts never reach the agent-served branch unreviewed.
+
+---
+
+## 9. Alternatives Considered (Why Not)
+
+Effort scale: **S** = days, **M** = 1–2 weeks, **L** = month+ (one engineer, one-way OSI → tool emitter).
+
+| Tool | Why not | Interop effort |
+| :--- | :--- | :--- |
+| **Cube** | Strongest fallback. Mature and production-proven, but it is a serving layer to *operate* (API gateway, caching, refresh workers) — more infrastructure than the MVP needs, and its model format is vendor-specific rather than the neutral interchange spec. | **S.** YAML→YAML, near 1:1: model→cube, joins, measures. |
+| **dbt MetricFlow** | Mature and open source, but adopting it pulls in the dbt project/workflow — heavy if you are not already a dbt shop. Fallback #2. | **S–M.** dataset→semantic model; `gross_margin`-style ratios map to MetricFlow `ratio` metrics; entity/join semantics need care. |
+| **Wren MDL** | Overlaps DOSI's role but is a second startup's spec instead of an Apache-incubating one; weaker governance and fan-out story. | **M.** Wren projects are YAML (models, relationships, cubes) — mechanical, but semantics differ. |
+| **Malloy** | A language, not a config format: no governed-metric registry concept, and it requires adopting a compiler/VS Code toolchain. Native DuckDB support noted for ad-hoc work. | **M export / L import.** Generating Malloy sources is feasible; importing *from* Malloy requires its TypeScript parser and is lossy for nested views. |
+| **nao** | An analytics *agent* (open source, dbt + nao-core context CLI), not a semantic-layer spec — a complementary category, not an alternative. Could sit on top of this stack. | **N/A.** No model format to compile to; interop would run through dbt models. |
+
+## 10. Import/Export Strategy
+
+* **One-way emitters only, never bidirectional sync.** OSI is the source of truth; target formats are disposable projections. Bidirectional sync requires identity mapping and round-trip fidelity, which multiplies effort 3–5× and is almost never worth it.
+* **OSI is designed to be this hub.** dbt Labs is a founding OSI member alongside Snowflake and Salesforce, so native OSI import in MetricFlow-class tools is plausible within the spec's lifetime — adapters written today may become obsolete.
+* **YAGNI for MVP:** build zero adapters now. If DOSI disappoints, write the Cube emitter first (S effort, mature target).
+
+## 11. Dependency Risk & Version Pins
+
+This stack pins three young specifications. Record exact versions in this repository and upgrade deliberately:
+
+* **OKF** — pinned at **v0.2**.
+* **Apache Ossie (OSI)** — incubating; pin to a spec commit/tag.
+* **DOSI Engine** — pin to a released version; startup product.
+
+Escape hatches per layer: **context layer** → plain Markdown + YAML frontmatter (OKF is a superset; migration is mechanical). **Semantic layer** → Cube or MetricFlow (see §9). **Execution layer** → DuckDB regardless. Rule: layers couple through the file artifacts they produce, never through tool-specific APIs.
+
+## 12. MVP Scope — Explicitly Deferred
+
+Deliberately out of scope for the MVP/PoC to protect pace — both are mandatory before production:
+
+* **Access control & governance** (authZ, row/column security, PII masking, audit): deferred — single-user PoC on trusted data. **Revisit before any multi-user access or production data.**
+* **Semantic-correctness evaluation** (golden question→metric test sets, fan-out/chasm-trap proofs): deferred — compilation and execution checks only for MVP. **Revisit before agents author models unsupervised.**
