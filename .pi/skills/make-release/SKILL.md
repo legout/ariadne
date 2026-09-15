@@ -1,12 +1,12 @@
 ---
 name: make-release
-description: Prepare and publish semver GitHub releases for Python/uv or Node projects, optionally publishing Python packages to PyPI. Use for version bumps, changelogs, tags, or releases.
+description: Prepare and publish semver GitHub releases for Python/uv, Node projects, or VERSION-based skill catalogs, optionally publishing Python packages to PyPI. Use for version bumps, changelogs, tags, or releases.
 compatibility: Requires git and gh; Python publishing requires uv; Node releases require the repository's package manager.
 ---
 
 # Make Release
 
-Create one release from a clean default branch: bump the version, finalize the changelog, build artifacts, commit, push, tag, publish a GitHub Release, and optionally publish a Python package to PyPI.
+Create one release from a clean default branch: select or bump the version, finalize the changelog, validate the release, commit, push, tag, publish a GitHub Release, and optionally publish a Python package to PyPI. A skill catalog uses its root `VERSION` and Git snapshot; do not invent a package manifest or package build.
 
 If specialized changelog, commit, GitHub, or uv skills are installed, they may assist; this workflow remains complete without them.
 
@@ -14,7 +14,7 @@ If specialized changelog, commit, GitHub, or uv skills are installed, they may a
 
 Resolve these from the request and repository before asking:
 
-- bump: `patch`, `minor`, or `major`;
+- bump: `patch`, `minor`, or `major`; `initial` explicitly publishes a VERSION-based catalog's prepared version without bumping, only when the catalog has no prior releases;
 - package when a monorepo or mixed Python/Node repository has multiple candidates; and
 - for Python, whether this release should publish to PyPI.
 
@@ -27,10 +27,11 @@ Ask only for unresolved choices. A Python project's first PyPI release must also
 3. Detect the version source:
    - Python: static `[project].version` in `pyproject.toml`.
    - Node: `version` in the selected `package.json`.
-4. If both ecosystems or multiple packages are present, select one package unless their manifests clearly describe the same release and currently have the same version. Never silently synchronize unrelated packages.
-5. Calculate the next semantic version from the requested bump. Stop on non-semantic or dynamically generated versions rather than guessing.
-6. Verify that neither the intended version nor its `v<version>` tag already exists locally, remotely, on GitHub Releases, or in the selected package registry.
-7. Inspect commits since the latest release tag and confirm there is a releasable change.
+   - Skill catalog: a root `VERSION` explicitly designated by repository docs, containing one stable `MAJOR.MINOR.PATCH` value without a `v` prefix. It versions the catalog, not individual skills, upstream pins/schema versions, or nested vendored package manifests.
+4. If multiple canonical version sources or multiple packages are present, select one package unless their manifests clearly describe the same release and currently have the same version. Never silently synchronize unrelated packages.
+5. Calculate the next semantic version from the requested bump and documented repository compatibility policy. For catalog `initial`, keep the prepared `VERSION`; refuse if a prior catalog release exists. Stop on non-semantic or dynamically generated versions rather than guessing.
+6. Verify that the intended `v<version>` tag and published version are absent locally, remotely, and on GitHub Releases, plus the selected package registry when applicable. A catalog's prepared VERSION file is not an existing publication. Catalog-only releases have no npm/PyPI registry check.
+7. Inspect commits since the latest release tag and confirm there is a releasable change. For `initial`, inspect the current catalog and available history as the baseline; do not invent an earlier release.
 
 ## First PyPI setup
 
@@ -70,6 +71,7 @@ If `--dry-run` is present, stop after this preview. Otherwise require explicit a
 1. Write any approved first-use publishing workflow, then update only the selected canonical version source:
    - Python: edit `[project].version`; run `uv lock` when `uv.lock` exists.
    - Node: use the lockfile's package manager version command with tag/commit creation disabled so its manifest and lockfile stay synchronized.
+   - Skill catalog: edit only root `VERSION` (leave it unchanged for `initial`); never bump schema versions, upstream pins, individual skills, or vendored manifests.
 2. Collect notable user-facing changes since the latest release tag.
 3. Update `CHANGELOG.md`, or `CHANGELOG` when that is the repository convention. Create `CHANGELOG.md` only when neither exists.
 4. Finalize the current Unreleased entries under `## <version> - <YYYY-MM-DD>` (preserving the repository's heading/link style) and leave a fresh empty Unreleased section above it.
@@ -81,6 +83,7 @@ Run the repository's established release checks, including its configured tests,
 
 - Python: show any stale distribution artifacts and remove only known build outputs covered by the approved plan, run `uv build`, run `uvx twine check dist/*`, and inspect wheel/sdist names plus embedded name/version metadata.
 - Node: run the repository's build script when present, then run the package manager's pack dry-run and inspect included files.
+- Skill catalog: run its declared structure/link/contract tests and required checks; inspect the tracked file list that the Git tag will expose. Require the dated changelog heading to match `VERSION` before publication. Do not run npm pack, create a package manifest, or build vendored tools merely to release the catalog. Existing catalog checks may still call vendored tests when required by project policy.
 
 Stop on any build failure or unexpected package contents. Do not publish broken or stale artifacts.
 

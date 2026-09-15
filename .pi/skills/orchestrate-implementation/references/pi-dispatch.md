@@ -1,5 +1,10 @@
 # Pi implementation dispatch
 
+- [Lane ownership](#lane-ownership)
+- [Native Pi dispatch recipe](#native-pi-dispatch-recipe)
+- [Reviewer dispatch contract](#reviewer-dispatch-contract)
+- [Durable lifecycle recipe](#durable-lifecycle-recipe)
+
 ## Lane ownership
 
 - Parallel mutation requires separate managed worktrees.
@@ -34,7 +39,29 @@ For a coordinated wave, make exactly one top-level `subagent` call with `async: 
 - Do not set hard tool budgets on mutation-capable workers.
 - Return output references, commit IDs, and handoffs instead of copying full reports into later prompts.
 
-A worker launch names the brief path, repo/cwd/ref, authority, claimed seam, validation, commit requirement, output, and escalation rules. A reviewer launch names the same brief, worker report, and exact diff package.
+A worker launch names the brief path, repo/cwd/ref, authority, claimed seam, validation, commit requirement, output, and escalation rules. Include the worker guardrails from the brief reference directly in its task. A reviewer launch names the same brief, worker report, and exact diff package **and pastes the entire contract below into the task every time**, including rechecks and candidate reviews. Fresh reviewers may never load project instruction files; links alone are not delivery.
+
+## Reviewer dispatch contract
+
+Fill the placeholders from the approved task and actual source inspection. Name applicable instruction/style/lint/config rules, or state that no written conventions were found; never substitute taste. Include real callers, input provenance, and runtime/deployment assumptions. Missing security-critical facts remain unverified and go to the parent.
+
+<!-- reviewer-contract:start -->
+```text
+Review <base>..<head> against <approved criteria and non-goals>.
+Written conventions: <named sources and relevant rules, or none found>.
+Real use: <callers, input provenance, environment, touched boundaries>.
+Priority: agreed feature, then correctness, then proven risk. Project written conventions are binding; violations are must-fix. Unwritten taste never blocks.
+Report only a violation of a named requirement or written rule that this change caused or worsened, reachable through real callers, inputs, and environment, with material impact and a proportionate response. Cite the rule, changed location, scenario, impact, and response.
+Security activates only for touched boundaries: untrusted or external input (files, queries, network), credentials, auth, dependency changes. Require a named asset, realistic attacker, and an attack path through real use. Stories requiring stolen secrets, broken TLS, malicious admins, or generic extra hardening are not findings. No boundary touched: write "security: n/a". Security facts missing: mark the criterion unverified; never invent a threat model. Trusted internal callers and user-owned local files are not hostile by default; written safety guarantees still bind.
+Test requests are findings too: name a reachable real scenario or drop them. Coverage percentage is not a reason.
+Large or out-of-scope fixes: one line with the owner decision needed, not an automatic fix-first item. Unrelated issues: one line max, non-blocking. Do not fix, dispatch workers, or start re-reviews; the parent dispositions findings before repair.
+Finish when agreed criteria, real risks, and written rules are covered; zero findings is success. Verdict: pass or fix-first (small in-scope repairs), with any unverified criterion or required human decision explicitly stated. A pass does not clear those decisions or authorize acceptance/publication. Then stop.
+```
+<!-- reviewer-contract:end -->
+
+For the one allowed recheck, replace the opening scope with: `Re-review only <priorReviewSha>..<replacementReviewSha>, the accepted findings <list>, and the behavior those fixes address. Do not re-review the rest of the change. Report any surviving blocker, then stop for the human; no third round.` Paste the full contract as well. A reconstructed sibling commit is compared directly with `git diff <priorReviewSha> <replacementReviewSha>` (two endpoints, not merge-base/triple-dot).
+
+For candidate review after lane reviews, supply the exact candidate base/head and prior review evidence; scope attention to previously unreviewed changes and integration effects. Verify tree/diff correspondence before reusing evidence; never copy a verdict across branches blindly or reopen settled findings just to fill another review. Missing correspondence is an unverified gate for the parent, not permission to reset the correction budget.
 
 ## Durable lifecycle recipe
 
@@ -77,7 +104,8 @@ git -C "$review_path" apply --index "$patch" || stop "handoff patch could not be
 # worker reports are supporting evidence; only the staged tree is the reviewed content
 test "$(git -C "$review_path" write-tree)" = "$expected_tree" || stop "staged tree differs from the expected worker tree"
 git -C "$review_path" commit -qm "reconstruct $lane for review" || stop "reconstruction commit failed"
-# review exactly "$base_sha"..HEAD, then advance lastReviewedSha on this reconstruction only
+# initial review: "$base_sha"..HEAD; fix recheck: priorReviewSha..replacementReviewSha
+# advance lastReviewedSha on this reconstruction only after the required review/recheck
 ```
 
 **Assemble accepted reconstructed commits.** The candidate consumes only reconstructed reviewed commits, never a deleted worker path, the parent `HEAD`, or a live worker SHA.
@@ -91,8 +119,9 @@ base_ref="refs/heads/orchestrator/$run/base/$lane"
 test "$(git rev-parse "$base_ref")" = "$base_sha" || stop "base pin moved before candidate assembly"
 git worktree add -b "orchestrator/$run/candidate" "$candidate_path" "$base_ref" || stop "candidate worktree creation failed"
 git -C "$candidate_path" cherry-pick "$reviewed_sha" >/dev/null || stop "candidate assembly failed"
-# fresh review of the exact candidate base..head, then hand merge-worktree the registered
+# apply the selected candidate policy to base..head, reusing verified prior evidence
+# for settled code and reviewing integration effects; then hand merge-worktree the
 # candidate path, branch, base/head, checks, review evidence, and authorization state
 ```
 
-The examples are intentionally recipes, not calls to a retention API. Use a binary-capable patch format, verify the digest before applying it, and preserve artifacts and owned refs when any check fails. A fix worker's replacement patch supersedes the prior full lane patch: replay it from the same pinned base with a distinct `review_branch`, reset the lane's review boundary to the pinned base, and re-review the complete replacement range.
+The examples are intentionally recipes, not calls to a retention API. Use a binary-capable patch format, verify the digest before applying it, and preserve artifacts and owned refs when any check fails. A fix worker's replacement patch supersedes the prior full lane patch: preserve the prior materialized review ref/SHA, then replay from the same pinned base with a distinct `review_branch`. Verify the full reconstructed tree, but review only `priorReviewSha..replacementReviewSha` and affected behavior. Advance `lastReviewedSha` to the replacement only after that recheck passes; reconstruction never resets the one-fix/one-recheck budget.

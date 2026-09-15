@@ -28,7 +28,11 @@ Classify each validation unit once:
 - **normal risk** — ordinary behavior changes and bug fixes: use one focused regression test **or** an existing check at the cheapest stable seam, plus one candidate review; do not duplicate the same behavior across unit, integration, API, and browser layers; or
 - **high risk** — authentication, permissions, secrets, money, destructive data handling, migrations, concurrency, distributed behavior, or public contracts: target the named threats or failure modes and require immediate review where later work will consume the result.
 
-A validation unit may cover several tightly related tasks. Verification belongs to the changed behavior or risk, not to every checkbox. Reuse required repository CI instead of restating its full test, lint, and typecheck matrix in each task. Security work names trust boundaries and plausible threats; “test everything” is not a threat model.
+A validation unit may cover several tightly related tasks. Verification belongs to the changed behavior or risk, not to every checkbox. Reuse required repository CI instead of restating its full test, lint, and typecheck matrix in each task. Asking for a test is a finding too: name the real reachable scenario and violated criterion; coverage percentage and impossible domain states are not reasons. Written conventions are binding, unwritten preferences never block. Identify the actual callers, input provenance, environment, and applicable instruction/style/lint rules (or none found) so fresh workers/reviewers do not invent context.
+
+Security review activates only when the task touches untrusted/external input, credentials, auth, or dependency changes. Name the asset, realistic attacker, and attack path through actual use. Trusted internal callers and user-owned local files are not hostile by default; services use the real deployment boundary. Stolen-secret, broken-TLS, malicious-admin, and generic-hardening stories are not findings. Untouched boundary: `security: n/a`; missing facts on security work: `unverified` and ask, never invent a threat model. Preserve written safety guarantees.
+
+Plan at most one parent-authorized fix pass and one delta-only recheck; remaining blockers go to the human, not another round. Candidate review covers unreviewed code and integration effects without reopening settled findings. Do not add evidence ledgers, review sign-offs, or a second lifecycle.
 
 ## Preflight
 

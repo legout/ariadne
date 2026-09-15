@@ -12,7 +12,7 @@ Create one compact run manifest in runtime-managed artifacts. Record:
 - task IDs, dependency edges, lanes, and claimed files/contracts;
 - per-task readiness: prerequisite evidence and the readiness verdict recorded before dispatch;
 - worker, reviewer, simplifier, oracle, and peer configuration;
-- validation units with risk, named failure modes, focused commands, review policy, and a one-correction-round default;
+- validation units with risk, named failure modes, focused commands, review policy, and the one-fix/one-delta-recheck limit (not reset at candidate assembly);
 - unresolved decisions and their owners;
 - per-lane pinned named base ref and resolved SHA, worker-reported commit/tree/cleanliness, materialized review ref/worktree and SHA/tree, lane base/head/last-reviewed SHA, and handoff/cleanup state;
 - candidate-branch base, head, registered worktree, cherry-picks, exact review range, and review state; and
@@ -34,7 +34,15 @@ Give each worker one bounded brief containing:
 8. commit and report requirements; and
 9. stop/escalate conditions.
 
-Do not paste the complete plan or accumulated task history into worker prompts.
+Do not paste the complete plan or accumulated task history into worker prompts. Include relevant written conventions (named sources/rules, or none found), real callers/input provenance/environment, and any actually touched trust boundary. Never infer that an internal library or user-owned local data is internet-facing.
+
+Paste this guardrail into each worker's task, including fix workers:
+
+```text
+Approved scope outranks reviewer suggestions. Use the smallest safe change; dependencies and abstractions need a job today. Follow named written conventions; taste is not a requirement. Test requests require a real reachable scenario, not coverage percentage or impossible inputs; use the assigned focused obligation, one failing test first for new-test.
+Do not act on raw reviewer output. The parent must first disposition each finding: reject failed gates in one line, authorize a small in-scope fix, or hand a large/out-of-scope fix to the human. Challenge accepted findings that source inspection contradicts instead of silently implementing them. Security findings need a touched boundary, named asset, realistic attacker, and actual path through real use; stolen-secret, broken-TLS, malicious-admin, and generic-hardening stories fail the gate. Missing security facts are unverified, not invented threats.
+Only the parent starts fixes/rechecks. One fix pass, one delta recheck, then ask the human; no third round. After the task, restate its approved goal, compare the result, and choose accept / fix / hand back / ask without resetting that limit. Extra ideas get one line, not code.
+```
 
 The worker report contains:
 
@@ -42,10 +50,11 @@ The worker report contains:
 - changed files;
 - test-obligation evidence: the assigned obligation, named failure mode, commands, and results; failing test before and passing test after implementation for `new-test`;
 - validation commands and results;
+- the one-sentence approved-task comparison and `accept / fix / hand back / ask` recommendation (the parent still owns acceptance);
 - open decisions and residual risks; and
 - artifact and handoff references, including the complete patch digest, worker tree/cleanliness, runtime cleanup state, and any warnings.
 
-The manifest must distinguish four identities: worker provenance (the commit/tree reported by the child), the materialized review commit/tree (the parent-owned reconstruction actually checked), the lane review boundary (`lastReviewedSha` on that reconstruction), and the candidate commit/tree assembled from accepted reviewed lanes. Never copy a clean verdict between these identities.
+The manifest must distinguish four identities: worker provenance (the commit/tree reported by the child), the materialized review commit/tree (the parent-owned reconstruction actually checked), the lane review boundary (`lastReviewedSha` on that reconstruction), and the candidate commit/tree assembled from accepted reviewed lanes. Never copy a clean verdict between these identities. Retain the prior materialized review ref/SHA for a fix: the replacement is reconstructed from the original pinned base but the recheck compares the old and new materialized endpoints, not the full replacement against the base. Record these ranges in the existing review state, not a new ledger.
 
 Workers do not expand scope, assemble other lanes, publish, or delegate further unless the orchestrator explicitly grants that authority.
 

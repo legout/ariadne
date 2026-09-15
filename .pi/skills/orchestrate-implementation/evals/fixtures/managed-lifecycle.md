@@ -33,9 +33,9 @@ Keep parent-created review/candidate checkouts under `$run_root`. Native managed
 4. **Handoff:** consume the actual runtime handoff artifact: complete binary-capable patch path, digest, worker-reported commit/tree/cleanliness, and recorded cleanup state (worktree removed/preserved).
 5. **Move parent:** commit an unrelated change on the parent branch so its HEAD advances past the pinned base.
 6. **Reconstruct:** run the documented replay recipe: verify the pin, verify the digest, `git apply --check`/`--index` in a registered parent-owned review worktree, verify the staged tree equals the reported clean worker tree, commit, run the focused check there.
-7. **Review:** dispatch a fresh read-only reviewer against the exact `base..reconstructed-head` range; record the verdict.
+7. **Review:** dispatch a fresh read-only reviewer against the exact `base..reconstructed-head` range with the full inline reviewer contract and actual fixture criteria; record the verdict. Preserve the materialized review ref/SHA. Plant one real criterion violation for this fixture's repair, not a pseudo-finding.
 8. **Fix:** launch a fresh managed fix worker from the same verified pinned base, replaying the full prior patch and applying one accepted finding; capture its complete replacement patch and digest; let finalization clean up.
-9. **Replace:** reconstruct the replacement patch from the pinned base on a distinct review branch; verify it is a full replacement (not incremental); reset the review boundary to the pinned base and re-review the complete replacement range.
+9. **Replace:** reconstruct the replacement patch from the pinned base on a distinct review branch; verify it is a full replacement (not incremental). Recheck only the direct `priorReviewSha..replacementReviewSha` delta and the accepted finding's behavior. One fix pass, one recheck; unresolved findings stop for the human, never reset the budget or re-review settled code.
 10. **Candidate:** assemble the reconstructed reviewed commit in a registered candidate worktree; record the handoff fields for `merge-worktree`; stop before integration.
 
 ## Required evidence fields
@@ -52,7 +52,7 @@ Keep parent-created review/candidate checkouts under `$run_root`. Native managed
 | `parent_moved_sha` | Parent HEAD after movement |
 | `review_ref`, `review_sha`, `review_tree` | Materialized reconstruction identities |
 | `review_range`, `review_verdict` | Exact reviewed range and verdict |
-| `replacement_digest`, `reset_boundary` | Replacement patch digest and reset review boundary |
+| `replacement_digest`, `prior_review_sha`, `recheck_range` | Full replacement digest, preserved prior materialized review SHA, and exact delta recheck endpoints |
 | `candidate_ref`, `candidate_path`, `candidate_base`, `candidate_head` | Registered candidate handoff |
 | `handoff_fields` | Fields handed to `merge-worktree` |
 | `cleanup_evidence` | What was cleaned up, what was preserved, and why |
@@ -62,4 +62,4 @@ Keep parent-created review/candidate checkouts under `$run_root`. Native managed
 
 Before PASS, exercise the refusal cases on separate fixture-owned review paths: a moved base or digest mismatch must abort before creating a review worktree/branch; a corrupt patch with its matching digest must abort at applicability checking without creating a reconstruction commit. A wrong expected tree must also refuse before commit, preserving the staged review checkout for inspection. Record exit statuses, refs, and preserved artifacts for each case.
 
-PASS requires every evidence field populated from actual live execution, every refusal boundary above honored, and final validation plus fresh review on the exact candidate tree. Missing native prerequisites produce **BLOCKED** with the exact error; a failed required assertion produces **FAIL**. A supervised approval pause is **AWAITING APPROVAL**. None is PASS or permission for a fallback run. This fixture's live status remains **PENDING** until executed and its evidence recorded.
+PASS requires every evidence field populated from actual live execution, every refusal boundary above honored, and final validation plus fresh review on the exact candidate tree, checking integration effects and verifying correspondence to prior review evidence without reopening settled findings. Missing native prerequisites produce **BLOCKED** with the exact error; a failed required assertion produces **FAIL**. A supervised approval pause is **AWAITING APPROVAL**. None is PASS or permission for a fallback run. This fixture's live status remains **PENDING** until executed and its evidence recorded.

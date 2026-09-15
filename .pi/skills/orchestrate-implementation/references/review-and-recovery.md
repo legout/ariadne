@@ -15,9 +15,9 @@ Immediate-review triggers:
 public API/schema/shared contract; security/auth/permissions/secrets; money/data-loss/migration; concurrency/distributed behavior; broad cross-cutting diff; weak or missing checks; worker uncertainty/scope expansion; candidate-assembly conflict; a task whose contract will be consumed before the next wave review
 ```
 
-Review boundaries are branch-scoped. For each mutation lane, record `laneBaseSha`, `laneHeadSha`, and `lastReviewedSha`. Review that lane's exact `lastReviewedSha..laneHeadSha` range in its managed worktree while that worktree exists; once the lane is reconstructed, review the reconstructed branch in its parent-owned review checkout. Never use the orchestrator's `HEAD` to represent unintegrated parallel lanes. After a clean verdict, advance only that lane's `lastReviewedSha`.
+Review boundaries are branch-scoped. For each mutation lane, record `laneBaseSha`, `laneHeadSha`, and `lastReviewedSha`. Review that lane's exact `lastReviewedSha..laneHeadSha` range in its managed worktree while that worktree exists; once the lane is reconstructed, review the reconstructed branch in its parent-owned review checkout. Never use the orchestrator's `HEAD` to represent unintegrated parallel lanes. After a clean verdict with no unresolved material criterion or owner decision, advance only that lane's `lastReviewedSha`. For fixes, retain the prior materialized review ref/SHA and compare the two endpoints directly, even when they are sibling reconstructions.
 
-At a wave boundary, independently review only high-risk lanes and dependency-defining contracts needed by the next wave. For normal-risk lanes, defer review until the candidate is assembled; for low-risk lanes, the parent inspects the exact candidate diff. Send all accepted blockers for one lane in one batch to one fix worker. After accepted commits are assembled on an explicit candidate branch, record `candidateBaseSha` and `candidateHeadSha` and apply the selected candidate review once. No lane or candidate boundary may advance based on inspection of another branch.
+At a wave boundary, independently review only high-risk lanes and dependency-defining contracts needed by the next wave. For normal-risk lanes, defer review until the candidate is assembled; for low-risk lanes, the parent inspects the exact candidate diff. Send all accepted blockers for one lane in one batch to one fix worker. After accepted commits are assembled on an explicit candidate branch, record `candidateBaseSha` and `candidateHeadSha` and apply the selected candidate review once. Verify correspondence to prior reviewed code; candidate review covers previously unreviewed changes and integration effects, not a fresh hunt through settled findings. Strict review adds boundaries, not repeated review of unchanged code. No boundary advances solely on inspection of another branch, and candidate assembly never resets a finding's correction budget.
 
 ## Execution loop
 
@@ -29,25 +29,27 @@ At a wave boundary, independently review only high-risk lanes and dependency-def
 6. Dispatch workers in safe serial or parallel waves with their validation-unit test obligations.
 7. Run the validation unit's focused check once on the tree being accepted; do not repeat equivalent validation on both worker and reconstructed trees unless reconstruction itself is in doubt.
 8. Record each completed lane's `laneHeadSha`; immediately review only high-risk or dependency-defining ranges.
-9. At a dependency boundary, review only the contract the next task will consume. Batch all accepted blockers for one lane into one fix pass, then rerun affected focused checks.
-10. Return valid blockers to the same writer for fix/re-review when its managed worktree still exists and the child is resumable; otherwise launch a fresh fix worker in a new managed worktree from the exact original base, apply the durable prior handoff patch, then apply accepted findings.
+9. At a dependency boundary, review only the contract the next task will consume. Apply disposition before any repair; batch accepted small in-scope blockers for one lane into one fix pass.
+10. Only the parent dispatches the fix and recheck. Use the same writer when its managed worktree exists and the child is resumable; otherwise use a fresh managed fix worker from the exact original base with the prior full patch replayed. Run affected focused checks and one fresh delta-only recheck with the inline dispatch contract. Surviving or new material blockers stop for the human; do not dispatch another fix automatically.
 11. After every candidate lane is clean, assemble accepted commits according to mode on an explicit candidate branch and record its base and head.
 12. Apply the selected candidate policy to the exact candidate range: parent inspection for low risk, one fresh independent review for normal risk, or fresh final review for high risk.
 13. Run required repository CI plus only the focused acceptance commands tied to named failure modes; do not automatically run every available typecheck, lint, and test command.
 14. Keep push, PR merge, deploy, and release behind separate authority gates.
 
-Default to one correction round. Only findings that identify a reachable defect, security issue, acceptance-criterion violation, or credible regression are blockers. Batch them into one fix pass and recheck only the affected evidence. If a second review still finds material blockers, stop and diagnose the plan or implementation boundary with the owner instead of continuing an uncontrolled loop. Never loop for optional polish.
+One fix pass, one delta recheck is the limit, not a renewable default. No third round. If the same finding survives an honest fix, stop: the finding or fix is wrong. Any unresolved material blocker or unverified security criterion requires a human decision, not another full review, a renamed lane, or an automatic repair loop. A changed scope needs explicit owner approval. Never loop for optional polish.
 
 ## Findings and recovery
 
-Classify each finding against the exact reviewed head:
+### Disposition before repair
 
-- **valid blocker**: a reachable defect, security issue, acceptance-criterion violation, or credible regression; fix and revalidate now;
-- **valid non-blocker**: record or defer explicitly;
-- **stale**: absent at current head;
-- **invalid**: contradicted by source, tests, or approved scope;
-- **speculative**: lacks a reachable failure, named threat, or contract; do not fix in this run; or
-- **out of scope/policy**: needs owner authority.
+The parent evaluates every finding against the exact reviewed head and approved task **before touching code or dispatching a fix**. Reviewer urgency never outranks requirements. Require all five: named violated requirement/written rule, change-caused or worsened problem, real reachability, material impact, and proportionate response. Written convention violations remain must-fix; taste does not become convention. Security and test demands additionally pass the inline reviewer contract's realism/scenario gates.
+
+- **Reject** stale, invalid, speculative, taste-only, or otherwise failed gates in one line with the reason. No repair is owed.
+- **Fix** gate-passing findings with small in-scope repairs; batch them into the single authorized fix pass and revalidate.
+- **Hand back** gate-passing findings whose proper repair is large or outside approved scope, with one sentence explaining the owner decision. Do not silently accept the defect or list a large redesign as an automatic fix-first item.
+- **Ask** when a material criterion is unverified, including genuinely security-sensitive work with missing facts. A reviewer `pass` does not clear this acceptance gate.
+
+Pre-existing/out-of-scope observations get at most one non-blocking line. Reviewers end with `pass` or `fix-first` and stop once agreed criteria, actual risks, and written rules are covered; zero findings is a successful review. No extra evidence ledger or sign-off artifact: use the existing report.
 
 Treat `needs_attention` as a control signal, not proof of failure. Preserve stopped or failed worktrees and artifacts until ownership is clear. Do not launch a replacement while the original writer may still own the seam. Inspect exact head and focused logs before classifying a failed gate.
 
@@ -56,8 +58,8 @@ A completed child's managed worktree may be removed automatically before a later
 1. Verify that the named base still resolves to its recorded SHA. If it moved, stop and preserve the handoff for an owner decision; never fall back to current `HEAD`.
 2. Create a registered parent-owned review worktree outside extension auto-discovery and the active source checkout at the verified named base.
 3. Verify the patch identity/digest, then run `git apply --check` and `git apply --index`. Do not use fuzzy application or omit files. Compare the reconstructed staged tree with the worker-reported clean tree; reports are supporting evidence, not acceptance.
-4. Commit the reconstruction, run focused checks on that exact tree, and apply the selected review policy to the exact base/head range. Advance `lastReviewedSha` only after the required review or parent inspection.
-5. For an accepted fix, allocate a fresh managed worker from the same verified named base, replay the prior full patch, and apply the findings. The new full patch replaces the old one; reset the review boundary to the pinned base and re-review the complete replacement range.
+4. Commit the initial reconstruction, run focused checks on that exact tree, and apply the selected review policy to the exact base/head range. For a replacement after review, use step 5's delta recheck instead. Advance `lastReviewedSha` only after the required review or parent inspection.
+5. For the one accepted fix pass, preserve the prior materialized review ref/SHA, allocate a fresh managed worker from the same verified named base, replay the prior full patch, and apply only parent-accepted findings. Reconstruct the new full patch on a distinct review branch and verify its entire staged tree as above. Re-review only `priorReviewSha..replacementReviewSha` and the behavior those fixes address, using a direct two-endpoint diff rather than merge-base/triple-dot. The full transport patch is not the re-review range. Missing prior review evidence stops for the owner, never resets to a full review. Advance `lastReviewedSha` only after the recheck passes.
 
 Preserve failed or uncertain artifacts and owned refs. Delete them only after all consumers are terminal and cleanup is explicitly authorized.
 
@@ -75,4 +77,4 @@ Before accepting a run, verify:
 - handoffs are durable before worktree cleanup; and
 - skipped validation and residual risks are explicit.
 
-Reviewer reports, CI checks, and receipts are evidence, not publication authority.
+After each task, restate the approved task in one sentence, compare the result, and choose `accept / fix / hand back / ask`. `fix` is subject to the existing correction limit, not permission to restart it. Extra ideas get one written line, not code. Reviewer reports, CI checks, and receipts are evidence, not publication authority.

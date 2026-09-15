@@ -17,6 +17,16 @@ The parent owns every child's work: review the diff yourself and write the final
 
 Default to lean assurance: use the smallest evidence set that establishes acceptance criteria and addresses named material risks. Do not add tests, validation commands, reviewers, or review rounds for speculative failures or duplicate evidence. Escalate assurance for security, permissions, secrets, money, destructive data handling, migrations, concurrency, distributed behavior, and public contracts; do not weaken approval, data-integrity, or publication gates.
 
+## Review ground rules
+
+Agreed feature, then correctness, then proven risk. Written conventions are binding and violations are must-fix; unwritten reviewer taste never blocks. A reportable finding must violate a named requirement or written rule, be caused or worsened by this change, be reachable through real callers/inputs/environment, matter, and have a proportionate response. Test requests pass the same gate: name a real scenario, not a coverage target.
+
+Security review activates only for touched untrusted/external input, credentials, auth, or dependency boundaries. Require a named asset, realistic attacker, and actual attack path. Stolen-secret, broken-TLS, malicious-admin, and generic-hardening stories are not findings. Otherwise write `security: n/a`; missing security facts stay `unverified`, never become invented threats. Trusted internal libraries and user-owned local data are not hostile by default; service tasks use the real deployment/auth/network boundary. Written safety guarantees remain binding.
+
+The parent dispositions every finding before repair: reject failed gates in one line, authorize small in-scope fixes, or hand large/out-of-scope fixes to the human. Only the parent starts fixes/rechecks. Review ends once criteria, real risks, and written rules are covered, with `pass` or `fix-first`; finding count is not success. One fix pass, one delta recheck, then ask the human; no third round. Candidate review does not reset that budget or reopen settled findings.
+
+After each task, restate the approved task, compare the result, and choose `accept / fix / hand back / ask`. Extra ideas get one line, not code. Keep the smallest safe change; dependencies and abstractions need a job today. Use existing reports, not new ledgers, lifecycles, or sign-off artifacts.
+
 **REQUIRED SUB-SKILL:** Use `pi-subagents` for child lifecycle, fresh contexts, managed worktrees, artifacts, missions, review, and recovery.
 
 Use `pi-intercom` only for explicitly named, persistent read-only peers or visible cross-project peers. Spawned children use Pi's native supervisor channel for decisions and progress.
@@ -29,7 +39,7 @@ Require each mutation lane to report a complete binary-capable patch, its digest
 
 When the worker worktree or branch is gone, reconstruct in a registered parent-owned review worktree outside extension auto-discovery and the active source checkout: create it from the pinned named base, verify the patch digest, run `git apply --check` and `git apply --index`, and compare the staged tree with the expected worker tree. Commit that reconstructed tree, run focused checks there, and apply the selected review policy to its exact base/head range. Record worker provenance separately from the materialized review SHA/tree; advance `lastReviewedSha` only for the reconstructed branch.
 
-A fix worker replays a full patch relative to the original pinned base. The replacement patch supersedes the prior full lane patch; it is not an incremental patch applied on top of the previous result. Reset the review boundary to the pinned base and review the complete replacement range. Assemble accepted reconstructed commits in a separate registered candidate worktree, then hand `merge-worktree` the candidate path, branch, base/head, checks, review evidence, and authorization state.
+A fix worker replays a full patch relative to the original pinned base. The replacement patch supersedes the prior full lane patch; it is not an incremental patch applied on top of the previous result. Preserve the prior materialized review ref/SHA before reconstruction. Reconstruct the full replacement from the pinned base, but re-review only `priorReviewSha..replacementReviewSha` and the behavior the accepted fixes address. Full-patch transport does not reset review scope or the correction budget; missing prior review evidence requires an owner decision, not a full review restart. Assemble accepted reconstructed commits in a separate registered candidate worktree, then hand `merge-worktree` the candidate path, branch, base/head, checks, review evidence, and authorization state.
 
 ## Modes
 
@@ -96,7 +106,7 @@ Before dispatch, read [manifest and briefs](references/manifest-and-briefs.md). 
 | Persistent specialist | Named read-only intercom peer |
 | Missing optional peer | Fresh advisor fallback |
 | Missing required peer | Pause |
-| Review blocker | Resumable writer with intact worktree fixes; otherwise fresh fix worker replays the durable prior handoff patch from the pinned base; fresh full-range re-review |
+| Review finding | Parent dispositions first; one batch of accepted small in-scope fixes, then one fresh delta-only recheck; unresolved or large fixes go to the human |
 | Missing/corrupt handoff | Block acceptance; preserve the artifact and owned refs for recovery |
 | Candidate-assembly conflict | Pause and preserve ownership |
 | Push/merge/deploy/release | Separate authority gate |
