@@ -22,8 +22,15 @@ compiled by a dedicated DatusOSIAdapter over a temp directory (discarded after
 each call — the served semantic dir is never touched). Compile failure returns
 the compiler errors verbatim; nothing is staged, nothing executed. On success
 the compiled SQL is executed read-only and the definition is auto-staged as a
-proposal under ``staging/semantic_layer/models/adhoc/`` (numeric suffix on name
-collision, never overwrite); promotion stays human (ADR-0003).
+proposal: the OSI model under ``staging/semantic_layer/models/adhoc/`` plus a
+minimal OKF draft under ``staging/context_layer/metrics/`` so ``search_context``
+can discover it (numeric suffix on name collision, never overwrite); promotion
+stays human (ADR-0003).
+
+Routing contract (spec rev 4 §8.12): fresh consuming agents discover the ad-hoc
+path through the facade itself — ``list_metrics`` ends with the routing hint,
+the unknown-metric error names ``list_datasets()`` + ``define_metric``, and the
+tool descriptions carry the same language (the MCP registry is the agent's map).
 
 No-unvalidated-execution invariant (spec §6): the DuckDB executor only ever
 receives SQL returned by the Datus compile step — there is no code path from
@@ -31,7 +38,8 @@ tool arguments to ``duckdb.execute`` that bypasses the compiler.
 
 Invariants and failure behavior (spec §6/§7): ``get_metric`` accepts only named
 governed metrics — never raw SQL; unknown metric -> error listing the available
-metrics; Datus absent/broken or no served models -> fail fast at startup with an
+metrics and naming the ad-hoc path (``list_datasets()`` + ``define_metric``);
+Datus absent/broken or no served models -> fail fast at startup with an
 install hint.
 
 Usage::
@@ -46,6 +54,7 @@ import os
 import re
 import sys
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +78,15 @@ except ImportError as exc:
 INSTALL_HINT = (
     "datus-semantic-osi is required to serve governed metrics "
     "(uv pip install 'datus-semantic-osi[metricflow]' on Python 3.12)"
+)
+
+# Spec rev 4 §8.12: the explicit route for questions no governed metric answers.
+# Shared by list_metrics' trailing hint and the unknown-metric error so both
+# name the same two tools.
+ROUTING_HINT = (
+    "If no governed metric above answers your question, route it to the ad-hoc path: "
+    "call list_datasets() to see the queryable tables, then define_metric(definition) "
+    "to compute the answer (compiled, executed read-only, auto-staged for human promotion)."
 )
 
 # MetricFlow's metric-name schema, enforced again at lowering time — reject up
@@ -124,6 +142,12 @@ class Facade:
         if not metrics:  # spec §7: nothing servable -> fail fast, not at query time
             raise RuntimeError(f"no governed metrics found under {models}")
         self._metrics: dict[str, Any] = {metric.name: metric for metric in metrics}
+        # Spec rev 4 §8.12: per-metric available dimensions for list_metrics.
+        # The models compiled two lines above, so discovery on them is safe.
+        self._dimensions: dict[str, list[str]] = {
+            name: sorted(dim.name for dim in asyncio.run(self.adapter.get_dimensions(name)))
+            for name in self._metrics
+        }
 
         # Spike §6.2: non-DuckDB attaches are connection-local, so the facade
         # attaches once on its long-lived connection; compiled SQL references
@@ -134,11 +158,19 @@ class Facade:
         self.con.execute("USE demo.main")
         self.staging_dir = Path(staging_dir)
 
-    async def list_metrics(self) -> list[dict]:
-        return [
-            {"name": metric.name, "description": metric.description or ""}
+    async def list_metrics(self) -> list[dict | str]:
+        """Governed metrics with descriptions and available dimensions; the list
+        ends with the explicit routing hint to the ad-hoc path (spec rev 4 §8.12)."""
+        entries = [
+            {
+                "name": metric.name,
+                "description": metric.description or "",
+                "dimensions": self._dimensions.get(metric.name, []),
+            }
             for metric in self._metrics.values()
         ]
+        entries.append(ROUTING_HINT)
+        return entries
 
     async def list_datasets(self) -> list[dict]:
         """Every table in the attached database with its columns (the agent's map)."""
@@ -159,9 +191,11 @@ class Facade:
         dimensions: list[str] | None = None,
         range: dict | None = None,  # noqa: A002 — spec §4 names the parameter
     ) -> dict:
-        if name not in self._metrics:  # spec §7: discovery before failure
+        if name not in self._metrics:  # spec §7/rev 4: discovery before failure
             available = ", ".join(sorted(self._metrics))
-            raise ValueError(f"unknown metric {name!r}; available metrics: {available}")
+            raise ValueError(
+                f"unknown metric {name!r}; available metrics: {available}. {ROUTING_HINT}"
+            )
         time_start = range.get("start") if range else None
         time_end = range.get("end") if range else None
         result = await self.adapter.query_metrics(
@@ -219,7 +253,18 @@ class Facade:
         relation = self.con.sql(sql)
         columns = list(relation.columns)
         rows = [dict(zip(columns, row)) for row in relation.fetchall()]
-        staged_as = self._stage_adhoc_proposal(params["name"], envelope)
+        staged_as = self._stage_atomic(
+            self.staging_dir / "semantic_layer" / "models" / "adhoc",
+            params["name"],
+            ".yml",
+            yaml.safe_dump(envelope, sort_keys=False).encode("utf-8"),
+        )
+        staged_page = self._stage_atomic(
+            self.staging_dir / "context_layer" / "metrics",
+            params["name"],
+            ".md",
+            _build_adhoc_page(params),
+        )
         return {
             "metric": params["name"],
             "columns": columns,
@@ -227,7 +272,8 @@ class Facade:
             "sql": sql,
             "governed": False,
             "definition": params,  # echoed definition
-            "staged_as": staged_as,
+            "staged_as": str(staged_as),
+            "staged_context_as": str(staged_page),
         }
 
     async def _compile_adhoc(self, envelope: dict, name: str, dimensions: list[str]) -> str:
@@ -261,26 +307,26 @@ class Facade:
             except Exception as exc:  # lowering/load failure — surface it verbatim
                 raise ValueError(f"{type(exc).__name__}: {exc}") from exc
 
-    def _stage_adhoc_proposal(self, name: str, envelope: dict) -> str:
-        """Auto-stage the proposal after successful execution (ADR-0003: promotion
-        stays human). Numeric suffix on collision — never overwrites (spec §8.11):
-        the O_CREAT|O_EXCL claim is atomic, so racing facade processes suffix off
-        each other instead of overwriting (no exists()-then-write TOCTOU)."""
-        adhoc_dir = self.staging_dir / "semantic_layer" / "models" / "adhoc"
-        adhoc_dir.mkdir(parents=True, exist_ok=True)
-        payload = yaml.safe_dump(envelope, sort_keys=False).encode("utf-8")
-        candidate = adhoc_dir / f"{name}.yml"
+    def _stage_atomic(self, directory: Path, stem: str, ext: str, payload: bytes) -> Path:
+        """Auto-stage one proposal artifact after successful execution (ADR-0003:
+        promotion stays human). Numeric suffix on collision — never overwrites
+        (spec §8.11): the O_CREAT|O_EXCL claim is atomic, so racing facade
+        processes suffix off each other instead of overwriting (no
+        exists()-then-write TOCTOU). Same discipline for the model (.yml) and
+        the context page (.md) — spec rev 4 §4."""
+        directory.mkdir(parents=True, exist_ok=True)
+        candidate = directory / f"{stem}{ext}"
         suffix = 2
         while True:
             try:
                 fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
             except FileExistsError:
-                candidate = adhoc_dir / f"{name}-{suffix}.yml"
+                candidate = directory / f"{stem}-{suffix}{ext}"
                 suffix += 1
                 continue
             with os.fdopen(fd, "wb") as fh:
                 fh.write(payload)
-            return str(candidate)
+            return candidate
 
     async def search_context(self, query: str, limit: int = 10) -> list[dict]:
         """Rank OKF pages by query-term frequency (name-anchored ties by path)."""
@@ -379,6 +425,42 @@ def _expand_adhoc_model(params: dict) -> dict:
     }
 
 
+# Best-effort table refs in an agent-authored SELECT ("FROM demo.main.orders",
+# "JOIN customers") for the draft page's provenance frontmatter.
+_TABLE_RE = re.compile(r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_.]*)", re.IGNORECASE)
+
+
+def _source_tables(source: str) -> list[str]:
+    """Table names from the definition's source (a table name or SELECT). Best
+    effort for exotic SQL — the staged OSI model stays the authoritative proposal."""
+    if _IDENTIFIER_RE.fullmatch(source):
+        return [source]
+    return list(dict.fromkeys(t.rsplit(".", 1)[-1] for t in _TABLE_RE.findall(source)))
+
+
+def _build_adhoc_page(params: dict) -> bytes:
+    """Minimal OKF draft for the auto-staged proposal (spec rev 4 §4): frontmatter
+    + name + description + dimensions + proposal marker, so ``search_context``
+    can discover ad-hoc proposals and the human gate sees them in context."""
+    frontmatter = yaml.safe_dump(
+        {
+            "type": "metric",
+            "status": "draft",
+            "generated": datetime.now(UTC).isoformat(timespec="seconds"),
+            "sources": _source_tables(params["source"]),
+        },
+        sort_keys=False,
+    )
+    dimensions = "\n".join(f"- {d}" for d in (params["dimensions"] or ["(none)"]))
+    return (
+        f"---\n{frontmatter}---\n\n"
+        f"# {params['name']}\n\n"
+        f"{params['description']}\n\n"
+        f"Dimensions:\n{dimensions}\n\n"
+        "Auto-staged ad-hoc proposal awaiting promotion.\n"
+    ).encode()
+
+
 def build_app(facade: Facade):
     """Wire the facade onto an MCP stdio server: exactly five tools (spec §4)."""
     from mcp.server.fastmcp import FastMCP  # pyright: ignore[reportMissingImports]
@@ -386,8 +468,12 @@ def build_app(facade: Facade):
     app: FastMCP = FastMCP("ariadne")
 
     @app.tool()
-    async def list_metrics() -> list[dict]:
-        """List the served governed metrics with their descriptions."""
+    async def list_metrics() -> list[dict | str]:
+        """List served governed metrics with descriptions and available dimensions.
+
+        The response ends with a routing hint: questions no listed metric answers
+        go to list_datasets() + define_metric (the ad-hoc path).
+        """
         return await facade.list_metrics()
 
     @app.tool()
@@ -410,12 +496,17 @@ def build_app(facade: Facade):
 
     @app.tool()
     async def list_datasets() -> list[dict]:
-        """List every table in the attached database with its columns and types."""
+        """List every table in the attached database with its columns and types.
+
+        Pairs with define_metric: pick tables here, then define an ad-hoc metric
+        for any question no governed metric answers.
+        """
         return await facade.list_datasets()
 
     @app.tool()
     async def define_metric(definition: dict) -> dict:
-        """Define an ad-hoc metric on the fly: compiled, executed, auto-staged.
+        """Define an ad-hoc metric for a question no governed metric answers:
+        compiled, executed read-only, auto-staged for human promotion.
 
         Args:
             definition: {name, description, source, expression, dimensions?, time_field?}
@@ -425,7 +516,9 @@ def build_app(facade: Facade):
                 column names of the source. Invalid definitions return the compiler
                 errors verbatim; nothing is staged or executed. Success returns rows,
                 the compiled SQL (provenance), governed: false, the echoed definition,
-                and the staging path of the auto-staged proposal.
+                and the staging paths of the auto-staged proposal (OSI model under
+                semantic_layer/models/adhoc/ plus an OKF draft under
+                context_layer/metrics/ that search_context can find).
         """
         return await facade.define_metric(definition)
 

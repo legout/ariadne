@@ -239,7 +239,7 @@ def test_get_metric_accepts_no_raw_sql(facade):
 
 
 def test_list_metrics_returns_both_with_descriptions(facade):
-    metrics = asyncio.run(facade.list_metrics())
+    metrics = asyncio.run(facade.list_metrics())[:-1]  # trailing entry is the routing hint
     by_name = {m["name"]: m for m in metrics}
     assert {"gross_margin", "order_count"} <= set(by_name)
     assert by_name["gross_margin"]["description"]
@@ -260,6 +260,20 @@ def test_unknown_metric_errors_listing_available(facade):
         asyncio.run(facade.get_metric("nonexistent"))
     message = str(excinfo.value)
     assert "gross_margin" in message and "order_count" in message
+    # spec rev 4 §7/§8.12: the error names the ad-hoc path for unmodeled questions
+    assert "list_datasets" in message and "define_metric" in message
+
+
+def test_list_metrics_includes_dimensions_and_routing_hint(facade):
+    """Spec rev 4 §8.12: entries carry available dimensions; the response ends
+    with the explicit routing hint to list_datasets() + define_metric."""
+    result = asyncio.run(facade.list_metrics())
+    hint = result[-1]
+    assert isinstance(hint, str)
+    assert "list_datasets" in hint and "define_metric" in hint
+    by_name = {m["name"]: m for m in result[:-1]}
+    assert "region" in by_name["gross_margin"]["dimensions"]
+    assert "status" in by_name["order_count"]["dimensions"]
 
 
 def test_range_filters_on_primary_date_dimension(facade, served):
@@ -272,6 +286,19 @@ def test_range_filters_on_primary_date_dimension(facade, served):
     full_total = sum(rows_by_region(full, "order_count").values())
     ranged_total = sum(rows_by_region(ranged, "order_count").values())
     assert 0 < ranged_total < full_total
+
+
+def test_tool_descriptions_carry_routing_language(served):
+    """Spec rev 4: the MCP registry is the agent's map — descriptions must route
+    unmodeled questions to the ad-hoc path."""
+    from ariadne.serve import build_app
+
+    served_dir, db = served
+    app = build_app(Facade(served_dir / "semantic_layer", served_dir / "context_layer", db))
+    desc = {tool.name: tool.description for tool in asyncio.run(app.list_tools())}
+    assert "no governed metric answers" in desc["define_metric"]
+    assert "define_metric" in desc["list_datasets"]
+    assert "dimensions" in desc["list_metrics"]
 
 
 def test_server_registers_exactly_five_tools(served):
@@ -359,6 +386,8 @@ def _adhoc_dir(facade):
 def test_define_metric_nonexistent_column_errors_without_side_effects(facade):
     """§8.9: invalid definition -> error, staging/…/adhoc/ unchanged, no execution."""
     adhoc, before = _adhoc_dir(facade)
+    pages = Path(facade.staging_dir) / "context_layer" / "metrics"
+    pages_before = sorted(p.name for p in pages.iterdir()) if pages.is_dir() else []
     with pytest.raises(ValueError, match="nonexistent_col"):
         asyncio.run(
             facade.define_metric(
@@ -372,6 +401,8 @@ def test_define_metric_nonexistent_column_errors_without_side_effects(facade):
             )
         )
     assert _adhoc_dir(facade)[1] == before
+    pages_after = sorted(p.name for p in pages.iterdir()) if pages.is_dir() else []
+    assert pages_after == pages_before  # no context page either
     assert not (adhoc / "broken_metric.yml").exists()
 
 
@@ -420,6 +451,9 @@ def test_define_metric_name_collision_never_overwrites(facade):
     first_path = Path(first["staged_as"])
     assert first_path.name == "collision_probe_metric.yml"
     original_bytes = first_path.read_bytes()
+    first_page = Path(first["staged_context_as"])
+    assert first_page.name == "collision_probe_metric.md"
+    first_page_bytes = first_page.read_bytes()
 
     second = asyncio.run(facade.define_metric(dict(definition)))
     second_path = Path(second["staged_as"])
@@ -427,6 +461,41 @@ def test_define_metric_name_collision_never_overwrites(facade):
     assert first_path.exists() and second_path.exists()  # both files present
     assert first_path != second_path  # distinct names
     assert first_path.read_bytes() == original_bytes  # first proposal never overwritten
+    # spec rev 4 §8.12: the collision suffixes the context page too — two pages,
+    # distinct names, first draft untouched.
+    second_page = Path(second["staged_context_as"])
+    assert second_page.name == "collision_probe_metric-2.md"
+    assert first_page.is_file() and second_page.is_file()
+    assert first_page != second_page
+    assert first_page.read_bytes() == first_page_bytes
+
+
+def test_define_metric_stages_model_and_context_page(facade):
+    """Spec rev 4 §4/§8.12: success leaves BOTH the OSI model proposal and a
+    discoverable OKF context-page draft under staging/context_layer/metrics/."""
+    result = asyncio.run(
+        facade.define_metric(
+            {
+                "name": "page_probe_metric",
+                "description": "probe for the auto-staged OKF draft",
+                "source": "orders",
+                "expression": "SUM(amount)",
+                "dimensions": ["status"],
+            }
+        )
+    )
+    model = Path(result["staged_as"])
+    page = Path(result["staged_context_as"])
+    assert model.is_file() and model.parent.name == "adhoc"
+    assert page.is_file()
+    assert Path("context_layer", "metrics") == Path(*page.parts[-3:-1])
+    text = page.read_text()
+    assert "# page_probe_metric" in text  # H1 name
+    assert "probe for the auto-staged OKF draft" in text  # description
+    assert "- status" in text  # dimensions list
+    assert "auto-staged ad-hoc proposal awaiting promotion" in text.lower()  # marker
+    assert "type: metric" in text and "status: draft" in text and "generated:" in text
+    assert "- orders" in text  # sources from the definition's source tables
 
 
 _INJECTION_SOURCE = "orders) ; CREATE TEMP TABLE pwned(x int); SELECT * FROM (SELECT 1"
