@@ -1,0 +1,38 @@
+{
+  "_meta": {
+    "description": "Hand-computed expected values for the governed metrics on data/demo.db, grouped by the 'region' dimension. Anchors the facade money test (ticket #5, spec S8.3). Regenerate only with an independent computation; never from seed/SQL logic.",
+    "db": "data/demo.db",
+    "dimension": "region",
+    "rules_applied": [
+      "Exclude orders with status CANCELLED or RETURNED.",
+      "Pre-2024 EMEA rows are stored in local currency without conversion: multiply amount and product_cost by currency_conversion_rate.rate_to_usd for the row's currency. All other rows are already USD.",
+      "gross_margin = (gross_revenue - cogs) / gross_revenue per region."
+    ],
+    "precision": {
+      "order_count": "integer",
+      "gross_revenue": 2,
+      "cogs": 2,
+      "gross_margin": 6
+    }
+  },
+  "gross_margin": {
+    "NA": 0.364099,
+    "EMEA": 0.384419,
+    "APAC": 0.366758
+  },
+  "order_count": {
+    "NA": 154,
+    "EMEA": 152,
+    "APAC": 86
+  },
+  "gross_revenue": {
+    "NA": 123431.15,
+    "EMEA": 118988.99,
+    "APAC": 61243.65
+  },
+  "cogs": {
+    "NA": 78490.05,
+    "EMEA": 73247.33,
+    "APAC": 38782.07
+  }
+}
