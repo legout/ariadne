@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Status** | **Approved** |
 | **Approved by** | Owner, pi session 2026-09-14 — decision rounds (slice / sources / dataset / runtime; authoring / MCP topology / review gate / LLM provider) and complete-design approval |
-| **Scope approved** | Revision 4 (2026-09-15) — agent routing contract: discovery hints, proposal context pages, self-describing metrics (fresh-agent discoverability gap found by the 2026-09-15 session analysis) |
+| **Scope approved** | Revision 5 (2026-09-15) — semantic-correctness eval harness promoted from deferred (§12) to in-scope: golden question→expected-value sets + fan-out trap proof (owner: "proceed housekeeping and eval") |
 | **Evidence base** | [docs/research/agentic-semantic-layer-architecture.md](../research/agentic-semantic-layer-architecture.md) |
 | **Contract** | planning-contract v1 |
 
@@ -16,7 +16,7 @@ Prove the full authoring loop end-to-end: an authoring agent generates OKF conte
 
 **In scope:** one synthetic SQLite database; authoring agent (profile + seed notes → synthesize → validate loop); MCP facade server; human promotion gate; ad-hoc query layer (`list_datasets`, `define_metric`, auto-staged proposals).
 
-**Non-goals (MVP):** access control/authZ/RLS/audit; semantic-correctness eval harness; Delta/Iceberg mounting; import/export adapters (Cube, MetricFlow, Wren, Malloy); multi-user; release automation; PR-based review gate (see §9); promotion-time revalidation (ADR-0004); write path of any kind; multi-database ad-hoc; auto-promotion of ad-hoc definitions; expression-injection hardening (deferred with the §12-class governance work — agent-authored SQL fragments are a named, accepted trust boundary capped by the read-only attach); ad-hoc composition of governed metrics.
+**Non-goals (MVP):** access control/authZ/RLS/audit; Delta/Iceberg mounting; import/export adapters (Cube, MetricFlow, Wren, Malloy); multi-user; release automation; PR-based review gate (see §9); promotion-time revalidation (ADR-0004); write path of any kind; multi-database ad-hoc; auto-promotion of ad-hoc definitions; expression-injection hardening (deferred — agent-authored SQL fragments are a named, accepted trust boundary capped by the read-only attach + single-statement guard); ad-hoc composition of governed metrics. ~~semantic-correctness eval harness~~ — **in scope since rev 5 (§13)**.
 
 ## 3. Architecture
 
@@ -81,6 +81,7 @@ semantic_layer/            # served OSI: datasets/, models/, metrics/
 10. **Symmetry:** `get_metric` responses carry `governed: true`.
 11. **Proposal capture:** each successful ad-hoc definition leaves exactly one `adhoc/<name>.yml` in staging; collisions suffix numerically, never overwrite.
 12. **Routing contract (rev 4):** `list_metrics` entries include available dimensions and end with the ad-hoc hint; the unknown-metric error names `list_datasets`/`define_metric`; a successful `define_metric` leaves both the model proposal and a discoverable `context_layer/metrics/<name>.md` draft in staging. The end-to-end check is manual: a fresh consuming-agent session answers an unmodeled question (e.g. "mean order volume per country") via the ad-hoc path without prior knowledge.
+13. **Eval harness (rev 5):** `tests/evals/golden.json` + `tests/test_evals.py` — golden entries {question, metric, dimensions, expected} with expected values derived by independent SQL (never from the implementation under test); every served governed metric covered; at least one ad-hoc `define_metric` round-trip; and one **fan-out trap proof**: a scratch orders⋈lines one-to-many model whose naive join would inflate aggregates, asserted equal to the correct deduplicated value when compiled through Datus.
 
 ## 9. Recorded deviations from the research study
 
