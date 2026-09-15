@@ -239,6 +239,26 @@ def test_author_rejects_served_layer_as_staging(tmp_path):
             )
 
 
+def test_author_rejects_served_layer_descendant_as_staging(tmp_path):
+    """Regression (review round 2): --staging context_layer/nested must be
+    rejected — writing beneath a served root bypasses the promotion gate."""
+    from ariadne.author import _REPO_ROOT
+
+    db, notes = make_demo_db(tmp_path / "demo.db"), make_notes(tmp_path)
+    complete, complete_calls = fake_complete([llm_response()])
+    validate_fn, _ = fake_validate([ValidationResult(True, [])])
+    for layer in ("context_layer", "semantic_layer"):
+        with pytest.raises(ValueError, match="inside the served layer"):
+            author(
+                db,
+                notes,
+                staging_dir=_REPO_ROOT / layer / "nested",
+                complete=complete,
+                validate_fn=validate_fn,
+            )
+    assert complete_calls == []  # guard fires before any LLM call
+
+
 def test_author_cli_rejects_repo_root_staging(capsys):
     with pytest.raises(SystemExit) as excinfo:
         main(["--db", "x", "--notes", "y", "--staging", "."])

@@ -257,6 +257,14 @@ def _validate_staging(staging: Path) -> None:
             f"staging directory {resolved} is a served layer ({resolved.name}): served "
             "artifacts arrive only by human promotion from staging/ — spec §6"
         )
+    for layer in _SERVED_LAYERS:
+        served_root = _REPO_ROOT / layer
+        if resolved == served_root or resolved.is_relative_to(served_root):
+            raise ValueError(
+                f"staging directory {resolved} is inside the served layer "
+                f"{layer}/: served artifacts arrive only by human promotion from "
+                "staging/ — spec §6"
+            )
 
 
 def _safe_path(staging: Path, rel_path: str) -> Path:
