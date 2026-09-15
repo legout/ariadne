@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Status** | **Approved** |
 | **Approved by** | Owner, pi session 2026-09-14 — decision rounds (slice / sources / dataset / runtime; authoring / MCP topology / review gate / LLM provider) and complete-design approval |
-| **Scope approved** | Revision 3 (2026-09-14) — ad-hoc query layer: agent-drafted, facade-validated ephemeral metrics (design approved in session) |
+| **Scope approved** | Revision 4 (2026-09-15) — agent routing contract: discovery hints, proposal context pages, self-describing metrics (fresh-agent discoverability gap found by the 2026-09-15 session analysis) |
 | **Evidence base** | [docs/research/agentic-semantic-layer-architecture.md](../research/agentic-semantic-layer-architecture.md) |
 | **Contract** | planning-contract v1 |
 
@@ -40,11 +40,11 @@ semantic_layer/            # served OSI: datasets/, models/, metrics/
 - `python -m ariadne.author --db data/demo.db --notes data/seed_notes.md` → writes `staging/{context_layer,semantic_layer}/…`; runs the validate loop internally.
 - `python -m ariadne.validate staging/` → exit 0/1 plus compiler errors.
 - `serve.py` — MCP stdio facade, exactly five tools:
-  - `list_metrics()` → served governed metrics with descriptions (discovery before failure).
+  - `list_metrics()` → served governed metrics with descriptions **and available dimensions**, ending with an explicit routing hint: unmodeled questions → `list_datasets()` + `define_metric`.
   - `list_datasets()` → `[{name, columns: [{name, type}]}]` for every table in the attached database (the agent's map of queryable data).
   - `search_context(query)` → ranked matches over `context_layer/**/*.md`.
   - `get_metric(name, dimensions, range)` → Datus compiles OSI → SQL → DuckDB executes → returns rows **plus the compiled SQL** (provenance) and `governed: true`. `range` is an optional `{start, end}` date filter applied to the metric's primary date dimension.
-  - `define_metric({name, description, source, expression, dimensions?, time_field?})` → the ad-hoc path: facade expands the params into an ephemeral OSI model, compiles via Datus, executes the compiled SQL read-only, and returns rows + SQL + `governed: false` + the echoed definition. `source` is a table name or SELECT (agent-authored, joins allowed); `expression` is an aggregate SQL expression. On success the definition is auto-staged as a proposal at `staging/semantic_layer/models/adhoc/<name>.yml` (numeric suffix on name collision, never overwrite); promotion remains human per ADR-0003.
+  - `define_metric({name, description, source, expression, dimensions?, time_field?})` → the ad-hoc path: facade expands the params into an ephemeral OSI model, compiles via Datus, executes the compiled SQL read-only, and returns rows + SQL + `governed: false` + the echoed definition. `source` is a table name or SELECT (agent-authored, joins allowed); `expression` is an aggregate SQL expression. On success the definition is auto-staged as a proposal at `staging/semantic_layer/models/adhoc/<name>.yml` (numeric suffix on name collision, never overwrite) **plus a minimal OKF draft at `staging/context_layer/metrics/<name>.md`** (frontmatter + description + dimensions — so `search_context` can discover proposals). Promotion remains human per ADR-0003.
 - Datus integration (decided by the Phase 0 spike): Python imports of `datus_semantic_osi`, compile-only; the facade owns the DuckDB connection. Ad-hoc compiles use an ephemeral model instance (temp path if the adapter requires files; discarded after the call).
 
 ## 5. Data flow
@@ -63,7 +63,7 @@ semantic_layer/            # served OSI: datasets/, models/, metrics/
 
 - Invalid OSI/OKF after 3 compile rounds → stop; errors recorded in the staging file's frontmatter as `status: review_needed`.
 - Datus absent/broken → `serve.py` fails fast at startup with an install hint.
-- Unknown metric requested → error response lists available metrics from `semantic_layer/`.
+- Unknown metric requested → error response lists available metrics from `semantic_layer/` **and names the ad-hoc path**: `list_datasets()` + `define_metric` for anything unmodeled.
 - Invalid ad-hoc definition → Datus compiler errors returned verbatim; nothing staged, nothing executed. The facade stays stateless — retry discipline is the consuming agent's concern.
 - Promotion conflict → manual `mv`; the human resolves. No merge machinery.
 
@@ -80,6 +80,7 @@ semantic_layer/            # served OSI: datasets/, models/, metrics/
 9. **Ad-hoc failure:** an invalid `define_metric` returns compiler errors; no file appears under `staging/…/adhoc/` and no SQL executes.
 10. **Symmetry:** `get_metric` responses carry `governed: true`.
 11. **Proposal capture:** each successful ad-hoc definition leaves exactly one `adhoc/<name>.yml` in staging; collisions suffix numerically, never overwrite.
+12. **Routing contract (rev 4):** `list_metrics` entries include available dimensions and end with the ad-hoc hint; the unknown-metric error names `list_datasets`/`define_metric`; a successful `define_metric` leaves both the model proposal and a discoverable `context_layer/metrics/<name>.md` draft in staging. The end-to-end check is manual: a fresh consuming-agent session answers an unmodeled question (e.g. "mean order volume per country") via the ad-hoc path without prior knowledge.
 
 ## 9. Recorded deviations from the research study
 
