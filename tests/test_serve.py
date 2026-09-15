@@ -295,7 +295,7 @@ def test_tool_descriptions_carry_routing_language(served):
 
     served_dir, db = served
     app = build_app(Facade(served_dir / "semantic_layer", served_dir / "context_layer", db))
-    desc = {tool.name: tool.description for tool in asyncio.run(app.list_tools())}
+    desc = {tool.name: tool.description or "" for tool in asyncio.run(app.list_tools())}
     assert "no governed metric answers" in desc["define_metric"]
     assert "define_metric" in desc["list_datasets"]
     assert "dimensions" in desc["list_metrics"]
@@ -472,12 +472,15 @@ def test_define_metric_name_collision_never_overwrites(facade):
 
 def test_define_metric_stages_model_and_context_page(facade):
     """Spec rev 4 §4/§8.12: success leaves BOTH the OSI model proposal and a
-    discoverable OKF context-page draft under staging/context_layer/metrics/."""
+    DISCOVERABLE OKF context-page draft — search_context surfaces the staged
+    page (marked draft: true) before any promotion, while unrelated text never
+    surfaces it and served pages stay draft: false."""
+    description = "probe for the auto-staged OKF draft"
     result = asyncio.run(
         facade.define_metric(
             {
                 "name": "page_probe_metric",
-                "description": "probe for the auto-staged OKF draft",
+                "description": description,
                 "source": "orders",
                 "expression": "SUM(amount)",
                 "dimensions": ["status"],
@@ -491,11 +494,25 @@ def test_define_metric_stages_model_and_context_page(facade):
     assert Path("context_layer", "metrics") == Path(*page.parts[-3:-1])
     text = page.read_text()
     assert "# page_probe_metric" in text  # H1 name
-    assert "probe for the auto-staged OKF draft" in text  # description
+    assert description in text  # description
     assert "- status" in text  # dimensions list
     assert "auto-staged ad-hoc proposal awaiting promotion" in text.lower()  # marker
     assert "type: metric" in text and "status: draft" in text and "generated:" in text
     assert "- orders" in text  # sources from the definition's source tables
+
+    # Discoverability (rev 4 §4): the description's own terms rank the staged
+    # draft first, flagged as a draft — pre-promotion, never masquerading.
+    top = asyncio.run(facade.search_context(description))[0]
+    assert top["path"] == "metrics/page_probe_metric.md"
+    assert top["draft"] is True
+    assert description in top["content"]
+    # The same response carries served pages, marked non-draft — distinguishable.
+    hits = asyncio.run(facade.search_context(description))
+    assert any(hit["path"] == "metrics/gross_margin.md" and hit["draft"] is False for hit in hits)
+    # Unrelated text (served-page terms absent from the draft) never surfaces it.
+    misses = asyncio.run(facade.search_context("gross margin"))
+    assert not any("page_probe_metric" in hit["path"] for hit in misses)
+    assert not any(hit["draft"] for hit in misses)  # only served pages match
 
 
 _INJECTION_SOURCE = "orders) ; CREATE TEMP TABLE pwned(x int); SELECT * FROM (SELECT 1"

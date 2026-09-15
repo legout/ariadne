@@ -12,7 +12,7 @@ Exactly five tools (spec §4):
 
 Mechanism per docs/research/datus-spike.md §5: Datus compiles the OSI metric to
 SQL (``query_metrics(dry_run=True)`` -> ``metadata["sql"]``) and the
-facade-owned DuckDB connection — with the SQLite database ATTACHed read-only as
+facade-owned DuckDB connection — with the SQLite database attached read-only as
 catalog ``demo`` — executes it. ``range`` is an optional ``{start, end}`` applied
 by the compiler to the metric's primary date dimension.
 
@@ -153,7 +153,9 @@ class Facade:
         # attaches once on its long-lived connection; compiled SQL references
         # demo.main.<table> (the authoring contract's catalog name).
         self.con = duckdb.connect()
-        self.con.execute(f"ATTACH '{Path(db_path)}' AS demo (TYPE SQLITE, READ_ONLY)")
+        # db_path is the operator's CLI arg (trusted input; spec §6 accepted boundary)
+        # and DuckDB's ATTACH takes no bind parameters — the f-string is a formatter.
+        self.con.execute(f"ATTACH '{Path(db_path)}' AS demo (TYPE SQLITE, READ_ONLY)")  # nosemgrep
         # Bare table names in agent-authored ad-hoc sources resolve against the attach.
         self.con.execute("USE demo.main")
         self.staging_dir = Path(staging_dir)
@@ -161,7 +163,7 @@ class Facade:
     async def list_metrics(self) -> list[dict | str]:
         """Governed metrics with descriptions and available dimensions; the list
         ends with the explicit routing hint to the ad-hoc path (spec rev 4 §8.12)."""
-        entries = [
+        entries: list[dict | str] = [
             {
                 "name": metric.name,
                 "description": metric.description or "",
@@ -244,7 +246,7 @@ class Facade:
         # plan without executing it, keeping §8.9's "no execution" honest for
         # that shape — while still only ever feeding compiler output to duckdb.
         try:
-            self.con.execute(f"EXPLAIN {sql}")
+            self.con.execute(f"EXPLAIN {sql}")  # nosemgrep — sql is Datus compile output (spec §6)
         except Exception as exc:  # spec §7: the binder's text, verbatim (§8.9 holds:
             # the guard above guarantees nothing executed before this check).
             raise ValueError(f"{type(exc).__name__}: {exc}") from exc
@@ -329,21 +331,30 @@ class Facade:
             return candidate
 
     async def search_context(self, query: str, limit: int = 10) -> list[dict]:
-        """Rank OKF pages by query-term frequency (name-anchored ties by path)."""
+        """Rank OKF pages by query-term frequency (name-anchored ties by path).
+
+        Scans the served context dir AND the staged context drafts
+        (``staging/context_layer/**/*.md``) — spec rev 4 §4: define_metric
+        drafts must be discoverable before promotion. Staged hits carry
+        ``draft: true`` and served hits ``draft: false`` — a draft never
+        masquerades as verified context (ADR-0003: promotion stays human)."""
         terms = query.lower().split()
         hits: list[dict] = []
-        for path in sorted(self.context_dir.rglob("*.md")):
-            text = path.read_text(encoding="utf-8")
-            score = sum(text.lower().count(term) for term in terms)
-            if not score:
-                continue
-            hits.append(
-                {
-                    "path": path.relative_to(self.context_dir).as_posix(),
-                    "score": score,
-                    "content": text,  # full OKF page: the rules are the payload
-                }
-            )
+        roots = [(self.context_dir, False), (self.staging_dir / "context_layer", True)]
+        for root, draft in roots:
+            for path in sorted(root.rglob("*.md")):
+                text = path.read_text(encoding="utf-8")
+                score = sum(text.lower().count(term) for term in terms)
+                if not score:
+                    continue
+                hits.append(
+                    {
+                        "path": path.relative_to(root).as_posix(),
+                        "score": score,
+                        "draft": draft,  # staged proposals stay distinguishable
+                        "content": text,  # full OKF page: the rules are the payload
+                    }
+                )
         hits.sort(key=lambda hit: (-hit["score"], hit["path"]))
         return hits[:limit]
 
@@ -478,7 +489,11 @@ def build_app(facade: Facade):
 
     @app.tool()
     async def search_context(query: str) -> list[dict]:
-        """Search the Context Layer (OKF pages) for business rules; ranked matches."""
+        """Search the Context Layer (OKF pages) for business rules; ranked matches.
+
+        Includes auto-staged ad-hoc proposals awaiting promotion; those hits are
+        marked draft: true (served pages are draft: false).
+        """
         return await facade.search_context(query)
 
     @app.tool()
