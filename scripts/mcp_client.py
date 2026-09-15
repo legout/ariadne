@@ -97,9 +97,12 @@ async def run(args: argparse.Namespace) -> None:
 
             print("== list_metrics()")
             metrics = result_data(await session.call_tool("list_metrics", {}))
-            for metric in metrics:
-                print(f"  {metric['name']}: {metric['description']}")
-            assert {"gross_margin", "order_count"} <= {m["name"] for m in metrics}
+            for entry in metrics[:-1]:
+                print(f"  {entry['name']}: {entry['description']}")
+            hint = metrics[-1]  # spec rev 4 §8.12: the response ends with the routing hint
+            assert isinstance(hint, str) and "define_metric" in hint, "routing hint missing"
+            print(f"  routing hint: {hint}")
+            assert {"gross_margin", "order_count"} <= {m["name"] for m in metrics[:-1]}
 
             print('== search_context("gross margin")')
             hits = result_data(
