@@ -9,4 +9,3 @@ staging/
 .orchestrator/
 .pytest_cache/
 .hermes/
-.pi/prompts/
