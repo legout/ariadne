@@ -9,3 +9,5 @@ staging/
 .orchestrator/
 .pytest_cache/
 .hermes/
+context_layer/
+semantic_layer/
