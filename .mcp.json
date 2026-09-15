@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "ariadne": {
+      "command": "/home/volker/coding/ariadne/.venv/bin/python",
+      "args": [
+        "-m", "ariadne.serve",
+        "--db", "data/demo.db",
+        "--semantic", "semantic_layer",
+        "--context", "context_layer"
+      ],
+      "cwd": "/home/volker/coding/ariadne",
+      "lifecycle": "lazy",
+      "requestTimeoutMs": 120000
+    }
+  }
+}
