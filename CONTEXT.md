@@ -45,3 +45,13 @@ _Avoid_: publish, deploy
 **Seed Notes**:
 The human-written data dictionary (`data/seed_notes.md`) carrying the business rules that statistics cannot derive; an input to the Authoring Agent alongside the statistical profile.
 _Avoid_: hints file
+
+### Querying
+
+**Ad-hoc Metric**:
+An agent-drafted, one-shot metric: validated by the deterministic compile gate and executed read-only, but never promoted. Queryable now, canonical never, until promoted.
+_Avoid_: dynamic metric, on-the-fly metric
+
+**Proposal**:
+An auto-staged Ad-hoc Metric definition awaiting human promotion; successful questions leave their definitions in `staging/` as candidates for the catalog.
+_Avoid_: draft, candidate file
