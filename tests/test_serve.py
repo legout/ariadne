@@ -422,8 +422,61 @@ def test_define_metric_name_collision_never_overwrites(facade):
     original_bytes = first_path.read_bytes()
 
     second = asyncio.run(facade.define_metric(dict(definition)))
-    assert Path(second["staged_as"]).name == "collision_probe_metric-2.yml"
+    second_path = Path(second["staged_as"])
+    assert second_path.name == "collision_probe_metric-2.yml"
+    assert first_path.exists() and second_path.exists()  # both files present
+    assert first_path != second_path  # distinct names
     assert first_path.read_bytes() == original_bytes  # first proposal never overwritten
+
+
+_INJECTION_SOURCE = "orders) ; CREATE TEMP TABLE pwned(x int); SELECT * FROM (SELECT 1"
+
+
+def test_define_metric_rejects_multi_statement_compiled_sql(facade):
+    """§6 invariant: a crafted source compiles to multi-statement SQL (the CREATE
+    TEMP TABLE would execute under the EXPLAIN bind-check). The parse-level guard
+    must reject it before ANY duckdb call: error names the invariant, no temp
+    table exists on the connection, nothing staged."""
+    adhoc, before = _adhoc_dir(facade)
+    with pytest.raises(ValueError, match="exactly one statement"):
+        asyncio.run(
+            facade.define_metric(
+                {
+                    "name": "pwned_metric",
+                    "description": "injection probe",
+                    "source": _INJECTION_SOURCE,
+                    "expression": "SUM(amount)",
+                    "dimensions": [],
+                }
+            )
+        )
+    assert _adhoc_dir(facade)[1] == before  # nothing staged
+    assert not (adhoc / "pwned_metric.yml").exists()
+    tables = {
+        row[0] for row in facade.con.execute("SELECT table_name FROM duckdb_tables()").fetchall()
+    }
+    assert "pwned" not in tables  # the smuggled DDL never ran
+
+
+def test_define_metric_allows_semicolon_inside_string_literal(facade):
+    """Parser correctness: a quoted semicolon in the compiled SQL must not trip
+    the single-statement guard — the definition still compiles and executes."""
+    result = asyncio.run(
+        facade.define_metric(
+            {
+                "name": "quoted_semicolon_metric",
+                "description": "semicolon inside a string literal",
+                "source": "orders",
+                "expression": (
+                    "SUM(CASE WHEN NOT status IN "
+                    "('CANCELLED', 'RETURNED', 'no;match') THEN amount END)"
+                ),
+                "dimensions": [],
+            }
+        )
+    )
+    assert result["governed"] is False
+    assert result["rows"]  # executed: SUM(amount) over billable orders is nonzero
 
 
 def test_startup_fails_fast_without_models(tmp_path):

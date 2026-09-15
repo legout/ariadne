@@ -42,6 +42,7 @@ Usage::
 
 import argparse
 import asyncio
+import os
 import re
 import sys
 import tempfile
@@ -74,6 +75,25 @@ INSTALL_HINT = (
 # front with an actionable message (lowercase snake_case, no double underscore).
 _SLUG_RE = re.compile(r"[a-z][a-z0-9_]*[a-z0-9]")
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def assert_single_statement(sql: str) -> None:
+    """Spec §6 no-unvalidated-execution invariant: the executor receives exactly
+    one statement. Uses duckdb's own parser (extract_statements), so semicolons
+    inside string literals cannot false-positive; an unparseable compiled SQL is
+    likewise rejected — nothing reaches a duckdb call un-parsed. Runs on the
+    compiled SQL after the Datus gate and BEFORE any duckdb call (EXPLAIN or
+    execution): both paths share this choke point, so no future code path can
+    reintroduce multi-statement SQL. Rejection: nothing staged, nothing executed."""
+    try:
+        count = len(duckdb.extract_statements(sql))
+    except Exception as exc:  # parse error — the SQL can never be one valid statement
+        raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+    if count != 1:
+        raise ValueError(
+            f"compiled SQL must be exactly one statement, got {count} "
+            "(no-unvalidated-execution invariant, spec §6); nothing staged, nothing executed"
+        )
 
 
 class Facade:
@@ -155,7 +175,9 @@ class Facade:
         if not sql:
             raise RuntimeError(f"Datus returned no compiled SQL for metric {name!r}")
         # Compiled by Datus from the served OSI models — never tool input (spec §6):
-        # the executor only ever receives SQL returned by the compile step.
+        # the executor only ever receives SQL returned by the compile step. The
+        # statement guard is defense in depth on this governed path too.
+        assert_single_statement(sql)
         relation = self.con.sql(sql)
         columns = list(relation.columns)
         rows = [dict(zip(columns, row)) for row in relation.fetchall()]
@@ -179,16 +201,19 @@ class Facade:
         params = _normalize_definition(definition)
         envelope = _expand_adhoc_model(params)
         sql = await self._compile_adhoc(envelope, params["name"], params["dimensions"])
+        # Choke point shared by the EXPLAIN bind-check below and the execution
+        # above it: exactly one statement, checked at parse level before any
+        # duckdb call (a crafted source can otherwise smuggle DDL past EXPLAIN).
+        assert_single_statement(sql)
         # Datus compiles structurally without schema introspection, so a column
         # missing from the source only surfaces at bind time. EXPLAIN binds the
         # plan without executing it, keeping §8.9's "no execution" honest for
         # that shape — while still only ever feeding compiler output to duckdb.
         try:
             self.con.execute(f"EXPLAIN {sql}")
-        except Exception as exc:
-            raise ValueError(
-                f"invalid ad-hoc definition (nothing staged, nothing executed): {exc}"
-            ) from exc
+        except Exception as exc:  # spec §7: the binder's text, verbatim (§8.9 holds:
+            # the guard above guarantees nothing executed before this check).
+            raise ValueError(f"{type(exc).__name__}: {exc}") from exc
         # sql is the Datus compile step's output and nothing else (spec §6): the
         # definition reached execution exclusively through the compiler above.
         relation = self.con.sql(sql)
@@ -238,16 +263,24 @@ class Facade:
 
     def _stage_adhoc_proposal(self, name: str, envelope: dict) -> str:
         """Auto-stage the proposal after successful execution (ADR-0003: promotion
-        stays human). Numeric suffix on collision — never overwrites (spec §8.11)."""
+        stays human). Numeric suffix on collision — never overwrites (spec §8.11):
+        the O_CREAT|O_EXCL claim is atomic, so racing facade processes suffix off
+        each other instead of overwriting (no exists()-then-write TOCTOU)."""
         adhoc_dir = self.staging_dir / "semantic_layer" / "models" / "adhoc"
         adhoc_dir.mkdir(parents=True, exist_ok=True)
+        payload = yaml.safe_dump(envelope, sort_keys=False).encode("utf-8")
         candidate = adhoc_dir / f"{name}.yml"
         suffix = 2
-        while candidate.exists():
-            candidate = adhoc_dir / f"{name}-{suffix}.yml"
-            suffix += 1
-        candidate.write_text(yaml.safe_dump(envelope, sort_keys=False), encoding="utf-8")
-        return str(candidate)
+        while True:
+            try:
+                fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            except FileExistsError:
+                candidate = adhoc_dir / f"{name}-{suffix}.yml"
+                suffix += 1
+                continue
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(payload)
+            return str(candidate)
 
     async def search_context(self, query: str, limit: int = 10) -> list[dict]:
         """Rank OKF pages by query-term frequency (name-anchored ties by path)."""
