@@ -1,4 +1,4 @@
-"""MCP facade (ticket #5): three governed tools; the money test lane.
+"""MCP facade (ticket #5): five tools (governed + ad-hoc); the money test lane.
 
 The served tree is produced offline by running the real author loop with the
 mocked-OpenAI fixture machinery from tests/test_author.py (a deterministic
@@ -16,6 +16,7 @@ import json
 import sys
 from pathlib import Path
 
+import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -190,9 +191,14 @@ def served(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
-def facade(served):
+def facade(served, tmp_path_factory):
     served_dir, db = served
-    return Facade(served_dir / "semantic_layer", served_dir / "context_layer", db)
+    return Facade(
+        served_dir / "semantic_layer",
+        served_dir / "context_layer",
+        db,
+        staging_dir=tmp_path_factory.mktemp("staging"),
+    )
 
 
 def rows_by_region(result, column):
@@ -268,13 +274,156 @@ def test_range_filters_on_primary_date_dimension(facade, served):
     assert 0 < ranged_total < full_total
 
 
-def test_server_registers_exactly_three_tools(served):
+def test_server_registers_exactly_five_tools(served):
     from ariadne.serve import build_app
 
     served_dir, db = served
     app = build_app(Facade(served_dir / "semantic_layer", served_dir / "context_layer", db))
     tools = asyncio.run(app.list_tools())
-    assert {tool.name for tool in tools} == {"list_metrics", "search_context", "get_metric"}
+    assert {tool.name for tool in tools} == {
+        "list_metrics",
+        "search_context",
+        "get_metric",
+        "list_datasets",
+        "define_metric",
+    }
+
+
+# --- Ad-hoc query layer (spec revision 3, §8.8-8.11) -------------------------
+
+
+def test_list_datasets_returns_demo_tables_with_columns(facade):
+    datasets = {d["name"]: d for d in asyncio.run(facade.list_datasets())}
+    assert set(datasets) == {"orders", "customers", "currency_conversion_rate"}
+    order_columns = {c["name"]: c["type"] for c in datasets["orders"]["columns"]}
+    assert {"order_id", "customer_id", "status", "amount"} <= set(order_columns)
+    assert all(
+        isinstance(c["type"], str) and c["type"] for d in datasets.values() for c in d["columns"]
+    )
+
+
+def test_get_metric_responses_carry_governed_true(facade):
+    result = asyncio.run(facade.get_metric("order_count", ["region"]))
+    assert result["governed"] is True
+    assert "sql" in result
+
+
+_JOIN_SOURCE = (
+    "SELECT o.customer_id, c.name AS customer_name, o.amount, o.status "
+    "FROM orders o JOIN customers c ON o.customer_id = c.id"
+)
+_MEAN_EXPR = "AVG(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount END)"
+
+
+def test_define_metric_adhoc_mean_per_customer(facade, served):
+    """§8.8: agent-authored join source, zero prior promotion, fixture-checked."""
+    _, db = served
+    result = asyncio.run(
+        facade.define_metric(
+            {
+                "name": "mean_order_amount_per_customer",
+                "description": "Mean order amount per customer over billable orders",
+                "source": _JOIN_SOURCE,
+                "expression": _MEAN_EXPR,
+                "dimensions": ["customer_name"],
+            }
+        )
+    )
+    assert result["governed"] is False
+    assert result["sql"].upper().count("SELECT") >= 1  # provenance SQL present
+    assert "CANCELLED" in result["sql"]  # the definition's filter is visible provenance
+    assert result["definition"]["source"] == _JOIN_SOURCE  # echoed params
+
+    # Independently computed expectation: direct DuckDB SQL, no facade logic.
+    con = duckdb.connect()
+    con.execute(f"ATTACH '{db}' AS demo (TYPE SQLITE, READ_ONLY)")
+    expected_rows = con.execute(
+        "SELECT c.name, AVG(o.amount) FROM demo.main.orders o "
+        "JOIN demo.main.customers c ON o.customer_id = c.id "
+        "WHERE o.status NOT IN ('CANCELLED', 'RETURNED') GROUP BY c.name"
+    ).fetchall()
+    con.close()
+    expected = {name: round(avg, 6) for name, avg in expected_rows}
+    actual = {
+        row["customer_name"]: round(row["mean_order_amount_per_customer"], 6)
+        for row in result["rows"]
+    }
+    assert actual == expected
+
+
+def _adhoc_dir(facade):
+    adhoc = Path(facade.staging_dir) / "semantic_layer" / "models" / "adhoc"
+    return adhoc, sorted(p.name for p in adhoc.iterdir()) if adhoc.is_dir() else []
+
+
+def test_define_metric_nonexistent_column_errors_without_side_effects(facade):
+    """§8.9: invalid definition -> error, staging/…/adhoc/ unchanged, no execution."""
+    adhoc, before = _adhoc_dir(facade)
+    with pytest.raises(ValueError, match="nonexistent_col"):
+        asyncio.run(
+            facade.define_metric(
+                {
+                    "name": "broken_metric",
+                    "description": "references a column that does not exist",
+                    "source": "orders",
+                    "expression": "SUM(nonexistent_col)",
+                    "dimensions": [],
+                }
+            )
+        )
+    assert _adhoc_dir(facade)[1] == before
+    assert not (adhoc / "broken_metric.yml").exists()
+
+
+def test_define_metric_compile_error_surfaced_verbatim(facade):
+    """A definition the Datus compiler itself rejects: errors verbatim, nothing staged."""
+    adhoc, before = _adhoc_dir(facade)
+    with pytest.raises(ValueError, match="could not parse expression"):
+        asyncio.run(
+            facade.define_metric(
+                {
+                    "name": "syntax_error_metric",
+                    "description": "malformed aggregate",
+                    "source": "orders",
+                    "expression": "SUM((",
+                    "dimensions": [],
+                }
+            )
+        )
+    assert _adhoc_dir(facade)[1] == before
+
+
+def test_define_metric_rejects_unsane_name(facade):
+    with pytest.raises(ValueError, match="lowercase snake_case"):
+        asyncio.run(
+            facade.define_metric(
+                {
+                    "name": "Bad Name!",
+                    "description": "not a slug",
+                    "source": "orders",
+                    "expression": "SUM(amount)",
+                }
+            )
+        )
+
+
+def test_define_metric_name_collision_never_overwrites(facade):
+    """§8.11: two successes with the same name -> two files, second suffixed."""
+    definition = {
+        "name": "collision_probe_metric",
+        "description": "same name twice",
+        "source": "orders",
+        "expression": "SUM(amount)",
+        "dimensions": [],
+    }
+    first = asyncio.run(facade.define_metric(dict(definition)))
+    first_path = Path(first["staged_as"])
+    assert first_path.name == "collision_probe_metric.yml"
+    original_bytes = first_path.read_bytes()
+
+    second = asyncio.run(facade.define_metric(dict(definition)))
+    assert Path(second["staged_as"]).name == "collision_probe_metric-2.yml"
+    assert first_path.read_bytes() == original_bytes  # first proposal never overwritten
 
 
 def test_startup_fails_fast_without_models(tmp_path):
