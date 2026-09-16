@@ -25,7 +25,6 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 
 from ariadne.author import author  # noqa: E402
 from ariadne.serve import Facade  # noqa: E402
-from ariadne.validate import validate  # noqa: E402
 from tests.test_author import (  # noqa: E402
     GOTCHA_1,
     GOTCHA_2,
@@ -177,15 +176,16 @@ def seed_demo_db(db_path: Path) -> Path:
 
 @pytest.fixture(scope="module")
 def served(tmp_path_factory):
-    """Author loop (mocked LLM, REAL Datus compile) -> promoted served tree + db."""
+    """Author loop (mocked LLM, default gate: real Datus compile + ADR-0006 §5
+    grain audit over the demo db) -> promoted served tree + db."""
     tmp = tmp_path_factory.mktemp("served")
     db = seed_demo_db(tmp / "demo.db")
     notes = make_notes(tmp)
     complete, _ = fake_complete([GOLDEN_RESPONSE])
     served = tmp / "served"
-    author(db, notes, staging_dir=served, complete=complete, validate_fn=validate)
+    author(db, notes, staging_dir=served, complete=complete)
     assert (served / "semantic_layer" / "models" / "orders.yml").is_file(), (
-        "golden model must pass the real compile gate"
+        "golden model must pass the real compile + grain-audit gate"
     )
     return served, db
 
@@ -572,7 +572,7 @@ def test_define_metric_rejects_fanned_out_join_source(facade):
     (Datus-ai/Datus-agent#1426), so the facade rejects before compile. Nothing
     staged, nothing executed."""
     adhoc, before = _adhoc_dir(facade)
-    with pytest.raises(ValueError, match="grain-preservation invariant.*GROUP BY"):
+    with pytest.raises(ValueError, match="grain-preservation invariant.*pivot"):
         asyncio.run(
             facade.define_metric(
                 {
@@ -589,6 +589,18 @@ def test_define_metric_rejects_fanned_out_join_source(facade):
         )
     assert _adhoc_dir(facade)[1] == before  # nothing staged
     assert not (adhoc / "fanned_metric.yml").exists()
+
+
+def test_grain_guidance_names_the_adr_0006_rubric():
+    """Spec rev 6: the rejection guidance names the ADR-0006 resolution rubric by
+    pattern (pivot / child-grain fact model / fact weight allocation) instead of
+    the bare GROUP BY phrasing — end-to-end through a real define_metric
+    rejection and in the shared constant the tool description derives from."""
+    from ariadne.serve import GRAIN_GUIDANCE
+
+    for pattern in ("pivot", "child-grain fact model", "weight allocation", "ADR-0006"):
+        assert pattern in GRAIN_GUIDANCE
+    assert "GROUP BY" not in GRAIN_GUIDANCE  # rubric names replaced the bare phrasing
 
 
 def test_define_metric_rejects_cross_join_source(facade):

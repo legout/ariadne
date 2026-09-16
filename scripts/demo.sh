@@ -55,18 +55,13 @@ echo "== 3/4 promotion gate (spec §6: served artifacts arrive only by human pro
 echo "   staged files:"
 find staging -type f | sort | sed 's/^/     /'
 promote() {
-  rm -rf context_layer semantic_layer
-  cp -r staging/context_layer context_layer
-  cp -r staging/semantic_layer semantic_layer
+  "$PY" scripts/promote.py --yes
 }
 if [ "$yes" = 1 ]; then
   echo "   --yes: promoting automatically"
   promote
 elif [ -t 0 ]; then
-  echo "   review staging/, then promote with:"
-  echo "     rm -rf context_layer semantic_layer"
-  echo "     cp -r staging/context_layer context_layer"
-  echo "     cp -r staging/semantic_layer semantic_layer"
+  echo "   review staging/, then promote with: python scripts/promote.py"
   printf '   promote now? [y/N] '
   read -r answer
   case "$answer" in

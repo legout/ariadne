@@ -6,18 +6,19 @@ tested in isolation. Real Datus compilation is covered by tests/test_validate.py
 """
 
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
 
-import pytest
+import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne.author import MAX_ROUNDS, author, main  # noqa: E402
+from ariadne.author import MAX_ROUNDS, _bundle_errors, author, main  # noqa: E402
 from ariadne.validate import ValidationResult  # noqa: E402
 
 GOTCHA_1 = "CANCELLED and RETURNED orders are not revenue"
@@ -26,9 +27,13 @@ GOTCHA_2 = "multiply both figures by rate_to_usd"
 OKF_PAGE = f"""---
 type: metric
 status: draft
+title: Gross margin
+description: Gross margin over billable orders.
+tags: [metric, margin]
 sources:
   - orders
   - currency_conversion_rate
+  - {{id: order-status-billing, resource: policies/order-status-billing.md}}
 ---
 
 # Gross margin
@@ -52,6 +57,12 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: order_id
+          - name: status
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: status
+            dimension: {}
     metrics:
       - name: gross_margin
         description: margin
@@ -112,6 +123,33 @@ def make_notes(tmp_path: Path) -> Path:
 
 
 def llm_response() -> str:
+    """Whole-bundle response: the ADR-0007 bundle gate rejects incomplete trees,
+    so even the basic fixture carries all six content types (metrics page from
+    OKF_PAGE, the rest from the bundle constants below)."""
+    return json.dumps(
+        {
+            "files": [
+                {"path": "context_layer/metrics/gross_margin.md", "content": OKF_PAGE},
+                {"path": "semantic_layer/models/orders.yml", "content": OSI_MODEL},
+                {"path": "context_layer/tables/orders.md", "content": BUNDLE_TABLE},
+                {
+                    "path": "context_layer/references/joins/orders--customers.md",
+                    "content": BUNDLE_JOIN,
+                },
+                {
+                    "path": "context_layer/policies/order-status-billing.md",
+                    "content": BUNDLE_POLICY,
+                },
+                {"path": "context_layer/skills/run-the-demo.md", "content": BUNDLE_SKILL},
+            ]
+        }
+    )
+
+
+def partial_response() -> str:
+    """Valid OSI but an INCOMPLETE context layer (one page, no tables/joins/
+    policies/skills) — the shape that used to return silent success before the
+    ADR-0007 bundle gate."""
     return json.dumps(
         {
             "files": [
@@ -125,6 +163,128 @@ def llm_response() -> str:
 def thinking_llm_response() -> str:
     """Reasoning models inline <think> blocks in content before the JSON."""
     return "<think>Let me draft the files...</think>" + llm_response()
+
+
+BUNDLE_METRIC = """---
+type: metric
+status: draft
+title: Gross Margin
+description: Ratio of gross profit to gross revenue over billable orders.
+tags: [metric, margin]
+sources:
+  - id: demo.main.orders
+    resource: data/demo.db
+    title: Orders
+  - id: order-status-billing
+    resource: policies/order-status-billing.md
+    title: Order status billing
+  - id: emea-currency-cutover
+    resource: policies/emea-currency-cutover.md
+    title: EMEA currency cutover
+---
+
+# Gross margin
+
+Rule 1: {GOTCHA_1}. Rule 2: {GOTCHA_2}.
+"""
+
+BUNDLE_TABLE = """---
+type: table
+status: draft
+title: Orders
+description: One row per placed order.
+tags: [table, orders]
+sources:
+  - id: demo.main.orders
+    resource: data/demo.db
+    title: Orders
+grain:
+  primary_key: [order_id]
+  cardinality_enforcement: STRICT_1_TO_1
+---
+
+# Orders
+
+Join hints: customer_id -> customers.id (N:1).
+"""
+
+BUNDLE_JOIN = """---
+type: reference
+status: draft
+title: Orders to Customers
+description: Many orders to one customer; the joined key is proven unique.
+tags: [reference, join]
+sources:
+  - id: demo.main.customers
+    resource: data/demo.db
+    title: Customers
+---
+
+# Orders <-> Customers
+
+Grain-safety: many-to-one from the fact side, per ADR-0006 the join is
+grain-preserving (joined side unique, no fan-out).
+"""
+
+BUNDLE_POLICY = """---
+type: policy
+status: draft
+title: Order status billing
+description: Cancelled and returned orders are not revenue.
+tags: [policy, billing]
+sources:
+  - id: seed-notes
+    resource: data/seed_notes.md
+    title: Seed notes
+---
+
+# Order status billing
+
+{GOTCHA_1}.
+"""
+
+BUNDLE_SKILL = """---
+type: skill
+status: draft
+title: Run the demo
+description: End-to-end demo via scripts/demo.sh.
+tags: [skill, demo]
+sources:
+  - id: demo-script
+    resource: scripts/demo.sh
+    title: demo.sh
+---
+
+# Run the demo
+
+python scripts/seed_db.py data/demo.db && scripts/demo.sh
+"""
+
+
+def bundle_response() -> str:
+    """ONE mock LLM round producing the whole OKF bundle plus the models."""
+    return json.dumps(
+        {
+            "files": [
+                {"path": "context_layer/metrics/gross_margin.md", "content": BUNDLE_METRIC},
+                {"path": "context_layer/tables/orders.md", "content": BUNDLE_TABLE},
+                {
+                    "path": "context_layer/references/joins/orders--customers.md",
+                    "content": BUNDLE_JOIN,
+                },
+                {
+                    "path": "context_layer/policies/order-status-billing.md",
+                    "content": BUNDLE_POLICY,
+                },
+                {"path": "context_layer/skills/run-the-demo.md", "content": BUNDLE_SKILL},
+                {"path": "semantic_layer/models/orders.yml", "content": OSI_MODEL},
+            ]
+        }
+    )
+
+
+def front_of(page: Path) -> dict:
+    return yaml.safe_load(page.read_text().split("---")[1])
 
 
 def fake_complete(responses: list[str]):
@@ -312,6 +472,40 @@ def test_author_second_round_recovers(tmp_path):
     assert front["status"] == "draft"  # recovered, not marked
 
 
+def test_author_incomplete_bundle_never_succeeds(tmp_path):
+    """ADR-0007 bundle hard gate: valid OSI plus a partial context layer (one
+    metric page) must enter round feedback — never return silent success — and
+    end in the spec §7 review_needed marking."""
+    complete, complete_calls = fake_complete([partial_response()])
+    validate_fn, _ = fake_validate([ValidationResult(True, [])])
+    staging, _ = run_author(tmp_path, complete, validate_fn)
+
+    assert len(complete_calls) == 3  # every round fed back; never a success
+    feedback = complete_calls[1][-1]["content"]
+    assert "authored bundle is incomplete" in feedback
+    assert "skills" in feedback  # the missing content type is named
+    for path in staged(staging).values():  # 3 failed rounds -> spec §7 marking
+        assert "review_needed" in path.read_text()
+
+
+def test_author_drops_index_and_log_from_llm_writes(tmp_path):
+    """Code-level enforcement: an LLM round that adds index.md/log.md must have
+    those writes dropped — bundle bookkeeping belongs to the promotion gate."""
+    data = json.loads(llm_response())
+    data["files"] = [
+        {"path": "context_layer/index.md", "content": "# hijacked index"},
+        {"path": "context_layer/log.md", "content": "# hijacked log"},
+        *data["files"],
+    ]
+    complete, _ = fake_complete([json.dumps(data)])
+    validate_fn, _ = fake_validate([ValidationResult(True, [])])
+    staging, _ = run_author(tmp_path, complete, validate_fn)
+
+    assert not list(staging.rglob("index.md"))
+    assert not list(staging.rglob("log.md"))
+    assert "context_layer/metrics/gross_margin.md" in staged(staging)  # the rest landed
+
+
 def staged_page(staging: Path, status: str) -> Path:
     page = staging / "context_layer" / "metrics" / "gross_margin.md"
     page.parent.mkdir(parents=True)
@@ -335,3 +529,226 @@ def test_main_exits_zero_when_staged_clean(tmp_path, monkeypatch):
     monkeypatch.setattr(author_module, "author", lambda *args, **kwargs: [page])
     code = author_module.main(["--db", "x", "--notes", "y", "--staging", str(tmp_path / "s")])
     assert code == 0
+
+
+def test_author_invalid_page_frontmatter_feeds_back_then_recovers(tmp_path):
+    """An LLM page whose frontmatter is not valid YAML (unquoted colon) must
+    feed back through the loop — not crash the deterministic post-passes."""
+    bad_response = bundle_response().replace(
+        "title: Order status billing", "title: Policy: order status billing"
+    )  # unquoted colon -> invalid YAML frontmatter
+    good_complete, complete_calls = fake_complete([bad_response, bundle_response()])
+    validate_fn, _ = fake_validate([ValidationResult(True, [])])
+    staging = tmp_path / "staging"
+    author(
+        make_demo_db(tmp_path / "demo.db"),
+        make_notes(tmp_path),
+        staging_dir=staging,
+        complete=good_complete,
+        validate_fn=validate_fn,
+    )
+    assert len(complete_calls) == 2  # round 1 rejected, round 2 recovered
+    front = front_of(staged(staging)["context_layer/policies/order-status-billing.md"])
+    assert front["title"] == "Order status billing"  # round-2 page, stamped cleanly
+    assert front["status"] == "draft"
+    assert front["generated"]["by"] == "ariadne-author"
+
+
+def run_bundle_author(tmp_path: Path):
+    """Author with one mocked whole-bundle round (spec rev 6 §8.15)."""
+    complete, complete_calls = fake_complete([bundle_response()])
+    validate_fn, _ = fake_validate([ValidationResult(True, [])])
+    staging, paths = run_author(tmp_path, complete, validate_fn)
+    assert len(complete_calls) == 1  # the whole bundle passed in one round
+    return staging, paths
+
+
+def test_author_bundle_required_frontmatter_per_type(tmp_path):
+    staging, _ = run_bundle_author(tmp_path)
+    files = staged(staging)
+
+    metric = front_of(files["context_layer/metrics/gross_margin.md"])
+    for key in ("type", "status", "sources", "dimensions", "governed_by", "grain"):
+        assert key in metric, f"metric frontmatter missing {key}"
+    assert metric["type"] == "metric"
+    # enriched mechanically FROM THE STAGED MODEL, not from the LLM response
+    # (the fixture metric page carries none of these fields)
+    assert metric["governed_by"] == "semantic_layer orders::gross_margin"
+    assert metric["dimensions"] == ["status"]
+    assert metric["grain"]["primary_key"] == ["order_id"]
+
+    policy = front_of(files["context_layer/policies/order-status-billing.md"])
+    for key in ("type", "status", "sources"):
+        assert key in policy, f"policy frontmatter missing {key}"
+    assert policy["type"] == "policy"
+
+    table = front_of(files["context_layer/tables/orders.md"])
+    assert table["grain"]["primary_key"] == ["order_id"]
+    assert table["grain"]["cardinality_enforcement"] == "STRICT_1_TO_1"
+
+
+def test_author_bundle_metric_sources_cite_policies(tmp_path):
+    staging, _ = run_bundle_author(tmp_path)
+    sources = front_of(staged(staging)["context_layer/metrics/gross_margin.md"])["sources"]
+    cited = [str(s.get("resource")) for s in sources]
+    assert any(r.startswith("policies/") for r in cited), "metrics must cite policy pages"
+
+
+def test_author_generates_computations_per_served_metric(tmp_path):
+    staging, _ = run_bundle_author(tmp_path)
+    files = staged(staging)
+    # one deterministic computation page per metric in the staged model
+    assert "context_layer/computations/gross_margin.md" in files
+    assert "context_layer/computations/order_count.md" in files
+    comp = front_of(files["context_layer/computations/gross_margin.md"])
+    assert comp["type"] == "computation"
+    assert comp["governed_by"] == "semantic_layer orders::gross_margin"
+    assert comp["runtime"] == "duckdb"
+    assert comp["attester"] == "tests/test_evals.py"
+    body = files["context_layer/computations/gross_margin.md"].read_text()
+    assert "(gross_revenue - cogs) / NULLIF(gross_revenue, 0)" in body  # sanctioned SQL
+
+
+def test_author_stamps_lifecycle_frontmatter_and_never_indexes(tmp_path):
+    staging, _ = run_bundle_author(tmp_path)
+    for path in staged(staging).values():
+        if path.suffix != ".md":
+            continue
+        front = front_of(path)
+        assert front["generated"]["by"] == "ariadne-author"
+        assert front["generated"]["at"]
+        assert front["verified"] == []  # promotion appends the human verification
+        assert front["stale_after"]
+    # bundle bookkeeping belongs to promote.py — the author never writes them
+    assert not list(staging.rglob("index.md"))
+    assert not list(staging.rglob("log.md"))
+
+
+# --- ADR-0007 bundle gate: every per-type required frontmatter field ----------
+
+# A metric/computation page with the mechanically attached fields already in
+# place (in the real loop _finalize_bundle stamps them before the gate runs).
+GATED_METRIC_PAGE = """---
+type: metric
+status: draft
+title: Gross Margin
+description: Ratio of gross profit to gross revenue over billable orders.
+tags: [metric, margin]
+sources:
+  - id: order-status-billing
+    resource: policies/order-status-billing.md
+    title: Order status billing
+governed_by: semantic_layer orders::gross_margin
+dimensions: [status]
+grain:
+  primary_key: [order_id]
+  cardinality_enforcement: STRICT_1_TO_1
+---
+
+# Gross margin
+"""
+
+GATED_COMPUTATION_PAGE = """---
+type: computation
+status: draft
+title: "sanctioned SQL — orders::gross_margin"
+description: "Sanctioned computation: SQL, runtime, attester."
+tags: [computation]
+governed_by: semantic_layer orders::gross_margin
+runtime: duckdb
+attester: tests/test_evals.py
+sources:
+  - id: model-orders
+    resource: ../../semantic_layer/models/orders.yml
+    title: orders OSI model
+---
+
+# Sanctioned computation
+"""
+
+_COMPLETE_BUNDLE = {
+    "tables": ("orders.md", BUNDLE_TABLE),
+    "references/joins": ("orders--customers.md", BUNDLE_JOIN),
+    "policies": ("order-status-billing.md", BUNDLE_POLICY),
+    "metrics": ("gross_margin.md", GATED_METRIC_PAGE),
+    "computations": ("gross_margin.md", GATED_COMPUTATION_PAGE),
+    "skills": ("run-the-demo.md", BUNDLE_SKILL),
+}
+
+
+def write_complete_bundle(staging: Path) -> None:
+    """A minimal gate-clean bundle: one complete page per ADR-0007 section."""
+    for section, (name, content) in _COMPLETE_BUNDLE.items():
+        page = staging / "context_layer" / section / name
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text(content, encoding="utf-8")
+
+
+_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)\Z", re.DOTALL)
+
+
+def without_frontmatter_field(page: str, key: str) -> str:
+    """The page with one top-level frontmatter field removed (gate test helper)."""
+    match = _FRONTMATTER_RE.match(page)
+    assert match, "fixture page must carry frontmatter"
+    meta = yaml.safe_load(match.group(1))
+    meta.pop(key, None)
+    front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
+    return f"---\n{front}\n---\n\n{match.group(2)}"
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("tables", "title"),
+        ("tables", "description"),
+        ("tables", "tags"),
+        ("tables", "sources"),
+        ("references/joins", "title"),
+        ("references/joins", "description"),
+        ("references/joins", "tags"),
+        ("references/joins", "sources"),
+        ("policies", "status"),
+        ("policies", "title"),
+        ("policies", "description"),
+        ("policies", "tags"),
+        ("policies", "sources"),
+        ("metrics", "status"),
+        ("metrics", "title"),
+        ("metrics", "description"),
+        ("metrics", "tags"),
+        ("metrics", "sources"),
+        ("metrics", "governed_by"),
+        ("metrics", "dimensions"),
+        ("metrics", "grain"),
+        ("computations", "status"),
+        ("computations", "title"),
+        ("computations", "description"),
+        ("computations", "tags"),
+        ("computations", "sources"),
+        ("computations", "governed_by"),
+        ("computations", "runtime"),
+        ("computations", "attester"),
+        ("skills", "title"),
+        ("skills", "description"),
+        ("skills", "tags"),
+        ("skills", "sources"),
+    ],
+)
+def test_bundle_gate_rejects_each_missing_required_field(tmp_path, section, field):
+    """mvp-5 round 2: the bundle gate enforces EVERY per-type required
+    frontmatter field — a bundle missing exactly one required field on one page
+    fails _bundle_errors with the missing field named (round feedback, never
+    silent success)."""
+    staging = tmp_path / "staging"
+    write_complete_bundle(staging)
+    assert _bundle_errors(staging) == []  # the complete bundle passes the gate
+
+    page = next((staging / "context_layer" / section).glob("*.md"))
+    page.write_text(
+        without_frontmatter_field(page.read_text(encoding="utf-8"), field),
+        encoding="utf-8",
+    )
+    errors = _bundle_errors(staging)
+    assert errors, f"missing '{field}' on a {section} page must fail the bundle gate"
+    assert any(f"'{field}'" in error for error in errors), errors

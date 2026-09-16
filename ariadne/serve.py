@@ -59,14 +59,12 @@ from pathlib import Path
 from typing import Any
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-
-# sqlglot: ad-hoc source join parsing (grain guard, spec rev 5 §13)
 import yaml
 
-# sqlglot exposes its AST node module lazily (sqlglot.exp is a real module but not
-# statically exported), so resolve it at runtime like the duckdb import above.
-_exp = getattr(sqlglot, "exp")
+# The grain guard lives in ariadne.grain (shared with the validate audit — mvp-5
+# round 2 convergence); GRAIN_GUIDANCE is re-exported for backward compatibility
+# (tests and the tool text import it from this module).
+from ariadne.grain import GRAIN_GUIDANCE, check_grain_preserving  # noqa: F401 — re-export
 
 # Captured when datus is missing so startup can fail fast with a hint (spec §7).
 # The imports live inside the try: a missing datus must not abort the module import
@@ -101,18 +99,6 @@ ROUTING_HINT = (
 _SLUG_RE = re.compile(r"[a-z][a-z0-9_]*[a-z0-9]")
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
-# Spec rev 5 §13: the facade rejects agent-authored sources whose joins fan out
-# the fact grain (upstream finding Datus-ai/Datus-agent#1426: the compiler
-# aggregates at joined-row grain and does NOT prevent this). Shared by every
-# rejection branch of _check_grain_preserving so tests and agents see one text.
-GRAIN_GUIDANCE = (
-    "source violates the grain-preservation invariant: a join fans out the fact "
-    "grain (its key is not unique on the joined side), so aggregates over the joined "
-    "rows would double-count. One-to-many relationships must be pre-aggregated to "
-    "the fact grain inside source (GROUP BY), or the definition is rejected; "
-    "nothing staged, nothing executed."
-)
-
 
 def assert_single_statement(sql: str) -> None:
     """Spec §6 no-unvalidated-execution invariant: the executor receives exactly
@@ -131,70 +117,6 @@ def assert_single_statement(sql: str) -> None:
             f"compiled SQL must be exactly one statement, got {count} "
             "(no-unvalidated-execution invariant, spec §6); nothing staged, nothing executed"
         )
-
-
-def _check_grain_preserving(con: "duckdb.DuckDBPyConnection", source: str) -> None:
-    """Reject ad-hoc sources whose joins fan out the fact grain (spec rev 5 §13).
-
-    Rule: for every join in the source, each ON key must be unique on the JOINED
-    side — joins run many-to-one from the fact table. The compiler does not
-    enforce this (Datus-ai/Datus-agent#1426: it aggregates at joined-row grain),
-    so the facade does, before compile: for each key it runs
-    ``SELECT COUNT(*) = COUNT(DISTINCT <key>) FROM <joined side>`` on the
-    read-only attach. Subquery join targets (pre-aggregated lines) are checked
-    the same way as plain tables, which is exactly how a one-to-many gets
-    legitimate. Fail-closed on anything it cannot prove: missing ON (cross/comma
-    join), an ON with no attributable equality key (``ON TRUE``, a pure
-    inequality) or a non-conjunctive predicate (OR'd keys — per-key uniqueness
-    proves nothing about the OR as a whole), a non-column or unattributable
-    key, or a check that does not bind.
-
-    Rejection raises ValueError(GRAIN_GUIDANCE): nothing staged, nothing executed.
-
-    ponytail: PoC-scale exactness — one COUNT scan per key per call (fine at demo
-    scale; cache/EXPLAIN ANALYZE if sources grow), and composite keys are checked
-    per column (stricter than tuple-uniqueness — may reject a grain-safe join on
-    two individually-duplicate keys; rare, fail-closed is the safe direction).
-    """
-    try:
-        tree = sqlglot.parse_one(source)
-    except Exception:
-        return  # not one parseable statement — the compile gate owns that error verbatim
-    for join in tree.find_all(_exp.Join):
-        on = join.args.get("on")
-        if on is None:  # CROSS/comma join: unbounded multiplication, no key to prove
-            raise ValueError(GRAIN_GUIDANCE)
-        if isinstance(on, (_exp.Or, _exp.Xor, _exp.Not)):  # non-conjunctive: per-key
-            raise ValueError(GRAIN_GUIDANCE)  # uniqueness proves nothing — fail closed
-        eqs = list(on.find_all(_exp.EQ))
-        if not eqs:  # ON TRUE / pure inequality: zero provable keys, fan-out and all
-            raise ValueError(GRAIN_GUIDANCE)
-        side = join.this  # the joined table or subquery expression
-        qualifier = side.alias_or_name
-        for eq in eqs:
-            key = next(
-                (
-                    c
-                    for c in (eq.left, eq.right)
-                    if isinstance(c, _exp.Column) and c.table == qualifier
-                ),
-                None,
-            )
-            if key is None:  # key not attributable to the joined side — cannot prove
-                raise ValueError(GRAIN_GUIDANCE)
-            check = (
-                f"SELECT COUNT(*) = COUNT(DISTINCT {key.sql(dialect='duckdb')}) "
-                f"FROM {side.sql(dialect='duckdb')}"
-            )
-            try:
-                # nosemgrep — never raw source text: sqlglot re-renders its own parse
-                # tree (multi-statement input cannot reach here — parse_one rejects
-                # it), and the check runs on the read-only attach (spec §6).
-                row = con.execute(check).fetchone()  # nosemgrep — read-only attach, no side effects
-            except Exception as exc:  # unresolvable standalone — cannot prove, reject
-                raise ValueError(GRAIN_GUIDANCE) from exc
-            if row is None or not row[0]:
-                raise ValueError(GRAIN_GUIDANCE)
 
 
 class Facade:
@@ -322,7 +244,7 @@ class Facade:
         # that fans out the fact grain is rejected outright — the compiler would
         # aggregate at joined-row grain (Datus-ai/Datus-agent#1426). Nothing staged,
         # nothing executed; same contract as the single-statement guard below.
-        _check_grain_preserving(self.con, params["source"])
+        check_grain_preserving(self.con, params["source"])
         envelope = _expand_adhoc_model(params)
         sql = await self._compile_adhoc(envelope, params["name"], params["dimensions"])
         # Choke point shared by the EXPLAIN bind-check below and the execution
@@ -617,9 +539,11 @@ def build_app(facade: Facade):
                 SELECT (joins allowed), expression is an aggregate SQL expression
                 (any business filter belongs in it), and dimensions/time_field are
                 column names of the source. Joins must be grain-preserving: every
-                join key must be unique on the joined side — one-to-many relationships
-                must be pre-aggregated to the fact grain inside source (GROUP BY), or
-                the definition is rejected. Invalid definitions return the compiler
+                join key must be unique on the joined side — resolve one-to-many
+                relationships per the ADR-0006 rubric (upstream conditional pivot,
+                child-grain fact model, or fact weight allocation), i.e. pre-aggregate
+                the many side to the fact grain inside source, or the definition is
+                rejected. Invalid definitions return the compiler
                 errors verbatim; nothing is staged or executed. Success returns rows,
                 the compiled SQL (provenance), governed: false, the echoed definition,
                 and the staging paths of the auto-staged proposal (OSI model under
