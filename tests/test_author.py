@@ -52,6 +52,12 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: order_id
+          - name: status
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: status
+            dimension: {}
     metrics:
       - name: gross_margin
         description: margin
@@ -125,6 +131,128 @@ def llm_response() -> str:
 def thinking_llm_response() -> str:
     """Reasoning models inline <think> blocks in content before the JSON."""
     return "<think>Let me draft the files...</think>" + llm_response()
+
+
+BUNDLE_METRIC = """---
+type: metric
+status: draft
+title: Gross Margin
+description: Ratio of gross profit to gross revenue over billable orders.
+tags: [metric, margin]
+sources:
+  - id: demo.main.orders
+    resource: data/demo.db
+    title: Orders
+  - id: order-status-billing
+    resource: policies/order-status-billing.md
+    title: Order status billing
+  - id: emea-currency-cutover
+    resource: policies/emea-currency-cutover.md
+    title: EMEA currency cutover
+---
+
+# Gross margin
+
+Rule 1: {GOTCHA_1}. Rule 2: {GOTCHA_2}.
+"""
+
+BUNDLE_TABLE = """---
+type: table
+status: draft
+title: Orders
+description: One row per placed order.
+tags: [table, orders]
+sources:
+  - id: demo.main.orders
+    resource: data/demo.db
+    title: Orders
+grain:
+  primary_key: [order_id]
+  cardinality_enforcement: STRICT_1_TO_1
+---
+
+# Orders
+
+Join hints: customer_id -> customers.id (N:1).
+"""
+
+BUNDLE_JOIN = """---
+type: reference
+status: draft
+title: Orders to Customers
+description: Many orders to one customer; the joined key is proven unique.
+tags: [reference, join]
+sources:
+  - id: demo.main.customers
+    resource: data/demo.db
+    title: Customers
+---
+
+# Orders <-> Customers
+
+Grain-safety: many-to-one from the fact side, per ADR-0006 the join is
+grain-preserving (joined side unique, no fan-out).
+"""
+
+BUNDLE_POLICY = """---
+type: policy
+status: draft
+title: Order status billing
+description: Cancelled and returned orders are not revenue.
+tags: [policy, billing]
+sources:
+  - id: seed-notes
+    resource: data/seed_notes.md
+    title: Seed notes
+---
+
+# Order status billing
+
+{GOTCHA_1}.
+"""
+
+BUNDLE_SKILL = """---
+type: skill
+status: draft
+title: Run the demo
+description: End-to-end demo via scripts/demo.sh.
+tags: [skill, demo]
+sources:
+  - id: demo-script
+    resource: scripts/demo.sh
+    title: demo.sh
+---
+
+# Run the demo
+
+python scripts/seed_db.py data/demo.db && scripts/demo.sh
+"""
+
+
+def bundle_response() -> str:
+    """ONE mock LLM round producing the whole OKF bundle plus the models."""
+    return json.dumps(
+        {
+            "files": [
+                {"path": "context_layer/metrics/gross_margin.md", "content": BUNDLE_METRIC},
+                {"path": "context_layer/tables/orders.md", "content": BUNDLE_TABLE},
+                {
+                    "path": "context_layer/references/joins/orders--customers.md",
+                    "content": BUNDLE_JOIN,
+                },
+                {
+                    "path": "context_layer/policies/order-status-billing.md",
+                    "content": BUNDLE_POLICY,
+                },
+                {"path": "context_layer/skills/run-the-demo.md", "content": BUNDLE_SKILL},
+                {"path": "semantic_layer/models/orders.yml", "content": OSI_MODEL},
+            ]
+        }
+    )
+
+
+def front_of(page: Path) -> dict:
+    return yaml.safe_load(page.read_text().split("---")[1])
 
 
 def fake_complete(responses: list[str]):
@@ -335,3 +463,96 @@ def test_main_exits_zero_when_staged_clean(tmp_path, monkeypatch):
     monkeypatch.setattr(author_module, "author", lambda *args, **kwargs: [page])
     code = author_module.main(["--db", "x", "--notes", "y", "--staging", str(tmp_path / "s")])
     assert code == 0
+
+
+def test_author_invalid_page_frontmatter_feeds_back_then_recovers(tmp_path):
+    """An LLM page whose frontmatter is not valid YAML (unquoted colon) must
+    feed back through the loop — not crash the deterministic post-passes."""
+    bad_response = bundle_response().replace(
+        "title: Order status billing", "title: Policy: order status billing"
+    )  # unquoted colon -> invalid YAML frontmatter
+    good_complete, complete_calls = fake_complete([bad_response, bundle_response()])
+    validate_fn, _ = fake_validate([ValidationResult(True, [])])
+    staging = tmp_path / "staging"
+    author(
+        make_demo_db(tmp_path / "demo.db"),
+        make_notes(tmp_path),
+        staging_dir=staging,
+        complete=good_complete,
+        validate_fn=validate_fn,
+    )
+    assert len(complete_calls) == 2  # round 1 rejected, round 2 recovered
+    front = front_of(staged(staging)["context_layer/policies/order-status-billing.md"])
+    assert front["title"] == "Order status billing"  # round-2 page, stamped cleanly
+    assert front["status"] == "draft"
+    assert front["generated"]["by"] == "ariadne-author"
+
+
+def run_bundle_author(tmp_path: Path):
+    """Author with one mocked whole-bundle round (spec rev 6 §8.15)."""
+    complete, complete_calls = fake_complete([bundle_response()])
+    validate_fn, _ = fake_validate([ValidationResult(True, [])])
+    staging, paths = run_author(tmp_path, complete, validate_fn)
+    assert len(complete_calls) == 1  # the whole bundle passed in one round
+    return staging, paths
+
+
+def test_author_bundle_required_frontmatter_per_type(tmp_path):
+    staging, _ = run_bundle_author(tmp_path)
+    files = staged(staging)
+
+    metric = front_of(files["context_layer/metrics/gross_margin.md"])
+    for key in ("type", "status", "sources", "dimensions", "governed_by", "grain"):
+        assert key in metric, f"metric frontmatter missing {key}"
+    assert metric["type"] == "metric"
+    # enriched mechanically FROM THE STAGED MODEL, not from the LLM response
+    # (the fixture metric page carries none of these fields)
+    assert metric["governed_by"] == "semantic_layer orders::gross_margin"
+    assert metric["dimensions"] == ["status"]
+    assert metric["grain"]["primary_key"] == ["order_id"]
+
+    policy = front_of(files["context_layer/policies/order-status-billing.md"])
+    for key in ("type", "status", "sources"):
+        assert key in policy, f"policy frontmatter missing {key}"
+    assert policy["type"] == "policy"
+
+    table = front_of(files["context_layer/tables/orders.md"])
+    assert table["grain"]["primary_key"] == ["order_id"]
+    assert table["grain"]["cardinality_enforcement"] == "STRICT_1_TO_1"
+
+
+def test_author_bundle_metric_sources_cite_policies(tmp_path):
+    staging, _ = run_bundle_author(tmp_path)
+    sources = front_of(staged(staging)["context_layer/metrics/gross_margin.md"])["sources"]
+    cited = [str(s.get("resource")) for s in sources]
+    assert any(r.startswith("policies/") for r in cited), "metrics must cite policy pages"
+
+
+def test_author_generates_computations_per_served_metric(tmp_path):
+    staging, _ = run_bundle_author(tmp_path)
+    files = staged(staging)
+    # one deterministic computation page per metric in the staged model
+    assert "context_layer/computations/gross_margin.md" in files
+    assert "context_layer/computations/order_count.md" in files
+    comp = front_of(files["context_layer/computations/gross_margin.md"])
+    assert comp["type"] == "computation"
+    assert comp["governed_by"] == "semantic_layer orders::gross_margin"
+    assert comp["runtime"] == "duckdb"
+    assert comp["attester"] == "tests/test_evals.py"
+    body = files["context_layer/computations/gross_margin.md"].read_text()
+    assert "(gross_revenue - cogs) / NULLIF(gross_revenue, 0)" in body  # sanctioned SQL
+
+
+def test_author_stamps_lifecycle_frontmatter_and_never_indexes(tmp_path):
+    staging, _ = run_bundle_author(tmp_path)
+    for path in staged(staging).values():
+        if path.suffix != ".md":
+            continue
+        front = front_of(path)
+        assert front["generated"]["by"] == "ariadne-author"
+        assert front["generated"]["at"]
+        assert front["verified"] == []  # promotion appends the human verification
+        assert front["stale_after"]
+    # bundle bookkeeping belongs to promote.py — the author never writes them
+    assert not list(staging.rglob("index.md"))
+    assert not list(staging.rglob("log.md"))
