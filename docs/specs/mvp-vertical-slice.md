@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Status** | **Approved** |
 | **Approved by** | Owner, pi session 2026-09-14 — decision rounds (slice / sources / dataset / runtime; authoring / MCP topology / review gate / LLM provider) and complete-design approval |
-| **Scope approved** | Revision 5 (2026-09-15) — semantic-correctness eval harness promoted from deferred (§12) to in-scope: golden question→expected-value sets + fan-out trap proof (owner: "proceed housekeeping and eval") |
+| **Scope approved** | Revision 6 (2026-09-15) — grain enforcement (validate.py audit assertions + rubric guidance) + OKF bundle maturity (context_layer restructure, enriched frontmatter, promote script, agent-authored bundle generation). Owner approval 2026-09-15, this session |
 | **Evidence base** | [docs/research/agentic-semantic-layer-architecture.md](../research/agentic-semantic-layer-architecture.md) |
 | **Contract** | planning-contract v1 |
 
@@ -14,7 +14,7 @@ Prove the full authoring loop end-to-end: an authoring agent generates OKF conte
 
 ## 2. Scope and non-goals
 
-**In scope:** one synthetic SQLite database; authoring agent (profile + seed notes → synthesize → validate loop); MCP facade server; human promotion gate; ad-hoc query layer (`list_datasets`, `define_metric`, auto-staged proposals).
+**In scope:** one synthetic SQLite database; authoring agent (profile + seed notes → synthesize → validate loop); MCP facade server; human promotion gate; ad-hoc query layer (`list_datasets`, `define_metric`, auto-staged proposals); eval harness (golden sets + fan-out sentinel); **rev 6**: grain audit assertions in `validate.py` (ADR-0006 §5); OKF bundle structure for `context_layer/` (tables/references/policies/metrics/computations/skills + index.md + log.md); agent-authored bundle generation; `scripts/promote.py` (merge promotion + verification recording + index regeneration).
 
 **Non-goals (MVP):** access control/authZ/RLS/audit; Delta/Iceberg mounting; import/export adapters (Cube, MetricFlow, Wren, Malloy); multi-user; release automation; PR-based review gate (see §9); promotion-time revalidation (ADR-0004); write path of any kind; multi-database ad-hoc; auto-promotion of ad-hoc definitions; expression-injection hardening (deferred — agent-authored SQL fragments are a named, accepted trust boundary capped by the read-only attach + single-statement guard); ad-hoc composition of governed metrics. ~~semantic-correctness eval harness~~ — **in scope since rev 5 (§13)**.
 
@@ -55,9 +55,10 @@ semantic_layer/            # served OSI: datasets/, models/, metrics/
 
 ## 6. Invariants
 
-- Served artifacts only ever arrive by human promotion from `staging/`.
+- Served artifacts only ever arrive by human promotion from `staging/` — mechanically via `scripts/promote.py`, which merges (never wipes), appends the `verified` entry, regenerates indexes, and logs.
 - The author never writes outside `staging/` (the ad-hoc path writes only to `staging/semantic_layer/models/adhoc/`).
 - **No unvalidated execution (revision 3):** every computation — governed or ad-hoc — passes the deterministic Datus compile gate. Agents may author dataset sources and metric expressions; there is no code path from tool arguments to `duckdb.execute` that bypasses the compiler. Governed state changes only by human promotion.
+- **Grain audit (revision 6):** every authored model must pass the ADR-0006 pre-flight assertions in `validate.py` — declared grain uniqueness (Assertion 1) and parent aggregate invariance (Assertion 2).
 
 ## 7. Failure behavior
 
@@ -82,6 +83,10 @@ semantic_layer/            # served OSI: datasets/, models/, metrics/
 11. **Proposal capture:** each successful ad-hoc definition leaves exactly one `adhoc/<name>.yml` in staging; collisions suffix numerically, never overwrite.
 12. **Routing contract (rev 4):** `list_metrics` entries include available dimensions and end with the ad-hoc hint; the unknown-metric error names `list_datasets`/`define_metric`; a successful `define_metric` leaves both the model proposal and a discoverable `context_layer/metrics/<name>.md` draft in staging. The end-to-end check is manual: a fresh consuming-agent session answers an unmodeled question (e.g. "mean order volume per country") via the ad-hoc path without prior knowledge.
 13. **Eval harness (rev 5):** `tests/evals/golden.json` + `tests/test_evals.py` — golden entries {question, metric, dimensions, expected} with expected values derived by independent SQL (never from the implementation under test); every served governed metric covered; at least one ad-hoc `define_metric` round-trip; and one **fan-out trap proof**: a scratch orders⋈lines one-to-many model whose naive join would inflate aggregates, asserted equal to the correct deduplicated value when compiled through Datus.
+14. **Grain audit (rev 6A):** `validate.py` rejects an authored model whose dataset source fans out (Assertion 2 divergence) and one whose declared grain is non-unique (Assertion 1); valid models pass.
+15. **Bundle generation (rev 6B):** a live author run produces the full OKF bundle (tables, references/joins, policies, metrics, computations, skills) with enriched frontmatter (`verified`, `stale_after`, `grain`, `governed_by`, policy-linked `sources`), passing validate.
+16. **Promotion bookkeeping (rev 6B):** `promote.py` merges staged→served without wiping, appends `verified: [{by, at}]`, regenerates all `index.md` files, appends `log.md`, and is idempotent; `demo.sh` uses it.
+17. **Discovery (rev 6B):** `search_context` surfaces served policies/joins and draft proposals (draft-marked) across the new bundle folders.
     **Disposition (grain guard):** the trap proof FAILED — Datus compiles the naive join at joined-row grain, returning the inflated totals (NA 700 / EMEA 400 vs the correct NA 300 / EMEA 400; upstream Datus-ai/Datus-agent#1426). The facade owns the invariant instead: `define_metric` runs a **grain guard** on the source BEFORE compile — every join key must be unique on the joined side (one-to-many must be pre-aggregated to the fact grain inside source with GROUP BY); rejection carries the grain-preservation guidance with nothing staged, nothing executed. The trap test is re-scoped to guard-rejection + pre-aggregated-success (deduplicated NA 300 / EMEA 400), and the original compiler assertion is kept as a **strict xfail sentinel**: an upstream fix makes it XPASS and fail the suite, forcing this disposition to be revisited.
 
 ## 9. Recorded deviations from the research study

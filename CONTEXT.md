@@ -55,3 +55,21 @@ _Avoid_: dynamic metric, on-the-fly metric
 **Proposal**:
 An auto-staged Ad-hoc Metric definition awaiting human promotion; successful questions leave their definitions in `staging/` as candidates for the catalog.
 _Avoid_: draft, candidate file
+
+### Context Layer (OKF bundle)
+
+**Bundle**:
+The OKF v0.2 structure of `context_layer/`: typed folders (tables, references, policies, metrics, computations, skills) with an `index.md` per directory and a `log.md` change log.
+_Avoid_: knowledge base directory, docs folder
+
+**Grain**:
+The declared row identity of a dataset (its primary key in analytical terms). Every model maps to exactly one grain; additive measures only on fields native to it (ADR-0006).
+_Avoid_: granularity, level
+
+**Policy**:
+A human-owned business rule published as an OKF page in `policies/` (e.g. status exclusion, currency cutover); metrics cite policies in their `sources`.
+_Avoid_: rule note, guideline
+
+**Attested Computation**:
+An OKF concept carrying the sanctioned way to compute a value (compiled SQL) plus the `attester` that verifies it (our eval harness).
+_Avoid_: query snippet
