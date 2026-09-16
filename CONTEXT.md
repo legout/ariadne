@@ -25,7 +25,7 @@ A named measure served only through the Semantic Layer, with one canonical defin
 _Avoid_: KPI, ad-hoc metric
 
 **Fan-out**:
-Join multiplication that silently inflates aggregates when a query fans one row into many. The Semantic Layer's compile-time safety exists to prevent it.
+Join multiplication that silently inflates aggregates when a query fans one row into many. Prevention is the facade's grain guard on agent-authored ad-hoc sources plus modeling discipline (pre-aggregate one-to-many to the fact grain) — the compiler does not prevent it (Datus-ai/Datus-agent#1426).
 _Avoid_: row explosion
 
 ### Authoring workflow

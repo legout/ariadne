@@ -21,10 +21,20 @@ Ad-hoc round trip: the canonical rev-3 acceptance definition — "mean order
 amount per customer" — through ``define_metric``: governed false, rows checked
 against independent SQL, the proposal staged, staging cleaned up afterwards.
 
-Fan-out trap (the core claim test, ``tests/evals/build_trap_fixture.py``): a
-scratch orders⋈lines model compiled through the facade's governed path must
-return the DEDUPLICATED order total. Inflation is a valid negative finding
-(recorded in the lane report) — the assertion is deliberately not weakened.
+Fan-out disposition (spec rev 5 §13, upstream finding Datus-ai/Datus-agent#1426:
+the compiler aggregates at joined-row grain and does NOT prevent fan-out):
+three tests over the trap fixture (``tests/evals/build_trap_fixture.py``,
+orders 1:N order_lines, deduplicated totals NA 300 / EMEA 400):
+
+1. **Guard**: a naive fanned source through ``define_metric`` is REJECTED by the
+   facade grain guard (grain-preservation invariant) — nothing staged, nothing
+   compiled, nothing executed.
+2. **Sanctioned shape**: pre-aggregating the many side to the fact grain inside
+   source (``GROUP BY order_id``) passes the guard and returns the correct
+   deduplicated totals.
+3. **Sentinel**: the original compiler-grain mechanism assertion (the governed
+   path must deduplicate) is kept as a STRICT xfail — an upstream fix would
+   XPASS and fail the suite, forcing this disposition to be revisited.
 """
 
 import asyncio
@@ -299,15 +309,100 @@ def test_adhoc_round_trip_stages_proposal_then_cleans_up(facade, demo_db):
     assert not adhoc.exists() or not any(adhoc.iterdir()), "staging left dirty"
 
 
-# --- Fan-out trap proof (the core claim test) ---------------------------------
+# --- Fan-out disposition (spec rev 5 §13, Datus-ai/Datus-agent#1426) ----------
+
+# The trap source: orders 1:N order_lines, join key NOT unique on the joined side.
+FANNED_SOURCE = (
+    "SELECT o.order_id, o.region, o.amount, l.line_amount "
+    "FROM orders o JOIN order_lines l ON l.order_id = o.order_id"
+)
+# The sanctioned shape: pre-aggregate the many side to the fact grain, THEN join.
+PREAGG_SOURCE = (
+    "SELECT o.order_id, o.region, o.amount, l.line_total "
+    "FROM orders o JOIN "
+    "(SELECT order_id, SUM(line_amount) AS line_total FROM order_lines GROUP BY order_id) l "
+    "ON l.order_id = o.order_id"
+)
 
 
-def test_fanout_trap_semantic_layer_must_not_inflate(tmp_path):
-    """§13 core claim: a measure whose dataset source fans out (orders 1:N
-    order_lines) must come back DEDUPLICATED through the facade's governed
-    path. If the compiled result is inflated, this test FAILS and the INFLATED
-    verdict is recorded in the lane report — a valid, important negative
-    finding. Do not weaken this assertion to make it pass."""
+@pytest.fixture()
+def trap_facade(tmp_path):
+    """A live facade over the trap fixture (orders 1:N order_lines, trap.db).
+    Deduplicated ground truth: NA 300, EMEA 400; the naive join would inflate."""
+    served = build_trap(tmp_path)
+    return Facade(
+        served / "semantic",
+        served / "context",
+        served / "trap.db",
+        staging_dir=served / "staging",
+    )
+
+
+def _assert_staging_clean(facade):
+    adhoc = Path(facade.staging_dir) / "semantic_layer" / "models" / "adhoc"
+    assert not adhoc.exists() or not any(adhoc.iterdir()), "staging left dirty"
+
+
+def test_define_metric_rejects_fanout_source(trap_facade, monkeypatch):
+    """§13 disposition (guard): the naive fanned source is rejected with the
+    grain-preservation guidance BEFORE compile — nothing staged, nothing
+    compiled, nothing executed. The compiler itself would inflate (sentinel
+    below): the facade owns the invariant (Datus-ai/Datus-agent#1426)."""
+
+    async def _must_not_be_reached(*args, **kwargs):  # compile/execute never reached
+        raise AssertionError("guard must reject before the compile gate")
+
+    monkeypatch.setattr(Facade, "_compile_adhoc", _must_not_be_reached)
+    with pytest.raises(ValueError, match="grain-preservation invariant"):
+        asyncio.run(
+            trap_facade.define_metric(
+                {
+                    "name": "orders_total_naive",
+                    "description": "the trap: SUM over the naive join",
+                    "source": FANNED_SOURCE,
+                    "expression": "SUM(amount)",
+                    "dimensions": ["region"],
+                }
+            )
+        )
+    _assert_staging_clean(trap_facade)
+
+
+def test_define_metric_accepts_preaggregated_one_to_many(trap_facade):
+    """§13 disposition (sanctioned shape): pre-aggregating the many side to the
+    fact grain inside source (GROUP BY) passes the guard and returns the
+    DEDUPLICATED totals — NA 300 / EMEA 400, never the inflated 700/400."""
+    staged: list[Path] = []
+    try:
+        result = asyncio.run(
+            trap_facade.define_metric(
+                {
+                    "name": "orders_total_preagg",
+                    "description": "deduplicated order total via pre-aggregated lines",
+                    "source": PREAGG_SOURCE,
+                    "expression": "SUM(amount)",
+                    "dimensions": ["region"],
+                }
+            )
+        )
+        staged = [Path(result["staged_as"]), Path(result["staged_context_as"])]
+        assert result["governed"] is False
+        actual = {row["region"]: row["orders_total_preagg"] for row in result["rows"]}
+        assert actual == pytest.approx({"NA": 300.0, "EMEA": 400.0})
+    finally:
+        for path in staged:
+            path.unlink(missing_ok=True)  # clean it up after (spec §13)
+    _assert_staging_clean(trap_facade)
+
+
+@pytest.mark.xfail(
+    strict=True, reason="Datus-ai/Datus-agent#1426 — compiler aggregates at joined-row grain"
+)
+def test_governed_compiler_dedupes_fanout(tmp_path):
+    """§13 sentinel: the original trap assertion against the COMPILER itself.
+    Strict xfail — if upstream ever deduplicates at fact grain, this XPASSes and
+    fails the suite, forcing the guard disposition (spec §13, docs) to be
+    revisited. Today it fails INFLATED: NA 700 (order 1 counted 3x, order 2 2x)."""
     served = build_trap(tmp_path)
     trap = Facade(
         served / "semantic",
@@ -318,10 +413,8 @@ def test_fanout_trap_semantic_layer_must_not_inflate(tmp_path):
     orders_total = asyncio.run(trap.get_metric("orders_total", ["region"]))
     assert orders_total["governed"] is True
     actual = {row["region"]: row["orders_total"] for row in orders_total["rows"]}
-    # Correct deduplicated totals (per-order line sums == order amounts):
     assert actual == pytest.approx({"NA": 300.0, "EMEA": 400.0}), (
-        f"FAN-OUT VERDICT: INFLATED — orders_total over the naive join is {actual}; "
-        "the semantic layer aggregated at joined-row grain (see lane report.md)"
+        f"FAN-OUT VERDICT: INFLATED — orders_total over the naive join is {actual}"
     )
     # The immune sibling: line sums are correct even under the naive join.
     lines_total = asyncio.run(trap.get_metric("lines_total", ["region"]))

@@ -565,6 +565,75 @@ def test_define_metric_allows_semicolon_inside_string_literal(facade):
     assert result["rows"]  # executed: SUM(amount) over billable orders is nonzero
 
 
+def test_define_metric_rejects_fanned_out_join_source(facade):
+    """Spec rev 5 §13 grain guard: a source whose join key is not unique on the
+    joined side (orders self-joined on region_code — guaranteed duplicates) fans
+    out the fact grain; the compiler would aggregate at joined-row grain
+    (Datus-ai/Datus-agent#1426), so the facade rejects before compile. Nothing
+    staged, nothing executed."""
+    adhoc, before = _adhoc_dir(facade)
+    with pytest.raises(ValueError, match="grain-preservation invariant.*GROUP BY"):
+        asyncio.run(
+            facade.define_metric(
+                {
+                    "name": "fanned_metric",
+                    "description": "join key not unique on the joined side",
+                    "source": (
+                        "SELECT o.order_id, o.amount, x.order_id AS x_id "
+                        "FROM orders o JOIN orders x ON x.region_code = o.region_code"
+                    ),
+                    "expression": "SUM(amount)",
+                    "dimensions": [],
+                }
+            )
+        )
+    assert _adhoc_dir(facade)[1] == before  # nothing staged
+    assert not (adhoc / "fanned_metric.yml").exists()
+
+
+def test_define_metric_rejects_cross_join_source(facade):
+    """§13 grain guard: a CROSS (or comma) join has no key to prove unique —
+    unbounded row multiplication is rejected outright."""
+    adhoc, before = _adhoc_dir(facade)
+    with pytest.raises(ValueError, match="grain-preservation invariant"):
+        asyncio.run(
+            facade.define_metric(
+                {
+                    "name": "cross_metric",
+                    "description": "cross join fans out unboundedly",
+                    "source": "SELECT o.order_id, c.name FROM orders o CROSS JOIN customers c",
+                    "expression": "SUM(o.amount)",
+                    "dimensions": [],
+                }
+            )
+        )
+    assert _adhoc_dir(facade)[1] == before  # nothing staged
+    assert not (adhoc / "cross_metric.yml").exists()
+
+
+def test_define_metric_allows_grain_preserving_join(facade):
+    """§13 grain guard upside: the many-to-one direction (orders ⋈ customers on
+    the customers primary key) stays legitimate — same shape as the ad-hoc
+    acceptance definition; the guard must not reject it."""
+    result = asyncio.run(
+        facade.define_metric(
+            {
+                "name": "guard_probe_metric",
+                "description": "many-to-one join on the unique side",
+                "source": (
+                    "SELECT o.order_id, c.name AS customer_name, o.amount "
+                    "FROM orders o JOIN customers c ON o.customer_id = c.id"
+                ),
+                "expression": "SUM(amount)",
+                "dimensions": [],
+            }
+        )
+    )
+    assert result["governed"] is False
+    Path(result["staged_as"]).unlink(missing_ok=True)
+    Path(result["staged_context_as"]).unlink(missing_ok=True)
+
+
 def test_startup_fails_fast_without_models(tmp_path):
     with pytest.raises(RuntimeError, match="promote staging"):
         Facade(tmp_path / "semantic_layer", tmp_path / "context_layer", tmp_path / "demo.db")

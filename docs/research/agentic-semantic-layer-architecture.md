@@ -42,7 +42,7 @@ flowchart TD
 
     subgraph Tier3["3. Semantic Layer (Governed Calculation Engine)"]
         OSI[Apache Ossie: OSI YAML Models<br>• Dimensions & Measures<br>• Join paths & attribution logic]
-        DOSI[DOSI Engine: Rust SQL Compiler<br>• Fan-out protection<br>• Dialect compilation & MCP server]
+        DOSI[DOSI Engine: Rust SQL Compiler<br>• "Fan-out protection" — disproven, see note<br>• Dialect compilation & MCP server]
     end
 
     subgraph Tier4["4. Execution & Storage Layer"]
@@ -59,11 +59,18 @@ flowchart TD
     DOSI -->|4. Emits optimized dialect SQL| DuckDB
 ```
 
+> **Correction (spec rev 5 trap proof):** DOSI does **not** protect against fan-out — a scratch
+> orders⋈lines one-to-many model compiled through the governed path returned the inflated
+> joined-row total (NA 700 vs the correct deduplicated 300; 1100 vs 700 overall). Upstream:
+> [Datus-ai/Datus-agent#1426](https://github.com/Datus-ai/Datus-agent/issues/1426). Ariadne
+> enforces grain preservation on agent-authored sources at its own facade instead (spec rev 5
+> §13 disposition: facade grain guard + strict-xfail sentinel).
+
 | Layer | Responsibility | Format / Standard | Role in Agentic Workflow |
 | :--- | :--- | :--- | :--- |
 | **1. Ontology** | *The World Model* | Entity definitions & relations (YAML / OKF Entities) | Establishes the conceptual entities (e.g., `Customer`, `Order`, `Asset`) and how they link across distinct databases. |
 | **2. Context Layer** | *The Business Guide* | **[OKF v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format)** (Markdown + YAML Frontmatter) | Ingests tribal knowledge, caveats, filter conditions, and routes questions to the appropriate semantic models. |
-| **3. Semantic Layer** | *The Calculation Engine* | **[Apache Ossie](https://github.com/open-semantic-interchange/OSI)** + **[DOSI Engine](https://dosi.datus.ai)** | Compiles deterministic, multi-dialect SQL; guarantees join safety and prevents metric divergence. |
+| **3. Semantic Layer** | *The Calculation Engine* | **[Apache Ossie](https://github.com/open-semantic-interchange/OSI)** + **[DOSI Engine](https://dosi.datus.ai)** | Compiles deterministic, multi-dialect SQL; does not prevent fan-out (correction above) — grain safety is enforced at the Ariadne facade. |
 | **4. Storage & Execution** | *The Unified Hub* | **DuckDB** + Native Lakehouse Extensions | Mounts Delta, Iceberg, DuckDB, and SQLite into a single in-process SQL execution engine. |
 
 ---
