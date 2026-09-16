@@ -45,7 +45,6 @@ import yaml
 _exp = getattr(sqlglot, "exp")
 
 _GRAIN_ADR = "docs/adr/0006-grain-governance-multi-cardinality-joins.md"
-_NUMERIC_TYPES = ("INT", "DECIMAL", "NUMERIC", "REAL", "FLOAT", "DOUBLE", "HUGEINT")
 _ADR_TOLERANCE = 1e-9
 
 
@@ -104,27 +103,62 @@ def _assertion_1(
     )
 
 
+def _unqualified(expr) -> str:  # _exp.* is a runtime module alias, not a static type
+    """The expression's SQL with table qualifiers stripped — it is re-evaluated
+    over the raw parent table, which knows no scan aliases."""
+    bare = expr.copy()
+    for column in bare.find_all(_exp.Column):
+        column.set("table", None)
+    return bare.sql(dialect="duckdb")
+
+
+def _parent_projections(tree, alias) -> dict[str, str]:
+    """parent-side SUM expression -> wrapped-side output reference, for every
+    projection originating PURELY from the parent table: direct columns, aliased
+    columns (``o.amount AS amount``), and aliased derivations (``o.a * o.b AS x``)
+    all resolve to their underlying parent-origin expression, so the audit cannot
+    be dodged by aliasing. Projections mixing in joined-table columns have no
+    parent-only baseline and are skipped fail-safe to the compile gate."""
+    refs: dict[str, str] = {}
+    for projection in tree.selects:
+        expr = projection.this if isinstance(projection, _exp.Alias) else projection
+        columns = [expr] if isinstance(expr, _exp.Column) else list(expr.find_all(_exp.Column))
+        if not columns:  # literal or star projection: nothing parent-origin to trace
+            continue
+        if any(column.table not in ("", alias) for column in columns):
+            continue  # derivation over joined columns too: no parent-only baseline
+        if isinstance(projection, _exp.Alias):
+            wrapped_ref = projection.alias  # reference the wrapped output name
+        elif isinstance(expr, _exp.Column):
+            wrapped_ref = expr.name  # bare column: its output name is the column name
+        else:
+            continue  # unaliased derivation: no stable output name to reference
+        refs[_unqualified(expr)] = wrapped_ref
+    return refs
+
+
 def _assertion_2(
     con: duckdb.DuckDBPyConnection, model: str, dataset: str, source: str
 ) -> list[str]:
     """ADR-0006 §5 Assertion 2: parent aggregate invariance. For a joined dataset
-    source, every projected column originating from the FROM (parent) table must
-    sum identically over the raw parent table and the joined source — a divergence
-    is fan-out inflation of the parent grain. Remediation: the ADR-0006 rubric
-    (pivot / child-grain model / weight allocation).
+    source, every projection originating from the FROM (parent) table — direct,
+    aliased, or derived — must sum identically over the raw parent table and the
+    joined source; a divergence is fan-out inflation of the parent grain.
+    Remediation: the ADR-0006 rubric (pivot / child-grain model / weight
+    allocation).
 
-    ponytail: projected-parent-column heuristic — measures are detected via the
-    source's SELECT list (qualified parent columns), not by resolving each metric
-    expression; subquery FROMs (no raw parent to baseline) and star projections
-    are skipped fail-safe to the compile gate. Widen if models stop projecting
-    their measured columns."""
+    ponytail: projections are traced through the source's SELECT list, not by
+    resolving each metric expression; subquery FROMs (no raw parent to baseline),
+    star projections, mixed parent/joined derivations, and non-numeric or
+    parent-absent references (the SUM raises) are skipped fail-safe to the
+    compile gate. Widen if models stop projecting their measured columns."""
     try:
         statements = sqlglot.parse(source, dialect="duckdb")
     except Exception:
         return []  # not parseable — the compile gate owns that error verbatim
-    if len(statements) != 1 or not isinstance(statements[0], _exp.Select):
+    tree = statements[0] if len(statements) == 1 else None
+    if tree is None or not isinstance(tree, _exp.Select):
         return []  # multi-statement or non-SELECT sources never reach the audit executor
-    tree = statements[0]
     joins = list(tree.find_all(_exp.Join))
     if not joins:  # Assertion 2 applies only to sources that join
         return []
@@ -133,31 +167,20 @@ def _assertion_2(
     if parent is None or not isinstance(parent, _exp.Table):
         return []  # subquery FROM: no raw parent table to baseline against
     parent_sql = parent.sql(dialect="duckdb")
-    alias = parent.alias_or_name
-    columns = sorted(
-        {
-            col.name
-            for col in tree.selects
-            if isinstance(col, _exp.Column) and col.table == alias
-        }
-    )
-    if not columns:
+    refs = _parent_projections(tree, parent.alias_or_name)
+    if not refs:
         return []
-    numeric = {
-        row[0]
-        for row in con.execute(f"DESCRIBE SELECT * FROM {parent_sql}").fetchall()  # nosemgrep
-        if any(t in str(row[1]).upper() for t in _NUMERIC_TYPES)
-    }
     errors: list[str] = []
     wrapped = _wrap_source(source)
-    for column in columns:
-        if column not in numeric:  # additive aggregates only exist over numeric columns
-            continue
-        baseline, modeled = con.execute(
-            f"SELECT (SELECT SUM({column}) FROM {parent_sql}), "
-            f"(SELECT SUM({column}) FROM {wrapped} _a)"  # nosemgrep — read-only attach,
-            # source is the staged authored file gated to one SELECT above (spec §6)
-        ).fetchone() or (None, None)
+    for parent_expr in sorted(refs):
+        try:
+            baseline, modeled = con.execute(
+                f"SELECT (SELECT SUM({parent_expr}) FROM {parent_sql}), "
+                f"(SELECT SUM({refs[parent_expr]}) FROM {wrapped} _a)"  # nosemgrep — read-only
+                # attach; source is the staged authored file gated to one SELECT above
+            ).fetchone() or (None, None)
+        except duckdb.Error:
+            continue  # non-numeric or not a parent column: the compile gate's domain
         if baseline is None and modeled is None:
             continue
         if baseline is not None and modeled is not None:
@@ -167,7 +190,7 @@ def _assertion_2(
         errors.append(
             f"grain audit failed for model '{model}' dataset '{dataset}' "
             f"(ADR-0006 Assertion 2, parent aggregate invariance): "
-            f"SUM({column}) over the joined source = {modeled!r} vs SUM over the raw "
+            f"SUM({parent_expr}) over the joined source = {modeled!r} vs SUM over the raw "
             f"parent table {parent_sql} = {baseline!r} (divergence {divergence} != 0): "
             f"the source fans out the parent grain and inflates parent-side additive "
             f"measures. Apply the ADR-0006 rubric: upstream conditional pivot "
@@ -191,6 +214,17 @@ def _grain_audit(staging_dir: str | Path, db_path: str | Path) -> list[str]:
         # boundary) and DuckDB's ATTACH takes no bind parameters — a formatter.
         con.execute(f"ATTACH '{Path(db_path)}' AS demo (TYPE SQLITE, READ_ONLY)")  # nosemgrep
         for model, dataset, source, pk in datasets:
+            if not pk:  # ADR-0006 rule of single declared grain: a model with no
+                # declared primary_key has no verifiable grain — it must FAIL the
+                # audit, never pass silently (spec rev 6 §8.14).
+                errors.append(
+                    f"grain audit failed for model '{model}' dataset '{dataset}' "
+                    f"(ADR-0006 rule of single declared grain): no declared grain — "
+                    f"the dataset declares no primary_key, so its grain cannot be "
+                    f"verified for uniqueness or join safety. Declare exactly one "
+                    f"primary_key unique over the dataset source (Assertion 1) before "
+                    f"registration. See {_GRAIN_ADR}."
+                )
             if pk:
                 error = _assertion_1(con, model, dataset, source, pk)
                 if error:

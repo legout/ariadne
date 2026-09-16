@@ -248,6 +248,22 @@ def test_promote_refuses_review_needed(tmp_path, capsys):
     assert not served.exists() or tree(served) == {}  # nothing was served
 
 
+def test_promote_refuses_review_needed_semantic_yaml(tmp_path, capsys):
+    """The author marks failed OSI YAML with a `# status: review_needed` comment
+    (the schema rejects unknown keys), and such YAML raw-merges into the served
+    semantic layer. The scan covers the whole staging tree; nothing is merged."""
+    staging, served = make_staging(tmp_path / "staging"), tmp_path / "served"
+    model = staging / "semantic_layer" / "models" / "orders.yml"
+    model.write_text("# status: review_needed\n" + STAGED_MODEL, encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_promote(staging, served)
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "semantic_layer/models/orders.yml" in err  # the offending file is listed
+    assert not served.exists() or tree(served) == {}  # nothing from the tree was served
+
+
 def test_promote_cli_yes(tmp_path):
     staging, served = make_staging(tmp_path / "staging"), tmp_path / "served"
     code = main(["--yes", "--staging", str(staging), "--served", str(served), "--by", BY])

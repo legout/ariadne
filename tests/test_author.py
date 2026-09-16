@@ -29,6 +29,7 @@ status: draft
 sources:
   - orders
   - currency_conversion_rate
+  - {{id: order-status-billing, resource: policies/order-status-billing.md}}
 ---
 
 # Gross margin
@@ -118,6 +119,33 @@ def make_notes(tmp_path: Path) -> Path:
 
 
 def llm_response() -> str:
+    """Whole-bundle response: the ADR-0007 bundle gate rejects incomplete trees,
+    so even the basic fixture carries all six content types (metrics page from
+    OKF_PAGE, the rest from the bundle constants below)."""
+    return json.dumps(
+        {
+            "files": [
+                {"path": "context_layer/metrics/gross_margin.md", "content": OKF_PAGE},
+                {"path": "semantic_layer/models/orders.yml", "content": OSI_MODEL},
+                {"path": "context_layer/tables/orders.md", "content": BUNDLE_TABLE},
+                {
+                    "path": "context_layer/references/joins/orders--customers.md",
+                    "content": BUNDLE_JOIN,
+                },
+                {
+                    "path": "context_layer/policies/order-status-billing.md",
+                    "content": BUNDLE_POLICY,
+                },
+                {"path": "context_layer/skills/run-the-demo.md", "content": BUNDLE_SKILL},
+            ]
+        }
+    )
+
+
+def partial_response() -> str:
+    """Valid OSI but an INCOMPLETE context layer (one page, no tables/joins/
+    policies/skills) — the shape that used to return silent success before the
+    ADR-0007 bundle gate."""
     return json.dumps(
         {
             "files": [
@@ -438,6 +466,40 @@ def test_author_second_round_recovers(tmp_path):
         staged(staging)["context_layer/metrics/gross_margin.md"].read_text().split("---")[1]
     )
     assert front["status"] == "draft"  # recovered, not marked
+
+
+def test_author_incomplete_bundle_never_succeeds(tmp_path):
+    """ADR-0007 bundle hard gate: valid OSI plus a partial context layer (one
+    metric page) must enter round feedback — never return silent success — and
+    end in the spec §7 review_needed marking."""
+    complete, complete_calls = fake_complete([partial_response()])
+    validate_fn, _ = fake_validate([ValidationResult(True, [])])
+    staging, _ = run_author(tmp_path, complete, validate_fn)
+
+    assert len(complete_calls) == 3  # every round fed back; never a success
+    feedback = complete_calls[1][-1]["content"]
+    assert "authored bundle is incomplete" in feedback
+    assert "skills" in feedback  # the missing content type is named
+    for path in staged(staging).values():  # 3 failed rounds -> spec §7 marking
+        assert "review_needed" in path.read_text()
+
+
+def test_author_drops_index_and_log_from_llm_writes(tmp_path):
+    """Code-level enforcement: an LLM round that adds index.md/log.md must have
+    those writes dropped — bundle bookkeeping belongs to the promotion gate."""
+    data = json.loads(llm_response())
+    data["files"] = [
+        {"path": "context_layer/index.md", "content": "# hijacked index"},
+        {"path": "context_layer/log.md", "content": "# hijacked log"},
+        *data["files"],
+    ]
+    complete, _ = fake_complete([json.dumps(data)])
+    validate_fn, _ = fake_validate([ValidationResult(True, [])])
+    staging, _ = run_author(tmp_path, complete, validate_fn)
+
+    assert not list(staging.rglob("index.md"))
+    assert not list(staging.rglob("log.md"))
+    assert "context_layer/metrics/gross_margin.md" in staged(staging)  # the rest landed
 
 
 def staged_page(staging: Path, status: str) -> Path:

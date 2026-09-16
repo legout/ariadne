@@ -193,6 +193,61 @@ def _write_model(staging: Path, name: str, yml: str) -> None:
     model.write_text(yml, encoding="utf-8")
 
 
+# The reviewer's alias trap: every parent-origin measure is projected through an
+# alias and the declared grain falls back to the child key, so a direct-column
+# scan sees nothing parent-side and the audit passed while SUM(amount) inflated
+# 700 (parent truth) to 1100 over the joined rows.
+ALIAS_TRAP_YML = """\
+version: 0.2.0.dev0
+semantic_model:
+  - name: trap_orders
+    description: Aliased parent measures over the naive join (alias audit trap)
+    datasets:
+      - name: trap_join
+        source: >-
+          SELECT o.order_id AS order_id, o.region AS region, o.amount AS amount,
+                 l.line_id, l.line_amount
+          FROM demo.main.orders o
+          JOIN demo.main.order_lines l ON l.order_id = o.order_id
+        primary_key: [line_id]
+        fields:
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+          - name: region
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: region
+            dimension: {}
+          - name: amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: amount
+          - name: line_amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: line_amount
+    metrics:
+      - name: orders_total
+        description: SUM of the aliased order amount over the naive join
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(amount)
+      - name: lines_total
+        description: SUM of the line amounts
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(line_amount)
+"""
+
+
 def test_fanned_source_fails_assertion_2_with_divergence(tmp_path):
     """§8.14(a): the orders⋈order_lines trap source fans out the parent grain;
     the audit fails with the divergence numbers and the ADR-0006 rubric."""
@@ -208,6 +263,42 @@ def test_fanned_source_fails_assertion_2_with_divergence(tmp_path):
     assert "trap_orders" in message  # the offending model is named
     for pattern in ("pivot", "child-grain fact model", "weight allocation"):
         assert pattern in message  # ADR-0006 rubric patterns named in remediation
+
+
+def test_undeclared_grain_fails_the_audit(tmp_path):
+    """ADR-0006 rule of single declared grain: a model with NO declared
+    primary_key has no verifiable grain and must FAIL the audit — never pass by
+    skipping the assertions."""
+    root = build_trap(tmp_path / "trap")
+    staging = tmp_path / "staging"
+    _write_model(staging, "nopk.yml", ORDERS_YML.replace("        primary_key: [order_id]\n", ""))
+    result = validate(staging, db_path=root / "trap.db")
+    assert not result.ok
+    grain_errors = [error for error in result.errors if "no declared grain" in error]
+    assert grain_errors, f"expected the no-declared-grain error, got: {result.errors}"
+    message = grain_errors[0]
+    assert "single declared grain" in message  # names the ADR-0006 rule
+    assert "'orders'" in message  # the offending model is named
+    assert "primary_key" in message  # remediation names the missing declaration
+    assert validate(staging).ok  # compile-only mode (no --db) is unchanged
+
+
+def test_aliased_parent_measures_fail_assertion_2(tmp_path):
+    """Reviewer fixture: `o.amount AS amount` with a child-grain primary_key
+    [line_id] used to pass the audit while SUM(amount) inflated 700 -> 1100.
+    Select aliases must resolve to their underlying parent-origin expressions."""
+    root = build_trap(tmp_path / "trap")
+    staging = tmp_path / "staging"
+    _write_model(staging, "alias_trap.yml", ALIAS_TRAP_YML)
+    result = validate(staging, db_path=root / "trap.db")
+    assert not result.ok
+    amount_errors = [error for error in result.errors if "SUM(amount)" in error]
+    assert amount_errors, f"expected an Assertion 2 divergence on amount, got: {result.errors}"
+    message = amount_errors[0]
+    assert "Assertion 2" in message
+    assert "1100.0" in message and "700.0" in message  # inflated vs parent truth
+    assert "400.0" in message  # the divergence itself
+    assert not any("Assertion 1" in error for error in result.errors)  # line_id IS unique
 
 
 def test_non_unique_declared_pk_fails_assertion_1(tmp_path):

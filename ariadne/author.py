@@ -15,7 +15,8 @@ the trust/lifecycle frontmatter (``generated``/``verified``/``stale_after``),
 the metric ``governed_by``/``dimensions``/``grain`` blocks (derived from the
 staged models), and one ``computations/<metric>.md`` page per governed metric
 (sanctioned expression + runtime + attester). The author never writes
-``index.md``/``log.md`` — the promotion gate owns bundle bookkeeping.
+``index.md``/``log.md`` — the promotion gate owns bundle bookkeeping, and such
+LLM-supplied file writes are dropped in code, not just by prompt instruction.
 
 The author NEVER writes outside ``staging/`` (spec invariant): every LLM-supplied
 path is checked to resolve inside the staging directory. Inputs come from
@@ -478,6 +479,91 @@ def _finalize_bundle(staging: Path) -> None:
     _stamp_pages(staging, now)
 
 
+# ADR-0007 bundle contract: every content type must be present, keyed by its
+# context_layer section and the frontmatter ``type`` its pages must carry.
+_BUNDLE_TYPES = {
+    "tables": "table",
+    "references/joins": "reference",
+    "policies": "policy",
+    "metrics": "metric",
+    "computations": "computation",
+    "skills": "skill",
+}
+
+
+def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list[str]:
+    """Contract violations of one staged page (ADR-0007 required frontmatter per
+    type, mirroring the per-type assertions the bundle tests make)."""
+    rel = page.relative_to(staging).as_posix()
+    try:
+        meta = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        return [f"{rel}: frontmatter is not valid YAML: {exc}"]
+    if not meta:
+        return [f"{rel}: no frontmatter (needs type: {expected_type})"]
+    errors: list[str] = []
+    if str(meta.get("type") or "") != expected_type:
+        errors.append(f"{rel}: frontmatter type must be '{expected_type}'")
+    if expected_type == "table":
+        grain = meta.get("grain")
+        if (
+            not isinstance(grain, dict)
+            or not grain.get("primary_key")
+            or not grain.get("cardinality_enforcement")
+        ):
+            errors.append(
+                f"{rel}: table page requires a grain block with primary_key and "
+                "cardinality_enforcement"
+            )
+    elif expected_type == "policy":
+        for key in ("status", "sources"):
+            if not meta.get(key):
+                errors.append(f"{rel}: policy page requires '{key}' frontmatter")
+    elif expected_type == "metric":
+        for key in ("governed_by", "grain"):  # attached mechanically from the models
+            if not meta.get(key):
+                errors.append(
+                    f"{rel}: metric page lacks governed '{key}' frontmatter (no "
+                    "matching staged OSI model metric?)"
+                )
+        resources = [
+            str(s.get("resource") if isinstance(s, dict) else s or "")
+            for s in meta.get("sources") or []
+        ]
+        if not any(r.startswith("policies/") for r in resources):
+            errors.append(
+                f"{rel}: metric page must cite at least one governing policy "
+                "(a policies/... source)"
+            )
+    elif expected_type == "computation":
+        for key in ("governed_by", "runtime", "attester"):
+            if not meta.get(key):
+                errors.append(f"{rel}: computation page requires '{key}' frontmatter")
+    elif not meta.get("sources"):  # reference, skill
+        errors.append(f"{rel}: {expected_type} page requires 'sources' frontmatter")
+    return errors
+
+
+def _bundle_errors(staging: Path) -> list[str]:
+    """The hard ADR-0007 bundle contract gate (spec §5: no silent success): all six
+    content types present under context_layer/, per-type required frontmatter, and
+    every metric page citing at least one governing policy."""
+    context = staging / "context_layer"
+    errors: list[str] = []
+    for section, expected_type in _BUNDLE_TYPES.items():
+        pages = sorted((context / section).glob("*.md")) if (context / section).is_dir() else []
+        if not pages:
+            errors.append(
+                f"authored bundle is incomplete: no pages under context_layer/{section}/ "
+                "(ADR-0007 requires all six content types: tables, references/joins, "
+                "policies, metrics, computations, skills)"
+            )
+            continue
+        for page in pages:
+            errors.extend(_page_contract_errors(staging, page, expected_type))
+    return errors
+
+
 def _load_frontmatter_meta(text: str) -> dict:
     """Frontmatter meta of an OKF page (empty dict when absent)."""
     match = _FRONTMATTER_RE.match(text)
@@ -578,12 +664,17 @@ def author(
             messages.append({"role": "user", "content": errors[0] + " Return the JSON object."})
             continue
         for rel_path, content in files:
+            if Path(rel_path).name in ("index.md", "log.md"):
+                # code-level enforcement of the prompt rule: bundle bookkeeping
+                # belongs to the promotion gate, never to the author
+                print(f"author: ignoring {rel_path} (the author never writes it)", flush=True)
+                continue
             target = _safe_path(staging, rel_path)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         result = gate(staging)
         errors = result.errors
-        if result.ok:  # deterministic post-passes may still reject the draft
+        if result.ok:  # deterministic post-passes and the bundle contract may still reject
             try:
                 _finalize_bundle(staging)
             except Exception as exc:  # e.g. frontmatter that is not valid YAML
@@ -592,6 +683,8 @@ def author(
                     "Quote YAML scalar values that contain colons or special "
                     "characters."
                 ]
+            else:
+                errors = _bundle_errors(staging)
         if not errors:
             print(f"author: round {round_no}: validation passed", flush=True)
             return _staged_paths(staging)

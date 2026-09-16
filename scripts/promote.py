@@ -133,12 +133,23 @@ def _staged_files(staging: Path) -> list[Path]:
     )
 
 
-def _review_needed(staging: Path, pages: list[Path]) -> list[str]:
-    """Staging-relative paths of pages carrying the spec §7 review_needed marker."""
+# Suffixes the spec §7 review_needed marker can live on: OKF page frontmatter
+# (markdown) and OSI models (YAML, where the author's marker survives only as a
+# ``# status: review_needed`` comment — the schema rejects unknown keys).
+_REVIEW_SUFFIXES = {".md", ".yml", ".yaml"}
+
+
+def _review_needed(staging: Path) -> list[str]:
+    """Staging-relative paths of files carrying the spec §7 review_needed marker,
+    scanned across the WHOLE staging tree — context markdown frontmatter AND
+    semantic-layer YAML. Any hit refuses the promotion: nothing from the tree is
+    merged."""
     return [
         p.relative_to(staging).as_posix()
-        for p in pages
-        if "review_needed" in p.read_text(encoding="utf-8")
+        for p in sorted(staging.rglob("*"))
+        if p.is_file()
+        and p.suffix in _REVIEW_SUFFIXES
+        and "review_needed" in p.read_text(encoding="utf-8", errors="replace")
     ]
 
 
@@ -287,11 +298,10 @@ def promote(
     staging, served_root = Path(staging_dir), Path(served_root)
     by = by or f"human:{getuser()}"
     now = datetime.now(UTC) if at is None else datetime.fromisoformat(at)
-    pages = _staged_pages(staging)
-    refused = _review_needed(staging, pages)
+    refused = _review_needed(staging)
     if refused:  # spec §6/§7: review_needed artifacts are not promotable
         print(
-            "error: staged pages carry status: review_needed — human review required:",
+            "error: staged files carry status: review_needed — human review required:",
             file=sys.stderr,
         )
         for rel in refused:
