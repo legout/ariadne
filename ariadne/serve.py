@@ -105,12 +105,16 @@ _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # the fact grain (upstream finding Datus-ai/Datus-agent#1426: the compiler
 # aggregates at joined-row grain and does NOT prevent this). Shared by every
 # rejection branch of _check_grain_preserving so tests and agents see one text.
+# Rev 6: the guidance names the ADR-0006 resolution rubric by pattern instead of
+# the bare GROUP BY phrasing.
 GRAIN_GUIDANCE = (
     "source violates the grain-preservation invariant: a join fans out the fact "
     "grain (its key is not unique on the joined side), so aggregates over the joined "
-    "rows would double-count. One-to-many relationships must be pre-aggregated to "
-    "the fact grain inside source (GROUP BY), or the definition is rejected; "
-    "nothing staged, nothing executed."
+    "rows would double-count. Resolve the relationship per the ADR-0006 rubric "
+    "(docs/adr/0006-grain-governance-multi-cardinality-joins.md): upstream conditional "
+    "pivot (Pattern 1), child-grain fact model (Pattern 2), or fact weight allocation "
+    "(Pattern 5) — the many side must be pre-aggregated to the fact grain inside "
+    "source before registration; nothing staged, nothing executed."
 )
 
 
@@ -617,9 +621,11 @@ def build_app(facade: Facade):
                 SELECT (joins allowed), expression is an aggregate SQL expression
                 (any business filter belongs in it), and dimensions/time_field are
                 column names of the source. Joins must be grain-preserving: every
-                join key must be unique on the joined side — one-to-many relationships
-                must be pre-aggregated to the fact grain inside source (GROUP BY), or
-                the definition is rejected. Invalid definitions return the compiler
+                join key must be unique on the joined side — resolve one-to-many
+                relationships per the ADR-0006 rubric (upstream conditional pivot,
+                child-grain fact model, or fact weight allocation), i.e. pre-aggregate
+                the many side to the fact grain inside source, or the definition is
+                rejected. Invalid definitions return the compiler
                 errors verbatim; nothing is staged or executed. Success returns rows,
                 the compiled SQL (provenance), governed: false, the echoed definition,
                 and the staging paths of the auto-staged proposal (OSI model under

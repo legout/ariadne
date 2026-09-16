@@ -87,6 +87,16 @@ expression and tag it with the DATUS custom_extensions hint exactly as shown.
 - Mark the primary time dimension with `dimension: {is_time: true}`; groupable \
 text columns carry `dimension: {}`.
 
+Grain rules (ADR-0006 — the validation audit REJECTS models that violate them;
+see docs/adr/0006-grain-governance-multi-cardinality-joins.md):
+- Rule of single declared grain: every model maps to exactly one declared grain; \
+its `primary_key` must be unique over the dataset source.
+- Rule of additive metric ownership: additive measures (SUM/AVG) only on fields \
+native to that grain — never aggregate a parent-side column across a 1:N or N:M join.
+- Rule of cardinality elimination: resolve 1:N and N:M joins before registration — \
+upstream conditional pivot (Pattern 1), child-grain fact model (Pattern 2), or fact \
+weight allocation (Pattern 5).
+
 Reference structure (adapt the content, keep the shape — it already encodes both
 seed-note rules: status exclusion in the metric expressions, pre-2024 EMEA
 currency conversion in the dataset source query):
@@ -336,15 +346,15 @@ def author(
     *,
     staging_dir: str | Path = "staging",
     complete=None,
-    validate_fn=validate,
+    validate_fn=None,
     rounds: int = MAX_ROUNDS,
 ) -> list[Path]:
     """Run the authoring loop; return the staged file paths.
 
     ``complete(messages) -> str`` is the LLM call boundary (default: the
     OpenAI-compatible endpoint); ``validate_fn(staging_dir) -> ValidationResult``
-    is the compile gate (default: real Datus compile).
-    """
+    is the validation gate (default: real Datus compile plus the ADR-0006 §5
+    grain audit over ``db_path`` — spec rev 6 §8.14)."""
     if rounds > MAX_ROUNDS:
         raise ValueError(
             f"rounds={rounds} exceeds the spec §5 hard cap of {MAX_ROUNDS} "
@@ -354,6 +364,8 @@ def author(
     _validate_staging(staging)
     staging.mkdir(parents=True, exist_ok=True)
     complete = complete or _default_complete
+    # Default gate: compile + grain audit over this author run's database (rev 6).
+    gate = validate_fn or (lambda staged: validate(staged, db_path=db_path))
 
     from ariadne.profiler import profile
 
@@ -380,7 +392,7 @@ def author(
             target = _safe_path(staging, rel_path)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
-        result = validate_fn(staging)
+        result = gate(staging)
         if result.ok:
             print(f"author: round {round_no}: validation passed", flush=True)
             return _staged_paths(staging)
