@@ -34,6 +34,7 @@ dependencies = [
     { name = "mcp" },
     { name = "openai" },
     { name = "pyyaml" },
+    { name = "sqlglot" },
 ]
 
 [package.optional-dependencies]
@@ -51,6 +52,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "sqlglot", specifier = ">=25.0" },
 ]
 provides-extras = ["dev"]
 
