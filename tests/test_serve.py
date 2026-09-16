@@ -611,6 +611,54 @@ def test_define_metric_rejects_cross_join_source(facade):
     assert not (adhoc / "cross_metric.yml").exists()
 
 
+def test_define_metric_rejects_on_true_cartesian_source(facade):
+    """§13 grain guard correction: `ON TRUE` has zero equality keys — the old
+    per-key loop never ran, so the cartesian product passed the guard and
+    executed, returning inflated aggregates. Fail closed before compile."""
+    adhoc, before = _adhoc_dir(facade)
+    with pytest.raises(ValueError, match="grain-preservation invariant"):
+        asyncio.run(
+            facade.define_metric(
+                {
+                    "name": "on_true_metric",
+                    "description": "ON TRUE fans out unboundedly",
+                    "source": (
+                        "SELECT o.order_id, l.line_amount "
+                        "FROM orders o JOIN order_lines l ON TRUE"
+                    ),
+                    "expression": "SUM(o.amount)",
+                    "dimensions": [],
+                }
+            )
+        )
+    assert _adhoc_dir(facade)[1] == before  # nothing staged
+    assert not (adhoc / "on_true_metric.yml").exists()
+
+
+def test_define_metric_rejects_non_equality_join_predicate(facade):
+    """§13 grain guard correction: an ON with only a non-equality predicate has
+    no attributable equality key to prove — the guard cannot establish grain
+    preservation, so it fails closed with the grain guidance."""
+    adhoc, before = _adhoc_dir(facade)
+    with pytest.raises(ValueError, match="grain-preservation invariant"):
+        asyncio.run(
+            facade.define_metric(
+                {
+                    "name": "inequality_metric",
+                    "description": "inequality ON fans out without a provable key",
+                    "source": (
+                        "SELECT o.order_id, l.line_amount "
+                        "FROM orders o JOIN order_lines l ON l.order_id > o.order_id"
+                    ),
+                    "expression": "SUM(o.amount)",
+                    "dimensions": [],
+                }
+            )
+        )
+    assert _adhoc_dir(facade)[1] == before  # nothing staged
+    assert not (adhoc / "inequality_metric.yml").exists()
+
+
 def test_define_metric_allows_grain_preserving_join(facade):
     """§13 grain guard upside: the many-to-one direction (orders ⋈ customers on
     the customers primary key) stays legitimate — same shape as the ad-hoc

@@ -59,7 +59,9 @@ from pathlib import Path
 from typing import Any
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-import sqlglot  # ad-hoc source join parsing (grain guard, spec rev 5 §13)
+import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+
+# sqlglot: ad-hoc source join parsing (grain guard, spec rev 5 §13)
 import yaml
 
 # sqlglot exposes its AST node module lazily (sqlglot.exp is a real module but not
@@ -142,7 +144,10 @@ def _check_grain_preserving(con: "duckdb.DuckDBPyConnection", source: str) -> No
     read-only attach. Subquery join targets (pre-aggregated lines) are checked
     the same way as plain tables, which is exactly how a one-to-many gets
     legitimate. Fail-closed on anything it cannot prove: missing ON (cross/comma
-    join), a non-column or unattributable key, or a check that does not bind.
+    join), an ON with no attributable equality key (``ON TRUE``, a pure
+    inequality) or a non-conjunctive predicate (OR'd keys — per-key uniqueness
+    proves nothing about the OR as a whole), a non-column or unattributable
+    key, or a check that does not bind.
 
     Rejection raises ValueError(GRAIN_GUIDANCE): nothing staged, nothing executed.
 
@@ -159,9 +164,14 @@ def _check_grain_preserving(con: "duckdb.DuckDBPyConnection", source: str) -> No
         on = join.args.get("on")
         if on is None:  # CROSS/comma join: unbounded multiplication, no key to prove
             raise ValueError(GRAIN_GUIDANCE)
+        if isinstance(on, (_exp.Or, _exp.Xor, _exp.Not)):  # non-conjunctive: per-key
+            raise ValueError(GRAIN_GUIDANCE)  # uniqueness proves nothing — fail closed
+        eqs = list(on.find_all(_exp.EQ))
+        if not eqs:  # ON TRUE / pure inequality: zero provable keys, fan-out and all
+            raise ValueError(GRAIN_GUIDANCE)
         side = join.this  # the joined table or subquery expression
         qualifier = side.alias_or_name
-        for eq in on.find_all(_exp.EQ):
+        for eq in eqs:
             key = next(
                 (
                     c
@@ -180,7 +190,7 @@ def _check_grain_preserving(con: "duckdb.DuckDBPyConnection", source: str) -> No
                 # nosemgrep — never raw source text: sqlglot re-renders its own parse
                 # tree (multi-statement input cannot reach here — parse_one rejects
                 # it), and the check runs on the read-only attach (spec §6).
-                row = con.execute(check).fetchone()  # read-only attach; no side effects
+                row = con.execute(check).fetchone()  # nosemgrep — read-only attach, no side effects
             except Exception as exc:  # unresolvable standalone — cannot prove, reject
                 raise ValueError(GRAIN_GUIDANCE) from exc
             if row is None or not row[0]:
