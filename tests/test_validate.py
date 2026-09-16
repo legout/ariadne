@@ -301,6 +301,85 @@ def test_aliased_parent_measures_fail_assertion_2(tmp_path):
     assert not any("Assertion 1" in error for error in result.errors)  # line_id IS unique
 
 
+CTE_TRAP_YML = """\
+version: 0.2.0.dev0
+semantic_model:
+  - name: cte_trap
+    description: Fan-out join hidden inside a CTE, outer SELECT reads the CTE
+    datasets:
+      - name: cte_join
+        source: >-
+          WITH joined AS (
+            SELECT o.order_id, o.region AS region, o.amount AS amount,
+                   l.line_id, l.line_amount
+            FROM demo.main.orders o
+            JOIN demo.main.order_lines l ON l.order_id = o.order_id
+          )
+          SELECT order_id, region, amount, line_id, line_amount FROM joined
+        primary_key: [line_id]
+        fields:
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+          - name: region
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: region
+            dimension: {}
+          - name: amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: amount
+          - name: line_amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: line_amount
+    metrics:
+      - name: orders_total
+        description: SUM of the aliased order amount over the CTE-joined rows
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(amount)
+      - name: lines_total
+        description: SUM of the line amounts
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(line_amount)
+"""
+
+
+def test_cte_hidden_fanout_fails_structural_join_check(tmp_path):
+    """Owner decision (mvp-5 round 2, structural guard reuse): a fan-out join
+    hidden inside a CTE used to pass the whole audit — the outer SELECT reads
+    the CTE, so Assertion 2 has no raw parent projection to trace and Assertion 1
+    passes on the child key. The audit now applies the shared structural guard
+    (the facade's join-uniqueness rule) to the authored source, so ANY join in
+    the tree — CTEs included — whose ON key is not unique on the joined side
+    fails the audit naming grain preservation, not just sum divergence."""
+    root = build_trap(tmp_path / "trap")
+    staging = tmp_path / "staging"
+    _write_model(staging, "cte_trap.yml", CTE_TRAP_YML)
+    result = validate(staging, db_path=root / "trap.db")
+    assert not result.ok
+    structural = [error for error in result.errors if "grain-preservation invariant" in error]
+    assert structural, f"expected the structural grain failure, got: {result.errors}"
+    message = structural[0]
+    assert "cte_trap" in message and "cte_join" in message  # offending model + dataset
+    assert "structural join check" in message  # the authoritative path, not a tracer
+    for pattern in ("pivot", "child-grain fact model", "weight allocation"):
+        assert pattern in message  # ADR-0006 rubric remediation carried
+    assert not any("Assertion 1" in error for error in result.errors)  # line_id IS unique
+    assert not any("Assertion 2" in error for error in result.errors)  # tracer bypassed;
+    # the structural guard is what rejects — the sum check never even sees the join
+
+
 def test_non_unique_declared_pk_fails_assertion_1(tmp_path):
     """§8.14(b): a declared primary_key that is not unique over the compiled
     source fails Assertion 1 — with no join in the source, in isolation."""

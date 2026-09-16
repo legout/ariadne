@@ -490,10 +490,25 @@ _BUNDLE_TYPES = {
     "skills": "skill",
 }
 
+# Per-type required frontmatter beyond ``type`` itself (ADR-0007 bundle
+# contract, as documented in the authoring prompt and asserted per type in
+# tests/test_author.py). Fields attached mechanically after validation (metric
+# governed_by/dimensions/grain, computation runtime/attester) carry their own
+# targeted errors below, not this shared list.
+_BUNDLE_REQUIRED_FIELDS = {
+    "table": ("title", "description", "tags", "sources"),
+    "reference": ("title", "description", "tags", "sources"),
+    "policy": ("status", "title", "description", "tags", "sources"),
+    "metric": ("status", "title", "description", "tags", "sources"),
+    "computation": ("status", "title", "description", "tags", "sources"),
+    "skill": ("title", "description", "tags", "sources"),
+}
+
 
 def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list[str]:
     """Contract violations of one staged page (ADR-0007 required frontmatter per
-    type, mirroring the per-type assertions the bundle tests make)."""
+    type: every field the bundle contract documents and the per-type bundle
+    tests assert — an omission anywhere fails the gate with the field named)."""
     rel = page.relative_to(staging).as_posix()
     try:
         meta = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
@@ -504,6 +519,9 @@ def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list
     errors: list[str] = []
     if str(meta.get("type") or "") != expected_type:
         errors.append(f"{rel}: frontmatter type must be '{expected_type}'")
+    for key in _BUNDLE_REQUIRED_FIELDS[expected_type]:
+        if not meta.get(key):
+            errors.append(f"{rel}: {expected_type} page requires '{key}' frontmatter")
     if expected_type == "table":
         grain = meta.get("grain")
         if (
@@ -515,12 +533,8 @@ def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list
                 f"{rel}: table page requires a grain block with primary_key and "
                 "cardinality_enforcement"
             )
-    elif expected_type == "policy":
-        for key in ("status", "sources"):
-            if not meta.get(key):
-                errors.append(f"{rel}: policy page requires '{key}' frontmatter")
     elif expected_type == "metric":
-        for key in ("governed_by", "grain"):  # attached mechanically from the models
+        for key in ("governed_by", "dimensions", "grain"):  # attached mechanically
             if not meta.get(key):
                 errors.append(
                     f"{rel}: metric page lacks governed '{key}' frontmatter (no "
@@ -539,8 +553,6 @@ def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list
         for key in ("governed_by", "runtime", "attester"):
             if not meta.get(key):
                 errors.append(f"{rel}: computation page requires '{key}' frontmatter")
-    elif not meta.get("sources"):  # reference, skill
-        errors.append(f"{rel}: {expected_type} page requires 'sources' frontmatter")
     return errors
 
 

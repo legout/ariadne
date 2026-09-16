@@ -6,18 +6,19 @@ tested in isolation. Real Datus compilation is covered by tests/test_validate.py
 """
 
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
 
-import pytest
+import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne.author import MAX_ROUNDS, author, main  # noqa: E402
+from ariadne.author import MAX_ROUNDS, _bundle_errors, author, main  # noqa: E402
 from ariadne.validate import ValidationResult  # noqa: E402
 
 GOTCHA_1 = "CANCELLED and RETURNED orders are not revenue"
@@ -26,6 +27,9 @@ GOTCHA_2 = "multiply both figures by rate_to_usd"
 OKF_PAGE = f"""---
 type: metric
 status: draft
+title: Gross margin
+description: Gross margin over billable orders.
+tags: [metric, margin]
 sources:
   - orders
   - currency_conversion_rate
@@ -618,3 +622,133 @@ def test_author_stamps_lifecycle_frontmatter_and_never_indexes(tmp_path):
     # bundle bookkeeping belongs to promote.py — the author never writes them
     assert not list(staging.rglob("index.md"))
     assert not list(staging.rglob("log.md"))
+
+
+# --- ADR-0007 bundle gate: every per-type required frontmatter field ----------
+
+# A metric/computation page with the mechanically attached fields already in
+# place (in the real loop _finalize_bundle stamps them before the gate runs).
+GATED_METRIC_PAGE = """---
+type: metric
+status: draft
+title: Gross Margin
+description: Ratio of gross profit to gross revenue over billable orders.
+tags: [metric, margin]
+sources:
+  - id: order-status-billing
+    resource: policies/order-status-billing.md
+    title: Order status billing
+governed_by: semantic_layer orders::gross_margin
+dimensions: [status]
+grain:
+  primary_key: [order_id]
+  cardinality_enforcement: STRICT_1_TO_1
+---
+
+# Gross margin
+"""
+
+GATED_COMPUTATION_PAGE = """---
+type: computation
+status: draft
+title: "sanctioned SQL — orders::gross_margin"
+description: "Sanctioned computation: SQL, runtime, attester."
+tags: [computation]
+governed_by: semantic_layer orders::gross_margin
+runtime: duckdb
+attester: tests/test_evals.py
+sources:
+  - id: model-orders
+    resource: ../../semantic_layer/models/orders.yml
+    title: orders OSI model
+---
+
+# Sanctioned computation
+"""
+
+_COMPLETE_BUNDLE = {
+    "tables": ("orders.md", BUNDLE_TABLE),
+    "references/joins": ("orders--customers.md", BUNDLE_JOIN),
+    "policies": ("order-status-billing.md", BUNDLE_POLICY),
+    "metrics": ("gross_margin.md", GATED_METRIC_PAGE),
+    "computations": ("gross_margin.md", GATED_COMPUTATION_PAGE),
+    "skills": ("run-the-demo.md", BUNDLE_SKILL),
+}
+
+
+def write_complete_bundle(staging: Path) -> None:
+    """A minimal gate-clean bundle: one complete page per ADR-0007 section."""
+    for section, (name, content) in _COMPLETE_BUNDLE.items():
+        page = staging / "context_layer" / section / name
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text(content, encoding="utf-8")
+
+
+_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)\Z", re.DOTALL)
+
+
+def without_frontmatter_field(page: str, key: str) -> str:
+    """The page with one top-level frontmatter field removed (gate test helper)."""
+    match = _FRONTMATTER_RE.match(page)
+    assert match, "fixture page must carry frontmatter"
+    meta = yaml.safe_load(match.group(1))
+    meta.pop(key, None)
+    front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
+    return f"---\n{front}\n---\n\n{match.group(2)}"
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("tables", "title"),
+        ("tables", "description"),
+        ("tables", "tags"),
+        ("tables", "sources"),
+        ("references/joins", "title"),
+        ("references/joins", "description"),
+        ("references/joins", "tags"),
+        ("references/joins", "sources"),
+        ("policies", "status"),
+        ("policies", "title"),
+        ("policies", "description"),
+        ("policies", "tags"),
+        ("policies", "sources"),
+        ("metrics", "status"),
+        ("metrics", "title"),
+        ("metrics", "description"),
+        ("metrics", "tags"),
+        ("metrics", "sources"),
+        ("metrics", "governed_by"),
+        ("metrics", "dimensions"),
+        ("metrics", "grain"),
+        ("computations", "status"),
+        ("computations", "title"),
+        ("computations", "description"),
+        ("computations", "tags"),
+        ("computations", "sources"),
+        ("computations", "governed_by"),
+        ("computations", "runtime"),
+        ("computations", "attester"),
+        ("skills", "title"),
+        ("skills", "description"),
+        ("skills", "tags"),
+        ("skills", "sources"),
+    ],
+)
+def test_bundle_gate_rejects_each_missing_required_field(tmp_path, section, field):
+    """mvp-5 round 2: the bundle gate enforces EVERY per-type required
+    frontmatter field — a bundle missing exactly one required field on one page
+    fails _bundle_errors with the missing field named (round feedback, never
+    silent success)."""
+    staging = tmp_path / "staging"
+    write_complete_bundle(staging)
+    assert _bundle_errors(staging) == []  # the complete bundle passes the gate
+
+    page = next((staging / "context_layer" / section).glob("*.md"))
+    page.write_text(
+        without_frontmatter_field(page.read_text(encoding="utf-8"), field),
+        encoding="utf-8",
+    )
+    errors = _bundle_errors(staging)
+    assert errors, f"missing '{field}' on a {section} page must fail the bundle gate"
+    assert any(f"'{field}'" in error for error in errors), errors

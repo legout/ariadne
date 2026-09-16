@@ -16,9 +16,14 @@ Assertion 1 — the declared ``primary_key`` is unique over the compiled dataset
 source; Assertion 2 — parent aggregate invariance: for dataset sources containing
 JOINs, additive parent-table columns must sum identically over the raw parent table
 and the joined source (fan-out inflation -> fail, remediation names the ADR-0006
-rubric patterns). The audit executes the authored source SQL on a read-only DuckDB
-attach of the SQLite database — the sanctioned staged-authoring path (serve.py's
-``_check_grain_preserving`` is the separate facade-side guard for ad-hoc tool input).
+rubric patterns). mvp-5 round 2 (owner decision: structural guard reuse): the
+audit's AUTHORITATIVE gate is the facade's shared structural guard
+(:func:`ariadne.grain.check_grain_preserving`) applied to every authored dataset
+source — any join ANYWHERE in the tree (CTEs included) whose ON key is not unique
+on the joined side fails the audit; the sum-invariance assertion stays as
+secondary defense in depth (a tracer bypass is no longer a blocker). The audit
+executes the authored source SQL on a read-only DuckDB attach of the SQLite
+database — the sanctioned staged-authoring path.
 Without ``db_path``, validate compiles only.
 
 CLI::
@@ -39,6 +44,8 @@ from pathlib import Path
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
+
+from ariadne.grain import check_grain_preserving
 
 # sqlglot exposes its AST node module lazily (sqlglot.exp is a real module but not
 # statically exported), so resolve it at runtime like serve.py does.
@@ -101,6 +108,27 @@ def _assertion_1(
         f"distinct keys. Apply the ADR-0006 rubric: upstream conditional pivot "
         f"(Pattern 1) or child-grain fact model (Pattern 2). See {_GRAIN_ADR}."
     )
+
+
+def _structural_join_errors(
+    con: duckdb.DuckDBPyConnection, model: str, dataset: str, source: str
+) -> list[str]:
+    """The audit's authoritative structural gate (mvp-5 round 2 owner decision:
+    converge on the facade's join-uniqueness guard — one implementation, shared
+    with serve.py via :mod:`ariadne.grain`): every join anywhere in the source
+    tree (CTEs included) must be grain-preserving — each ON key unique on the
+    joined side; cartesian / ``ON TRUE`` / inequality / OR'd joins fail closed.
+    This closes the Assertion 2 bypass where a fan-out join hides inside a CTE
+    the outer SELECT merely reads: no parent projection is directly traceable,
+    so the sum-invariance tracer sees nothing while the join still fans out."""
+    try:
+        check_grain_preserving(con, source)
+    except ValueError as exc:  # GRAIN_GUIDANCE: names the invariant + ADR-0006 rubric
+        return [
+            f"grain audit failed for model '{model}' dataset '{dataset}' "
+            f"(structural join check, ADR-0006 grain preservation): {exc}"
+        ]
+    return []
 
 
 def _unqualified(expr) -> str:  # _exp.* is a runtime module alias, not a static type
@@ -214,6 +242,7 @@ def _grain_audit(staging_dir: str | Path, db_path: str | Path) -> list[str]:
         # boundary) and DuckDB's ATTACH takes no bind parameters — a formatter.
         con.execute(f"ATTACH '{Path(db_path)}' AS demo (TYPE SQLITE, READ_ONLY)")  # nosemgrep
         for model, dataset, source, pk in datasets:
+            errors.extend(_structural_join_errors(con, model, dataset, source))
             if not pk:  # ADR-0006 rule of single declared grain: a model with no
                 # declared primary_key has no verifiable grain — it must FAIL the
                 # audit, never pass silently (spec rev 6 §8.14).
