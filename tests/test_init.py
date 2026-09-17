@@ -93,6 +93,57 @@ def test_refuses_ariadne_checkout_unless_force(tmp_path):
     assert (target / ".mcp.json").is_file()
 
 
+def test_refuses_ariadne_project_with_quirky_toml_formatting(tmp_path):
+    # Detected by parsing, not substring matching: single quotes, odd whitespace.
+    target = tmp_path / "proj"
+    target.mkdir()
+    (target / "pyproject.toml").write_text(
+        "# a comment\n[project]   \n  name = 'ariadne'  # trailing\n",
+        encoding="utf-8",
+    )
+    assert main([str(target)]) == 1
+    assert not (target / ".mcp.json").exists()
+
+
+def test_non_ariadne_pyproject_scaffolds_normally(tmp_path):
+    target = tmp_path / "proj"
+    target.mkdir()
+    (target / "pyproject.toml").write_text('[project]\nname = "other"\n', encoding="utf-8")
+    assert main([str(target)]) == 0
+    assert (target / ".mcp.json").is_file()
+
+
+def test_refuses_unparsable_pyproject_unless_force(tmp_path, capsys):
+    target = tmp_path / "proj"
+    target.mkdir()
+    (target / "pyproject.toml").write_text("[project\nname = ", encoding="utf-8")
+    assert main([str(target)]) == 1  # ambiguous project: refuse
+    assert "not valid TOML" in capsys.readouterr().err
+    assert not (target / ".mcp.json").exists()
+    assert main([str(target), "--force"]) == 0  # explicit override scaffolds
+
+
+def test_refuses_symlinked_data_dir(tmp_path):
+    # data -> outside TARGET: scaffold must refuse, never write through the link.
+    target = tmp_path / "proj"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target.mkdir()
+    (target / "data").symlink_to(outside, target_is_directory=True)
+    assert main([str(target)]) == 1
+    assert not (outside / "seed_notes.md").exists()  # nothing landed outside TARGET
+    assert not (target / ".env.example").exists()  # and nothing was scaffolded at all
+
+
+def test_refuses_dangling_env_example_symlink(tmp_path):
+    # Dangling link: exists() is False, so the old code would write through it.
+    target = tmp_path / "proj"
+    target.mkdir()
+    (target / ".env.example").symlink_to(tmp_path / "nope.txt")
+    assert main([str(target)]) == 1
+    assert not (tmp_path / "nope.txt").exists()
+
+
 def test_console_scripts_registered():
     scripts = {ep.name: ep for ep in entry_points(group="console_scripts")}
     for name in CONSOLE_SCRIPTS:

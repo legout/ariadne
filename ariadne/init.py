@@ -6,7 +6,10 @@ and an empty ``data/``. It never creates OUTPUTS: the served bundle
 
 Idempotent: an existing file is reported and skipped, never overwritten. A
 directory that already holds an ariadne ``pyproject.toml`` (i.e. this repo) is
-refused unless ``--force``.
+refused unless ``--force``; so is an unparsable ``pyproject.toml`` (ambiguous
+project). Fail closed on symlinks: if any scaffold path under TARGET — or a
+parent of it — is a symlink (e.g. ``data`` linked outside TARGET, or a dangling
+``.env.example``), nothing is written through the link.
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tomllib
 from pathlib import Path
 
 # Same lines the ariadne repo itself ignores: generated DBs, served layers,
@@ -101,26 +105,33 @@ def main(argv: list[str] | None = None) -> int:
 
     target = Path(args.target)
     pyproject = target / "pyproject.toml"
-    if (
-        not args.force
-        and pyproject.is_file()
-        and 'name = "ariadne"' in pyproject.read_text(encoding="utf-8", errors="replace")
-    ):
-        print(
-            f"error: {target} already holds an ariadne project ({pyproject}); "
-            "refusing to scaffold over it (use --force to override)",
-            file=sys.stderr,
-        )
-        return 1
+    if not args.force and pyproject.is_file():
+        refusal = _project_conflict(pyproject)
+        if refusal is not None:
+            print(refusal, file=sys.stderr)
+            return 1
 
-    target.mkdir(parents=True, exist_ok=True)
-    (target / "data").mkdir(exist_ok=True)  # empty: the author builds the DB here
     files = [
         ("data/seed_notes.md", SEED_NOTES),
         (".env.example", ENV_EXAMPLE),
         (".mcp.json", json.dumps(MCP_JSON, indent=2) + "\n"),
         (".gitignore", GITIGNORE),
     ]
+
+    # Fail closed: refuse before any write if a scaffold path, or a parent of it
+    # under TARGET, is a symlink (even dangling) — never write through a link.
+    for rel in ("data", *(rel for rel, _ in files)):
+        offender = _symlink_under(target, rel)
+        if offender is not None:
+            print(
+                f"error: refusing to scaffold through a symlink: {offender} is a "
+                f"symlink under {target}; remove it and re-run",
+                file=sys.stderr,
+            )
+            return 1
+
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "data").mkdir(exist_ok=True)  # empty: the author builds the DB here
     created = skipped = 0
     for rel, content in files:
         path = target / rel
@@ -137,6 +148,40 @@ def main(argv: list[str] | None = None) -> int:
         "then ariadne-author --db data/YOURDB.db --notes data/seed_notes.md"
     )
     return 0
+
+
+def _project_conflict(pyproject: Path) -> str | None:
+    """Refusal message for an existing ``pyproject.toml``, or None if safe."""
+    try:
+        with pyproject.open("rb") as fh:
+            manifest = tomllib.load(fh)
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return (
+            f"error: {pyproject} is not valid TOML; refusing to scaffold an "
+            "ambiguous project (fix or remove the file, or use --force to override)"
+        )
+    project = manifest.get("project")
+    name = project.get("name") if isinstance(project, dict) else None
+    if name == "ariadne":
+        return (
+            f"error: {pyproject.parent} already holds an ariadne project ({pyproject}); "
+            "refusing to scaffold over it (use --force to override)"
+        )
+    return None
+
+
+def _symlink_under(target: Path, rel: str) -> str | None:
+    """First symlinked component of ``target/rel`` (from TARGET down), or None.
+
+    ``Path.is_symlink`` (lstat-based) also catches dangling links, which plain
+    ``exists()`` misses.
+    """
+    path = target
+    for part in Path(rel).parts:
+        path = path / part
+        if path.is_symlink():
+            return str(path)
+    return None
 
 
 if __name__ == "__main__":
