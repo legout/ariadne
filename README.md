@@ -49,9 +49,10 @@ scripts/demo.sh          # pauses for human promotion instead
 - `list_metrics()` — governed metrics with descriptions + available dimensions + routing hint
 - `list_datasets()` — every table in the attached database (the agent's map of queryable data)
 - `search_context(query)` — ranked matches over the served OKF bundle and draft proposals
-- `get_metric(name, dimensions, range)` — governed rows + compiled SQL (`governed: true`)
+- `get_metric(name, dimensions, range)` — governed rows + compiled SQL (`governed: true`);
+  served models run the same compile/bind/grain gauntlet as the ad-hoc path
 - `define_metric(definition)` — the ad-hoc path: agent-drafted metric → grain-preservation
-  check → Datus compile → read-only execution → `governed: false` + auto-staged proposal
+  check → renderer compile → read-only execution → `governed: false` + auto-staged proposal
 
 The repo ships a `.mcp.json` — pi (via `pi-mcp-adapter`) and any MCP-capable agent connect
 to the facade directly; restart the agent after config changes.
@@ -60,7 +61,7 @@ to the facade directly; restart the agent after config changes.
 
 - `python -m ariadne.author --db data/demo.db --notes data/seed_notes.md` — the ≤3-round
   author/validate loop; writes only under `staging/`
-- `python -m ariadne.validate staging --db data/demo.db` — Datus compile + grain audit
+- `python -m ariadne.validate staging --db data/demo.db` — `render()` compile gate + grain audit
   (declared-grain uniqueness, parent aggregate invariance, join-uniqueness guard incl. CTEs)
 - `python scripts/promote.py` — human promotion gate: merges staged → served (never wipes),
   appends `verified`, regenerates all `index.md`, appends `log.md`; idempotent
@@ -70,7 +71,7 @@ to the facade directly; restart the agent after config changes.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest     # green incl. one strict-xfail upstream sentinel
+.venv/bin/python -m pytest     # green incl. the joined-row-grain renderer-behavior test (ADR-0008)
 .venv/bin/python -m ruff check .
 ```
 

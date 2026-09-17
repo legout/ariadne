@@ -328,6 +328,46 @@ PREAGG_SOURCE = (
     "(SELECT order_id, SUM(line_amount) AS line_total FROM order_lines GROUP BY order_id) l "
     "ON l.order_id = o.order_id"
 )
+# The many-to-one SERVED model: lines joined to orders on the orders PK — the
+# sanctioned direction (join key unique on the joined side), the governed-path
+# counterpart of PREAGG_SOURCE (same trap.db, both directions on one fixture).
+LINES_MODEL = """\
+version: 0.2.0.dev0
+semantic_model:
+  - name: lines_many_to_one
+    description: Lines joined many-to-one to orders (sanctioned direction)
+    datasets:
+      - name: lines_join
+        source: >-
+          SELECT l.line_id, o.region, l.line_amount
+          FROM demo.main.order_lines l
+          JOIN demo.main.orders o ON o.order_id = l.order_id
+        primary_key: [line_id]
+        fields:
+          - name: line_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: line_id
+          - name: region
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: region
+            dimension: {}
+          - name: line_amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: line_amount
+    metrics:
+      - name: sanctioned_lines_total
+        description: SUM of line amounts over the many-to-one join
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(line_amount)
+"""
 
 
 @pytest.fixture()
@@ -440,3 +480,34 @@ def test_renderer_aggregates_at_joined_row_grain_and_guard_rejects_fanout(tmp_pa
             )
         )
     _assert_staging_clean(trap_facade)
+
+
+def test_get_metric_rejects_served_model_with_fanned_source(trap_facade):
+    """Correction-pass reachability (the reviewer's exact path): the governed
+    get_metric gauntlet — render -> single-statement guard -> EXPLAIN bind-check
+    -> grain guard — rejects a SERVED model whose dataset source bakes in the
+    fan-out (trap.yml, orders ⋈ order_lines) with the grain guidance. The
+    inflated joined-row total (NA 700) is unservable through the facade, not
+    just through define_metric."""
+    with pytest.raises(ValueError, match="grain-preservation invariant"):
+        asyncio.run(trap_facade.get_metric("orders_total", ["region"]))
+
+
+def test_get_metric_answers_served_model_with_many_to_one_source(tmp_path):
+    """The governed gauntlet's upside: a served model whose source joins
+    many-to-one (order_lines ⋈ orders on the orders PK — unique on the joined
+    side) still answers through get_metric: the deduplicated line totals
+    NA 300 / EMEA 400, with provenance SQL and governed: true."""
+    served = build_trap(tmp_path)
+    (served / "semantic" / "models" / "lines.yml").write_text(LINES_MODEL, encoding="utf-8")
+    facade = Facade(
+        served / "semantic",
+        served / "context",
+        served / "trap.db",
+        staging_dir=served / "staging",
+    )
+    result = asyncio.run(facade.get_metric("sanctioned_lines_total", ["region"]))
+    assert result["governed"] is True
+    assert result["sql"].strip().upper().startswith("SELECT")
+    actual = {row["region"]: row["sanctioned_lines_total"] for row in result["rows"]}
+    assert actual == pytest.approx({"NA": 300.0, "EMEA": 400.0})

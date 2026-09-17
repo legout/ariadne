@@ -184,6 +184,11 @@ class Facade:
         # Bare table names in agent-authored ad-hoc sources resolve against the attach.
         self.con.execute("USE demo.main")
         self.staging_dir = Path(staging_dir)
+        # Governed-path grain-guard memo: the served envelopes are loaded once here
+        # and never re-read, so one passing check per metric holds for the facade's
+        # lifetime (ponytail: one COUNT scan per join key, paid once per process;
+        # re-key by model file mtime if served models ever hot-reload).
+        self._grain_checked: set[str] = set()
 
     async def list_metrics(self) -> list[dict | str]:
         """Governed metrics with descriptions and available dimensions; the list
@@ -228,7 +233,27 @@ class Facade:
         # by the compile step. The statement guard is defense in depth on this
         # governed path too.
         sql = render(self._metrics[name]["model"], dimensions or [], range or {}, metric=name)
+        # Choke point shared with the EXPLAIN bind-check below (spec §6): exactly
+        # one statement at parse level before any duckdb call.
         assert_single_statement(sql)
+        # Same gauntlet as the ad-hoc path (spec §8.9): the renderer compiles
+        # structurally, so a column missing from the source only surfaces at bind
+        # time. EXPLAIN binds the plan without executing it — while still only
+        # ever feeding compiler output to duckdb.
+        try:
+            self.con.execute(f"EXPLAIN {sql}")  # nosemgrep — sql is render() output (spec §6)
+        except Exception as exc:  # spec §7: the binder's text, verbatim (§8.9 holds:
+            # the guard above guarantees nothing executed before this check).
+            raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+        # Grain guard on the model's dataset source (spec rev 5 §13): a fan-out
+        # baked into a served model would aggregate at joined-row grain
+        # (Datus-ai/Datus-agent#1426) — identical rejection contract to
+        # define_metric. Memoized per metric (see __init__).
+        if name not in self._grain_checked:
+            (dataset,) = self._metrics[name]["model"]["semantic_model"][0].get("datasets") or []
+            check_grain_preserving(self.con, dataset["source"])
+            self._grain_checked.add(name)
+        # sql is the render compile step's output and nothing else (spec §6).
         relation = self.con.sql(sql)
         columns = list(relation.columns)
         rows = [dict(zip(columns, row)) for row in relation.fetchall()]
