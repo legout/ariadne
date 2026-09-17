@@ -211,3 +211,16 @@ Disposable probe (never committed): `/tmp/datus-spike/{venv,venv-min,probe}` —
 `probe/seed_sqlite.py` (deterministic seed), `probe/models/orders.yml` (adapted OSI-core model), `probe/probe.py` (steps: seed+attach → adapter → validate → dry-run SQL → execute on attached connection → fixture asserts → range query → determinism assert). Final run: `PROBE OK` in both venvs; full logs `probe/probe_run.log`, `probe/probe_run_min.log`. The compiled SQL, results, and warnings above are quoted from those logs verbatim.
 
 **Gate outcome:** #4 (author + validate) and #5 (MCP facade) may build on `datus-semantic-osi` per §5. Escape hatch (Cube, research §9/§11) not triggered.
+
+## 8. Correction (2026-09-17, spec rev 7 / ADR-0008)
+
+**Mechanism superseded.** The §5 gate outcome above (build #4/#5 on
+`datus-semantic-osi`) held only until the AGPL exit: the datus compile path was
+replaced by our own sqlglot compiler, `ariadne/render.py` (ADR-0008, spec rev 7).
+§6 fact 6 survives in-repo — the DATUS custom_extensions hint is strictly
+validated (`{metric_kind, inputs}` keys; a stray key fails the compile) by the
+new renderer, pinning the contract the broken-model tests rely on. Everything
+else in this document is mechanism history: the envelope shape (§3.1), the
+lowering gotchas (§6, incl. qualifier-stripping, which `render()` reproduces),
+and the AGPL note in fact 9 (now moot — the runtime no longer imports any datus
+package).
