@@ -1,6 +1,7 @@
 """Project scaffolder (``ariadne-init [TARGET_DIR]``): writes the INPUT files a
 fresh ariadne project needs — seed notes, .env.example, .mcp.json, .gitignore,
-and an empty ``data/``. It never creates OUTPUTS: the served bundle
+and an empty ``data/`` (with ``data/docs/`` for source documents destined for
+``ariadne-ingest``, ADR-0009). It never creates OUTPUTS: the served bundle
 (``context_layer/``, ``semantic_layer/``) arrives only via ``ariadne-author`` +
 ``ariadne-promote`` (spec §6: served artifacts are promoted, never pre-seeded).
 
@@ -120,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Fail closed: refuse before any write if a scaffold path, or a parent of it
     # under TARGET, is a symlink (even dangling) — never write through a link.
-    for rel in ("data", *(rel for rel, _ in files)):
+    for rel in ("data", "data/docs", *(rel for rel, _ in files)):
         offender = _symlink_under(target, rel)
         if offender is not None:
             print(
@@ -132,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
 
     target.mkdir(parents=True, exist_ok=True)
     (target / "data").mkdir(exist_ok=True)  # empty: the author builds the DB here
+    (target / "data" / "docs").mkdir(parents=True, exist_ok=True)  # ingest inputs (ADR-0009)
     created = skipped = 0
     for rel, content in files:
         path = target / rel
@@ -145,7 +147,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"ariadne project ready in {target}: {created} file(s) created, "
         f"{skipped} skipped — next: cp .env.example .env, add credentials, "
-        "then ariadne-author --db data/YOURDB.db --notes data/seed_notes.md"
+        "then ariadne-author --db data/YOURDB.db --notes data/seed_notes.md "
+        "(source documents for ariadne-ingest go in data/docs/)"
     )
     return 0
 
