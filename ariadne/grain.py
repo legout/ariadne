@@ -34,7 +34,7 @@ GRAIN_GUIDANCE = (
     "source violates the grain-preservation invariant: a join fans out the fact "
     "grain (its key is not unique on the joined side), so aggregates over the joined "
     "rows would double-count. Resolve the relationship per the ADR-0006 rubric "
-    "(docs/adr/0006-grain-governance-multi-cardinality-joins.md): upstream conditional "
+    "(project/adr/0006-grain-governance-multi-cardinality-joins.md): upstream conditional "
     "pivot (Pattern 1), child-grain fact model (Pattern 2), or fact weight allocation "
     "(Pattern 5) — the many side must be pre-aggregated to the fact grain inside "
     "source before registration; nothing staged, nothing executed."

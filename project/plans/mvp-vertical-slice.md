@@ -3,7 +3,7 @@
 | | |
 | :--- | :--- |
 | **Goal** | Prove the authoring loop: profile → synthesize OKF+OSI → deterministic validate → human promote → governed MCP query |
-| **Source** | [docs/specs/mvp-vertical-slice.md](../specs/mvp-vertical-slice.md) — approved by owner 2026-09-14, **revision 2** (grill-with-docs amendments) |
+| **Source** | [project/specs/mvp-vertical-slice.md](../specs/mvp-vertical-slice.md) — approved by owner 2026-09-14, **revision 2** (grill-with-docs amendments) |
 | **Capture checkpoint** | Recorded: `CONTEXT.md`; ADR 0001–0004; open uncertainty: Datus install/call mechanics → #1 |
 | **Constraints** | Spec §2 non-goals; invariants §6: author writes only to `staging/`, `get_metric` never takes raw SQL, served artifacts only via promotion |
 | **Runtime assumptions** | Python 3.11+, venv; deps: `duckdb`, `openai`, `pyyaml`, MCP SDK, Datus (form per #1); `pytest`; `OPENAI_API_KEY` |

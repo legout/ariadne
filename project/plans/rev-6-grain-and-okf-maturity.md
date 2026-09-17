@@ -3,7 +3,7 @@
 | | |
 | :--- | :--- |
 | **Goal** | Grain audit in the validation loop (ADR-0006 §5) and the OKF v0.2 bundle structure with agent-authored generation (ADR-0007) |
-| **Source** | [docs/specs/mvp-vertical-slice.md](../specs/mvp-vertical-slice.md) — approved by owner 2026-09-15, **revision 6** (§6 grain-audit invariant, §8.14–8.17) |
+| **Source** | [project/specs/mvp-vertical-slice.md](../specs/mvp-vertical-slice.md) — approved by owner 2026-09-15, **revision 6** (§6 grain-audit invariant, §8.14–8.17) |
 | **Capture checkpoint** | ADR-0007; CONTEXT.md + Bundle, Grain, Policy, Attested Computation; contract v1; provenance: legout/skills via npx skills, per-skill hashes in skills-lock.json |
 | **Constraints** | Spec §2 non-goals; invariants §6 (incl. merge-only promotion, no wipe); lanes serial — both touch `author.py` |
 | **Runtime** | Python 3.12 (uv venv), existing deps + sqlglot |

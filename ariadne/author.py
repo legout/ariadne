@@ -94,7 +94,7 @@ bundle: every folder below PLUS the semantic models.
   `sources`. Body: the join keys, the cardinality FROM THE PROFILER EVIDENCE
   (many-to-one from the fact side because the joined key is a proven-unique
   primary key; cite match_ratio and distinct counts), and a grain-safety note
-  per ADR-0006 (docs/adr/0006-grain-governance-multi-cardinality-joins.md):
+  per ADR-0006 (project/adr/0006-grain-governance-multi-cardinality-joins.md):
   the join is grain-preserving only because the joined side is unique — a 1:N
   join would fan out the parent grain and must never be registered.
 - `context_layer/policies/<slug>.md` — the human-owned business rules extracted
@@ -138,7 +138,7 @@ expression and tag it with the DATUS custom_extensions hint exactly as shown.
 text columns carry `dimension: {}`.
 
 Grain rules (ADR-0006 — the validation audit REJECTS models that violate them;
-see docs/adr/0006-grain-governance-multi-cardinality-joins.md):
+see project/adr/0006-grain-governance-multi-cardinality-joins.md):
 - Rule of single declared grain: every model maps to exactly one declared grain; \
 its `primary_key` must be unique over the dataset source.
 - Rule of additive metric ownership: additive measures (SUM/AVG) only on fields \

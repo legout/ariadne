@@ -4,13 +4,13 @@
 
 | | |
 | :--- | :--- |
-| **Type** | Research — design study (evidence per `docs/agents/artifacts.md`) |
+| **Type** | Research — design study (evidence per `project/agents/artifacts.md`) |
 | **Status** | Proposed — owner-reviewed brainstorming findings |
 | **Date** | 2026-09-14 |
 | **Question** | How should autonomous AI agents query heterogeneous storage (Delta Lake, Iceberg, DuckDB, SQLite) with governed metrics — beyond raw text-to-SQL? |
 | **Contract** | planning-contract v1; skill provenance: `legout/skills` via `npx skills` (per-skill hashes in `skills-lock.json`; catalog revision unknown) |
 
-> **Approval boundary:** This note is evidence, even where the owner accepts its findings. Acceptance is not authorization to build. Behavioral contracts with acceptance criteria belong in `docs/specs/` (shaped by `shape-design`); consequential approved choices belong in `docs/adr/`. No specification or ADR currently owns or links this study.
+> **Approval boundary:** This note is evidence, even where the owner accepts its findings. Acceptance is not authorization to build. Behavioral contracts with acceptance criteria belong in `project/specs/` (shaped by `shape-design`); consequential approved choices belong in `project/adr/`. No specification or ADR currently owns or links this study.
 
 > **Engine correction (2026-09-16):** the implemented compile engine is **`datus-semantic-osi` 0.1.7 (Apache-2.0)** plus its vendored **`datus-metricflow` 0.2.8 (AGPL-3.0, transitive runtime dependency)** — **not** the "DOSI Engine". The proprietary `dosi-engine` (Elastic-2.0, binaries-only via `datus-ai/dosi-dist`) was evaluated in the spike and **not adopted** ([datus-spike.md §6.8](datus-spike.md)). All "DOSI (Engine)" mentions below are deprecated shorthand for the `datus-semantic-osi` compile path; read them as such.
 

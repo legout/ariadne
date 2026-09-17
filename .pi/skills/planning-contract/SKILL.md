@@ -11,23 +11,23 @@ Contract version: 1. This is the single canonical contract for classifying plann
 
 | Destination | Owns |
 | --- | --- |
-| `docs/research/` | investigations, design studies, probe reports — evidence |
-| `docs/adr/` | architectural decision records — why |
-| `docs/specs/` | behavioral contracts — what and acceptance |
-| `docs/plans/` | execution maps — how, decomposed |
+| `project/research/` | investigations, design studies, probe reports — evidence |
+| `project/adr/` | architectural decision records — why |
+| `project/specs/` | behavioral contracts — what and acceptance |
+| `project/plans/` | execution maps — how, decomposed |
 | `docs/tickets/` | local work items |
-| `docs/agents/` | workflow configuration, including the protected project mapping |
+| `project/agents/` | workflow configuration, including the protected project mapping |
 | root `CONTEXT.md` | single-context vocabulary; explicit multi-context projects use their owning context glossaries |
 
 Directories are created lazily when real content exists for them. Setup never fabricates empty folders, placeholder glossaries, or fictional decisions.
 
 ## Project mapping
 
-The installer-managed project mapping lives in `docs/agents/artifacts.md`, linked from the project's root agent instructions.
+The installer-managed project mapping lives in `project/agents/artifacts.md`, linked from the project's root agent instructions.
 
 - The mapping is declarative documentation read by humans and agents. It is never an executable configuration file; nothing interprets it as code or config.
 - Explicit project mappings override these defaults. A conflict between a mapping and established paths requires an owner decision; never resolve it silently.
-- A research document found under `docs/specs/` is evidence of misclassification, not an established rule to copy. Route its content to research and link it from the owning artifact.
+- A research document found under `project/specs/` is evidence of misclassification, not an established rule to copy. Route its content to research and link it from the owning artifact.
 - Directory membership never grants approval. A mixed document is separated into evidence, behavior, and rationale with links; moving or rewriting existing content requires owner approval. No setup rerun moves existing documents, manufactures ADRs, or rewrites user notes automatically.
 
 ## Scoped authority

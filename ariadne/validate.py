@@ -12,7 +12,7 @@ With ``db_path`` (``--db``, passed by the author loop), the rendered SQL also
 passes an EXPLAIN bind-check on a read-only DuckDB attach of the SQLite database
 (a column missing from the source only surfaces at bind time — nothing executes),
 and then the post-compile GRAIN AUDIT
-runs per ADR-0006 §5 (docs/adr/0006-grain-governance-multi-cardinality-joins.md):
+runs per ADR-0006 §5 (project/adr/0006-grain-governance-multi-cardinality-joins.md):
 Assertion 1 — the declared ``primary_key`` is unique over the compiled dataset
 source; Assertion 2 — parent aggregate invariance: for dataset sources containing
 JOINs, additive parent-table columns must sum identically over the raw parent table
@@ -55,7 +55,7 @@ from ariadne.render import (  # pyright: ignore[reportMissingImports] — new-mo
 # statically exported), so resolve it at runtime like serve.py does.
 _exp = getattr(sqlglot, "exp")
 
-_GRAIN_ADR = "docs/adr/0006-grain-governance-multi-cardinality-joins.md"
+_GRAIN_ADR = "project/adr/0006-grain-governance-multi-cardinality-joins.md"
 _ADR_TOLERANCE = 1e-9
 
 

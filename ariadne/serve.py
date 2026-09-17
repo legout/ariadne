@@ -419,7 +419,7 @@ def _normalize_definition(definition: dict) -> dict:
 
 def _expand_adhoc_model(params: dict) -> dict:
     """Expand define_metric params into an ephemeral OSI-core model — the dialect
-    per docs/research/datus-spike.md §3.1 (version 0.2.0.dev0, dialects-expression
+    per project/research/datus-spike.md §3.1 (version 0.2.0.dev0, dialects-expression
     fields, is_time dimension). ``source`` is a table name or SELECT (query
     sources pass through untouched); ``expression`` is the aggregate SQL. The
     definition alone carries any business filter — the facade adds nothing."""

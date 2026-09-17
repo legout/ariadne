@@ -1,7 +1,7 @@
 """Deterministic validation via real Datus compile (ticket #4).
 
 Compiles the spike-doc ``orders.yml`` variant adapted to OSI core per
-docs/research/datus-spike.md §3.1: a valid model must pass (its one
+project/research/datus-spike.md §3.1: a valid model must pass (its one
 authoring-quality lint is severity=warning, a pass-through), and a
 deliberately broken model must fail with the compiler error captured for the
 author loop's feedback. Requires datus-semantic-osi on Python 3.12.

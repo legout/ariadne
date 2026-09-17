@@ -35,7 +35,7 @@ Record the contract version and the available installed provenance, or `unknown`
 
 ## Spike
 
-Present the question and cheapest valid probe in 2–3 sentences, then get approval. Invoke `prototype-question` with the approved question, evidence threshold, constraints, and cleanup expectation. Consume its verdict as design evidence and return to shaping; when the probe report is durable, file it as research evidence under `docs/research/` and link it from the owning design — never `docs/specs/`. Keeping prototype code is a new bounded or architectural request; `shape-design` owns that reclassification.
+Present the question and cheapest valid probe in 2–3 sentences, then get approval. Invoke `prototype-question` with the approved question, evidence threshold, constraints, and cleanup expectation. Consume its verdict as design evidence and return to shaping; when the probe report is durable, file it as research evidence under `project/research/` and link it from the owning design — never `project/specs/`. Keeping prototype code is a new bounded or architectural request; `shape-design` owns that reclassification.
 
 ## Bounded change
 
@@ -46,7 +46,7 @@ Ask only material questions. Present a short design covering behavior, files, er
 1. Propose 2–3 viable approaches with trade-offs; recommend one.
 2. Present the design in reviewable sections: architecture, interfaces, data flow, failures, migration, and testing.
 3. Obtain approval for the complete design.
-4. Write the approved specification to the repository's established location — `docs/specs/` by default, adjusted by the project mapping in `docs/agents/artifacts.md` — marked approved with a reference to the owner's approval and the exact scope and revision approved.
+4. Write the approved specification to the repository's established location — `project/specs/` by default, adjusted by the project mapping in `project/agents/artifacts.md` — marked approved with a reference to the owner's approval and the exact scope and revision approved.
 5. Self-review for placeholders, contradictions, ambiguity, and excess scope.
 6. Ask the user to review the written specification.
 7. After approval, invoke `write-implementation-plan`—not an implementation skill.

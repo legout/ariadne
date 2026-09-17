@@ -35,17 +35,17 @@ If a `CONTEXT-MAP.md` exists at the root, or the project explicitly declares mul
 ├── src/
 │   ├── ordering/
 │   │   ├── CONTEXT.md
-│   │   └── docs/adr/                 ← context-specific decisions
+│   │   └── project/adr/                 ← context-specific decisions
 │   └── billing/
 │       ├── CONTEXT.md
-│       └── docs/adr/
+│       └── project/adr/
 ```
 
-Create files lazily: only when you have something to write. If no `CONTEXT.md` exists, create one when the first term is resolved — for any single-context project, configured or unconfigured. Never create a root `CONTEXT.md` for a configured multi-context project. If no `docs/adr/` exists, create it when the first ADR is needed.
+Create files lazily: only when you have something to write. If no `CONTEXT.md` exists, create one when the first term is resolved — for any single-context project, configured or unconfigured. Never create a root `CONTEXT.md` for a configured multi-context project. If no `project/adr/` exists, create it when the first ADR is needed.
 
 ## Discover context ownership
 
-Before writing a glossary, read `docs/agents/domain.md` when present. Treat its explicit single/multiple-context declaration as configuration, not as a reason to invent names. Then:
+Before writing a glossary, read `project/agents/domain.md` when present. Treat its explicit single/multiple-context declaration as configuration, not as a reason to invent names. Then:
 
 1. If `CONTEXT-MAP.md` exists, read it and follow its real paths.
 2. Inspect the relevant package/context directories and their existing `CONTEXT.md` or glossary files.

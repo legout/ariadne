@@ -124,7 +124,7 @@ build_trap = _load_trap_builder().build
 @contextlib.contextmanager
 def attached_demo(db_path: Path):
     """Fresh duckdb connection with the attach the facade mirrors: the SQLite
-    file read-only as catalog ``demo`` (docs/research/datus-spike.md §4).
+    file read-only as catalog ``demo`` (project/research/datus-spike.md §4).
     db_path is the test's own tmp path; ATTACH takes no bind parameters."""
     con = duckdb.connect()
     try:

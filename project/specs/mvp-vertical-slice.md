@@ -5,7 +5,7 @@
 | **Status** | **Approved** |
 | **Approved by** | Owner, pi session 2026-09-14 — decision rounds (slice / sources / dataset / runtime; authoring / MCP topology / review gate / LLM provider) and complete-design approval |
 | **Scope approved** | Revision 8 (2026-09-17) — document ingestion: standalone proposal-first `ariadne-ingest` (convert → LLM distill → typed OKF proposals → existing promote gate), lumio-wiki-inspired `[documents]` extra (liteparse, markitdown[docx], firecrawl-anydoc), classification into bundle types (ADR-0009). Owner approval 2026-09-17, this session |
-| **Evidence base** | [docs/research/agentic-semantic-layer-architecture.md](../research/agentic-semantic-layer-architecture.md) |
+| **Evidence base** | [project/research/agentic-semantic-layer-architecture.md](../research/agentic-semantic-layer-architecture.md) |
 | **Contract** | planning-contract v1 |
 
 ## 1. Purpose

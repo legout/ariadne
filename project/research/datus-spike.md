@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Type** | Research — probe report (evidence per `docs/agents/artifacts.md`) |
+| **Type** | Research — probe report (evidence per `project/agents/artifacts.md`) |
 | **Status** | Verdict: **PASS — proceed with Datus for #4/#5** |
 | **Date** | 2026-09-14 |
 | **Ticket** | [#1](https://github.com/legout/ariadne/issues) — T0 Datus spike, gate for T3 (#4) / T4 (#5) |

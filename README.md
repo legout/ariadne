@@ -11,9 +11,9 @@ executes it, and **no computation ever bypasses the compile gate** — including
 agent-drafted ad-hoc metrics (`define_metric`), which are grain-checked, executed
 read-only, and auto-staged as promotion candidates.
 
-Spec: [docs/specs/mvp-vertical-slice.md](docs/specs/mvp-vertical-slice.md) · research:
-[docs/research/](docs/research/) (engine evidence in
-[datus-spike.md](docs/research/datus-spike.md)) · decisions: [docs/adr/](docs/adr/).
+Spec: [project/specs/mvp-vertical-slice.md](project/specs/mvp-vertical-slice.md) · research:
+[project/research/](project/research/) (engine evidence in
+[datus-spike.md](project/research/datus-spike.md)) · decisions: [project/adr/](project/adr/).
 
 ## Setup
 
@@ -105,9 +105,9 @@ Compile engine: **our own sqlglot renderer** (`ariadne/render.py`, ADR-0008) ove
 `sqlglot` (MIT) — the runtime is **AGPL-free**: `datus-semantic-osi` and its
 AGPL-3.0 transitive dependency `datus-metricflow` were removed from the
 dependencies (spec rev 7; the datus engine remains documented in
-[datus-spike.md](docs/research/datus-spike.md) as the superseded mechanism and in
-[ADR-0008](docs/adr/0008-own-sqlglot-compiler-agpl-exit.md)). Remaining runtime
+[datus-spike.md](project/research/datus-spike.md) as the superseded mechanism and in
+[ADR-0008](project/adr/0008-own-sqlglot-compiler-agpl-exit.md)). Remaining runtime
 dependencies: `duckdb`, `mcp` (pinned `<2` — 2.x renames the FastMCP tool API),
 `sqlglot`, `openai`, `pyyaml`. The proprietary `dosi-engine` (Elastic-2.0) was
 evaluated and **not** adopted — see the engine correction in the
-[research study](docs/research/agentic-semantic-layer-architecture.md).
+[research study](project/research/agentic-semantic-layer-architecture.md).
