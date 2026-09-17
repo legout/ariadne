@@ -60,7 +60,7 @@ to the facade directly; restart the agent after config changes.
 
 ## Document ingestion (ADR-0009)
 
-`ariadne-ingest docs/ingest-example.md` turns a document into typed OKF proposals without
+`ariadne-ingest project/ingest-example.md` turns a document into typed OKF proposals without
 the authoring loop: convert → LLM distill → per-type contract gate → stage under
 `staging/context_layer/`. Classification follows the bundle taxonomy: `policies/` (owner
 rules, transcribed verbatim), `tables/` (row meaning + declared grain), `references/` and
