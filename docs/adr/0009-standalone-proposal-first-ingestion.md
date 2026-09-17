@@ -1,0 +1,7 @@
+# Standalone proposal-first document ingestion
+
+Status: accepted (owner, 2026-09-17 shape-design round for spec revision 8; inspired by the lumio-wiki Knowledge Base flow).
+
+Documents (notes, PDFs, data dictionaries, office/HTML files) enter the context layer as standalone proposals via `ariadne-ingest`, not as author-loop inputs: convert to Markdown (native md/txt; the `[documents]` extra — liteparse, markitdown[docx], firecrawl-anydoc, the stack researched in lumio-wiki — for PDF/office/HTML), LLM-distill into typed OKF pages classified into the existing bundle taxonomy (unclassifiable content defaults to `references/` with an ingest tag), enforce the per-type frontmatter contract at staging, cite the source document in `sources[]` with digest and path, and stage under `staging/context_layer/` — the existing promote gate remains the only path to served state. Chosen over an author-input channel (documents woven into bundle authoring) because it reuses promote.py and the bundle gate unchanged, gives immediate per-document value without re-authoring, and keeps the author loop's seed-notes input contract stable; the author-input widening remains possible as a later revision.
+
+**Consequences:** the LLM classifier decides page type within the contract — wrong classifications are caught at the per-type gate or by the human at promotion; the `[documents]` extra stays optional so the base install remains lightweight.
