@@ -17,6 +17,13 @@ dependencies = [
     "datus-semantic-osi[metricflow]==0.1.7",  # compile engine (docs/research/datus-spike.md §6.8; python 3.12 only)
 ]
 
+[project.scripts]
+ariadne-author = "ariadne.author:main"
+ariadne-validate = "ariadne.validate:main"
+ariadne-serve = "ariadne.serve:main"
+ariadne-promote = "ariadne.promote:main"
+ariadne-init = "ariadne.init:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",

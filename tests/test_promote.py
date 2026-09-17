@@ -1,22 +1,18 @@
 """Mechanical promotion gate (spec rev 6 §8.16): merge-only promotion bookkeeping.
 
-Exercises scripts/promote.py against fixture staging/served trees: verified
+Exercises ariadne.promote (the logic behind ``ariadne-promote`` / the
+``scripts/promote.py`` shim) against fixture staging/served trees: verified
 append + status flip, index regeneration, log.md entries, idempotency, and the
 merge-never-wipes invariant. The staged pages mirror the real author output
 shape so the frontmatter round-trip is exercised for real.
 """
 
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
-    sys.path.insert(0, str(REPO_ROOT))
-
-from scripts.promote import Change, _index_for, main, promote  # noqa: E402
+from ariadne.promote import Change, _index_for, main, promote
 
 BY = "human:tester"
 AT = "2026-09-16T12:00:00+00:00"
