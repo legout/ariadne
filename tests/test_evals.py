@@ -22,7 +22,9 @@ amount per customer" — through ``define_metric``: governed false, rows checked
 against independent SQL, the proposal staged, staging cleaned up afterwards.
 
 Fan-out disposition (spec rev 5 §13, upstream finding Datus-ai/Datus-agent#1426:
-the compiler aggregates at joined-row grain and does NOT prevent fan-out):
+the datus compiler aggregated at joined-row grain and did NOT prevent fan-out;
+spec rev 7 §8.18: our own sqlglot renderer keeps the joined-row-grain semantics
+BY DESIGN and the facade owns the invariant through the grain guard):
 three tests over the trap fixture (``tests/evals/build_trap_fixture.py``,
 orders 1:N order_lines, deduplicated totals NA 300 / EMEA 400):
 
@@ -32,9 +34,10 @@ orders 1:N order_lines, deduplicated totals NA 300 / EMEA 400):
 2. **Sanctioned shape**: pre-aggregating the many side to the fact grain inside
    source (``GROUP BY order_id``) passes the guard and returns the correct
    deduplicated totals.
-3. **Sentinel**: the original compiler-grain mechanism assertion (the governed
-   path must deduplicate) is kept as a STRICT xfail — an upstream fix would
-   XPASS and fail the suite, forcing this disposition to be revisited.
+3. **Renderer behavior (rev 7, ADR-0008)**: the own sqlglot compiler aggregates
+   at joined-row grain BY DESIGN — executing the rendered trap SQL yields the
+   INFLATED totals (NA 700 / EMEA 400), and the guard is what keeps that number
+   unservable (rejection test 1). Replaces the rev 5 strict xfail sentinel.
 """
 
 import asyncio
@@ -46,11 +49,13 @@ from pathlib import Path
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest  # pyright: ignore[reportMissingImports]
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
+from ariadne.render import render  # noqa: E402  # pyright: ignore[reportMissingImports]
 from ariadne.serve import Facade  # noqa: E402
 from tests.test_seed import run_seed  # noqa: E402
 from tests.test_serve import GOLDEN_OKF, GOLDEN_OSI  # noqa: E402
@@ -395,29 +400,43 @@ def test_define_metric_accepts_preaggregated_one_to_many(trap_facade):
     _assert_staging_clean(trap_facade)
 
 
-@pytest.mark.xfail(
-    strict=True, reason="Datus-ai/Datus-agent#1426 — compiler aggregates at joined-row grain"
-)
-def test_governed_compiler_dedupes_fanout(tmp_path):
-    """§13 sentinel: the original trap assertion against the COMPILER itself.
-    Strict xfail — if upstream ever deduplicates at fact grain, this XPASSes and
-    fails the suite, forcing the guard disposition (spec §13, docs) to be
-    revisited. Today it fails INFLATED: NA 700 (order 1 counted 3x, order 2 2x)."""
+def test_renderer_aggregates_at_joined_row_grain_and_guard_rejects_fanout(tmp_path, trap_facade):
+    """§8.18 renderer-behavior test (replaces the rev 5 strict xfail sentinel).
+    Our own sqlglot compiler (ADR-0008) aggregates at JOINED-ROW grain BY DESIGN:
+    over a fanned dataset source the rendered SQL returns the INFLATED totals
+    (NA 700 / EMEA 400 — order 1 counted 3x, order 2 2x), never the deduplicated
+    NA 300 / EMEA 400. This is the same mechanism upstream Datus exhibited
+    (Datus-ai/Datus-agent#1426), now owned in-repo: the facade's grain guard
+    rejects fanned sources BEFORE compile (spec rev 5 §13 disposition), so the
+    inflated aggregate is unreachable through define_metric — asserted live on
+    the trap facade below."""
     served = build_trap(tmp_path)
-    trap = Facade(
-        served / "semantic",
-        served / "context",
-        served / "trap.db",
-        staging_dir=served / "staging",
+    envelope = yaml.safe_load(
+        (served / "semantic" / "models" / "trap.yml").read_text(encoding="utf-8")
     )
-    orders_total = asyncio.run(trap.get_metric("orders_total", ["region"]))
-    assert orders_total["governed"] is True
-    actual = {row["region"]: row["orders_total"] for row in orders_total["rows"]}
-    assert actual == pytest.approx({"NA": 300.0, "EMEA": 400.0}), (
-        f"FAN-OUT VERDICT: INFLATED — orders_total over the naive join is {actual}"
-    )
-    # The immune sibling: line sums are correct even under the naive join.
-    lines_total = asyncio.run(trap.get_metric("lines_total", ["region"]))
-    assert {row["region"]: row["lines_total"] for row in lines_total["rows"]} == pytest.approx(
-        {"NA": 300.0, "EMEA": 400.0}
-    )
+    sql = render(envelope, ["region"], metric="orders_total")
+    # BY DESIGN: the aggregate runs over the joined rows as-is — no compile-time
+    # deduplication; the grain guard (not the compiler) owns that invariant.
+    assert "SUM(amount)" in sql and "DISTINCT" not in sql.upper()
+    with attached_demo(served / "trap.db") as con:
+        rows = con.sql(sql).fetchall()  # sql is render() compile output (spec §6)
+    assert {region: total for region, total in rows} == pytest.approx(
+        {"NA": 700.0, "EMEA": 400.0}
+    ), "renderer must aggregate at joined-row grain (INFLATED), by design — "
+    "the grain guard keeps it unservable"
+
+    # The same fanned source through the facade: rejected before compile —
+    # nothing staged, nothing compiled, nothing executed.
+    with pytest.raises(ValueError, match="grain-preservation invariant"):
+        asyncio.run(
+            trap_facade.define_metric(
+                {
+                    "name": "orders_total_naive",
+                    "description": "the trap: SUM over the naive join",
+                    "source": FANNED_SOURCE,
+                    "expression": "SUM(amount)",
+                    "dimensions": ["region"],
+                }
+            )
+        )
+    _assert_staging_clean(trap_facade)

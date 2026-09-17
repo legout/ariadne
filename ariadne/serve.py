@@ -7,25 +7,27 @@ Exactly five tools (spec §4):
     search_context(query)              -> ranked matches over context_layer/**/*.md
     get_metric(name, dimensions, range)-> rows PLUS the compiled SQL (provenance), governed: true
     define_metric(definition)          -> the ad-hoc path (spec rev 3): ephemeral OSI model ->
-                                          Datus compile -> read-only execution -> rows + SQL +
+                                          render -> read-only execution -> rows + SQL +
                                           governed: false + auto-staged proposal
 
-Mechanism per docs/research/datus-spike.md §5: Datus compiles the OSI metric to
-SQL (``query_metrics(dry_run=True)`` -> ``metadata["sql"]``) and the
+Mechanism per ADR-0008 (spec rev 7): our own sqlglot compiler
+(:mod:`ariadne.render`) renders the OSI envelope model to SQL and the
 facade-owned DuckDB connection — with the SQLite database attached read-only as
 catalog ``demo`` — executes it. ``range`` is an optional ``{start, end}`` applied
-by the compiler to the metric's primary date dimension.
+by the compiler to the model's primary date dimension (the is_time field).
+``list_metrics``/``list_datasets`` read the envelope metadata and the attach
+directly — no datus anywhere in the runtime.
 
 Ad-hoc (ADR-0005, spec §6): ``define_metric`` params are expanded into an
-ephemeral OSI-core model (dialect per docs/research/datus-spike.md §3.1),
-compiled by a dedicated DatusOSIAdapter over a temp directory (discarded after
-each call — the served semantic dir is never touched). Compile failure returns
-the compiler errors verbatim; nothing is staged, nothing executed. On success
-the compiled SQL is executed read-only and the definition is auto-staged as a
-proposal: the OSI model under ``staging/semantic_layer/models/adhoc/`` plus a
-minimal OKF draft under ``staging/context_layer/metrics/`` so ``search_context``
-can discover it (numeric suffix on name collision, never overwrite); promotion
-stays human (ADR-0003).
+ephemeral OSI-core model (version 0.2.0.dev0 shape, dialects-expression fields,
+is_time dimension), rendered by :mod:`ariadne.render` (no files touched — the
+served semantic dir is never written). Compile failure returns the compiler's
+error verbatim; nothing is staged, nothing executed. On success the compiled SQL
+is executed read-only and the definition is auto-staged as a proposal: the OSI
+model under ``staging/semantic_layer/models/adhoc/`` plus a minimal OKF draft
+under ``staging/context_layer/metrics/`` so ``search_context`` can discover it
+(numeric suffix on name collision, never overwrite); promotion stays human
+(ADR-0003).
 
 Routing contract (spec rev 4 §8.12): fresh consuming agents discover the ad-hoc
 path through the facade itself — ``list_metrics`` ends with the routing hint,
@@ -33,13 +35,14 @@ the unknown-metric error names ``list_datasets()`` + ``define_metric``, and the
 tool descriptions carry the same language (the MCP registry is the agent's map).
 
 No-unvalidated-execution invariant (spec §6): the DuckDB executor only ever
-receives SQL returned by the Datus compile step — there is no code path from
+receives SQL returned by the render compile step — there is no code path from
 tool arguments to ``duckdb.execute`` that bypasses the compiler.
 
 Invariants and failure behavior (spec §6/§7): ``get_metric`` accepts only named
 governed metrics — never raw SQL; unknown metric -> error listing the available
 metrics and naming the ad-hoc path (``list_datasets()`` + ``define_metric``);
-Datus absent/broken or no served models -> fail fast at startup with an
+unrenderable served models -> fail fast at startup; an environment that
+actively blocks the retired datus packages -> fail fast with the historical
 install hint.
 
 Usage::
@@ -49,11 +52,9 @@ Usage::
 """
 
 import argparse
-import asyncio
 import os
 import re
 import sys
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -66,19 +67,20 @@ import yaml
 # (tests and the tool text import it from this module).
 from ariadne.grain import GRAIN_GUIDANCE, check_grain_preserving  # noqa: F401 — re-export
 
-# Captured when datus is missing so startup can fail fast with a hint (spec §7).
-# The imports live inside the try: a missing datus must not abort the module import
-# itself — the CLI fails fast with INSTALL_HINT instead of a raw ImportError.
-# Tests exercise the branch offline via monkeypatching / blocked imports.
-try:
-    from datus_semantic_osi.adapter import DatusOSIAdapter  # pyright: ignore[reportMissingImports]
-    from datus_semantic_osi.config import DatusOSIConfig  # pyright: ignore[reportMissingImports]
+# (the pyright ignore below: the analyzer may bind `ariadne` to a copy predating
+# this lane's render module — see ADR-0008; runtime and uvx pyright resolve it)
+from ariadne.render import render  # pyright: ignore[reportMissingImports]
 
-    _DATUS_IMPORT_ERROR: ImportError | None = None
-except ImportError as exc:
-    DatusOSIAdapter = None  # type: ignore[assignment, misc]
-    DatusOSIConfig = None  # type: ignore[assignment, misc]
-    _DATUS_IMPORT_ERROR = exc
+# ADR-0008: the compile path is ariadne.render (own sqlglot compiler) — datus is
+# no longer imported at all. The historical spec §7 fail-fast contract stays
+# testable: an environment that ACTIVELY BLOCKS datus (the ``sys.modules[name] =
+# None`` sentinel the offline tests install) still surfaces the original install
+# hint at Facade init, while a plain datus-free install serves through render().
+_DATUS_IMPORT_ERROR: ImportError | None = (
+    ImportError("import of datus_semantic_osi halted; None in sys.modules")
+    if sys.modules.get("datus_semantic_osi", 1) is None
+    else None
+)
 
 INSTALL_HINT = (
     "datus-semantic-osi is required to serve governed metrics "
@@ -120,7 +122,7 @@ def assert_single_statement(sql: str) -> None:
 
 
 class Facade:
-    """Governed + ad-hoc metric facade: Datus compile + facade-owned DuckDB execution."""
+    """Governed + ad-hoc metric facade: render-gate compile + facade-owned DuckDB execution."""
 
     def __init__(
         self,
@@ -131,7 +133,6 @@ class Facade:
     ):
         if _DATUS_IMPORT_ERROR is not None:  # spec §7: fail fast with the hint
             raise RuntimeError(f"{INSTALL_HINT}: {_DATUS_IMPORT_ERROR}")
-        assert DatusOSIAdapter is not None and DatusOSIConfig is not None
 
         self.context_dir = Path(context_dir)
         models = Path(semantic_dir) / "models"
@@ -139,20 +140,39 @@ class Facade:
             raise RuntimeError(
                 f"no semantic models under {models} — promote staging/semantic_layer/ first"
             )
-        self.adapter = DatusOSIAdapter(DatusOSIConfig(semantic_models_path=str(models)))
+        # Envelope metadata read directly (no datus): per metric, its description,
+        # available dimensions (fields carrying a dimension flag — spec rev 4 §8.12)
+        # and the single-entry envelope render() compiles.
+        self._metrics: dict[str, Any] = {}
+        for path in sorted(models.glob("*.yml")):
+            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            for model in doc.get("semantic_model") or []:
+                dimension_names = {
+                    field.get("name")
+                    for dataset in model.get("datasets") or []
+                    for field in dataset.get("fields") or []
+                    if isinstance(field.get("dimension"), dict) and field.get("name")
+                }
+                for metric in model.get("metrics") or []:
+                    name = metric.get("name")
+                    if not isinstance(name, str) or not name:
+                        continue
+                    self._metrics[name] = {
+                        "description": metric.get("description") or "",
+                        "dimensions": sorted(dimension_names),
+                        "model": {"version": doc.get("version"), "semantic_model": [model]},
+                    }
+        if not self._metrics:  # spec §7: nothing servable -> fail fast, not at query time
+            raise RuntimeError(f"no governed metrics found under {models}")
+        seen: list[dict] = []
+        for entry in self._metrics.values():
+            if not any(entry["model"] is candidate for candidate in seen):
+                seen.append(entry["model"])
         try:
-            metrics = asyncio.run(self.adapter.list_metrics())
+            for model in seen:
+                render(model)
         except Exception as exc:
             raise RuntimeError(f"served OSI models under {models} do not compile: {exc}") from exc
-        if not metrics:  # spec §7: nothing servable -> fail fast, not at query time
-            raise RuntimeError(f"no governed metrics found under {models}")
-        self._metrics: dict[str, Any] = {metric.name: metric for metric in metrics}
-        # Spec rev 4 §8.12: per-metric available dimensions for list_metrics.
-        # The models compiled two lines above, so discovery on them is safe.
-        self._dimensions: dict[str, list[str]] = {
-            name: sorted(dim.name for dim in asyncio.run(self.adapter.get_dimensions(name)))
-            for name in self._metrics
-        }
 
         # Spike §6.2: non-DuckDB attaches are connection-local, so the facade
         # attaches once on its long-lived connection; compiled SQL references
@@ -170,11 +190,11 @@ class Facade:
         ends with the explicit routing hint to the ad-hoc path (spec rev 4 §8.12)."""
         entries: list[dict | str] = [
             {
-                "name": metric.name,
-                "description": metric.description or "",
-                "dimensions": self._dimensions.get(metric.name, []),
+                "name": name,
+                "description": meta["description"],
+                "dimensions": meta["dimensions"],
             }
-            for metric in self._metrics.values()
+            for name, meta in self._metrics.items()
         ]
         entries.append(ROUTING_HINT)
         return entries
@@ -203,21 +223,11 @@ class Facade:
             raise ValueError(
                 f"unknown metric {name!r}; available metrics: {available}. {ROUTING_HINT}"
             )
-        time_start = range.get("start") if range else None
-        time_end = range.get("end") if range else None
-        result = await self.adapter.query_metrics(
-            metrics=[name],
-            dimensions=dimensions or [],
-            time_start=time_start,
-            time_end=time_end,
-            dry_run=True,
-        )
-        sql = (result.metadata or {}).get("sql")
-        if not sql:
-            raise RuntimeError(f"Datus returned no compiled SQL for metric {name!r}")
-        # Compiled by Datus from the served OSI models — never tool input (spec §6):
-        # the executor only ever receives SQL returned by the compile step. The
-        # statement guard is defense in depth on this governed path too.
+        # Compiled by our sqlglot renderer (ADR-0008) from the served OSI models —
+        # never tool input (spec §6): the executor only ever receives SQL returned
+        # by the compile step. The statement guard is defense in depth on this
+        # governed path too.
+        sql = render(self._metrics[name]["model"], dimensions or [], range or {}, metric=name)
         assert_single_statement(sql)
         relation = self.con.sql(sql)
         columns = list(relation.columns)
@@ -234,10 +244,11 @@ class Facade:
     async def define_metric(self, definition: dict) -> dict:
         """Ad-hoc path (spec rev 3 §4/§5): draft -> compile gate -> execute -> stage.
 
-        The definition is expanded into an ephemeral OSI model and compiled by
-        Datus; failure returns compiler errors verbatim (nothing staged, nothing
-        executed). On success the compiled SQL is executed read-only and the
-        definition is auto-staged as a proposal (never auto-promoted).
+        The definition is expanded into an ephemeral OSI model and rendered by
+        ariadne.render; failure returns the compiler's error verbatim (nothing
+        staged, nothing executed). On success the compiled SQL is executed
+        read-only and the definition is auto-staged as a proposal (never
+        auto-promoted).
         """
         params = _normalize_definition(definition)
         # Grain guard BEFORE envelope expansion/compile (spec rev 5 §13): a source
@@ -251,16 +262,16 @@ class Facade:
         # above it: exactly one statement, checked at parse level before any
         # duckdb call (a crafted source can otherwise smuggle DDL past EXPLAIN).
         assert_single_statement(sql)
-        # Datus compiles structurally without schema introspection, so a column
-        # missing from the source only surfaces at bind time. EXPLAIN binds the
-        # plan without executing it, keeping §8.9's "no execution" honest for
+        # The renderer compiles structurally without schema introspection, so a
+        # column missing from the source only surfaces at bind time. EXPLAIN binds
+        # the plan without executing it, keeping §8.9's "no execution" honest for
         # that shape — while still only ever feeding compiler output to duckdb.
         try:
-            self.con.execute(f"EXPLAIN {sql}")  # nosemgrep — sql is Datus compile output (spec §6)
+            self.con.execute(f"EXPLAIN {sql}")  # nosemgrep — sql is render() output (spec §6)
         except Exception as exc:  # spec §7: the binder's text, verbatim (§8.9 holds:
             # the guard above guarantees nothing executed before this check).
             raise ValueError(f"{type(exc).__name__}: {exc}") from exc
-        # sql is the Datus compile step's output and nothing else (spec §6): the
+        # sql is the render compile step's output and nothing else (spec §6): the
         # definition reached execution exclusively through the compiler above.
         relation = self.con.sql(sql)
         columns = list(relation.columns)
@@ -289,35 +300,17 @@ class Facade:
         }
 
     async def _compile_adhoc(self, envelope: dict, name: str, dimensions: list[str]) -> str:
-        """Datus compile of the ephemeral model — the only gate between tool args
-        and execution. Returns the compiled SQL; raises ValueError carrying the
-        compiler errors verbatim (spec §7). The ephemeral model lives in a system
-        temp dir that is discarded after the call; the served semantic dir and
-        everything outside it is never written."""
-        with tempfile.TemporaryDirectory(prefix="ariadne-adhoc-") as tmp:
-            try:
-                model = Path(tmp) / "adhoc.yml"
-                model.write_text(yaml.safe_dump(envelope, sort_keys=False), encoding="utf-8")
-                adapter = DatusOSIAdapter(DatusOSIConfig(semantic_models_path=tmp))  # pyright: ignore[reportOptionalCall]
-                validation = await adapter.validate_semantic()
-                errors = [
-                    issue.message
-                    for issue in validation.issues
-                    if getattr(issue, "severity", "error") == "error"
-                ]
-                if errors:
-                    raise ValueError("\n".join(errors))
-                result = await adapter.query_metrics(
-                    metrics=[name], dimensions=dimensions, dry_run=True
-                )
-                sql = (result.metadata or {}).get("sql")
-                if not sql:
-                    raise ValueError("Datus returned no compiled SQL for the ad-hoc definition")
-                return sql
-            except ValueError:
-                raise
-            except Exception as exc:  # lowering/load failure — surface it verbatim
-                raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+        """Render-gate compile (ADR-0008) of the ephemeral model — the only gate
+        between tool args and execution. Returns the compiled SQL; raises
+        ValueError carrying the compiler's verbatim reason (spec §7). No files
+        are touched: the envelope is compiled in memory; the served semantic dir
+        and everything outside staging is never written."""
+        try:
+            return render(envelope, dimensions)
+        except ValueError:
+            raise  # RenderError already carries the verbatim reason (spec §7)
+        except Exception as exc:  # defense in depth — surface it verbatim
+            raise ValueError(f"{type(exc).__name__}: {exc}") from exc
 
     def _stage_atomic(self, directory: Path, stem: str, ext: str, payload: bytes) -> Path:
         """Auto-stage one proposal artifact after successful execution (ADR-0003:
@@ -484,7 +477,9 @@ def _build_adhoc_page(params: dict) -> bytes:
 
 def build_app(facade: Facade):
     """Wire the facade onto an MCP stdio server: exactly five tools (spec §4)."""
-    from mcp.server.fastmcp import FastMCP  # pyright: ignore[reportMissingImports]
+    from mcp.server.fastmcp import (  # pyright: ignore[reportMissingImports, reportAttributeAccessIssue]
+        FastMCP,  # mcp<2 (pinned) exports FastMCP; the 2.x shim renames it
+    )
 
     app: FastMCP = FastMCP("ariadne")
 
