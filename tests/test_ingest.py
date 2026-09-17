@@ -406,6 +406,110 @@ def test_rtf_conversion_via_firecrawl_anydoc(tmp_path):
     assert "Churned ARR" in _convert(doc)
 
 
+# --- (h) staging symlink refusal (init.py component-walk discipline) ---------
+
+
+def test_symlinked_context_layer_refuses_to_stage_anything(tmp_path, monkeypatch):
+    """staging/context_layer -> external dir: an attacker-planted link must
+    receive nothing — staged pages would otherwise bypass the promotion gate."""
+    doc = make_doc(tmp_path)
+    staging = tmp_path / "staging"
+    outside = tmp_path / "context_layer"  # e.g. the served layer
+    outside.mkdir()
+    staging.mkdir()
+    link = staging / "context_layer"
+    link.symlink_to(outside, target_is_directory=True)
+
+    _, staged, errors, _ = run_ingest(
+        tmp_path, doc, [response(page_entry())], monkeypatch
+    )
+
+    assert staged == []  # nothing staged
+    assert not list(outside.iterdir())  # nothing written outside staging
+    (error,) = errors
+    assert "symlink" in error and str(link) in error  # offending path named
+
+
+def test_symlinked_subfolder_component_refuses_too(tmp_path, monkeypatch):
+    """Every component from staging/ down is walked: a link planted deeper
+    (staging/context_layer/policies) is refused just the same."""
+    doc = make_doc(tmp_path)
+    staging = tmp_path / "staging"
+    outside = tmp_path / "outside"
+    (outside / "policies").mkdir(parents=True)
+    (staging / "context_layer").mkdir(parents=True)
+    (staging / "context_layer" / "policies").symlink_to(outside / "policies")
+
+    _, staged, errors, _ = run_ingest(
+        tmp_path, doc, [response(page_entry())], monkeypatch
+    )
+
+    assert staged == []
+    assert not list((outside / "policies").iterdir())
+    assert any("symlink" in error for error in errors)
+
+
+# --- (i) secret scan: LLM output is untrusted ------------------------------
+
+
+def test_secret_token_in_body_rejects_page_naming_class_not_secret(tmp_path, monkeypatch):
+    """A source document's credentials echoed by the LLM must never reach
+    staging: the page is rejected naming the pattern CLASS, the secret value
+    itself appears nowhere in the feedback or errors, and nothing is staged."""
+    doc = make_doc(tmp_path)
+    secret = "sk-" + "a1B2c3D4e5F6g7H8i9J0k1"  # fake token, 24 chars
+    poisoned = page_entry(body=f"# Rotation\n\nuse {secret} in prod\n")
+    staging, staged, errors, calls = run_ingest(
+        tmp_path, doc, [response(poisoned)], monkeypatch  # replayed every round
+    )
+
+    assert len(calls) == 1 + MAX_RETRIES  # every round violates
+    assert staged == [] and not (staging / "context_layer").exists()
+    feedback = calls[1][-1]["content"]
+    assert "api_token" in feedback  # pattern CLASS named
+    assert secret not in feedback and secret not in str(errors)  # value never echoed
+
+
+def test_secret_page_rejected_then_clean_retry_stages(tmp_path, monkeypatch):
+    """The retry loop continues without the secret: a clean round stages."""
+    doc = make_doc(tmp_path)
+    secret = "sk-" + "a1B2c3D4e5F6g7H8i9J0k1"
+    staging, staged, errors, calls = run_ingest(
+        tmp_path, doc, [response(page_entry(body=f"key {secret}")), response(page_entry())],
+        monkeypatch,
+    )
+
+    assert len(calls) == 2  # round 1 rejected, round 2 recovered
+    assert staged and front_of(staged[0])["status"] == "draft"
+    assert not any(secret in page.read_text(encoding="utf-8") for page in staged)
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected_class"),
+    [
+        (
+            page_entry(body="# key\n\n-----BEGIN RSA PRIVATE KEY-----\nMIIEpA...\n"),
+            "private_key",
+        ),
+        (page_entry(body="# aws\n\nid AKIAIOSFODNN7EXAMPLE\n"), "aws_access_key"),
+        # frontmatter values are scanned too: title renders into the YAML block
+        (page_entry(title="the settings password: hunter2"), "credential_assignment"),
+        (
+            page_entry(body="curl -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9'"),
+            "bearer_token",
+        ),
+    ],
+)
+def test_secret_scan_covers_frontmatter_and_every_pattern_class(
+    tmp_path, monkeypatch, entry, expected_class
+):
+    doc = make_doc(tmp_path)
+    _, staged, errors, _ = run_ingest(tmp_path, doc, [response(entry)], monkeypatch)
+
+    assert staged == []
+    assert any(expected_class in error for error in errors)
+
+
 # --- CLI ----------------------------------------------------------------------
 
 

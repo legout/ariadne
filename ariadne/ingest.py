@@ -31,6 +31,12 @@ description, tags and body. Pages are gated with the author's per-type contract
 with at most 2 retry rounds feeding violations back; a document that never
 passes stages nothing.
 
+Two further untrusted-input refusals: staging refuses to write through any
+symlinked component under staging/ (init.py's component-walk discipline — an
+attacker-planted link, e.g. ``staging/context_layer`` -> the served dir,
+receives nothing), and every fully-rendered page is scanned for credential
+patterns before staging, rejected naming the pattern CLASS, never the secret.
+
 Staging writes use the facade's atomic ``O_CREAT|O_EXCL`` claim — name
 collisions suffix ``-2``/``-3``/… instead of overwriting (spec §8.11 discipline).
 
@@ -56,6 +62,7 @@ from typing import Any, cast
 import yaml
 
 from ariadne.author import _default_complete, _page_contract_errors, _validate_staging
+from ariadne.init import _symlink_under
 
 MAX_RETRIES = 2  # ≤2 retry rounds on contract violations (rev 8 brief; author allows 3 total)
 STAGING_SUBDIR = "context_layer"  # the only place ingest ever writes under staging/
@@ -71,6 +78,19 @@ _ALLOWED_FOLDERS = {
 }
 
 _NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")  # slug; no slashes/dots: no path tricks
+
+# Credential classes rejected before staging: LLM output is untrusted, so a
+# secret from the source document must never be echoed into a staged page.
+# Violations name the CLASS only — the matched text is never reproduced.
+# (sk- allows -/_ so real sk-proj-... keys match; assignments are same-line so
+# prose ending in the word "token" cannot false-positive across newlines.)
+_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("private_key", re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")),
+    ("aws_access_key", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("api_token", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}")),
+    ("credential_assignment", re.compile(r"\b(password|secret|token|api_key)[ \t]*[=:][ \t]*\S+")),
+    ("bearer_token", re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{16,}")),
+)
 
 _NATIVE_SUFFIXES = (".md", ".txt")
 
@@ -286,6 +306,35 @@ def _assemble(
     return pages, errors
 
 
+def _symlink_offender(staging: Path, pages: list[tuple]) -> str | None:
+    """First symlinked component of any page's staging path (from staging/
+down to the target file), or None — the same component-walk refusal as
+ariadne.init's scaffolder: an attacker-planted link (e.g.
+``staging/context_layer`` -> the served context_layer/) must never receive
+staged pages directly, bypassing the promotion gate."""
+    for folder, name, _text in pages:
+        offender = _symlink_under(staging, f"{STAGING_SUBDIR}/{folder}/{name}.md")
+        if offender is not None:
+            return offender
+    return None
+
+
+def _secret_violations(pages: list[tuple]) -> list[str]:
+    """Reject pages whose fully-rendered text (frontmatter values + body)
+    matches a credential pattern. The violation names the pattern CLASS,
+    never the secret itself, so the retry loop can continue without it."""
+    violations: list[str] = []
+    for position, (_folder, _name, text) in enumerate(pages):
+        for label, pattern in _SECRET_PATTERNS:
+            if pattern.search(text):
+                violations.append(
+                    f"pages[{position}]: appears to contain a {label} credential — "
+                    "remove it and re-send; secrets are never staged"
+                )
+                break  # one class names the rejection; drop the page
+    return violations
+
+
 def _contract_errors(pages: list[tuple]) -> list[str]:
     """Run the author's per-type gate over assembled pages WITHOUT staging them:
     pages are mirrored into a throwaway tree so a violating round never leaves
@@ -354,8 +403,16 @@ def _ingest_one(
         else:
             pages, violations = _assemble(entries, source, model, now)
             if not violations:
+                violations = _secret_violations(pages)
+            if not violations:
                 violations = _contract_errors(pages)
             if not violations:  # gate-clean: only now does anything touch staging
+                offender = _symlink_offender(staging, pages)
+                if offender is not None:  # refuse BEFORE any write: stage nothing
+                    return [], [
+                        f"{doc.name}: refusing to stage through a symlink: {offender} "
+                        f"is a symlink under {staging}; remove it and re-run"
+                    ]
                 return [
                     _stage_atomic(staging / STAGING_SUBDIR / folder, name, page_text)
                     for folder, name, page_text in pages
