@@ -12,6 +12,8 @@
 
 > **Approval boundary:** This note is evidence, even where the owner accepts its findings. Acceptance is not authorization to build. Behavioral contracts with acceptance criteria belong in `docs/specs/` (shaped by `shape-design`); consequential approved choices belong in `docs/adr/`. No specification or ADR currently owns or links this study.
 
+> **Engine correction (2026-09-16):** the implemented compile engine is **`datus-semantic-osi` 0.1.7 (Apache-2.0)** plus its vendored **`datus-metricflow` 0.2.8 (AGPL-3.0, transitive runtime dependency)** — **not** the "DOSI Engine". The proprietary `dosi-engine` (Elastic-2.0, binaries-only via `datus-ai/dosi-dist`) was evaluated in the spike and **not adopted** ([datus-spike.md §6.8](datus-spike.md)). All "DOSI (Engine)" mentions below are deprecated shorthand for the `datus-semantic-osi` compile path; read them as such.
+
 ---
 
 ## 1. Executive Summary & Core Paradigm
@@ -42,7 +44,7 @@ flowchart TD
 
     subgraph Tier3["3. Semantic Layer (Governed Calculation Engine)"]
         OSI[Apache Ossie: OSI YAML Models<br>• Dimensions & Measures<br>• Join paths & attribution logic]
-        DOSI[DOSI Engine: Rust SQL Compiler<br>• "Fan-out protection" — disproven, see note<br>• Dialect compilation & MCP server]
+        DOSI[DOSI Engine: Rust SQL Compiler<br>• "Fan-out protection" — disproven, see note<br>• Dialect compilation & MCP server<br>(deprecated name — engine is datus-semantic-osi)]
     end
 
     subgraph Tier4["4. Execution & Storage Layer"]
@@ -70,7 +72,7 @@ flowchart TD
 | :--- | :--- | :--- | :--- |
 | **1. Ontology** | *The World Model* | Entity definitions & relations (YAML / OKF Entities) | Establishes the conceptual entities (e.g., `Customer`, `Order`, `Asset`) and how they link across distinct databases. |
 | **2. Context Layer** | *The Business Guide* | **[OKF v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format)** (Markdown + YAML Frontmatter) | Ingests tribal knowledge, caveats, filter conditions, and routes questions to the appropriate semantic models. |
-| **3. Semantic Layer** | *The Calculation Engine* | **[Apache Ossie](https://github.com/open-semantic-interchange/OSI)** + **[DOSI Engine](https://dosi.datus.ai)** | Compiles deterministic, multi-dialect SQL; does not prevent fan-out (correction above) — grain safety is enforced at the Ariadne facade. |
+| **3. Semantic Layer** | *The Calculation Engine* | **[Apache Ossie](https://github.com/open-semantic-interchange/OSI)** + ~~**[DOSI Engine](https://dosi.datus.ai)**~~ → **`datus-semantic-osi`** *(corrected 2026-09-16)* | Compiles deterministic, multi-dialect SQL; does not prevent fan-out (correction above) — grain safety is enforced at the Ariadne facade. |
 | **4. Storage & Execution** | *The Unified Hub* | **DuckDB** + Native Lakehouse Extensions | Mounts Delta, Iceberg, DuckDB, and SQLite into a single in-process SQL execution engine. |
 
 ---
@@ -79,7 +81,7 @@ flowchart TD
 
 * **[Open Knowledge Format (OKF v0.2)](https://github.com/GoogleCloudPlatform/open-knowledge-format)**: Open specification by Google Cloud for storing context, trust tiers, lifecycle states, and domain caveats in version-controlled Markdown.
 * **[Apache Ossie / OSI Specification](https://github.com/open-semantic-interchange/OSI)**: Vendor-neutral, declarative YAML specification for defining datasets, metrics, dimensions, and joins.
-* **[DOSI Engine (Datus)](https://dosi.datus.ai)**: Rust-based compiler and Model Context Protocol (MCP) server that transforms Apache Ossie models into optimized dialect SQL (DuckDB, Snowflake, BigQuery, Postgres).
+* **[DOSI Engine (Datus)](https://dosi.datus.ai)** *(deprecated term — evaluated in the spike, **not adopted**; proprietary, Elastic-2.0)*: Rust-based compiler and Model Context Protocol (MCP) server that transforms Apache Ossie models into optimized dialect SQL (DuckDB, Snowflake, BigQuery, Postgres). The implemented engine is `datus-semantic-osi` (Apache-2.0) + vendored `datus-metricflow` (AGPL-3.0, transitive runtime — see engine correction above).
 * **[Wren AI / Wren MDL](https://github.com/Canner/Wren-Engine)**: AI-native semantic modeling engine designed for LLM text-to-SQL workflows.
 * **[Malloy Language](https://www.malloydata.dev/)**: Embedded semantic data modeling DSL from the original Looker team, with native DuckDB integration.
 * **[Cube](https://cube.dev)**: Mature headless semantic layer (YAML/JS cubes) — primary fallback for the semantic layer (see §9).
@@ -114,7 +116,7 @@ flowchart TD
     end
 
     subgraph 4. Deterministic Validation
-        V1[DOSI Pre-flight Compilation Check]
+        V1[DOSI Pre-flight Compilation Check<br>(deprecated — datus-semantic-osi compile + grain audit)]
         V2[DuckDB Test Metric Execution]
     end
 
@@ -325,7 +327,7 @@ This stack pins three young specifications. Record exact versions in this reposi
 
 * **OKF** — pinned at **v0.2**.
 * **Apache Ossie (OSI)** — incubating; pin to a spec commit/tag.
-* **DOSI Engine** — pin to a released version; startup product.
+* ~~**DOSI Engine** — pin to a released version; startup product~~ *(corrected 2026-09-16)*: actual pins live in `pyproject.toml` — `datus-semantic-osi==0.1.7` (Apache-2.0) with transitive `datus-metricflow 0.2.8` (**AGPL-3.0**; flagged for any public-distribution decision).
 
 Escape hatches per layer: **context layer** → plain Markdown + YAML frontmatter (OKF is a superset; migration is mechanical). **Semantic layer** → Cube or MetricFlow (see §9). **Execution layer** → DuckDB regardless. Rule: layers couple through the file artifacts they produce, never through tool-specific APIs.
 
