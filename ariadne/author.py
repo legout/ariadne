@@ -53,7 +53,10 @@ import yaml
 # ADR-0010: the author loop runs on the shared registry connection when a
 # registry is in play (--sources / ariadne.yaml), else the legacy --db sqlite.
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    build_connection,
     default_registry_path,
+    implicit_registry,
+    load_registry,
 )
 from ariadne.validate import validate
 
@@ -133,8 +136,12 @@ Semantic Layer (OSI YAML):
 - One file per model under `semantic_layer/models/<model_name>.yml`, OSI core \
 schema `version: 0.2.0.dev0`, following EXACTLY the reference structure below \
 (same keys and nesting, expression.dialects blocks, primary_key as a list).
-- Bind datasets to `demo.main.<table>`, or to a SELECT query when a rule needs a
-  join or conversion (as in the reference).
+- Bind datasets to the exact `<source>.<table>` references from the multi-source
+  catalog in the user message (e.g. `demo.main.orders`, `support.tickets`), or to
+  a SELECT query when a rule needs a join or conversion (as in the reference).
+- Model EVERY source the seed notes define metrics over — one model per source,
+  each binding to that source's `<source>.<table>` references and honoring the
+  same grain rules. Sources the seed notes say nothing about need no model.
 - Define BOTH governed metrics: `gross_margin` and `order_count`.
 - Encode exclusion rules as CASE WHEN inside the aggregate expression.
 - A ratio of aggregates is a derived metric: reference base metrics by name in its \
@@ -340,10 +347,37 @@ def _safe_path(staging: Path, rel_path: str) -> Path:
     return target
 
 
-def _user_prompt(profile: dict, notes: str) -> str:
+def _catalog_lines(db_path: str | Path | None, sources_path: str | Path | None) -> str:
+    """Every queryable table as the exact ``<source>.<table>`` reference models
+    must use — read from the shared builder's catalog (ADR-0010), the same
+    surface the validate gate's grain audit runs over."""
+    if sources_path is not None:
+        registry = load_registry(sources_path)
+    elif db_path is not None:
+        registry = implicit_registry(db_path)
+    else:
+        raise ValueError("catalog requires sources_path or db_path")
+    con, catalog = build_connection(registry)
+    try:
+        return "\n".join(
+            f"- {entry['name']} ({entry['type']}): "
+            + ", ".join(
+                f"{table.get('ref') or entry['name']}.{table['name']}"
+                for table in entry["tables"]
+            )
+            for entry in catalog
+        )
+    finally:
+        con.close()
+
+
+def _user_prompt(profile: dict, notes: str, catalog_lines: str) -> str:
     return (
         "Statistical profile of the database (JSON):\n"
         f"{json.dumps(profile)}\n\n"
+        "Multi-source catalog — every queryable table, named exactly as model "
+        "dataset sources must reference them:\n"
+        f"{catalog_lines}\n\n"
         "Seed notes from the data owner (authoritative business rules):\n"
         f"{notes}\n\n"
         "Operational facts for the skill pages (use these commands verbatim):\n"
@@ -670,7 +704,10 @@ def author(
     notes = Path(notes_path).read_text(encoding="utf-8")
     messages: list[dict] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content": _user_prompt(profile_data, notes)},
+        {
+            "role": "user",
+            "content": _user_prompt(profile_data, notes, _catalog_lines(db_path, sources_path)),
+        },
     ]
 
     errors: list[str] = []

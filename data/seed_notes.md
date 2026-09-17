@@ -11,6 +11,10 @@ A synthetic e-commerce transaction extract, 2022-01-01 through 2025-06-30.
 Three regions (`NA`, `EMEA`, `APAC`), 30 customers, 500 orders. Small enough
 to eyeball, messy enough to be honest.
 
+The catalog also carries a second source: `support` — a parquet extract of
+customer support tickets (`support.tickets`, built by
+`scripts/make_parquet_fixture.py`), covering 2024-01-01 through 2025-06-30.
+
 ## Tables
 
 ### `orders` — one row per placed order
@@ -41,6 +45,17 @@ to eyeball, messy enough to be honest.
 | `currency`    | Currency code (`EUR`, `GBP`). |
 | `rate_to_usd` | Multiply a local-currency amount by this to get US dollars. |
 
+### `support.tickets` — one row per support ticket (second source, parquet)
+
+| column             | meaning |
+| :----------------- | :------ |
+| `ticket_id`        | Primary key. |
+| `customer_id`      | References `customers.id` in the `demo` source (same id space). |
+| `status`           | `open` or `closed`. |
+| `severity`         | One of `low`, `medium`, `high`, `critical`. |
+| `created_at`       | When the ticket was opened, ISO-8601 text. |
+| `resolution_hours` | Hours from open to close; NULL while the ticket is `open`. |
+
 ## Rules you must follow (the gotchas)
 
 1. **Cancelled and returned orders are not revenue.** Rows with
@@ -57,6 +72,12 @@ to eyeball, messy enough to be honest.
    USD at cutover, and NA/APAC were always USD — do **not** convert those, or
    you will silently deflate them.
 
+3. **Open tickets have no resolution time.** `support.tickets.resolution_hours`
+   is NULL for every row whose `status` is `open`. Every average-resolution
+   number must exclude open tickets — an AVG over the column already drops
+   NULLs, but say so in the metric's business rule so nobody "fixes" it with a
+   zero fill.
+
 ## Metric definitions
 
 - **Gross margin** by region: over non-cancelled, non-returned orders,
@@ -64,6 +85,13 @@ to eyeball, messy enough to be honest.
   where `*_converted` applies rule 2. This is a ratio of sums, not an average
   of per-row margins.
 - **Order count** by region: count of non-cancelled, non-returned orders.
+- **Customer count**: count of rows in the `customers` master table (not a
+  distinct-customer count over orders), groupable by `country`.
+- **Ticket count** over `support.tickets`: all tickets, groupable by severity
+  (and status if asked).
+- **Average resolution hours** over `support.tickets`: mean of
+  `resolution_hours` over `closed` tickets only (rule 3), groupable by
+  severity.
 
 The reference answers live in `tests/fixtures/expected_metrics.json`; if a
 computed metric disagrees with that fixture, the computation is wrong.

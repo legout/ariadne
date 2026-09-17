@@ -11,6 +11,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
 
@@ -561,6 +562,324 @@ def run_bundle_author(tmp_path: Path):
     staging, paths = run_author(tmp_path, complete, validate_fn)
     assert len(complete_calls) == 1  # the whole bundle passed in one round
     return staging, paths
+
+
+# --- rev 9 Lane B: the author input carries the multi-source catalog ----------
+
+TICKETS_MODEL = """\
+version: 0.2.0.dev0
+semantic_model:
+  - name: tickets
+    description: Support tickets model over the parquet source
+    datasets:
+      - name: tickets
+        source: support.tickets
+        primary_key: [ticket_id]
+        fields:
+          - name: ticket_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ticket_id
+          - name: status
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: status
+            dimension: {}
+          - name: severity
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: severity
+            dimension: {}
+          - name: resolution_hours
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: resolution_hours
+    metrics:
+      - name: ticket_count
+        description: Number of support tickets
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(*)
+      - name: avg_resolution_hours
+        description: Mean resolution hours over closed tickets (open are NULL)
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: AVG(resolution_hours)
+"""
+
+SUPPORT_TABLE_PAGE = """\
+---
+type: table
+status: draft
+title: Support tickets
+description: One row per support ticket (parquet source).
+tags: [table, tickets, support]
+sources:
+  - id: support.tickets
+    resource: data/support_tickets
+    title: Support tickets
+grain:
+  primary_key: [ticket_id]
+  cardinality_enforcement: STRICT_1_TO_1
+---
+
+# Support tickets
+
+One row per ticket; resolution_hours is NULL while status is open.
+"""
+
+SUPPORT_METRIC_PAGE = """\
+---
+type: metric
+status: draft
+title: {title}
+description: {desc}
+tags: [metric, support]
+sources:
+  - id: support.tickets
+    resource: data/support_tickets
+    title: Support tickets
+  - id: open-tickets-no-resolution
+    resource: policies/open-tickets-no-resolution.md
+    title: Open tickets have no resolution time
+---
+
+# {title}
+
+Rule: open tickets have no resolution time.
+"""
+
+OPEN_TICKETS_POLICY = """\
+---
+type: policy
+status: draft
+title: Open tickets have no resolution time
+description: resolution_hours is NULL while a ticket is open.
+tags: [policy, support]
+sources:
+  - id: seed-notes
+    resource: data/seed_notes.md
+    title: Seed notes
+---
+
+# Open tickets have no resolution time
+
+Every average-resolution number excludes open tickets.
+"""
+
+
+MINIMAL_ORDERS_MODEL = """\
+version: 0.2.0.dev0
+semantic_model:
+  - name: orders
+    description: Orders model over the demo sqlite source
+    datasets:
+      - name: orders
+        source: demo.main.orders
+        primary_key: [order_id]
+        fields:
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+          - name: status
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: status
+            dimension: {}
+    metrics:
+      - name: order_count
+        description: Count of billable orders
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN 1 ELSE 0 END)
+"""
+
+
+def make_support_parquet(tmp_path: Path) -> Path:
+    """Miniature support-tickets parquet source, one shard per year (rev 9)."""
+    support_dir = tmp_path / "support_tickets"
+    support_dir.mkdir()
+    con = duckdb.connect()
+    try:
+        con.execute(
+            "CREATE TABLE tickets (ticket_id INTEGER, customer_id INTEGER, "
+            "status TEXT, severity TEXT, created_at TEXT, resolution_hours DOUBLE)"
+        )
+        con.executemany(
+            "INSERT INTO tickets VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (1, 1, "closed", "low", "2024-02-01 09:00:00", 30.0),
+                (2, 2, "open", "high", "2024-03-01 10:00:00", None),
+                (3, 1, "closed", "high", "2025-01-15 11:00:00", 5.0),
+                (4, 3, "closed", "low", "2025-02-15 12:00:00", 48.0),
+            ],
+        )
+        for year, predicate in (
+            ("2024", "created_at < '2025-01-01'"),
+            ("2025", "created_at >= '2025-01-01'"),
+        ):
+            con.execute(
+                f"COPY (SELECT * FROM tickets WHERE {predicate}) "
+                f"TO '{support_dir / f'tickets_{year}.parquet'}' (FORMAT PARQUET)"
+            )
+    finally:
+        con.close()
+    return support_dir
+
+
+def make_registry(tmp_path: Path, db_path: Path, support_dir: Path) -> Path:
+    """Two-source registry: the demo sqlite plus a parquet glob view."""
+    registry = tmp_path / "ariadne.yaml"
+    registry.write_text(
+        yaml.safe_dump(
+            {
+                "sources": [
+                    {"name": "demo", "type": "sqlite", "path": str(db_path)},
+                    {
+                        "name": "support",
+                        "type": "parquet",
+                        "path": str(support_dir / "*.parquet"),
+                        "table": "tickets",
+                    },
+                ]
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return registry
+
+
+def run_multisource_author(tmp_path: Path, response: str, validate_fn=None):
+    """One author run over the sqlite+parquet registry with a mocked LLM."""
+    db = make_demo_db(tmp_path / "demo.db")
+    registry = make_registry(tmp_path, db, make_support_parquet(tmp_path))
+    complete, complete_calls = fake_complete([response])
+    staging = tmp_path / "staging"
+    paths = author(
+        db,
+        make_notes(tmp_path),
+        staging_dir=staging,
+        complete=complete,
+        validate_fn=validate_fn,
+        sources_path=registry,
+    )
+    return staging, paths, complete_calls
+
+
+def test_author_prompt_carries_multisource_catalog(tmp_path):
+    """With a registry, the prompt input lists BOTH sources' catalogs (source
+    names, types, qualified tables) alongside profile and seed notes."""
+    validate_fn, _ = fake_validate([ValidationResult(True, [])])
+    complete_calls = run_multisource_author(
+        tmp_path, bundle_response(), validate_fn=validate_fn
+    )[2]
+
+    system, prompt = complete_calls[0][0]["content"], complete_calls[0][1]["content"]
+    assert "demo (sqlite)" in prompt
+    assert "support (parquet)" in prompt
+    assert "demo.main.orders" in prompt  # sqlite attaches keep the full qualifier
+    assert "support.tickets" in prompt  # the glob view is addressable
+    # the profile itself is the registry shape covering both sources
+    assert '"sources"' in prompt and '"tickets"' in prompt
+    # the binding instruction is catalog-driven, not hardcoded to demo.main
+    assert "<source>.<table>" in system and "demo.main.orders" in system
+    assert "Multi-source catalog" in prompt
+
+
+def test_author_envelope_may_reference_parquet_source(tmp_path):
+    """Envelopes may reference ANY catalog source: a model bound to
+    support.tickets stages exactly like a demo.main one (fake gate)."""
+    # prepend a tickets model to the bundle response (envelope bound to parquet)
+    inject = json.dumps(
+        {"path": "semantic_layer/models/tickets.yml", "content": TICKETS_MODEL}
+    )
+    response = bundle_response().replace('"files": [', '"files": [' + inject + ", ")
+    validate_fn, _ = fake_validate([ValidationResult(True, [])])
+    staging, _, complete_calls = run_multisource_author(
+        tmp_path, response, validate_fn=validate_fn
+    )
+
+    assert len(complete_calls) == 1
+    model = yaml.safe_load(
+        staged(staging)["semantic_layer/models/tickets.yml"].read_text()
+    )
+    assert model["semantic_model"][0]["datasets"][0]["source"] == "support.tickets"
+
+
+def test_author_real_gate_accepts_envelopes_over_both_sources(tmp_path):
+    """The DEFAULT gate (render + EXPLAIN bind + ADR-0006 grain audit) over the
+    registry connection accepts a bundle whose models reference BOTH sources —
+    governed metrics over a parquet glob view clear every deterministic gate."""
+    response = json.dumps(
+        {
+            "files": [
+                {"path": "semantic_layer/models/orders.yml", "content": MINIMAL_ORDERS_MODEL},
+                {"path": "semantic_layer/models/tickets.yml", "content": TICKETS_MODEL},
+                {"path": "context_layer/tables/orders.md", "content": BUNDLE_TABLE},
+                {
+                    "path": "context_layer/tables/tickets.md",
+                    "content": SUPPORT_TABLE_PAGE,
+                },
+                {
+                    "path": "context_layer/references/joins/orders--customers.md",
+                    "content": BUNDLE_JOIN,
+                },
+                {
+                    "path": "context_layer/policies/order-status-billing.md",
+                    "content": BUNDLE_POLICY,
+                },
+                {
+                    "path": "context_layer/policies/open-tickets-no-resolution.md",
+                    "content": OPEN_TICKETS_POLICY,
+                },
+                {
+                    "path": "context_layer/metrics/order_count.md",
+                    "content": SUPPORT_METRIC_PAGE.format(
+                        title="Order count", desc="Billable orders."
+                    ),
+                },
+                {
+                    "path": "context_layer/metrics/ticket_count.md",
+                    "content": SUPPORT_METRIC_PAGE.format(
+                        title="Ticket count", desc="All support tickets."
+                    ),
+                },
+                {
+                    "path": "context_layer/metrics/avg_resolution_hours.md",
+                    "content": SUPPORT_METRIC_PAGE.format(
+                        title="Average resolution hours",
+                        desc="Mean resolution over closed tickets.",
+                    ),
+                },
+                {
+                    "path": "context_layer/skills/run-the-demo.md",
+                    "content": BUNDLE_SKILL,
+                },
+            ]
+        }
+    )
+    staging, paths, complete_calls = run_multisource_author(tmp_path, response)
+
+    assert len(complete_calls) == 1, "the cross-source bundle must clear the gate"
+    files = {path.relative_to(staging).as_posix() for path in paths}
+    assert "semantic_layer/models/tickets.yml" in files
+    # computations are generated for EVERY served metric, both sources included
+    assert "context_layer/computations/ticket_count.md" in files
+    assert "context_layer/computations/avg_resolution_hours.md" in files
+    tickets_front = front_of(staged(staging)["context_layer/metrics/ticket_count.md"])
+    assert tickets_front["governed_by"] == "semantic_layer tickets::ticket_count"
+    assert tickets_front["dimensions"] == ["status", "severity"]  # sorted by serve order
 
 
 def test_author_bundle_required_frontmatter_per_type(tmp_path):

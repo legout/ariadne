@@ -175,6 +175,9 @@ def test_missing_models_dir_is_an_error(tmp_path):
 
 
 def test_cli_exit_codes(tmp_path, capsys, monkeypatch):
+    # tmp cwd: the repo's own ariadne.yaml (which declares sources) must not
+    # hijack these shorthand runs — the CLI's default-registry probe is cwd-based
+    monkeypatch.chdir(tmp_path)
     good = make_staging(tmp_path, ORDERS_YML)
     assert validate_main([str(good)]) == 0
     bad_yml = ORDERS_YML.replace('"metric_kind"', '"v": "1", "metric_kind"')
@@ -418,9 +421,10 @@ def test_without_db_compile_only_unchanged(tmp_path):
     assert result.ok, f"compile-only validate must pass: {result.errors}"
 
 
-def test_cli_db_flag_runs_the_audit(tmp_path, capsys):
+def test_cli_db_flag_runs_the_audit(tmp_path, capsys, monkeypatch):
     """The --db CLI flag wires the audit in: served models + demo.db -> exit 0
     naming the audit; the same audit run is what failed in §8.14(a) via validate()."""
+    monkeypatch.chdir(tmp_path)  # the repo ariadne.yaml must not hijack --db
     db = seed_demo_db(tmp_path / "demo.db")
     staging = tmp_path / "staging"
     _write_model(staging, "orders.yml", GOLDEN_OSI)

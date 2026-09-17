@@ -11,3 +11,4 @@ staging/
 .hermes/
 context_layer/
 semantic_layer/
+data/support_tickets/

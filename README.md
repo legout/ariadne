@@ -95,6 +95,20 @@ committed; a missing variable fails with the variable name in the error). Live-f
 cover sqlite/csv/json/parquet/delta; iceberg/ducklake/postgres/remote paths are covered by
 exact statement-construction tests.
 
+This repo itself runs multi-source: its `ariadne.yaml` declares the demo sqlite shop plus a
+support-tickets parquet extract, and the profiler/author work across BOTH sources:
+
+```bash
+python scripts/seed_db.py data/demo.db            # source 1: demo (sqlite)
+python scripts/make_parquet_fixture.py            # source 2: support (parquet glob -> support.tickets)
+.venv/bin/python -m ariadne.profiler --no-out     # profiles every table of every registered source
+.venv/bin/python -m ariadne.author --sources ariadne.yaml --notes data/seed_notes.md
+```
+
+`scripts/demo.sh` does all of the above end-to-end (seed both sources → author over the
+registry → promote → serve), and the served bundle then carries governed metrics over
+`support.tickets` (ticket counts, average resolution hours) alongside the orders metrics.
+
 ## Document ingestion (ADR-0009)
 
 `ariadne-ingest project/ingest-example.md` turns a document into typed OKF proposals without
