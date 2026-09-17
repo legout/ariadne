@@ -50,6 +50,14 @@ from typing import Any, cast
 
 import yaml
 
+# ADR-0010: the author loop runs on the shared registry connection when a
+# registry is in play (--sources / ariadne.yaml), else the legacy --db sqlite.
+from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    build_connection,
+    default_registry_path,
+    implicit_registry,
+    load_registry,
+)
 from ariadne.validate import validate
 
 ENV_PATH = Path(os.environ.get("ARIADNE_ENV", "/home/volker/coding/ariadne/.env"))
@@ -128,8 +136,12 @@ Semantic Layer (OSI YAML):
 - One file per model under `semantic_layer/models/<model_name>.yml`, OSI core \
 schema `version: 0.2.0.dev0`, following EXACTLY the reference structure below \
 (same keys and nesting, expression.dialects blocks, primary_key as a list).
-- Bind datasets to `demo.main.<table>`, or to a SELECT query when a rule needs a
-  join or conversion (as in the reference).
+- Bind datasets to the exact `<source>.<table>` references from the multi-source
+  catalog in the user message (e.g. `demo.main.orders`, `support.tickets`), or to
+  a SELECT query when a rule needs a join or conversion (as in the reference).
+- Model EVERY source the seed notes define metrics over — one model per source,
+  each binding to that source's `<source>.<table>` references and honoring the
+  same grain rules. Sources the seed notes say nothing about need no model.
 - Define BOTH governed metrics: `gross_margin` and `order_count`.
 - Encode exclusion rules as CASE WHEN inside the aggregate expression.
 - A ratio of aggregates is a derived metric: reference base metrics by name in its \
@@ -335,10 +347,37 @@ def _safe_path(staging: Path, rel_path: str) -> Path:
     return target
 
 
-def _user_prompt(profile: dict, notes: str) -> str:
+def _catalog_lines(db_path: str | Path | None, sources_path: str | Path | None) -> str:
+    """Every queryable table as the exact ``<source>.<table>`` reference models
+    must use — read from the shared builder's catalog (ADR-0010), the same
+    surface the validate gate's grain audit runs over."""
+    if sources_path is not None:
+        registry = load_registry(sources_path)
+    elif db_path is not None:
+        registry = implicit_registry(db_path)
+    else:
+        raise ValueError("catalog requires sources_path or db_path")
+    con, catalog = build_connection(registry)
+    try:
+        return "\n".join(
+            f"- {entry['name']} ({entry['type']}): "
+            + ", ".join(
+                f"{table.get('ref') or entry['name']}.{table['name']}"
+                for table in entry["tables"]
+            )
+            for entry in catalog
+        )
+    finally:
+        con.close()
+
+
+def _user_prompt(profile: dict, notes: str, catalog_lines: str) -> str:
     return (
         "Statistical profile of the database (JSON):\n"
         f"{json.dumps(profile)}\n\n"
+        "Multi-source catalog — every queryable table, named exactly as model "
+        "dataset sources must reference them:\n"
+        f"{catalog_lines}\n\n"
         "Seed notes from the data owner (authoritative business rules):\n"
         f"{notes}\n\n"
         "Operational facts for the skill pages (use these commands verbatim):\n"
@@ -628,20 +667,22 @@ def _staged_paths(staging: Path) -> list[Path]:
 
 
 def author(
-    db_path: str | Path,
+    db_path: str | Path | None,
     notes_path: str | Path,
     *,
     staging_dir: str | Path = "staging",
     complete=None,
     validate_fn=None,
     rounds: int = MAX_ROUNDS,
+    sources_path: str | Path | None = None,
 ) -> list[Path]:
     """Run the authoring loop; return the staged file paths.
 
     ``complete(messages) -> str`` is the LLM call boundary (default: the
     OpenAI-compatible endpoint); ``validate_fn(staging_dir) -> ValidationResult``
-    is the validation gate (default: real Datus compile plus the ADR-0006 §5
-    grain audit over ``db_path`` — spec rev 6 §8.14)."""
+    is the validation gate (default: real compile plus the ADR-0006 §5 grain
+    audit over this author run's connection — spec rev 6 §8.14 — the legacy
+    ``db_path`` sqlite attach, or the ADR-0010 registry via ``sources_path``)."""
     if rounds > MAX_ROUNDS:
         raise ValueError(
             f"rounds={rounds} exceeds the spec §5 hard cap of {MAX_ROUNDS} "
@@ -651,16 +692,22 @@ def author(
     _validate_staging(staging)
     staging.mkdir(parents=True, exist_ok=True)
     complete = complete or _default_complete
-    # Default gate: compile + grain audit over this author run's database (rev 6).
-    gate = validate_fn or (lambda staged: validate(staged, db_path=db_path))
+    # Default gate: compile + grain audit over this author run's database (rev 6);
+    # a registry (ADR-0010) replaces the single-sqlite audit connection.
+    gate = validate_fn or (
+        lambda staged: validate(staged, db_path=db_path, sources_path=sources_path)
+    )
 
     from ariadne.profiler import profile
 
-    profile_data = profile(db_path)
+    profile_data = profile(db_path, sources_path=sources_path)
     notes = Path(notes_path).read_text(encoding="utf-8")
     messages: list[dict] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content": _user_prompt(profile_data, notes)},
+        {
+            "role": "user",
+            "content": _user_prompt(profile_data, notes, _catalog_lines(db_path, sources_path)),
+        },
     ]
 
     errors: list[str] = []
@@ -726,7 +773,17 @@ def main(argv: list[str] | None = None) -> int:
         prog="python -m ariadne.author",
         description="Author OKF context pages and OSI semantic models into staging/.",
     )
-    parser.add_argument("--db", required=True, help="path to the SQLite database")
+    parser.add_argument(
+        "--db",
+        default=None,
+        help="path to the SQLite database (or --sources)",
+    )
+    parser.add_argument(
+        "--sources",
+        default=None,
+        help="source registry YAML (ADR-0010; default: ./ariadne.yaml only when "
+        "neither --sources nor --db is given)",
+    )
     parser.add_argument("--notes", required=True, help="path to the seed notes markdown")
     parser.add_argument("--staging", default="staging", help="staging directory (default: staging)")
     parser.add_argument("--rounds", type=int, default=MAX_ROUNDS)
@@ -734,12 +791,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if not 1 <= args.rounds <= MAX_ROUNDS:
         parser.error(f"--rounds must be between 1 and {MAX_ROUNDS} (spec §5 hard cap)")
+    sources_path = default_registry_path(args.sources, args.db)
+    if args.db is None and sources_path is None:
+        parser.error("one of --db or --sources is required")
     try:
         _validate_staging(Path(args.staging))
     except ValueError as exc:
         parser.error(str(exc))
 
-    paths = author(args.db, args.notes, staging_dir=Path(args.staging), rounds=args.rounds)
+    paths = author(
+        args.db,
+        args.notes,
+        staging_dir=Path(args.staging),
+        rounds=args.rounds,
+        sources_path=sources_path,
+    )
     for path in paths:
         print(f"staged: {path}")
     if _needs_human_review(paths):  # spec §6/§7: review_needed artifacts are not promotable

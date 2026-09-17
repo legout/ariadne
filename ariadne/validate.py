@@ -50,6 +50,11 @@ from ariadne.render import (  # pyright: ignore[reportMissingImports] — new-mo
     RenderError,
     render,
 )
+from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    build_connection,
+    default_registry_path,
+    load_registry,
+)
 
 # sqlglot exposes its AST node module lazily (sqlglot.exp is a real module but not
 # statically exported), so resolve it at runtime like serve.py does.
@@ -154,25 +159,35 @@ def _schema_errors(envelope: dict) -> list[str]:
     return errors
 
 
-def _bind_check(rendered: list[tuple[str, str]], db_path: str | Path) -> list[str]:
-    """EXPLAIN the rendered SQL on a read-only attach of the SQLite database:
-    the plan is bound without executing it, so a column missing from the source
-    surfaces here — verbatim binder text, nothing executed."""
-    errors: list[str] = []
+def _audit_connection(
+    db_path: str | Path | None, sources_path: str | Path | None
+) -> duckdb.DuckDBPyConnection:
+    """The audit's DuckDB session via the shared registry builder (ADR-0010):
+    a --sources registry connection when given, else the legacy read-only
+    attach of the single SQLite database as catalog ``demo``."""
+    if sources_path is not None:
+        return build_connection(load_registry(sources_path))[0]
+    if db_path is None:
+        raise ValueError("audit connection requires --sources or --db")
     con = duckdb.connect()
-    try:
-        # db_path is the author loop's own --db (trusted input; spec §6 accepted
-        # boundary) and DuckDB's ATTACH takes no bind parameters — a formatter.
-        con.execute(f"ATTACH '{Path(db_path)}' AS demo (TYPE SQLITE, READ_ONLY)")  # nosemgrep
-        for name, sql in rendered:
-            try:
-                con.execute(f"EXPLAIN {sql}")  # nosemgrep — sql is render() output
-            except Exception as exc:
-                errors.append(
-                    f"model '{name}' failed the bind check: {type(exc).__name__}: {exc}"
-                )
-    finally:
-        con.close()
+    # db_path is the author loop's own --db (trusted input; spec §6 accepted
+    # boundary) and DuckDB's ATTACH takes no bind parameters — a formatter.
+    con.execute(f"ATTACH '{Path(db_path)}' AS demo (TYPE SQLITE, READ_ONLY)")  # nosemgrep
+    return con
+
+
+def _bind_check(rendered: list[tuple[str, str]], con: duckdb.DuckDBPyConnection) -> list[str]:
+    """EXPLAIN the rendered SQL on the audit connection: the plan is bound
+    without executing it, so a column missing from the source surfaces here —
+    verbatim binder text, nothing executed."""
+    errors: list[str] = []
+    for name, sql in rendered:
+        try:
+            con.execute(f"EXPLAIN {sql}")  # nosemgrep — sql is render() output
+        except Exception as exc:
+            errors.append(
+                f"model '{name}' failed the bind check: {type(exc).__name__}: {exc}"
+            )
     return errors
 
 
@@ -332,45 +347,45 @@ def _assertion_2(
     return errors
 
 
-def _grain_audit(staging_dir: str | Path, db_path: str | Path) -> list[str]:
+def _grain_audit(
+    staging_dir: str | Path, con: duckdb.DuckDBPyConnection
+) -> list[str]:
     """ADR-0006 §5 pre-flight protocol over the staged models: Assertion 1 (grain
-    uniqueness) then Assertion 2 (parent aggregate invariance), executed on a
-    read-only DuckDB attach of the SQLite database (spec §6)."""
+    uniqueness) then Assertion 2 (parent aggregate invariance), executed on the
+    shared audit connection (spec §6)."""
     datasets = _datasets(staging_dir)
     if not datasets:
         return []
     errors: list[str] = []
-    con = duckdb.connect()
-    try:
-        # db_path is the author loop's own --db (trusted input; spec §6 accepted
-        # boundary) and DuckDB's ATTACH takes no bind parameters — a formatter.
-        con.execute(f"ATTACH '{Path(db_path)}' AS demo (TYPE SQLITE, READ_ONLY)")  # nosemgrep
-        for model, dataset, source, pk in datasets:
-            errors.extend(_structural_join_errors(con, model, dataset, source))
-            if not pk:  # ADR-0006 rule of single declared grain: a model with no
-                # declared primary_key has no verifiable grain — it must FAIL the
-                # audit, never pass silently (spec rev 6 §8.14).
-                errors.append(
-                    f"grain audit failed for model '{model}' dataset '{dataset}' "
-                    f"(ADR-0006 rule of single declared grain): no declared grain — "
-                    f"the dataset declares no primary_key, so its grain cannot be "
-                    f"verified for uniqueness or join safety. Declare exactly one "
-                    f"primary_key unique over the dataset source (Assertion 1) before "
-                    f"registration. See {_GRAIN_ADR}."
-                )
-            if pk:
-                error = _assertion_1(con, model, dataset, source, pk)
-                if error:
-                    errors.append(error)
-            errors.extend(_assertion_2(con, model, dataset, source))
-    finally:
-        con.close()
+    for model, dataset, source, pk in datasets:
+        errors.extend(_structural_join_errors(con, model, dataset, source))
+        if not pk:  # ADR-0006 rule of single declared grain: a model with no
+            # declared primary_key has no verifiable grain — it must FAIL the
+            # audit, never pass silently (spec rev 6 §8.14).
+            errors.append(
+                f"grain audit failed for model '{model}' dataset '{dataset}' "
+                f"(ADR-0006 rule of single declared grain): no declared grain — "
+                f"the dataset declares no primary_key, so its grain cannot be "
+                f"verified for uniqueness or join safety. Declare exactly one "
+                f"primary_key unique over the dataset source (Assertion 1) before "
+                f"registration. See {_GRAIN_ADR}."
+            )
+        if pk:
+            error = _assertion_1(con, model, dataset, source, pk)
+            if error:
+                errors.append(error)
+        errors.extend(_assertion_2(con, model, dataset, source))
     return errors
 
 
-def validate(staging_dir: str | Path, db_path: str | Path | None = None) -> ValidationResult:
-    """Schema-check and render the staged OSI models (ADR-0008); with ``db_path``,
-    additionally EXPLAIN-bind the rendered SQL and run the ADR-0006 §5 grain audit."""
+def validate(
+    staging_dir: str | Path,
+    db_path: str | Path | None = None,
+    sources_path: str | Path | None = None,
+) -> ValidationResult:
+    """Schema-check and render the staged OSI models (ADR-0008); with ``db_path``
+    or ``sources_path`` (ADR-0010), additionally EXPLAIN-bind the rendered SQL
+    and run the ADR-0006 §5 grain audit over the shared audit connection."""
     models_dir = _models_dir(staging_dir)
     if not models_dir.is_dir():
         return ValidationResult(False, [f"no semantic models under {models_dir}"])
@@ -391,12 +406,18 @@ def validate(staging_dir: str | Path, db_path: str | Path | None = None) -> Vali
             errors.append(f"model '{name}' failed to compile: {exc}")
         except Exception as exc:
             errors.append(f"model '{name}' failed to compile: {type(exc).__name__}: {exc}")
-    if not errors and db_path is not None:  # bind check + audit only what compiles
-        errors.extend(_bind_check(rendered, db_path))
+    if not errors and (db_path is not None or sources_path is not None):
+        # bind check + audit only what compiles; one audit connection for both
+        # (the shared registry builder, ADR-0010 — or the legacy demo attach).
+        con = _audit_connection(db_path, sources_path)
         try:
-            errors.extend(_grain_audit(staging_dir, db_path))
-        except Exception as exc:
-            errors = [f"grain audit failed: {type(exc).__name__}: {exc}"]
+            errors.extend(_bind_check(rendered, con))
+            try:
+                errors.extend(_grain_audit(staging_dir, con))
+            except Exception as exc:
+                errors = [f"grain audit failed: {type(exc).__name__}: {exc}"]
+        finally:
+            con.close()
     return ValidationResult(not errors, errors)
 
 
@@ -410,10 +431,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--db", default=None, help="SQLite database for the grain audit (read-only attach)"
     )
+    parser.add_argument(
+        "--sources",
+        default=None,
+        help="source registry YAML for the audit connection (ADR-0010; default: "
+        "./ariadne.yaml only when neither --sources nor --db is given)",
+    )
     args = parser.parse_args(argv)
-    result = validate(args.staging_dir, db_path=args.db)
+    sources_path = default_registry_path(args.sources, args.db)
+    if sources_path is not None:
+        args.db = None  # the registry connection replaces the single-sqlite attach
+    result = validate(args.staging_dir, db_path=args.db, sources_path=sources_path)
     if result.ok:
-        audited = " and pass the grain audit (ADR-0006 §5)" if args.db else ""
+        audited = (
+            " and pass the grain audit (ADR-0006 §5)"
+            if args.db is not None or sources_path is not None
+            else ""
+        )
         print(f"ok: staged OSI models under {args.staging_dir} compile{audited}")
         return 0
     for error in result.errors:

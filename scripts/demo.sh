@@ -32,13 +32,14 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
-echo "== 1/4 seed: data/demo.db (deterministic)"
+echo "== 1/4 seed: data/demo.db + the support-tickets parquet fixture (deterministic)"
 "$PY" scripts/seed_db.py data/demo.db
+"$PY" scripts/make_parquet_fixture.py data/support_tickets
 
 echo "== 2/4 author: profile + seed notes -> live LLM drafts -> staging/"
 rm -rf staging
 author_rc=0
-"$PY" -m ariadne.author --db data/demo.db --notes data/seed_notes.md || author_rc=$?
+"$PY" -m ariadne.author --sources ariadne.yaml --notes data/seed_notes.md || author_rc=$?
 # Spec §6/§7: review_needed artifacts must never be auto-promoted — the human gate
 # holds even under --yes (and even if an older author exited 0 despite review_needed).
 if grep -rq 'status: review_needed' staging 2>/dev/null; then
@@ -75,6 +76,16 @@ fi
 
 echo "== 4/4 serve + scripted MCP client (spawns python -m ariadne.serve over stdio)"
 "$PY" scripts/mcp_client.py --db data/demo.db
+
+# The seed notes define support metrics, so the bundle should carry a model over
+# support.tickets. The LLM is not fully deterministic: warn, never fail, here —
+# the human promotion gate already reviewed whatever was served.
+if grep -rq 'support.tickets' semantic_layer/models 2>/dev/null; then
+  echo "   multi-source breadth: served bundle models support.tickets"
+else
+  echo "   WARNING: no model over support.tickets in the served bundle — the author"
+  echo "   ignored the support source; re-run or author it manually"
+fi
 
 echo
 echo "demo OK — served layers: context_layer/ semantic_layer/ (promoted from staging/)"

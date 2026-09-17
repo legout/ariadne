@@ -1,0 +1,12 @@
+# Demo registry (ADR-0010, spec rev 9): the seeded sqlite shop plus the
+# support-tickets parquet fixture. Every command picks this file up
+# automatically; each source is addressable as <source>.<table> (sqlite
+# attaches qualify as <catalog>.<schema>.<table>, file views as <name>.<table>).
+sources:
+  - name: demo
+    type: sqlite
+    path: data/demo.db
+  - name: support
+    type: parquet
+    path: data/support_tickets/*.parquet
+    table: tickets # one view over the whole glob: support.tickets
