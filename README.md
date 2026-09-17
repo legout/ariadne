@@ -21,6 +21,12 @@ uv venv --python 3.12 .venv   # the datus path requires CPython 3.12
 uv pip install --python .venv/bin/python -e ".[dev]"
 ```
 
+The editable install registers console scripts — `ariadne-author`, `ariadne-validate`,
+`ariadne-serve`, `ariadne-promote`, `ariadne-init`. `ariadne-init [TARGET_DIR]`
+scaffolds a fresh project's inputs (seed notes, `.env.example`, `.mcp.json` wired to
+`ariadne-serve`, `.gitignore`, empty `data/`); the served layers are never scaffolded —
+they arrive only via author + promote.
+
 Live authoring credentials are read from `$ARIADNE_ENV` (default
 `/home/volker/coding/ariadne/.env`, never committed): `OPENAI_API_KEY`,
 `OPENAI_BASE_URL`, `OPENAI_MODEL`.
