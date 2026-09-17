@@ -17,6 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
+ariadne-ingest = "ariadne.ingest:main"
 ariadne-author = "ariadne.author:main"
 ariadne-validate = "ariadne.validate:main"
 ariadne-serve = "ariadne.serve:main"
@@ -24,9 +25,20 @@ ariadne-promote = "ariadne.promote:main"
 ariadne-init = "ariadne.init:main"
 
 [project.optional-dependencies]
+# ADR-0009 document ingestion: the lumio-wiki-researched converter stack. Optional
+# so the base install stays lightweight; ariadne-ingest fails with install guidance
+# when a converter is missing. dev gains the same deps so the test suite covers them.
+documents = [
+    "liteparse>=2.4.0",  # PDF
+    "markitdown[docx]>=0.1.6",  # docx/pptx/xlsx
+    "firecrawl-anydoc==0.1.3",  # html
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
+    "liteparse>=2.4.0",
+    "markitdown[docx]>=0.1.6",
+    "firecrawl-anydoc==0.1.3",
 ]
 
 [tool.setuptools.packages.find]

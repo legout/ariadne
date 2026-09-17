@@ -22,10 +22,11 @@ uv venv --python 3.12 .venv   # floor is CPython 3.12 (>=3.12; no upper cap sinc
 uv pip install --python .venv/bin/python -e ".[dev]"
 ```
 
-The editable install registers console scripts — `ariadne-author`, `ariadne-validate`,
-`ariadne-serve`, `ariadne-promote`, `ariadne-init`. `ariadne-init [TARGET_DIR]`
+The editable install registers console scripts — `ariadne-ingest`, `ariadne-author`,
+`ariadne-validate`, `ariadne-serve`, `ariadne-promote`, `ariadne-init`. `ariadne-init [TARGET_DIR]`
 scaffolds a fresh project's inputs (seed notes, `.env.example`, `.mcp.json` wired to
-`ariadne-serve`, `.gitignore`, empty `data/`); the served layers are never scaffolded —
+`ariadne-serve`, `.gitignore`, empty `data/` + `data/docs/` for ingestible source
+documents); the served layers are never scaffolded —
 they arrive only via author + promote.
 
 Live authoring credentials are read from `$ARIADNE_ENV` (default
@@ -56,6 +57,29 @@ scripts/demo.sh          # pauses for human promotion instead
 
 The repo ships a `.mcp.json` — pi (via `pi-mcp-adapter`) and any MCP-capable agent connect
 to the facade directly; restart the agent after config changes.
+
+## Document ingestion (ADR-0009)
+
+`ariadne-ingest docs/ingest-example.md` turns a document into typed OKF proposals without
+the authoring loop: convert → LLM distill → per-type contract gate → stage under
+`staging/context_layer/`. Classification follows the bundle taxonomy: `policies/` (owner
+rules, transcribed verbatim), `tables/` (row meaning + declared grain), `references/` and
+`references/joins/`; anything unclassifiable lands in `references/` tagged `ingest`.
+Provenance is mechanical — every staged page cites its source in `sources[]`
+(sha256-12 digest + absolute path + filename) and carries `generated: {by:
+ariadne-ingest:<model>}` plus `status: draft`. Violating pages get at most 2 repair
+rounds; a document that never passes the gate stages nothing.
+
+- **Converters** (dispatch by extension): `.md`/`.txt` natively; `.pdf` via `liteparse`;
+  `.docx`/`.pptx`/`.xlsx`/`.html` via `markitdown`; `.doc`/`.rtf`/`.epub`/`.csv`/`.odt`/
+  `.ods`/`.odp`/`.xls` via `firecrawl-anydoc`. Install with
+  `uv pip install -e ".[documents]"`; a missing converter fails just that document with
+  the exact hint (the base install stays lightweight). Note: firecrawl-anydoc 0.1.3 ships
+  no HTML reader, so `.html` is handled by markitdown (owner decision, rev 8 round).
+- **Staging discipline**: writes go only under `staging/context_layer/` — never the
+  served dirs, never `index.md`/`log.md` (promote owns bundle bookkeeping); name
+  collisions suffix `-2`/`-3` atomically. Promote as usual: `python scripts/promote.py`.
+- **Credentials**: same `OPENAI_*` wiring as the author (`$ARIADNE_ENV`).
 
 ## Authoring, promotion, safety
 
