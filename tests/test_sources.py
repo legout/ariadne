@@ -299,6 +299,46 @@ def test_postgres_missing_env_names_the_variable(recorded, monkeypatch, tmp_path
         build_connection(load_registry(reg))
 
 
+# ------------------------------------------------------------ DSN redaction
+
+
+def test_attach_failure_error_never_carries_the_dsn(monkeypatch, tmp_path):
+    """A failing postgres ATTACH re-raises with the DSN redacted: the password
+    — and the full DSN — never appear in an exception message (ADR-0010)."""
+    dsn = "postgresql://ro:s3cret@db.internal:5432/prod"
+    monkeypatch.setenv("ARIADNE_PG_DSN", dsn)
+    reg = write_registry(
+        tmp_path, [{"name": "pg", "type": "postgres", "connection_env": "ARIADNE_PG_DSN"}]
+    )
+
+    class ExplodingConnection:
+        def execute(self, sql, *args):
+            if sql.lstrip().upper().startswith("ATTACH"):
+                raise RuntimeError(f"Connection error: unable to attach: {sql}")
+            return type("R", (), {"fetchall": lambda self: []})()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(duckdb, "connect", lambda *a, **k: ExplodingConnection())
+    with pytest.raises(RuntimeError) as excinfo:
+        build_connection(load_registry(reg))
+    message = str(excinfo.value)
+    assert "s3cret" not in message  # password never survives
+    assert dsn not in message  # the full DSN is gone
+    assert "postgresql://ro:***@db.internal:5432/prod" in message  # redaction marker
+
+
+def test_quote_bearing_dsn_error_does_not_echo_the_value(monkeypatch, tmp_path):
+    monkeypatch.setenv("ARIADNE_PG_DSN", "postgres://u:pa'ss@h/db")
+    reg = write_registry(
+        tmp_path, [{"name": "pg", "type": "postgres", "connection_env": "ARIADNE_PG_DSN"}]
+    )
+    with pytest.raises(ValueError, match="quote character") as excinfo:
+        build_connection(load_registry(reg))
+    assert "pa'ss" not in str(excinfo.value)
+
+
 def test_remote_parquet_loads_httpfs_once(recorded, tmp_path):
     """Two remote file sources -> httpfs LOADed exactly once, first."""
     reg = write_registry(
@@ -324,7 +364,10 @@ def test_writable_build_drops_read_only(recorded, tmp_path):
     """build_connection(read_only=False): attaches lose the READ_ONLY suffix."""
     reg = write_registry(tmp_path, [{"name": "d", "type": "ducklake", "path": "x.ducklake"}])
     con, _ = build_connection(load_registry(reg), read_only=False)
-    assert con.statements == ["LOAD ducklake", "ATTACH 'x.ducklake' AS d (TYPE DUCKLAKE)"]
+    assert con.statements == [
+        "LOAD ducklake",
+        f"ATTACH '{tmp_path / 'x.ducklake'}' AS d (TYPE DUCKLAKE)",  # resolved vs registry dir
+    ]
 
 
 # --------------------------------------------------------- registry validation
@@ -351,6 +394,34 @@ def test_connection_env_dsn_shaped_rejected_as_inline(tmp_path):
 def test_unknown_type_rejected(tmp_path):
     reg = write_registry(tmp_path, [{"name": "x", "type": "mongodb", "path": "data/x"}])
     with pytest.raises(ValueError, match="unknown type 'mongodb'"):
+        load_registry(reg)
+
+
+@pytest.mark.parametrize(
+    ("key", "source_type"),
+    [
+        ("dsn", "postgres"),
+        ("connection_string", "postgres"),
+        ("path", "sqlite"),
+        ("table", "csv"),
+    ],
+)
+def test_inline_dsn_under_any_key_rejected(tmp_path, key, source_type):
+    """dsn:/connection_string: are not loopholes: a postgres://-shaped value
+    under ANY key of ANY source entry is an ADR-0010 error naming the rule."""
+    reg = write_registry(
+        tmp_path, [{"name": "pg", "type": source_type, key: "postgresql://u:p@h/db"}]
+    )
+    with pytest.raises(ValueError, match="ADR-0010"):
+        load_registry(reg)
+
+
+def test_unknown_keys_rejected(tmp_path):
+    """Strict entry schema: freestyle keys fail loudly instead of passing."""
+    reg = write_registry(
+        tmp_path, [{"name": "a", "type": "sqlite", "path": "x.db", "extra": 1}]
+    )
+    with pytest.raises(ValueError, match=r"unknown key\(s\) \['extra'\]"):
         load_registry(reg)
 
 
@@ -404,6 +475,9 @@ def test_default_registry_path_resolution(tmp_path, monkeypatch):
     assert default_registry_path("other.yaml") == Path("other.yaml")  # explicit wins
     (tmp_path / "broken.yaml").write_text("sources: [unparsable", encoding="utf-8")
     assert default_registry_path("broken.yaml") == Path("broken.yaml")  # let it raise
+    # an explicit --db always suppresses the ambient probe; --sources beats --db
+    assert default_registry_path(None, "x.db") is None
+    assert default_registry_path("r.yaml", "x.db") == Path("r.yaml")
 
 
 def test_implicit_registry_is_legacy_demo_shorthand():
@@ -411,6 +485,49 @@ def test_implicit_registry_is_legacy_demo_shorthand():
     assert registry.path is None
     (source,) = registry.sources
     assert (source.name, source.type, source.path) == ("demo", "sqlite", "data/demo.db")
+
+
+# ------------------------------------------------ registry-relative path base
+
+
+def test_relative_paths_resolve_against_the_registry_file(tmp_path, monkeypatch):
+    """init.py's promise: registry paths are relative to the registry's
+    directory, not the process cwd (makes --sources cwd-independent)."""
+    dir_a = tmp_path / "a"
+    (dir_a / "data").mkdir(parents=True)
+    db = dir_a / "data" / "demo.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE t (x INTEGER)")
+    con.commit()
+    con.close()
+    reg = write_registry(dir_a, [{"name": "demo", "type": "sqlite", "path": "data/demo.db"}])
+
+    (tmp_path / "b").mkdir()
+    monkeypatch.chdir(tmp_path / "b")  # unrelated cwd
+    registry = load_registry(reg)
+    assert registry.sources[0].path == str(db)  # resolved under A
+    con, _ = build_connection(registry)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM demo.t").fetchone() == (0,)
+    finally:
+        con.close()
+
+
+def test_absolute_and_scheme_paths_pass_through_untouched(tmp_path):
+    reg = write_registry(
+        tmp_path,
+        [
+            {"name": "abs", "type": "sqlite", "path": "/data/abs.db"},
+            {"name": "web", "type": "parquet", "path": "https://cdn/x.parquet", "table": "web"},
+            {"name": "dl", "type": "ducklake", "path": "ducklake:w.ducklake"},
+        ],
+    )
+    paths = {s.name: s.path for s in load_registry(reg).sources}
+    assert paths == {
+        "abs": "/data/abs.db",
+        "web": "https://cdn/x.parquet",
+        "dl": "ducklake:w.ducklake",
+    }
 
 
 # ------------------------------------------------------- serve.py integration

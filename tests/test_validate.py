@@ -431,3 +431,19 @@ def test_cli_db_flag_runs_the_audit(tmp_path, capsys, monkeypatch):
     _write_model(staging, "customers.yml", CUSTOMERS_MODEL)
     assert validate_main([str(staging), "--db", str(db)]) == 0
     assert "grain audit" in capsys.readouterr().out
+
+
+def test_cli_explicit_db_beats_ambient_registry(tmp_path, capsys, monkeypatch):
+    """With an ambient ./ariadne.yaml present, an explicit --db still runs the
+    audit on THAT database — the registry applies only when neither is given."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ariadne.yaml").write_text(
+        "sources:\n  - name: demo\n    type: sqlite\n    path: missing.db\n",
+        encoding="utf-8",
+    )
+    db = seed_demo_db(tmp_path / "demo.db")
+    staging = tmp_path / "staging"
+    _write_model(staging, "orders.yml", GOLDEN_OSI)
+    _write_model(staging, "customers.yml", CUSTOMERS_MODEL)
+    assert validate_main([str(staging), "--db", str(db)]) == 0
+    assert "grain audit" in capsys.readouterr().out

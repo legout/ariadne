@@ -46,6 +46,16 @@ import yaml
 NAME_RE = re.compile(r"[a-z][a-z0-9_]*")
 IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
+# Strict entry schema: no freestyle keys — a typo'd or smuggled key (dsn:,
+# connection_string:, ...) must fail loudly instead of passing silently.
+SOURCE_KEYS = frozenset({"name", "type", "path", "connection_env", "table", "read_only"})
+# A connection string is a credential (ADR-0010): rejected under ANY key.
+DSN_RE = re.compile(r"postgres(?:ql)?://")
+# URI-scheme prefix (ducklake:, https://, s3://, ...): never cwd-relative.
+_URI_SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*:")
+# scheme://user:password@host — the password NEVER survives into an error.
+_DSN_PASSWORD_RE = re.compile(r"(//[^\s/@:]+:)([^\s/@]+)(@)")
+
 SOURCE_TYPES = (
     "sqlite",
     "csv",
@@ -89,14 +99,21 @@ class Registry:
     path: str | None = None
 
 
-def default_registry_path(explicit: str | Path | None = None) -> Path | None:
-    """``--sources`` resolution shared by every command: an explicit path wins;
-    otherwise ``./ariadne.yaml`` when it declares sources. The scaffolded
-    template (all comments, no ``sources:``) counts as absent, so ``--db``
-    keeps working for fresh projects; an UNPARSABLE registry is returned as-is
-    so :func:`load_registry` raises the real error instead of hiding it."""
+def default_registry_path(
+    explicit: str | Path | None = None, db: str | Path | None = None
+) -> Path | None:
+    """``--sources``/``--db`` resolution shared by every command. An explicit
+    flag ALWAYS wins: ``--sources`` selects that registry; ``--db`` selects the
+    legacy single-sqlite shorthand and the ambient registry is IGNORED. The
+    ambient ``./ariadne.yaml`` applies only when NEITHER flag is given. The
+    scaffolded template (all comments, no ``sources:``) counts as absent, so
+    ``--db`` keeps working for fresh projects; an UNPARSABLE registry is
+    returned as-is so :func:`load_registry` raises the real error instead of
+    hiding it."""
     if explicit:
         return Path(explicit)
+    if db:
+        return None
     candidate = Path(DEFAULT_PATH)
     if candidate.is_file():
         try:
@@ -129,6 +146,10 @@ def load_registry(path: str | Path = DEFAULT_PATH) -> Registry:
     seen: set[str] = set()
     for index, entry in enumerate(entries):
         sources.append(_source(registry_path, index, entry, seen))
+    base = registry_path.parent.resolve()
+    for src in sources:  # init.py's promise: paths are relative to THIS file
+        if src.path:
+            src.path = _resolve_against(base, src.path)
     return Registry(sources=sources, path=str(registry_path))
 
 
@@ -159,6 +180,17 @@ def _source(path: Path, index: int, entry: object, seen: set[str]) -> Source:
         raise ValueError(
             f"{where}: inline connection strings are rejected (ADR-0010): "
             "reference an environment variable with connection_env: <NAME>"
+        )
+    for key, value in entry.items():  # under ANY key, not just ``connection``
+        if isinstance(value, str) and DSN_RE.match(value):
+            raise ValueError(
+                f"{where}: {key} carries an inline connection string (ADR-0010): "
+                "reference an environment variable with connection_env: <NAME>"
+            )
+    unknown = sorted(set(entry) - SOURCE_KEYS)
+    if unknown:
+        raise ValueError(
+            f"{where}: unknown key(s) {unknown}; allowed: {sorted(SOURCE_KEYS)}"
         )
     connection_env = entry.get("connection_env")
     if source_type == "postgres":
@@ -263,14 +295,35 @@ def build_connection(
     """The one DuckDB session for all commands (ADR-0010): executes
     :func:`plan` verbatim and returns ``(connection, catalog)``. The catalog
     lists, per source, its tables with columns where cheaply enumerable —
-    ``information_schema`` for attaches, the same catalog for file views."""
+    ``information_schema`` for attaches, the same catalog for file views.
+    Execution errors are re-raised with any postgres DSN redacted (DuckDB
+    echoes the SQL text, so a failed ATTACH would leak credentials)."""
     loads, statements = plan(registry, read_only=read_only)
+    secrets = [_resolve_dsn(src) for src in registry.sources if src.type == "postgres"]
     con = duckdb.connect()
     for extension in loads:
         con.execute(f"LOAD {extension}")
     for statement in statements:
-        con.execute(statement)  # plan() output — no tool/user input flows in
+        try:
+            con.execute(statement)  # nosemgrep — plan() output, validated-registry inputs only
+        except Exception as exc:
+            exc.args = (_redact_all(str(exc), secrets),)
+            raise
     return con, [_catalog_entry(con, src) for src in registry.sources]
+
+
+def _redact(dsn: str) -> str:
+    """``scheme://user:password@host/...`` -> ``scheme://user:***@host/...``
+    (user and host may surface; the password never does)."""
+    return _DSN_PASSWORD_RE.sub(r"\1***\3", dsn)
+
+
+def _redact_all(message: str, secrets: list[str]) -> str:
+    """Every known DSN redacted, plus a generic pass so no credentialed URL in
+    a builder-raised error message ever carries a password."""
+    for dsn in secrets:
+        message = message.replace(dsn, _redact(dsn))
+    return _DSN_PASSWORD_RE.sub(r"\1***\3", message)
 
 
 def _want(loads: list[str], extension: str) -> None:
@@ -281,10 +334,23 @@ def _want(loads: list[str], extension: str) -> None:
 
 def _noquotes(value: str) -> str:
     """ATTACH/scan literals take no bind parameters; a quote-bearing path is
-    rejected outright instead of escaped into SQL text (profiler precedent)."""
+    rejected outright instead of escaped into SQL text (profiler precedent).
+    The value is never echoed — it may be a DSN carrying credentials."""
     if "'" in value:
-        raise ValueError(f"path/connection contains a quote character: {value!r}")
+        raise ValueError(
+            "path/connection contains a quote character — rejected outright "
+            "(ATTACH/scan literals take no bind parameters)"
+        )
     return value
+
+
+def _resolve_against(base: Path, raw: str) -> str:
+    """Registry-relative paths resolve against the registry file's directory
+    (the scaffold template's promise); absolute and URI-scheme paths
+    (``https://``, ``s3://``, ``ducklake:``) pass through untouched."""
+    if Path(raw).is_absolute() or _URI_SCHEME_RE.match(raw):
+        return raw
+    return str(base / raw)
 
 
 def _path(src: Source) -> str:

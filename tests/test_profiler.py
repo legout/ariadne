@@ -41,21 +41,32 @@ EXPECTED_COLUMNS = {
 
 def make_demo_db(db_path: Path) -> Path:
     """Miniature demo.db: same schema, same USD-dominant currency distribution."""
-    rows = []
-    for i in range(1, 25):
-        currency = "USD" if i > 4 else ("EUR" if i % 2 == 0 else "GBP")  # 20 USD / 2 EUR / 2 GBP
-        rows.append(
-            (
-                i,
-                (i % 3) + 1,
-                "2023-05-01 10:00:00",
-                "COMPLETED" if i % 4 else "CANCELLED",
-                ("NA", "EMEA", "APAC")[i % 3],
-                currency,
-                100.0 + i,
-                60.0 + (i % 5),
-            )
-        )
+    rows = [
+        (1, 2, "2023-05-01 10:00:00", "COMPLETED", "EMEA", "GBP", 101.0, 61.0),
+        (2, 3, "2023-05-01 10:00:00", "COMPLETED", "APAC", "EUR", 102.0, 62.0),
+        (3, 1, "2023-05-01 10:00:00", "COMPLETED", "NA", "GBP", 103.0, 63.0),
+        (4, 2, "2023-05-01 10:00:00", "CANCELLED", "EMEA", "EUR", 104.0, 64.0),
+        (5, 3, "2023-05-01 10:00:00", "COMPLETED", "APAC", "USD", 105.0, 60.0),
+        (6, 1, "2023-05-01 10:00:00", "COMPLETED", "NA", "USD", 106.0, 61.0),
+        (7, 2, "2023-05-01 10:00:00", "COMPLETED", "EMEA", "USD", 107.0, 62.0),
+        (8, 3, "2023-05-01 10:00:00", "CANCELLED", "APAC", "USD", 108.0, 63.0),
+        (9, 1, "2023-05-01 10:00:00", "COMPLETED", "NA", "USD", 109.0, 64.0),
+        (10, 2, "2023-05-01 10:00:00", "COMPLETED", "EMEA", "USD", 110.0, 60.0),
+        (11, 3, "2023-05-01 10:00:00", "COMPLETED", "APAC", "USD", 111.0, 61.0),
+        (12, 1, "2023-05-01 10:00:00", "CANCELLED", "NA", "USD", 112.0, 62.0),
+        (13, 2, "2023-05-01 10:00:00", "COMPLETED", "EMEA", "USD", 113.0, 63.0),
+        (14, 3, "2023-05-01 10:00:00", "COMPLETED", "APAC", "USD", 114.0, 64.0),
+        (15, 1, "2023-05-01 10:00:00", "COMPLETED", "NA", "USD", 115.0, 60.0),
+        (16, 2, "2023-05-01 10:00:00", "CANCELLED", "EMEA", "USD", 116.0, 61.0),
+        (17, 3, "2023-05-01 10:00:00", "COMPLETED", "APAC", "USD", 117.0, 62.0),
+        (18, 1, "2023-05-01 10:00:00", "COMPLETED", "NA", "USD", 118.0, 63.0),
+        (19, 2, "2023-05-01 10:00:00", "COMPLETED", "EMEA", "USD", 119.0, 64.0),
+        (20, 3, "2023-05-01 10:00:00", "CANCELLED", "APAC", "USD", 120.0, 60.0),
+        (21, 1, "2023-05-01 10:00:00", "COMPLETED", "NA", "USD", 121.0, 61.0),
+        (22, 2, "2023-05-01 10:00:00", "COMPLETED", "EMEA", "USD", 122.0, 62.0),
+        (23, 3, "2023-05-01 10:00:00", "COMPLETED", "APAC", "USD", 123.0, 63.0),
+        (24, 1, "2023-05-01 10:00:00", "CANCELLED", "NA", "USD", 124.0, 64.0),
+    ]  # 20 USD / 2 EUR / 2 GBP (i <= 4: EUR when even, GBP when odd)
     con = sqlite3.connect(db_path)
     try:
         con.execute(
@@ -93,7 +104,10 @@ def make_demo_db(db_path: Path) -> Path:
             "INSERT INTO customers VALUES (?, ?, ?)",
             [(1, "A", "US"), (2, "B", "DE"), (3, "C", "JP")],
         )
-        con.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        con.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
         con.executemany(
             "INSERT INTO currency_conversion_rate VALUES (?, ?)",
             [("EUR", 1.10), ("GBP", 1.27)],
@@ -180,6 +194,23 @@ def test_cli_writes_profile_json(demo_db, tmp_path):
     written = json.loads(out.read_text())
     assert json.loads(result.stdout) == written  # stdout and file agree
     assert written["tables"]["orders"]["columns"]["currency"]["top_value_share"] >= 0.8
+
+
+def test_cli_explicit_db_beats_ambient_registry(tmp_path, demo_db, monkeypatch, capsys):
+    """With an ambient ./ariadne.yaml present, an explicit --db still wins: the
+    registry applies only when NEITHER --sources nor --db is given."""
+    import ariadne.profiler as profiler_module
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ariadne.yaml").write_text(
+        "sources:\n  - name: demo\n    type: sqlite\n    path: missing.db\n",
+        encoding="utf-8",
+    )
+    profiler_module.main(
+        ["--db", str(demo_db), "--out", str(tmp_path / "p.json"), "--no-out"]
+    )
+    out = json.loads(capsys.readouterr().out)
+    assert out["db_path"] == str(demo_db)  # legacy shape: --db won, registry ignored
 
 
 def _seed_real_demo_db(tmp_path):

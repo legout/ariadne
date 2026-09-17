@@ -603,12 +603,17 @@ def main(argv: list[str] | None = None) -> int:
         prog="python -m ariadne.serve",
         description="MCP stdio facade over the served context and semantic layers.",
     )
-    parser.add_argument("--db", default="data/demo.db", help="SQLite database to attach read-only")
+    parser.add_argument(
+        "--db",
+        default=None,
+        help="SQLite database to attach read-only (default: data/demo.db when "
+        "no --sources/ariadne.yaml applies)",
+    )
     parser.add_argument(
         "--sources",
         default=None,
-        help="source registry YAML (ADR-0010; default: ./ariadne.yaml when it "
-        "declares sources, else --db)",
+        help="source registry YAML (ADR-0010; default: ./ariadne.yaml only when "
+        "neither --sources nor --db is given)",
     )
     parser.add_argument("--semantic", default="semantic_layer", help="served OSI layer directory")
     parser.add_argument("--context", default="context_layer", help="served OKF layer directory")
@@ -617,13 +622,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # Explicit --db/--sources always win over the ambient ./ariadne.yaml
+    # (shared resolution, ADR-0010); the legacy default fills in only when
+    # --db is not given (unused by the Facade whenever a registry applies).
+    sources_path = default_registry_path(args.sources, args.db)
+    db = args.db or "data/demo.db"
     try:
         facade = Facade(
             args.semantic,
             args.context,
-            args.db,
+            db,
             staging_dir=args.staging,
-            sources=default_registry_path(args.sources),
+            sources=sources_path,
         )
     except Exception as exc:  # fail fast before any MCP traffic
         print(f"error: {exc}", file=sys.stderr)

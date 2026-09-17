@@ -435,10 +435,10 @@ def main(argv: list[str] | None = None) -> int:
         "--sources",
         default=None,
         help="source registry YAML for the audit connection (ADR-0010; default: "
-        "./ariadne.yaml when it declares sources, else --db)",
+        "./ariadne.yaml only when neither --sources nor --db is given)",
     )
     args = parser.parse_args(argv)
-    sources_path = default_registry_path(args.sources)
+    sources_path = default_registry_path(args.sources, args.db)
     if sources_path is not None:
         args.db = None  # the registry connection replaces the single-sqlite attach
     result = validate(args.staging_dir, db_path=args.db, sources_path=sources_path)

@@ -731,3 +731,43 @@ def test_serve_cli_fails_fast_with_hint_when_datus_missing(tmp_path):
     assert proc.returncode == 1  # fail-fast exit, not a traceback
     assert b"datus-semantic-osi is required" in proc.stderr
     assert b"Traceback" not in proc.stderr
+
+
+def test_serve_main_explicit_db_beats_ambient_registry(tmp_path, monkeypatch):
+    """With an ambient ./ariadne.yaml present, an explicit --db still selects
+    the legacy single-sqlite shorthand (registry only when neither is given)."""
+    import ariadne.serve as serve_module
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ariadne.yaml").write_text(
+        "sources:\n  - name: demo\n    type: sqlite\n    path: missing.db\n",
+        encoding="utf-8",
+    )
+    served = tmp_path / "semantic_layer" / "models"
+    served.mkdir(parents=True)
+    (served / "orders.yml").write_text(GOLDEN_OSI, encoding="utf-8")
+    db = seed_demo_db(tmp_path / "demo.db")
+    built: list = []
+
+    class FakeApp:
+        def __init__(self, facade):
+            built.append(facade)
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(serve_module, "build_app", FakeApp)
+    code = serve_module.main(
+        [
+            "--semantic",
+            str(tmp_path / "semantic_layer"),
+            "--context",
+            str(tmp_path / "context_layer"),
+            "--db",
+            str(db),
+            "--staging",
+            str(tmp_path / "staging"),
+        ]
+    )
+    assert code == 0
+    assert built and built[0]._qualified is False  # legacy --db shorthand won

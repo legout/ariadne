@@ -367,14 +367,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--sources",
         default=None,
-        help="source registry YAML (ADR-0010; default: ./ariadne.yaml when it "
-        "declares sources, else --db)",
+        help="source registry YAML (ADR-0010; default: ./ariadne.yaml only when "
+        "neither --sources nor --db is given)",
     )
     parser.add_argument("--out", default="profile.json", help="output path (default: profile.json)")
     parser.add_argument("--no-out", action="store_true", help="print to stdout only, write no file")
     args = parser.parse_args(argv)
 
-    sources_path = default_registry_path(args.sources)
+    sources_path = default_registry_path(args.sources, args.db)
     if args.db is None and sources_path is None:
         parser.error("one of --db or --sources is required")
     text = json.dumps(profile(args.db, sources_path=sources_path), indent=2)

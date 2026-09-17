@@ -781,8 +781,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--sources",
         default=None,
-        help="source registry YAML (ADR-0010; default: ./ariadne.yaml when it "
-        "declares sources, else --db)",
+        help="source registry YAML (ADR-0010; default: ./ariadne.yaml only when "
+        "neither --sources nor --db is given)",
     )
     parser.add_argument("--notes", required=True, help="path to the seed notes markdown")
     parser.add_argument("--staging", default="staging", help="staging directory (default: staging)")
@@ -791,7 +791,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not 1 <= args.rounds <= MAX_ROUNDS:
         parser.error(f"--rounds must be between 1 and {MAX_ROUNDS} (spec §5 hard cap)")
-    sources_path = default_registry_path(args.sources)
+    sources_path = default_registry_path(args.sources, args.db)
     if args.db is None and sources_path is None:
         parser.error("one of --db or --sources is required")
     try:

@@ -532,6 +532,29 @@ def test_main_exits_zero_when_staged_clean(tmp_path, monkeypatch):
     assert code == 0
 
 
+def test_main_explicit_db_beats_ambient_registry(tmp_path, monkeypatch):
+    """With an ambient ./ariadne.yaml present, an explicit --db still wins: the
+    registry applies only when NEITHER --sources nor --db is given."""
+    import ariadne.author as author_module
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ariadne.yaml").write_text(
+        "sources:\n  - name: demo\n    type: sqlite\n    path: missing.db\n",
+        encoding="utf-8",
+    )
+    seen = {}
+
+    def spy(db_path, notes, **kwargs):
+        seen["db"] = db_path
+        seen["sources_path"] = kwargs.get("sources_path")
+        return []
+
+    monkeypatch.setattr(author_module, "author", spy)
+    code = author_module.main(["--db", "x.db", "--notes", "y", "--staging", str(tmp_path / "s")])
+    assert code == 0
+    assert seen == {"db": "x.db", "sources_path": None}
+
+
 def test_author_invalid_page_frontmatter_feeds_back_then_recovers(tmp_path):
     """An LLM page whose frontmatter is not valid YAML (unquoted colon) must
     feed back through the loop — not crash the deterministic post-passes."""
