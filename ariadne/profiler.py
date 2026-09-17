@@ -1,12 +1,15 @@
-"""Database profiler: DuckDB SUMMARIZE + PK/FK heuristics over a SQLite file (ticket #3).
+"""Database profiler: DuckDB SUMMARIZE + PK/FK heuristics over the source registry (ticket #3).
 
-Reads a SQLite database read-only through DuckDB's sqlite_scanner, profiles
-every table, and emits a JSON-serializable dict. This output is the input
-contract of the authoring agent (``ariadne.author``, ticket #4), which combines
-it with ``data/seed_notes.md``; the profiler surfaces statistics only —
-business rules live in the seed notes, never here.
+Reads every source of the ADR-0010 registry (``ariadne.yaml``) — or the legacy
+single SQLite file (``--db``) — read-only through the shared connection builder
+(:mod:`ariadne.sources`), profiles every table, and emits a JSON-serializable
+dict. This output is the input contract of the authoring agent
+(``ariadne.author``, ticket #4), which combines it with ``data/seed_notes.md``;
+the profiler surfaces statistics only — business rules live in the seed notes,
+never here.
 
-Output shape (``profile(db_path) -> dict``, also written by the CLI)::
+Output shape: the legacy single-sqlite call keeps the historical contract
+(``profile(db_path) -> dict``, also written by the CLI)::
 
     {
       "db_path": "data/demo.db",
@@ -43,6 +46,9 @@ Output shape (``profile(db_path) -> dict``, also written by the CLI)::
       }
     }
 
+A registry run (``profile(sources_path=...)``) returns the same per-table shape
+per source: ``{"sources_path": ..., "sources": [{"name", "type", "tables"}]}``.
+
 Field notes for consumers:
 
 - ``min/max/avg/std/q25/q50/q75`` come from DuckDB ``SUMMARIZE``; some render
@@ -71,6 +77,7 @@ CLI::
     python -m ariadne.profiler --db data/demo.db                 # prints JSON + writes profile.json
     python -m ariadne.profiler --db data/demo.db --out other.json
     python -m ariadne.profiler --db data/demo.db --no-out        # stdout only
+    python -m ariadne.profiler --sources ariadne.yaml --no-out   # every registry source
 """
 
 from __future__ import annotations
@@ -81,9 +88,15 @@ import sys
 from decimal import Decimal
 from pathlib import Path
 
-import duckdb
+import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-CATALOG = "ariadne_profile"
+from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    build_connection,
+    default_registry_path,
+    implicit_registry,
+    load_registry,
+)
+
 TOP_VALUES_MAX_CARDINALITY = 20
 TOP_VALUES_LIMIT = 10
 
@@ -128,25 +141,19 @@ def _numeric(type_name: str) -> bool:
     return type_name.split("(")[0].upper() in _NUMERIC_TYPES
 
 
-def _allowlisted(con: duckdb.DuckDBPyConnection) -> set[str]:
-    """Every table and column name the attached catalog actually contains.
-
-    DuckDB cannot parameterize identifiers; although the relation API escapes
-    them, membership in this set is asserted before any name is used.
-    """
-    allowed: set[str] = set()
-    for sql in (
-        "SELECT table_name FROM information_schema.tables WHERE table_catalog = ?",
-        "SELECT column_name FROM information_schema.columns WHERE table_catalog = ?",
-    ):
-        allowed.update(name for (name,) in con.execute(sql, [CATALOG]).fetchall())
-    return allowed
+def _allowlisted(cols_by_table: dict[str, list[tuple[str, str]]]) -> set[str]:
+    """Every table and column name the source actually contains (from the
+    builder's catalog — DuckDB cannot parameterize identifiers, so membership
+    in this set is asserted before any name is used)."""
+    return set(cols_by_table) | {name for cols in cols_by_table.values() for name, _ in cols}
 
 
-def _table_rel(con: duckdb.DuckDBPyConnection, table: str, allowed: set[str]):
+def _table_rel(con: duckdb.DuckDBPyConnection, ref: str, table: str, allowed: set[str]):
     if table not in allowed:
         raise ValueError(f"identifier not present in the catalog: {table!r}")
-    return con.table(f"{CATALOG}.main.{_q(table)}")
+    # con.table() cannot bind schema-qualified views; a plain SELECT through
+    # con.sql resolves identically for attaches and views (read-only relation).
+    return con.sql(f"SELECT * FROM {ref}.{_q(table)}")
 
 
 def _column_rel(rel, column: str, allowed: set[str]):
@@ -158,17 +165,16 @@ def _column_rel(rel, column: str, allowed: set[str]):
 
 
 def _profile_table(
-    con: duckdb.DuckDBPyConnection, table: str, allowed: set[str]
-) -> tuple[list[tuple[str, str]], int, list[str], dict]:
-    """Return (columns as (name, type), row_count, pk_candidates, column profiles)."""
-    cols = con.execute(
-        "SELECT column_name, data_type FROM information_schema.columns"
-        " WHERE table_catalog = ? AND table_schema = 'main' AND table_name = ?"
-        " ORDER BY ordinal_position",
-        [CATALOG, table],
-    ).fetchall()
+    con: duckdb.DuckDBPyConnection,
+    ref: str,
+    table: str,
+    cols: list[tuple[str, str]],
+    allowed: set[str],
+) -> tuple[int, list[str], dict]:
+    """Return (row_count, pk_candidates, column profiles); ``cols`` comes from
+    the builder's catalog (name, type) pairs in ordinal order."""
     names = [c[0] for c in cols]
-    rel = _table_rel(con, table, allowed)
+    rel = _table_rel(con, ref, table, allowed)
 
     row_count = rel.aggregate("COUNT(*) AS n").fetchall()[0][0]
     counts: dict[str, tuple[int, int]] = {}
@@ -184,7 +190,7 @@ def _profile_table(
         if row_count > 0 and counts[name][0] == row_count and counts[name][1] == row_count
     ]
 
-    cur = con.sql(f"SUMMARIZE {CATALOG}.main.{_q(table)}")
+    cur = con.sql(f"SUMMARIZE {ref}.{_q(table)}")
     fields = [d[0] for d in cur.description]
     summarize = {row[0]: dict(zip(fields, row, strict=True)) for row in cur.fetchall()}
 
@@ -221,21 +227,23 @@ def _profile_table(
             ]
             entry["top_value_share"] = top[0][1] / row_count
         columns[name] = entry
-    return cols, row_count, pk_candidates, columns
+    return row_count, pk_candidates, columns
 
 
 def _fk_candidates(
     con: duckdb.DuckDBPyConnection,
+    ref: str,
     table: str,
     cols: list[tuple[str, str]],
     non_null: dict[str, int],
     pk_candidates: list[str],
     pk_by_table: dict[str, list[str]],
     allowed: set[str],
+    cols_by_table: dict[str, list[tuple[str, str]]],
 ) -> list[dict]:
     """``*_id`` columns whose name resolves to another table's PK, type-checked
     and verified by containment (``match_ratio``)."""
-    table_rel = _table_rel(con, table, allowed)
+    table_rel = _table_rel(con, ref, table, allowed)
     candidates: list[dict] = []
     for name, type_name in cols:
         if name in pk_candidates or not name.endswith("_id") or len(name) <= 3:
@@ -249,19 +257,16 @@ def _fk_candidates(
             target_col = min(target_pks, key=lambda c: (c != "id", c != name))
             if target_table == table and target_col == name:
                 continue  # a column referencing itself is its own PK, not an FK
-            target_type = con.execute(
-                "SELECT data_type FROM information_schema.columns"
-                " WHERE table_catalog = ? AND table_schema = 'main'"
-                " AND table_name = ? AND column_name = ?",
-                [CATALOG, target_table, target_col],
-            ).fetchall()
+            target_type = [
+                (c, t) for c, t in cols_by_table.get(target_table) or [] if c == target_col
+            ]
             if not target_type:
                 continue
-            target_is_numeric = _numeric(type_name) and _numeric(target_type[0][0])
-            if not target_is_numeric and type_name != target_type[0][0]:
+            target_is_numeric = _numeric(type_name) and _numeric(target_type[0][1])
+            if not target_is_numeric and type_name != target_type[0][1]:
                 continue
             src = _column_rel(table_rel, name, allowed).set_alias("s")
-            tgt_rel = _table_rel(con, target_table, allowed)
+            tgt_rel = _table_rel(con, ref, target_table, allowed)
             tgt = _column_rel(tgt_rel, target_col, allowed).set_alias("t")
             orphans = (
                 src.join(tgt, "s.__profile_value = t.__profile_value", "left")
@@ -289,62 +294,90 @@ def _fk_candidates(
     return candidates
 
 
-def profile(db_path: str | Path) -> dict:
-    """Profile every table in a SQLite database (shape documented in the module docstring)."""
-    db_path = Path(db_path)
-    if not db_path.is_file():
-        raise FileNotFoundError(f"database not found: {db_path}")
-    con = duckdb.connect()
+def _profile_source(con: duckdb.DuckDBPyConnection, entry: dict) -> dict:
+    """Profile every table of one builder-catalog source: attaches address
+    tables as ``<catalog>.<schema>.<table>``, file views as
+    ``<schema>.<table>`` — both are the per-table ``ref`` the builder emits."""
+    cols_by_table = {
+        table["name"]: [(col["name"], col["type"]) for col in table["columns"]]
+        for table in entry["tables"]
+    }
+    refs = {table["name"]: table.get("ref") or entry["name"] for table in entry["tables"]}
+    allowed = _allowlisted(cols_by_table)
+    tables: dict[str, dict] = {}
+    pk_by_table: dict[str, list[str]] = {}
+    profiles: dict[str, tuple] = {}
+    for name in cols_by_table:  # builder catalog order == information_schema order
+        cols = cols_by_table[name]
+        row_count, pk_candidates, columns = _profile_table(
+            con, refs[name], name, cols, allowed
+        )
+        profiles[name] = (cols, row_count, pk_candidates, columns)
+        pk_by_table[name] = pk_candidates
+    for name, (cols, row_count, pk_candidates, columns) in profiles.items():
+        non_null = {n: row_count - col["null_count"] for n, col in columns.items()}
+        tables[name] = {
+            "row_count": row_count,
+            "primary_key_candidates": pk_candidates,
+            "foreign_key_candidates": _fk_candidates(
+                con,
+                refs[name],
+                name,
+                cols,
+                non_null,
+                pk_candidates,
+                pk_by_table,
+                allowed,
+                cols_by_table,
+            ),
+            "columns": columns,
+        }
+    return {"name": entry["name"], "type": entry["type"], "tables": tables}
+
+
+def profile(db_path: str | Path | None = None, *, sources_path: str | Path | None = None) -> dict:
+    """Profile every table of every source (shapes documented in the module
+    docstring): the legacy single-sqlite call via ``db_path``, the full
+    registry via ``sources_path`` (ADR-0010, shared connection builder)."""
+    if sources_path is not None:
+        registry = load_registry(sources_path)
+    elif db_path is not None:
+        registry = implicit_registry(db_path)
+        if not Path(db_path).is_file():
+            raise FileNotFoundError(f"database not found: {db_path}")
+    else:
+        raise ValueError("profile requires db_path or sources_path")
+    con, catalog = build_connection(registry)
     try:
-        # ATTACH cannot take prepared parameters; quote-bearing paths are
-        # rejected outright instead of escaped into SQL text.
-        db_file = str(db_path.resolve())
-        if "'" in db_file:
-            raise ValueError(f"database path contains a quote character: {db_file!r}")
-        con.execute(f"ATTACH '{db_file}' AS {CATALOG} (TYPE SQLITE, READ_ONLY)")
-        all_tables = [
-            row[0]
-            for row in con.execute(
-                "SELECT table_name FROM information_schema.tables"
-                " WHERE table_catalog = ? AND table_schema = 'main' ORDER BY 1",
-                [CATALOG],
-            ).fetchall()
-        ]
-        allowed = _allowlisted(con)
-        tables: dict[str, dict] = {}
-        pk_by_table: dict[str, list[str]] = {}
-        profiles: dict[str, tuple] = {}
-        for table in all_tables:
-            cols, row_count, pk_candidates, columns = _profile_table(con, table, allowed)
-            profiles[table] = (cols, row_count, pk_candidates, columns)
-            pk_by_table[table] = pk_candidates
-        for table in all_tables:
-            cols, row_count, pk_candidates, columns = profiles[table]
-            non_null = {name: row_count - col["null_count"] for name, col in columns.items()}
-            tables[table] = {
-                "row_count": row_count,
-                "primary_key_candidates": pk_candidates,
-                "foreign_key_candidates": _fk_candidates(
-                    con, table, cols, non_null, pk_candidates, pk_by_table, allowed
-                ),
-                "columns": columns,
-            }
-        return {"db_path": str(db_path), "dialect": "sqlite", "tables": tables}
+        sources = [_profile_source(con, entry) for entry in catalog]
     finally:
         con.close()
+    if sources_path is not None:
+        return {"sources_path": str(sources_path), "sources": sources}
+    (only,) = sources  # the legacy shape: one sqlite source, historical keys
+    return {"db_path": str(db_path), "dialect": "sqlite", "tables": only["tables"]}
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="python -m ariadne.profiler",
-        description="Profile a SQLite database for the authoring agent (writes profile.json).",
+        description="Profile a database for the authoring agent (writes profile.json).",
     )
-    parser.add_argument("--db", required=True, help="path to the SQLite database")
+    parser.add_argument("--db", default=None, help="path to the SQLite database")
+    parser.add_argument(
+        "--sources",
+        default=None,
+        help="source registry YAML (ADR-0010; default: ./ariadne.yaml when it "
+        "declares sources, else --db)",
+    )
     parser.add_argument("--out", default="profile.json", help="output path (default: profile.json)")
     parser.add_argument("--no-out", action="store_true", help="print to stdout only, write no file")
     args = parser.parse_args(argv)
 
-    text = json.dumps(profile(args.db), indent=2)
+    sources_path = default_registry_path(args.sources)
+    if args.db is None and sources_path is None:
+        parser.error("one of --db or --sources is required")
+    text = json.dumps(profile(args.db, sources_path=sources_path), indent=2)
     print(text)
     if not args.no_out:
         Path(args.out).write_text(text + "\n", encoding="utf-8")

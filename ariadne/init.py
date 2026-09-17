@@ -88,11 +88,51 @@ TODO: the metrics you want governed, in plain words, each citing the rule(s)
 above that make them right.
 """
 
+# ADR-0010 source registry template: all comments — an empty/parsed-absent
+# registry counts as absent (commands fall back to --db), so a fresh project
+# boots unchanged until the owner declares sources. Credentials are NEVER
+# written here: postgres sources name an environment variable (connection_env);
+# an inline connection string is a validation error (ADR-0010).
+ARIADNE_YAML = """\
+# ariadne.yaml — declarative source registry (ADR-0010, spec rev 9 §8.20).
+# Uncomment and edit the block below to declare your sources; every command
+# (serve/author/validate/profiler) picks this file up automatically — or pass
+# --sources explicitly. Each source is addressable as <name>.<table>.
+# Paths are relative to this file's directory; globs need an explicit table name.
+#
+# sources:
+#   - name: demo
+#     type: sqlite
+#     path: data/demo.db
+#   - name: events
+#     type: parquet
+#     path: data/events/*.parquet
+#     table: events              # one view over the whole glob
+#   - name: raw_orders
+#     type: csv                  # also: json, parquet (local or https:// / s3://)
+#     path: data/orders.csv      # view named after the file stem: raw_orders.orders
+#   - name: lake
+#     type: delta
+#     path: data/lake/orders
+#   - name: iceberg_catalog
+#     type: iceberg
+#     path: s3://bucket/warehouse/sales
+#     table: sales
+#   - name: warehouse
+#     type: ducklake
+#     path: ducklake:warehouse.ducklake
+#   - name: pg
+#     type: postgres
+#     connection_env: ARIADNE_PG_DSN   # the NAME of the env var holding the DSN
+#     read_only: true
+"""
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ariadne-init",
-        description="Scaffold a fresh ariadne project: seed notes, .env.example, "
+        description="Scaffold a fresh ariadne project: seed notes, a commented "
+        "ariadne.yaml source registry template, .env.example, "
         ".mcp.json, .gitignore, and an empty data/ (inputs only — the served "
         "layers come from ariadne-author + ariadne-promote).",
     )
@@ -114,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
 
     files = [
         ("data/seed_notes.md", SEED_NOTES),
+        ("ariadne.yaml", ARIADNE_YAML),
         (".env.example", ENV_EXAMPLE),
         (".mcp.json", json.dumps(MCP_JSON, indent=2) + "\n"),
         (".gitignore", GITIGNORE),

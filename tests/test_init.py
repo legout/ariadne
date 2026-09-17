@@ -72,7 +72,8 @@ def test_second_run_is_idempotent(tmp_path, capsys):
     after = {p.relative_to(target): p.read_bytes() for p in target.rglob("*") if p.is_file()}
     assert before == after  # byte-identical tree: nothing rewritten
     skipped = [line for line in out.splitlines() if "skipped (exists)" in line]
-    assert len(skipped) == 4  # every input file reported skipped, none rewritten
+    assert len(skipped) == 5  # every input file reported skipped, none rewritten
+    # (rev 9: the scaffolded inputs include the ariadne.yaml registry template)
 
 
 def test_existing_gitignore_is_not_overwritten(tmp_path):

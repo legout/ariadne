@@ -12,9 +12,11 @@ Exactly five tools (spec §4):
 
 Mechanism per ADR-0008 (spec rev 7): our own sqlglot compiler
 (:mod:`ariadne.render`) renders the OSI envelope model to SQL and the
-facade-owned DuckDB connection — with the SQLite database attached read-only as
-catalog ``demo`` — executes it. ``range`` is an optional ``{start, end}`` applied
-by the compiler to the model's primary date dimension (the is_time field).
+facade-owned DuckDB connection — built by the shared source-registry builder
+(:mod:`ariadne.sources`, ADR-0010: a ``ariadne.yaml`` registry, or the legacy
+``--db`` SQLite file attached read-only as catalog ``demo``) — executes it.
+``range`` is an optional ``{start, end}`` applied by the compiler to the
+model's primary date dimension (the is_time field).
 ``list_metrics``/``list_datasets`` read the envelope metadata and the attach
 directly — no datus anywhere in the runtime.
 
@@ -70,6 +72,15 @@ from ariadne.grain import GRAIN_GUIDANCE, check_grain_preserving  # noqa: F401 �
 # (the pyright ignore below: the analyzer may bind `ariadne` to a copy predating
 # this lane's render module — see ADR-0008; runtime and uvx pyright resolve it)
 from ariadne.render import render  # pyright: ignore[reportMissingImports]
+
+# ADR-0010: the facade's DuckDB session comes from the shared registry builder
+# (ariadne.yaml --sources, or the legacy --db single-sqlite shorthand).
+from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    build_connection,
+    default_registry_path,
+    implicit_registry,
+    load_registry,
+)
 
 # ADR-0008: the compile path is ariadne.render (own sqlglot compiler) — datus is
 # no longer imported at all. The historical spec §7 fail-fast contract stays
@@ -130,6 +141,7 @@ class Facade:
         context_dir: str | Path,
         db_path: str | Path,
         staging_dir: str | Path = "staging",
+        sources: str | Path | None = None,
     ):
         if _DATUS_IMPORT_ERROR is not None:  # spec §7: fail fast with the hint
             raise RuntimeError(f"{INSTALL_HINT}: {_DATUS_IMPORT_ERROR}")
@@ -174,15 +186,19 @@ class Facade:
         except Exception as exc:
             raise RuntimeError(f"served OSI models under {models} do not compile: {exc}") from exc
 
-        # Spike §6.2: non-DuckDB attaches are connection-local, so the facade
-        # attaches once on its long-lived connection; compiled SQL references
-        # demo.main.<table> (the authoring contract's catalog name).
-        self.con = duckdb.connect()
-        # db_path is the operator's CLI arg (trusted input; spec §6 accepted boundary)
-        # and DuckDB's ATTACH takes no bind parameters — the f-string is a formatter.
-        self.con.execute(f"ATTACH '{Path(db_path)}' AS demo (TYPE SQLITE, READ_ONLY)")  # nosemgrep
-        # Bare table names in agent-authored ad-hoc sources resolve against the attach.
-        self.con.execute("USE demo.main")
+        # ADR-0010: one shared builder produces the facade's long-lived DuckDB
+        # session over the registry sources (addressable as <source>.<table>);
+        # non-DuckDB attaches are connection-local, so this happens exactly
+        # once. Compiled SQL references <catalog>.<schema>.<table> — the legacy
+        # shorthand keeps the authoring contract's catalog name demo.
+        registry = (
+            load_registry(sources) if sources is not None else implicit_registry(db_path)
+        )
+        self.con, self.catalog = build_connection(registry)
+        self._qualified = sources is not None
+        if not self._qualified:
+            # Bare table names in agent-authored ad-hoc sources resolve against the attach.
+            self.con.execute("USE demo.main")
         self.staging_dir = Path(staging_dir)
         # Governed-path grain-guard memo: the served envelopes are loaded once here
         # and never re-read, so one passing check per metric holds for the facade's
@@ -205,17 +221,24 @@ class Facade:
         return entries
 
     async def list_datasets(self) -> list[dict]:
-        """Every table in the attached database with its columns (the agent's map)."""
-        rows = self.con.execute(
-            "SELECT table_name, column_name, data_type FROM information_schema.columns "
-            "WHERE table_catalog = 'demo' AND table_schema = 'main' "
-            "ORDER BY table_name, ordinal_position"
-        ).fetchall()
-        datasets: dict[str, dict] = {}
-        for table, column, data_type in rows:
-            entry = datasets.setdefault(table, {"name": table, "columns": []})
-            entry["columns"].append({"name": column, "type": data_type})
-        return list(datasets.values())
+        """Every queryable table across all registry sources with its columns
+        (the agent's map, spec rev 9 §8.20). The legacy --db shorthand keeps
+        plain table names; a registry qualifies each entry as
+        ``<source>.<table>`` so both sources stay distinguishable."""
+        datasets: list[dict] = []
+        for source in self.catalog:
+            for table in source["tables"]:
+                datasets.append(
+                    {
+                        "name": (
+                            f"{source['name']}.{table['name']}"
+                            if self._qualified
+                            else table["name"]
+                        ),
+                        "columns": table["columns"],
+                    }
+                )
+        return datasets
 
     async def get_metric(
         self,
@@ -581,6 +604,12 @@ def main(argv: list[str] | None = None) -> int:
         description="MCP stdio facade over the served context and semantic layers.",
     )
     parser.add_argument("--db", default="data/demo.db", help="SQLite database to attach read-only")
+    parser.add_argument(
+        "--sources",
+        default=None,
+        help="source registry YAML (ADR-0010; default: ./ariadne.yaml when it "
+        "declares sources, else --db)",
+    )
     parser.add_argument("--semantic", default="semantic_layer", help="served OSI layer directory")
     parser.add_argument("--context", default="context_layer", help="served OKF layer directory")
     parser.add_argument(
@@ -589,7 +618,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        facade = Facade(args.semantic, args.context, args.db, staging_dir=args.staging)
+        facade = Facade(
+            args.semantic,
+            args.context,
+            args.db,
+            staging_dir=args.staging,
+            sources=default_registry_path(args.sources),
+        )
     except Exception as exc:  # fail fast before any MCP traffic
         print(f"error: {exc}", file=sys.stderr)
         return 1

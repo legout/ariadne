@@ -50,6 +50,11 @@ from typing import Any, cast
 
 import yaml
 
+# ADR-0010: the author loop runs on the shared registry connection when a
+# registry is in play (--sources / ariadne.yaml), else the legacy --db sqlite.
+from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    default_registry_path,
+)
 from ariadne.validate import validate
 
 ENV_PATH = Path(os.environ.get("ARIADNE_ENV", "/home/volker/coding/ariadne/.env"))
@@ -628,20 +633,22 @@ def _staged_paths(staging: Path) -> list[Path]:
 
 
 def author(
-    db_path: str | Path,
+    db_path: str | Path | None,
     notes_path: str | Path,
     *,
     staging_dir: str | Path = "staging",
     complete=None,
     validate_fn=None,
     rounds: int = MAX_ROUNDS,
+    sources_path: str | Path | None = None,
 ) -> list[Path]:
     """Run the authoring loop; return the staged file paths.
 
     ``complete(messages) -> str`` is the LLM call boundary (default: the
     OpenAI-compatible endpoint); ``validate_fn(staging_dir) -> ValidationResult``
-    is the validation gate (default: real Datus compile plus the ADR-0006 §5
-    grain audit over ``db_path`` — spec rev 6 §8.14)."""
+    is the validation gate (default: real compile plus the ADR-0006 §5 grain
+    audit over this author run's connection — spec rev 6 §8.14 — the legacy
+    ``db_path`` sqlite attach, or the ADR-0010 registry via ``sources_path``)."""
     if rounds > MAX_ROUNDS:
         raise ValueError(
             f"rounds={rounds} exceeds the spec §5 hard cap of {MAX_ROUNDS} "
@@ -651,12 +658,15 @@ def author(
     _validate_staging(staging)
     staging.mkdir(parents=True, exist_ok=True)
     complete = complete or _default_complete
-    # Default gate: compile + grain audit over this author run's database (rev 6).
-    gate = validate_fn or (lambda staged: validate(staged, db_path=db_path))
+    # Default gate: compile + grain audit over this author run's database (rev 6);
+    # a registry (ADR-0010) replaces the single-sqlite audit connection.
+    gate = validate_fn or (
+        lambda staged: validate(staged, db_path=db_path, sources_path=sources_path)
+    )
 
     from ariadne.profiler import profile
 
-    profile_data = profile(db_path)
+    profile_data = profile(db_path, sources_path=sources_path)
     notes = Path(notes_path).read_text(encoding="utf-8")
     messages: list[dict] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
@@ -726,7 +736,17 @@ def main(argv: list[str] | None = None) -> int:
         prog="python -m ariadne.author",
         description="Author OKF context pages and OSI semantic models into staging/.",
     )
-    parser.add_argument("--db", required=True, help="path to the SQLite database")
+    parser.add_argument(
+        "--db",
+        default=None,
+        help="path to the SQLite database (or --sources)",
+    )
+    parser.add_argument(
+        "--sources",
+        default=None,
+        help="source registry YAML (ADR-0010; default: ./ariadne.yaml when it "
+        "declares sources, else --db)",
+    )
     parser.add_argument("--notes", required=True, help="path to the seed notes markdown")
     parser.add_argument("--staging", default="staging", help="staging directory (default: staging)")
     parser.add_argument("--rounds", type=int, default=MAX_ROUNDS)
@@ -734,12 +754,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if not 1 <= args.rounds <= MAX_ROUNDS:
         parser.error(f"--rounds must be between 1 and {MAX_ROUNDS} (spec §5 hard cap)")
+    sources_path = default_registry_path(args.sources)
+    if args.db is None and sources_path is None:
+        parser.error("one of --db or --sources is required")
     try:
         _validate_staging(Path(args.staging))
     except ValueError as exc:
         parser.error(str(exc))
 
-    paths = author(args.db, args.notes, staging_dir=Path(args.staging), rounds=args.rounds)
+    paths = author(
+        args.db,
+        args.notes,
+        staging_dir=Path(args.staging),
+        rounds=args.rounds,
+        sources_path=sources_path,
+    )
     for path in paths:
         print(f"staged: {path}")
     if _needs_human_review(paths):  # spec §6/§7: review_needed artifacts are not promotable

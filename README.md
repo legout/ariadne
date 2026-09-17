@@ -58,6 +58,43 @@ scripts/demo.sh          # pauses for human promotion instead
 The repo ships a `.mcp.json` — pi (via `pi-mcp-adapter`) and any MCP-capable agent connect
 to the facade directly; restart the agent after config changes.
 
+## Sources — the `ariadne.yaml` registry (ADR-0010)
+
+Every command takes its data sources from one declarative registry — a `sources:` block in
+`ariadne.yaml` (scaffolded, commented-out, by `ariadne-init`). When the file declares sources,
+all commands (`ariadne-serve`, `ariadne-author`, `ariadne-validate`, `ariadne-profiler`) use it
+automatically; `--sources <file>` overrides, and the legacy `--db data/demo.db` remains the
+single-SQLite shorthand (catalog `demo`) for projects without a registry.
+
+```yaml
+sources:
+  - name: demo            # addressable as demo.<table>
+    type: sqlite
+    path: data/demo.db
+  - name: events
+    type: parquet
+    path: data/events/*.parquet
+    table: events        # globs: one view over the whole glob
+  - name: raw_orders     # csv / json / parquet — local or https:// / s3:// (httpfs)
+    type: csv
+    path: data/orders.csv
+  - name: lake
+    type: delta           # also: iceberg, ducklake (DuckDB extensions)
+    path: data/lake/orders
+  - name: pg
+    type: postgres
+    connection_env: ARIADNE_PG_DSN   # env-var NAME only — resolved at runtime
+```
+
+The shared connection builder produces one read-only DuckDB session for all commands, so every
+source is addressable as `<source>.<table>` and the compiler, grain guard, and audit operate
+unchanged over the unified connection (`list_datasets()` reflects the full multi-source catalog).
+Validation rejects unknown types, non-slug names, glob paths without a `table:`, and any inline
+connection string — credentials are environment-variable references only (ADR-0010: never
+committed; a missing variable fails with the variable name in the error). Live-fixture tests
+cover sqlite/csv/json/parquet/delta; iceberg/ducklake/postgres/remote paths are covered by
+exact statement-construction tests.
+
 ## Document ingestion (ADR-0009)
 
 `ariadne-ingest project/ingest-example.md` turns a document into typed OKF proposals without
