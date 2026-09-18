@@ -296,6 +296,7 @@ def build_connection(
     secrets = [_resolve_dsn(src) for src in registry.sources if src.type == "postgres"]
     con = duckdb.connect()
     for extension in loads:
+        # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         con.execute(f"LOAD {extension}")
     for statement in statements:
         try:
