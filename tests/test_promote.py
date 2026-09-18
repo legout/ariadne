@@ -9,7 +9,7 @@ shape so the frontmatter round-trip is exercised for real.
 
 from pathlib import Path
 
-import pytest
+import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
 
 from ariadne.promote import Change, _index_for, main, promote
@@ -268,3 +268,20 @@ def test_promote_cli_yes(tmp_path):
     meta = front(served / "context_layer" / "metrics" / "gross_margin.md")
     assert meta["verified"] == [{"by": BY, "at": meta["verified"][0]["at"]}]  # one entry
     assert meta["verified"][0]["at"]  # stamped with the promotion time
+
+
+def test_promote_cli_fresh_project_defaults_to_project_root(tmp_path, monkeypatch):
+    """Spec rev 10 §8.21: with no --served and no ./context_layer, promotion
+    defaults the served root to the project root — the first promotion creates
+    context_layer/ + semantic_layer/ THERE instead of reporting "nothing to
+    promote" against a package-relative guess. Staging defaults to ./staging
+    (the ariadne-author convention)."""
+    project = tmp_path / "fresh"
+    make_staging(project / "staging")
+    monkeypatch.chdir(project)
+    assert main(["--yes", "--by", BY]) == 0
+    meta = front(project / "context_layer" / "metrics" / "gross_margin.md")
+    assert meta["status"] == "stable"
+    assert meta["verified"] == [{"by": BY, "at": meta["verified"][0]["at"]}]
+    assert (project / "semantic_layer" / "models" / "orders.yml").is_file()
+    assert (project / "context_layer" / "index.md").is_file()

@@ -1,9 +1,17 @@
 """Project scaffolder (``ariadne-init [TARGET_DIR]``): writes the INPUT files a
-fresh ariadne project needs — seed notes, .env.example, .mcp.json, .gitignore,
-and an empty ``data/`` (with ``data/docs/`` for source documents destined for
-``ariadne-ingest``, ADR-0009). It never creates OUTPUTS: the served bundle
-(``context_layer/``, ``semantic_layer/``) arrives only via ``ariadne-author`` +
-``ariadne-promote`` (spec §6: served artifacts are promoted, never pre-seeded).
+fresh ariadne project needs — seed notes, an AGENTS.md pointer page, .env.example,
+.mcp.json, .gitignore, and an empty ``data/`` (with ``data/docs/`` for source
+documents destined for ``ariadne-ingest``, ADR-0009). It never creates OUTPUTS:
+the served bundle (``context_layer/``, ``semantic_layer/``) arrives only via
+``ariadne-author`` + ``ariadne-promote`` (spec §6: served artifacts are promoted,
+never pre-seeded).
+
+AGENTS.md is deliberately a pointer page (ADR-0011, spec rev 10): project facts,
+the directory layout, the promotion-gate rule, and "load the ariadne skill" —
+the workflow itself lives in the packaged skill (``ariadne skill install``),
+not duplicated here. The scaffolded ``.mcp.json`` is registry-aware: it points
+the facade at ``ariadne.yaml``, whose ``sources:`` block is the single source
+of truth for what the project serves (ADR-0010).
 
 Idempotent: an existing file is reported and skipped, never overwritten. A
 directory that already holds an ariadne ``pyproject.toml`` (i.e. this repo) is
@@ -44,14 +52,17 @@ OPENAI_MODEL=
 """
 
 # Facade entry for MCP-capable agents (pi via pi-mcp-adapter, or any MCP client).
-# Same shape as the ariadne repo's .mcp.json, minus the worktree-specific cwd.
+# Registry-aware (ADR-0010/spec rev 10): --sources names the project's ariadne.yaml
+# — its sources: block (declared after init) is what the facade serves. The
+# semantic/context paths are the project-root defaults ariadne-promote creates on
+# first promotion in a fresh project.
 MCP_JSON = {
     "mcpServers": {
         "ariadne": {
             "command": "ariadne-serve",
             "args": [
-                "--db",
-                "data/YOURDB.db",
+                "--sources",
+                "ariadne.yaml",
                 "--semantic",
                 "semantic_layer",
                 "--context",
@@ -62,6 +73,40 @@ MCP_JSON = {
         }
     }
 }
+
+# Rev 10 (ADR-0011): AGENTS.md shrinks to project facts + the layout table + the
+# promotion-gate rule + a pointer to the packaged skill — the workflow prose the
+# skill owns is NOT duplicated here (per-project files describe the project;
+# the skill describes how to work).
+AGENTS_MD = """\
+# Ariadne project facts
+
+## What this project is
+
+TODO: one paragraph — what the database is about, who owns it, which questions
+the governed metrics answer. The human-owned rules live in `data/seed_notes.md`;
+served policy pages cite them.
+
+## The ariadne skill
+
+Load the ariadne skill (`ariadne skill install` if absent) — it carries the
+workflow and the grain rules. This file holds only project facts.
+
+## Layout
+
+| Directory | Role |
+| :--- | :--- |
+| `data/` | Inputs: the database(s), `data/seed_notes.md`, `data/docs/` source documents. |
+| `staging/` | Authoring output awaiting human review — the only place agents write. |
+| `context_layer/` | Served OKF bundle: policies, metrics, computations (promotion output). |
+| `semantic_layer/` | Served OSI models: the governed metric definitions (promotion output). |
+
+## Promotion gate
+
+Served artifacts arrive ONLY by human promotion (`ariadne-promote`): agents never
+write outside `staging/`, and anything staged with `status: review_needed` refuses
+promotion until a human resolves it.
+"""
 
 SEED_NOTES = """\
 # Seed notes — TODO: name your database
@@ -131,10 +176,10 @@ ARIADNE_YAML = """\
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ariadne-init",
-        description="Scaffold a fresh ariadne project: seed notes, a commented "
-        "ariadne.yaml source registry template, .env.example, "
-        ".mcp.json, .gitignore, and an empty data/ (inputs only — the served "
-        "layers come from ariadne-author + ariadne-promote).",
+        description="Scaffold a fresh ariadne project: seed notes, an AGENTS.md "
+        "pointer page, a commented ariadne.yaml source registry template, "
+        ".env.example, .mcp.json, .gitignore, and an empty data/ (inputs only — "
+        "the served layers come from ariadne-author + ariadne-promote).",
     )
     parser.add_argument("target", nargs="?", default=".", help="directory to scaffold (default: .)")
     parser.add_argument(
@@ -155,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     files = [
         ("data/seed_notes.md", SEED_NOTES),
         ("ariadne.yaml", ARIADNE_YAML),
+        ("AGENTS.md", AGENTS_MD),
         (".env.example", ENV_EXAMPLE),
         (".mcp.json", json.dumps(MCP_JSON, indent=2) + "\n"),
         (".gitignore", GITIGNORE),

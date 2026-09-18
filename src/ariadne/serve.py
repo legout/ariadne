@@ -5,7 +5,10 @@ Exactly five tools (spec §4):
     list_metrics()                     -> served governed metrics with descriptions
     list_datasets()                    -> [{name, columns: [{name, type}]}] from the attach
     search_context(query)              -> ranked matches over context_layer/**/*.md
-    get_metric(name, dimensions, range)-> rows PLUS the compiled SQL (provenance), governed: true
+    get_metric(name, dimensions, range)-> rows PLUS the compiled SQL (provenance),
+                                          governed: true + context (rev 10): the full
+                                          served OKF metric page plus the full bodies
+                                          of every policy its frontmatter cites
     define_metric(definition)          -> the ad-hoc path (spec rev 3): ephemeral OSI model ->
                                           render -> read-only execution -> rows + SQL +
                                           governed: false + auto-staged proposal
@@ -111,6 +114,10 @@ ROUTING_HINT = (
 # front with an actionable message (lowercase snake_case, no double underscore).
 _SLUG_RE = re.compile(r"[a-z][a-z0-9_]*[a-z0-9]")
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+# OKF page frontmatter (same shape as author/promote): sources[] resolution for
+# the rev 10 context field reads it.
+_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)\Z", re.DOTALL)
 
 
 def assert_single_statement(sql: str) -> None:
@@ -285,7 +292,33 @@ class Facade:
             "rows": rows,
             "sql": sql,
             "governed": True,  # spec rev 3 §8.10: symmetry with define_metric
+            "context": self._metric_context(name),  # spec rev 10 §8.21 (ADR-0011)
         }
+
+    def _metric_context(self, name: str) -> dict:
+        """Rev 10 (ADR-0011): the governed number ships with its caveats — the full
+        served OKF metric page (``context_layer/metrics/<name>.md``) plus the full
+        bodies of every policy page its frontmatter ``sources[]`` cites
+        (``policies/`` paths, resolved against the served context dir). Context
+        problems NEVER fail the query — the number is still governed: a missing
+        metric page or an unresolvable policy reference collapses to
+        ``{metric_page: null, policies: []}`` and is logged nowhere."""
+        try:
+            text = (self.context_dir / "metrics" / f"{name}.md").read_text(encoding="utf-8")
+            match = _FRONTMATTER_RE.match(text)
+            meta = (yaml.safe_load(match.group(1)) or {}) if match else {}
+            refs = (
+                source.get("resource") if isinstance(source, dict) else source
+                for source in meta.get("sources") or []
+            )
+            policies = [
+                (self.context_dir / ref).read_text(encoding="utf-8")
+                for ref in refs
+                if isinstance(ref, str) and ref.startswith("policies/")
+            ]
+            return {"metric_page": text, "policies": policies}
+        except Exception:  # missing page, unresolvable ref, unparsable frontmatter
+            return {"metric_page": None, "policies": []}
 
     async def define_metric(self, definition: dict) -> dict:
         """Ad-hoc path (spec rev 3 §4/§5): draft -> compile gate -> execute -> stage.
@@ -340,6 +373,7 @@ class Facade:
             "rows": rows,
             "sql": sql,
             "governed": False,
+            "context": None,  # spec rev 10: no served page exists for ad-hoc metrics
             "definition": params,  # echoed definition
             "staged_as": str(staged_as),
             "staged_context_as": str(staged_page),
@@ -552,6 +586,10 @@ def build_app(facade: Facade):
         name: str, dimensions: list[str] | None = None, range: dict | None = None
     ) -> dict:
         """Rows plus compiled SQL for a named governed metric — never raw SQL.
+
+        The response carries a context field: the full served OKF metric page
+        plus the full bodies of every policy it cites. Report those caveats
+        with every number (context is null-shaped when no page is served yet).
 
         Args:
             name: governed metric name (see list_metrics).
