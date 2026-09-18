@@ -74,11 +74,21 @@ def test_agents_md_is_pointer_page_not_workflow(tmp_path):
     target = tmp_path / "proj"
     assert main([str(target)]) == 0
     agents = (target / "AGENTS.md").read_text(encoding="utf-8")
-    assert "Load the ariadne skill (`ariadne skill install` if absent)" in agents
+    assert "Load the ariadne skill (`ariadne-skill install` if absent)" in agents
     assert "TODO" in agents  # project facts the owner fills in
     assert "`context_layer/`" in agents and "`staging/`" in agents  # layout table
     assert "ariadne-promote" in agents and "review_needed" in agents  # gate rule
     assert "profile" not in agents.lower()  # the loop prose lives in the skill
+
+
+def test_agents_md_names_the_real_skill_command(tmp_path):
+    """The packaged CLI is ``ariadne-skill`` — no generated input may reference
+    the absent ``ariadne skill`` command form (there is no umbrella CLI)."""
+    target = tmp_path / "proj"
+    assert main([str(target)]) == 0
+    agents = (target / "AGENTS.md").read_text(encoding="utf-8")
+    assert "ariadne-skill install" in agents
+    assert "ariadne skill install" not in agents
 
 
 def test_second_run_is_idempotent(tmp_path, capsys):

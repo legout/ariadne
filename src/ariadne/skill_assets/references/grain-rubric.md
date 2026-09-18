@@ -4,8 +4,9 @@ The compiler aggregates at joined-row grain and does NOT prevent fan-out
 (Datus-ai/Datus-agent#1426): a naive 1:N join silently inflates parent-grain
 sums. Before any join enters a metric source, verify each join key is unique on
 the joined side; if it is not, resolve the relationship with one of the five
-patterns below. In ariadne this is enforced, not advisory: `define_metric` and
-the validate audit reject non-grain-preserving sources before compile.
+patterns below. In ariadne this is enforced, not advisory: `define_metric`
+rejects non-grain-preserving sources before compile, and the validate audit
+runs after render/bind compilation, before any execution.
 
 ## 1. Upstream conditional pivot
 
@@ -63,5 +64,6 @@ the validate audit reject non-grain-preserving sources before compile.
 
 `define_metric` sources and authored dataset models must satisfy the guard: a
 joined key that is not unique on the joined side, a cross/`ON TRUE` join, or an
-unprovable predicate is rejected before compile. Pre-aggregate the many side to
+unprovable predicate is rejected — `define_metric` before compile, the validate
+audit after render/bind compilation, before execution. Pre-aggregate the many side to
 the fact grain inside `source` (patterns 1–5), then resubmit.

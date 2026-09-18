@@ -451,6 +451,48 @@ def test_unresolvable_policy_reference_collapses_context_without_failing(served,
     assert result["context"] == {"metric_page": None, "policies": []}
 
 
+def test_metric_page_name_traversal_collapses_context_without_reading_outside(served, tmp_path):
+    """Containment: a served metric name that escapes the context dir (a model
+    YAML is not fully trusted) never reads outside context_layer/ — the page
+    collapses to the null form and the external file's content is absent."""
+    served_dir, db = served
+    secret = served_dir / "secret.md"  # context_layer/metrics/../../secret.md lands here
+    secret.write_text("TOP_SECRET_TRAVERSAL_PAYLOAD", encoding="utf-8")
+    facade = Facade(
+        served_dir / "semantic_layer",
+        served_dir / "context_layer",
+        db,
+        staging_dir=tmp_path / "staging",
+    )
+    context = facade._metric_context("../../secret")
+    assert context == {"metric_page": None, "policies": []}
+    assert "TOP_SECRET_TRAVERSAL_PAYLOAD" not in json.dumps(context)
+
+
+def test_policy_ref_traversal_collapses_context_without_reading_dotenv(served, tmp_path):
+    """Containment: a cited policy ``policies/../../.env`` must resolve under
+    ``policies/`` — it does not, so the whole context collapses to the null form
+    while the query itself still answers, and the .env content never leaks."""
+    served_dir, db = served
+    context_dir = tmp_path / "context_layer"
+    (context_dir / "metrics").mkdir(parents=True)
+    (context_dir / "metrics" / "gross_margin.md").write_text(
+        "---\ntype: metric\nstatus: stable\nsources:\n"
+        "  - {id: theft, resource: policies/../../.env}\n---\n\n# Gross margin\n",
+        encoding="utf-8",
+    )
+    dotenv = tmp_path / ".env"  # context_layer/policies/../../.env resolves here
+    dotenv.write_text("OPENAI_API_KEY=sk-traversal-secret\n", encoding="utf-8")
+    facade = Facade(
+        served_dir / "semantic_layer", context_dir, db, staging_dir=tmp_path / "staging"
+    )
+    result = asyncio.run(facade.get_metric("gross_margin", ["region"]))
+    assert result["governed"] is True and result["rows"]  # the query never fails
+    context = result["context"]
+    assert context == {"metric_page": None, "policies": []}
+    assert "sk-traversal-secret" not in json.dumps(result)
+
+
 _JOIN_SOURCE = (
     "SELECT o.customer_id, c.name AS customer_name, o.amount, o.status "
     "FROM orders o JOIN customers c ON o.customer_id = c.id"

@@ -8,7 +8,7 @@ never pre-seeded).
 
 AGENTS.md is deliberately a pointer page (ADR-0011, spec rev 10): project facts,
 the directory layout, the promotion-gate rule, and "load the ariadne skill" —
-the workflow itself lives in the packaged skill (``ariadne skill install``),
+the workflow itself lives in the packaged skill (``ariadne-skill install``),
 not duplicated here. The scaffolded ``.mcp.json`` is registry-aware: it points
 the facade at ``ariadne.yaml``, whose ``sources:`` block is the single source
 of truth for what the project serves (ADR-0010).
@@ -89,7 +89,7 @@ served policy pages cite them.
 
 ## The ariadne skill
 
-Load the ariadne skill (`ariadne skill install` if absent) — it carries the
+Load the ariadne skill (`ariadne-skill install` if absent) — it carries the
 workflow and the grain rules. This file holds only project facts.
 
 ## Layout

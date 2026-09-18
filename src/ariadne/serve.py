@@ -302,22 +302,35 @@ class Facade:
         (``policies/`` paths, resolved against the served context dir). Context
         problems NEVER fail the query — the number is still governed: a missing
         metric page or an unresolvable policy reference collapses to
-        ``{metric_page: null, policies: []}`` and is logged nowhere."""
+        ``{metric_page: null, policies: []}`` and is logged nowhere. Containment
+        (defense in depth — served YAML names are not fully trusted): the metric
+        page must resolve inside the context root and every cited policy under
+        ``policies/``; a ``../..``-style traversal is just another unresolvable
+        reference — the context collapses to the null form and nothing outside
+        the context dir is ever read."""
         try:
-            text = (self.context_dir / "metrics" / f"{name}.md").read_text(encoding="utf-8")
+            root = self.context_dir.resolve()
+            page = root / "metrics" / f"{name}.md"
+            if not page.resolve().is_relative_to(root):
+                raise ValueError("metric page path escapes the context root")
+            text = page.read_text(encoding="utf-8")
             match = _FRONTMATTER_RE.match(text)
             meta = (yaml.safe_load(match.group(1)) or {}) if match else {}
             refs = (
                 source.get("resource") if isinstance(source, dict) else source
                 for source in meta.get("sources") or []
             )
-            policies = [
-                (self.context_dir / ref).read_text(encoding="utf-8")
-                for ref in refs
-                if isinstance(ref, str) and ref.startswith("policies/")
-            ]
+            policies_root = root / "policies"
+            policies = []
+            for ref in refs:
+                if not (isinstance(ref, str) and ref.startswith("policies/")):
+                    continue
+                body = (root / ref).resolve()
+                if not body.is_relative_to(policies_root):
+                    raise ValueError(f"policy reference escapes policies/: {ref}")
+                policies.append(body.read_text(encoding="utf-8"))
             return {"metric_page": text, "policies": policies}
-        except Exception:  # missing page, unresolvable ref, unparsable frontmatter
+        except Exception:  # missing page, unresolvable ref, traversal, unparsable frontmatter
             return {"metric_page": None, "policies": []}
 
     async def define_metric(self, definition: dict) -> dict:

@@ -9,6 +9,7 @@ monkeypatch HOME so nothing ever touches the real home directory.
 """
 
 import hashlib
+import os
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
@@ -102,3 +103,48 @@ def test_dir_hash_is_content_sensitive():
     baseline = _dir_hash(ASSETS)
     assert baseline == _dir_hash(ASSETS)  # stable
     assert len(baseline) == hashlib.sha256().digest_size * 2
+
+
+def test_install_agent_refuses_existing_non_symlink_dir(project, capsys):
+    """An agent target that exists and is not a symlink is user content —
+    install refuses (exit != 0, error names the path) and the directory's
+    contents stay intact. Install never deletes directories."""
+    home, _ = project
+    agent_dir = home / ".claude" / "skills" / "ariadne"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "user-content.txt").write_text("precious\n", encoding="utf-8")
+    assert main(["install", "--scope", "user", "--agent", "claude"]) != 0
+    err = capsys.readouterr().err
+    assert str(agent_dir) in err  # the refusal names the path
+    assert "remove it manually" in err  # and suggests manual removal
+    assert (agent_dir / "user-content.txt").read_text(encoding="utf-8") == "precious\n"
+    assert not agent_dir.is_symlink()  # untouched, not replaced
+
+
+def test_install_agent_replaces_existing_symlink_and_logs_old_target(project, capsys):
+    """Any symlink is acceptable to overwrite: the replaced link is re-pointed
+    at the installed copy, the old target (and its contents) is untouched, and
+    what the link pointed to is logged."""
+    home, _ = project
+    installed = home / ".agents" / "skills" / "ariadne"
+    link = home / ".pi" / "agent" / "skills" / "ariadne"
+    old = home / "elsewhere" / "ariadne-skill"
+    old.mkdir(parents=True)
+    (old / "keep.txt").write_text("real content\n", encoding="utf-8")
+    link.parent.mkdir(parents=True)
+    os.symlink(old, link)
+    assert main(["install", "--scope", "user", "--agent", "pi"]) == 0
+    out = capsys.readouterr().out
+    assert link.is_symlink() and link.resolve() == installed.resolve()
+    assert (installed / "SKILL.md").is_file()
+    assert str(old) in out  # the log names what the replaced symlink pointed to
+    assert (old / "keep.txt").read_text(encoding="utf-8") == "real content\n"
+
+
+def test_rubric_states_the_real_grain_audit_order():
+    """The validate audit runs after render/bind compilation, before execution —
+    the packaged rubric must not claim it rejects before compile (only
+    ``define_metric`` does)."""
+    rubric = (ASSETS / "references" / "grain-rubric.md").read_text(encoding="utf-8")
+    assert "validate audit reject non-grain-preserving sources before compile" not in rubric
+    assert "after render/bind compilation, before execution" in rubric

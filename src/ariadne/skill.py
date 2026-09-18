@@ -23,6 +23,7 @@ import argparse
 import hashlib
 import os
 import shutil
+import sys
 from pathlib import Path
 
 ASSETS = Path(__file__).resolve().parent / "skill_assets"
@@ -76,21 +77,36 @@ def _managed_targets() -> list[Path]:
 
 def _install(scope: str, agent: str | None) -> int:
     target = _scope_target(scope)
-    _replace(ASSETS, target)
-    print(f"installed: {target}")
+    link: Path | None = None
     if agent:
         link = Path(AGENT_DIRS[agent][0 if scope == "user" else 1]).expanduser()
+        # Refuse BEFORE anything is written: an agent dir that exists and is not a
+        # symlink is user content — install never deletes directories, and only
+        # ever replaces a symlink (any target; the old target is logged).
+        if link.exists() and not link.is_symlink():
+            print(
+                f"error: {link} exists and is not a symlink — refusing to replace "
+                "it; remove it manually and re-run to wire the agent there",
+                file=sys.stderr,
+            )
+            return 1
+    _replace(ASSETS, target)
+    print(f"installed: {target}")
+    if link is not None:
+        if link.is_symlink():
+            print(f"replacing symlink {link} (was -> {os.readlink(link)})")
         try:
-            if link.is_symlink() or link.is_file():
-                link.unlink()
-            elif link.exists():
-                shutil.rmtree(link)
             link.parent.mkdir(parents=True, exist_ok=True)
+            if link.is_symlink():
+                link.unlink()
             os.symlink(target.resolve(), link)
-            print(f"linked: {link} -> {target.resolve()}")
         except OSError:  # platform without symlink support: copy + note instead
+            # link does not exist here (fresh, or the symlink above was unlinked),
+            # so _replace copies fresh — no directory deletion on any path.
             _replace(ASSETS, link)
             print(f"copied (symlinks unavailable): {link} — re-run install to refresh")
+        else:
+            print(f"linked: {link} -> {target.resolve()}")
     return 0
 
 
