@@ -465,9 +465,7 @@ def test_default_registry_path_resolution(tmp_path, monkeypatch):
         "# only comments — the scaffolded template\n", encoding="utf-8"
     )
     assert default_registry_path() is None  # template counts as absent
-    write_registry(
-        tmp_path, [{"name": "demo", "type": "sqlite", "path": "data/demo.db"}]
-    )
+    write_registry(tmp_path, [{"name": "demo", "type": "sqlite", "path": "data/demo.db"}])
     resolved = default_registry_path()
     assert resolved is not None and resolved.name == "ariadne.yaml" and resolved.is_file()
     assert default_registry_path("other.yaml") == Path("other.yaml")  # explicit wins
@@ -498,9 +496,7 @@ def test_relative_paths_resolve_against_the_registry_file(tmp_path, monkeypatch)
     con.execute("CREATE TABLE t (x INTEGER)")
     con.commit()
     con.close()
-    reg = write_registry(
-        dir_a, [{"name": "demo", "type": "sqlite", "path": "data/demo.db"}]
-    )
+    reg = write_registry(dir_a, [{"name": "demo", "type": "sqlite", "path": "data/demo.db"}])
 
     (tmp_path / "b").mkdir()
     monkeypatch.chdir(tmp_path / "b")  # unrelated cwd
