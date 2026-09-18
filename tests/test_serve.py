@@ -5,7 +5,7 @@ mocked-OpenAI fixture machinery from tests/test_author.py (a deterministic
 golden LLM response encoding both seed-note gotchas) and the REAL Datus
 compile as the validation gate — then the facade is pointed at that promoted
 tree. Execution happens on the facade-owned DuckDB connection over the
-deterministic demo.db (scripts/seed_db.py), so every number below is checked
+deterministic demo.db (examples/retail-demo/seed_db.py), so every number below is checked
 against tests/fixtures/expected_metrics.json — hand-computed, never derived
 from seed/SQL logic. No network anywhere.
 """
@@ -163,9 +163,9 @@ GOLDEN_RESPONSE = json.dumps(
 
 
 def seed_demo_db(db_path: Path) -> Path:
-    """Deterministic demo.db via scripts/seed_db.py (loaded by path, no pkg)."""
+    """Deterministic demo.db via examples/retail-demo/seed_db.py (loaded by path, no pkg)."""
     spec = importlib.util.spec_from_file_location(
-        "ariadne_seed_db", REPO_ROOT / "scripts" / "seed_db.py"
+        "ariadne_seed_db", REPO_ROOT / "examples" / "retail-demo" / "seed_db.py"
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -635,8 +635,7 @@ def test_define_metric_rejects_on_true_cartesian_source(facade):
                     "name": "on_true_metric",
                     "description": "ON TRUE fans out unboundedly",
                     "source": (
-                        "SELECT o.order_id, l.line_amount "
-                        "FROM orders o JOIN order_lines l ON TRUE"
+                        "SELECT o.order_id, l.line_amount FROM orders o JOIN order_lines l ON TRUE"
                     ),
                     "expression": "SUM(o.amount)",
                     "dimensions": [],

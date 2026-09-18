@@ -1,7 +1,7 @@
 {
   "_meta": {
     "description": "Golden semantic-correctness entries (spec rev 5 §13): question -> metric/dimensions/expected for every currently served governed metric, plus one ad-hoc define_metric round trip. Expected values are derived by the INDEPENDENT hand-written SQL inside tests/test_evals.py at run time (the two seed-note rules spelled out inline; plain customer-count SQL) — never from the seed script, the fixture generator, or the facade. The baked 'expected' values below are cross-checked against that SQL on every run (tolerance 1e-6), so a stale golden cannot pass silently.",
-    "db": "data/demo.db (rebuilt via scripts/seed_db.py into tmp by the test)",
+    "db": "examples/retail-demo/data/demo.db (rebuilt via examples/retail-demo/seed_db.py into tmp by the test)",
     "served_set": "semantic_layer/models + context_layer are snapshotted from the repo worktree copy when present; in fresh checkouts (gitignored, absent) the test reconstructs the served set from the recorded rev-4 golden orders model (tests/test_serve.py GOLDEN_OSI) plus the verbatim promoted customers model embedded in tests/test_evals.py — workaround recorded in the lane report.",
     "tolerance": 1e-06,
     "rules_applied": [

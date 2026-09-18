@@ -21,9 +21,9 @@ its ``verified`` list or ``status`` differs from the served copy. Pages carrying
 
 Usage::
 
-    python scripts/promote.py                 # interactive: lists the plan, asks
-    python scripts/promote.py --yes           # unattended (demo.sh, CI)
-    python scripts/promote.py --by human:alice
+    python ariadne-promote                 # interactive: lists the plan, asks
+    python ariadne-promote --yes           # unattended (demo.sh, CI)
+    python ariadne-promote --by human:alice
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ import yaml
 
 from ariadne.author import _FRONTMATTER_RE
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONTEXT = "context_layer"
 
 # Section heading for a folder's index.md (SPEC §8 example form: "# Metric").
@@ -126,10 +126,7 @@ def _staged_files(staging: Path) -> list[Path]:
         return not (in_context and p.suffix == ".md")  # pages get bookkeeping
 
     return sorted(
-        p
-        for layer in (_CONTEXT, "semantic_layer")
-        for p in (staging / layer).rglob("*")
-        if raw(p)
+        p for layer in (_CONTEXT, "semantic_layer") for p in (staging / layer).rglob("*") if raw(p)
     )
 
 
@@ -326,7 +323,7 @@ def promote(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python scripts/promote.py",
+        prog="python ariadne-promote",
         description="Promote staged layers into the served roots (merge-only, "
         "verified append, index + log bookkeeping).",
     )

@@ -206,9 +206,7 @@ def test_name_collision_suffixes_never_overwrites(tmp_path, monkeypatch):
     existing.parent.mkdir(parents=True)
     existing.write_text("---\ntype: policy\n---\n\nkeep me\n", encoding="utf-8")
 
-    staging2, staged, errors, _ = run_ingest(
-        tmp_path, doc, [response(page_entry())], monkeypatch
-    )
+    staging2, staged, errors, _ = run_ingest(tmp_path, doc, [response(page_entry())], monkeypatch)
 
     assert errors == []
     assert staged == [staging / "context_layer" / "policies" / "churned-arr-not-expansion-2.md"]
@@ -311,8 +309,21 @@ def test_dispatch_table_maps_suffix_to_requirement(suffix, requirement):
 
 def test_dispatch_table_exactly_matches_native_suffixes():
     assert set(_CONVERTERS) | set(_NATIVE_SUFFIXES) == {
-        ".md", ".txt", ".pdf", ".docx", ".pptx", ".xlsx", ".html", ".doc",
-        ".rtf", ".epub", ".csv", ".odt", ".ods", ".odp", ".xls",
+        ".md",
+        ".txt",
+        ".pdf",
+        ".docx",
+        ".pptx",
+        ".xlsx",
+        ".html",
+        ".doc",
+        ".rtf",
+        ".epub",
+        ".csv",
+        ".odt",
+        ".ods",
+        ".odp",
+        ".xls",
     }
 
 
@@ -420,9 +431,7 @@ def test_symlinked_context_layer_refuses_to_stage_anything(tmp_path, monkeypatch
     link = staging / "context_layer"
     link.symlink_to(outside, target_is_directory=True)
 
-    _, staged, errors, _ = run_ingest(
-        tmp_path, doc, [response(page_entry())], monkeypatch
-    )
+    _, staged, errors, _ = run_ingest(tmp_path, doc, [response(page_entry())], monkeypatch)
 
     assert staged == []  # nothing staged
     assert not list(outside.iterdir())  # nothing written outside staging
@@ -440,9 +449,7 @@ def test_symlinked_subfolder_component_refuses_too(tmp_path, monkeypatch):
     (staging / "context_layer").mkdir(parents=True)
     (staging / "context_layer" / "policies").symlink_to(outside / "policies")
 
-    _, staged, errors, _ = run_ingest(
-        tmp_path, doc, [response(page_entry())], monkeypatch
-    )
+    _, staged, errors, _ = run_ingest(tmp_path, doc, [response(page_entry())], monkeypatch)
 
     assert staged == []
     assert not list((outside / "policies").iterdir())
@@ -460,7 +467,10 @@ def test_secret_token_in_body_rejects_page_naming_class_not_secret(tmp_path, mon
     secret = "sk-" + "a1B2c3D4e5F6g7H8i9J0k1"  # fake token, 24 chars
     poisoned = page_entry(body=f"# Rotation\n\nuse {secret} in prod\n")
     staging, staged, errors, calls = run_ingest(
-        tmp_path, doc, [response(poisoned)], monkeypatch  # replayed every round
+        tmp_path,
+        doc,
+        [response(poisoned)],
+        monkeypatch,  # replayed every round
     )
 
     assert len(calls) == 1 + MAX_RETRIES  # every round violates
@@ -475,7 +485,9 @@ def test_secret_page_rejected_then_clean_retry_stages(tmp_path, monkeypatch):
     doc = make_doc(tmp_path)
     secret = "sk-" + "a1B2c3D4e5F6g7H8i9J0k1"
     staging, staged, errors, calls = run_ingest(
-        tmp_path, doc, [response(page_entry(body=f"key {secret}")), response(page_entry())],
+        tmp_path,
+        doc,
+        [response(page_entry(body=f"key {secret}")), response(page_entry())],
         monkeypatch,
     )
 
@@ -539,4 +551,15 @@ def test_cli_accepts_ignored_db_flag(tmp_path, monkeypatch):
     doc = make_doc(tmp_path)
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
     monkeypatch.setattr(ingest_module, "_default_complete", lambda _m: response(page_entry()))
-    assert main([str(doc), "--db", "data/demo.db", "--staging", str(tmp_path / "s")]) == 0
+    assert (
+        main(
+            [
+                str(doc),
+                "--db",
+                "examples/retail-demo/data/demo.db",
+                "--staging",
+                str(tmp_path / "s"),
+            ]
+        )
+        == 0
+    )

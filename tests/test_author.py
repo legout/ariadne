@@ -85,7 +85,7 @@ semantic_model:
 
 
 def make_demo_db(db_path: Path) -> Path:
-    """Miniature demo.db: same schema as scripts/seed_db.py."""
+    """Miniature demo.db: same schema as examples/retail-demo/seed_db.py."""
     con = sqlite3.connect(db_path)
     try:
         con.executescript(
@@ -174,7 +174,7 @@ description: Ratio of gross profit to gross revenue over billable orders.
 tags: [metric, margin]
 sources:
   - id: demo.main.orders
-    resource: data/demo.db
+    resource: examples/retail-demo/data/demo.db
     title: Orders
   - id: order-status-billing
     resource: policies/order-status-billing.md
@@ -197,7 +197,7 @@ description: One row per placed order.
 tags: [table, orders]
 sources:
   - id: demo.main.orders
-    resource: data/demo.db
+    resource: examples/retail-demo/data/demo.db
     title: Orders
 grain:
   primary_key: [order_id]
@@ -217,7 +217,7 @@ description: Many orders to one customer; the joined key is proven unique.
 tags: [reference, join]
 sources:
   - id: demo.main.customers
-    resource: data/demo.db
+    resource: examples/retail-demo/data/demo.db
     title: Customers
 ---
 
@@ -235,7 +235,7 @@ description: Cancelled and returned orders are not revenue.
 tags: [policy, billing]
 sources:
   - id: seed-notes
-    resource: data/seed_notes.md
+    resource: examples/retail-demo/seed_notes.md
     title: Seed notes
 ---
 
@@ -248,17 +248,17 @@ BUNDLE_SKILL = """---
 type: skill
 status: draft
 title: Run the demo
-description: End-to-end demo via scripts/demo.sh.
+description: End-to-end demo via examples/retail-demo/demo.sh.
 tags: [skill, demo]
 sources:
   - id: demo-script
-    resource: scripts/demo.sh
+    resource: examples/retail-demo/demo.sh
     title: demo.sh
 ---
 
 # Run the demo
 
-python scripts/seed_db.py data/demo.db && scripts/demo.sh
+cd examples/retail-demo && python seed_db.py data/demo.db && ./demo.sh
 """
 
 
@@ -428,9 +428,7 @@ def test_author_cli_rejects_repo_root_staging(capsys):
 
 
 def test_author_never_writes_outside_staging(tmp_path):
-    escape = json.dumps(
-        {"files": [{"path": "../escape.md", "content": "no"}]}
-    )
+    escape = json.dumps({"files": [{"path": "../escape.md", "content": "no"}]})
     complete, _ = fake_complete([escape])
     validate_fn, _ = fake_validate([ValidationResult(True, [])])
     with pytest.raises(ValueError, match="staging"):
@@ -461,9 +459,7 @@ def test_author_error_feedback_marks_review_needed_after_three_rounds(tmp_path):
 
 def test_author_second_round_recovers(tmp_path):
     complete, complete_calls = fake_complete([llm_response()])
-    validate_fn, _ = fake_validate(
-        [ValidationResult(False, ["boom"]), ValidationResult(True, [])]
-    )
+    validate_fn, _ = fake_validate([ValidationResult(False, ["boom"]), ValidationResult(True, [])])
     staging, _ = run_author(tmp_path, complete, validate_fn)
 
     assert len(complete_calls) == 2
@@ -645,7 +641,7 @@ description: One row per support ticket (parquet source).
 tags: [table, tickets, support]
 sources:
   - id: support.tickets
-    resource: data/support_tickets
+    resource: examples/retail-demo/data/support_tickets
     title: Support tickets
 grain:
   primary_key: [ticket_id]
@@ -666,7 +662,7 @@ description: {desc}
 tags: [metric, support]
 sources:
   - id: support.tickets
-    resource: data/support_tickets
+    resource: examples/retail-demo/data/support_tickets
     title: Support tickets
   - id: open-tickets-no-resolution
     resource: policies/open-tickets-no-resolution.md
@@ -687,7 +683,7 @@ description: resolution_hours is NULL while a ticket is open.
 tags: [policy, support]
 sources:
   - id: seed-notes
-    resource: data/seed_notes.md
+    resource: examples/retail-demo/seed_notes.md
     title: Seed notes
 ---
 
@@ -804,9 +800,7 @@ def test_author_prompt_carries_multisource_catalog(tmp_path):
     """With a registry, the prompt input lists BOTH sources' catalogs (source
     names, types, qualified tables) alongside profile and seed notes."""
     validate_fn, _ = fake_validate([ValidationResult(True, [])])
-    complete_calls = run_multisource_author(
-        tmp_path, bundle_response(), validate_fn=validate_fn
-    )[2]
+    complete_calls = run_multisource_author(tmp_path, bundle_response(), validate_fn=validate_fn)[2]
 
     system, prompt = complete_calls[0][0]["content"], complete_calls[0][1]["content"]
     assert "demo (sqlite)" in prompt
@@ -824,19 +818,13 @@ def test_author_envelope_may_reference_parquet_source(tmp_path):
     """Envelopes may reference ANY catalog source: a model bound to
     support.tickets stages exactly like a demo.main one (fake gate)."""
     # prepend a tickets model to the bundle response (envelope bound to parquet)
-    inject = json.dumps(
-        {"path": "semantic_layer/models/tickets.yml", "content": TICKETS_MODEL}
-    )
+    inject = json.dumps({"path": "semantic_layer/models/tickets.yml", "content": TICKETS_MODEL})
     response = bundle_response().replace('"files": [', '"files": [' + inject + ", ")
     validate_fn, _ = fake_validate([ValidationResult(True, [])])
-    staging, _, complete_calls = run_multisource_author(
-        tmp_path, response, validate_fn=validate_fn
-    )
+    staging, _, complete_calls = run_multisource_author(tmp_path, response, validate_fn=validate_fn)
 
     assert len(complete_calls) == 1
-    model = yaml.safe_load(
-        staged(staging)["semantic_layer/models/tickets.yml"].read_text()
-    )
+    model = yaml.safe_load(staged(staging)["semantic_layer/models/tickets.yml"].read_text())
     assert model["semantic_model"][0]["datasets"][0]["source"] == "support.tickets"
 
 

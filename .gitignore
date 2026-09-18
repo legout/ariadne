@@ -3,12 +3,12 @@
 *.egg-info/
 __pycache__/
 *.pyc
-data/*.db
-staging/
+examples/retail-demo/data/*.db
+examples/retail-demo/staging/
 .env
 .orchestrator/
 .pytest_cache/
 .hermes/
-context_layer/
-semantic_layer/
+examples/retail-demo/context_layer/
+examples/retail-demo/semantic_layer/
 data/support_tickets/

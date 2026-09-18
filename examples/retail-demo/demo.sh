@@ -2,8 +2,8 @@
 # End-to-end demo (ticket #6): seed -> author -> promote -> serve + scripted MCP calls.
 # Idempotent: every step rebuilds its artifacts from scratch. Exit 0 = green.
 #
-#   scripts/demo.sh          # interactive: pauses at the human promotion gate
-#   scripts/demo.sh --yes    # auto-promote (CI)
+#   examples/retail-demo/demo.sh          # interactive: pauses at the human promotion gate
+#   examples/retail-demo/demo.sh --yes    # auto-promote (CI)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -11,7 +11,7 @@ yes=0
 for arg in "$@"; do
   case "$arg" in
     --yes) yes=1 ;;
-    *) echo "usage: scripts/demo.sh [--yes]" >&2; exit 2 ;;
+    *) echo "usage: examples/retail-demo/demo.sh [--yes]" >&2; exit 2 ;;
   esac
 done
 
@@ -33,13 +33,13 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 echo "== 1/4 seed: data/demo.db + the support-tickets parquet fixture (deterministic)"
-"$PY" scripts/seed_db.py data/demo.db
-"$PY" scripts/make_parquet_fixture.py data/support_tickets
+"$PY" seed_db.py data/demo.db
+"$PY" make_parquet_fixture.py data/support_tickets
 
 echo "== 2/4 author: profile + seed notes -> live LLM drafts -> staging/"
 rm -rf staging
 author_rc=0
-"$PY" -m ariadne.author --sources ariadne.yaml --notes data/seed_notes.md || author_rc=$?
+"$PY" -m ariadne.author --sources ariadne.yaml --notes examples/retail-demo/seed_notes.md || author_rc=$?
 # Spec §6/§7: review_needed artifacts must never be auto-promoted — the human gate
 # holds even under --yes (and even if an older author exited 0 despite review_needed).
 if grep -rq 'status: review_needed' staging 2>/dev/null; then
@@ -56,13 +56,13 @@ echo "== 3/4 promotion gate (spec §6: served artifacts arrive only by human pro
 echo "   staged files:"
 find staging -type f | sort | sed 's/^/     /'
 promote() {
-  "$PY" scripts/promote.py --yes
+  "$PY" ariadne-promote --yes
 }
 if [ "$yes" = 1 ]; then
   echo "   --yes: promoting automatically"
   promote
 elif [ -t 0 ]; then
-  echo "   review staging/, then promote with: python scripts/promote.py"
+  echo "   review staging/, then promote with: python ariadne-promote"
   printf '   promote now? [y/N] '
   read -r answer
   case "$answer" in
@@ -75,7 +75,7 @@ else
 fi
 
 echo "== 4/4 serve + scripted MCP client (spawns python -m ariadne.serve over stdio)"
-"$PY" scripts/mcp_client.py --db data/demo.db
+"$PY" examples/retail-demo/mcp_client.py --db data/demo.db
 
 # The seed notes define support metrics, so the bundle should carry a model over
 # support.tickets. The LLM is not fully deterministic: warn, never fail, here —

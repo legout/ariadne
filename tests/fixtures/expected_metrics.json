@@ -1,7 +1,7 @@
 {
   "_meta": {
-    "description": "Hand-computed expected values for the governed metrics on data/demo.db, grouped by the 'region' dimension. Anchors the facade money test (ticket #5, spec S8.3). Regenerate only with an independent computation; never from seed/SQL logic.",
-    "db": "data/demo.db",
+    "description": "Hand-computed expected values for the governed metrics on examples/retail-demo/data/demo.db, grouped by the 'region' dimension. Anchors the facade money test (ticket #5, spec S8.3). Regenerate only with an independent computation; never from seed/SQL logic.",
+    "db": "examples/retail-demo/data/demo.db",
     "dimension": "region",
     "rules_applied": [
       "Exclude orders with status CANCELLED or RETURNED.",

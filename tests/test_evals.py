@@ -107,7 +107,7 @@ _REGION_METRICS = {"gross_margin", "gross_revenue", "cogs", "order_count"}
 
 def _load_trap_builder():
     """Load tests/evals/build_trap_fixture.py by path (same pattern test_serve.py
-    uses for scripts/seed_db.py — no package machinery needed)."""
+    uses for examples/retail-demo/seed_db.py — no package machinery needed)."""
     import importlib.util
 
     path = Path(__file__).resolve().parent / "evals" / "build_trap_fixture.py"
@@ -201,8 +201,8 @@ def resolve_served(served: Path) -> Path:
     models_dst = served / "semantic_layer" / "models"
     models_dst.mkdir(parents=True)
     (served / "context_layer").mkdir(parents=True)
-    models_src = REPO_ROOT / "semantic_layer" / "models"
-    context_src = REPO_ROOT / "context_layer"
+    models_src = REPO_ROOT / "examples" / "retail-demo" / "semantic_layer" / "models"
+    context_src = REPO_ROOT / "examples" / "retail-demo" / "context_layer"
     if models_src.is_dir():
         shutil.copytree(models_src, models_dst, dirs_exist_ok=True)
         if context_src.is_dir():
@@ -219,7 +219,7 @@ def resolve_served(served: Path) -> Path:
 @pytest.fixture(scope="module")
 def demo_db(tmp_path_factory) -> Path:
     db_path = tmp_path_factory.mktemp("evals") / "demo.db"
-    run_seed(db_path)  # scripts/seed_db.py into tmp (subprocess), as in test_seed
+    run_seed(db_path)  # examples/retail-demo/seed_db.py into tmp (subprocess), as in test_seed
     return db_path
 
 

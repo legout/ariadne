@@ -130,8 +130,7 @@ def _model_parts(
     datasets = model.get("datasets") or []
     if len(datasets) != 1:
         raise RenderError(
-            f"model {model.get('name')!r}: render compiles exactly one dataset, "
-            f"got {len(datasets)}"
+            f"model {model.get('name')!r}: render compiles exactly one dataset, got {len(datasets)}"
         )
     dataset = datasets[0]
     source = dataset.get("source")
@@ -235,7 +234,7 @@ def _metric_levels(metric_sqls: dict[str, str]) -> tuple[dict[str, int], dict[st
         if name in levels:
             return levels[name]
         if name in stack:
-            cycle = stack[stack.index(name):] + [name]
+            cycle = stack[stack.index(name) :] + [name]
             raise RenderError(f"metric dependency cycle: {' -> '.join(cycle)}")
         stack.append(name)
         level = 0

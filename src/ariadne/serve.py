@@ -49,7 +49,7 @@ install hint.
 
 Usage::
 
-    python -m ariadne.serve --db data/demo.db \\
+    python -m ariadne.serve --db examples/retail-demo/data/demo.db \\
         --semantic semantic_layer --context context_layer
 """
 
@@ -191,9 +191,7 @@ class Facade:
         # non-DuckDB attaches are connection-local, so this happens exactly
         # once. Compiled SQL references <catalog>.<schema>.<table> — the legacy
         # shorthand keeps the authoring contract's catalog name demo.
-        registry = (
-            load_registry(sources) if sources is not None else implicit_registry(db_path)
-        )
+        registry = load_registry(sources) if sources is not None else implicit_registry(db_path)
         self.con, self.catalog = build_connection(registry)
         self._qualified = sources is not None
         if not self._qualified:
@@ -606,7 +604,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--db",
         default=None,
-        help="SQLite database to attach read-only (default: data/demo.db when "
+        help="SQLite database to attach read-only (default: examples/retail-demo/data/demo.db when "
         "no --sources/ariadne.yaml applies)",
     )
     parser.add_argument(
@@ -626,7 +624,7 @@ def main(argv: list[str] | None = None) -> int:
     # (shared resolution, ADR-0010); the legacy default fills in only when
     # --db is not given (unused by the Facade whenever a registry applies).
     sources_path = default_registry_path(args.sources, args.db)
-    db = args.db or "data/demo.db"
+    db = args.db or "examples/retail-demo/data/demo.db"
     try:
         facade = Facade(
             args.semantic,

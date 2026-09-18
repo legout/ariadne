@@ -189,9 +189,7 @@ def _source(path: Path, index: int, entry: object, seen: set[str]) -> Source:
             )
     unknown = sorted(set(entry) - SOURCE_KEYS)
     if unknown:
-        raise ValueError(
-            f"{where}: unknown key(s) {unknown}; allowed: {sorted(SOURCE_KEYS)}"
-        )
+        raise ValueError(f"{where}: unknown key(s) {unknown}; allowed: {sorted(SOURCE_KEYS)}")
     connection_env = entry.get("connection_env")
     if source_type == "postgres":
         if not isinstance(connection_env, str) or not connection_env.strip():
@@ -217,15 +215,11 @@ def _source(path: Path, index: int, entry: object, seen: set[str]) -> Source:
         if not isinstance(source_path, str) or not source_path.strip():
             raise ValueError(f"{where}: type {source_type} requires path")
         table = entry.get("table")
-        if table is not None and (
-            not isinstance(table, str) or not IDENTIFIER_RE.fullmatch(table)
-        ):
+        if table is not None and (not isinstance(table, str) or not IDENTIFIER_RE.fullmatch(table)):
             raise ValueError(f"{where}: table must be a plain identifier")
         if any(ch in source_path for ch in GLOB_CHARS):
             if source_type not in FILE_TYPES:
-                raise ValueError(
-                    f"{where}: glob paths are only valid for {sorted(FILE_TYPES)}"
-                )
+                raise ValueError(f"{where}: glob paths are only valid for {sorted(FILE_TYPES)}")
             if not table:
                 raise ValueError(
                     f"{where}: a glob path needs an explicit table: name "
@@ -388,8 +382,7 @@ def _table_name(src: Source) -> str:
     stem = Path(_path(src)).stem
     if not IDENTIFIER_RE.fullmatch(stem):
         raise ValueError(
-            f"source {src.name!r}: cannot derive a table name from {src.path!r} — "
-            "set table: <name>"
+            f"source {src.name!r}: cannot derive a table name from {src.path!r} — set table: <name>"
         )
     return stem
 

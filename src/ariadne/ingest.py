@@ -4,7 +4,7 @@
 authoring loop: convert to Markdown, LLM-distill into pages classified into the
 existing bundle taxonomy, enforce the per-type frontmatter contract, and stage
 under ``staging/context_layer/`` only — the human promotion gate
-(``scripts/promote.py``) stays the only path to served state; served dirs,
+(``ariadne-promote``) stays the only path to served state; served dirs,
 ``index.md`` and ``log.md`` are never written (promote owns bundle bookkeeping).
 
 Converter dispatch — the lumio-wiki-researched stack, installed via the optional
@@ -264,8 +264,7 @@ def _assemble(
             continue
         if str(entry.get("type") or "") != expected:
             errors.append(
-                f"{rel}: folder {folder!r} requires type '{expected}' "
-                f"(got {entry.get('type')!r})"
+                f"{rel}: folder {folder!r} requires type '{expected}' (got {entry.get('type')!r})"
             )
             continue
         name = str(entry.get("name") or "")
@@ -285,8 +284,10 @@ def _assemble(
             errors.append(f"{rel}: description must be a non-empty one-sentence summary")
         if not body:
             errors.append(f"{rel}: body must be non-empty markdown")
-        if not isinstance(tags, list) or not tags or not all(
-            isinstance(tag, str) and tag.strip() for tag in tags
+        if (
+            not isinstance(tags, list)
+            or not tags
+            or not all(isinstance(tag, str) and tag.strip() for tag in tags)
         ):
             errors.append(f"{rel}: tags must be a non-empty JSON list of strings")
             tags = []
@@ -308,10 +309,10 @@ def _assemble(
 
 def _symlink_offender(staging: Path, pages: list[tuple]) -> str | None:
     """First symlinked component of any page's staging path (from staging/
-down to the target file), or None — the same component-walk refusal as
-ariadne.init's scaffolder: an attacker-planted link (e.g.
-``staging/context_layer`` -> the served context_layer/) must never receive
-staged pages directly, bypassing the promotion gate."""
+    down to the target file), or None — the same component-walk refusal as
+    ariadne.init's scaffolder: an attacker-planted link (e.g.
+    ``staging/context_layer`` -> the served context_layer/) must never receive
+    staged pages directly, bypassing the promotion gate."""
     for folder, name, _text in pages:
         offender = _symlink_under(staging, f"{STAGING_SUBDIR}/{folder}/{name}.md")
         if offender is not None:
@@ -371,9 +372,7 @@ def _stage_atomic(directory: Path, name: str, text: str) -> Path:
         return candidate
 
 
-def _ingest_one(
-    doc: Path, *, staging: Path, complete, now: str
-) -> tuple[list[Path], list[str]]:
+def _ingest_one(doc: Path, *, staging: Path, complete, now: str) -> tuple[list[Path], list[str]]:
     """Convert + distill + gate + stage one document. Returns (staged, errors)."""
     if not doc.is_file():
         return [], [f"{doc}: no such document"]

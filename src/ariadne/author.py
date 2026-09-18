@@ -34,7 +34,8 @@ tests/test_validate.py and the live run.
 Interfaces::
 
     author(db_path, notes_path) -> list[Path]   # staged files
-    python -m ariadne.author --db data/demo.db --notes data/seed_notes.md
+    # from examples/retail-demo/:
+    #   python -m ariadne.author --db data/demo.db --notes seed_notes.md
 """
 
 from __future__ import annotations
@@ -62,7 +63,7 @@ from ariadne.validate import validate
 
 ENV_PATH = Path(os.environ.get("ARIADNE_ENV", "/home/volker/coding/ariadne/.env"))
 MAX_ROUNDS = 3  # spec §5 hard cap on the validate/error loop
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _SERVED_LAYERS = ("context_layer", "semantic_layer")  # only ever human-promoted (spec §6)
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)\Z", re.DOTALL)
@@ -70,12 +71,10 @@ _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)\Z", re.DOTALL)
 # Assembled as string pieces so every source line stays under the lint limit.
 # Both patterns are execution-verified against tests/fixtures/expected_metrics.json.
 _EXCLUDE_REV_EXPR = (
-    "SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED')"
-    " THEN amount * fx_rate ELSE 0 END)"
+    "SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount * fx_rate ELSE 0 END)"
 )
 _EXCLUDE_COGS_EXPR = (
-    "SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED')"
-    " THEN product_cost * fx_rate ELSE 0 END)"
+    "SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN product_cost * fx_rate ELSE 0 END)"
 )
 
 _SYSTEM_PROMPT_TEMPLATE = """\
@@ -304,7 +303,7 @@ def _parse_files(raw: str) -> list[tuple[str, str]]:
     text = text.strip()
     if text.startswith("```"):  # tolerate a fenced response
         text = re.sub(r"\A```[a-zA-Z0-9_-]*\n|\n```\Z", "", text)
-    data = json.loads(text)
+    data = json.loads(text)  # ValueError feeds the round-feedback loop by design
     entries = data.get("files", []) if isinstance(data, dict) else data
     files = [(entry["path"], entry["content"]) for entry in entries]
     if not files:
@@ -362,8 +361,7 @@ def _catalog_lines(db_path: str | Path | None, sources_path: str | Path | None) 
         return "\n".join(
             f"- {entry['name']} ({entry['type']}): "
             + ", ".join(
-                f"{table.get('ref') or entry['name']}.{table['name']}"
-                for table in entry["tables"]
+                f"{table.get('ref') or entry['name']}.{table['name']}" for table in entry["tables"]
             )
             for entry in catalog
         )
@@ -381,11 +379,12 @@ def _user_prompt(profile: dict, notes: str, catalog_lines: str) -> str:
         "Seed notes from the data owner (authoritative business rules):\n"
         f"{notes}\n\n"
         "Operational facts for the skill pages (use these commands verbatim):\n"
-        "- Seed the demo database: python scripts/seed_db.py data/demo.db\n"
-        "- Run the end-to-end demo: scripts/demo.sh (--yes for unattended)\n"
-        "- Promote staged artifacts (human gate): python scripts/promote.py [--yes]\n"
-        "- Serve the MCP facade: python -m ariadne.serve --db data/demo.db\n"
-        "- Scripted MCP client: .venv/bin/python scripts/mcp_client.py --db data/demo.db\n\n"
+        "- Seed the demo database: cd examples/retail-demo && python seed_db.py data/demo.db\n"
+        "- Run the end-to-end demo: examples/retail-demo/demo.sh (--yes for unattended)\n"
+        "- Promote staged artifacts (human gate): python ariadne-promote [--yes]\n"
+        "- Serve the MCP facade: python -m ariadne.serve --db examples/retail-demo/data/demo.db\n"
+        "- Scripted MCP client (from examples/retail-demo/):\n"
+        "  ../../.venv/bin/python mcp_client.py --db data/demo.db\n\n"
         "Draft the complete Context Layer bundle and the Semantic Layer models now. "
         "Return only the JSON object."
     )
@@ -479,9 +478,7 @@ def _write_computations(staging: Path, models: dict[str, dict]) -> None:
             "compile gate `ariadne.validate`; execution DuckDB via `ariadne.serve`; "
             "attestation `tests/test_evals.py` golden values. Business rules: cited "
             "metric page.\n\n"
-            "```sql\n"
-            + info["expression"].strip()
-            + "\n```\n"
+            "```sql\n" + info["expression"].strip() + "\n```\n"
         )
         (comp_dir / f"{name}.md").write_text(f"---\n{front}\n---\n\n{body}", encoding="utf-8")
 
@@ -640,9 +637,7 @@ def _mark_review_needed(staging: Path, errors: list[str]) -> None:
         if "review_needed" in text:
             continue
         try:
-            marked = _set_frontmatter(
-                text, {"status": "review_needed", "review_errors": errors}
-            )
+            marked = _set_frontmatter(text, {"status": "review_needed", "review_errors": errors})
         except yaml.YAMLError:  # unparseable frontmatter: mark without rewriting it
             marked = "# status: review_needed (frontmatter unparseable)\n" + text
         path.write_text(marked, encoding="utf-8")

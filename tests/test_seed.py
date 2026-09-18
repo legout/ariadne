@@ -1,7 +1,7 @@
 """Seed determinism + fixture correctness (spec §8.1, §8.3).
 
 These tests own the contract consumed by the profiler (#3) and the MCP facade
-money test (#5): a deterministic ``data/demo.db`` and a hand-computed
+money test (#5): a deterministic ``examples/retail-demo/data/demo.db`` and a hand-computed
 ``tests/fixtures/expected_metrics.json``.
 
 Fixture verification is deliberately independent of seed logic: expected
@@ -21,7 +21,7 @@ import duckdb
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SEED_SCRIPT = REPO_ROOT / "scripts" / "seed_db.py"
+SEED_SCRIPT = REPO_ROOT / "examples" / "retail-demo" / "seed_db.py"
 FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "expected_metrics.json"
 
 # Fixed row-count contract (spec §8.1: "asserted row counts").

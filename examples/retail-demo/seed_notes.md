@@ -1,4 +1,4 @@
-# Seed notes — demo database (`data/demo.db`)
+# Seed notes — demo database (`examples/retail-demo/data/demo.db`)
 
 Notes from the data owner. This is the business documentation that statistics
 cannot derive: profile the schema all you like, but the rules below are the
@@ -13,7 +13,7 @@ to eyeball, messy enough to be honest.
 
 The catalog also carries a second source: `support` — a parquet extract of
 customer support tickets (`support.tickets`, built by
-`scripts/make_parquet_fixture.py`), covering 2024-01-01 through 2025-06-30.
+`examples/retail-demo/make_parquet_fixture.py`), covering 2024-01-01 through 2025-06-30.
 
 ## Tables
 

@@ -2,7 +2,7 @@
 
 Contract consumed by the authoring agent (#4): ``profile(db_path) -> dict`` and
 the ``python -m ariadne.profiler --db ... --out profile.json`` CLI. The fixture
-db below mirrors ``scripts/seed_db.py``'s schema and gotcha-2 currency
+db below mirrors ``examples/retail-demo/seed_db.py``'s schema and gotcha-2 currency
 distribution in miniature so this lane validates standalone; one integration
 test runs the real seeder once lane #2 merges.
 """
@@ -38,6 +38,7 @@ EXPECTED_COLUMNS = {
     "customers": {"id", "name", "country"},
     "currency_conversion_rate": {"currency", "rate_to_usd"},
 }
+
 
 def make_demo_db(db_path: Path) -> Path:
     """Miniature demo.db: same schema, same USD-dominant currency distribution."""
@@ -206,17 +207,15 @@ def test_cli_explicit_db_beats_ambient_registry(tmp_path, demo_db, monkeypatch, 
         "sources:\n  - name: demo\n    type: sqlite\n    path: missing.db\n",
         encoding="utf-8",
     )
-    profiler_module.main(
-        ["--db", str(demo_db), "--out", str(tmp_path / "p.json"), "--no-out"]
-    )
+    profiler_module.main(["--db", str(demo_db), "--out", str(tmp_path / "p.json"), "--no-out"])
     out = json.loads(capsys.readouterr().out)
     assert out["db_path"] == str(demo_db)  # legacy shape: --db won, registry ignored
 
 
 def _seed_real_demo_db(tmp_path):
-    seed = REPO_ROOT / "scripts" / "seed_db.py"
+    seed = REPO_ROOT / "examples" / "retail-demo" / "seed_db.py"
     if not seed.is_file():
-        pytest.skip("scripts/seed_db.py arrives with lane #2")
+        pytest.skip("examples/retail-demo/seed_db.py arrives with lane #2")
     db = tmp_path / "demo.db"
     subprocess.run([sys.executable, str(seed), str(db)], check=True, capture_output=True)
     return db
@@ -235,14 +234,12 @@ def test_real_demo_db_contract(tmp_path):
     } in tables["orders"]["foreign_key_candidates"]
     currency = tables["orders"]["columns"]["currency"]
     assert currency["distinct_count"] == 3
-    # Real cross-lane contract (scripts/seed_db.py, ticket #2): USD is a clear
+    # Real cross-lane contract (examples/retail-demo/seed_db.py, ticket #2): USD is a clear
     # majority; pre-2024 EMEA rows keep EUR/GBP as minority local currencies.
     # Asserted as properties of the seeder, not a calibrated share float.
     assert currency["top_values"][0]["value"] == "USD"
     assert currency["top_value_share"] > 0.5
-    assert {"EUR", "GBP"} <= {
-        entry["value"] for entry in currency["top_values"][1:]
-    }
+    assert {"EUR", "GBP"} <= {entry["value"] for entry in currency["top_values"][1:]}
 
 
 # --- rev 9 Lane B: registry profiling covers ALL sources (sqlite + parquet) ---
@@ -250,7 +247,7 @@ def test_real_demo_db_contract(tmp_path):
 
 def make_support_parquet(tmp_path: Path) -> Path:
     """Miniature support-tickets parquet source, one shard per year (DuckDB-
-    written, same shape as the demo fixture from scripts/make_parquet_fixture)."""
+    written, same shape as the demo fixture from examples/retail-demo/make_parquet_fixture)."""
     support_dir = tmp_path / "support_tickets"
     support_dir.mkdir()
     con = duckdb.connect()

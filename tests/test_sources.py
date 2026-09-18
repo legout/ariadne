@@ -136,22 +136,22 @@ def test_parquet_file_and_glob_live(tmp_path, duck):
     events_dir = tmp_path / "events"
     events_dir.mkdir()
     duck.execute(
-        f"COPY (SELECT 1 AS x UNION ALL SELECT 2) TO '{events_dir / 'p1.parquet'}' "
-        "(FORMAT PARQUET)"
+        f"COPY (SELECT 1 AS x UNION ALL SELECT 2) TO '{events_dir / 'p1.parquet'}' (FORMAT PARQUET)"
     )
     duck.execute(
-        f"COPY (SELECT 3 AS x UNION ALL SELECT 4) TO '{events_dir / 'p2.parquet'}' "
-        "(FORMAT PARQUET)"
+        f"COPY (SELECT 3 AS x UNION ALL SELECT 4) TO '{events_dir / 'p2.parquet'}' (FORMAT PARQUET)"
     )
-    duck.execute(
-        f"COPY (SELECT 9 AS single) TO '{tmp_path / 'solo.parquet'}' (FORMAT PARQUET)"
-    )
+    duck.execute(f"COPY (SELECT 9 AS single) TO '{tmp_path / 'solo.parquet'}' (FORMAT PARQUET)")
     reg = write_registry(
         tmp_path,
         [
             # glob: two files, ONE view, named by the registry entry
-            {"name": "events", "type": "parquet", "path": f"{events_dir}/*.parquet",
-             "table": "readings"},
+            {
+                "name": "events",
+                "type": "parquet",
+                "path": f"{events_dir}/*.parquet",
+                "table": "readings",
+            },
             # single file: view named by the file stem
             {"name": "solo", "type": "parquet", "path": str(tmp_path / "solo.parquet")},
         ],
@@ -178,8 +178,9 @@ def test_csv_live(tmp_path, duck):
         f"COPY (SELECT * FROM (VALUES ('EMEA', 10.5), ('AMER', 3.5)) t(region, n)) "
         f"TO '{tmp_path / 'orders.csv'}' (FORMAT CSV, HEADER)"
     )
-    reg = write_registry(tmp_path, [{"name": "raw", "type": "csv",
-                                     "path": str(tmp_path / "orders.csv")}])
+    reg = write_registry(
+        tmp_path, [{"name": "raw", "type": "csv", "path": str(tmp_path / "orders.csv")}]
+    )
     con, catalog = build_connection(load_registry(reg))
     try:
         assert con.execute(
@@ -198,8 +199,9 @@ def test_json_live(tmp_path, duck):
         f"COPY (SELECT * FROM (VALUES ('a', 1), ('b', 2)) t(label, n)) "
         f"TO '{tmp_path / 'tags.json'}' (FORMAT JSON)"
     )
-    reg = write_registry(tmp_path, [{"name": "tags", "type": "json",
-                                     "path": str(tmp_path / "tags.json")}])
+    reg = write_registry(
+        tmp_path, [{"name": "tags", "type": "json", "path": str(tmp_path / "tags.json")}]
+    )
     con, _ = build_connection(load_registry(reg))
     try:
         assert con.execute("SELECT SUM(n) FROM tags.tags").fetchone() == (3,)
@@ -212,9 +214,7 @@ def test_delta_live(tmp_path):
     reg = write_registry(tmp_path, [{"name": "lake", "type": "delta", "path": str(table_dir)}])
     con, catalog = build_connection(load_registry(reg))
     try:
-        assert con.execute(
-            "SELECT COUNT(*), SUM(id) FROM lake.lake_orders"
-        ).fetchone() == (3, 6)
+        assert con.execute("SELECT COUNT(*), SUM(id) FROM lake.lake_orders").fetchone() == (3, 6)
         (entry,) = catalog
         (table,) = entry["tables"]
         assert table["name"] == "lake_orders"  # derived from the directory stem
@@ -418,9 +418,7 @@ def test_inline_dsn_under_any_key_rejected(tmp_path, key, source_type):
 
 def test_unknown_keys_rejected(tmp_path):
     """Strict entry schema: freestyle keys fail loudly instead of passing."""
-    reg = write_registry(
-        tmp_path, [{"name": "a", "type": "sqlite", "path": "x.db", "extra": 1}]
-    )
+    reg = write_registry(tmp_path, [{"name": "a", "type": "sqlite", "path": "x.db", "extra": 1}])
     with pytest.raises(ValueError, match=r"unknown key\(s\) \['extra'\]"):
         load_registry(reg)
 
@@ -440,9 +438,7 @@ def test_missing_path_and_missing_connection_env(tmp_path):
 
 
 def test_glob_without_table_rejected(tmp_path):
-    reg = write_registry(
-        tmp_path, [{"name": "e", "type": "parquet", "path": "data/*.parquet"}]
-    )
+    reg = write_registry(tmp_path, [{"name": "e", "type": "parquet", "path": "data/*.parquet"}])
     with pytest.raises(ValueError, match="explicit table: name"):
         load_registry(reg)
 
@@ -469,7 +465,9 @@ def test_default_registry_path_resolution(tmp_path, monkeypatch):
         "# only comments — the scaffolded template\n", encoding="utf-8"
     )
     assert default_registry_path() is None  # template counts as absent
-    write_registry(tmp_path, [{"name": "demo", "type": "sqlite", "path": "data/demo.db"}])
+    write_registry(
+        tmp_path, [{"name": "demo", "type": "sqlite", "path": "data/demo.db"}]
+    )
     resolved = default_registry_path()
     assert resolved is not None and resolved.name == "ariadne.yaml" and resolved.is_file()
     assert default_registry_path("other.yaml") == Path("other.yaml")  # explicit wins
@@ -500,7 +498,9 @@ def test_relative_paths_resolve_against_the_registry_file(tmp_path, monkeypatch)
     con.execute("CREATE TABLE t (x INTEGER)")
     con.commit()
     con.close()
-    reg = write_registry(dir_a, [{"name": "demo", "type": "sqlite", "path": "data/demo.db"}])
+    reg = write_registry(
+        dir_a, [{"name": "demo", "type": "sqlite", "path": "data/demo.db"}]
+    )
 
     (tmp_path / "b").mkdir()
     monkeypatch.chdir(tmp_path / "b")  # unrelated cwd

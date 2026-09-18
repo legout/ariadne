@@ -11,7 +11,7 @@ fixture's precision — same rule as tests/test_serve.py). Exit 0 = all served.
 
 Usage::
 
-    python scripts/mcp_client.py [--db data/demo.db]
+    python examples/retail-demo/mcp_client.py [--db examples/retail-demo/data/demo.db]
         [--semantic semantic_layer] [--context context_layer]
 """
 
@@ -105,9 +105,7 @@ async def run(args: argparse.Namespace) -> None:
             assert {"gross_margin", "order_count"} <= {m["name"] for m in metrics[:-1]}
 
             print('== search_context("gross margin")')
-            hits = result_data(
-                await session.call_tool("search_context", {"query": "gross margin"})
-            )
+            hits = result_data(await session.call_tool("search_context", {"query": "gross margin"}))
             assert hits, "no context hits for 'gross margin'"
             for hit in hits[:3]:
                 print(f"  {hit['score']:>3}  {hit['path']}")
@@ -138,7 +136,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Scripted MCP client: run the spec §8 acceptance calls against the facade."
     )
-    parser.add_argument("--db", default="data/demo.db", help="SQLite database to attach")
+    parser.add_argument(
+        "--db", default="examples/retail-demo/data/demo.db", help="SQLite database to attach"
+    )
     parser.add_argument("--semantic", default="semantic_layer", help="served OSI layer directory")
     parser.add_argument("--context", default="context_layer", help="served OKF layer directory")
     args = parser.parse_args()

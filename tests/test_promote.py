@@ -1,7 +1,7 @@
 """Mechanical promotion gate (spec rev 6 §8.16): merge-only promotion bookkeeping.
 
 Exercises ariadne.promote (the logic behind ``ariadne-promote`` / the
-``scripts/promote.py`` shim) against fixture staging/served trees: verified
+``ariadne-promote`` shim) against fixture staging/served trees: verified
 append + status flip, index regeneration, log.md entries, idempotency, and the
 merge-never-wipes invariant. The staged pages mirror the real author output
 shape so the frontmatter round-trip is exercised for real.
@@ -42,7 +42,7 @@ tags: [policy, billing]
 status: draft
 sources:
   - id: seed-notes
-    resource: data/seed_notes.md
+    resource: examples/retail-demo/seed_notes.md
     title: Seed notes
 ---
 
@@ -58,7 +58,7 @@ description: One row per placed order.
 tags: [table, orders]
 sources:
   - id: demo.main.orders
-    resource: data/demo.db
+    resource: examples/retail-demo/data/demo.db
     title: Orders
 grain:
   primary_key: [order_id]

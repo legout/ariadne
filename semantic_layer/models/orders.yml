@@ -1,0 +1,37 @@
+version: 0.2.0.dev0
+semantic_model:
+  - name: orders
+    description: Orders
+    datasets:
+      - name: orders
+        source: demo.main.orders
+        primary_key: [order_id]
+        fields:
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+          - name: status
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: status
+            dimension: {}
+    metrics:
+      - name: gross_margin
+        description: margin
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: (gross_revenue - cogs) / NULLIF(gross_revenue, 0)
+        custom_extensions:
+          - vendor_name: DATUS
+            data: '{"metric_kind":"derived","inputs":["gross_revenue","cogs"]}'
+      - name: order_count
+        description: count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(CASE WHEN orders.status NOT IN ('CANCELLED', 'RETURNED')
+                            THEN 1 ELSE 0 END)

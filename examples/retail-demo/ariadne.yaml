@@ -5,8 +5,8 @@
 sources:
   - name: demo
     type: sqlite
-    path: data/demo.db
+    path: examples/retail-demo/data/demo.db
   - name: support
     type: parquet
-    path: data/support_tickets/*.parquet
+    path: examples/retail-demo/data/support_tickets/*.parquet
     table: tickets # one view over the whole glob: support.tickets

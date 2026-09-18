@@ -52,8 +52,12 @@ def _model(metrics: list[dict], fields: list[dict], source: str = "demo.main.ord
                 "name": "orders",
                 "description": "test model",
                 "datasets": [
-                    {"name": "orders", "source": source, "primary_key": ["order_id"],
-                     "fields": fields}
+                    {
+                        "name": "orders",
+                        "source": source,
+                        "primary_key": ["order_id"],
+                        "fields": fields,
+                    }
                 ],
                 "metrics": metrics,
             }
@@ -69,12 +73,18 @@ GOLDEN_FIELDS = [
     _field("fx_rate", "fx_rate"),
 ]
 GOLDEN_METRICS = [
-    _metric("gross_revenue", "SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') "
-                             "THEN amount * fx_rate ELSE 0 END)"),
-    _metric("cogs", "SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') "
-                    "THEN product_cost * fx_rate ELSE 0 END)"),
-    _metric("gross_margin", "(gross_revenue - cogs) / NULLIF(gross_revenue, 0)",
-            datus_derived=True),
+    _metric(
+        "gross_revenue",
+        "SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount * fx_rate ELSE 0 END)",
+    ),
+    _metric(
+        "cogs",
+        "SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') "
+        "THEN product_cost * fx_rate ELSE 0 END)",
+    ),
+    _metric(
+        "gross_margin", "(gross_revenue - cogs) / NULLIF(gross_revenue, 0)", datus_derived=True
+    ),
 ]
 GOLDEN_MODEL = _model(GOLDEN_METRICS, GOLDEN_FIELDS)
 
@@ -96,8 +106,9 @@ def test_field_alias_resolution_uses_the_field_expression():
     expression mapping: the region dimension groups on region_code, and a metric
     expression referencing `region` inlines its field expression too."""
     fields = GOLDEN_FIELDS + [_field("amount", "amount")]
-    model = _model([_metric("emea_count", "SUM(CASE WHEN region = 'EMEA' THEN 1 ELSE 0 END)")],
-                   fields)
+    model = _model(
+        [_metric("emea_count", "SUM(CASE WHEN region = 'EMEA' THEN 1 ELSE 0 END)")], fields
+    )
     sql = render(model, ["region"])
     assert "region_code AS region" in sql
     assert "CASE WHEN region_code = 'EMEA' THEN 1 ELSE 0 END" in sql
@@ -208,8 +219,12 @@ def test_stray_datus_extension_key_is_a_compile_error():
 
 
 def test_time_range_predicate_on_the_is_time_field():
-    sql = render(GOLDEN_MODEL, ["region"], {"start": "2025-01-01", "end": "2025-06-30"},
-                 metric="gross_revenue")
+    sql = render(
+        GOLDEN_MODEL,
+        ["region"],
+        {"start": "2025-01-01", "end": "2025-06-30"},
+        metric="gross_revenue",
+    )
     assert "CAST(order_timestamp AS DATE) >= '2025-01-01'" in sql
     assert "CAST(order_timestamp AS DATE) <= '2025-06-30'" in sql
     assert "GROUP BY region" in sql  # predicate applies to the inner aggregate

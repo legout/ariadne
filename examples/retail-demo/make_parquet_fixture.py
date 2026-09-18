@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic support-tickets parquet fixture (spec rev 9 Lane B, §8.20).
 
-Writes ``<outdir>/*.parquet`` (default ``data/support_tickets/``), sharded by
+Writes ``<outdir>/*.parquet`` (default ``examples/retail-demo/data/support_tickets/``), sharded by
 year — the registry's parquet glob (``table: tickets``) turns the whole
 directory into one view ``support.tickets`` alongside the demo sqlite source.
 
@@ -20,7 +20,8 @@ The NULL-for-open rule is the seed-notes rule ("average resolution excludes
 open tickets") made visible in the data.
 
 Usage:
-    python scripts/make_parquet_fixture.py [outdir]   # default: data/support_tickets
+    python examples/retail-demo/make_parquet_fixture.py [outdir]
+    # default: examples/retail-demo/data/support_tickets
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ DEFAULT_OUTDIR = REPO_ROOT / "data" / "support_tickets"
 
 SEED = 42
 TICKET_COUNT = 200
-CUSTOMER_COUNT = 30  # matches scripts/seed_db.py customers so joins are plausible
+CUSTOMER_COUNT = 30  # matches examples/retail-demo/seed_db.py customers so joins are plausible
 
 FIRST_TICKET = datetime(2024, 1, 1)
 LAST_TICKET = datetime(2025, 6, 30)
@@ -102,9 +103,7 @@ def write_fixture(outdir: Path) -> list[Path]:
         con.table("tickets").filter(
             "created_at >= '2024-01-01' AND created_at < '2025-01-01'"
         ).write_parquet(str(written[0]))
-        con.table("tickets").filter("created_at >= '2025-01-01'").write_parquet(
-            str(written[1])
-        )
+        con.table("tickets").filter("created_at >= '2025-01-01'").write_parquet(str(written[1]))
     finally:
         con.close()
     return written
@@ -121,11 +120,16 @@ def summarize(written: list[Path]) -> str:
             "ticket_id INTEGER, customer_id INTEGER, status TEXT, "
             "severity TEXT, created_at TEXT, resolution_hours DOUBLE)"
         )
+        # parameterized insert — lens sink heuristic false positive
         con.executemany("INSERT INTO tickets VALUES (?, ?, ?, ?, ?, ?)", rows)
-        stats = con.table("tickets").aggregate(
-            "COUNT(*) AS n, COUNT(resolution_hours) AS closed, "
-            "AVG(resolution_hours) FILTER (WHERE status = 'closed') AS avg_h"
-        ).fetchone()
+        stats = (
+            con.table("tickets")
+            .aggregate(
+                "COUNT(*) AS n, COUNT(resolution_hours) AS closed, "
+                "AVG(resolution_hours) FILTER (WHERE status = 'closed') AS avg_h"
+            )
+            .fetchone()
+        )
     finally:
         con.close()
     if stats is None:  # unreachable for an aggregate query, but keeps pyright honest

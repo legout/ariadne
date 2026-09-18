@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Seed the synthetic demo database (data/demo.db).
+"""Seed the synthetic demo database (examples/retail-demo/data/demo.db).
 
 Deterministic by construction: seeded RNG, fixed row counts, fixed currency
 rates. Re-running the script onto an existing database drops and rebuilds the
 tables, converging to identical content (idempotent).
 
-Designed-in gotchas (documented in data/seed_notes.md, consumed by the
+Designed-in gotchas (documented in examples/retail-demo/seed_notes.md, consumed by the
 authoring agent):
   1. orders contains CANCELLED and RETURNED rows that revenue metrics must
      exclude.
@@ -14,7 +14,8 @@ authoring agent):
      and must be joined to ``currency_conversion_rate``.
 
 Usage:
-    python scripts/seed_db.py [output_db_path]   # default: data/demo.db
+    python examples/retail-demo/seed_db.py [output_db_path]
+    # default: examples/retail-demo/data/demo.db
 """
 
 import random

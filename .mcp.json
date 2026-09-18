@@ -3,10 +3,14 @@
     "ariadne": {
       "command": "/home/volker/coding/ariadne/.venv/bin/python",
       "args": [
-        "-m", "ariadne.serve",
-        "--db", "data/demo.db",
-        "--semantic", "semantic_layer",
-        "--context", "context_layer"
+        "-m",
+        "ariadne.serve",
+        "--sources",
+        "examples/retail-demo/ariadne.yaml",
+        "--semantic",
+        "examples/retail-demo/semantic_layer",
+        "--context",
+        "examples/retail-demo/context_layer"
       ],
       "cwd": "/home/volker/coding/ariadne",
       "lifecycle": "lazy",

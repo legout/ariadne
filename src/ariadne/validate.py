@@ -30,7 +30,7 @@ Without ``db_path``, validate checks schema and renderability only.
 CLI::
 
     python -m ariadne.validate staging/               # exit 0 = compiles
-    python -m ariadne.validate staging/ --db data/demo.db   # + bind check + grain audit
+    python -m ariadne.validate staging/ --db DB   # + bind check + grain audit
 """
 
 from __future__ import annotations
@@ -94,8 +94,10 @@ def _model_entries(staging_dir: str | Path) -> list[tuple[str, dict]]:
         for model in models:
             name = model.get("name") if isinstance(model, dict) else None
             entries.append(
-                (str(name) if name else path.stem,
-                 {"version": doc.get("version"), "semantic_model": [model]})
+                (
+                    str(name) if name else path.stem,
+                    {"version": doc.get("version"), "semantic_model": [model]},
+                )
             )
     return entries
 
@@ -185,9 +187,7 @@ def _bind_check(rendered: list[tuple[str, str]], con: duckdb.DuckDBPyConnection)
         try:
             con.execute(f"EXPLAIN {sql}")  # nosemgrep — sql is render() output
         except Exception as exc:
-            errors.append(
-                f"model '{name}' failed the bind check: {type(exc).__name__}: {exc}"
-            )
+            errors.append(f"model '{name}' failed the bind check: {type(exc).__name__}: {exc}")
     return errors
 
 
@@ -347,9 +347,7 @@ def _assertion_2(
     return errors
 
 
-def _grain_audit(
-    staging_dir: str | Path, con: duckdb.DuckDBPyConnection
-) -> list[str]:
+def _grain_audit(staging_dir: str | Path, con: duckdb.DuckDBPyConnection) -> list[str]:
     """ADR-0006 §5 pre-flight protocol over the staged models: Assertion 1 (grain
     uniqueness) then Assertion 2 (parent aggregate invariance), executed on the
     shared audit connection (spec §6)."""

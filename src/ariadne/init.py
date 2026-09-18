@@ -103,7 +103,7 @@ ARIADNE_YAML = """\
 # sources:
 #   - name: demo
 #     type: sqlite
-#     path: data/demo.db
+#     path: data/YOURDB.db
 #   - name: events
 #     type: parquet
 #     path: data/events/*.parquet

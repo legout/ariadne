@@ -4,7 +4,7 @@ Reads every source of the ADR-0010 registry (``ariadne.yaml``) — or the legacy
 single SQLite file (``--db``) — read-only through the shared connection builder
 (:mod:`ariadne.sources`), profiles every table, and emits a JSON-serializable
 dict. This output is the input contract of the authoring agent
-(``ariadne.author``, ticket #4), which combines it with ``data/seed_notes.md``;
+(``ariadne.author``, ticket #4), which combines it with ``examples/retail-demo/seed_notes.md``;
 the profiler surfaces statistics only — business rules live in the seed notes,
 never here.
 
@@ -12,7 +12,7 @@ Output shape: the legacy single-sqlite call keeps the historical contract
 (``profile(db_path) -> dict``, also written by the CLI)::
 
     {
-      "db_path": "data/demo.db",
+      "db_path": "examples/retail-demo/data/demo.db",
       "dialect": "sqlite",
       "tables": {
         "<table>": {
@@ -74,9 +74,9 @@ interpolates only allowlisted catalog identifiers.
 
 CLI::
 
-    python -m ariadne.profiler --db data/demo.db                 # prints JSON + writes profile.json
-    python -m ariadne.profiler --db data/demo.db --out other.json
-    python -m ariadne.profiler --db data/demo.db --no-out        # stdout only
+    python -m ariadne.profiler --db DB   # prints JSON + writes profile.json
+    python -m ariadne.profiler --db examples/retail-demo/data/demo.db --out other.json
+    python -m ariadne.profiler --db examples/retail-demo/data/demo.db --no-out        # stdout only
     python -m ariadne.profiler --sources ariadne.yaml --no-out   # every registry source
 """
 
@@ -179,9 +179,11 @@ def _profile_table(
     row_count = rel.aggregate("COUNT(*) AS n").fetchall()[0][0]
     counts: dict[str, tuple[int, int]] = {}
     for name in names:
-        row = _column_rel(rel, name, allowed).aggregate(
-            "COUNT(__profile_value) AS nn, COUNT(DISTINCT __profile_value) AS d"
-        ).fetchall()
+        row = (
+            _column_rel(rel, name, allowed)
+            .aggregate("COUNT(__profile_value) AS nn, COUNT(DISTINCT __profile_value) AS d")
+            .fetchall()
+        )
         counts[name] = (row[0][0], row[0][1])  # (non_null, distinct)
 
     pk_candidates = [
@@ -309,9 +311,7 @@ def _profile_source(con: duckdb.DuckDBPyConnection, entry: dict) -> dict:
     profiles: dict[str, tuple] = {}
     for name in cols_by_table:  # builder catalog order == information_schema order
         cols = cols_by_table[name]
-        row_count, pk_candidates, columns = _profile_table(
-            con, refs[name], name, cols, allowed
-        )
+        row_count, pk_candidates, columns = _profile_table(con, refs[name], name, cols, allowed)
         profiles[name] = (cols, row_count, pk_candidates, columns)
         pk_by_table[name] = pk_candidates
     for name, (cols, row_count, pk_candidates, columns) in profiles.items():
