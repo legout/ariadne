@@ -121,6 +121,7 @@ def summarize(written: list[Path]) -> str:
             "severity TEXT, created_at TEXT, resolution_hours DOUBLE)"
         )
         # parameterized insert — lens sink heuristic false positive
+        # pi-lens-ignore: sql-injection-sink
         con.executemany("INSERT INTO tickets VALUES (?, ?, ?, ?, ?, ?)", rows)
         stats = (
             con.table("tickets")
