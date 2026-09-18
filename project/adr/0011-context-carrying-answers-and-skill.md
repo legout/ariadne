@@ -1,0 +1,7 @@
+# Context-carrying answers and the packaged agent skill
+
+Status: accepted (owner, 2026-09-18 shape-design round for spec revision 10).
+
+The context layer was fully generated but barely consumed: `search_context` was its only runtime consumer, and nothing forced an agent to consult it — the research study's core axiom ("the context layer routes and guides") lived only in the querying agent's discipline. Rev 10 makes consumption structural on two levels. First, governed `get_metric` responses carry a `context` field: the full served OKF metric page plus the full bodies of every policy page it cites (resolved via the metric page's `sources[]`) — even a lazy agent ships the caveats with the number. Ad-hoc responses carry `context: null` (no served page exists). Second, ariadne packages an agent skill (SKILL.md + grain-rubric reference) in the wheel, installed via `ariadne skill install` to the cross-agent `~/.agents/skills/ariadne/` (user) or `.agents/skills/ariadne/` (project) convention with optional agent-specific wiring (`--agent pi|claude|hermes`), drift-checked by `ariadne skill status` — the lumio-wiki pattern. Tool descriptions stay minimal (what's callable), the skill owns workflow knowledge (how to work), per-project AGENTS.md shrinks to project facts plus a skill pointer.
+
+**Considered options:** metadata-only context field (rejected — loses the actual rule text, which is the point); skills distributed via a separate catalog repo (rejected — drifts from the package; in-wheel distribution version-locks them).
