@@ -1,9 +1,9 @@
 """Packaging: the ariadne-init scaffolder and the console-script entry points.
 
-Scaffolding covers INPUTS only (seed notes, .env.example, .mcp.json, .gitignore,
-empty data/) — the served layers are author+promote outputs and must never be
-pre-seeded. Entry points assert the editable install registered all five
-console scripts and that each import target resolves.
+Scaffolding covers INPUTS only (seed notes, AGENTS.md pointer, .env.example,
+.mcp.json, .gitignore, empty data/) — the served layers are author+promote
+outputs and must never be pre-seeded. Entry points assert the editable install
+registered all eight console scripts and that each import target resolves.
 """
 
 import json
@@ -17,6 +17,9 @@ CONSOLE_SCRIPTS = (
     "ariadne-serve",
     "ariadne-promote",
     "ariadne-init",
+    "ariadne-skill",
+    "ariadne-profiler",
+    "ariadne-ingest",
 )
 
 GITIGNORE_LINES = (
@@ -33,7 +36,7 @@ GITIGNORE_LINES = (
 def test_scaffold_creates_expected_inputs(tmp_path):
     target = tmp_path / "proj"
     assert main([str(target)]) == 0
-    for rel in ("data/seed_notes.md", ".env.example", ".mcp.json", ".gitignore"):
+    for rel in ("data/seed_notes.md", "AGENTS.md", ".env.example", ".mcp.json", ".gitignore"):
         assert (target / rel).is_file(), rel
     assert (target / "data").is_dir()
 
@@ -48,9 +51,11 @@ def test_scaffold_creates_expected_inputs(tmp_path):
     mcp = json.loads((target / ".mcp.json").read_text(encoding="utf-8"))  # parses as JSON
     server = mcp["mcpServers"]["ariadne"]
     assert server["command"] == "ariadne-serve"
+    # Registry-aware (rev 10): --sources names the project's ariadne.yaml; the
+    # semantic/context paths are the project-root defaults promote creates.
     assert server["args"] == [
-        "--db",
-        "data/YOURDB.db",
+        "--sources",
+        "ariadne.yaml",
         "--semantic",
         "semantic_layer",
         "--context",
@@ -60,6 +65,30 @@ def test_scaffold_creates_expected_inputs(tmp_path):
     gitignore = (target / ".gitignore").read_text(encoding="utf-8")
     for line in GITIGNORE_LINES:
         assert line in gitignore, line
+
+
+def test_agents_md_is_pointer_page_not_workflow(tmp_path):
+    """Rev 10 (ADR-0011): AGENTS.md = project facts + skill pointer + layout
+    table + promotion-gate rule. The workflow prose belongs to the packaged
+    skill and is NOT duplicated here."""
+    target = tmp_path / "proj"
+    assert main([str(target)]) == 0
+    agents = (target / "AGENTS.md").read_text(encoding="utf-8")
+    assert "Load the ariadne skill (`ariadne-skill install` if absent)" in agents
+    assert "TODO" in agents  # project facts the owner fills in
+    assert "`context_layer/`" in agents and "`staging/`" in agents  # layout table
+    assert "ariadne-promote" in agents and "review_needed" in agents  # gate rule
+    assert "profile" not in agents.lower()  # the loop prose lives in the skill
+
+
+def test_agents_md_names_the_real_skill_command(tmp_path):
+    """The packaged CLI is ``ariadne-skill`` — no generated input may reference
+    the absent ``ariadne skill`` command form (there is no umbrella CLI)."""
+    target = tmp_path / "proj"
+    assert main([str(target)]) == 0
+    agents = (target / "AGENTS.md").read_text(encoding="utf-8")
+    assert "ariadne-skill install" in agents
+    assert "ariadne skill install" not in agents
 
 
 def test_second_run_is_idempotent(tmp_path, capsys):
@@ -72,8 +101,8 @@ def test_second_run_is_idempotent(tmp_path, capsys):
     after = {p.relative_to(target): p.read_bytes() for p in target.rglob("*") if p.is_file()}
     assert before == after  # byte-identical tree: nothing rewritten
     skipped = [line for line in out.splitlines() if "skipped (exists)" in line]
-    assert len(skipped) == 5  # every input file reported skipped, none rewritten
-    # (rev 9: the scaffolded inputs include the ariadne.yaml registry template)
+    assert len(skipped) == 6  # every input file reported skipped, none rewritten
+    # (rev 10: the scaffolded inputs include the AGENTS.md pointer page)
 
 
 def test_existing_gitignore_is_not_overwritten(tmp_path):

@@ -23,6 +23,8 @@ ariadne-validate = "ariadne.validate:main"
 ariadne-serve = "ariadne.serve:main"
 ariadne-promote = "ariadne.promote:main"
 ariadne-init = "ariadne.init:main"
+ariadne-skill = "ariadne.skill:main"
+ariadne-profiler = "ariadne.profiler:main"
 
 [project.optional-dependencies]
 # ADR-0009 document ingestion: the lumio-wiki-researched converter stack. Optional
@@ -43,6 +45,11 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# The packaged agent skill ships in the wheel, version-locked to the package
+# (ADR-0011); ariadne skill install copies it out.
+ariadne = ["skill_assets/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

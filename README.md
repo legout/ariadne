@@ -23,9 +23,11 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 ```
 
 The editable install registers console scripts — `ariadne-ingest`, `ariadne-author`,
-`ariadne-validate`, `ariadne-serve`, `ariadne-promote`, `ariadne-init`. `ariadne-init [TARGET_DIR]`
-scaffolds a fresh project's inputs (seed notes, `.env.example`, `.mcp.json` wired to
-`ariadne-serve`, `.gitignore`, empty `data/` + `data/docs/` for ingestible source
+`ariadne-validate`, `ariadne-serve`, `ariadne-promote`, `ariadne-init`, `ariadne-skill`,
+`ariadne-profiler`. `ariadne-init [TARGET_DIR]`
+scaffolds a fresh project's inputs (seed notes, an AGENTS.md pointer page,
+`.env.example`, `.mcp.json` wired to `ariadne-serve --sources ariadne.yaml`, `.gitignore`,
+empty `data/` + `data/docs/` for ingestible source
 documents); the served layers are never scaffolded —
 they arrive only via author + promote.
 
@@ -57,6 +59,29 @@ examples/retail-demo/demo.sh          # pauses for human promotion instead
 
 The repo ships a `.mcp.json` — pi (via `pi-mcp-adapter`) and any MCP-capable agent connect
 to the facade directly; restart the agent after config changes.
+
+## The packaged agent skill (ADR-0011)
+
+The wheel ships an agent skill (`ariadne/skill_assets/`: SKILL.md + the grain-rubric
+reference), version-locked to the package. Install it for your agents:
+
+```bash
+ariadne-skill install --scope user --agent pi   # ~/.agents/skills/ariadne + ~/.pi symlink
+ariadne-skill install --scope project           # .agents/skills/ariadne in this project
+ariadne-skill status                            # per-target drift vs the packaged skill
+ariadne-skill path                              # print the packaged location
+```
+
+The `.agents/skills` directory is the cross-agent convention; `--agent pi|claude|hermes`
+additionally wires the agent-specific dir as a symlink to it (copy + note where symlinks
+are unavailable). Re-install refreshes. The skill owns the workflow (profile → author →
+review staging → human promote → query) and the agent rules — per-project AGENTS.md
+stays a pointer page (`ariadne-init` scaffolds one) with just the project facts.
+
+Governed `get_metric` responses carry the rules with the number: a `context` field with
+the full served OKF metric page plus the full bodies of every policy it cites — agents
+report those caveats with every answer (ad-hoc `define_metric` responses carry
+`context: null`).
 
 ## Sources — the `ariadne.yaml` registry (ADR-0010)
 

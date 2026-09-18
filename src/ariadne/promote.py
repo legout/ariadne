@@ -328,13 +328,25 @@ def main(argv: list[str] | None = None) -> int:
         "verified append, index + log bookkeeping).",
     )
     parser.add_argument("--yes", action="store_true", help="promote without prompting")
-    parser.add_argument("--staging", default=str(_REPO_ROOT / "staging"), help="staging directory")
     parser.add_argument(
-        "--served", default=str(_REPO_ROOT), help="served root (holds context_layer/)"
+        "--staging", default="staging", help="staging directory (default: ./staging)"
+    )
+    parser.add_argument(
+        "--served",
+        default=None,
+        help="served root (holds context_layer/); default: the project root (.) in a "
+        "fresh project (no ./context_layer yet), else this checkout's root",
     )
     parser.add_argument("--by", default=None, help="verifier identity (default: human:<$USER>)")
     args = parser.parse_args(argv)
-    promote(args.staging, args.served, by=args.by, assume_yes=args.yes)
+    # Rev 10 (spec §8.21): a fresh project has no ./context_layer yet — the served
+    # root defaults to the project root, so the first promotion creates
+    # context_layer/ + semantic_layer/ THERE instead of the misleading "nothing to
+    # promote" against a package-relative guess. Explicit --served always wins.
+    served = args.served
+    if served is None:
+        served = "." if not (Path(".") / _CONTEXT).is_dir() else str(_REPO_ROOT)
+    promote(args.staging, served, by=args.by, assume_yes=args.yes)
     return 0
 
 

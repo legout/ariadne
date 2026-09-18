@@ -133,6 +133,9 @@ semantic_model:
     .replace("@COUNT@", _COUNT)
 )
 
+# Golden OKF page: cites both governing policies (spec rev 10 §8.21 — the
+# context field resolves policies/order-status-billing.md and
+# policies/emea-currency-cutover.md against the served context dir).
 GOLDEN_OKF = f"""\
 ---
 type: metric
@@ -140,6 +143,8 @@ status: draft
 sources:
   - orders
   - currency_conversion_rate
+  - {{id: order-status-billing, resource: policies/order-status-billing.md}}
+  - {{id: emea-currency-cutover, resource: policies/emea-currency-cutover.md}}
 ---
 
 # Gross margin
@@ -152,10 +157,56 @@ Business rules from the seed notes (the author MUST restate every one):
    for both amount and product_cost before aggregating.
 """
 
+GOLDEN_POLICY_STATUS = f"""\
+---
+type: policy
+status: draft
+title: Order status billing
+description: Cancelled and returned orders are not revenue.
+tags: [policy, billing]
+sources:
+  - id: seed-notes
+    resource: data/seed_notes.md
+    title: Seed notes
+---
+
+# Order status billing
+
+{GOTCHA_1}: rows with status IN ('CANCELLED', 'RETURNED') are excluded from
+every revenue, cost, and order-count number.
+"""
+
+GOLDEN_POLICY_EMEA = f"""\
+---
+type: policy
+status: draft
+title: EMEA currency cutover
+description: Pre-2024 EMEA rows are unconverted local currency.
+tags: [policy, currency]
+sources:
+  - id: seed-notes
+    resource: data/seed_notes.md
+    title: Seed notes
+---
+
+# EMEA currency cutover
+
+{GOTCHA_2}: pre-2024 EMEA rows carry unconverted local currency (EUR/GBP) and
+must be converted with the fx_rate join before aggregating.
+"""
+
 GOLDEN_RESPONSE = json.dumps(
     {
         "files": [
             {"path": "context_layer/metrics/gross_margin.md", "content": GOLDEN_OKF},
+            {
+                "path": "context_layer/policies/order-status-billing.md",
+                "content": GOLDEN_POLICY_STATUS,
+            },
+            {
+                "path": "context_layer/policies/emea-currency-cutover.md",
+                "content": GOLDEN_POLICY_EMEA,
+            },
             {"path": "semantic_layer/models/orders.yml", "content": GOLDEN_OSI},
         ]
     }
@@ -333,6 +384,113 @@ def test_get_metric_responses_carry_governed_true(facade):
     result = asyncio.run(facade.get_metric("order_count", ["region"]))
     assert result["governed"] is True
     assert "sql" in result
+
+
+# --- Context-carrying answers (spec rev 10 §8.21, ADR-0011) ------------------
+
+
+def test_governed_get_metric_carries_context_with_policy_bodies(facade):
+    """The governed response carries the full metric page AND the full bodies of
+    both policies its sources[] cites (gross_margin cites order-status-billing
+    and emea-currency-cutover)."""
+    result = asyncio.run(facade.get_metric("gross_margin", ["region"]))
+    context = result["context"]
+    assert GOTCHA_1 in context["metric_page"]  # the metric page itself, full text
+    assert len(context["policies"]) == 2
+    assert GOTCHA_1 in context["policies"][0]  # order-status-billing body
+    assert GOTCHA_2 in context["policies"][1]  # emea-currency-cutover body
+
+
+def test_adhoc_define_metric_carries_context_null(facade):
+    """Ad-hoc metrics have no served page: context is exactly null."""
+    result = asyncio.run(
+        facade.define_metric(
+            {
+                "name": "context_probe_metric",
+                "description": "ad-hoc answers carry no served context",
+                "source": "orders",
+                "expression": "SUM(amount)",
+                "dimensions": [],
+            }
+        )
+    )
+    assert result["governed"] is False
+    assert result["context"] is None
+
+
+def test_missing_metric_page_collapses_context_without_failing(served, tmp_path):
+    """A served tree whose context dir lacks the metric page still answers:
+    the fallback is the null form, never a query error."""
+    served_dir, db = served
+    naked = Facade(
+        served_dir / "semantic_layer", tmp_path, db, staging_dir=tmp_path / "staging"
+    )
+    result = asyncio.run(naked.get_metric("gross_margin", ["region"]))
+    assert result["governed"] is True
+    assert result["rows"]
+    assert result["context"] == {"metric_page": None, "policies": []}
+
+
+def test_unresolvable_policy_reference_collapses_context_without_failing(served, tmp_path):
+    """A metric page citing a policies/ path that does not resolve collapses the
+    whole context to the null form (spec rev 10: one fallback shape, no failure,
+    nothing logged)."""
+    served_dir, db = served
+    context_dir = tmp_path / "context_layer"
+    (context_dir / "metrics").mkdir(parents=True)
+    (context_dir / "metrics" / "gross_margin.md").write_text(
+        "---\ntype: metric\nstatus: stable\nsources:\n"
+        "  - {id: gone, resource: policies/missing-policy.md}\n---\n\n# Gross margin\n",
+        encoding="utf-8",
+    )
+    facade = Facade(
+        served_dir / "semantic_layer", context_dir, db, staging_dir=tmp_path / "staging"
+    )
+    result = asyncio.run(facade.get_metric("gross_margin", ["region"]))
+    assert result["governed"] is True
+    assert result["context"] == {"metric_page": None, "policies": []}
+
+
+def test_metric_page_name_traversal_collapses_context_without_reading_outside(served, tmp_path):
+    """Containment: a served metric name that escapes the context dir (a model
+    YAML is not fully trusted) never reads outside context_layer/ — the page
+    collapses to the null form and the external file's content is absent."""
+    served_dir, db = served
+    secret = served_dir / "secret.md"  # context_layer/metrics/../../secret.md lands here
+    secret.write_text("TOP_SECRET_TRAVERSAL_PAYLOAD", encoding="utf-8")
+    facade = Facade(
+        served_dir / "semantic_layer",
+        served_dir / "context_layer",
+        db,
+        staging_dir=tmp_path / "staging",
+    )
+    context = facade._metric_context("../../secret")
+    assert context == {"metric_page": None, "policies": []}
+    assert "TOP_SECRET_TRAVERSAL_PAYLOAD" not in json.dumps(context)
+
+
+def test_policy_ref_traversal_collapses_context_without_reading_dotenv(served, tmp_path):
+    """Containment: a cited policy ``policies/../../.env`` must resolve under
+    ``policies/`` — it does not, so the whole context collapses to the null form
+    while the query itself still answers, and the .env content never leaks."""
+    served_dir, db = served
+    context_dir = tmp_path / "context_layer"
+    (context_dir / "metrics").mkdir(parents=True)
+    (context_dir / "metrics" / "gross_margin.md").write_text(
+        "---\ntype: metric\nstatus: stable\nsources:\n"
+        "  - {id: theft, resource: policies/../../.env}\n---\n\n# Gross margin\n",
+        encoding="utf-8",
+    )
+    dotenv = tmp_path / ".env"  # context_layer/policies/../../.env resolves here
+    dotenv.write_text("OPENAI_API_KEY=sk-traversal-secret\n", encoding="utf-8")
+    facade = Facade(
+        served_dir / "semantic_layer", context_dir, db, staging_dir=tmp_path / "staging"
+    )
+    result = asyncio.run(facade.get_metric("gross_margin", ["region"]))
+    assert result["governed"] is True and result["rows"]  # the query never fails
+    context = result["context"]
+    assert context == {"metric_page": None, "policies": []}
+    assert "sk-traversal-secret" not in json.dumps(result)
 
 
 _JOIN_SOURCE = (
