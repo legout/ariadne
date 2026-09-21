@@ -1,189 +1,166 @@
 # Ariadne
 
-Governed metrics for autonomous agents. An authoring agent profiles a database, combines
-the profile with human seed notes, and drafts a full **Context Layer** (OKF v0.2 bundle:
-tables, join references, policies, metrics, attested computations, skills) plus a
-**Semantic Layer** (OSI YAML) into `staging/`. A human promotes them (`ariadne-promote`
-— merge-only, records `verified`, regenerates indexes); agents then query via MCP:
-`ariadne/render.py` (our own sqlglot compiler, ADR-0008) renders OSI to SQL, a
-facade-owned read-only DuckDB connection
-executes it, and **no computation ever bypasses the compile gate** — including
-agent-drafted ad-hoc metrics (`define_metric`), which are grain-checked, executed
-read-only, and auto-staged as promotion candidates.
+**Governed metrics for AI agents.** Ariadne sits between your data and your AI agent
+and makes sure the numbers coming back are the numbers your business agreed on.
 
-Spec: [project/specs/mvp-vertical-slice.md](project/specs/mvp-vertical-slice.md) · research:
-[project/research/](project/research/) (engine evidence in
-[datus-spike.md](project/research/datus-spike.md)) · decisions: [project/adr/](project/adr/).
+When an agent writes SQL directly against a database (text-to-SQL), it guesses: which
+table, which join, which filter, which definition of "revenue". Two runs of the same
+question can return different answers, and nothing tells the agent that cancelled orders
+must be excluded or that the currency changed in March. Ariadne replaces the guessing
+with a governed catalog:
 
-## Setup
+- A **semantic layer** holds the one canonical definition of each metric, written in
+  the open [OSI](https://ossie.apache.org/) YAML format. Ariadne compiles these to SQL
+  itself and executes them read-only — no agent ever hand-writes a query for a governed
+  number.
+- A **context layer** holds the business knowledge around those metrics — policies,
+  table caveats, provenance — as plain version-controlled Markdown. Every governed
+  answer carries its caveats with it, so the agent reports "revenue was X *— excluding
+  cancelled orders, per policy*" instead of a bare number.
 
-```bash
-uv venv --python 3.12 .venv   # floor is CPython 3.12 (>=3.12; no upper cap since ADR-0008)
-uv pip install --python .venv/bin/python -e ".[dev]"
+Agents talk to Ariadne over [MCP](https://modelcontextprotocol.io/), the standard tool
+protocol — pi, Claude, and any other MCP-capable agent can connect directly.
+
+## What you get
+
+### For querying agents
+
+- **Five MCP tools** covering the full question lifecycle (see below) — governed answers
+  first, with a safe path for anything not yet modeled.
+- **Caveats attached to every number.** Governed answers include the full text of every
+  business policy the metric cites. Ungoverned answers are clearly labeled
+  `governed: false`.
+- **Fan-out protection.** Ad-hoc queries are checked for grain-preserving joins *before*
+  execution, so one-to-many joins can't silently inflate totals — a classic way
+  text-to-SQL agents produce wrong-but-confident numbers.
+
+### For data owners
+
+- **AI-assisted authoring, human gate.** One command profiles your databases and drafts
+  the entire metric catalog and context pages into a `staging/` area. Nothing is ever
+  served until a human reviews and promotes it.
+- **Everything is files.** Metrics are YAML, business knowledge is Markdown. Review in
+  pull requests, diff definitions, roll back with git. No server database to migrate.
+- **Self-improving catalog.** When an agent answers an unmodeled question, its working
+  definition is automatically staged as a proposal — good ad-hoc answers become
+  governed metrics through the same human review.
+- **Document ingestion.** Feed existing data dictionaries, PDFs, or Office documents in;
+  get typed, provenance-cited proposals out, staged for review.
+
+### For everyone
+
+- **Lightweight.** A Python package plus embedded DuckDB. No API gateway, cache cluster,
+  or refresh workers to operate.
+- **Permissive runtime.** Only MIT/Apache-licensed dependencies — no AGPL, no proprietary
+  engine.
+
+## How it works
+
+```text
+ your data ──▶ profile ──▶ author (AI) ──▶ staging/ ──▶ human review ──▶ served catalog
+  (many sources)        drafts everything     nothing serves              metrics + policies
+                                                   from here                       │
+                                                                                   ▼
+                                              AI agent ◀── MCP ── Ariadne compiles the metric
+                                               to SQL, checks it, runs it read-only,
+                                               returns the number + its business caveats
 ```
 
-The editable install registers console scripts — `ariadne-ingest`, `ariadne-author`,
-`ariadne-validate`, `ariadne-serve`, `ariadne-promote`, `ariadne-init`, `ariadne-skill`,
-`ariadne-profiler`. `ariadne-init [TARGET_DIR]`
-scaffolds a fresh project's inputs (seed notes, an AGENTS.md pointer page,
-`.env.example`, `.mcp.json` wired to `ariadne-serve --sources ariadne.yaml`, `.gitignore`,
-empty `data/` + `data/docs/` for ingestible source
-documents); the served layers are never scaffolded —
-they arrive only via author + promote.
+1. **Register your sources** in one `ariadne.yaml` file.
+2. **Profile & author**: `ariadne-author` inspects the actual data and combines it with
+   your seed notes (the rules statistics can't see) to draft the catalog into `staging/`.
+3. **Review & promote**: a human reads the staging area, then `ariadne-promote` merges
+   approved artifacts into the served catalog and marks them verified.
+4. **Query**: your agent connects over MCP. Governed metrics are compiled, checked, and
+   executed by Ariadne; business context is searched alongside.
 
-Live authoring credentials are read from `$ARIADNE_ENV` (default
-`/home/volker/coding/ariadne/.env`, never committed): `OPENAI_API_KEY`,
-`OPENAI_BASE_URL`, `OPENAI_MODEL`.
+## Quickstart
 
-## Demo
-
-```bash
-examples/retail-demo/demo.sh --yes    # seed → author (live LLM) → promote → facade + scripted client
-examples/retail-demo/demo.sh          # pauses for human promotion instead
-```
-
-## The facade — five MCP tools (stdio)
+Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/). Authoring uses an LLM —
+set `OPENAI_API_KEY` (plus `OPENAI_BASE_URL` / `OPENAI_MODEL` if not using OpenAI
+directly) in a `.env` file.
 
 ```bash
-.venv/bin/python -m ariadne.serve --db examples/retail-demo/data/demo.db \
-    --semantic semantic_layer --context context_layer
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -e .
 ```
 
-- `list_metrics()` — governed metrics with descriptions + available dimensions + routing hint
-- `list_datasets()` — every table in the attached database (the agent's map of queryable data)
-- `search_context(query)` — ranked matches over the served OKF bundle and draft proposals
-- `get_metric(name, dimensions, range)` — governed rows + compiled SQL (`governed: true`);
-  served models run the same compile/bind/grain gauntlet as the ad-hoc path
-- `define_metric(definition)` — the ad-hoc path: agent-drafted metric → grain-preservation
-  check → renderer compile → read-only execution → `governed: false` + auto-staged proposal
-
-The repo ships a `.mcp.json` — pi (via `pi-mcp-adapter`) and any MCP-capable agent connect
-to the facade directly; restart the agent after config changes.
-
-## The packaged agent skill (ADR-0011)
-
-The wheel ships an agent skill (`ariadne/skill_assets/`: SKILL.md + the grain-rubric
-reference), version-locked to the package. Install it for your agents:
+**See it end-to-end** on a bundled example (seeds a demo shop, authors a catalog with a
+live LLM, pauses for your review, then serves it):
 
 ```bash
-ariadne-skill install --scope user --agent pi   # ~/.agents/skills/ariadne + ~/.pi symlink
-ariadne-skill install --scope project           # .agents/skills/ariadne in this project
-ariadne-skill status                            # per-target drift vs the packaged skill
-ariadne-skill path                              # print the packaged location
+examples/retail-demo/demo.sh
 ```
 
-The `.agents/skills` directory is the cross-agent convention; `--agent pi|claude|hermes`
-additionally wires the agent-specific dir as a symlink to it (copy + note where symlinks
-are unavailable). Re-install refreshes. The skill owns the workflow (profile → author →
-review staging → human promote → query) and the agent rules — per-project AGENTS.md
-stays a pointer page (`ariadne-init` scaffolds one) with just the project facts.
+**Point it at your own data:**
 
-Governed `get_metric` responses carry the rules with the number: a `context` field with
-the full served OKF metric page plus the full bodies of every policy it cites — agents
-report those caveats with every answer (ad-hoc `define_metric` responses carry
-`context: null`).
+```bash
+ariadne-init my-project && cd my-project   # scaffold registry, seed notes, MCP config
+# edit ariadne.yaml (your sources) and data/seed_notes.md (your business rules)
+ariadne-author --sources ariadne.yaml --notes data/seed_notes.md
+# review staging/, then:
+ariadne-promote
+ariadne-serve --sources ariadne.yaml        # starts the MCP server
+```
 
-## Sources — the `ariadne.yaml` registry (ADR-0010)
+The scaffolded `.mcp.json` wires your agent to `ariadne-serve`; restart the agent after
+config changes. Installing the packaged skill (`ariadne-skill install --scope user`)
+teaches your agent the whole workflow — query governed metrics first, respect the
+staging boundary, report caveats with every number.
 
-Every command takes its data sources from one declarative registry — a `sources:` block in
-`ariadne.yaml` (scaffolded, commented-out, by `ariadne-init`). When the file declares sources,
-all commands (`ariadne-serve`, `ariadne-author`, `ariadne-validate`, `ariadne-profiler`) use it
-automatically; `--sources <file>` overrides, and the legacy `--db examples/retail-demo/data/demo.db` remains the
-single-SQLite shorthand (catalog `demo`) for projects without a registry.
+## Querying: the five MCP tools
+
+| Tool | What the agent uses it for |
+| --- | --- |
+| `list_metrics` | Browse the governed catalog: metrics, descriptions, available dimensions |
+| `get_metric` | Get a governed number — compiled SQL, executed read-only, caveats included |
+| `search_context` | Look up business rules, policies, and table caveats before answering |
+| `list_datasets` | See every table across all registered sources |
+| `define_metric` | Answer an unmodeled question: draft a metric, pass the safety checks, run it read-only, label it `governed: false`, and auto-stage it as a proposal |
+
+## Data sources
+
+One read-only connection unifies every source; the agent addresses them as
+`<source>.<table>`:
 
 ```yaml
 sources:
-  - name: demo            # addressable as demo.<table>
+  - name: shop
     type: sqlite
-    path: examples/retail-demo/data/demo.db
+    path: data/shop.db
   - name: events
     type: parquet
-    path: data/events/*.parquet
-    table: events        # globs: one view over the whole glob
-  - name: raw_orders     # csv / json / parquet — local or https:// / s3:// (httpfs)
-    type: csv
-    path: data/orders.csv
-  - name: lake
-    type: delta           # also: iceberg, ducklake (DuckDB extensions)
-    path: data/lake/orders
-  - name: pg
+    path: data/events/*.parquet      # globs become one table
+    table: events
+  - name: warehouse
     type: postgres
-    connection_env: ARIADNE_PG_DSN   # env-var NAME only — resolved at runtime
+    connection_env: ARIADNE_PG_DSN   # credentials are env-var names, never inline
 ```
 
-The shared connection builder produces one read-only DuckDB session for all commands, so every
-source is addressable as `<source>.<table>` and the compiler, grain guard, and audit operate
-unchanged over the unified connection (`list_datasets()` reflects the full multi-source catalog).
-Validation rejects unknown types, non-slug names, glob paths without a `table:`, and any inline
-connection string — credentials are environment-variable references only (ADR-0010: never
-committed; a missing variable fails with the variable name in the error). Live-fixture tests
-cover sqlite/csv/json/parquet/delta; iceberg/ducklake/postgres/remote paths are covered by
-exact statement-construction tests.
+Supported: **SQLite, CSV, JSON, Parquet, Delta Lake, Iceberg, DuckLake, PostgreSQL** —
+local files, `https://`, or `s3://`. Document ingestion (optional extra
+`.[documents]`) covers Markdown, text, PDF, Word, PowerPoint, Excel, and HTML.
 
-This repo itself runs multi-source: its `ariadne.yaml` declares the demo sqlite shop plus a
-support-tickets parquet extract, and the profiler/author work across BOTH sources:
+## How Ariadne compares
 
-```bash
-python examples/retail-demo/seed_db.py examples/retail-demo/data/demo.db            # source 1: demo (sqlite)
-python examples/retail-demo/make_parquet_fixture.py            # source 2: support (parquet glob -> support.tickets)
-.venv/bin/python -m ariadne.profiler --no-out     # profiles every table of every registered source
-.venv/bin/python -m ariadne.author --sources ariadne.yaml --notes examples/retail-demo/seed_notes.md
-```
+| Approach | What it is | Where Ariadne differs |
+| --- | --- | --- |
+| **Raw text-to-SQL agents** | The agent writes SQL directly against your database | No canonical definitions, no business rules, joins can silently inflate numbers. Ariadne compiles every governed metric itself and attaches the rules to the answer. |
+| **Cube** | Mature headless-BI semantic layer you operate as a service | Cube is infrastructure: API gateway, caching, refresh workers, vendor-specific model format. Ariadne is a Python package with embedded DuckDB — no serving infrastructure — using open file formats (OSI YAML, Markdown). |
+| **dbt MetricFlow** | Semantic layer inside the dbt ecosystem | Strong choice if you already run dbt; adopting it otherwise means adopting the whole dbt workflow. Ariadne stands alone and adds the agent-facing context layer and review gate. |
+| **Wren MDL** | AI-oriented semantic modeling spec | Similar niche, but a vendor-specific spec with a weaker governance and join-safety story; Ariadne builds on the vendor-neutral OSI standard. |
+| **Malloy** | Semantic modeling *language* from ex-Looker engineers | A language and toolchain, not a governed metric registry with business context; Ariadne's artifacts are plain YAML/Markdown with a human promotion gate. |
 
-`examples/retail-demo/demo.sh` does all of the above end-to-end (seed both sources → author over the
-registry → promote → serve), and the served bundle then carries governed metrics over
-`support.tickets` (ticket counts, average resolution hours) alongside the orders metrics.
+Ariadne is a good fit when AI agents need trustworthy, repeatable numbers from
+heterogeneous data — and a human must stay in the loop on definitions. It is **not** a
+BI dashboard, a transformation pipeline, or a high-concurrency metrics API; if you need
+those, pair it with (or choose) the tools above.
 
-## Document ingestion (ADR-0009)
+## Technical details
 
-`ariadne-ingest project/ingest-example.md` turns a document into typed OKF proposals without
-the authoring loop: convert → LLM distill → per-type contract gate → stage under
-`staging/context_layer/`. Classification follows the bundle taxonomy: `policies/` (owner
-rules, transcribed verbatim), `tables/` (row meaning + declared grain), `references/` and
-`references/joins/`; anything unclassifiable lands in `references/` tagged `ingest`.
-Provenance is mechanical — every staged page cites its source in `sources[]`
-(sha256-12 digest + absolute path + filename) and carries `generated: {by:
-ariadne-ingest:<model>}` plus `status: draft`. Violating pages get at most 2 repair
-rounds; a document that never passes the gate stages nothing.
+The design decisions, specification, and research behind Ariadne live in the repo:
 
-- **Converters** (dispatch by extension): `.md`/`.txt` natively; `.pdf` via `liteparse`;
-  `.docx`/`.pptx`/`.xlsx`/`.html` via `markitdown`; `.doc`/`.rtf`/`.epub`/`.csv`/`.odt`/
-  `.ods`/`.odp`/`.xls` via `firecrawl-anydoc`. Install with
-  `uv pip install -e ".[documents]"`; a missing converter fails just that document with
-  the exact hint (the base install stays lightweight). Note: firecrawl-anydoc 0.1.3 ships
-  no HTML reader, so `.html` is handled by markitdown (owner decision, rev 8 round).
-- **Staging discipline**: writes go only under `staging/context_layer/` — never the
-  served dirs, never `index.md`/`log.md` (promote owns bundle bookkeeping); name
-  collisions suffix `-2`/`-3` atomically. Promote as usual: `python ariadne-promote`.
-- **Credentials**: same `OPENAI_*` wiring as the author (`$ARIADNE_ENV`).
-
-## Authoring, promotion, safety
-
-- `python -m ariadne.author --db examples/retail-demo/data/demo.db --notes examples/retail-demo/seed_notes.md` — the ≤3-round
-  author/validate loop; writes only under `staging/`
-- `python -m ariadne.validate staging --db examples/retail-demo/data/demo.db` — `render()` compile gate + grain audit
-  (declared-grain uniqueness, parent aggregate invariance, join-uniqueness guard incl. CTEs)
-- `python ariadne-promote` — human promotion gate: merges staged → served (never wipes),
-  appends `verified`, regenerates all `index.md`, appends `log.md`; idempotent
-- `tests/test_evals.py` — golden question→value sets and the fan-out sentinel
-  ([Datus-ai/Datus-agent#1426](https://github.com/Datus-ai/Datus-agent/issues/1426))
-
-## Tests
-
-```bash
-.venv/bin/python -m pytest     # green incl. the joined-row-grain renderer-behavior test (ADR-0008)
-.venv/bin/python -m ruff check .
-```
-
-## Dependencies & licensing
-
-Compile engine: **our own sqlglot renderer** (`ariadne/render.py`, ADR-0008) over
-`sqlglot` (MIT) — the runtime is **AGPL-free**: `datus-semantic-osi` and its
-AGPL-3.0 transitive dependency `datus-metricflow` were removed from the
-dependencies (spec rev 7; the datus engine remains documented in
-[datus-spike.md](project/research/datus-spike.md) as the superseded mechanism and in
-[ADR-0008](project/adr/0008-own-sqlglot-compiler-agpl-exit.md)). Remaining runtime
-dependencies: `duckdb`, `mcp` (pinned `<2` — 2.x renames the FastMCP tool API),
-`sqlglot`, `openai`, `pyyaml`. The proprietary `dosi-engine` (Elastic-2.0) was
-evaluated and **not** adopted — see the engine correction in the
-[research study](project/research/agentic-semantic-layer-architecture.md).
+- Behavior spec: [project/specs/mvp-vertical-slice.md](project/specs/mvp-vertical-slice.md)
+- Architecture decisions: [project/adr/](project/adr/)
+- Domain vocabulary: [CONTEXT.md](CONTEXT.md) · Research: [project/research/](project/research/)
+- Contributing: `python -m pytest` and `ruff check .` must stay green
