@@ -460,13 +460,24 @@ def _serve_args(served, tmp_path):
     ]
 
 
-def test_serve_main_hints_mcp_extra_when_mcp_absent(served, tmp_path, capsys, monkeypatch):
-    monkeypatch.setitem(sys.modules, "mcp", None)  # the base install state
-    from ariadne import serve
-
-    assert serve.main(_serve_args(served, tmp_path)) == 1
-    err = capsys.readouterr().err
-    assert "pip install 'ariadne[mcp]'" in err
+def test_serve_main_hints_mcp_extra_when_mcp_absent(served, tmp_path):
+    # A fresh interpreter keeps earlier MCP tests from caching the imported SDK.
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.modules['mcp'] = None; "
+            "from ariadne.serve import main; sys.exit(main(sys.argv[1:]))",
+            *_serve_args(served, tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == 1
+    assert "pip install 'ariadne[mcp]'" in proc.stderr
 
 
 def test_serve_main_does_not_mask_unrelated_missing_modules(served, tmp_path, monkeypatch):
