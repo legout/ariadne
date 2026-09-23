@@ -1,6 +1,6 @@
 # Single MCP facade server
 
-Status: accepted (owner, 2026-09-14 shaping session).
+Status: superseded by ADR-0012 (owner, 2026-09-23 shaping session).
 
 Agents reach both context (OKF) and metrics (OSI via Datus) through one MCP facade server (`ariadne/serve.py`) instead of connecting to two separate MCP servers (Datus's own server plus a thin OKF server). Owner chose the facade over the recommended two-server topology: one endpoint, one connection, integration mechanics hidden behind it.
 

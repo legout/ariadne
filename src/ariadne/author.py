@@ -122,9 +122,11 @@ bundle: every folder below PLUS the semantic models.
   NOT write `governed_by`, `dimensions`, or `grain` on metric pages: they are
   attached mechanically from the OSI models after validation.
 - `context_layer/skills/<slug>.md` — exactly three guides: `run-the-demo`,
-  `promote-artifacts`, `query-via-mcp`. Frontmatter: `type: skill`, `title`,
+  `promote-artifacts`, `query-artifacts`. Frontmatter: `type: skill`, `title`,
   `description`, `tags`, `sources` (cite the script/module). Body: the exact
-  commands from the operational facts below and what each step does.
+  commands from the operational facts below and what each step does. The
+  query guide is local-first: it cites the `ariadne` executable (spec
+  2026-09-23-0001 §8) and must never claim a server or MCP is required.
 - NEVER write `index.md` or `log.md` — the promotion gate owns them.
 - Never invent `generated`, `verified`, or `stale_after` frontmatter — stamped
   mechanically after validation.
@@ -303,6 +305,7 @@ def _parse_files(raw: str) -> list[tuple[str, str]]:
     text = text.strip()
     if text.startswith("```"):  # tolerate a fenced response
         text = re.sub(r"\A```[a-zA-Z0-9_-]*\n|\n```\Z", "", text)
+    # pi-lens-ignore: unchecked-throwing-call-python
     data = json.loads(text)  # ValueError feeds the round-feedback loop by design
     entries = data.get("files", []) if isinstance(data, dict) else data
     files = [(entry["path"], entry["content"]) for entry in entries]
@@ -381,10 +384,27 @@ def _user_prompt(profile: dict, notes: str, catalog_lines: str) -> str:
         "Operational facts for the skill pages (use these commands verbatim):\n"
         "- Seed the demo database: cd examples/retail-demo && python seed_db.py data/demo.db\n"
         "- Run the end-to-end demo: examples/retail-demo/demo.sh (--yes for unattended)\n"
-        "- Promote staged artifacts (human gate): python ariadne-promote [--yes]\n"
-        "- Serve the MCP facade: python -m ariadne.serve --db examples/retail-demo/data/demo.db\n"
-        "- Scripted MCP client (from examples/retail-demo/):\n"
-        "  ../../.venv/bin/python mcp_client.py --db data/demo.db\n\n"
+        "- Promote demo artifacts (human gate): python ariadne-promote "
+        "--staging examples/retail-demo/staging --served examples/retail-demo [--yes]\n"
+        "- Query promoted artifacts locally — the default, no server needed (repo root):\n"
+        "  ariadne list-metrics --served examples/retail-demo "
+        "--sources examples/retail-demo/ariadne.yaml\n"
+        "  ariadne get-metric gross_margin --dimension region "
+        "--served examples/retail-demo --sources examples/retail-demo/ariadne.yaml\n"
+        "  ariadne search-context 'cancelled orders' --served examples/retail-demo "
+        "--sources examples/retail-demo/ariadne.yaml "
+        "--staging examples/retail-demo/staging\n"
+        "  ariadne list-datasets --served examples/retail-demo "
+        "--sources examples/retail-demo/ariadne.yaml\n"
+        "  ariadne define-metric --file def.json --served examples/retail-demo "
+        "--sources examples/retail-demo/ariadne.yaml "
+        "--staging examples/retail-demo/staging (stdin also works)\n"
+        "- Optional MCP transport (needs the extra installed: pip install 'ariadne[mcp]'):\n"
+        "  python -m ariadne.serve --sources examples/retail-demo/ariadne.yaml "
+        "--semantic examples/retail-demo/semantic_layer "
+        "--context examples/retail-demo/context_layer "
+        "--staging examples/retail-demo/staging\n"
+        "  optional client example: examples/retail-demo/mcp_client.py\n\n"
         "Draft the complete Context Layer bundle and the Semantic Layer models now. "
         "Return only the JSON object."
     )
@@ -475,9 +495,9 @@ def _write_computations(staging: Path, models: dict[str, dict]) -> None:
         body = (
             "# Sanctioned computation\n\n"
             f"Sanctioned SQL (ANSI_SQL, `semantic_layer/models/{info['model']}.yml`); "
-            "compile gate `ariadne.validate`; execution DuckDB via `ariadne.serve`; "
-            "attestation `tests/test_evals.py` golden values. Business rules: cited "
-            "metric page.\n\n"
+            "compile gate `ariadne.validate`; execution DuckDB via the local `ariadne` "
+            "command (`ariadne get-metric`); attestation `tests/test_evals.py` golden "
+            "values. Business rules: cited metric page.\n\n"
             "```sql\n" + info["expression"].strip() + "\n```\n"
         )
         (comp_dir / f"{name}.md").write_text(f"---\n{front}\n---\n\n{body}", encoding="utf-8")

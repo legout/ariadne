@@ -1,8 +1,9 @@
 """Seed determinism + fixture correctness (spec §8.1, §8.3).
 
-These tests own the contract consumed by the profiler (#3) and the MCP facade
-money test (#5): a deterministic ``examples/retail-demo/data/demo.db`` and a hand-computed
-``tests/fixtures/expected_metrics.json``.
+These tests own the contract consumed by the profiler (#3) and the governed-metric
+money test (#5 — exercised through the local `ariadne` CLI and, with the extra
+installed, the MCP facade): a deterministic ``examples/retail-demo/data/demo.db``
+and a hand-computed ``tests/fixtures/expected_metrics.json``.
 
 Fixture verification is deliberately independent of seed logic: expected
 values are checked against one hand-written SQL query (the two OKF rules —
@@ -83,6 +84,17 @@ def seeded_db(tmp_path_factory) -> Path:
     db_path = tmp_path_factory.mktemp("seed") / "demo.db"
     run_seed(db_path)
     return db_path
+
+
+def test_retail_demo_registry_paths_are_relative_to_its_file():
+    from ariadne.sources import load_registry
+
+    registry_path = REPO_ROOT / "examples" / "retail-demo" / "ariadne.yaml"
+    sources = {source.name: source for source in load_registry(registry_path).sources}
+    assert sources["demo"].path == str(registry_path.parent / "data" / "demo.db")
+    assert sources["support"].path == str(
+        registry_path.parent / "data" / "support_tickets" / "*.parquet"
+    )
 
 
 def test_row_counts_deterministic_across_two_seed_runs(tmp_path):
@@ -183,7 +195,8 @@ def test_expected_metrics_fixture_matches_independent_sql(seeded_db):
 
     con = duckdb.connect()
     con.execute(f"ATTACH '{seeded_db}' AS demo (TYPE SQLITE)")
-    assert con.execute("SELECT COUNT(*) FROM demo.orders").fetchone()[0] > 0  # attach sanity
+    order_rows = con.execute("SELECT COUNT(*) FROM demo.orders").fetchone()
+    assert order_rows is not None and order_rows[0] > 0  # attach sanity
     actual = {
         region: {"order_count": n, "gross_revenue": rev, "cogs": cogs, "gross_margin": gm}
         for region, n, rev, cogs, gm in con.execute(sql).fetchall()

@@ -19,7 +19,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne.author import MAX_ROUNDS, _bundle_errors, author, main  # noqa: E402
+from ariadne.author import (  # noqa: E402
+    _SYSTEM_PROMPT,
+    MAX_ROUNDS,
+    _bundle_errors,
+    _user_prompt,
+    author,
+    main,
+)
 from ariadne.validate import ValidationResult  # noqa: E402
 
 GOTCHA_1 = "CANCELLED and RETURNED orders are not revenue"
@@ -937,6 +944,36 @@ def test_author_generates_computations_per_served_metric(tmp_path):
     assert comp["attester"] == "tests/test_evals.py"
     body = files["context_layer/computations/gross_margin.md"].read_text()
     assert "(gross_revenue - cogs) / NULLIF(gross_revenue, 0)" in body  # sanctioned SQL
+    assert "ariadne get-metric" in body  # local-first execution pointer (#9, spec §8)
+    assert "ariadne.serve" not in body  # no MCP-only operational wording
+
+
+def test_authoring_contract_teaches_local_first_query_guide():
+    """#9 (spec 2026-09-23-0001 §8): the authoring prompt drafts a local-first
+    operational query guide citing the `ariadne` executable; MCP stays an
+    optional extra and no authored bundle may claim it is required."""
+    assert "query-artifacts" in _SYSTEM_PROMPT
+    assert "query-via-mcp" not in _SYSTEM_PROMPT
+    assert "local-first" in _SYSTEM_PROMPT
+    user = _user_prompt({}, "seed notes", "- demo (sqlite): demo.main.orders")
+    assert "ariadne list-metrics" in user and "ariadne get-metric" in user
+    assert "ariadne define-metric --file" in user  # file/stdin ad-hoc definitions
+    assert user.count("--sources examples/retail-demo/ariadne.yaml") == 6
+    assert "--db examples/retail-demo/data/demo.db" not in user  # don't drop parquet sources
+    assert (
+        "ariadne search-context 'cancelled orders' --served examples/retail-demo "
+        "--sources examples/retail-demo/ariadne.yaml "
+        "--staging examples/retail-demo/staging"
+    ) in user
+    assert (
+        "ariadne define-metric --file def.json --served examples/retail-demo "
+        "--sources examples/retail-demo/ariadne.yaml "
+        "--staging examples/retail-demo/staging"
+    ) in user
+    assert "--served examples/retail-demo" in user  # actual promoted-root location
+    assert "--staging examples/retail-demo/staging --served examples/retail-demo" in user
+    assert "--semantic examples/retail-demo/semantic_layer" in user
+    assert "Optional MCP" in user and "ariadne[mcp]" in user  # accurate extra guidance
 
 
 def test_author_stamps_lifecycle_frontmatter_and_never_indexes(tmp_path):

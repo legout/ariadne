@@ -10,13 +10,13 @@ readme = "README.md"
 requires-python = ">=3.12"  # ADR-0008: the datus <3.13 cap left with datus
 dependencies = [
     "duckdb>=1.0",
-    "mcp>=1.2,<2",  # 2.x renames FastMCP (facade tool registry) — migration is out of scope
     "sqlglot>=25.0",  # own compile engine: ariadne/render.py (ADR-0008) + grain guard
     "openai>=1.40",
     "pyyaml>=6.0",
 ]
 
 [project.scripts]
+ariadne = "ariadne.cli:main"  # the local JSON CLI (spec 2026-09-23-0001 §4)
 ariadne-ingest = "ariadne.ingest:main"
 ariadne-author = "ariadne.author:main"
 ariadne-validate = "ariadne.validate:main"
@@ -27,6 +27,11 @@ ariadne-skill = "ariadne.skill:main"
 ariadne-profiler = "ariadne.profiler:main"
 
 [project.optional-dependencies]
+# ADR-0012/spec §7: MCP is the optional transport extra — the base install
+# serves the full local interface without importing or installing it.
+mcp = [
+    "mcp>=1.2,<2",  # 2.x renames FastMCP (facade tool registry) — migration is out of scope
+]
 # ADR-0009 document ingestion: the lumio-wiki-researched converter stack. Optional
 # so the base install stays lightweight; ariadne-ingest fails with install guidance
 # when a converter is missing. dev gains the same deps so the test suite covers them.
@@ -38,6 +43,7 @@ documents = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
+    "mcp>=1.2,<2",  # dev gains the mcp extra so the test suite covers the adapter
     "liteparse>=2.4.0",
     "markitdown[docx]>=0.1.6",
     "firecrawl-anydoc==0.1.3",

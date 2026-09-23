@@ -1,5 +1,7 @@
 # Specification: MVP Vertical Slice — Agentic Semantic Layer
 
+> **Consumption-interface notice (2026-09-23):** `2026-09-23-0001-local-artifact-runtime.md` supersedes this specification's MCP-first behavior in §§1, 3–5, 7–8. Unaffected MVP invariants remain authoritative.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved** |

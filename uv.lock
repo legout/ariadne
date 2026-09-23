@@ -36,7 +36,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
-    { name = "mcp" },
     { name = "openai" },
     { name = "pyyaml" },
     { name = "sqlglot" },
@@ -47,6 +46,7 @@ dev = [
     { name = "firecrawl-anydoc" },
     { name = "liteparse" },
     { name = "markitdown", extra = ["docx"] },
+    { name = "mcp" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -54,6 +54,9 @@ documents = [
     { name = "firecrawl-anydoc" },
     { name = "liteparse" },
     { name = "markitdown", extra = ["docx"] },
+]
+mcp = [
+    { name = "mcp" },
 ]
 
 [package.metadata]
@@ -65,14 +68,15 @@ requires-dist = [
     { name = "liteparse", marker = "extra == 'documents'", specifier = ">=2.4.0" },
     { name = "markitdown", extras = ["docx"], marker = "extra == 'dev'", specifier = ">=0.1.6" },
     { name = "markitdown", extras = ["docx"], marker = "extra == 'documents'", specifier = ">=0.1.6" },
-    { name = "mcp", specifier = ">=1.2,<2" },
+    { name = "mcp", marker = "extra == 'dev'", specifier = ">=1.2,<2" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2,<2" },
     { name = "openai", specifier = ">=1.40" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "sqlglot", specifier = ">=25.0" },
 ]
-provides-extras = ["documents", "dev"]
+provides-extras = ["mcp", "documents", "dev"]
 
 [[package]]
 name = "attrs"

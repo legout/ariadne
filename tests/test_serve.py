@@ -422,9 +422,7 @@ def test_missing_metric_page_collapses_context_without_failing(served, tmp_path)
     """A served tree whose context dir lacks the metric page still answers:
     the fallback is the null form, never a query error."""
     served_dir, db = served
-    naked = Facade(
-        served_dir / "semantic_layer", tmp_path, db, staging_dir=tmp_path / "staging"
-    )
+    naked = Facade(served_dir / "semantic_layer", tmp_path, db, staging_dir=tmp_path / "staging")
     result = asyncio.run(naked.get_metric("gross_margin", ["region"]))
     assert result["governed"] is True
     assert result["rows"]
@@ -851,15 +849,24 @@ def test_define_metric_allows_grain_preserving_join(facade):
     Path(result["staged_context_as"]).unlink(missing_ok=True)
 
 
+def test_serve_facade_is_the_runtime_class():
+    """Ticket #7: ariadne.serve.Facade is the exact runtime class — a plain
+    alias, never a subclass or wrapper that could diverge."""
+    import ariadne.runtime
+    import ariadne.serve
+
+    assert ariadne.serve.Facade is ariadne.runtime.AriadneRuntime
+
+
 def test_startup_fails_fast_without_models(tmp_path):
     with pytest.raises(RuntimeError, match="promote staging"):
         Facade(tmp_path / "semantic_layer", tmp_path / "context_layer", tmp_path / "demo.db")
 
 
 def test_startup_fails_fast_when_datus_absent(tmp_path, monkeypatch):
-    import ariadne.serve as serve_module
+    import ariadne.runtime as runtime_module
 
-    monkeypatch.setattr(serve_module, "_DATUS_IMPORT_ERROR", ImportError("no datus"))
+    monkeypatch.setattr(runtime_module, "_DATUS_IMPORT_ERROR", ImportError("no datus"))
     with pytest.raises(RuntimeError, match="datus-semantic-osi"):
         Facade(tmp_path / "semantic_layer", tmp_path / "context_layer", tmp_path / "demo.db")
 

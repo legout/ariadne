@@ -1,9 +1,12 @@
 """Packaging: the ariadne-init scaffolder and the console-script entry points.
 
 Scaffolding covers INPUTS only (seed notes, AGENTS.md pointer, .env.example,
-.mcp.json, .gitignore, empty data/) — the served layers are author+promote
-outputs and must never be pre-seeded. Entry points assert the editable install
-registered all eight console scripts and that each import target resolves.
+.gitignore, empty data/) — the served layers are author+promote outputs and
+must never be pre-seeded. `.mcp.json` is opt-in (spec 2026-09-23-0001 §7): the
+default scaffold omits it — the local `ariadne` CLI needs no server config —
+and `--with-mcp` creates the registry-aware MCP config without ever removing
+an existing file. Entry points assert the editable install registered all
+nine console scripts and that each import target resolves.
 """
 
 import json
@@ -12,6 +15,7 @@ from importlib.metadata import entry_points
 from ariadne.init import main
 
 CONSOLE_SCRIPTS = (
+    "ariadne",  # the local JSON CLI (spec 2026-09-23-0001 §4)
     "ariadne-author",
     "ariadne-validate",
     "ariadne-serve",
@@ -34,10 +38,12 @@ GITIGNORE_LINES = (
 
 
 def test_scaffold_creates_expected_inputs(tmp_path):
+    """Default scaffold (spec §7): local-first — .mcp.json is NOT created."""
     target = tmp_path / "proj"
     assert main([str(target)]) == 0
-    for rel in ("data/seed_notes.md", "AGENTS.md", ".env.example", ".mcp.json", ".gitignore"):
+    for rel in ("data/seed_notes.md", "ariadne.yaml", "AGENTS.md", ".env.example", ".gitignore"):
         assert (target / rel).is_file(), rel
+    assert not (target / ".mcp.json").exists()  # default omits MCP config
     assert (target / "data").is_dir()
 
     notes = (target / "data" / "seed_notes.md").read_text(encoding="utf-8")
@@ -48,11 +54,22 @@ def test_scaffold_creates_expected_inputs(tmp_path):
     for var in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"):
         assert var in env, var
 
+    gitignore = (target / ".gitignore").read_text(encoding="utf-8")
+    for line in GITIGNORE_LINES:
+        assert line in gitignore, line
+
+
+def test_scaffold_with_mcp_creates_registry_aware_config(tmp_path):
+    """--with-mcp (spec §7): the opt-in .mcp.json keeps the registry-aware shape —
+    --sources names the project's ariadne.yaml; the semantic/context paths are
+    the project-root defaults promote creates on first promotion."""
+    target = tmp_path / "proj"
+    assert main([str(target), "--with-mcp"]) == 0
+    for rel in ("data/seed_notes.md", ".gitignore"):
+        assert (target / rel).is_file(), rel
     mcp = json.loads((target / ".mcp.json").read_text(encoding="utf-8"))  # parses as JSON
     server = mcp["mcpServers"]["ariadne"]
     assert server["command"] == "ariadne-serve"
-    # Registry-aware (rev 10): --sources names the project's ariadne.yaml; the
-    # semantic/context paths are the project-root defaults promote creates.
     assert server["args"] == [
         "--sources",
         "ariadne.yaml",
@@ -62,9 +79,17 @@ def test_scaffold_creates_expected_inputs(tmp_path):
         "context_layer",
     ]
 
-    gitignore = (target / ".gitignore").read_text(encoding="utf-8")
-    for line in GITIGNORE_LINES:
-        assert line in gitignore, line
+
+def test_existing_mcp_json_is_never_removed_or_overwritten(tmp_path):
+    """Spec §7: an existing .mcp.json survives the default run AND --with-mcp."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    user_config = '{"mcpServers": {"user": {"command": "keep-me"}}}\n'
+    (target / ".mcp.json").write_text(user_config, encoding="utf-8")
+    assert main([str(target)]) == 0  # default run: file not in the write set at all
+    assert (target / ".mcp.json").read_text(encoding="utf-8") == user_config
+    assert main([str(target), "--with-mcp"]) == 0  # opt-in still refuses to overwrite
+    assert (target / ".mcp.json").read_text(encoding="utf-8") == user_config
 
 
 def test_agents_md_is_pointer_page_not_workflow(tmp_path):
@@ -101,8 +126,18 @@ def test_second_run_is_idempotent(tmp_path, capsys):
     after = {p.relative_to(target): p.read_bytes() for p in target.rglob("*") if p.is_file()}
     assert before == after  # byte-identical tree: nothing rewritten
     skipped = [line for line in out.splitlines() if "skipped (exists)" in line]
-    assert len(skipped) == 6  # every input file reported skipped, none rewritten
-    # (rev 10: the scaffolded inputs include the AGENTS.md pointer page)
+    assert len(skipped) == 5  # every default input file reported skipped, none rewritten
+
+    # --with-mcp adds exactly the MCP config: first opt-in run creates it (5
+    # skipped + 1 created), the next reports all 6 skipped
+    assert main([str(target), "--with-mcp"]) == 0
+    out = capsys.readouterr().out
+    assert len([line for line in out.splitlines() if "skipped (exists)" in line]) == 5
+    assert main([str(target), "--with-mcp"]) == 0
+    out = capsys.readouterr().out
+    skipped = [line for line in out.splitlines() if "skipped (exists)" in line]
+    assert len(skipped) == 6
+    assert (target / ".mcp.json").is_file()  # created once, then stable
 
 
 def test_existing_gitignore_is_not_overwritten(tmp_path):
@@ -118,9 +153,9 @@ def test_refuses_ariadne_checkout_unless_force(tmp_path):
     target.mkdir()
     (target / "pyproject.toml").write_text('[project]\nname = "ariadne"\n', encoding="utf-8")
     assert main([str(target)]) == 1  # refuses: this looks like the ariadne repo
-    assert not (target / ".mcp.json").exists()  # nothing was written
+    assert not (target / ".env.example").exists()  # nothing was written
     assert main([str(target), "--force"]) == 0  # explicit override scaffolds
-    assert (target / ".mcp.json").is_file()
+    assert (target / ".env.example").is_file()
 
 
 def test_refuses_ariadne_project_with_quirky_toml_formatting(tmp_path):
@@ -132,7 +167,7 @@ def test_refuses_ariadne_project_with_quirky_toml_formatting(tmp_path):
         encoding="utf-8",
     )
     assert main([str(target)]) == 1
-    assert not (target / ".mcp.json").exists()
+    assert not (target / ".env.example").exists()
 
 
 def test_non_ariadne_pyproject_scaffolds_normally(tmp_path):
@@ -140,7 +175,7 @@ def test_non_ariadne_pyproject_scaffolds_normally(tmp_path):
     target.mkdir()
     (target / "pyproject.toml").write_text('[project]\nname = "other"\n', encoding="utf-8")
     assert main([str(target)]) == 0
-    assert (target / ".mcp.json").is_file()
+    assert (target / ".env.example").is_file()
 
 
 def test_refuses_unparsable_pyproject_unless_force(tmp_path, capsys):
@@ -149,7 +184,7 @@ def test_refuses_unparsable_pyproject_unless_force(tmp_path, capsys):
     (target / "pyproject.toml").write_text("[project\nname = ", encoding="utf-8")
     assert main([str(target)]) == 1  # ambiguous project: refuse
     assert "not valid TOML" in capsys.readouterr().err
-    assert not (target / ".mcp.json").exists()
+    assert not (target / ".env.example").exists()
     assert main([str(target), "--force"]) == 0  # explicit override scaffolds
 
 

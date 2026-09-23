@@ -1,6 +1,6 @@
 """Project scaffolder (``ariadne-init [TARGET_DIR]``): writes the INPUT files a
 fresh ariadne project needs — seed notes, an AGENTS.md pointer page, .env.example,
-.mcp.json, .gitignore, and an empty ``data/`` (with ``data/docs/`` for source
+.gitignore, and an empty ``data/`` (with ``data/docs/`` for source
 documents destined for ``ariadne-ingest``, ADR-0009). It never creates OUTPUTS:
 the served bundle (``context_layer/``, ``semantic_layer/``) arrives only via
 ``ariadne-author`` + ``ariadne-promote`` (spec §6: served artifacts are promoted,
@@ -9,9 +9,12 @@ never pre-seeded).
 AGENTS.md is deliberately a pointer page (ADR-0011, spec rev 10): project facts,
 the directory layout, the promotion-gate rule, and "load the ariadne skill" —
 the workflow itself lives in the packaged skill (``ariadne-skill install``),
-not duplicated here. The scaffolded ``.mcp.json`` is registry-aware: it points
-the facade at ``ariadne.yaml``, whose ``sources:`` block is the single source
-of truth for what the project serves (ADR-0010).
+not duplicated here. ``.mcp.json`` is opt-in (spec 2026-09-23-0001 §7, ADR-0012):
+``--with-mcp`` scaffolds the registry-aware config — it points the facade at
+``ariadne.yaml``, whose ``sources:`` block is the single source of truth for
+what the project serves (ADR-0010). The default scaffold omits it: querying
+happens through the local ``ariadne`` CLI, which needs no server, and an
+existing ``.mcp.json`` is never removed or overwritten.
 
 Idempotent: an existing file is reported and skipped, never overwritten. A
 directory that already holds an ariadne ``pyproject.toml`` (i.e. this repo) is
@@ -51,7 +54,9 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=
 """
 
-# Facade entry for MCP-capable agents (pi via pi-mcp-adapter, or any MCP client).
+# Facade entry for MCP-capable agents (pi via pi-mcp-adapter, or any MCP client) —
+# OPT-IN only: created by ``ariadne-init --with-mcp`` (spec 2026-09-23-0001 §7);
+# the default scaffold omits it because the local ``ariadne`` CLI needs no server.
 # Registry-aware (ADR-0010/spec rev 10): --sources names the project's ariadne.yaml
 # — its sources: block (declared after init) is what the facade serves. The
 # semantic/context paths are the project-root defaults ariadne-promote creates on
@@ -178,14 +183,20 @@ def main(argv: list[str] | None = None) -> int:
         prog="ariadne-init",
         description="Scaffold a fresh ariadne project: seed notes, an AGENTS.md "
         "pointer page, a commented ariadne.yaml source registry template, "
-        ".env.example, .mcp.json, .gitignore, and an empty data/ (inputs only — "
-        "the served layers come from ariadne-author + ariadne-promote).",
+        ".env.example, .gitignore, and an empty data/ (inputs only — the served "
+        "layers come from ariadne-author + ariadne-promote).",
     )
     parser.add_argument("target", nargs="?", default=".", help="directory to scaffold (default: .)")
     parser.add_argument(
         "--force",
         action="store_true",
         help="scaffold even if the target already holds an ariadne pyproject.toml",
+    )
+    parser.add_argument(
+        "--with-mcp",
+        action="store_true",
+        help="also scaffold .mcp.json, the registry-aware MCP server config "
+        "(optional transport — the local ariadne CLI needs no server)",
     )
     args = parser.parse_args(argv)
 
@@ -202,9 +213,10 @@ def main(argv: list[str] | None = None) -> int:
         ("ariadne.yaml", ARIADNE_YAML),
         ("AGENTS.md", AGENTS_MD),
         (".env.example", ENV_EXAMPLE),
-        (".mcp.json", json.dumps(MCP_JSON, indent=2) + "\n"),
         (".gitignore", GITIGNORE),
     ]
+    if args.with_mcp:  # opt-in only (spec §7): the local CLI needs no MCP config
+        files.append((".mcp.json", json.dumps(MCP_JSON, indent=2) + "\n"))
 
     # Fail closed: refuse before any write if a scaffold path, or a parent of it
     # under TARGET, is a symlink (even dangling) — never write through a link.
@@ -235,7 +247,8 @@ def main(argv: list[str] | None = None) -> int:
         f"ariadne project ready in {target}: {created} file(s) created, "
         f"{skipped} skipped — next: cp .env.example .env, add credentials, "
         "then ariadne-author --db data/YOURDB.db --notes data/seed_notes.md "
-        "(source documents for ariadne-ingest go in data/docs/)"
+        "(source documents for ariadne-ingest go in data/docs/); query with the "
+        "local ariadne CLI (MCP config: re-run with --with-mcp)"
     )
     return 0
 

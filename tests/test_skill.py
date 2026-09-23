@@ -10,6 +10,7 @@ monkeypatch HOME so nothing ever touches the real home directory.
 
 import hashlib
 import os
+import re
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
@@ -34,6 +35,30 @@ def test_packaged_assets_exist():
     skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
     assert "grain-rubric.md" in skill  # the reference is linked from the skill
     assert "search_context" in skill and "define_metric" in skill  # the agent rules
+
+
+def test_skill_teaches_local_cli_as_default_mcp_optional():
+    """Spec 2026-09-23-0001 §8: the packaged skill defaults to the five local
+    `ariadne` commands (root selection, caveats, labels, file/stdin ad-hoc
+    definitions); MCP appears only in the optional integration section with
+    accurate ariadne[mcp] install guidance — never as a requirement."""
+    skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
+    for cmd in ("list-metrics", "search-context", "get-metric", "list-datasets", "define-metric"):
+        assert f"ariadne {cmd}" in skill, cmd
+    assert "ariadne define-metric --file" in skill  # file definitions (stdin named too)
+    assert "--served" in skill  # safe promoted-root selection escape hatch
+    assert "governed: true" in skill and "governed: false" in skill  # labels taught
+    # MCP only after the optional integration heading, with the real extra named
+    optional_at = skill.index("Optional: MCP integration")
+    mcp_mentions = [m.start() for m in re.finditer("MCP", skill)]
+    assert mcp_mentions and all(pos > optional_at for pos in mcp_mentions)
+    assert "ariadne[mcp]" in skill
+    normalized = " ".join(skill.split())
+    assert "Ariadne package checkout" in normalized
+    assert "not from the data project root" in normalized
+    assert "ariadne-init --with-mcp ." in skill
+    assert skill.index("pyproject.toml") < skill.index("ariadne-init --with-mcp .")
+    assert "ariadne-serve --sources ariadne.yaml" in skill
 
 
 def test_path_prints_packaged_dir(project, capsys):
@@ -77,9 +102,7 @@ def test_status_reports_ok_then_detects_tampering(project, capsys):
     assert "ok" in out
     assert "drift" not in out
     target = proj / ".agents" / "skills" / "ariadne" / "SKILL.md"
-    target.write_text(
-        target.read_text(encoding="utf-8") + "\nmanual edit\n", encoding="utf-8"
-    )
+    target.write_text(target.read_text(encoding="utf-8") + "\nmanual edit\n", encoding="utf-8")
     assert main(["status"]) == 0
     out = capsys.readouterr().out
     assert "drift" in out  # the tampered target is named as drifted

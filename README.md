@@ -18,15 +18,17 @@ with a governed catalog:
   answer carries its caveats with it, so the agent reports "revenue was X *— excluding
   cancelled orders, per policy*" instead of a bare number.
 
-Agents talk to Ariadne over [MCP](https://modelcontextprotocol.io/), the standard tool
-protocol — pi, Claude, and any other MCP-capable agent can connect directly.
+Agents query Ariadne through the local `ariadne` command line — no server to run,
+no extra setup. Ariadne also speaks [MCP](https://modelcontextprotocol.io/), the
+standard tool protocol, as an optional extra (`ariadne[mcp]`) for remote or
+host-integrated tool registration.
 
 ## What you get
 
 ### For querying agents
 
-- **Five MCP tools** covering the full question lifecycle (see below) — governed answers
-  first, with a safe path for anything not yet modeled.
+- **Five local commands** covering the full question lifecycle (see below) — governed answers
+  first, with a safe path for anything not yet modeled. No server required.
 - **Caveats attached to every number.** Governed answers include the full text of every
   business policy the metric cites. Ungoverned answers are clearly labeled
   `governed: false`.
@@ -61,7 +63,8 @@ protocol — pi, Claude, and any other MCP-capable agent can connect directly.
   (many sources)        drafts everything     nothing serves              metrics + policies
                                                    from here                       │
                                                                                    ▼
-                                              AI agent ◀── MCP ── Ariadne compiles the metric
+                                    AI agent runs `ariadne` (local) or connects over MCP:
+                                               Ariadne compiles the metric
                                                to SQL, checks it, runs it read-only,
                                                returns the number + its business caveats
 ```
@@ -71,8 +74,8 @@ protocol — pi, Claude, and any other MCP-capable agent can connect directly.
    your seed notes (the rules statistics can't see) to draft the catalog into `staging/`.
 3. **Review & promote**: a human reads the staging area, then `ariadne-promote` merges
    approved artifacts into the served catalog and marks them verified.
-4. **Query**: your agent connects over MCP. Governed metrics are compiled, checked, and
-   executed by Ariadne; business context is searched alongside.
+4. **Query**: your agent runs `ariadne` locally against the promoted catalog — or
+   connects over MCP with the optional extra.
 
 ## Quickstart
 
@@ -83,10 +86,11 @@ directly) in a `.env` file.
 ```bash
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e .
+source .venv/bin/activate
 ```
 
 **See it end-to-end** on a bundled example (seeds a demo shop, authors a catalog with a
-live LLM, pauses for your review, then serves it):
+live LLM, pauses for your review, then queries a governed metric locally):
 
 ```bash
 examples/retail-demo/demo.sh
@@ -95,28 +99,52 @@ examples/retail-demo/demo.sh
 **Point it at your own data:**
 
 ```bash
-ariadne-init my-project && cd my-project   # scaffold registry, seed notes, MCP config
+ariadne-init my-project && cd my-project   # scaffold registry, seed notes (local-first)
 # edit ariadne.yaml (your sources) and data/seed_notes.md (your business rules)
 ariadne-author --sources ariadne.yaml --notes data/seed_notes.md
 # review staging/, then:
 ariadne-promote
-ariadne-serve --sources ariadne.yaml        # starts the MCP server
+ariadne list-metrics --sources ariadne.yaml      # query locally — no server needed
+ariadne get-metric gross_margin --sources ariadne.yaml
+```
+
+Installing the packaged skill (`ariadne-skill install --scope user`) teaches your agent
+the whole workflow — query governed metrics first, respect the staging boundary, report
+caveats with every number.
+
+**Optional: MCP.** The base package is local-first and needs no server; MCP registers the
+same five operations as tools when you want them. Install the extra into the same Python
+environment as `ariadne`, from the Ariadne package checkout (the directory containing
+`pyproject.toml`):
+
+```bash
+uv pip install --python .venv/bin/python -e '.[mcp]'
+```
+
+Then, from the initialized project root, opt in to its registry-aware `.mcp.json` (an
+existing file is never overwritten) and start the server:
+
+```bash
+ariadne-init --with-mcp .
+ariadne-serve --sources ariadne.yaml
 ```
 
 The scaffolded `.mcp.json` wires your agent to `ariadne-serve`; restart the agent after
-config changes. Installing the packaged skill (`ariadne-skill install --scope user`)
-teaches your agent the whole workflow — query governed metrics first, respect the
-staging boundary, report caveats with every number.
+config changes.
 
-## Querying: the five MCP tools
+## Querying: the five local commands
 
-| Tool | What the agent uses it for |
+All five print one JSON value; the common options (`--sources`/`--db`, `--served`) follow
+the subcommand. The CLI finds promoted artifacts in the working directory or `./served`.
+MCP registers the same five operations as tools when the `mcp` extra is installed.
+
+| Command | What the agent uses it for |
 | --- | --- |
-| `list_metrics` | Browse the governed catalog: metrics, descriptions, available dimensions |
-| `get_metric` | Get a governed number — compiled SQL, executed read-only, caveats included |
-| `search_context` | Look up business rules, policies, and table caveats before answering |
-| `list_datasets` | See every table across all registered sources |
-| `define_metric` | Answer an unmodeled question: draft a metric, pass the safety checks, run it read-only, label it `governed: false`, and auto-stage it as a proposal |
+| `ariadne list-metrics` | Browse the governed catalog: metrics, descriptions, available dimensions |
+| `ariadne get-metric NAME` | Get a governed number — compiled SQL, executed read-only, caveats included |
+| `ariadne search-context QUERY` | Look up business rules, policies, and table caveats before answering |
+| `ariadne list-datasets` | See every table across all registered sources |
+| `ariadne define-metric` | Answer an unmodeled question: draft a metric (JSON via `--file` or stdin), pass the safety checks, run it read-only, label it `governed: false`, and auto-stage it as a proposal |
 
 ## Data sources
 
