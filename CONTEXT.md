@@ -43,7 +43,7 @@ The human act of moving a staged artifact into the served layers, marking it ver
 _Avoid_: publish, deploy
 
 **Seed Notes**:
-The human-written data dictionary (`data/seed_notes.md`) carrying the business rules that statistics cannot derive; an input to the Authoring Agent alongside the statistical profile.
+The human-owned data dictionary (`data/seed_notes.md`) carrying business rules that statistics cannot derive; an input to the Authoring Agent alongside the statistical profile. It may be drafted by a harness from domain evidence, but its rules become authoritative only after human approval.
 _Avoid_: hints file
 
 ### Querying
@@ -70,6 +70,9 @@ _Avoid_: granularity, level
 A human-owned business rule published as an OKF page in `policies/` (e.g. status exclusion, currency cutover); metrics cite policies in their `sources`.
 _Avoid_: rule note, guideline
 
+**Computation**:
+An OKF page carrying the sanctioned way to calculate a value and its independent-attestation status; a newly modeled metric may still have `attestation: pending` after human review.
+
 **Attested Computation**:
-An OKF concept carrying the sanctioned way to compute a value (compiled SQL) plus the `attester` that verifies it (our eval harness).
+A Computation with an actual independent expected-value check identified by its `attester`, not merely a compiled or human-reviewed definition.
 _Avoid_: query snippet

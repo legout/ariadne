@@ -8,6 +8,7 @@
 | **Supersedes** | The MCP-first consumption behavior in `project/specs/mvp-vertical-slice.md` §§1, 3–5, 7–8. All unaffected MVP invariants remain in force. |
 | **Decision** | [ADR-0012](../adr/0012-local-first-artifact-runtime.md) |
 | **Contract** | planning-contract v1; installed skill provenance unknown |
+| **Later scoped extension** | [Harness-led authoring, revision 2](2026-09-24-0005-harness-led-authoring.md) adds optional authoring tools and private HTTP MCP for a server-configured project. This document's five-tool and no-HTTP constraints still govern its original query-runtime scope. |
 
 ## 1. Purpose
 
