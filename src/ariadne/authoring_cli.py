@@ -1,6 +1,7 @@
 """``ariadne-authoring`` — the local command surface of harness-led authoring
 (spec 2026-09-24-0005 "Authoring interface and lifecycle"; issue #13 exposes
-the source-proposal pair only, later slices add inputs/submit/review).
+the source-proposal pair, issue #14 adds inputs; later slices add
+submit/review).
 
 Follows the ``ariadne`` CLI's JSON contract: one JSON value on stdout for
 success; one ``{"error": {"type", "message"}}`` object on stderr plus exit 1
@@ -8,6 +9,7 @@ for failure, message verbatim.
 
     ariadne-authoring propose-sources --file FILE [--project DIR]
     ariadne-authoring approve-sources --digest DIGEST [--project DIR]
+    ariadne-authoring inputs [--document REF ...] [--part N] [--project DIR]
 
 ``approve-sources`` is HUMAN-ONLY and runs on the server host (ADR-0013): the
 packaged skill must never invoke it, and it is excluded from every MCP tool
@@ -23,7 +25,7 @@ import json
 import sys
 from typing import Any, NoReturn
 
-from ariadne.authoring import approve_sources, propose_sources
+from ariadne.authoring import approve_sources, harness_inputs, propose_sources
 
 
 class UsageError(ValueError):
@@ -46,7 +48,6 @@ def build_parser() -> _Parser:
         description="Harness-led authoring: propose sources for operator approval.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
-
     propose = sub.add_parser(
         "propose-sources",
         help="validate and store an inert source proposal (harness-invocable)",
@@ -65,6 +66,29 @@ def build_parser() -> _Parser:
     approve.add_argument(
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
+
+    inputs = sub.add_parser(
+        "inputs",
+        help="measured harness inputs (harness-invocable, no model): approved-source "
+        "profile, source-linked converted document evidence, optional Seed Notes",
+    )
+    inputs.add_argument(
+        "--document",
+        action="append",
+        default=[],
+        dest="documents",
+        help="document reference inside the project input area data/docs/ "
+        "(repeatable; large documents arrive in bounded parts)",
+    )
+    inputs.add_argument(
+        "--part",
+        type=int,
+        default=1,
+        help="which bounded part of each document's converted text (default: 1)",
+    )
+    inputs.add_argument(
+        "--project", default=".", help="project root holding ariadne.yaml (default: .)"
+    )
     return parser
 
 
@@ -73,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
         args = build_parser().parse_args(argv)
         if args.command == "propose-sources":
             result: Any = propose_sources(args.file, project=args.project)
+        elif args.command == "inputs":
+            result = harness_inputs(project=args.project, documents=args.documents, part=args.part)
         else:  # approve-sources
             result = approve_sources(args.digest, project=args.project)
     except Exception as exc:  # one JSON error object, message verbatim
