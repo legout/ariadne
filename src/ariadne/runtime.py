@@ -56,6 +56,7 @@ install hint.
 import os
 import re
 import sys
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -113,6 +114,95 @@ _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # OKF page frontmatter (same shape as author/promote): sources[] resolution for
 # the rev 10 context field reads it.
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)\Z", re.DOTALL)
+
+# Spec 2026-09-23-0002: search matching is token-aware, not substring — a query
+# token is a lowercase [a-z0-9]+ run, so "order" no longer counts inside
+# "orders" and incidental substring repetition cannot crowd out real matches.
+_QUERY_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+# ATX headings (spec: the section is the containing Markdown heading; a line
+# like "#hashtag" without the required space is not one).
+_HEADING_RE = re.compile(r"#{1,6}\s+(.+?)\s*$")
+
+# Excerpt bound: chars of context kept on each side of the matched token before
+# snapping outward to whole words (spec: bounded, verbatim).
+_EXCERPT_RADIUS = 60
+
+
+def _fence_mask(lines: list[str]) -> list[bool]:
+    """True for lines that delimit or sit inside a fenced code block — ``` or
+    ~~~. A fence closes only on the same marker with a run at least as long as
+    the opener and nothing else on the line (CommonMark: a ~~~ line inside a
+    ~~~~ fence stays literal). Fenced text is generated/machine content (SQL,
+    code) whose identifiers merely echo page names — the spec's "incidental
+    occurrences" — so it scores at half weight and its headings never
+    establish a section (spec: every Markdown category stays searchable;
+    fenced-only occurrences still hit)."""
+    mask: list[bool] = []
+    marker = ""  # active fence marker char; "" when not fenced
+    needed = 0  # closing run length the active fence requires
+    for line in lines:
+        stripped = line.lstrip()
+        char = stripped[:1]
+        run = len(stripped) - len(stripped.lstrip(char))
+        if char in ("`", "~") and run >= 3:
+            if not marker:
+                marker, needed = char, run  # opener: an info string may follow
+                mask.append(True)
+            elif char == marker and run >= needed and not stripped[run:].strip():
+                marker, needed = "", 0  # closer: same marker, long enough, bare
+                mask.append(True)
+            else:
+                mask.append(True)  # fence-ish line stays literal inside the fence
+        else:
+            mask.append(bool(marker))
+    return mask
+
+
+def _locate_passage(
+    lines: list[str], mask: list[bool], body_start: int, terms: set[str]
+) -> tuple[str, int, int, str | None]:
+    """Deterministically pick the passage a hit points at (spec rev 1): scan the
+    body lines first — a body match is preferred over a frontmatter-only match —
+    then the frontmatter, in file order; the leftmost token match on the first
+    matching line wins (fenced lines may carry the passage). Returns (excerpt,
+    line_start, line_end, section) with inclusive 1-based line coordinates; the
+    section is the nearest ATX heading at or before the passage, outside fenced
+    code, or None for frontmatter/heading-less matches (no body evidence is
+    fabricated)."""
+    for index in [*range(body_start, len(lines)), *range(body_start)]:
+        line = lines[index]
+        token = next(
+            (m for m in _QUERY_TOKEN_RE.finditer(line.lower()) if m.group() in terms), None
+        )
+        if token is None:
+            continue
+        start, end = token.span()
+        lo = max(0, start - _EXCERPT_RADIUS)
+        hi = min(len(line), end + _EXCERPT_RADIUS)
+        while lo > 0 and start - lo < _EXCERPT_RADIUS and not line[lo - 1].isspace():
+            lo -= 1  # keep whole words at the left clip
+        while hi < len(line) and hi - end < _EXCERPT_RADIUS and not line[hi].isspace():
+            hi += 1  # keep whole words at the right clip
+        if index >= body_start:
+            section = _enclosing_heading(lines, mask, body_start, index)
+        else:
+            section = None
+        return line[lo:hi], index + 1, index + 1, section
+    raise AssertionError("a positive score implies a matched line")  # pragma: no cover
+
+
+def _enclosing_heading(
+    lines: list[str], mask: list[bool], body_start: int, index: int
+) -> str | None:
+    """The nearest ATX heading at or above line `index` that is not inside a
+    fenced code block (spec: headings inside fences never establish a section,
+    and a passage on a heading line names that heading)."""
+    section = None
+    for position, line in enumerate(lines[body_start : index + 1], start=body_start):
+        if not mask[position] and (heading := _HEADING_RE.match(line)):
+            section = heading.group(1)
+    return section
 
 
 def assert_single_statement(sql: str) -> None:
@@ -423,28 +513,58 @@ class AriadneRuntime:
             return candidate
 
     async def search_context(self, query: str, limit: int = 10) -> list[dict]:
-        """Rank OKF pages by query-term frequency (name-anchored ties by path).
+        """Rank OKF pages by query-token frequency; each hit points at its passage.
 
         Scans the served context dir AND the staged context drafts
         (``staging/context_layer/**/*.md``) — spec rev 4 §4: define_metric
         drafts must be discoverable before promotion. Staged hits carry
         ``draft: true`` and served hits ``draft: false`` — a draft never
-        masquerades as verified context (ADR-0003: promotion stays human)."""
-        terms = query.lower().split()
+        masquerades as verified context (ADR-0003: promotion stays human).
+
+        Spec 2026-09-23-0002: ranking is deterministic and token-aware (whole
+        ``[a-z0-9]+`` tokens, so incidental substrings like "order" inside
+        "orders" no longer crowd out real matches; fenced code tokens count at
+        half weight so generated SQL echoes rank below prose without hiding a
+        fenced-only match; ties break by path, served before staged). Every hit
+        additionally carries ``excerpt`` (a bounded
+        verbatim substring of ``content`` around the first matched token),
+        inclusive 1-based ``line_start``/``line_end`` covering that excerpt,
+        and ``section`` (the containing ATX heading outside fenced code, else
+        ``None`` — a frontmatter-only match never fabricates a body section;
+        a body match is preferred over a frontmatter match). Nonpositive
+        limits and queries with no matching token return ``[]``."""
+        if limit <= 0:
+            return []
+        terms = _QUERY_TOKEN_RE.findall(query.lower())
         hits: list[dict] = []
         roots = [(self.context_dir, False), (self.staging_dir / "context_layer", True)]
         for root, draft in roots:
             for path in sorted(root.rglob("*.md")):
                 text = path.read_text(encoding="utf-8")
-                score = sum(text.lower().count(term) for term in terms)
+                lines = text.split("\n")
+                mask = _fence_mask(lines)
+                prose: Counter[str] = Counter()
+                code: Counter[str] = Counter()
+                for line, fenced in zip(lines, mask):
+                    (code if fenced else prose).update(_QUERY_TOKEN_RE.findall(line.lower()))
+                score = 2 * sum(prose[term] for term in terms) + sum(code[term] for term in terms)
                 if not score:
                     continue
+                frontmatter = _FRONTMATTER_RE.match(text)
+                body_start = text[: frontmatter.start(2)].count("\n") if frontmatter else 0
+                excerpt, line_start, line_end, section = _locate_passage(
+                    lines, mask, body_start, set(terms)
+                )
                 hits.append(
                     {
                         "path": path.relative_to(root).as_posix(),
-                        "score": score,
+                        "score": score,  # relative ranking value, not a frequency contract
                         "draft": draft,  # staged proposals stay distinguishable
                         "content": text,  # full OKF page: the rules are the payload
+                        "excerpt": excerpt,
+                        "line_start": line_start,
+                        "line_end": line_end,
+                        "section": section,
                     }
                 )
         hits.sort(key=lambda hit: (-hit["score"], hit["path"]))
