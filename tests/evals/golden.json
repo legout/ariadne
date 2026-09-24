@@ -10,7 +10,7 @@
       "gross_margin = (gross_revenue - cogs) / gross_revenue per region (ratio of sums).",
       "customer_count = COUNT(*) over the customers master data (no status/time rules)."
     ],
-    "adhoc_entries": "Entries with \"adhoc\": true route through define_metric (governed false); their 'expected' is null because the full per-customer expectation is derived at run time by independent SQL and compared row by row."
+    "adhoc_entries": "Entries with \"adhoc\": true route through define_metric (governed false); their 'expected' is null because the full per-customer expectation is derived at run time by independent SQL and compared row by row. The ad-hoc mean (spec 2026-09-23-0003 rev 2) is the AVG of billable order amounts in USD per customer_id: CANCELLED/RETURNED excluded, pre-2024 EMEA amounts converted via currency_conversion_rate.rate_to_usd, other amounts already USD."
   },
   "entries": [
     {
@@ -79,7 +79,7 @@
     {
       "question": "mean order amount per customer",
       "metric": "mean_order_amount_per_customer",
-      "dimensions": ["customer_name"],
+      "dimensions": ["customer_id"],
       "adhoc": true,
       "expected": null
     }

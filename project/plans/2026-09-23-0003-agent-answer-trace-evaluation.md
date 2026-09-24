@@ -4,15 +4,15 @@
 | :--- | :--- |
 | **Status** | **Approved — ticketized; implementation not authorized by ticketization** |
 | **Goal** | Test whether a real Pi agent with the installed skill routes and answers two synthetic metric questions correctly, without provider-dependent CI. |
-| **Source** | [Approved answer-trace specification, revision 1](../specs/2026-09-23-0003-agent-answer-trace-evaluation.md) |
-| **Source approval** | Owner, pi session 2026-09-23 — complete design and written specification approved; exact scope is the source header's revision 1. |
-| **Plan approval** | Owner, same session — approved this one-unit trace evaluation plan; subsequently requested ticketization. |
+| **Source** | [Approved answer-trace specification, revision 2](../specs/2026-09-23-0003-agent-answer-trace-evaluation.md) |
+| **Source approval** | Owner, pi session 2026-09-23 — revision 1 approved; owner, pi session 2026-09-24 — approved exact ad-hoc USD/customer-ID revision 2 after the actual Pi run exposed a raw-amount oracle mismatch. |
+| **Plan approval** | Owner, pi session 2026-09-23 — approved the one-unit trace evaluation plan; the 2026-09-24 owner decision reconciles its oracle prerequisite without adding a unit. |
 | **Prerequisite** | Issues [#7](https://github.com/legout/ariadne/issues/7) → [#8](https://github.com/legout/ariadne/issues/8) → [#9](https://github.com/legout/ariadne/issues/9) are closed; confirm their local-first CLI/skill baseline is accepted and integrated before recording a Pi trace. Retrieval issue #10 is independent. |
 | **Contract** | planning-contract v1; installed skill provenance unknown |
 
 ## Constraints and capture checkpoint
 
-- Use synthetic retail-demo data and the independent numeric oracle in `tests/evals/golden.json`/`tests/test_evals.py`. A saved trace tests only that recorded Pi run; it is not evidence of current agent behavior after a skill/runtime change. No new production runtime API, model judge, service, provider requirement in CI, raw transcript, or agent-host matrix.
+- Use synthetic retail-demo data and the revision-2 independent USD billable-order/customer-ID numeric oracle in `tests/evals/golden.json`/`tests/test_evals.py`. Reconcile the former raw-amount/customer-name oracle before asserting recorded values; the ad-hoc entry keeps `expected: null`. A saved trace tests only that recorded Pi run; it is not evidence of current agent behavior after a skill/runtime change. No new production runtime API, model judge, service, provider requirement in CI, raw transcript, or agent-host matrix.
 - **Vocabulary:** existing Governed Metric, Ad-hoc Metric, Policy, and Proposal terms suffice. **Decision:** recorded real Pi evidence plus a fresh live smoke is a reversible assurance choice; no ADR. **Behavior:** the approved specification owns questions, routes, caveats, failure and evidence claims. **Uncertainty:** a genuine Pi trace is an execution prerequisite; an unavailable provider leaves live acceptance unverified.
 - No new untrusted-input, credential, authentication or dependency boundary is touched: `security: n/a`. Only synthetic demo data enters the recorded fixture; never capture secrets or unrelated session text. One writer, after the accepted local-runtime baseline, owns the evaluation.
 
@@ -25,8 +25,8 @@
 | AC1 — actual Pi run, both questions, independent numeric oracle | #11 | Accepted and integrated #7–#9 |
 | AC2 — named failures for wrong route, missing caveat, false label | #11 | Same |
 | AC3 — packaged-skill provenance and separate current live-smoke status | #11 | Same |
-| AC4 — unchanged golden oracle, no agent Promotion | #11 | Same |
+| AC4 — revised independent ad-hoc USD/customer-ID oracle, no agent Promotion | #11 | Same |
 
 ## Execution and integration
 
-After #7–#9 are accepted and integrated, observe an actual Pi run rather than scripting a desired trace. The deterministic recorded-trace check and separately reported fresh live smoke must not be conflated. One candidate review covers the observed provenance and integration. The parent retains implementation, fix, and integration approval gates; creating #11 authorizes none of them. Material changes to routing or acceptance return to the approved specification for reconciliation.
+After #7–#9 are accepted and integrated, use an actual Pi run rather than scripting a desired trace. The 2026-09-24 observed Pi run exposed the old raw-amount oracle conflict; revision 2 explicitly chooses conversion of pre-2024 EMEA billable amounts and grouping by customer ID. Reconcile the independent oracle, then record the observed run without mechanically changing its calls or values. The deterministic recorded-trace check and separately reported fresh live smoke must not be conflated. One candidate review covers the observed provenance and integration. The parent retains implementation, fix, and integration approval gates; creating #11 authorizes none of them. Material changes to routing or acceptance return to the approved specification for reconciliation.
