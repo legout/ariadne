@@ -17,9 +17,12 @@ below, supplied by the orchestrator from the currently served tree (nothing in
 git records it; the canonical ``tests/evals/served/`` reference copy lands in a
 later lane). Documented in the lane report.
 
-Ad-hoc round trip: the canonical rev-3 acceptance definition — "mean order
-amount per customer" — through ``define_metric``: governed false, rows checked
-against independent SQL, the proposal staged, staging cleaned up afterwards.
+Ad-hoc round trip: "mean order amount per customer" under the revision-2
+definition (spec 2026-09-23-0003): AVG of billable order amounts in USD per
+``customer_id`` — CANCELLED/RETURNED excluded, pre-2024 EMEA amounts converted
+via ``rate_to_usd`` — through ``define_metric``: governed false, every
+customer ID checked against independent SQL, the proposal staged, staging
+cleaned up afterwards.
 
 Fan-out disposition (spec rev 5 §13, upstream finding Datus-ai/Datus-agent#1426:
 the datus compiler aggregated at joined-row grain and did NOT prevent fan-out;
@@ -264,21 +267,71 @@ def test_golden_entry(entry, facade, demo_db):
         )
 
 
-# --- Ad-hoc round trip (the canonical rev-3 acceptance definition) ------------
+# --- Ad-hoc round trip (spec 2026-09-23-0003 rev 2 USD/customer_id oracle) ----
 
 ADHOC_ENTRY = next(e for e in GOLDEN["entries"] if e.get("adhoc"))
 
+# The proposal under test (rev 2): source converts billable amounts to USD
+# (seed-note rule 2), the expression averages them per customer_id — the
+# definition an agent authors after list_datasets, not a served metric.
 _JOIN_SOURCE = (
-    "SELECT o.customer_id, c.name AS customer_name, o.amount, o.status "
-    "FROM orders o JOIN customers c ON o.customer_id = c.id"
+    "SELECT o.customer_id, o.status, "
+    "CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp::TIMESTAMP"
+    " < TIMESTAMP '2024-01-01' THEN o.amount * r.rate_to_usd"
+    " ELSE o.amount END AS amount_usd "
+    "FROM orders o LEFT JOIN currency_conversion_rate r ON r.currency = o.currency"
 )
-_MEAN_EXPR = "AVG(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount END)"
+_MEAN_EXPR = "AVG(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount_usd END)"
+
+
+# --- Independent ad-hoc oracle (shared; spec 2026-09-23-0003 rev 2) ------------
+
+# Seed-note rules 1+2 spelled out inline in a CTE — a different formulation than
+# the proposal's CASE-in-AVG; never the seeder, the generator, the facade, or an
+# observed run. Shared with tests/test_agent_trace.py so no second numeric
+# oracle for the ad-hoc mean exists anywhere. One statement returns both grains:
+# one row per customer_id plus a NULL-keyed overall row.
+_ADHOC_MEAN_SQL = """
+WITH converted AS (
+    SELECT
+        o.customer_id AS customer_id,
+        CASE
+            WHEN o.region_code = 'EMEA'
+                 AND o.order_timestamp::TIMESTAMP < TIMESTAMP '2024-01-01'
+                THEN o.amount * r.rate_to_usd
+            ELSE o.amount
+        END AS amount_usd
+    FROM demo.orders o
+    LEFT JOIN demo.currency_conversion_rate r ON r.currency = o.currency
+    WHERE o.status NOT IN ('CANCELLED', 'RETURNED')
+)
+SELECT customer_id, AVG(amount_usd) AS mean_usd FROM converted GROUP BY customer_id
+UNION ALL
+SELECT NULL, AVG(amount_usd) FROM converted
+"""
+
+
+def independent_adhoc_means(db_path: Path) -> dict:
+    """Rev-2 ad-hoc oracle: mean billable order amount in USD per customer_id,
+    the same measure ungrouped, and every customer id in the master data."""
+    per_customer: dict = {}
+    overall = None
+    with attached_demo(db_path) as con:
+        # nosemgrep — module-level constant SQL, no interpolation or tool input
+        for customer_id, mean_usd in con.execute(_ADHOC_MEAN_SQL).fetchall():
+            if customer_id is None:
+                overall = mean_usd
+            else:
+                per_customer[customer_id] = mean_usd
+        ids = [r[0] for r in con.execute("SELECT id FROM demo.customers").fetchall()]
+    assert overall is not None
+    return {"per_customer": per_customer, "overall": overall, "customer_ids": ids}
 
 
 def test_adhoc_round_trip_stages_proposal_then_cleans_up(facade, demo_db):
     definition = {
         "name": ADHOC_ENTRY["metric"],
-        "description": "Mean order amount per customer over billable orders",
+        "description": "Mean billable order amount per customer in USD",
         "source": _JOIN_SOURCE,
         "expression": _MEAN_EXPR,
         "dimensions": ADHOC_ENTRY["dimensions"],
@@ -295,18 +348,14 @@ def test_adhoc_round_trip_stages_proposal_then_cleans_up(facade, demo_db):
         assert staged_page.is_file()
         staged = [staged_model, staged_page]
 
-        with attached_demo(demo_db) as con:
-            rows = con.execute(
-                "SELECT c.name, AVG(o.amount) FROM demo.orders o"
-                " JOIN demo.customers c ON o.customer_id = c.id"
-                " WHERE o.status NOT IN ('CANCELLED', 'RETURNED')"
-                " GROUP BY c.name"
-            ).fetchall()
-        expected = {name: avg for name, avg in rows}
-        actual = {row["customer_name"]: row[ADHOC_ENTRY["metric"]] for row in result["rows"]}
-        assert set(actual) == set(expected), "every customer with billable orders must appear"
-        for name, value in actual.items():
-            assert_close(value, expected[name], f"mean per customer {name}")
+        oracle = independent_adhoc_means(demo_db)
+        expected = oracle["per_customer"]
+        actual = {row["customer_id"]: row[ADHOC_ENTRY["metric"]] for row in result["rows"]}
+        assert set(actual) == set(expected) == set(oracle["customer_ids"]), (
+            "every customer ID in the demo must appear with a billable-order mean"
+        )
+        for customer_id, value in actual.items():
+            assert_close(value, expected[customer_id], f"mean per customer {customer_id}")
     finally:
         for path in staged:
             path.unlink(missing_ok=True)  # clean it up after (spec §13)

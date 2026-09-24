@@ -68,11 +68,15 @@ explicitly. Never start a server just to answer a question.
   one-to-many and many-to-many per [references/grain-rubric.md](references/grain-rubric.md)
   — pre-aggregate the many side inside `source`, or the definition is rejected
   before compile (nothing staged, nothing executed).
-- **Every number ships its caveats.** Governed `get_metric` responses carry a
-  `context` field: the served metric page plus the full bodies of every policy it
-  cites. Restate those caveats with every number and say `governed: true`;
-  ad-hoc answers are `governed: false` proposals — label them as such, never as
-  canonical.
+- **Every number ships its caveats; governed answers cite provenance.** Governed
+  `get_metric` responses carry a `context` field: the served metric page plus
+  the full bodies of every policy it cites. Restate those caveats with every
+  number, say `governed: true`, and cite the context actually returned: the
+  served metric page and the relevant Policy paths exactly as the page's
+  `sources` list gives them (e.g. `context_layer/metrics/gross_margin.md` and
+  `policies/emea-currency-cutover.md`) — never invented, remembered, or guessed
+  paths. Ad-hoc answers are `governed: false` proposals — label them as such,
+  never as canonical.
 - **`search_context` before novel questions.** The rule you are about to rediscover
   is probably already a policy page. Search first; if the question stays unmodeled,
   route it through `define_metric` so the definition lands in staging as a proposal.

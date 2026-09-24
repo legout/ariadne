@@ -43,25 +43,35 @@ collisions suffix ``-2``/``-3``/… instead of overwriting (spec §8.11 discipli
 Interfaces::
 
     ingest(docs, staging_dir="staging", complete=None) -> (staged paths, errors)
-    ariadne-ingest <doc>... [--db DB]   # --db reserved: unwired for now
+    reconcile_ingest(docs, *, served_root, staging_dir="staging", complete=None)
+        -> (staged paths, errors, comparisons)   # opt-in, spec 2026-09-23-0004
+    ariadne-ingest <doc>... [--db DB]          # --db reserved: unwired for now
+    ariadne-ingest --reconcile --served ROOT <doc>...
 """
 
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
 import os
 import re
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
 import yaml
 
-from ariadne.author import _default_complete, _page_contract_errors, _validate_staging
+from ariadne.author import (
+    _FRONTMATTER_RE,
+    _default_complete,
+    _page_contract_errors,
+    _validate_staging,
+)
 from ariadne.init import _symlink_under
 
 MAX_RETRIES = 2  # ≤2 retry rounds on contract violations (rev 8 brief; author allows 3 total)
@@ -354,6 +364,14 @@ def _contract_errors(pages: list[tuple]) -> list[str]:
     return errors
 
 
+def _claim_exclusive(candidate: Path, text: str) -> Path:
+    """Atomic O_CREAT|O_EXCL write: claims the path or raises FileExistsError."""
+    fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return candidate
+
+
 def _stage_atomic(directory: Path, name: str, text: str) -> Path:
     """Mirror of the facade's O_CREAT|O_EXCL claim (ariadne.serve): the suffix
     race resolves atomically, collisions get -2/-3/…, never an overwrite."""
@@ -362,24 +380,24 @@ def _stage_atomic(directory: Path, name: str, text: str) -> Path:
     suffix = 2
     while True:
         try:
-            fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            return _claim_exclusive(candidate, text)
         except FileExistsError:
             candidate = directory / f"{name}-{suffix}.md"
             suffix += 1
-            continue
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        return candidate
 
 
-def _ingest_one(doc: Path, *, staging: Path, complete, now: str) -> tuple[list[Path], list[str]]:
-    """Convert + distill + gate + stage one document. Returns (staged, errors)."""
+def _distill(doc: Path, *, complete, now: str) -> tuple[list[tuple], list[str], str]:
+    """Convert + LLM-distill + gate one document WITHOUT touching staging;
+    returns (gate-clean page triples, errors, converted text). The SAME
+    converted text is returned so callers that quote-check against the document
+    (the reconcile advisory) never re-read a file that may have changed mid-run.
+    Shared by ordinary ingest and the opt-in reconcile mode."""
     if not doc.is_file():
-        return [], [f"{doc}: no such document"]
+        return [], [f"{doc}: no such document"], ""
     try:
         text = _convert(doc)
     except _ConversionError as exc:
-        return [], [str(exc)]
+        return [], [str(exc)], ""
     source = {
         "id": hashlib.sha256(doc.read_bytes()).hexdigest()[:12],
         "resource": str(doc.resolve()),
@@ -405,17 +423,8 @@ def _ingest_one(doc: Path, *, staging: Path, complete, now: str) -> tuple[list[P
                 violations = _secret_violations(pages)
             if not violations:
                 violations = _contract_errors(pages)
-            if not violations:  # gate-clean: only now does anything touch staging
-                offender = _symlink_offender(staging, pages)
-                if offender is not None:  # refuse BEFORE any write: stage nothing
-                    return [], [
-                        f"{doc.name}: refusing to stage through a symlink: {offender} "
-                        f"is a symlink under {staging}; remove it and re-run"
-                    ]
-                return [
-                    _stage_atomic(staging / STAGING_SUBDIR / folder, name, page_text)
-                    for folder, name, page_text in pages
-                ], []
+            if not violations:  # gate-clean: the caller decides what gets staged
+                return pages, [], text
         print(
             f"ariadne-ingest: {doc.name}: attempt {attempt + 1}: "
             f"{len(violations)} contract violation(s), feeding back",
@@ -435,7 +444,24 @@ def _ingest_one(doc: Path, *, staging: Path, complete, now: str) -> tuple[list[P
         "attempts — nothing staged",
         flush=True,
     )
-    return [], violations
+    return [], violations, text
+
+
+def _ingest_one(doc: Path, *, staging: Path, complete, now: str) -> tuple[list[Path], list[str]]:
+    """Convert + distill + gate + stage one document. Returns (staged, errors)."""
+    pages, errors, _converted = _distill(doc, complete=complete, now=now)
+    if errors:
+        return [], errors
+    offender = _symlink_offender(staging, pages)
+    if offender is not None:  # refuse BEFORE any write: stage nothing
+        return [], [
+            f"{doc.name}: refusing to stage through a symlink: {offender} "
+            f"is a symlink under {staging}; remove it and re-run"
+        ]
+    return [
+        _stage_atomic(staging / STAGING_SUBDIR / folder, name, page_text)
+        for folder, name, page_text in pages
+    ], []
 
 
 def ingest(
@@ -461,6 +487,500 @@ def ingest(
     return staged, errors
 
 
+# --- opt-in evidence reconciliation (spec 2026-09-23-0004 rev 1, ADR-0003/0009) ---
+# Deterministic identity + staging (issue #12 validation unit A) plus the
+# explicitly opt-in conflict advisory (unit B): only a same-path matched
+# APPROVED Policy with changed body text is ever sent to the configured
+# ingestion model, after the existing credential-pattern refusal — never any
+# other approved page, never `verified` identities.
+
+_DIFF_LINE_CAP = 60  # bounded human-readable diff: review output stays readable
+# Frontmatter excluded from owner-content comparison: promotion bookkeeping
+# (status/verified/generated, promote.py's no-op key) and source provenance,
+# which is compared separately as digest identity (provenance_only class).
+_BOOKKEEPING_KEYS = ("status", "verified", "generated", "sources")
+
+
+@dataclass
+class Advisory:
+    """Fallible conflict advice for the human reviewer (spec 2026-09-23-0004):
+    it never promotes, blocks, rewrites, or sets review_needed — a suggestion
+    with no verbatim-verified quote is not evidence."""
+
+    status: str  # "supported" | "unverified" | "none" | "unavailable" | "not_applicable"
+    reason: str = ""  # e.g. credential-pattern class or provider-failure cause
+    note: str = ""  # the model's one-line conflict note, when it suggested one
+    quotes: list[dict] | None = None  # [{text, verified}] — only verified ones are evidence
+
+
+@dataclass
+class Reconciliation:
+    """One proposed page compared against the approved Context Layer."""
+
+    proposal: str  # context-layer-relative proposed path, e.g. policies/x.md
+    match: str  # "same-path" (matched an approved page) | "new" (unmatched)
+    change: str  # "changed" | "provenance_only" | "unchanged" | "new"
+    new_source: dict  # proposal's {resource, digest}
+    old_source: dict | None = None  # matched approved page's {resource, digest}
+    diff: str = ""  # bounded unified diff of owner content (changed only)
+    warning: str | None = None  # e.g. possible-duplicate on path drift
+    staged: Path | None = None  # final staged path (suffixed path for new pages)
+    advisory: Advisory = field(  # not_applicable unless eligible (unit B)
+        default_factory=lambda: Advisory("not_applicable")
+    )
+
+
+_ADVISORY_ABSENT_NOTE = "model offered no conflict suggestion — absence is not proof of consistency"
+
+_ADVISORY_SYSTEM_PROMPT = """\
+You are the Ariadne reconciliation advisor (spec 2026-09-23-0004). You see \
+ONE converted source document and ONE approved Policy that a new proposal \
+would replace. Determine whether the revised document possibly CONFLICTS \
+with the approved Policy (contradiction, dropped constraint, changed \
+obligation).
+
+Return ONE JSON object and nothing else — no markdown fences, no commentary:
+{"possible_conflict": true|false, "note": "<one line>", "quotes": ["<passage>", ...]}
+Each quote MUST be copied VERBATIM from the document or the approved Policy \
+and must support the note. If there is no possible conflict, return \
+{"possible_conflict": false} with no quotes. Never invent quotations.
+"""
+
+
+def _advisory_user_prompt(
+    document: str, filename: str, title: str, body: str, identity: dict
+) -> str:
+    """The minimal disclosure payload (ADR-0009 clarification): the converted
+    input plus ONLY the matched approved Policy's title, body and source
+    identity — never its verified identities or unrelated pages."""
+    return (
+        f"Source document: {filename} (already converted to markdown)\n\n"
+        f"<document>\n{document.strip()}\n</document>\n\n"
+        f'<approved_policy resource="{identity["resource"]}" '
+        f'digest="{identity["digest"]}" title="{title}">\n{body.strip()}\n</approved_policy>\n\n'
+        "Is there a possible conflict? Return only the JSON object."
+    )
+
+
+def _parse_advisory(raw: str) -> dict:
+    """Parse the advisory JSON (tolerates <think> blocks and fences like the
+    distillation response)."""
+    text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    if text.startswith("```"):
+        text = re.sub(r"\A```[a-zA-Z0-9_-]*\n|\n```\Z", "", text)
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("advisory response must be a JSON object")
+    return data
+
+
+# A recognized PEM private key must redact as ONE BLOCK — the header-only
+# pattern above would leave the base64 payload and END marker in review output
+# (owner-authorized unit-B delta finding). The optional END alternation also
+# swallows a dangling BEGIN whose END marker never arrived.
+_PEM_BLOCK_RE = re.compile(
+    r"-----BEGIN[A-Z ]*PRIVATE KEY-----.*?(?:-----END[A-Z ]*PRIVATE KEY-----|$)", re.DOTALL
+)
+
+
+def _redact_credential_matches(text: str) -> str:
+    """Replace credential-pattern matches with their class name in ONE pass
+    (markers are immune to later patterns): every returned/printed diff stays
+    a useful bounded comparison without echoing a suspected secret (spec
+    2026-09-23-0004). A recognized PEM private key is removed as the ENTIRE
+    block — BEGIN header, payload lines and END marker. Applied where a diff
+    is built — never to a staged page or the served state."""
+    text = _PEM_BLOCK_RE.sub("[redacted private_key]", text)
+    combined = re.compile(
+        "|".join(
+            f"(?P<c{index}>{pattern.pattern})"
+            for index, (_label, pattern) in enumerate(_SECRET_PATTERNS)
+        )
+    )
+
+    def _redact(match: re.Match) -> str:
+        for index, (label, _pattern) in enumerate(_SECRET_PATTERNS):
+            if match.group(f"c{index}") is not None:
+                return f"[redacted {label}]"
+        return match.group(0)  # pragma: no cover — one alternative always matched
+
+    return combined.sub(_redact, text)
+
+
+def _run_advisory(
+    record: Reconciliation,
+    ameta: dict,
+    abody: str,
+    *,
+    identity: dict,
+    converted: str,
+    filename: str,
+    complete,
+) -> None:
+    """Attach one opt-in advisory result to ``record``. Credential-pattern
+    refusal over the approved Policy's substantive metadata AND body comes
+    BEFORE any egress (the diff is already credential-redacted where it is
+    built); provider failure, unparseable answers and a missing boolean
+    possible_conflict flag leave the deterministic comparison intact as
+    `unavailable`; every quote is verified verbatim against the same converted
+    text the distillation saw before counting as evidence — anything else
+    stays `unverified`, and no answer is ever proof of consistency."""
+    title = str(ameta.get("title", ""))
+    description = str(ameta.get("description", ""))
+    tags = ", ".join(str(tag) for tag in (ameta.get("tags") or []))
+    # The refusal scans ALL approved text that can echo into review output —
+    # substantive metadata (title/description/tags) plus body — while the model
+    # payload below still sends only title/body/source identity (never that
+    # metadata): a metadata credential refuses the call without being sent.
+    outgoing = f"{title}\n{description}\n{tags}\n{abody}"
+    for label, pattern in _SECRET_PATTERNS:
+        if pattern.search(outgoing):
+            record.advisory = Advisory(
+                "unavailable",
+                reason=(
+                    f"approved Policy text matches the {label} credential pattern — "
+                    "not sent; deterministic diff above stands"
+                ),
+            )
+            return
+    messages: list[dict] = [
+        {"role": "system", "content": _ADVISORY_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": _advisory_user_prompt(converted, filename, title, abody, identity),
+        },
+    ]
+    try:
+        data = _parse_advisory(complete(messages))
+    except Exception as exc:  # provider failure/unparseable: advice is unavailable, staging stands
+        cause = type(exc).__name__
+        record.advisory = Advisory("unavailable", reason=f"advisory call failed ({cause})")
+        return
+    flag = data.get("possible_conflict")
+    if not isinstance(flag, bool):
+        record.advisory = Advisory(
+            "unavailable", reason="advisory response lacks a boolean possible_conflict"
+        )
+        return
+    if not flag:
+        record.advisory = Advisory("none", reason=_ADVISORY_ABSENT_NOTE)
+        return
+    note = str(data.get("note") or "").strip()
+    quotes: list[dict] = []
+    raw_quotes = data.get("quotes")
+    for quote in raw_quotes if isinstance(raw_quotes, list) else []:
+        passage = str(quote)
+        if not passage.strip():
+            continue
+        verified = passage in converted or passage in abody or (bool(title) and passage in title)
+        quotes.append({"text": passage, "verified": verified})
+    if not quotes:
+        record.advisory = Advisory(
+            "unverified", note=note, reason="suggestion carried no verifiable quotes"
+        )
+        return
+    status = "supported" if any(q["verified"] for q in quotes) else "unverified"
+    record.advisory = Advisory(status, note=note, quotes=quotes)
+
+
+def _split_page(text: str) -> tuple[dict, str]:
+    """Frontmatter meta (empty dict when absent) and body of one OKF page."""
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return {}, text
+    return (yaml.safe_load(match.group(1)) or {}), match.group(2)
+
+
+def _owner_text(meta: dict, body: str) -> str:
+    """Canonical owner content: every frontmatter field except promotion
+    bookkeeping (status, verified, generated) and source provenance (compared
+    separately as digest identity) — substantive per-type metadata such as a
+    table's grain participates in change detection — plus the body."""
+    owner_meta = {key: value for key, value in meta.items() if key not in _BOOKKEEPING_KEYS}
+    front = yaml.safe_dump(owner_meta, sort_keys=True, default_flow_style=False).strip()
+    return f"{front}\n{body}"
+
+
+def _source_identity(meta: dict) -> dict | None:
+    """{resource, digest} of a page's first sources[] entry, or None.
+    Resource values are identity STRINGS — never opened as paths."""
+    sources = meta.get("sources") or []
+    if not sources or not isinstance(sources[0], dict):
+        return None
+    return {
+        "resource": str(sources[0].get("resource", "")),
+        "digest": str(sources[0].get("id", "")),
+    }
+
+
+def _matching_source(meta: dict, resource: str) -> dict | None:
+    """{resource, digest} of the sources[] entry identifying ``resource`` — the
+    entry that made the page a match — or None when no citation identifies it."""
+    for entry in meta.get("sources") or []:
+        if isinstance(entry, dict) and str(entry.get("resource", "")) == resource:
+            return {
+                "resource": str(entry.get("resource", "")),
+                "digest": str(entry.get("id", "")),
+            }
+    return None
+
+
+def _approved_page(served_root: Path, rel: str) -> tuple[Path | None, str | None]:
+    """Contained, symlink-free approved page at exactly ``rel`` under
+    served_root/context_layer/, or (None, error). A proposed or symlinked path
+    must never read outside the selected approved Context Layer."""
+    offender = _symlink_under(served_root, f"{STAGING_SUBDIR}/{rel}")
+    if offender is not None:
+        return None, f"approved path {rel} traverses a symlink ({offender})"
+    served_context = served_root / STAGING_SUBDIR
+    page = served_context / rel
+    if not page.resolve().is_relative_to(served_context.resolve()):
+        return None, f"approved path {rel} escapes the served Context Layer"
+    if page.is_file():
+        return page, None
+    return None, None  # no approved page at that exact path: an unmatched new page
+
+
+def _duplicate_suspect(served_root: Path, meta: dict) -> str | None:
+    """Approved page at a DIFFERENT path sharing the proposal's source resource
+    or title (path-drift hint); warning-only — it never retargets a proposal.
+    Symlinked candidates are skipped unread: discovery must never read outside
+    the selected approved Context Layer."""
+    served_context = served_root / STAGING_SUBDIR
+    resource = ""
+    sources = meta.get("sources") or []
+    if sources and isinstance(sources[0], dict):
+        resource = str(sources[0].get("resource", ""))
+    title = str(meta.get("title", ""))
+    for page in sorted(served_context.rglob("*.md")):
+        if page.name == "index.md":
+            continue
+        rel = page.relative_to(served_context).as_posix()
+        if _symlink_under(served_root, f"{STAGING_SUBDIR}/{rel}") is not None:
+            continue  # symlinked candidate: never read through it
+        suspect_meta, _ = _split_page(page.read_text(encoding="utf-8", errors="replace"))
+        if not suspect_meta:
+            continue
+        for entry in suspect_meta.get("sources") or []:
+            if isinstance(entry, dict) and str(entry.get("resource", "")) == resource != "":
+                return rel
+        if title and suspect_meta.get("title") == title:
+            return rel
+    return None
+
+
+def _bounded_diff(old: str, new: str) -> str:
+    """Bounded unified diff of owner content (approved -> proposed)."""
+    lines = list(
+        difflib.unified_diff(
+            old.splitlines(), new.splitlines(), fromfile="approved", tofile="proposed", lineterm=""
+        )
+    )
+    if len(lines) > _DIFF_LINE_CAP:
+        lines = [*lines[:_DIFF_LINE_CAP], "… (diff truncated)"]
+    return "\n".join(lines)
+
+
+def _reconcile_one(
+    doc: Path, *, staging: Path, served_root: Path, complete, now: str
+) -> tuple[list[Path], list[str], list[Reconciliation]]:
+    """Reconcile one document: distill, resolve EVERY candidate's identity and
+    collisions first, then stage. Any preflight failure stages nothing for this
+    document; other documents stay independently processable."""
+    pages, errors, converted = _distill(doc, complete=complete, now=now)
+    if errors:
+        return [], errors, []
+    doc_errors: list[str] = []
+    comparisons: list[Reconciliation] = []
+    plans: list[tuple[str, str, str]] = []  # (rel, mode, page_text); mode: replacement|new
+    seen: set[str] = set()  # every proposed path, unchanged ones included
+    advisory_jobs: list[tuple[Reconciliation, dict, str]] = []  # (record, ameta, abody)
+    # -- preflight: resolve all candidates before any per-document write ------
+    for folder, name, page_text in pages:
+        rel = f"{folder}/{name}.md"
+        if rel in seen:
+            doc_errors.append(
+                f"{doc.name}: duplicate proposal path {rel} within this document — "
+                "nothing staged for this document"
+            )
+            break
+        seen.add(rel)
+        pmeta, pbody = _split_page(page_text)
+        new_source = _source_identity(pmeta) or {"resource": "", "digest": ""}
+        approved, containment_error = _approved_page(served_root, rel)
+        if containment_error is not None:
+            doc_errors.append(
+                f"{doc.name}: refusing to reconcile {rel}: {containment_error}; "
+                "nothing staged for this document"
+            )
+            break
+        if approved is not None:
+            ameta, abody = _split_page(approved.read_text(encoding="utf-8"))
+            old_source = _matching_source(ameta, new_source["resource"])
+            if old_source is None:
+                doc_errors.append(
+                    f"{doc.name}: identity conflict at {rel}: the approved page's sources "
+                    f"do not reference {new_source['resource']} — resolve the mismatch "
+                    "manually; nothing staged for this document"
+                )
+                break
+            same_owner = _owner_text(ameta, abody) == _owner_text(pmeta, pbody)
+            if same_owner and old_source == new_source:
+                comparisons.append(  # identical page and digest: stages nothing
+                    Reconciliation(rel, "same-path", "unchanged", new_source, old_source)
+                )
+                continue
+            change = "provenance_only" if same_owner else "changed"
+            diff = ""
+            if not same_owner:
+                # EVERY returned/printed diff is credential-redacted where it is
+                # built (spec 2026-09-23-0004: no suspected secret in review
+                # output) — independent of advisory eligibility, so a metadata
+                # credential echoes nowhere. The proposal side is already
+                # secret-free by the distillation gate; only approved-side
+                # echoes are masked.
+                diff = _redact_credential_matches(
+                    _bounded_diff(_owner_text(ameta, abody), _owner_text(pmeta, pbody))
+                )
+            if (staging / STAGING_SUBDIR / rel).exists():
+                doc_errors.append(
+                    f"{doc.name}: replacement staging target {rel} is already occupied "
+                    f"under {staging} — nothing staged for this document"
+                )
+                break
+            record = Reconciliation(rel, "same-path", change, new_source, old_source, diff=diff)
+            comparisons.append(record)
+            plans.append((rel, "replacement", page_text))
+            if ameta.get("type") == "policy" and abody.strip() != pbody.strip():
+                # unit B eligibility: only a matched approved POLICY with changed
+                # BODY text is ever disclosed to the advisory model
+                advisory_jobs.append((record, ameta, abody))
+        else:
+            suspect = _duplicate_suspect(served_root, pmeta)
+            warning = None
+            if suspect is not None:
+                warning = (
+                    f"possible duplicate: no approved page at {rel}, but approved "
+                    f"{suspect} matches this proposal's source/title — staged as a new "
+                    "page, not retargeted"
+                )
+            comparisons.append(Reconciliation(rel, "new", "new", new_source, warning=warning))
+            plans.append((rel, "new", page_text))
+    if doc_errors:
+        return [], doc_errors, []
+    for _rel, _mode, _text in plans:  # staging containment refusal, unchanged walk
+        offender = _symlink_under(staging, f"{STAGING_SUBDIR}/{_rel}")
+        if offender is not None:
+            return (
+                [],
+                [
+                    f"{doc.name}: refusing to stage through a symlink: {offender} is a "
+                    f"symlink under {staging}; remove it and re-run"
+                ],
+                [],
+            )
+    # -- all candidates resolved: only now does anything touch staging --------
+    staged: list[Path] = []
+    for rel, mode, page_text in plans:
+        directory = staging / STAGING_SUBDIR / Path(rel).parent
+        directory.mkdir(parents=True, exist_ok=True)
+        if mode == "replacement":  # exact approved path: suffixing would change identity
+            staged.append(_claim_exclusive(directory / f"{Path(rel).stem}.md", page_text))
+        else:
+            staged.append(_stage_atomic(directory, Path(rel).stem, page_text))
+    final_by_rel = {rel: path for (rel, _mode, _text), path in zip(plans, staged)}
+    for record in comparisons:
+        record.staged = final_by_rel.get(record.proposal)
+    # -- opt-in advisory (unit B): only eligible changed approved Policies, and
+    # only AFTER the deterministic comparison and staging are complete — advice
+    # can never gate, rewrite or undo them (spec 2026-09-23-0004). The advisory
+    # quote-checks against the SAME converted text the distillation saw: no
+    # re-read of a document that may have changed or vanished mid-run.
+    for record, ameta, abody in advisory_jobs:
+        _run_advisory(
+            record,
+            ameta,
+            abody,
+            identity=record.old_source or {"resource": "", "digest": ""},
+            converted=converted,
+            filename=doc.name,
+            complete=complete,
+        )
+    return staged, [], comparisons
+
+
+def reconcile_ingest(
+    docs: list[str | Path],
+    *,
+    served_root: str | Path,
+    staging_dir: str | Path = "staging",
+    complete=None,
+) -> tuple[list[Path], list[str], list[Reconciliation]]:
+    """Opt-in re-ingestion with evidence reconciliation (spec 2026-09-23-0004):
+    compares document-derived proposals against same-path approved pages,
+    stages replacements at their exact approved relative path, and returns
+    (staged_paths, errors, comparisons). The served tree is never written;
+    human promotion stays the only path to served state."""
+    staging = Path(staging_dir)
+    _validate_staging(staging)  # same spec §6 discipline as ordinary ingest
+    served = Path(served_root)
+    if not (served / STAGING_SUBDIR).is_dir():
+        raise ValueError(
+            f"served root {served} has no {STAGING_SUBDIR}/ — nothing to "
+            "reconcile against; pass the served root that promotion writes"
+        )
+    staging_resolved = staging.resolve()
+    served_resolved = served.resolve()
+    if staging_resolved == served_resolved or staging_resolved.is_relative_to(served_resolved):
+        # _validate_staging only knows the repo's fixed served paths; the
+        # caller-selected served root needs the same promotion-gate discipline
+        # (ADR-0003), or an unmatched new page would land directly in served state.
+        raise ValueError(
+            f"staging directory {staging} is inside the served root {served}: staged "
+            "pages reach served state only through human promotion — spec §6"
+        )
+    complete = complete or _default_complete
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    staged: list[Path] = []
+    errors: list[str] = []
+    comparisons: list[Reconciliation] = []
+    for doc in docs:  # documents stay independently processable
+        paths, doc_errors, doc_comparisons = _reconcile_one(
+            Path(doc), staging=staging, served_root=served, complete=complete, now=now
+        )
+        staged.extend(paths)
+        errors.extend(doc_errors)
+        comparisons.extend(doc_comparisons)
+    return staged, errors, comparisons
+
+
+def _print_reconciliation(record: Reconciliation) -> None:
+    """One comparison for the opt-in command's review output (never a served page)."""
+    print(f"reconcile: {record.proposal} — {record.match}, {record.change}")
+    if record.warning is not None:
+        print(f"  warning: {record.warning}")
+    if record.old_source is not None:
+        old = record.old_source
+        print(f"  old source: {old['resource']} (digest {old['digest']})")
+    print(f"  new source: {record.new_source['resource']} (digest {record.new_source['digest']})")
+    if record.diff:
+        print("  diff:")
+        for line in record.diff.splitlines():
+            print(f"    {line}")
+    if record.staged is not None:
+        print(f"  staged: {record.staged}")
+    advisory = record.advisory
+    line = f"  advisory: {advisory.status}"
+    if advisory.reason:
+        line += f" — {advisory.reason}"
+    print(line)
+    if advisory.note:
+        print(f"    note: {advisory.note}")
+    for quote in advisory.quotes or []:
+        flag = "supported" if quote["verified"] else "UNVERIFIED, not evidence"
+        print(f"    quote ({flag}): {quote['text']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ariadne-ingest",
@@ -480,9 +1000,30 @@ def main(argv: list[str] | None = None) -> int:
         help="ignored for now (reserved for a future author-loop widening, ADR-0009)",
     )
     parser.add_argument("--staging", default="staging", help="staging directory (default: staging)")
+    parser.add_argument(
+        "--reconcile",
+        action="store_true",
+        help="opt-in (spec 2026-09-23-0004): compare proposals against same-path "
+        "approved pages under --served before staging; replacements claim their "
+        "exact approved path, nothing is ever served automatically",
+    )
+    parser.add_argument(
+        "--served",
+        default=None,
+        help="served root holding context_layer/ (required with --reconcile)",
+    )
     args = parser.parse_args(argv)
+    if args.reconcile and not args.served:
+        parser.error("--reconcile requires --served ROOT (a served root containing context_layer/)")
 
-    staged, errors = ingest(args.docs, staging_dir=Path(args.staging))
+    if args.reconcile:
+        staged, errors, comparisons = reconcile_ingest(
+            args.docs, served_root=Path(args.served), staging_dir=Path(args.staging)
+        )
+        for record in comparisons:
+            _print_reconciliation(record)
+    else:
+        staged, errors = ingest(args.docs, staging_dir=Path(args.staging))
     for path in staged:
         meta = yaml.safe_load(path.read_text(encoding="utf-8").split("---")[1]) or {}
         print(f"staged: {path} [{meta.get('type')}] {meta.get('description', '')}")
