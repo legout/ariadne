@@ -897,6 +897,197 @@ def test_serve_cli_fails_fast_with_hint_when_datus_missing(tmp_path):
     assert b"Traceback" not in proc.stderr
 
 
+# --- Measured Context Layer retrieval (spec 2026-09-23-0002, issue #10) -------
+
+
+RETRIEVAL_CORPUS = json.loads(
+    (REPO_ROOT / "tests" / "evals" / "context_retrieval.json").read_text(encoding="utf-8")
+)
+
+
+def test_context_retrieval_corpus_recall_at_five(served, tmp_path):
+    """AC1/AC2: the checked-in natural-language corpus over the demo served tree.
+    Every positive expectation lands within the first five distinct (path, draft)
+    hits; the missing-term question returns no hits; the same-path staged draft
+    and served page stay distinct; editing the staged text is visible on the very
+    next search without implying promotion."""
+    served_dir, db = served
+    staging = tmp_path / "staging"
+    facade = Facade(
+        served_dir / "semantic_layer", served_dir / "context_layer", db, staging_dir=staging
+    )
+    staged_files = {}
+    for entry in RETRIEVAL_CORPUS["entries"]:  # one deterministic world state
+        for staged in entry.get("staged", []):
+            page = staging / "context_layer" / staged["path"]
+            page.parent.mkdir(parents=True, exist_ok=True)
+            page.write_text(staged["content"], encoding="utf-8")
+            staged_files[staged["path"]] = page
+    top_k = RETRIEVAL_CORPUS["_meta"]["top_k"]
+    for entry in RETRIEVAL_CORPUS["entries"]:
+        hits = asyncio.run(facade.search_context(entry["question"]))
+        distinct = list(dict.fromkeys((hit["path"], hit["draft"]) for hit in hits))
+        if entry["expect"]:
+            for expected in entry["expect"]:
+                assert (expected["path"], expected["draft"]) in distinct[:top_k], (
+                    entry["question"],
+                    distinct[:top_k],
+                )
+        else:
+            assert hits == [], entry["question"]
+
+    # AC2: revise the staged draft — the next search reflects the new text (the
+    # withdrawn terms stop matching, the new wording is discoverable), while the
+    # served twin keeps its own content.
+    revision = (
+        "---\ntype: policy\nstatus: draft\ntitle: Order status billing\n---\n\n"
+        "# Order status billing\n\nRevision withdrawn; no special-casing remains.\n"
+    )
+    staged_files["policies/order-status-billing.md"].write_text(revision, encoding="utf-8")
+    assert asyncio.run(facade.search_context("charity gift")) == []
+    revised = asyncio.run(facade.search_context("withdrawn special-casing"))
+    assert [(hit["path"], hit["draft"]) for hit in revised] == [
+        ("policies/order-status-billing.md", True)
+    ]
+    hits = asyncio.run(facade.search_context("order-count number"))
+    served_twin = next(
+        hit
+        for hit in hits
+        if hit["path"] == "policies/order-status-billing.md" and not hit["draft"]
+    )
+    assert "Revision withdrawn" not in served_twin["content"]  # promotion stays human
+
+
+def test_search_context_passage_coordinates_and_sections(served, tmp_path):
+    """AC3/AC4: each hit carries a bounded verbatim excerpt with inclusive 1-based
+    line coordinates and the containing heading — frontmatter-only matches have
+    no invented section, headings inside fenced code (backtick or tilde) never
+    name a section, a body match is preferred over a frontmatter match, and a
+    query matching an actual heading line names that heading itself. A page
+    whose only match is inside a fenced code block stays a hit (every Markdown
+    category remains searchable) and resolves to the surrounding real heading."""
+    served_dir, db = served
+    context = tmp_path / "context_layer"
+    (context / "policies").mkdir(parents=True)
+    page = (
+        "---\n"
+        "type: policy\n"
+        "title: Passage demo\n"
+        "description: revenue rules summary with a xylophone marker\n"
+        "---\n"
+        "\n"
+        "# Real heading above\n"
+        "\n"
+        "Revenue rules live in this paragraph.\n"
+        "\n"
+        "```\n"
+        "# Fenced not a heading\n"
+        "```\n"
+        "\n"
+        "The zebra clause applies after the fence.\n"
+        "\n"
+        "# Later heading\n"
+        "\n"
+        "Ignored trailing body.\n"
+        "\n"
+        "## Code corner\n"
+        "\n"
+        "```\n"
+        "# Fake fenced heading\n"
+        "quokka lives only inside this fenced block\n"
+        "```\n"
+        "\n"
+        "~~~\n"
+        "# Tilde fake heading\n"
+        "wombat drafts inside a tilde fence\n"
+        "~~~\n"
+        "\n"
+        "Yacc paragraph after the tilde fence.\n"
+        "\n"
+        "## Outer heading\n"
+        "\n"
+        "~~~~\n"
+        "~~~\n"
+        "# Fake nested-tilde heading\n"
+        "pangolin note inside the four-tilde fence\n"
+        "~~~~\n"
+        "\n"
+        "Okapi paragraph after the four-tilde fence.\n"
+    )
+    (context / "policies" / "passage-demo.md").write_text(page, encoding="utf-8")
+    facade = Facade(served_dir / "semantic_layer", context, db, staging_dir=tmp_path / "staging")
+
+    def hit_for(query):
+        return asyncio.run(facade.search_context(query))[0]
+
+    # Body match after a fenced block: the fence's fake heading is skipped, the
+    # real heading above names the section.
+    hit = hit_for("zebra")
+    assert hit["path"] == "policies/passage-demo.md" and hit["draft"] is False
+    assert "zebra" in hit["excerpt"]
+    assert hit["excerpt"] in hit["content"]  # bounded verbatim substring
+    lines = hit["content"].split("\n")
+    assert 1 <= hit["line_start"] <= hit["line_end"] <= len(lines)
+    assert hit["excerpt"] in "\n".join(lines[hit["line_start"] - 1 : hit["line_end"]])
+    assert hit["section"] == "Real heading above"
+
+    # A match below a later real heading resolves to that heading.
+    assert hit_for("trailing")["section"] == "Later heading"
+
+    # A query matching an actual heading line names that heading itself, not
+    # the preceding one.
+    hit = hit_for("later")
+    assert "Later heading" in hit["excerpt"]
+    assert hit["section"] == "Later heading"
+
+    # Body match preferred over the frontmatter line that also matches.
+    hit = hit_for("revenue")
+    assert hit["excerpt"].startswith("Revenue rules")
+    assert hit["section"] == "Real heading above"
+
+    # Frontmatter-only match: coordinates land inside the frontmatter block and
+    # no body section is fabricated.
+    hit = hit_for("xylophone")
+    assert "xylophone" in hit["excerpt"] and hit["excerpt"] in hit["content"]
+    assert hit["line_start"] == 4  # the description line, inside the frontmatter
+    assert hit["section"] is None
+
+    # Fenced-only match: the page stays searchable (it is still a hit) and its
+    # passage sits on the fenced line — the fence's own fake heading never names
+    # the section; the real heading surrounding the fence does.
+    hit = hit_for("quokka")
+    assert hit["path"] == "policies/passage-demo.md"
+    assert "quokka" in hit["excerpt"] and hit["excerpt"] in hit["content"]
+    assert hit["line_start"] == hit["line_end"] == 25  # the fenced quokka line
+    assert hit["section"] == "Code corner"
+
+    # Tilde fences behave exactly like backtick fences: a fenced-only match
+    # stays searchable, and the tilde block's fake heading neither names its own
+    # passage nor establishes a section for subsequent passages.
+    hit = hit_for("wombat")
+    assert hit["path"] == "policies/passage-demo.md"
+    assert "wombat" in hit["excerpt"] and hit["excerpt"] in hit["content"]
+    assert hit["line_start"] == hit["line_end"] == 30  # the tilde-fenced wombat line
+    assert hit["section"] == "Code corner"
+    assert hit_for("yacc")["section"] == "Code corner"
+
+    # A closing fence needs the same marker at least as long as the opener: a
+    # ~~~ line inside a ~~~~ fence stays literal, so the fence's fake heading
+    # neither names its own passage nor establishes a section for the passage
+    # after the real ~~~~ close.
+    hit = hit_for("pangolin")
+    assert hit["path"] == "policies/passage-demo.md"
+    assert "pangolin" in hit["excerpt"] and hit["excerpt"] in hit["content"]
+    assert hit["line_start"] == hit["line_end"] == 40  # still inside the ~~~~ fence
+    assert hit["section"] == "Outer heading"
+    assert hit_for("okapi")["section"] == "Outer heading"  # after the real close
+
+    # Failure shape: empty query and nonpositive limits return no hits.
+    assert asyncio.run(facade.search_context("")) == []
+    assert asyncio.run(facade.search_context("zebra", limit=0)) == []
+    assert asyncio.run(facade.search_context("zebra", limit=-3)) == []
+
+
 def test_serve_main_explicit_db_beats_ambient_registry(tmp_path, monkeypatch):
     """With an ambient ./ariadne.yaml present, an explicit --db still selects
     the legacy single-sqlite shorthand (registry only when neither is given)."""
