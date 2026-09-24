@@ -5,14 +5,38 @@ Exercises ariadne.promote (the logic behind ``ariadne-promote`` / the
 append + status flip, index regeneration, log.md entries, idempotency, and the
 merge-never-wipes invariant. The staged pages mirror the real author output
 shape so the frontmatter round-trip is exercised for real.
+
+The issue #15 block exercises the HUMAN-ONLY exact-digest Promotion of a
+harness-led bundle proposal (spec 2026-09-24-0005, ADR-0003/0013) end to end
+through the real submission service — the same journey the local CLI offers.
 """
 
+import asyncio
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
 
-from ariadne.promote import Change, _index_for, main, promote
+from ariadne import promote as promote_module
+from ariadne.promote import Change, _index_for, main, promote, promote_bundle
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tests.test_authoring import (  # noqa: E402
+    _submit_captured,
+    _wait_for,
+    approved_project,
+    bundle_submission,
+    write_submission,
+)
 
 BY = "human:tester"
 AT = "2026-09-16T12:00:00+00:00"
@@ -285,3 +309,311 @@ def test_promote_cli_fresh_project_defaults_to_project_root(tmp_path, monkeypatc
     assert meta["verified"] == [{"by": BY, "at": meta["verified"][0]["at"]}]
     assert (project / "semantic_layer" / "models" / "orders.yml").is_file()
     assert (project / "context_layer" / "index.md").is_file()
+
+
+# ------------- issue #15: human-only exact-digest bundle Promotion (ADR-0013) -------------
+
+
+class _Capture:
+    """Minimal capsys stand-in so the shared submission helper works here."""
+
+    def __init__(self, capsys):
+        self._capsys = capsys
+
+    def readouterr(self):
+        return self._capsys.readouterr()
+
+
+def validated_project(tmp_path, capsys) -> tuple[Path, str]:
+    """A project holding ONE validated harness-led bundle proposal + the exact
+    reviewed digest a human would take from ``ariadne-authoring review``."""
+    project = approved_project(tmp_path)
+    out = json.loads(_submit_captured(project, bundle_submission(), _Capture(capsys)))
+    assert out["status"] == "validated"
+    return project, out["review_digest"]
+
+
+def test_exact_digest_promotion_serves_seed_notes_and_artifacts_together(tmp_path, capsys):
+    """The human gate, green path: with the EXACT reviewed digest the proposed
+    Seed Notes and OSI/OKF are accepted TOGETHER through the ordinary
+    merge-only bookkeeping — and only then does anything get served."""
+    project, digest = validated_project(tmp_path, capsys)
+    assert not (project / "context_layer").exists()  # nothing served before the gate
+
+    code = main(
+        [
+            "--yes",
+            "--by",
+            BY,
+            "--digest",
+            digest,
+            "--staging",
+            str(project / "staging"),
+            "--served",
+            str(project),
+        ]
+    )
+    assert code == 0
+    # Seed Notes merged (the reviewed proposal, now the project's approved notes)
+    assert (
+        (project / "data" / "seed_notes.md").read_text(encoding="utf-8").startswith("# Seed notes")
+    )
+    # OSI/OKF merged with the ordinary verified/index/log bookkeeping
+    meta = front(project / "context_layer" / "metrics" / "event_count.md")
+    assert meta["status"] == "stable" and meta["verified"][0]["by"] == BY
+    assert (project / "semantic_layer" / "models" / "events.yml").is_file()
+    assert (project / "context_layer" / "metrics" / "index.md").is_file()
+    assert "event_count" in (project / "context_layer" / "log.md").read_text(encoding="utf-8")
+    # the pending attestation survives promotion verbatim (ADR-0013)
+    comp = (project / "context_layer" / "computations" / "event_count.md").read_text(
+        encoding="utf-8"
+    )
+    assert "attestation: pending" in comp and "tests/test_evals.py" not in comp
+
+    # the promoted proposal is recorded; re-promoting the same digest is a no-op
+    state = json.loads(
+        (project / "staging" / "authoring" / "bundle-state.json").read_text(encoding="utf-8")
+    )
+    assert state["status"] == "promoted"
+    assert (
+        main(
+            [
+                "--yes",
+                "--by",
+                BY,
+                "--digest",
+                digest,
+                "--staging",
+                str(project / "staging"),
+                "--served",
+                str(project),
+            ]
+        )
+        == 0
+    )
+
+
+def test_governed_query_carries_the_pending_attestation_caveat(tmp_path, capsys):
+    """Spec acceptance 5: after Promotion, ``governed: true`` means Promoted —
+    the governed context states that an un-attested computation is pending, and
+    never presents the demo evals as its oracle."""
+    from ariadne.runtime import AriadneRuntime
+
+    project, digest = validated_project(tmp_path, capsys)
+    assert (
+        main(
+            [
+                "--yes",
+                "--by",
+                BY,
+                "--digest",
+                digest,
+                "--staging",
+                str(project / "staging"),
+                "--served",
+                str(project),
+            ]
+        )
+        == 0
+    )
+    runtime = AriadneRuntime(
+        project / "semantic_layer",
+        project / "context_layer",
+        db_path=project / "ariadne.yaml",
+        staging_dir=project / "staging",
+        sources=project / "ariadne.yaml",
+    )
+    result = asyncio.run(runtime.get_metric("event_count"))
+    assert result["governed"] is True
+    context = result["context"]
+    assert context["attestation"] == "pending"
+    assert context["governed_note"] == (
+        "governed: true means Promoted, not independently value-attested"
+    )
+
+
+def test_digest_promotion_refuses_changed_staged_content(tmp_path, capsys):
+    """The exact-content rule: staging edited after the review (same digest)
+    refuses promotion before any served write."""
+    project, digest = validated_project(tmp_path, capsys)
+    metrics_page = (
+        project
+        / "staging"
+        / "authoring"
+        / "bundle"
+        / "context_layer"
+        / "metrics"
+        / "event_count.md"
+    )
+    page = metrics_page
+    page.write_text(page.read_text(encoding="utf-8") + "\nsneaked line\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="changed after the review"):
+        promote_bundle(
+            digest,
+            staging_root=project / "staging",
+            served_root=project,
+            by=BY,
+            assume_yes=True,
+            at=AT,
+        )
+    assert not (project / "context_layer").exists()
+
+
+def test_digest_promotion_refuses_invalid_and_review_needed_proposals(tmp_path, capsys):
+    """Only a proposal that passed every deterministic check is promotable:
+    an ``invalid`` (failed round) and an exhausted ``review_needed`` proposal
+    both refuse before any served write."""
+    from ariadne.authoring import submit_bundle
+
+    project = approved_project(tmp_path)
+    file = write_submission(project, bundle_submission(pk="label"))
+    submit_bundle(file, project=project)  # invalid: grain audit failure
+    state_path = project / "staging" / "authoring" / "bundle-state.json"
+    bad_digest = json.loads(state_path.read_text(encoding="utf-8"))["digest"]
+    with pytest.raises(ValueError, match="'invalid'"):
+        promote_bundle(
+            bad_digest,
+            staging_root=project / "staging",
+            served_root=project,
+            by=BY,
+            assume_yes=True,
+        )
+    assert not (project / "context_layer").exists()
+
+
+def test_digest_promotion_refuses_a_changed_source_registry(tmp_path, capsys):
+    """The approved source identity must still be what the proposal was checked
+    against: a registry change after the review refuses promotion."""
+    project, digest = validated_project(tmp_path, capsys)
+    doc = yaml.safe_load((project / "ariadne.yaml").read_text(encoding="utf-8"))
+    doc["sources"][0]["path"] = str(project / "data" / "moved.parquet")
+    (project / "ariadne.yaml").write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="source registry changed"):
+        promote_bundle(
+            digest,
+            staging_root=project / "staging",
+            served_root=project,
+            by=BY,
+            assume_yes=True,
+            at=AT,
+        )
+    assert not (project / "context_layer").exists()
+
+
+def test_digest_promotion_requires_an_explicit_served_root(tmp_path, capsys):
+    """Spec: the human command names the project's staging and served roots
+    explicitly — a digest promotion without --served refuses."""
+    project, digest = validated_project(tmp_path, capsys)
+    assert main(["--yes", "--digest", digest, "--staging", str(project / "staging")]) == 1
+    assert not (project / "context_layer").exists()
+
+
+def test_digest_promotion_without_a_proposal_is_an_actionable_error(tmp_path, capsys, monkeypatch):
+    """No active bundle proposal: the human gate reports it and serves nothing."""
+    monkeypatch.chdir(tmp_path)
+    assert main(["--yes", "--digest", "0" * 64, "--served", str(tmp_path)]) == 1
+    assert not (tmp_path / "context_layer").exists()
+
+
+_PROMOTE_RACE_WRITER = """\
+import json, sys
+from pathlib import Path
+
+from ariadne import authoring
+
+project, submission_file, base_digest, outcome = sys.argv[1:5]
+try:
+    result = authoring.submit_bundle(
+        submission_file, project=project, base_digest=base_digest
+    )
+    Path(outcome).write_text(
+        json.dumps({"ok": True, "digest": result["digest"]}), encoding="utf-8"
+    )
+except ValueError as exc:
+    Path(outcome).write_text(
+        json.dumps({"ok": False, "error": str(exc)}), encoding="utf-8"
+    )
+"""
+
+
+def test_promotion_serves_only_the_reviewed_digest_when_a_writer_races(
+    tmp_path, capsys, monkeypatch
+):
+    """Review finding P1, the promotion crossing: a competing writer submitting
+    while the human Promotion is between its digest check and the served writes
+    can never split the reviewed digest from the bytes served — either the
+    promotion completes on the reviewed content and the writer fails, or the
+    writer lands first and the promotion refuses. Promotion parks (via _apply)
+    exactly in that window, giving a real submit_bundle process the chance to
+    interleave; without serialization it serves the unreviewed replacement."""
+    project, digest = validated_project(tmp_path, capsys)
+    state = json.loads(
+        (project / "staging" / "authoring" / "bundle-state.json").read_text(encoding="utf-8")
+    )
+    replacement = write_submission(
+        project, bundle_submission(seed_notes="# competing writer\n"), name="race.json"
+    )
+    started, release, outcome_file = project / "APPLY", project / "RELEASE", project / "WRITER"
+    real_apply = promote_module._apply
+
+    def parked_apply(staging, served_root, by, at):
+        started.write_text("", encoding="utf-8")  # past every digest check
+        deadline = time.monotonic() + 30
+        while not release.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)  # parked between the digest check and the served writes
+        return real_apply(staging, served_root, by, at)
+
+    monkeypatch.setattr(promote_module, "_apply", parked_apply)
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _PROMOTE_RACE_WRITER,
+            str(project),
+            str(replacement),
+            state["submission_digest"],
+            str(outcome_file),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    errors: list[BaseException] = []
+
+    def run_promotion():
+        try:
+            promote_bundle(
+                digest,
+                staging_root=project / "staging",
+                served_root=project,
+                by=BY,
+                assume_yes=True,
+            )
+        except BaseException as exc:  # surfaced by the join assertion below
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_promotion)
+    try:
+        thread.start()
+        _wait_for(started)
+        # Bounded window: an unserialized writer lands its swap mid-promotion
+        # (test red); a serialized one is still blocked on the project lock.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not outcome_file.exists():
+            time.sleep(0.05)
+        release.write_text("", encoding="utf-8")
+        thread.join(timeout=60)
+        assert not thread.is_alive() and not errors
+        child.wait(timeout=120)
+    finally:
+        if thread.is_alive():  # pragma: no cover - failure path only
+            thread.join(timeout=10)
+        if child.poll() is None:  # pragma: no cover - failure path only
+            child.kill()
+
+    writer = json.loads(outcome_file.read_text(encoding="utf-8"))
+    served = (project / "data" / "seed_notes.md").read_text(encoding="utf-8")
+    assert served.startswith("# Seed notes")  # the REVIEWED bytes, never the writer's
+    assert writer["ok"] is False  # the racing writer replaced nothing mid-promotion

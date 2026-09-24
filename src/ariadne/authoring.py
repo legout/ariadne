@@ -52,25 +52,77 @@ Notes (``data/seed_notes.md``); source credentials never appear (the registry
 carries env-var NAMES only; connections resolve server-side). A remote
 client's local dataset path is not a server path: it is simply an escaping
 reference here.
+
+Slice 3 — :func:`submit_bundle` / :func:`review_bundle` (issue #15; spec
+"Authoring interface and lifecycle"): the harness's OWN model drafts the whole
+bundle (complete Seed Notes, OSI models, OKF pages) and submits it as relative
+paths + bodies into ONE dedicated project staging area
+(``staging/authoring/bundle/``); the service runs the SAME deterministic
+checks the author loop uses (:func:`ariadne.validate` compile/bind/grain plus
+``author._finalize_bundle``/``_bundle_errors``), never the server's
+OpenAI-compatible completion. Out-of-scope paths, symlinked staging
+components, generated ``index.md``/``log.md``, harness-supplied computations,
+credentials, and unbounded payloads are refused BEFORE any write, and nothing
+is ever written to the served layers. Proposed dataset sources are authorized
+FIRST (:func:`_authorize_dataset_sources`): only SELECT/joins over approved
+registry identities ever reach ``validate``'s bind/audit — table functions and
+direct file/URI scans never execute, and an empty approved registry cannot
+validate a bundle. OKF pages are accepted only in the layout the per-type
+gate actually checks (one ``.md`` per section, references under
+``references/joins/``); credential classes follow the ingest patterns plus
+named AWS assignments, never echoing the value. One active proposal per
+project persists in ``staging/authoring/bundle-state.json`` with its exact
+digests/revision: repairs require the current submission digest, a
+stale/competing submission or a changed source registry fails WITHOUT
+replacement, an identical retry is idempotent (no attempt reset), and exhausted
+validation (3 rounds) stays ``review_needed`` for the human. Submit, the
+review snapshot, and digest Promotion share ONE per-project interprocess lock
+(:func:`bundle_lock`), so competing CLI processes serialize instead of
+corrupting the active proposal, and the staged swap keeps the prior proposal
+recoverable across a crash. :func:`review_bundle` returns the inventory,
+provenance, errors, and the exact reviewed-content digest with bounded bodies
+— it is never a signoff. Serving is the human-only exact-digest Promotion
+(:func:`ariadne.promote.promote_bundle`), which refuses changed, incomplete,
+or ``review_needed`` proposals before any served write.
 """
 
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import json
 import os
+import re
+import shutil
 import stat
 import tempfile
 from collections.abc import Sequence
-from pathlib import Path
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
+import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+from sqlglot import exp  # pyright: ignore[reportMissingImports] — same
 
 from ariadne import profiler
-from ariadne.ingest import _ConversionError, _convert
-from ariadne.sources import _URI_SCHEME_RE, _resolve_against, load_registry
+from ariadne.author import (
+    MAX_ROUNDS,
+    _bundle_errors,
+    _finalize_bundle,
+    _mark_review_needed,
+)
+from ariadne.ingest import _SECRET_PATTERNS, _ConversionError, _convert
+from ariadne.render import render
+from ariadne.sources import (
+    _DSN_PASSWORD_RE,
+    _URI_SCHEME_RE,
+    _resolve_against,
+    load_registry,
+)
+from ariadne.validate import _model_entries, validate
 
 # One pending source proposal per project, in the agent-writable staging area
 # (a dedicated subdir: never collides with ad-hoc metric or ingest proposals).
@@ -110,9 +162,7 @@ def approve_sources(digest: str, *, project: str | Path = ".") -> dict:
     project = Path(project)
     stored = project / PROPOSAL_REL
     if not stored.is_file():
-        raise ValueError(
-            f"no pending source proposal at {stored} — run propose-sources first"
-        )
+        raise ValueError(f"no pending source proposal at {stored} — run propose-sources first")
     load_registry(stored)  # revalidate the stored entries before any install
     entries = _entries(stored)
     current = _digest(entries)
@@ -133,9 +183,7 @@ def approve_sources(digest: str, *, project: str | Path = ".") -> dict:
     existing = doc.get("sources") or []
     if not isinstance(existing, list):
         raise ValueError(f"{registry_path}: 'sources' is not a list")
-    taken = {
-        entry.get("name") for entry in existing if isinstance(entry, dict)
-    }
+    taken = {entry.get("name") for entry in existing if isinstance(entry, dict)}
     clashes = [entry["name"] for entry in entries if entry["name"] in taken]
     if clashes:
         raise ValueError(
@@ -220,8 +268,7 @@ def _project_documents_config(project: Path) -> tuple[list[Path], list[str]]:
         return [_input_root(project)], []
     if not isinstance(section, dict):
         raise ValueError(
-            f"{registry_path}: 'documents' must be a mapping with 'roots' and "
-            "'object_store' lists"
+            f"{registry_path}: 'documents' must be a mapping with 'roots' and 'object_store' lists"
         )
     roots: list[Path] = []
     for raw in section.get("roots", [str(INPUT_ROOT_REL)]):
@@ -505,3 +552,548 @@ def harness_inputs(
         ],
         "seed_notes": seed_notes,
     }
+
+
+# --- slice 3 (issue #15): full-bundle submission and staged review ---
+
+# The one active full-bundle proposal per project: content under a dedicated
+# staging dir (never collides with ad-hoc or standalone-ingest proposals),
+# persisted state as a sibling file that survives any restart.
+AUTHORING_STAGING = Path("authoring")  # under the project staging root
+BUNDLE_DIR_REL = AUTHORING_STAGING / "bundle"
+BUNDLE_STATE_REL = AUTHORING_STAGING / "bundle-state.json"
+BUNDLE_LOCK_REL = AUTHORING_STAGING / "bundle.lock"
+BUNDLE_STAGING_REL = Path("staging") / BUNDLE_DIR_REL  # project-relative content dir
+BUNDLE_STATE_PATH_REL = Path("staging") / BUNDLE_STATE_REL  # project-relative state file
+BUNDLE_DISCARD_NAME = "bundle.discarded"  # crash-recoverable prior proposal
+
+SEED_NOTES_SUBMIT_REL = "data/seed_notes.md"  # the one required non-artifact file
+# Documented submission roots (spec "Authoring interface and lifecycle"): the
+# complete Seed Notes, the OSI models, and OKF pages. index.md/log.md and the
+# computation pages are service-generated, so submitting them is refused.
+_OKF_SECTIONS = frozenset({"tables", "references", "policies", "metrics", "skills"})
+_GENERATED_FILES = frozenset({"index.md", "log.md"})
+_HARNESS_LED_BY = "ariadne-authoring:harness-led"  # provenance (spec: name it)
+
+MAX_BUNDLE_FILES = 256  # bounded submission: one demo-scale bundle is ~30 files
+MAX_BUNDLE_BYTES = 2 * 1024 * 1024  # bounded payload; large evidence is referenced, not inlined
+
+# Named env-style credential assignments the URL-password rule misses (review
+# finding: ``AWS_SECRET_ACCESS_KEY=...``). The value is never echoed; the
+# same-line ``=`` keeps prose that merely MENTIONS the variable from matching.
+_AWS_ASSIGNMENT_RE = re.compile(
+    r"\b(AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN)[ \t]*=[ \t]*\S+"
+)
+
+
+def bundle_state_path(staging_root: str | Path) -> Path:
+    """Where the active-bundle state lives under a project's staging root."""
+    return Path(staging_root) / BUNDLE_STATE_REL
+
+
+def bundle_staging_dir(staging_root: str | Path) -> Path:
+    """The dedicated bundle-content staging dir under a project's staging root."""
+    return Path(staging_root) / BUNDLE_DIR_REL
+
+
+@contextmanager
+def bundle_lock(staging_root: str | Path):
+    """ONE shared interprocess lock per project, serializing bundle submit,
+    the review snapshot, and digest Promotion (spec "Authoring interface and
+    lifecycle": competing writers fail without replacement, and a reviewed
+    digest always pairs with the staged bytes it was taken from). ``flock(2)``
+    on a lock file under the project staging area — POSIX only; the lock is
+    released on close/exit, so a crashed holder never wedges the project.
+    ponytail: the lock file lives in agent-writable staging, so an agent that
+    DELETES it mid-flight could fork the lock domain; move it under an
+    operator-owned directory if staging ever turns hostile."""
+    lock_path = Path(staging_root) / BUNDLE_LOCK_REL
+    entry = _lstat(lock_path)
+    if entry is not None and stat.S_ISLNK(entry.st_mode):
+        raise ValueError(
+            f"{lock_path}: refusing a symlinked bundle lock file — the project "
+            "bundle lock stays a plain staging file"
+        )
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "r+b") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _submission_doc(file: str | Path) -> tuple[list[tuple[str, str]], str | None]:
+    """Parse a submission document (``{"files": [{path, content}], ...}`` —
+    the author response contract) into (files, base_digest or None). Every
+    shape problem is an actionable ValueError before anything is written."""
+    raw = Path(file).read_text(encoding="utf-8")
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError(f"{file}: submission is not valid JSON: {exc}") from None
+    if not isinstance(data, dict) or not isinstance(data.get("files"), list) or not data["files"]:
+        raise ValueError(f"{file}: submission needs a non-empty 'files' list")
+    files: list[tuple[str, str]] = []
+    for entry in data["files"]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            raise ValueError(f"{file}: every files[] entry needs a 'path' string")
+        content = entry.get("content")
+        if not isinstance(content, str):
+            raise ValueError(f"{file}: files[] entry {entry['path']!r} needs 'content'")
+        files.append((entry["path"], content))
+    base = data.get("base_digest")
+    if base is not None and (not isinstance(base, str) or len(base) != 64):
+        raise ValueError(f"{file}: 'base_digest' must be a 64-hex digest string")
+    return files, base
+
+
+def _check_submission(files: list[tuple[str, str]]) -> None:
+    """The pre-write boundary (spec: remotely controlled bytes and relative
+    paths; the assets are staging and everything served). Out-of-scope paths,
+    generated/computed file names, credentials, and unbounded payloads fail
+    BEFORE any write; no served path is ever touched here."""
+    if len(files) > MAX_BUNDLE_FILES:
+        raise ValueError(
+            f"submission carries {len(files)} files, over the bound of {MAX_BUNDLE_FILES}"
+        )
+    total = sum(len(content.encode("utf-8")) for _, content in files)
+    if total > MAX_BUNDLE_BYTES:
+        raise ValueError(
+            f"submission is {total} bytes, over the {MAX_BUNDLE_BYTES}-byte bound — "
+            "reference evidence by resource instead of inlining it"
+        )
+    seed_notes = 0
+    for rel, content in files:
+        where = f"files[] entry {rel!r}"
+        pure = PurePosixPath(rel)
+        if pure.is_absolute() or not pure.parts or rel.startswith("/") or "\\" in rel:
+            raise ValueError(f"{where}: only relative POSIX artifact paths are accepted")
+        if any(part in ("", ".", "..") for part in pure.parts):
+            raise ValueError(f"{where}: path traversal is refused (no ''/'.'/'..' parts)")
+        if pure.name in _GENERATED_FILES:
+            raise ValueError(
+                f"{where}: index.md and log.md are generated by the promotion gate, never submitted"
+            )
+        if rel == SEED_NOTES_SUBMIT_REL:
+            seed_notes += 1
+            continue
+        parts = pure.parts
+        if len(parts) >= 3 and parts[0] == "context_layer":
+            section = parts[1]
+            if section == "computations":
+                raise ValueError(
+                    f"{where}: computation pages are generated by the validation pass "
+                    "(attestation is service-owned, ADR-0013) — submit tables/references/"
+                    "policies/metrics/skills pages"
+                )
+            # ONLY the layout the per-type bundle gate actually checks is
+            # accepted: one .md directly under each section, and reference
+            # pages under references/joins/ (ADR-0007's sixth type). Deeper
+            # pages are never checked there, so they are refused before any
+            # write — they cannot ride along to validation and Promotion.
+            if section == "references":
+                if len(parts) != 4 or parts[2] != "joins" or pure.suffix != ".md":
+                    raise ValueError(
+                        f"{where}: reference pages are .md files directly under "
+                        "context_layer/references/joins/ (the checked bundle layout)"
+                    )
+            elif section not in _OKF_SECTIONS or len(parts) != 3 or pure.suffix != ".md":
+                raise ValueError(
+                    f"{where}: OKF pages are single .md files directly under "
+                    "context_layer/{{tables,references/joins,policies,metrics,skills}}/ "
+                    "— nested pages are never checked by the per-type bundle gate and "
+                    "are refused before any write"
+                )
+            continue
+        if (
+            len(parts) == 3
+            and parts[:2] == ("semantic_layer", "models")
+            and pure.suffix
+            in (
+                ".yml",
+                ".yaml",
+            )
+        ):
+            continue
+        raise ValueError(
+            f"{where}: outside the documented submission roots "
+            f"({SEED_NOTES_SUBMIT_REL}, semantic_layer/models/*.yml, context_layer/"
+            "{tables,references,policies,metrics,skills}/)"
+        )
+    if seed_notes != 1:
+        raise ValueError(
+            f"the complete proposed Seed Notes are required exactly once as "
+            f"{SEED_NOTES_SUBMIT_REL} (got {seed_notes})"
+        )
+    for rel, content in files:
+        if match := _DSN_PASSWORD_RE.search(content):  # ADR-0010 credential shape
+            raise ValueError(
+                f"files[] entry {rel!r} carries inline URL credentials "
+                f"({match.group(1)}***{match.group(3)}) — credentials never live in a "
+                "submitted bundle"
+            )
+        for label, pattern in _SECRET_PATTERNS:  # ingest's classes, reused verbatim
+            if pattern.search(content):
+                raise ValueError(
+                    f"files[] entry {rel!r} appears to carry a {label} credential — "
+                    "credential-free submissions only; the matched value is never "
+                    "echoed, remove it and resubmit"
+                )
+        if _AWS_ASSIGNMENT_RE.search(content):
+            raise ValueError(
+                f"files[] entry {rel!r} carries a named AWS credential assignment "
+                "(AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_SESSION_TOKEN = value) — "
+                "credential-free submissions only; the matched value is never echoed"
+            )
+
+
+def _refuse_symlinked_staging(project: Path, rel: Path) -> None:
+    """Refuse before any write when a component of the bundle staging path is a
+    symlink (a pre-planted link must never redirect staging writes)."""
+    path = project
+    for part in rel.parts:
+        path = path / part
+        entry = _lstat(path)
+        if entry is not None and stat.S_ISLNK(entry.st_mode):
+            raise ValueError(
+                f"{path}: refusing a symlinked staging component — staging stays a "
+                "plain project directory"
+            )
+
+
+def _registry_sources(project: Path) -> list:
+    """The APPROVED registry entries (the bundle's source identity), [] when the
+    project has none; malformed config is an explicit error."""
+    registry_path = project / "ariadne.yaml"
+    if not registry_path.is_file():
+        return []
+    doc = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(doc, dict):
+        raise ValueError(f"{registry_path}: top level is not a mapping")
+    sources = doc.get("sources") or []
+    if not isinstance(sources, list):
+        raise ValueError(f"{registry_path}: 'sources' is not a list")
+    return sources
+
+
+def _submission_digest(files: list[tuple[str, str]]) -> str:
+    """sha256 over the canonical submitted content: the proposal identity that
+    repairs chain on and identical retries are detected by."""
+    canonical = json.dumps(
+        [(rel, content) for rel, content in sorted(files)], sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _tree_digest(root: Path) -> str:
+    """sha256 over every file under ``root`` (path + content hash, canonical
+    order): the EXACT staged content a human reviews and Promotion enforces."""
+    entries = [
+        (path.relative_to(root).as_posix(), _sha256_hex(path.read_bytes()))
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    ]
+    canonical = json.dumps(entries, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _authorize_dataset_sources(staging: Path, approved: set[str]) -> None:
+    """The source-access boundary BEFORE any bind/audit execution (spec
+    "Evidence and source-access boundary" §1: no profiling or query opens a
+    location outside the approved registry). Remotely authored dataset sources
+    and field/metric expressions may reference ONLY approved registry
+    identities: every table the compiled SQL touches is walked over the real
+    sqlglot AST of the rendered model — table functions (``read_text``,
+    ``read_parquet``, ...), direct file/URI scans, unqualified tables, and
+    references outside the approved registry names are refused BEFORE
+    ``validate`` binds or executes anything. With an empty approved registry
+    nothing is approvable, so a full bundle can never be validated by the
+    compile-only path."""
+    for name, envelope in _model_entries(staging):
+        try:
+            rendered = render(envelope)
+        except Exception:  # RenderError et al.: the compile gate owns the error
+            continue  # a bundle with compile errors never reaches bind/audit
+        try:
+            tree = sqlglot.parse_one(rendered, dialect="duckdb")
+        except Exception:
+            continue  # render() re-parses its output; unreachable in practice
+        ctes = {cte.alias_or_name for cte in tree.find_all(exp.CTE)}
+        names = ", ".join(sorted(approved)) or "none approved yet"
+        for table in tree.find_all(exp.Table):
+            this = table.this
+            if not isinstance(this, exp.Identifier):
+                # a table FUNCTION in FROM (read_parquet('...'), read_text('...')):
+                # approved access goes through registry views, never raw scans
+                raise ValueError(
+                    f"model '{name}': the dataset source uses the table function "
+                    f"{this.name or type(this).__name__}(...) — only SELECT/joins over "
+                    f"approved registry tables ({names}) enter validation; raw scans "
+                    "of server files or object URIs are refused before any execution"
+                )
+            ref = table.sql(dialect="duckdb")
+            if table.catalog or table.db:  # qualified: the leftmost part is the identity
+                if (table.catalog or table.db) not in approved:
+                    raise ValueError(
+                        f"model '{name}': {ref} is not an approved source registry "
+                        f"identity (approved: {names}) — validation never opens "
+                        "locations outside the approved registry"
+                    )
+            elif table.name in ctes:
+                continue  # a WITH-clause reference; its defining statement is walked too
+            elif "/" in table.name or _URI_SCHEME_RE.match(table.name):
+                raise ValueError(
+                    f"model '{name}': the dataset source scans {table.name!r} directly "
+                    "— only SELECT/joins over approved registry tables enter validation; "
+                    "direct file/URI scans are refused before any execution"
+                )
+            else:
+                raise ValueError(
+                    f"model '{name}': table '{table.name}' is unqualified — qualify "
+                    f"tables with an approved source name ({names})"
+                )
+
+
+def _load_bundle_state(project: Path) -> dict | None:
+    """The persisted active-proposal state, or None when no proposal exists.
+    A corrupt/non-regular state file is a human-resolution failure, never a reset."""
+    state_path = project / BUNDLE_STATE_PATH_REL
+    entry = _lstat(state_path)
+    if entry is None:
+        return None
+    if not stat.S_ISREG(entry.st_mode):
+        raise ValueError(
+            f"{state_path}: refusing a non-regular bundle-state file — inspect the "
+            "project staging area"
+        )
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ValueError(
+            f"{state_path}: unreadable bundle proposal state ({exc}) — this needs "
+            "human resolution, not an agent reset"
+        ) from None
+    if not isinstance(state, dict) or not state.get("submission_digest"):
+        raise ValueError(
+            f"{state_path}: malformed bundle proposal state — this needs human "
+            "resolution, not an agent reset"
+        )
+    return state
+
+
+def _store_bundle_state(project: Path, state: dict) -> None:
+    """Persist the proposal state atomically (tmp + os.replace): the
+    restart-surviving, single-writer record."""
+    state_path = project / BUNDLE_STATE_PATH_REL
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=state_path.parent, suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, state_path)
+
+
+def _state_view(state: dict) -> dict:
+    """The common submission/review response shape (never a signoff). ``digest``
+    is the submission digest (repair chaining / idempotency); callers add the
+    exact reviewed-content digest under their own named key."""
+    return {
+        "digest": state["submission_digest"],
+        "revision": state["revision"],
+        "attempts": state["attempts"],
+        "status": state["status"],
+        "errors": state.get("errors") or [],
+        "provenance": state["provenance"],
+        "sources": state.get("sources") or [],
+        "project": state["project"],
+        "staging": state["staging"],
+    }
+
+
+def submit_bundle(
+    file: str | Path, *, project: str | Path = ".", base_digest: str | None = None
+) -> dict:
+    """Accept one complete harness-owned-model bundle and run the SAME
+    deterministic author checks on it (never the server's completion endpoint):
+    compile/bind/grain via :func:`ariadne.validate` against the project's
+    approved registry, then the ADR-0007 finalize passes (metric enrichment,
+    computation generation with ``attestation: pending``, lifecycle stamping
+    naming harness-led provenance) and the per-type bundle gate. Errors are
+    actionable and repair the SAME proposal with the returned digest; at most
+    three rounds, then the staged files stay ``review_needed`` for the human.
+    Nothing is written to the served layers, ever."""
+    project = Path(project)
+    files, doc_base = _submission_doc(file)
+    base = base_digest or doc_base
+    _check_submission(files)  # bounds/paths/credentials — BEFORE any write
+    _refuse_symlinked_staging(project, BUNDLE_STAGING_REL)  # same
+
+    sources = _registry_sources(project)
+    sources_digest = _digest(sources)
+    submission = _submission_digest(files)
+    # ONE interprocess lock per project: the state read, the staged swap, and
+    # the state store are a single critical section, so two CLI processes with
+    # the same base digest cannot both replace the active proposal and no
+    # digest ever pairs with bytes it was not taken from.
+    with bundle_lock(project / "staging"):
+        state = _load_bundle_state(project)
+        if state is not None and state.get("status") != "promoted":
+            if sources_digest != state.get("sources_digest"):
+                raise ValueError(
+                    "the approved source registry changed while this bundle proposal was "
+                    "active — the proposal is invalidated and needs human resolution; "
+                    "no replacement was made"
+                )
+            if submission == state["submission_digest"]:
+                view = _state_view(state)
+                if (project / BUNDLE_STAGING_REL).is_dir():
+                    view["review_digest"] = state.get("digest")  # unchanged staging
+                return view  # idempotent retry: no writes, no attempt reset
+            if state["attempts"] >= MAX_ROUNDS or state["status"] == "review_needed":
+                raise ValueError(
+                    "the active bundle proposal exhausted its three authoring rounds and "
+                    "remains review_needed — this needs human resolution; no replacement "
+                    "was made"
+                )
+            if base != state["submission_digest"]:
+                raise ValueError(
+                    "base-digest mismatch: the active proposal moved on (stale or competing "
+                    "submission) — repairs need the CURRENT submission digest; no "
+                    "replacement was made"
+                )
+        elif state is not None and base is not None:
+            raise ValueError(
+                "no active proposal to repair (the previous bundle was promoted) — submit "
+                "without --base-digest"
+            )
+
+        revision = (state["revision"] if state is not None else 0) + 1
+        attempts = (state["attempts"] if state is not None else 0) + 1
+
+        # Stage the exact submission into a fresh tree, validate, finalize — the
+        # served layers are never a target and the old proposal survives any crash
+        # before the atomic swap (a failed round never replaces prior staging).
+        staging_root = project / "staging"
+        staging_root.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(dir=staging_root, prefix="bundle-"))
+        try:
+            for rel, content in files:
+                target = tmp / Path(*PurePosixPath(rel).parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+            # Source authorization comes BEFORE any bind/audit: nothing outside
+            # the approved registry identities is ever opened or executed here.
+            _authorize_dataset_sources(tmp, {str(entry.get("name")) for entry in sources})
+            registry_path = project / "ariadne.yaml"
+            result = (
+                validate(tmp, sources_path=registry_path)
+                if sources
+                else validate(tmp)  # compile-only: an empty project has no audit connection
+            )
+            errors = list(result.errors)
+            if not errors:
+                try:
+                    _finalize_bundle(tmp, generated_by=_HARNESS_LED_BY, attester=None)
+                except Exception as exc:
+                    errors = [f"authored bundle violates the OKF frontmatter contract: {exc}"]
+                else:
+                    errors = _bundle_errors(tmp)
+            if errors and attempts >= MAX_ROUNDS:
+                _mark_review_needed(tmp, errors)
+            status = (
+                "review_needed"
+                if (errors and attempts >= MAX_ROUNDS)
+                else ("invalid" if errors else "validated")
+            )
+            # Crash-recoverable transition: the prior proposal is RENAMED aside
+            # (never deleted first), the fresh tree swaps in atomically, and the
+            # state is stored durably before the superseded copy is dropped — a
+            # crash mid-transition leaves the prior content recoverable under
+            # staging/authoring/ and the gates fail closed on any mismatch.
+            bundle_dir = project / BUNDLE_STAGING_REL
+            discarded = bundle_dir.parent / BUNDLE_DISCARD_NAME
+            if discarded.is_dir():
+                shutil.rmtree(discarded, ignore_errors=True)  # crash leftover: superseded
+            bundle_dir.parent.mkdir(parents=True, exist_ok=True)
+            if bundle_dir.is_dir():
+                os.replace(bundle_dir, discarded)  # keep the safe prior proposal
+            os.replace(tmp, bundle_dir)
+        finally:
+            if tmp.is_dir() and tmp.parent.exists():
+                shutil.rmtree(tmp, ignore_errors=True)
+
+        new_state = {
+            "submission_digest": submission,
+            "digest": _tree_digest(project / BUNDLE_STAGING_REL),
+            "revision": revision,
+            "attempts": attempts,
+            "status": status,
+            "errors": errors,
+            "provenance": {
+                "mode": "harness-led",
+                "generated_by": _HARNESS_LED_BY,
+                "submitted_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            },
+            "sources": sources,
+            "sources_digest": sources_digest,
+            "project": str(project.resolve()),
+            "staging": str((project / BUNDLE_STAGING_REL).resolve()),
+        }
+        _store_bundle_state(project, new_state)
+    shutil.rmtree(
+        project / "staging" / AUTHORING_STAGING / BUNDLE_DISCARD_NAME, ignore_errors=True
+    )  # the prior proposal is only dropped once the new state is durable
+    view = _state_view(new_state)
+    view["review_digest"] = new_state["digest"]
+    return view
+
+
+def review_bundle(*, project: str | Path = ".", part: int = 1) -> dict:
+    """The staged review (spec: readable, never a signoff): inventory, source
+    identities, provenance, validation state, the exact reviewed-content digest,
+    and every proposed body — Seed Notes and artifacts — in bounded parts. The
+    snapshot (bodies AND digest) is taken under the project bundle lock, so the
+    returned digest always corresponds to the returned bodies even while another
+    writer submits concurrently."""
+    project = Path(project)
+    with bundle_lock(project / "staging"):
+        state = _load_bundle_state(project)
+        if state is None:
+            raise ValueError(
+                f"no active bundle proposal under {project / BUNDLE_STAGING_REL} — submit first"
+            )
+        bundle_dir = project / BUNDLE_STAGING_REL
+        if not bundle_dir.is_dir():
+            raise ValueError(
+                f"the bundle proposal state exists but its staging is gone ({bundle_dir}) — "
+                "this needs human resolution, not an agent reset"
+            )
+        bodies = []
+        for path in sorted(p for p in bundle_dir.rglob("*") if p.is_file()):
+            data = path.read_bytes()  # one stable snapshot: digest AND text
+            bodies.append(
+                _evidence_record(
+                    path.relative_to(bundle_dir).as_posix(),
+                    path.name,
+                    _sha256_hex(data),
+                    data.decode("utf-8", errors="replace"),
+                    part=part,
+                    part_chars=EVIDENCE_PART_CHARS,
+                )
+            )
+        # The headline digest is the EXACT staged content a human reviewed and
+        # Promotion enforces; the chaining digest stays available for repairs.
+        tree = _tree_digest(bundle_dir)
+        if state.get("digest") != tree:
+            raise ValueError(
+                "the staged bundle no longer matches the recorded proposal state "
+                f"(staged {tree} != recorded {state.get('digest')}) — this needs "
+                "human resolution, not an agent reset"
+            )
+        view = _state_view(state)
+        view["digest"] = tree
+        view["submission_digest"] = state["submission_digest"]
+        view["files"] = bodies
+    return view

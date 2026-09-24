@@ -29,7 +29,10 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from getpass import getuser
@@ -38,6 +41,14 @@ from pathlib import Path
 import yaml
 
 from ariadne.author import _FRONTMATTER_RE
+from ariadne.authoring import (
+    _digest,
+    _registry_sources,
+    _tree_digest,
+    bundle_lock,
+    bundle_staging_dir,
+    bundle_state_path,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONTEXT = "context_layer"
@@ -321,6 +332,127 @@ def promote(
     return applied
 
 
+def promote_bundle(
+    digest: str,
+    *,
+    staging_root: str | Path,
+    served_root: str | Path,
+    by: str | None = None,
+    assume_yes: bool = False,
+    at: str | None = None,
+) -> list[Change]:
+    """HUMAN-ONLY exact-digest Promotion of the active harness-led bundle
+    proposal (spec 2026-09-24-0005, ADR-0003/0013): serves ONLY the exact
+    content a human reviewed, and only together — the reviewed Seed Notes plus
+    OSI/OKF through the ordinary merge-only bookkeeping above. Refused before
+    ANY served write for a missing/changed/incomplete/``review_needed``
+    proposal, a digest that is not the exact reviewed content, or an approved
+    source registry that changed after the review. No agent-facing tool wraps
+    this; the caller names the project's staging and served roots explicitly."""
+    staging_root = Path(staging_root)
+    served_root = Path(served_root)
+    by = by or f"human:{getuser()}"
+    now = datetime.now(UTC) if at is None else datetime.fromisoformat(at)
+    state_path = bundle_state_path(staging_root)
+    bundle = bundle_staging_dir(staging_root)
+    # The SAME per-project interprocess lock submit/review use: the digest
+    # checks, the served writes, and the state update are one critical section,
+    # so a writer submitting mid-Promotion can never split the reviewed digest
+    # from the bytes served — it serializes behind the gate and then fails as
+    # a stale/promoted writer.
+    with bundle_lock(staging_root):
+        if not state_path.is_file():
+            raise ValueError(
+                f"no active bundle proposal state at {state_path} — ariadne-authoring "
+                "submit stages one first"
+            )
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict) or not state.get("submission_digest"):
+            raise ValueError(f"{state_path}: malformed bundle proposal state — human resolution")
+        if digest != state.get("digest"):
+            raise ValueError(
+                f"digest mismatch: exact-content promotion — the active proposal's "
+                f"reviewed digest is {state.get('digest')}, not {digest}; review the "
+                "current proposal (ariadne-authoring review) and promote that digest"
+            )
+        if state.get("status") != "validated" and state.get("status") != "promoted":
+            raise ValueError(
+                f"the active bundle proposal is '{state.get('status')}' — only a "
+                "proposal that passed every deterministic check is promotable"
+            )
+        if not bundle.is_dir():
+            raise ValueError(
+                f"the bundle proposal state exists but its staging is gone ({bundle}) — "
+                "human resolution"
+            )
+        # The digest binds the exact staged content: any hand-edited (or otherwise
+        # changed) staging tree refuses promotion before a single served write.
+        current = _tree_digest(bundle)
+        if current != digest:
+            raise ValueError(
+                "staged content changed after the review (digest "
+                f"{current} != reviewed {digest}) — re-review; nothing was served"
+            )
+        # The approved source identity must still be what the proposal was checked
+        # against (spec: a source change while a proposal is active invalidates it).
+        project = Path(str(state.get("project") or staging_root.parent))
+        if _digest(_registry_sources(project)) != state.get("sources_digest"):
+            raise ValueError(
+                "the approved source registry changed after this proposal was "
+                "validated — re-validate (resubmit) before promoting; nothing was served"
+            )
+        refused = _review_needed(bundle)
+        if refused:  # spec §6/§7: review_needed artifacts are not promotable
+            raise ValueError(
+                "staged files carry status: review_needed — human review required: "
+                + ", ".join(refused)
+            )
+        notes_src = bundle / "data" / "seed_notes.md"
+        if not notes_src.is_file():
+            raise ValueError(
+                "the reviewed proposal is incomplete: no data/seed_notes.md staged — "
+                "resubmit the complete bundle"
+            )
+        notes_dst = served_root / "data" / "seed_notes.md"
+        notes_change = None
+        if not (notes_dst.is_file() and notes_dst.read_bytes() == notes_src.read_bytes()):
+            notes_change = Change(
+                "data/seed_notes.md", "updated" if notes_dst.is_file() else "created"
+            )
+        page_plan, raw_plan = _plan(bundle, served_root)
+        if not page_plan and not raw_plan and notes_change is None:
+            print("nothing to promote: served layers already match the reviewed bundle/")
+            return []
+        if not assume_yes:
+            print("promotion plan (reviewed bundle staging/ -> served, merge-only):")
+            for change in [*page_plan, *raw_plan, *([notes_change] if notes_change else [])]:
+                print(f"  {change.action}: {change.rel}")
+            answer = input(
+                f"promote {len(page_plan) + len(raw_plan) + bool(notes_change)} file(s) "
+                f"as {by}? [y/N] "
+            )
+            if answer.strip().lower() not in ("y", "yes"):
+                print("aborted: nothing served")
+                raise SystemExit(1)
+        applied = _apply(bundle, served_root, by, now.isoformat(timespec="seconds"))
+        if notes_change is not None:
+            notes_dst.parent.mkdir(parents=True, exist_ok=True)
+            notes_dst.write_bytes(notes_src.read_bytes())
+            applied.append(notes_change)
+        # The proposal is served: record it so the active slot's history is honest.
+        state["status"] = "promoted"
+        state["promoted"] = {"by": by, "at": now.isoformat(timespec="seconds"), "digest": digest}
+        fd, tmp = tempfile.mkstemp(dir=state_path.parent, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, sort_keys=True)
+        os.replace(tmp, state_path)
+    print(
+        f"promoted {len(applied)} file(s) under reviewed digest {digest}; indexes "
+        "regenerated; log.md updated"
+    )
+    return applied
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python ariadne-promote",
@@ -338,7 +470,35 @@ def main(argv: list[str] | None = None) -> int:
         "fresh project (no ./context_layer yet), else this checkout's root",
     )
     parser.add_argument("--by", default=None, help="verifier identity (default: human:<$USER>)")
+    parser.add_argument(
+        "--digest",
+        default=None,
+        help="HUMAN-ONLY exact-digest promotion of the harness-led bundle proposal "
+        "under <staging>/authoring/: serves ONLY the exact reviewed content "
+        "(Seed Notes + OSI + OKF together); refuses changed, incomplete, or "
+        "review_needed proposals before any served write",
+    )
     args = parser.parse_args(argv)
+    if args.digest is not None:
+        if args.served is None:  # spec: the human names the served root explicitly
+            print(
+                "error: --digest promotion requires an explicit --served root (the "
+                "human names the project's staging and served roots)",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            promote_bundle(
+                args.digest,
+                staging_root=args.staging,
+                served_root=args.served,
+                by=args.by,
+                assume_yes=args.yes,
+            )
+        except (ValueError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        return 0
     # Rev 10 (spec §8.21): a fresh project has no ./context_layer yet — the served
     # root defaults to the project root, so the first promotion creates
     # context_layer/ + semantic_layer/ THERE instead of the misleading "nothing to

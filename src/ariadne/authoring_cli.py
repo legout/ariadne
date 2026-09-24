@@ -1,7 +1,6 @@
 """``ariadne-authoring`` — the local command surface of harness-led authoring
 (spec 2026-09-24-0005 "Authoring interface and lifecycle"; issue #13 exposes
-the source-proposal pair, issue #14 adds inputs; later slices add
-submit/review).
+the source-proposal pair, issue #14 adds inputs, issue #15 adds submit/review).
 
 Follows the ``ariadne`` CLI's JSON contract: one JSON value on stdout for
 success; one ``{"error": {"type", "message"}}`` object on stderr plus exit 1
@@ -10,10 +9,15 @@ for failure, message verbatim.
     ariadne-authoring propose-sources --file FILE [--project DIR]
     ariadne-authoring approve-sources --digest DIGEST [--project DIR]
     ariadne-authoring inputs [--document REF ...] [--part N] [--project DIR]
+    ariadne-authoring submit --file FILE [--base-digest DIGEST] [--project DIR]
+    ariadne-authoring review [--part N] [--project DIR]
 
 ``approve-sources`` is HUMAN-ONLY and runs on the server host (ADR-0013): the
 packaged skill must never invoke it, and it is excluded from every MCP tool
-surface. The ``--project`` default is the working directory — locally the
+surface. ``submit`` and ``review`` are harness-invocable; they stage and expose
+proposals but NEVER approve, promote, or serve anything — the exact-digest
+Promotion gate is the separate human-only ``ariadne-promote --digest DIGEST``
+(ADR-0003). The ``--project`` default is the working directory — locally the
 project root; remotely the server's single configured project, whose
 filesystem root no client argument ever selects.
 """
@@ -25,7 +29,13 @@ import json
 import sys
 from typing import Any, NoReturn
 
-from ariadne.authoring import approve_sources, harness_inputs, propose_sources
+from ariadne.authoring import (
+    approve_sources,
+    harness_inputs,
+    propose_sources,
+    review_bundle,
+    submit_bundle,
+)
 
 
 class UsageError(ValueError):
@@ -89,6 +99,41 @@ def build_parser() -> _Parser:
     inputs.add_argument(
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
+
+    submit = sub.add_parser(
+        "submit",
+        help="submit the harness model's complete proposed bundle (Seed Notes + OSI "
+        "+ OKF pages as relative paths/contents) for deterministic validation "
+        "and staged review — never approval or promotion",
+    )
+    submit.add_argument(
+        "--file",
+        required=True,
+        help="submission JSON: {\"files\": [{path, content}], \"base_digest\": ...}",
+    )
+    submit.add_argument(
+        "--base-digest",
+        default=None,
+        help="the CURRENT submission digest (required to repair an active proposal)",
+    )
+    submit.add_argument(
+        "--project", default=".", help="project root holding ariadne.yaml (default: .)"
+    )
+
+    review_cmd = sub.add_parser(
+        "review",
+        help="the staged bundle proposal: inventory, provenance, validation state, "
+        "exact content digest, bounded bodies — readable, never a signoff",
+    )
+    review_cmd.add_argument(
+        "--part",
+        type=int,
+        default=1,
+        help="which bounded part of each proposed body (default: 1)",
+    )
+    review_cmd.add_argument(
+        "--project", default=".", help="project root holding ariadne.yaml (default: .)"
+    )
     return parser
 
 
@@ -99,6 +144,10 @@ def main(argv: list[str] | None = None) -> int:
             result: Any = propose_sources(args.file, project=args.project)
         elif args.command == "inputs":
             result = harness_inputs(project=args.project, documents=args.documents, part=args.part)
+        elif args.command == "submit":
+            result = submit_bundle(args.file, project=args.project, base_digest=args.base_digest)
+        elif args.command == "review":
+            result = review_bundle(project=args.project, part=args.part)
         else:  # approve-sources
             result = approve_sources(args.digest, project=args.project)
     except Exception as exc:  # one JSON error object, message verbatim

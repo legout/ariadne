@@ -12,7 +12,10 @@ ever opened before approval. No network, no LLM.
 
 import hashlib
 import json
+import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -27,6 +30,7 @@ import ariadne.profiler  # noqa: E402
 import ariadne.sources  # noqa: E402
 from ariadne import authoring  # noqa: E402
 from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
+from ariadne.promote import main as promote_main  # noqa: E402
 
 # ---------------------------------------------------------------- fixtures
 
@@ -123,9 +127,7 @@ def test_proposed_source_is_inert_until_digest_matched_approval(
     assert installed["sources"] == [{"name": "events", "type": "parquet", "path": str(parquet)}]
     registry_doc = yaml.safe_load((project / "ariadne.yaml").read_text(encoding="utf-8"))
     assert registry_doc["retention_days"] == 90  # unrelated config preserved
-    assert registry_doc["sources"] == [
-        {"name": "events", "type": "parquet", "path": str(parquet)}
-    ]
+    assert registry_doc["sources"] == [{"name": "events", "type": "parquet", "path": str(parquet)}]
 
     # Only now does the source profile — through the same shared connection.
     profile = ariadne.profiler.profile(sources_path=project / "ariadne.yaml")
@@ -156,9 +158,7 @@ def test_stale_digest_after_re_proposal_is_refused(tmp_path, connection_spy):
     assert stale != current
     with pytest.raises(ValueError, match="[Dd]igest"):
         authoring.approve_sources(stale, project=project)
-    assert "sources" not in yaml.safe_load(
-        (project / "ariadne.yaml").read_text(encoding="utf-8")
-    )
+    assert "sources" not in yaml.safe_load((project / "ariadne.yaml").read_text(encoding="utf-8"))
     assert connection_spy == []
 
 
@@ -287,9 +287,7 @@ def test_approval_survives_an_edited_stored_proposal(tmp_path):
     stored.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
     with pytest.raises(ValueError, match="[Dd]igest"):
         authoring.approve_sources(digest, project=project)
-    assert "sources" not in yaml.safe_load(
-        (project / "ariadne.yaml").read_text(encoding="utf-8")
-    )
+    assert "sources" not in yaml.safe_load((project / "ariadne.yaml").read_text(encoding="utf-8"))
 
 
 # ------------------------------------------------------------------- CLI
@@ -305,8 +303,7 @@ def test_cli_propose_then_wrong_digest_then_approval(tmp_path, capsys, monkeypat
         tmp_path, [{"name": "events", "type": "parquet", "path": str(parquet)}]
     )
     assert (
-        authoring_cli(["propose-sources", "--file", str(proposal), "--project", str(project)])
-        == 0
+        authoring_cli(["propose-sources", "--file", str(proposal), "--project", str(project)]) == 0
     )
     out = json.loads(capsys.readouterr().out)
     assert out["digest"] and out["sources"] == [
@@ -315,9 +312,7 @@ def test_cli_propose_then_wrong_digest_then_approval(tmp_path, capsys, monkeypat
     assert authoring_cli(["approve-sources", "--digest", "0" * 64, "--project", str(project)]) == 1
     captured = capsys.readouterr()
     assert json.loads(captured.err)["error"]["type"] == "ValueError"
-    assert "sources" not in yaml.safe_load(
-        (project / "ariadne.yaml").read_text(encoding="utf-8")
-    )
+    assert "sources" not in yaml.safe_load((project / "ariadne.yaml").read_text(encoding="utf-8"))
     assert (
         authoring_cli(["approve-sources", "--digest", out["digest"], "--project", str(project)])
         == 0
@@ -665,7 +660,600 @@ def test_cli_inputs_returns_documents_and_optional_pieces(tmp_path, capsys):
     assert out["seed_notes"] is None  # absent Seed Notes stay absent
 
 
+# --------------------------- slice 3 (issue #15): full-bundle submission + review
+
+
+MODEL_YML = """\
+version: 0.2.0.dev0
+semantic_model:
+  - name: events
+    description: Events model
+    datasets:
+      - name: events
+        source: events.events
+        primary_key: [{pk}]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+          - name: label
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: label
+            dimension: {{}}
+    metrics:
+      - name: event_count
+        description: Count of all events
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(*)
+"""
+
+
+def _page(page_type: str, title: str, *, status: str | None = None, sources: str = "") -> str:
+    """One minimal gate-clean OKF page of ``page_type`` (ADR-0007 frontmatter)."""
+    front = (
+        f"type: {page_type}\ntitle: {title}\n"
+        f"description: One {page_type} page.\ntags: [{page_type}]\n"
+    )
+    if status:
+        front += f"status: {status}\n"
+    front += (
+        "sources:\n  - id: seed-notes\n    resource: data/seed_notes.md\n    title: Seed notes\n"
+    )
+    return f"---\n{front}---\n\n# {title}\n" + sources
+
+
+def bundle_submission(
+    *, pk: str = "id", seed_notes: str = "# Seed notes\n\nAll events count.\n"
+) -> dict:
+    """One complete proposed bundle: Seed Notes, OSI model, and OKF pages
+    (spec "Authoring interface and lifecycle") as relative paths and bodies."""
+    return {
+        "files": [
+            {
+                "path": "data/seed_notes.md",
+                "content": seed_notes,
+            },
+            {
+                "path": "semantic_layer/models/events.yml",
+                "content": MODEL_YML.format(pk=pk),
+            },
+            {
+                "path": "context_layer/tables/events.md",
+                "content": (
+                    "---\ntype: table\ntitle: Events\ndescription: One row per event.\n"
+                    "tags: [table]\n"
+                    "sources:\n  - id: events\n    resource: events.events\n    title: events\n"
+                    f"grain:\n  primary_key: [{pk}]\n  cardinality_enforcement: STRICT_1_TO_1\n"
+                    "---\n\n# Events\n"
+                ),
+            },
+            {
+                "path": "context_layer/references/joins/events--events.md",
+                "content": _page("reference", "events identity"),
+            },
+            {
+                "path": "context_layer/policies/all-events-count.md",
+                "content": _page("policy", "All events count", status="draft"),
+            },
+            {
+                "path": "context_layer/metrics/event_count.md",
+                "content": (
+                    "---\ntype: metric\nstatus: draft\ntitle: event_count\n"
+                    "description: Count of all events.\ntags: [metric]\n"
+                    "sources:\n  - id: all-events-count\n"
+                    "    resource: policies/all-events-count.md\n    title: All events count\n"
+                    "---\n\n# event_count\n"
+                ),
+            },
+            {
+                "path": "context_layer/skills/run-the-demo.md",
+                "content": _page("skill", "run the demo"),
+            },
+        ]
+    }
+
+
+def write_submission(tmp_path: Path, submission: dict, name: str = "bundle.json") -> Path:
+    path = tmp_path / name
+    path.write_text(json.dumps(submission), encoding="utf-8")
+    return path
+
+
+def approved_project(tmp_path: Path) -> Path:
+    """A fresh project with one APPROVED parquet source (the #13/#14 flow), so
+    the bundle's deterministic checks run against a real registry connection.
+    The ``label`` column deliberately repeats (a,a,b): it is NOT a unique grain."""
+    project = scaffold_project(tmp_path)
+    parquet = project / "data" / "events.parquet"
+    parquet.parent.mkdir(parents=True, exist_ok=True)
+    duckdb.connect().execute(
+        f"COPY (SELECT * FROM (VALUES (1, 'a'), (2, 'a'), (3, 'b')) t(id, label)) "
+        f"TO '{parquet}' (FORMAT PARQUET)"
+    ).close()
+    digest = authoring.propose_sources(
+        write_proposal(tmp_path, [{"name": "events", "type": "parquet", "path": str(parquet)}]),
+        project=project,
+    )["digest"]
+    authoring.approve_sources(digest, project=project)
+    return project
+
+
+def submit_cli(project: Path, submission: dict, *extra: str, name: str = "bundle.json") -> int:
+    """One public-CLI ``submit`` invocation over a written submission file."""
+    file = write_submission(project, submission, name=name)
+    return authoring_cli(["submit", "--file", str(file), "--project", str(project), *extra])
+
+
+def test_identical_retry_is_idempotent_and_never_resets_attempts(tmp_path, capsys):
+    """Distinct case (ticket): re-submitting IDENTICAL content creates no new
+    candidate and resets nothing — same revision, same attempt count, no rewrite."""
+    project = approved_project(tmp_path)
+    bad = bundle_submission(pk="label")
+    first = json.loads(_submit_captured(project, bad, capsys, name="b1.json"))
+    assert first["status"] == "invalid" and first["attempts"] == 1
+    before = (project / "staging" / "authoring" / "bundle-state.json").read_text()
+
+    retry = json.loads(_submit_captured(project, bad, capsys, name="b2.json"))
+    assert retry["revision"] == first["revision"] == 1
+    assert retry["attempts"] == 1  # not reset, not incremented
+    assert retry["status"] == "invalid"
+    assert (project / "staging" / "authoring" / "bundle-state.json").read_text() == before
+
+
+def test_state_survives_a_process_restart(tmp_path, capsys, monkeypatch):
+    """Distinct case (ticket): the active proposal persists across a restart —
+    a SEPARATE PROCESS (python -m ariadne.authoring_cli) sees the same proposal,
+    refuses a repair without the current digest, and accepts it with the digest
+    recorded by the first process."""
+    project = approved_project(tmp_path)
+    bad = bundle_submission(pk="label")
+    first = json.loads(_submit_captured(project, bad, capsys, name="b1.json"))
+
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
+    good = write_submission(project, bundle_submission(), name="b2.json")
+    no_base = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "ariadne.authoring_cli",
+            "submit",
+            "--file",
+            str(good),
+            "--project",
+            str(project),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert no_base.returncode == 1  # the restarted process refuses a digest-less repair
+    assert "base-digest mismatch" in json.loads(no_base.stderr)["error"]["message"]
+
+    repaired = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "ariadne.authoring_cli",
+            "submit",
+            "--file",
+            str(good),
+            "--base-digest",
+            first["digest"],
+            "--project",
+            str(project),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert repaired.returncode == 0
+    out = json.loads(repaired.stdout)
+    assert out["status"] == "validated" and out["revision"] == 2 and out["attempts"] == 2
+
+
+def test_three_failed_rounds_exhaust_to_review_needed(tmp_path, capsys):
+    """Distinct case (ticket): at most three authoring rounds — the third
+    failure marks the staged files ``review_needed`` and a fourth submission is
+    refused for human resolution, without replacing anything."""
+    project = approved_project(tmp_path)
+    base = None
+    for round_no in (1, 2, 3):
+        bad = bundle_submission(pk="label", seed_notes=f"# round {round_no}\n")
+        extra = ("--base-digest", base) if base else ()
+        out = json.loads(_submit_captured(project, bad, capsys, *extra, name=f"b{round_no}.json"))
+        assert out["attempts"] == round_no
+        base = out["digest"]
+    assert out["status"] == "review_needed"
+    staged = (project / "staging" / "authoring" / "bundle").rglob("*.md")
+    assert any("review_needed" in p.read_text(encoding="utf-8") for p in staged)
+
+    fourth = bundle_submission(pk="label", seed_notes="# round 4\n")
+    file = write_submission(project, fourth, name="b4.json")
+    assert authoring_cli(["submit", "--file", str(file), "--project", str(project)]) == 1
+    err = json.loads(capsys.readouterr().err)["error"]
+    assert "review_needed" in err["message"] and "human" in err["message"]
+    state = json.loads((project / "staging" / "authoring" / "bundle-state.json").read_text())
+    assert state["attempts"] == 3  # the refusal replaced nothing
+
+
+def test_pending_attestation_computation_cites_no_demo_oracle(tmp_path, capsys):
+    """Distinct case (ticket/ADR-0013): a metric with no independent
+    expected-value oracle gets an honest ``attestation: pending`` computation —
+    the demo eval harness is NEVER cited, and the per-type contract accepts it."""
+    project = approved_project(tmp_path)
+    good = json.loads(_submit_captured(project, bundle_submission(), capsys))
+    assert good["status"] == "validated"  # the pending state passes the bundle gate
+    comp = (
+        project
+        / "staging"
+        / "authoring"
+        / "bundle"
+        / "context_layer"
+        / "computations"
+        / "event_count.md"
+    ).read_text(encoding="utf-8")
+    assert "attestation: pending" in comp
+    assert "tests/test_evals.py" not in comp and "attester:" not in comp
+    meta = yaml.safe_load(comp.split("---")[1])
+    assert meta["attestation"] == "pending" and not meta.get("attester")
+
+
+def test_competing_or_stale_writer_cannot_replace_the_active_proposal(tmp_path, capsys):
+    """Distinct case (ticket): a repair without the CURRENT digest — stale or
+    competing — fails and the active proposal is untouched."""
+    project = approved_project(tmp_path)
+    first = json.loads(_submit_captured(project, bundle_submission(pk="label"), capsys))
+    competing = bundle_submission(pk="label", seed_notes="# competing\n")
+    file = write_submission(project, competing, name="c.json")
+    assert (
+        authoring_cli(
+            ["submit", "--file", str(file), "--base-digest", "0" * 64, "--project", str(project)]
+        )
+        == 1
+    )
+    assert "base-digest mismatch" in json.loads(capsys.readouterr().err)["error"]["message"]
+    state = json.loads((project / "staging" / "authoring" / "bundle-state.json").read_text())
+    assert state["submission_digest"] == first["digest"]  # not replaced
+    assert state["attempts"] == 1
+
+
+def test_changed_source_registry_invalidates_the_active_proposal(tmp_path, capsys):
+    """Distinct case (ticket/spec): a source change while a bundle proposal is
+    active invalidates it — submission fails without replacement, for the human."""
+    project = approved_project(tmp_path)
+    json.loads(_submit_captured(project, bundle_submission(pk="label"), capsys))
+    doc = yaml.safe_load((project / "ariadne.yaml").read_text(encoding="utf-8"))
+    doc["sources"][0]["path"] = str(project / "data" / "other.parquet")
+    (project / "ariadne.yaml").write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+
+    file = write_submission(project, bundle_submission(), name="b2.json")
+    assert authoring_cli(["submit", "--file", str(file), "--project", str(project)]) == 1
+    err = json.loads(capsys.readouterr().err)["error"]["message"]
+    assert "source registry changed" in err and "no replacement" in err
+
+
+@pytest.mark.parametrize(
+    ("bad_path", "why"),
+    [
+        ("../escape.md", "path traversal"),
+        ("/abs/path.md", "relative POSIX"),
+        ("context_layer/metrics/../../escape.md", "traversal"),
+        ("context_layer/index.md", "index.md"),
+        ("context_layer/log.md", "log.md"),
+        ("context_layer/computations/event_count.md", "generated"),
+        ("served/thing.md", "documented submission roots"),
+    ],
+)
+def test_out_of_scope_paths_are_refused_before_any_write(tmp_path, bad_path, why):
+    """The pre-write boundary: escapes, generated bookkeeping, service-owned
+    computations, and undocumented roots never reach staging."""
+    project = approved_project(tmp_path)
+    submission = bundle_submission()
+    submission["files"][0]["path"] = bad_path
+    file = write_submission(project, submission)
+    with pytest.raises(ValueError, match=why):
+        authoring.submit_bundle(file, project=project)
+    assert not (project / "staging" / "authoring" / "bundle").exists()
+
+
+def test_credential_carrying_submission_is_refused_before_any_write(tmp_path):
+    """Inline URL credentials never enter staging (ADR-0010 credential shape)."""
+    project = approved_project(tmp_path)
+    submission = bundle_submission()
+    submission["files"][0]["content"] += (
+        "\nConnect via postgresql://admin:hunter2@db.internal:5432/events\n"
+    )
+    file = write_submission(project, submission)
+    with pytest.raises(ValueError, match="credentials"):
+        authoring.submit_bundle(file, project=project)
+    assert not (project / "staging" / "authoring" / "bundle").exists()
+
+
+def test_unbounded_submission_is_refused_before_any_write(tmp_path):
+    """The payload bound: an over-limit submission writes nothing."""
+    project = approved_project(tmp_path)
+    submission = bundle_submission()
+    submission["files"][0]["content"] = "x" * (authoring.MAX_BUNDLE_BYTES + 1)
+    file = write_submission(project, submission)
+    with pytest.raises(ValueError, match="bound"):
+        authoring.submit_bundle(file, project=project)
+    assert not (project / "staging" / "authoring" / "bundle").exists()
+    assert not (project / "staging" / "authoring" / "bundle-state.json").exists()
+
+
+@pytest.mark.parametrize("dangling", [False, True], ids=["existing", "dangling"])
+def test_symlinked_staging_component_is_refused(tmp_path, dangling):
+    """A symlink planted on the bundle staging path — pointing outside the
+    project or dangling — never redirects staging writes."""
+    project = approved_project(tmp_path)
+    authoring_dir = project / "staging" / "authoring"
+    authoring_dir.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (authoring_dir / "bundle").symlink_to(outside if not dangling else tmp_path / "absent")
+    file = write_submission(project, bundle_submission())
+    with pytest.raises(ValueError, match="symlinked staging component"):
+        authoring.submit_bundle(file, project=project)
+    assert list(outside.rglob("*")) == []  # nothing written through the link
+
+
+def test_review_without_a_proposal_is_an_actionable_error(tmp_path, capsys):
+    """``review`` on a proposal-less project keeps the JSON error contract."""
+    project = scaffold_project(tmp_path)
+    assert authoring_cli(["review", "--project", str(project)]) == 1
+    err = json.loads(capsys.readouterr().err)["error"]
+    assert err["type"] == "ValueError" and "submit" in err["message"]
+
+
+def _submit_captured(
+    project: Path, submission: dict, capsys, *extra: str, name: str = "bundle.json"
+) -> str:
+    """Submit through the public CLI and return captured stdout (one JSON value)."""
+    assert submit_cli(project, submission, *extra, name=name) == 0
+    return capsys.readouterr().out
+
+
+def test_cli_grain_invalid_bundle_fails_checks_and_serves_nothing(tmp_path, capsys):
+    """Issue #15 red seam, the public journey: a harness-owned-model bundle
+    whose model violates the ADR-0006 grain rules is submitted through the
+    local CLI, fails the SAME deterministic checks with actionable errors and
+    a repair digest — and nothing reaches the served layers."""
+    project = approved_project(tmp_path)
+    bad = bundle_submission(pk="label")  # label repeats across rows: not a unique grain
+
+    file = write_submission(project, bad)
+    assert (
+        authoring_cli(["submit", "--file", str(file), "--project", str(project)]) == 0
+    )  # accepted for review, validation failed — errors are the harness's data
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "invalid"
+    assert any("grain audit failed" in error for error in out["errors"])
+    assert len(out["digest"]) == 64 and out["revision"] == 1 and out["attempts"] == 1
+    assert out["provenance"]["mode"] == "harness-led"
+
+    # nothing was served: no served layer exists, the seed notes are untouched
+    assert not (project / "context_layer").exists()
+    assert not (project / "semantic_layer").exists()
+    assert not (project / "data" / "seed_notes.md").exists()
+
+    # the staged proposal is repairable with the returned digest and then valid
+    assert (
+        submit_cli(
+            project, bundle_submission(), "--base-digest", out["digest"], name="bundle-2.json"
+        )
+        == 0
+    )
+    good = json.loads(capsys.readouterr().out)
+    assert good["status"] == "validated"
+    assert good["errors"] == []
+    assert good["revision"] == 2 and good["attempts"] == 2
+    assert not (project / "context_layer").exists()  # still nothing served
+
+    # review exposes the exact reviewed content digest (never a signoff)
+    assert authoring_cli(["review", "--project", str(project)]) == 0
+    review = json.loads(capsys.readouterr().out)
+    assert review["status"] == "validated"
+    assert review["digest"] == good["review_digest"]
+    paths = [entry["resource"] for entry in review["files"]]
+    assert "data/seed_notes.md" in paths
+    assert any(path.startswith("context_layer/computations/") for path in paths)
+
+    # human Promotion under a STALE reviewed digest is denied before any write
+    stale = promote_main(
+        [
+            "--yes",
+            "--digest",
+            "0" * 64,
+            "--staging",
+            str(project / "staging"),
+            "--served",
+            str(project),
+        ]
+    )
+    assert stale == 1
+    assert not (project / "context_layer").exists()  # denied before any served write
+    assert not (project / "data" / "seed_notes.md").exists()
+
+
 def test_pyproject_exposes_ariadne_authoring():
     """The console script the spec names is installed."""
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'ariadne-authoring = "ariadne.authoring_cli:main"' in text
+
+
+# ------- issue #15 fix pass: boundary findings from the exact-content review -------
+
+
+def _wait_for(path: Path, timeout: float = 60.0) -> None:
+    """Poll until ``path`` exists (subprocess handshakes in the race tests)."""
+    deadline = time.monotonic() + timeout
+    while not path.exists():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out waiting for {path}")
+        time.sleep(0.02)
+
+
+def test_unapproved_dataset_source_is_refused_before_any_duckdb_execution(tmp_path):
+    """Review finding P1: a remotely authored dataset.source naming a table
+    function over an unregistered server file must be refused BEFORE any
+    validate bind/audit opens it — the file below is real and readable, so a
+    submission that reaches DuckDB would audit it and come back validated."""
+    project = approved_project(tmp_path)
+    secret = write_parquet(project / "data" / "unregistered.parquet")  # outside the registry
+    submission = bundle_submission()
+    submission["files"][1]["content"] = MODEL_YML.format(pk="id").replace(
+        "source: events.events",
+        f"source: (SELECT * FROM read_parquet('{secret}'))",
+    )
+    file = write_submission(project, submission)
+    with pytest.raises(ValueError, match="approved"):
+        authoring.submit_bundle(file, project=project)
+    assert not (project / "staging" / "authoring" / "bundle").exists()
+    assert not (project / "staging" / "authoring" / "bundle-state.json").exists()
+
+
+def test_empty_registry_cannot_validate_a_full_bundle(tmp_path):
+    """Review finding P1: with NO approved sources, a full bundle must never
+    be marked validated through the compile-only path — there is no approved
+    identity its models could legitimately read."""
+    project = scaffold_project(tmp_path)  # template registry: no approved sources
+    file = write_submission(project, bundle_submission())
+    with pytest.raises(ValueError, match="approved"):
+        authoring.submit_bundle(file, project=project)
+    assert not (project / "staging" / "authoring" / "bundle").exists()
+    assert not (project / "staging" / "authoring" / "bundle-state.json").exists()
+
+
+def test_nested_okf_page_is_refused_and_never_reaches_validation(tmp_path):
+    """Review finding P1: a page nested below a section (never checked by the
+    per-type bundle gate, which reads only the section's immediate .md files)
+    must be refused before any write — it can never ride along to validation
+    and Promotion. The documented references/joins layout stays accepted."""
+    project = approved_project(tmp_path)
+    submission = bundle_submission()
+    submission["files"].append(
+        {"path": "context_layer/metrics/extra/untyped.md", "content": "# no frontmatter\n"}
+    )
+    file = write_submission(project, submission)
+    with pytest.raises(ValueError, match="nested"):
+        authoring.submit_bundle(file, project=project)
+    assert not (project / "staging" / "authoring" / "bundle").exists()
+    assert not (project / "staging" / "authoring" / "bundle-state.json").exists()
+
+
+def test_named_aws_credential_assignment_is_refused_and_prose_is_not(tmp_path):
+    """Review finding P2: a named AWS credential assignment in Seed Notes is
+    a credential (the URL-password rule alone misses it); the rejection names
+    the class, never echoes the value — and ordinary business-rule prose that
+    merely mentions the variable name is not rejected."""
+    project = approved_project(tmp_path)
+    submission = bundle_submission()
+    submission["files"][0]["content"] += (
+        "\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+    )
+    file = write_submission(project, submission)
+    with pytest.raises(ValueError, match="credential") as excinfo:
+        authoring.submit_bundle(file, project=project)
+    assert "wJalrXUtnFEMI" not in str(excinfo.value)  # the value is never echoed
+    assert not (project / "staging" / "authoring" / "bundle").exists()
+
+    prose = bundle_submission()
+    prose["files"][0]["content"] += (
+        "\nThe AWS_SECRET_ACCESS_KEY environment variable supplies credentials at "
+        "runtime; values are never pasted into Seed Notes.\n"
+    )
+    out = authoring.submit_bundle(
+        write_submission(project, prose, name="prose.json"), project=project
+    )
+    assert out["status"] == "validated"  # business-rule prose passes
+
+
+_RACE_CHILD = """\
+import json, sys, time
+from pathlib import Path
+
+from ariadne import authoring
+
+project, submission_file, base_digest, ready, go = sys.argv[1:6]
+Path(ready).write_text("ready", encoding="utf-8")
+deadline = time.time() + 60
+while not Path(go).exists() and time.time() < deadline:
+    time.sleep(0.01)
+try:
+    result = authoring.submit_bundle(
+        submission_file, project=project, base_digest=base_digest
+    )
+    print(json.dumps({"ok": True, "digest": result["digest"], "status": result["status"]}))
+except ValueError as exc:
+    print(json.dumps({"ok": False, "error": str(exc)}))
+"""
+
+
+def test_concurrent_submissions_cannot_both_replace_the_active_proposal(tmp_path):
+    """Review finding P1, the named race: two real CLI processes released by
+    a barrier with the SAME base digest — exactly one may replace the active
+    proposal; the other must fail as a stale/competing writer, and the final
+    state must pair with the staged bytes it names."""
+    project = approved_project(tmp_path)
+    first = authoring.submit_bundle(
+        write_submission(project, bundle_submission(pk="label"), name="b1.json"),
+        project=project,
+    )  # round 1 fails the grain audit: an active, repairable proposal
+    assert first["status"] == "invalid"
+
+    ready_a, ready_b, go = project / "ra", project / "rb", project / "GO"
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
+    procs = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                _RACE_CHILD,
+                str(project),
+                str(write_submission(project, sub, name=f"{tag}.json")),
+                first["digest"],
+                str(ready),
+                str(go),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        for tag, sub, ready in (
+            ("a", bundle_submission(seed_notes="# writer A\n"), ready_a),
+            ("b", bundle_submission(seed_notes="# writer B\n"), ready_b),
+        )
+    ]
+    try:
+        _wait_for(ready_a)
+        _wait_for(ready_b)
+        go.write_text("go", encoding="utf-8")  # the barrier: both race from one state
+        results = []
+        for proc in procs:
+            out, _err = proc.communicate(timeout=120)
+            results.append(json.loads(out))
+    finally:
+        for proc in procs:
+            if proc.poll() is None:  # pragma: no cover - failure path only
+                proc.kill()
+
+    winners = [r for r in results if r["ok"]]
+    losers = [r for r in results if not r["ok"]]
+    assert len(winners) == 1 and winners[0]["status"] == "validated"
+    assert len(losers) == 1 and "stale or competing" in losers[0]["error"]
+    state = json.loads(
+        (project / "staging" / "authoring" / "bundle-state.json").read_text(encoding="utf-8")
+    )
+    assert state["submission_digest"] == winners[0]["digest"]
+    # the recorded exact-content digest pairs with the staged bytes (no split state)
+    assert state["digest"] == authoring._tree_digest(project / "staging" / "authoring" / "bundle")
+    assert not (project / "context_layer").exists()  # the human gate still holds
