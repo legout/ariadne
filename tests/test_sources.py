@@ -416,6 +416,17 @@ def test_inline_dsn_under_any_key_rejected(tmp_path, key, source_type):
         load_registry(reg)
 
 
+def test_credentialed_url_userinfo_rejected_naming_adr(tmp_path):
+    """URL userinfo is an inline credential (ADR-0010): https://user:pass@host
+    under any entry key fails loudly at the registry itself, like a DSN."""
+    reg = write_registry(
+        tmp_path,
+        [{"name": "cdn", "type": "parquet", "path": "https://ro:s3cret@cdn/e.parquet"}],
+    )
+    with pytest.raises(ValueError, match="ADR-0010"):
+        load_registry(reg)
+
+
 def test_unknown_keys_rejected(tmp_path):
     """Strict entry schema: freestyle keys fail loudly instead of passing."""
     reg = write_registry(tmp_path, [{"name": "a", "type": "sqlite", "path": "x.db", "extra": 1}])
