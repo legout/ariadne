@@ -53,8 +53,8 @@ SOURCE_KEYS = frozenset({"name", "type", "path", "connection_env", "table", "rea
 DSN_RE = re.compile(r"postgres(?:ql)?://")
 # URI-scheme prefix (ducklake:, https://, s3://, ...): never cwd-relative.
 _URI_SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*:")
-# scheme://user:password@host — the password NEVER survives into an error.
-_DSN_PASSWORD_RE = re.compile(r"(//[^\s/@:]+:)([^\s/@]+)(@)")
+# scheme://user:password@host (also empty user) — never echo a password.
+_DSN_PASSWORD_RE = re.compile(r"(//[^\s/@:]*:)([^\s/@]+)(@)")
 
 SOURCE_TYPES = (
     "sqlite",

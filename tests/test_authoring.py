@@ -205,19 +205,20 @@ def test_relative_proposal_paths_bind_to_the_project_registry(tmp_path, connecti
     assert profile["sources"][0]["tables"]["events"]["row_count"] == 3
 
 
-def test_credentialed_url_proposal_is_rejected_inertly(tmp_path, connection_spy):
-    """A URL with userinfo (https://user:password@...) is an inline credential
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://ro:s3cret@cdn.example.com/events.parquet",
+        "https://:s3cret@cdn.example.com/events.parquet",
+    ],
+)
+def test_credentialed_url_proposal_is_rejected_inertly(tmp_path, connection_spy, url):
+    """A URL with password-bearing userinfo is an inline credential
     (spec rev2 §1, ADR-0010): it never becomes a pending proposal."""
     project = scaffold_project(tmp_path)
     proposal = write_proposal(
         tmp_path,
-        [
-            {
-                "name": "cdn",
-                "type": "parquet",
-                "path": "https://ro:s3cret@cdn.example.com/events.parquet",
-            }
-        ],
+        [{"name": "cdn", "type": "parquet", "path": url}],
     )
     with pytest.raises(ValueError, match="ADR-0010"):
         authoring.propose_sources(proposal, project=project)
