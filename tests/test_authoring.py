@@ -10,6 +10,7 @@ in the first test spies on that one chokepoint to prove no proposed location is
 ever opened before approval. No network, no LLM.
 """
 
+import errno
 import fcntl
 import hashlib
 import json
@@ -1452,3 +1453,163 @@ def test_retained_discard_blocks_submit_review_and_promotion_until_human_resolut
     )
     assert not (project / "context_layer").exists()
     assert not (project / "data" / "seed_notes.md").exists()
+
+
+def test_durability_barriers_precede_the_prior_copy_removal(tmp_path, monkeypatch):
+    """Issue #15 review P1: "durably stored" is a fsync barrier, not rename
+    atomicity. Before ``bundle.discarded`` (prior proposal A) is removed, the
+    transition must have synced B's staged file data, the staged tree's
+    directory entries, BOTH sides of the cross-directory rename (staging root
+    and authoring/), the replaced state file's data, and the state file's
+    containing directory — otherwise a power interruption can recover state A
+    alongside a deleted A while B half-survives."""
+    project = approved_project(tmp_path)
+    a = authoring.submit_bundle(
+        write_submission(project, bundle_submission(), name="a.json"), project=project
+    )
+    assert a["status"] == "validated"
+
+    # ordered probe of the real syscall seam: every fsync'd/opened path, every
+    # rename, and the discard removal, in the order submit_bundle performed them
+    events: list[tuple[str, str, bool]] = []  # (kind, path, is_dir at the time)
+    fd_paths: dict[int, str] = {}
+    real_open, real_fsync, real_rmtree, real_replace = (
+        os.open,
+        os.fsync,
+        shutil.rmtree,
+        os.replace,
+    )
+
+    def spy_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        fd_paths[fd] = str(path)
+        return fd
+
+    def spy_fsync(fd):
+        path = fd_paths.get(fd, f"fd:{fd}")
+        events.append(("fsync", path, os.path.isdir(path)))
+        return real_fsync(fd)
+
+    def spy_rmtree(path, *args, **kwargs):
+        if Path(path).name == authoring.BUNDLE_DISCARD_NAME:
+            events.append(("rmtree", str(path), True))
+        return real_rmtree(path, *args, **kwargs)
+
+    def spy_replace(src, dst):
+        events.append(("rename", f"{src} -> {dst}", False))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "open", spy_open)
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+    monkeypatch.setattr(shutil, "rmtree", spy_rmtree)
+    monkeypatch.setattr(os, "replace", spy_replace)
+
+    b = authoring.submit_bundle(
+        write_submission(
+            project, bundle_submission(seed_notes="# Seed notes\n\nVersion B.\n"), name="b.json"
+        ),
+        project=project,
+        base_digest=a["digest"],
+    )
+    assert b["status"] == "validated"
+
+    removals = [i for i, (kind, _, _) in enumerate(events) if kind == "rmtree"]
+    assert len(removals) == 1, "exactly one prior-copy removal per transition"
+    cut = removals[0]  # nothing below may happen only after this point
+    barrier = events[:cut]
+    fsynced = [(p, d) for kind, p, d in barrier if kind == "fsync"]
+    synced_files = [p for p, d in fsynced if not d]
+    synced_dirs = {p for p, d in fsynced if d}
+    renames = [p for kind, p, _ in barrier if kind == "rename"]
+
+    # B's file DATA was synced while it still lived in the rename-staging tree
+    # (every file of the final bundle went through it), and that tree's own
+    # directory entries were synced too — deepest-first is verified by code
+    # review; presence and position are what a crash can observe.
+    staging_root = project / "staging"
+    bundle = staging_root / "authoring" / "bundle"
+    staged = [p for p in synced_files if p.startswith(str(staging_root) + "/bundle-")]
+    assert staged, "no staged-tree file data was synced before the prior copy was removed"
+    for rel in sorted(p.relative_to(bundle).as_posix() for p in bundle.rglob("*") if p.is_file()):
+        assert any(p.endswith(rel) for p in staged), f"staged file never synced: {rel}"
+    assert any(p.startswith(str(staging_root) + "/bundle-") for p in synced_dirs), (
+        "the staged tree's directory entries were never synced"
+    )
+
+    # BOTH sides of the cross-directory rename: the staging root lost the tmp
+    # entry, authoring/ gained bundle (and discarded) — and the initial
+    # proposal path renames across the same two directories.
+    assert str(staging_root) in synced_dirs
+    assert str(staging_root / "authoring") in synced_dirs
+
+    # the replaced state file's DATA was synced before its rename, and the
+    # state file's containing directory entry afterwards
+    state_path = staging_root / "authoring" / "bundle-state.json"
+    state_syncs = [
+        i
+        for i, (p, d) in enumerate(fsynced)
+        if not d and p.endswith(".tmp") and Path(p).parent == state_path.parent
+    ]
+    assert state_syncs, "the state file data was never synced before the rename"
+    state_renames = [p for p in renames if p.endswith(f"-> {state_path}")]
+    assert state_renames, "the state file was never renamed into place"
+    state_rename_at = next(
+        i for i, (kind, p, _) in enumerate(barrier) if kind == "rename" and p in state_renames
+    )
+    assert max(state_syncs) < state_rename_at, (
+        "the state rename happened before the state data was durable"
+    )
+    after_state_rename = barrier[state_rename_at + 1 :]
+    assert any(
+        kind == "fsync" and p == str(staging_root / "authoring")
+        for kind, p, _ in after_state_rename
+    ), "the state directory entry was not synced after the state rename"
+
+
+def test_fsync_failure_fails_closed_and_retains_the_prior_proposal(tmp_path, monkeypatch):
+    """The barrier is load-bearing: an fsync failure (EIO/ENOSPC on a full or
+    failing disk) must abort the transition BEFORE the prior proposal copy is
+    deleted — the operator keeps every copy instead of a silently non-durable
+    replacement (issue #15 review P1, fail-closed requirement)."""
+    project = approved_project(tmp_path)
+    a = authoring.submit_bundle(
+        write_submission(project, bundle_submission(), name="a.json"), project=project
+    )
+    assert a["status"] == "validated"
+    staging = project / "staging" / "authoring"
+    state_before = (staging / "bundle-state.json").read_text()
+
+    def failing_fsync(fd):
+        raise OSError(errno.EIO, "simulated fsync failure")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    with pytest.raises(OSError, match="simulated fsync failure"):
+        authoring.submit_bundle(
+            write_submission(
+                project,
+                bundle_submission(seed_notes="# Seed notes\n\nVersion B.\n"),
+                name="b.json",
+            ),
+            project=project,
+            base_digest=a["digest"],
+        )
+    monkeypatch.undo()
+
+    # fail-closed: no retained discard, the prior proposal is still the active
+    # staging AND the recorded state — nothing was replaced or dropped
+    assert not (staging / "bundle.discarded").exists()
+    assert "All events count." in (staging / "bundle" / "data" / "seed_notes.md").read_text()
+    assert (staging / "bundle-state.json").read_text() == state_before
+    assert not any(p.name.startswith("bundle-") for p in (project / "staging").iterdir())
+
+    # the project stays usable: a retry once the IO failure is gone succeeds
+    b = authoring.submit_bundle(
+        write_submission(
+            project, bundle_submission(seed_notes="# Seed notes\n\nVersion B.\n"), name="b2.json"
+        ),
+        project=project,
+        base_digest=a["digest"],
+    )
+    assert b["status"] == "validated"
+    assert "Version B." in (staging / "bundle" / "data" / "seed_notes.md").read_text()
+    assert not (staging / "bundle.discarded").exists()

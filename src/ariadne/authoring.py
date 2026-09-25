@@ -929,16 +929,47 @@ def _refuse_incoherent_staging(project: Path, state: dict | None) -> None:
         )
 
 
+def _fsync_path(path: Path) -> None:
+    """Sync one file or directory entry to stable storage (POSIX service).
+    Opened read-only — ``fsync(2)`` flushes the data/directory entries
+    regardless — and any ``OSError`` PROPAGATES so the transition fails closed
+    before the prior proposal copy is removed (issue #15 review P1)."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fsync_tree(root: Path) -> None:
+    """Make a staged tree durable: every file's data, then every directory's
+    entries deepest-first (a parent synced before its children's entries could
+    miss them on some filesystems)."""
+    entries = sorted(root.rglob("*"))
+    for path in entries:
+        if path.is_file():
+            _fsync_path(path)
+    for path in sorted(
+        (p for p in entries if p.is_dir()), key=lambda p: len(p.parts), reverse=True
+    ):
+        _fsync_path(path)
+
+
 def _store_bundle_state(project: Path, state: dict) -> None:
-    """Persist the proposal state atomically (tmp + os.replace): the
-    restart-surviving, single-writer record."""
+    """Persist the proposal state atomically (tmp + os.replace) and DURABLY
+    (issue #15 review P1): the file data is synced BEFORE the rename and the
+    containing directory entry afterwards, so a power interruption cannot
+    recover a stale or empty state file next to the bundle it must describe."""
     state_path = project / BUNDLE_STATE_PATH_REL
     state_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=state_path.parent, suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(state, fh, sort_keys=True)
         fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
     os.replace(tmp, state_path)
+    _fsync_path(state_path.parent)
 
 
 def _state_view(state: dict) -> dict:
@@ -1066,12 +1097,21 @@ def submit_bundle(
             # swaps in atomically, and the state is stored durably BEFORE the
             # superseded copy is dropped — a crash anywhere in between leaves an
             # incoherent layout every gate refuses until a human resolves it.
+            # The ordered durability barrier (issue #15 review P1): B's staged
+            # file data and directory entries are synced BEFORE the renames,
+            # then both sides of the cross-directory rename (the staging root
+            # loses the tmp entry; authoring/ gains bundle — initial proposals
+            # rename across the same two directories) — so a power interruption
+            # cannot recover B as a partial tree.
             bundle_dir = project / BUNDLE_STAGING_REL
             discarded = bundle_dir.parent / BUNDLE_DISCARD_NAME
             bundle_dir.parent.mkdir(parents=True, exist_ok=True)
+            _fsync_tree(tmp)
             if bundle_dir.is_dir():
                 os.replace(bundle_dir, discarded)  # keep the safe prior proposal
             os.replace(tmp, bundle_dir)
+            _fsync_path(staging_root)
+            _fsync_path(bundle_dir.parent)
         finally:
             if tmp.is_dir() and tmp.parent.exists():
                 shutil.rmtree(tmp, ignore_errors=True)
