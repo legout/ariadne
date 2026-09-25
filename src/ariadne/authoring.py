@@ -80,8 +80,13 @@ review snapshot, and digest Promotion share ONE per-project interprocess lock
 (:func:`bundle_lock`), so competing CLI processes serialize instead of
 corrupting the active proposal, and the staged swap keeps the prior proposal
 recoverable across a crash. :func:`review_bundle` returns the inventory,
-provenance, errors, and the exact reviewed-content digest with bounded bodies
-— it is never a signoff. Serving is the human-only exact-digest Promotion
+provenance, errors, the exact reviewed-content digest with bounded bodies, and
+the VERIFIED converted-document citations recorded with the proposal — a
+service-generated ``citations.json`` manifest inside the staged tree, each
+citation server-derived (exact resource, current-snapshot digest, title) from
+the operator's document boundary, so the exact review digest binds citation
+changes to the reviewed identity the way it binds bodies — it is never a
+signoff. Serving is the human-only exact-digest Promotion
 (:func:`ariadne.promote.promote_bundle`), which refuses changed, incomplete,
 or ``review_needed`` proposals before any served write.
 """
@@ -441,6 +446,47 @@ def _retained_object_bytes(retained: Path, uri: str) -> bytes:
     return data
 
 
+def _document_bytes(reference: str, project: Path) -> tuple[str, str, bytes]:
+    """Locate ONE document reference inside the operator's boundary and return
+    its stable identity ``(resource, title, current snapshot bytes)``: the
+    shared seam of converted evidence (spec §2–3) and submit-time citation
+    verification. A URI reference must be an EXACT approved object-store URI
+    (``documents.object_store``, S3 only — approved objects are read through
+    the retained project copy, fetching once with server-held credentials); a
+    local reference must resolve inside an allowed input root
+    (``documents.roots``, default ``data/docs``). Traversal, an absolute path
+    outside the roots, an unapproved or credentialed URI, or a missing file
+    fails explicitly BEFORE anything beyond the check is fetched, read, or
+    written."""
+    roots, approved_uris = _project_documents_config(project)
+    if _URI_SCHEME_RE.match(reference):
+        if reference not in approved_uris:  # exact approval only — refused before ANY fetch
+            raise ValueError(
+                f"{reference}: object-store reference is not approved — approval is the "
+                "operator's exact documents.object_store list in ariadne.yaml; "
+                "nothing was fetched"
+            )
+        name = _uri_name(reference)
+        retained = (
+            project
+            / OBJECT_STORE_REL
+            / (_sha256_hex(reference.encode("utf-8")) + Path(name).suffix)
+        )
+        return reference, name, _retained_object_bytes(retained, reference)
+    for root in roots:
+        resolved = (root / reference).resolve()
+        if resolved.is_relative_to(root):
+            break
+    else:
+        raise ValueError(
+            f"{reference}: reference escapes the operator-configured input roots "
+            f"({', '.join(str(r) for r in roots)}) — reads stay inside them (spec §2)"
+        )
+    if not resolved.is_file():
+        raise ValueError(f"{reference}: no readable document at {resolved}")
+    return str(resolved), resolved.name, resolved.read_bytes()
+
+
 def document_evidence(
     reference: str,
     *,
@@ -453,54 +499,21 @@ def document_evidence(
     bytes, and one bounded part of the converted text — all from ONE stable
     snapshot, so a file replaced mid-call can never split digest from text.
 
-    Reads stay inside what the operator configured in ``ariadne.yaml``: a
-    local reference must resolve inside an allowed input root
-    (``documents.roots``, default ``data/docs``); a URI reference must be an
-    EXACT approved object-store URI (``documents.object_store``, S3 only).
-    Traversal, an absolute path outside the roots, an unapproved or
-    credentialed URI, a missing file, an unsupported format, or a missing
-    converter fails explicitly BEFORE anything is fetched, read beyond the
-    check, or written anywhere (never a served artifact)."""
-    project_path = Path(project)
-    roots, approved_uris = _project_documents_config(project_path)
-    ref = str(reference)
-    if _URI_SCHEME_RE.match(ref):
-        if ref not in approved_uris:  # exact approval only — refused before ANY fetch
-            raise ValueError(
-                f"{ref}: object-store reference is not approved — approval is the "
-                "operator's exact documents.object_store list in ariadne.yaml; "
-                "nothing was fetched"
-            )
-        name = _uri_name(ref)
-        retained = (
-            project_path / OBJECT_STORE_REL / (_sha256_hex(ref.encode("utf-8")) + Path(name).suffix)
-        )
-        data = _retained_object_bytes(retained, ref)
-        return _evidence_record(
-            ref,
-            name,
-            _sha256_hex(data),
-            _convert_snapshot(data, Path(name).suffix, display=name),
-            part=part,
-            part_chars=part_chars,
-        )
-    for root in roots:
-        resolved = (root / ref).resolve()
-        if resolved.is_relative_to(root):
-            break
-    else:
-        raise ValueError(
-            f"{ref}: reference escapes the operator-configured input roots "
-            f"({', '.join(str(r) for r in roots)}) — reads stay inside them (spec §2)"
-        )
-    if not resolved.is_file():
-        raise ValueError(f"{ref}: no readable document at {resolved}")
-    data = resolved.read_bytes()  # the one stable snapshot for digest AND text
+    Reads stay inside what the operator configured in ``ariadne.yaml``
+    (:func:`_document_bytes`): a local reference must resolve inside an
+    allowed input root (``documents.roots``, default ``data/docs``); a URI
+    reference must be an EXACT approved object-store URI
+    (``documents.object_store``, S3 only). Traversal, an absolute path outside
+    the roots, an unapproved or credentialed URI, a missing file, an
+    unsupported format, or a missing converter fails explicitly BEFORE anything
+    is fetched, read beyond the check, or written anywhere (never a served
+    artifact)."""
+    resource, title, data = _document_bytes(str(reference), Path(project))
     return _evidence_record(
-        str(resolved),
-        resolved.name,
+        resource,
+        title,
         _sha256_hex(data),
-        _convert_snapshot(data, resolved.suffix, display=resolved.name),
+        _convert_snapshot(data, Path(title).suffix, display=title),
         part=part,
         part_chars=part_chars,
     )
@@ -568,6 +581,12 @@ BUNDLE_STATE_PATH_REL = Path("staging") / BUNDLE_STATE_REL  # project-relative s
 BUNDLE_DISCARD_NAME = "bundle.discarded"  # crash-recoverable prior proposal
 
 SEED_NOTES_SUBMIT_REL = "data/seed_notes.md"  # the one required non-artifact file
+# The service-generated manifest of VERIFIED document citations at the bundle
+# root (candidate review P1): outside the documented submission roots, so the
+# harness can never submit or overwrite it, ignored by the promotion merge,
+# and included in the exact staged-tree digest — citation changes therefore
+# change the review digest human Promotion enforces.
+CITATIONS_NAME = "citations.json"
 # Documented submission roots (spec "Authoring interface and lifecycle"): the
 # complete Seed Notes, the OSI models, and OKF pages. index.md/log.md and the
 # computation pages are service-generated, so submitting them is refused.
@@ -624,10 +643,12 @@ def bundle_lock(staging_root: str | Path):
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
-def _submission_doc(file: str | Path) -> tuple[list[tuple[str, str]], str | None]:
-    """Parse a submission document (``{"files": [{path, content}], ...}`` —
-    the author response contract) into (files, base_digest or None). Every
-    shape problem is an actionable ValueError before anything is written."""
+def _submission_doc(file: str | Path) -> tuple[list[tuple[str, str]], str | None, list[str]]:
+    """Parse a submission document (``{"files": [{path, content}], "documents":
+    [reference, ...], "base_digest": ...}`` — the author response contract plus
+    the explicit bounded linkage to prepared documents) into (files,
+    base_digest or None, document references). Every shape problem is an
+    actionable ValueError before anything is written."""
     raw = Path(file).read_text(encoding="utf-8")
     try:
         data = json.loads(raw)
@@ -646,7 +667,17 @@ def _submission_doc(file: str | Path) -> tuple[list[tuple[str, str]], str | None
     base = data.get("base_digest")
     if base is not None and (not isinstance(base, str) or len(base) != 64):
         raise ValueError(f"{file}: 'base_digest' must be a 64-hex digest string")
-    return files, base
+    documents = data.get("documents", [])
+    if not isinstance(documents, list) or not all(
+        isinstance(ref, str) and ref for ref in documents
+    ):
+        raise ValueError(f"{file}: 'documents' must be a list of document reference strings")
+    if len(documents) > MAX_DOCUMENTS_PER_CALL:
+        raise ValueError(
+            f"{file}: {len(documents)} cited documents exceeds the per-call bound of "
+            f"{MAX_DOCUMENTS_PER_CALL} — cite document references in bounded batches"
+        )
+    return files, base, documents
 
 
 def _check_submission(files: list[tuple[str, str]]) -> None:
@@ -778,11 +809,50 @@ def _registry_sources(project: Path) -> list:
     return sources
 
 
-def _submission_digest(files: list[tuple[str, str]]) -> str:
-    """sha256 over the canonical submitted content: the proposal identity that
-    repairs chain on and identical retries are detected by."""
+def _citation_record(reference: str, project: Path) -> dict:
+    """One VERIFIED document citation (candidate review P1): the reference is
+    checked at the operator's document boundary and the digest taken from the
+    CURRENT snapshot bytes — the resource/title/digest triple is
+    server-derived, never copied from client-supplied citation strings (the
+    client names a reference; the server states what it verified)."""
+    resource, title, data = _document_bytes(reference, project)
+    return {"resource": resource, "title": title, "digest": _sha256_hex(data)}
+
+
+def _staged_citations(bundle_dir: Path) -> list:
+    """The verified citations recorded with the staged proposal — read from
+    the service-generated manifest INSIDE the staged tree, so what review
+    returns is exactly what the review digest covers. A proposal staged before
+    citations existed cites nothing; an unreadable or malformed manifest needs
+    human resolution, never an agent reset (a hand-edited manifest already
+    fails the staged-tree coherence check first)."""
+    manifest = bundle_dir / CITATIONS_NAME
+    if not manifest.is_file():
+        return []
+    try:
+        doc = json.loads(manifest.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ValueError(
+            f"{manifest}: unreadable citations manifest ({exc}) — this needs human "
+            "resolution, not an agent reset"
+        ) from None
+    citations = doc.get("documents") if isinstance(doc, dict) else None
+    if not isinstance(citations, list):
+        raise ValueError(
+            f"{manifest}: malformed citations manifest — this needs human resolution, "
+            "not an agent reset"
+        )
+    return citations
+
+
+def _submission_digest(files: list[tuple[str, str]], documents: list[str]) -> str:
+    """sha256 over the canonical submitted content INCLUDING the cited document
+    references: the proposal identity that repairs chain on and identical
+    retries are detected by (same files AND same citations)."""
     canonical = json.dumps(
-        [(rel, content) for rel, content in sorted(files)], sort_keys=True, separators=(",", ":")
+        {"documents": list(documents), "files": sorted(files)},
+        sort_keys=True,
+        separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -1007,14 +1077,19 @@ def submit_bundle(
     (a retained prior copy, or state/staging disagreement) is refused for
     human resolution with every copy kept — never auto-reset."""
     project = Path(project)
-    files, doc_base = _submission_doc(file)
+    files, doc_base, documents = _submission_doc(file)
     base = base_digest or doc_base
     _check_submission(files)  # bounds/paths/credentials — BEFORE any write
     _refuse_symlinked_staging(project, BUNDLE_STAGING_REL)  # same
+    # Every requested citation is verified at the operator's document boundary
+    # against the CURRENT snapshot bytes BEFORE anything is staged (candidate
+    # review P1): an explicit per-submission linkage, never a project-global
+    # last-inputs list, and the recorded triples below are server-derived.
+    citations = [_citation_record(reference, project) for reference in documents]
 
     sources = _registry_sources(project)
     sources_digest = _digest(sources)
-    submission = _submission_digest(files)
+    submission = _submission_digest(files, documents)
     # ONE interprocess lock per project: the state read, the staged swap, and
     # the state store are a single critical section, so two CLI processes with
     # the same base digest cannot both replace the active proposal and no
@@ -1037,6 +1112,7 @@ def submit_bundle(
                 view = _state_view(state)
                 if (project / BUNDLE_STAGING_REL).is_dir():
                     view["review_digest"] = state.get("digest")  # unchanged staging
+                    view["documents"] = _staged_citations(project / BUNDLE_STAGING_REL)
                 return view  # idempotent retry: no writes, no attempt reset
             if state["attempts"] >= MAX_ROUNDS or state["status"] == "review_needed":
                 raise ValueError(
@@ -1093,6 +1169,17 @@ def submit_bundle(
                 "review_needed"
                 if (errors and attempts >= MAX_ROUNDS)
                 else ("invalid" if errors else "validated")
+            )
+            # The verified citations ride WITH the staged proposal as one
+            # service-generated manifest at the bundle root (outside the
+            # documented submission roots, so the harness can never submit or
+            # overwrite it, and never part of what Promotion serves): because
+            # the manifest lives in the staged tree, the EXACT review digest
+            # binds citation changes to the reviewed identity exactly as it
+            # binds bodies (candidate review P1). No document contents are
+            # duplicated — only the verified resource/title/digest triples.
+            (tmp / CITATIONS_NAME).write_text(
+                json.dumps({"documents": citations}, sort_keys=True) + "\n", encoding="utf-8"
             )
             # Crash-recoverable transition (owner fail-closed decision): the
             # coherence guard above proved no retained discard exists, the prior
@@ -1155,6 +1242,7 @@ def submit_bundle(
                 )
         view = _state_view(new_state)
         view["review_digest"] = new_state["digest"]
+        view["documents"] = citations
         if retained_note is not None:
             view["retained_prior_copy"] = retained_note
         return view
@@ -1162,11 +1250,14 @@ def submit_bundle(
 
 def review_bundle(*, project: str | Path = ".", part: int = 1) -> dict:
     """The staged review (spec: readable, never a signoff): inventory, source
-    identities, provenance, validation state, the exact reviewed-content digest,
-    and every proposed body — Seed Notes and artifacts — in bounded parts. The
-    snapshot (bodies AND digest) is taken under the project bundle lock, so the
-    returned digest always corresponds to the returned bodies even while another
-    writer submits concurrently."""
+    identities, the VERIFIED converted-document citations recorded with the
+    proposal (spec "Authoring interface and lifecycle": review returns
+    converted-document citations), provenance, validation state, the exact
+    reviewed-content digest, and every proposed body — Seed Notes and
+    artifacts — in bounded parts. The snapshot (bodies, citations, AND digest)
+    is taken under the project bundle lock, so the returned digest always
+    corresponds to the returned bodies and citations even while another writer
+    submits concurrently."""
     project = Path(project)
     with bundle_lock(project / "staging"):
         state = _load_bundle_state(project)
@@ -1178,9 +1269,23 @@ def review_bundle(*, project: str | Path = ".", part: int = 1) -> dict:
         # decision): a review never reports a readable proposal out of an
         # interrupted transition, and never touches the retained copies.
         _refuse_incoherent_staging(project, state)
+        # Spec "Evidence and source-access boundary" §1: a source change while
+        # a bundle proposal is active invalidates it. Review refuses the same
+        # way submission and Promotion already do — BEFORE any body or status
+        # is returned — so it can never describe a source-invalidated proposal
+        # as validated (candidate review P2). Nothing is written: the original
+        # staging and state stay untouched for the human.
+        if _digest(_registry_sources(project)) != state.get("sources_digest"):
+            raise ValueError(
+                "the approved source registry changed while this bundle proposal was "
+                "active — the proposal is invalidated and needs re-profiling and "
+                "resubmission; review is refused, nothing was written or served"
+            )
         bundle_dir = project / BUNDLE_STAGING_REL
         bodies = []
         for path in sorted(p for p in bundle_dir.rglob("*") if p.is_file()):
+            if path.relative_to(bundle_dir).as_posix() == CITATIONS_NAME:
+                continue  # surfaced as the verified document citations below
             data = path.read_bytes()  # one stable snapshot: digest AND text
             bodies.append(
                 _evidence_record(
@@ -1198,5 +1303,6 @@ def review_bundle(*, project: str | Path = ".", part: int = 1) -> dict:
         view = _state_view(state)
         view["digest"] = tree
         view["submission_digest"] = state["submission_digest"]
+        view["documents"] = _staged_citations(bundle_dir)  # covered by that digest
         view["files"] = bodies
     return view

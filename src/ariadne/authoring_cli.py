@@ -109,7 +109,9 @@ def build_parser() -> _Parser:
     submit.add_argument(
         "--file",
         required=True,
-        help="submission JSON: {\"files\": [{path, content}], \"base_digest\": ...}",
+        help='submission JSON: {"files": [{path, content}], "documents": '
+        '[reference, ...], "base_digest": ...} — documents name input-area '
+        "references whose citations the service verifies itself",
     )
     submit.add_argument(
         "--base-digest",
@@ -123,7 +125,8 @@ def build_parser() -> _Parser:
     review_cmd = sub.add_parser(
         "review",
         help="the staged bundle proposal: inventory, provenance, validation state, "
-        "exact content digest, bounded bodies — readable, never a signoff",
+        "exact content digest, verified document citations, bounded bodies — "
+        "readable, never a signoff",
     )
     review_cmd.add_argument(
         "--part",

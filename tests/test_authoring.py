@@ -1632,3 +1632,145 @@ def test_fsync_failure_fails_closed_and_retains_the_prior_proposal(tmp_path, mon
     assert b["status"] == "validated"
     assert "Version B." in (staging / "bundle" / "data" / "seed_notes.md").read_text()
     assert not (staging / "bundle.discarded").exists()
+
+
+# ---- candidate-integration fix pass: review findings P1 (document citations
+# vanish at the review boundary) and P2 (review of a source-invalidated
+# proposal) ----
+
+
+def test_document_citations_travel_from_inputs_to_submit_and_review(tmp_path, capsys):
+    """Candidate review P1, the public journey: ``inputs --document policy.md``
+    -> ``submit`` carrying the document reference -> ``review``: the
+    server-verified citation (exact resource, current-snapshot digest, title)
+    is recorded with the proposal and returned by review beside the staged
+    bodies — pre-fix, submit recorded no document evidence and review omitted
+    every citation, so the human never saw which converted evidence a policy
+    was drafted from."""
+    project = approved_project(tmp_path)
+    docs = project / "data" / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    policy = docs / "policy.md"
+    policy.write_text("# Pricing policy\n\nUSD is the only billing currency.\n", encoding="utf-8")
+
+    inputs = authoring.harness_inputs(project=project, documents=["policy.md"])
+    cited = inputs["documents"][0]
+
+    submission = bundle_submission()
+    submission["documents"] = ["policy.md"]
+    file = write_submission(project, submission, name="cited.json")
+    assert authoring_cli(["submit", "--file", str(file), "--project", str(project)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "validated"
+    # the citation is server-derived: the same identity inputs reported, and
+    # the digest of the actual current bytes — never a client-supplied string
+    assert out["documents"] == [
+        {"resource": cited["resource"], "title": "policy.md", "digest": cited["digest"]}
+    ]
+    assert out["documents"][0]["digest"] == hashlib.sha256(policy.read_bytes()).hexdigest()
+
+    # an identical retry (same files AND same references) is idempotent: the
+    # recorded citations and digests are preserved, attempts are not reset
+    again = json.loads(_submit_captured(project, submission, capsys, name="cited-again.json"))
+    assert again["documents"] == out["documents"]
+    assert again["attempts"] == 1 and again["digest"] == out["digest"]
+
+    # review re-reads the PERSISTED proposal (a fresh process would too): the
+    # citations ride with it, and the bodies stay the proposed content alone
+    assert authoring_cli(["review", "--project", str(project)]) == 0
+    review = json.loads(capsys.readouterr().out)
+    assert review["documents"] == out["documents"]
+    assert review["digest"] == out["review_digest"]
+    paths = [entry["resource"] for entry in review["files"]]
+    assert "data/seed_notes.md" in paths
+    assert "citations.json" not in paths  # the manifest is not a proposed body
+
+
+def test_unapproved_cited_document_is_refused_before_any_write(tmp_path, monkeypatch):
+    """Candidate review P1: each requested citation is verified at the SAME
+    operator boundary as document reads, before anything is staged — a cited
+    reference escaping the input roots or naming an unapproved object URI is
+    refused with no fetch, no staging write, and no state file."""
+    project = approved_project(tmp_path)
+    (project / "server-secret.md").write_text("server-side secret", encoding="utf-8")
+    fetched: list[str] = []
+    monkeypatch.setattr(authoring, "_fetch_object_bytes", lambda uri: fetched.append(uri) or b"x")
+    for reference in ("../server-secret.md", "s3://ariadne-docs/policies/secret.md"):
+        submission = bundle_submission()
+        submission["documents"] = [reference]
+        file = write_submission(project, submission)
+        with pytest.raises(ValueError, match="escapes|not approved"):
+            authoring.submit_bundle(file, project=project)
+    assert fetched == []  # nothing fetched for the unapproved URI
+    assert not (project / "staging" / "authoring" / "bundle").exists()
+    assert not (project / "staging" / "authoring" / "bundle-state.json").exists()
+
+
+def test_changed_citations_invalidate_the_previously_reviewed_digest(tmp_path):
+    """Candidate review P1 binding: the recorded citations are part of the
+    proposal the exact review digest covers — resubmitting the SAME files with
+    a DIFFERENT verified citation produces a new review digest, so the digest a
+    human took before the change can no longer promote the changed citation
+    metadata, and nothing is served."""
+    project = approved_project(tmp_path)
+    docs = project / "data" / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    (docs / "policy.md").write_text("# Pricing policy\n", encoding="utf-8")
+    (docs / "other.md").write_text("# Other policy\n", encoding="utf-8")
+
+    first = bundle_submission()
+    first["documents"] = ["policy.md"]
+    a = authoring.submit_bundle(write_submission(project, first, name="a.json"), project=project)
+    assert a["status"] == "validated"
+
+    # the harness swaps the citation linkage: identical files, different document
+    second = bundle_submission()
+    second["documents"] = ["other.md"]
+    b = authoring.submit_bundle(
+        write_submission(project, second, name="b.json"),
+        project=project,
+        base_digest=a["digest"],
+    )
+    assert b["review_digest"] != a["review_digest"]
+    assert b["documents"][0]["title"] == "other.md"
+
+    review = authoring.review_bundle(project=project)
+    assert review["digest"] == b["review_digest"]
+    assert review["documents"] == b["documents"]
+
+    # the earlier human-reviewed digest no longer covers the changed citations
+    with pytest.raises(ValueError, match="digest mismatch"):
+        promote_bundle(
+            a["review_digest"],
+            staging_root=project / "staging",
+            served_root=project,
+            by="human:tester",
+            assume_yes=True,
+        )
+    assert not (project / "context_layer").exists()  # nothing served
+
+
+def test_review_refuses_a_source_invalidated_proposal_without_touching_it(tmp_path):
+    """Candidate review P2: after the human-managed registry changes, review
+    refuses as source-invalidated BEFORE describing bodies or status — the
+    original staging and state stay byte-identical for the human (Promotion
+    already refuses the same proposal; review must not call it validated)."""
+    project = approved_project(tmp_path)
+    a = authoring.submit_bundle(
+        write_submission(project, bundle_submission(), name="a.json"), project=project
+    )
+    assert a["status"] == "validated"
+    staging = project / "staging" / "authoring"
+    state_before = (staging / "bundle-state.json").read_bytes()
+    tree_before = authoring._tree_digest(staging / "bundle")
+
+    doc = yaml.safe_load((project / "ariadne.yaml").read_text(encoding="utf-8"))
+    doc["sources"][0]["path"] = str(project / "data" / "other.parquet")
+    (project / "ariadne.yaml").write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source registry changed"):
+        authoring.review_bundle(project=project)
+
+    assert (staging / "bundle-state.json").read_bytes() == state_before
+    assert authoring._tree_digest(staging / "bundle") == tree_before
+    assert not (project / "context_layer").exists()  # no served effects
