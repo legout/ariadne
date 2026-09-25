@@ -883,6 +883,52 @@ def _load_bundle_state(project: Path) -> dict | None:
     return state
 
 
+# The shared human-recovery instructions for an interrupted transition (the
+# owner's fail-closed decision): name every copy, forbid any agent reset, and
+# never offer a command that silently deletes evidence.
+_CRASH_HUMAN_RESOLUTION = (
+    " — interrupted bundle transition, human resolution required: KEEP both copies "
+    "(staging/authoring/bundle and staging/authoring/bundle.discarded) and "
+    "staging/authoring/bundle-state.json, compare them, copy out anything to keep, "
+    "and remove the leftover directory by hand to resume agent authoring; no agent "
+    "command resets or deletes any of them"
+)
+
+
+def _refuse_incoherent_staging(project: Path, state: dict | None) -> None:
+    """The owner's fail-closed crash-recovery decision (issue #15 surviving
+    P1): after an interrupted transition the staged bundle and the persisted
+    state can disagree, and the prior safe proposal may survive ONLY in
+    ``bundle.discarded``. Every agent retry, replace, and review is refused
+    until a human resolves it — no auto-restore, no silent reset; both copies
+    and the state stay exactly as the crash left them."""
+    bundle_dir = project / BUNDLE_STAGING_REL
+    discarded = bundle_dir.parent / BUNDLE_DISCARD_NAME
+    if _lstat(discarded) is not None:
+        raise ValueError(
+            f"{discarded}: a retained prior-proposal copy marks an interrupted transition"
+            + _CRASH_HUMAN_RESOLUTION
+        )
+    if state is None:
+        if bundle_dir.exists():
+            raise ValueError(
+                f"{bundle_dir}: staged bundle content exists with no bundle-state.json"
+                + _CRASH_HUMAN_RESOLUTION
+            )
+        return
+    if not bundle_dir.is_dir():
+        raise ValueError(
+            f"the bundle proposal state exists but its staging is gone ({bundle_dir})"
+            + _CRASH_HUMAN_RESOLUTION
+        )
+    tree = _tree_digest(bundle_dir)
+    if tree != state.get("digest"):
+        raise ValueError(
+            "the staged bundle no longer matches the recorded proposal state "
+            f"(staged {tree} != recorded {state.get('digest')})" + _CRASH_HUMAN_RESOLUTION
+        )
+
+
 def _store_bundle_state(project: Path, state: dict) -> None:
     """Persist the proposal state atomically (tmp + os.replace): the
     restart-surviving, single-writer record."""
@@ -923,7 +969,9 @@ def submit_bundle(
     naming harness-led provenance) and the per-type bundle gate. Errors are
     actionable and repair the SAME proposal with the returned digest; at most
     three rounds, then the staged files stay ``review_needed`` for the human.
-    Nothing is written to the served layers, ever."""
+    Nothing is written to the served layers, ever. An interrupted transition
+    (a retained prior copy, or state/staging disagreement) is refused for
+    human resolution with every copy kept — never auto-reset."""
     project = Path(project)
     files, doc_base = _submission_doc(file)
     base = base_digest or doc_base
@@ -939,6 +987,11 @@ def submit_bundle(
     # digest ever pairs with bytes it was not taken from.
     with bundle_lock(project / "staging"):
         state = _load_bundle_state(project)
+        # The early coherence guard (owner fail-closed decision) comes BEFORE
+        # the idempotent/stale/new-writer branches: a retained discard or a
+        # state/staging disagreement marks an interrupted transition, and NO
+        # agent retry — not even an identical one — may run on top of it.
+        _refuse_incoherent_staging(project, state)
         if state is not None and state.get("status") != "promoted":
             if sources_digest != state.get("sources_digest"):
                 raise ValueError(
@@ -1007,15 +1060,14 @@ def submit_bundle(
                 if (errors and attempts >= MAX_ROUNDS)
                 else ("invalid" if errors else "validated")
             )
-            # Crash-recoverable transition: the prior proposal is RENAMED aside
-            # (never deleted first), the fresh tree swaps in atomically, and the
-            # state is stored durably before the superseded copy is dropped — a
-            # crash mid-transition leaves the prior content recoverable under
-            # staging/authoring/ and the gates fail closed on any mismatch.
+            # Crash-recoverable transition (owner fail-closed decision): the
+            # coherence guard above proved no retained discard exists, the prior
+            # proposal is RENAMED aside (never deleted first), the fresh tree
+            # swaps in atomically, and the state is stored durably BEFORE the
+            # superseded copy is dropped — a crash anywhere in between leaves an
+            # incoherent layout every gate refuses until a human resolves it.
             bundle_dir = project / BUNDLE_STAGING_REL
             discarded = bundle_dir.parent / BUNDLE_DISCARD_NAME
-            if discarded.is_dir():
-                shutil.rmtree(discarded, ignore_errors=True)  # crash leftover: superseded
             bundle_dir.parent.mkdir(parents=True, exist_ok=True)
             if bundle_dir.is_dir():
                 os.replace(bundle_dir, discarded)  # keep the safe prior proposal
@@ -1042,12 +1094,27 @@ def submit_bundle(
             "staging": str((project / BUNDLE_STAGING_REL).resolve()),
         }
         _store_bundle_state(project, new_state)
-    shutil.rmtree(
-        project / "staging" / AUTHORING_STAGING / BUNDLE_DISCARD_NAME, ignore_errors=True
-    )  # the prior proposal is only dropped once the new state is durable
-    view = _state_view(new_state)
-    view["review_digest"] = new_state["digest"]
-    return view
+        # The superseded copy is dropped ONLY here — after the replacement state
+        # is durable and INSIDE the same lock (issue #15 surviving P1: a cleanup
+        # after the lock is released can interleave with the next writer's swap
+        # and remove its retained copy). A cleanup failure reports the retained
+        # copy instead of hiding it; the coherence guard then fails closed for
+        # the human on the next operation.
+        retained_note = None
+        if discarded.exists():
+            try:
+                shutil.rmtree(discarded)
+            except OSError as exc:
+                retained_note = (
+                    f"{discarded}: the superseded prior proposal could not be removed "
+                    f"({exc}) — it is RETAINED: resolve it by hand; agent operations "
+                    "stay blocked while it exists"
+                )
+        view = _state_view(new_state)
+        view["review_digest"] = new_state["digest"]
+        if retained_note is not None:
+            view["retained_prior_copy"] = retained_note
+        return view
 
 
 def review_bundle(*, project: str | Path = ".", part: int = 1) -> dict:
@@ -1064,12 +1131,11 @@ def review_bundle(*, project: str | Path = ".", part: int = 1) -> dict:
             raise ValueError(
                 f"no active bundle proposal under {project / BUNDLE_STAGING_REL} — submit first"
             )
+        # The SAME fail-closed coherence rule as submit (owner crash-recovery
+        # decision): a review never reports a readable proposal out of an
+        # interrupted transition, and never touches the retained copies.
+        _refuse_incoherent_staging(project, state)
         bundle_dir = project / BUNDLE_STAGING_REL
-        if not bundle_dir.is_dir():
-            raise ValueError(
-                f"the bundle proposal state exists but its staging is gone ({bundle_dir}) — "
-                "this needs human resolution, not an agent reset"
-            )
         bodies = []
         for path in sorted(p for p in bundle_dir.rglob("*") if p.is_file()):
             data = path.read_bytes()  # one stable snapshot: digest AND text
@@ -1086,12 +1152,6 @@ def review_bundle(*, project: str | Path = ".", part: int = 1) -> dict:
         # The headline digest is the EXACT staged content a human reviewed and
         # Promotion enforces; the chaining digest stays available for repairs.
         tree = _tree_digest(bundle_dir)
-        if state.get("digest") != tree:
-            raise ValueError(
-                "the staged bundle no longer matches the recorded proposal state "
-                f"(staged {tree} != recorded {state.get('digest')}) — this needs "
-                "human resolution, not an agent reset"
-            )
         view = _state_view(state)
         view["digest"] = tree
         view["submission_digest"] = state["submission_digest"]

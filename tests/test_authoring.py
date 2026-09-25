@@ -10,9 +10,11 @@ in the first test spies on that one chokepoint to prove no proposed location is
 ever opened before approval. No network, no LLM.
 """
 
+import fcntl
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -31,6 +33,7 @@ import ariadne.sources  # noqa: E402
 from ariadne import authoring  # noqa: E402
 from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
 from ariadne.promote import main as promote_main  # noqa: E402
+from ariadne.promote import promote_bundle  # noqa: E402
 
 # ---------------------------------------------------------------- fixtures
 
@@ -1257,3 +1260,195 @@ def test_concurrent_submissions_cannot_both_replace_the_active_proposal(tmp_path
     # the recorded exact-content digest pairs with the staged bytes (no split state)
     assert state["digest"] == authoring._tree_digest(project / "staging" / "authoring" / "bundle")
     assert not (project / "context_layer").exists()  # the human gate still holds
+
+
+# ---- issue #15 crash-recovery repair: the surviving P1 (owner fail-closed) ----
+
+
+def test_crashed_transition_blocks_the_retry_that_would_delete_the_retained_copy(
+    tmp_path, monkeypatch
+):
+    """Issue #15 surviving P1 (owner fail-closed decision): a transition that
+    renamed A into ``bundle.discarded`` and swapped B in, then died before
+    storing B's state, leaves state=A + A-only-in-bundle.discarded + B-staged.
+    The retry with A's CURRENT base digest is refused with EVERY copy intact —
+    pre-fix it ran the transition and deleted A's last surviving copy."""
+    project = approved_project(tmp_path)
+    a = authoring.submit_bundle(
+        write_submission(project, bundle_submission(), name="a.json"), project=project
+    )
+    assert a["status"] == "validated"
+
+    def crash_after_swap(project, state):  # the interruption the finding names
+        raise RuntimeError("simulated crash: swap done, state not stored")
+
+    monkeypatch.setattr(authoring, "_store_bundle_state", crash_after_swap)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        authoring.submit_bundle(
+            write_submission(
+                project, bundle_submission(seed_notes="# Seed notes\n\nVersion B.\n"), name="b.json"
+            ),
+            project=project,
+            base_digest=a["digest"],
+        )
+    monkeypatch.undo()
+    staging = project / "staging" / "authoring"
+    # the exact interrupted layout: B staged, A surviving ONLY under bundle.discarded
+    assert "Version B." in (staging / "bundle" / "data" / "seed_notes.md").read_text()
+    assert (
+        "All events count." in (staging / "bundle.discarded" / "data" / "seed_notes.md").read_text()
+    )
+    assert (
+        json.loads((staging / "bundle-state.json").read_text())["submission_digest"] == a["digest"]
+    )
+
+    # the fatal retry pre-fix: chained on A's current base digest, the
+    # transition rmtree'd bundle.discarded BEFORE any state update
+    with pytest.raises(ValueError, match="human resolution"):
+        authoring.submit_bundle(
+            write_submission(
+                project, bundle_submission(seed_notes="# Seed notes\n\nVersion C.\n"), name="c.json"
+            ),
+            project=project,
+            base_digest=a["digest"],
+        )
+    # refused: every copy stays exactly as the crash left it
+    assert "Version B." in (staging / "bundle" / "data" / "seed_notes.md").read_text()
+    assert (
+        "All events count." in (staging / "bundle.discarded" / "data" / "seed_notes.md").read_text()
+    )
+    assert (
+        json.loads((staging / "bundle-state.json").read_text())["submission_digest"] == a["digest"]
+    )
+
+    # review and the human Promotion refuse the same layout without touching it
+    with pytest.raises(ValueError, match="human resolution"):
+        authoring.review_bundle(project=project)
+    with pytest.raises(ValueError, match="human resolution"):
+        promote_bundle(
+            a["review_digest"],
+            staging_root=project / "staging",
+            served_root=project,
+            by="human:tester",
+            assume_yes=True,
+        )
+    assert not (project / "context_layer").exists()  # nothing served
+    assert "Version B." in (staging / "bundle" / "data" / "seed_notes.md").read_text()
+
+
+def test_successful_transition_cleans_the_discard_under_the_bundle_lock(tmp_path, monkeypatch):
+    """Issue #15 surviving P1, the cleanup race: dropping the superseded
+    bundle.discarded must happen INSIDE the bundle lock — after the lock is
+    released the cleanup can interleave with the next writer's swap and remove
+    ITS retained copy. A monkeypatched rmtree proves the lock is held (a second
+    non-blocking flock on the lock file blocks) exactly when the copy is dropped."""
+    project = approved_project(tmp_path)
+    a = authoring.submit_bundle(
+        write_submission(project, bundle_submission(), name="a.json"), project=project
+    )
+    lock_file = project / "staging" / "authoring" / "bundle.lock"
+    real_rmtree = shutil.rmtree
+    cleaned: list[str] = []
+
+    def rmtree_only_under_the_lock(path, *args, **kwargs):
+        if Path(path).name == authoring.BUNDLE_DISCARD_NAME:
+            fd = os.open(lock_file, os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                cleaned.append(str(path))  # held: cleanup is in the critical section
+            else:
+                raise AssertionError(f"discard cleanup ran without the bundle lock: {path}")
+            finally:
+                os.close(fd)
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(authoring.shutil, "rmtree", rmtree_only_under_the_lock)
+    b = authoring.submit_bundle(
+        write_submission(
+            project, bundle_submission(seed_notes="# Seed notes\n\nVersion B.\n"), name="b.json"
+        ),
+        project=project,
+        base_digest=a["digest"],
+    )
+    assert b["status"] == "validated"  # the clean successful path stays usable
+    assert cleaned, "the discard cleanup never ran"
+    assert not (project / "staging" / "authoring" / "bundle.discarded").exists()
+    state = json.loads((project / "staging" / "authoring" / "bundle-state.json").read_text())
+    assert state["submission_digest"] == b["digest"]
+
+
+def test_state_staging_disagreement_blocks_repair_instead_of_replacing(tmp_path):
+    """The incoherent layout without a retained discard: staging that no longer
+    matches the recorded state (hand-edited or drifted by an interruption) — a
+    repair submission is refused for the human, never run on top of it."""
+    project = approved_project(tmp_path)
+    a = authoring.submit_bundle(
+        write_submission(project, bundle_submission(), name="a.json"), project=project
+    )
+    notes = project / "staging" / "authoring" / "bundle" / "data" / "seed_notes.md"
+    notes.write_text("# hand-edited out from under the recorded state\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="no longer matches"):
+        authoring.submit_bundle(
+            write_submission(
+                project, bundle_submission(seed_notes="# Seed notes\n\nRepair.\n"), name="r.json"
+            ),
+            project=project,
+            base_digest=a["digest"],
+        )
+    assert notes.read_text().startswith("# hand-edited")  # untouched
+    assert (
+        json.loads((project / "staging" / "authoring" / "bundle-state.json").read_text())[
+            "submission_digest"
+        ]
+        == a["digest"]
+    )
+
+
+def test_retained_discard_blocks_submit_review_and_promotion_until_human_resolution(tmp_path):
+    """A crash between the durable state store and the in-lock cleanup leaves a
+    COHERENT state/bundle plus a retained ``bundle.discarded``: retries, review,
+    and human Promotion all fail closed with every copy intact (owner decision:
+    keep both copies, block agents, no command silently deletes evidence)."""
+    project = approved_project(tmp_path)
+    a = authoring.submit_bundle(
+        write_submission(project, bundle_submission(), name="a.json"), project=project
+    )
+    b = authoring.submit_bundle(
+        write_submission(
+            project, bundle_submission(seed_notes="# Seed notes\n\nVersion B.\n"), name="b.json"
+        ),
+        project=project,
+        base_digest=a["digest"],
+    )
+    assert b["status"] == "validated"
+    staging = project / "staging" / "authoring"
+    (staging / "bundle.discarded").mkdir()  # the leftover the crash never cleaned
+    (staging / "bundle.discarded" / "leftover.md").write_text("prior copy\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="human resolution"):
+        authoring.submit_bundle(
+            write_submission(
+                project, bundle_submission(seed_notes="# Seed notes\n\nVersion C.\n"), name="c.json"
+            ),
+            project=project,
+            base_digest=b["digest"],
+        )
+    with pytest.raises(ValueError, match="human resolution"):
+        authoring.review_bundle(project=project)
+    with pytest.raises(ValueError, match="human resolution"):
+        promote_bundle(
+            b["review_digest"],
+            staging_root=project / "staging",
+            served_root=project,
+            by="human:tester",
+            assume_yes=True,
+        )
+    # every copy intact, nothing served, nothing reset
+    assert "Version B." in (staging / "bundle" / "data" / "seed_notes.md").read_text()
+    assert (staging / "bundle.discarded" / "leftover.md").read_text() == "prior copy\n"
+    assert (
+        json.loads((staging / "bundle-state.json").read_text())["submission_digest"] == b["digest"]
+    )
+    assert not (project / "context_layer").exists()
+    assert not (project / "data" / "seed_notes.md").exists()

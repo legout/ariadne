@@ -42,6 +42,7 @@ import yaml
 
 from ariadne.author import _FRONTMATTER_RE
 from ariadne.authoring import (
+    BUNDLE_DISCARD_NAME,
     _digest,
     _registry_sources,
     _tree_digest,
@@ -369,6 +370,18 @@ def promote_bundle(
         state = json.loads(state_path.read_text(encoding="utf-8"))
         if not isinstance(state, dict) or not state.get("submission_digest"):
             raise ValueError(f"{state_path}: malformed bundle proposal state — human resolution")
+        # The owner's fail-closed crash-recovery decision (issue #15): a
+        # retained bundle.discarded marks an interrupted transition. Promotion
+        # refuses it for the human BEFORE any served write and never modifies
+        # or removes either copy.
+        discarded = bundle.parent / BUNDLE_DISCARD_NAME
+        if discarded.exists() or discarded.is_symlink():
+            raise ValueError(
+                f"{discarded}: a retained prior-proposal copy marks an interrupted "
+                "transition — human resolution required: keep both copies plus "
+                f"{state_path}, compare them, copy out anything to keep, and remove the "
+                "leftover by hand; nothing was served and no agent command deletes them"
+            )
         if digest != state.get("digest"):
             raise ValueError(
                 f"digest mismatch: exact-content promotion — the active proposal's "
