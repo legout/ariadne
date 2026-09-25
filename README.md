@@ -41,6 +41,9 @@ host-integrated tool registration.
 - **AI-assisted authoring, human gate.** One command profiles your databases and drafts
   the entire metric catalog and context pages into a `staging/` area. Nothing is ever
   served until a human reviews and promotes it.
+- **Bring your own agent.** In harness-led authoring, your agent's *own* model drafts
+  the catalog from measured profiles and converted documents (`ariadne-authoring`) —
+  no server-side LLM. Source access and Promotion stay human decisions.
 - **Everything is files.** Metrics are YAML, business knowledge is Markdown. Review in
   pull requests, diff definitions, roll back with git. No server database to migrate.
 - **Self-improving catalog.** When an agent answers an unmodeled question, its working
@@ -72,6 +75,8 @@ host-integrated tool registration.
 1. **Register your sources** in one `ariadne.yaml` file.
 2. **Profile & author**: `ariadne-author` inspects the actual data and combines it with
    your seed notes (the rules statistics can't see) to draft the catalog into `staging/`.
+   Or let your own agent's model do the drafting with `ariadne-authoring` (see
+   "Harness-led authoring" below) — either way, a human reviews and promotes.
 3. **Review & promote**: a human reads the staging area, then `ariadne-promote` merges
    approved artifacts into the served catalog and marks them verified.
 4. **Query**: your agent runs `ariadne` locally against the promoted catalog — or
@@ -111,6 +116,44 @@ ariadne get-metric gross_margin --sources ariadne.yaml
 Installing the packaged skill (`ariadne-skill install --scope user`) teaches your agent
 the whole workflow — query governed metrics first, respect the staging boundary, report
 caveats with every number.
+
+### Harness-led authoring — bring your own agent
+
+`ariadne-author` above drafts using an LLM configured on the host (`.env`). If your
+agent harness has its own model, it authors instead through the local
+`ariadne-authoring` commands — base install only, no OpenAI-compatible endpoint, no
+extra credential:
+
+```bash
+ariadne-init my-project && cd my-project
+# 1. agent: propose source registry entries (inert data — nothing is opened yet)
+ariadne-authoring propose-sources --file sources-proposal.yaml
+# 2. HUMAN operator (never the agent): review the digest, install into ariadne.yaml
+#    ariadne-authoring approve-sources --digest <digest>
+# 3. agent: read the measured profile (null until step 2) and converted documents
+#    from data/docs/ (allowed roots live in ariadne.yaml's documents: section)
+ariadne-authoring inputs --document policy-notes.md
+# 4. agent's own model drafts Seed Notes + OSI + OKF, submits, repairs on errors
+#    (3 rounds max; each repair needs the current digest as --base-digest)
+ariadne-authoring submit --file submission.json   # cites its document references
+# 5. agent inspects and reports the exact digest, then STOPS
+ariadne-authoring review
+# 6. HUMAN (never the agent): ariadne-promote on the reviewed digest
+```
+
+Documents are pre-staged by the operator in `data/docs/` (or another configured
+root); PDF/Office/HTML conversion uses the optional `.[documents]` extra, and
+inputs are bounded (converted text arrives in parts). Metrics without an
+independent expected-value oracle are staged with `attestation: pending` —
+`governed: true` means Promoted, not independently value-attested.
+
+**Optional: stdio MCP for authoring.** With the `mcp` extra installed (see below),
+the same local stdio server exposes the five authoring tools
+(`authoring_propose_sources`, `authoring_inputs`, `authoring_upload_document` for
+bounded ≤5 MiB uploads, `authoring_submit_bundle`, `authoring_review_bundle`) with
+identical contracts — plus the five query tools. Stdio is local and needs no
+token; the server runs for one project root. Source approval and Promotion are
+never exposed as tools.
 
 **Optional: MCP.** The base package is local-first and needs no server; MCP registers the
 same five operations as tools when you want them. Install the extra into the same Python

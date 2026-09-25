@@ -1,6 +1,6 @@
 ---
 name: ariadne
-description: Work in an ariadne data project — query governed metrics with the local ariadne CLI (caveats attached), author context/semantic layers through the staging-to-promotion gate, and draft ad-hoc metrics without ever bypassing the compile gate.
+description: Work in an ariadne data project — query governed metrics with the local ariadne CLI (caveats attached), author context/semantic layers through the staging-to-promotion gate, harness-led authoring with ariadne-authoring (operator-approved sources, human-only promotion), and draft ad-hoc metrics without ever bypassing the compile gate.
 ---
 
 # Ariadne data projects
@@ -43,6 +43,10 @@ explicitly. Never start a server just to answer a question.
 
 ## The authoring loop
 
+This loop drafts with a server-configured LLM (`ariadne-author`, credentials in
+`.env`). When the agent itself is the author — its own model, no server LLM —
+use the harness-led loop below instead.
+
 1. **profile** — `ariadne-profiler` summarizes every source declared in
    `ariadne.yaml` (schemas, keys, cardinalities) so models fit the real data.
 2. **author** — `ariadne-author --sources ariadne.yaml --notes data/seed_notes.md`
@@ -57,6 +61,66 @@ explicitly. Never start a server just to answer a question.
    governed questions; `search-context` for rules; `list-datasets` →
    `define-metric` for anything unmodeled (auto-staged as a promotion
    proposal).
+
+## Harness-led authoring — the agent as author
+
+The `ariadne-authoring` commands let the agent's own model onboard data and
+domain documents with no server LLM and no second credential. Ariadne measures
+the data and validates every proposal; two decisions stay strictly human:
+operator source approval and Promotion.
+
+1. **propose sources** — write a registry-shaped `sources:` YAML (same shape as
+   `ariadne.yaml`, no inline credentials) and run
+   `ariadne-authoring propose-sources --file proposal.yaml`. The proposal is
+   inert data: no location is opened, profiled, or connected. You get back a
+   digest and the precise proposed locations. Local paths resolve against the
+   project root; large datasets are pre-staged by the operator, never uploaded.
+2. **STOP — operator source approval.** Only a human runs
+   `ariadne-authoring approve-sources --digest DIGEST` on the project host to
+   install the exact reviewed entries into `ariadne.yaml`. The agent NEVER runs
+   it, and no agent assertion counts as approval. Until it happens,
+   `ariadne-authoring inputs` returns `profile: null` and nothing is opened.
+3. **read measured inputs** — `ariadne-authoring inputs --document notes.md
+   [--part N]` returns the deterministic per-source profile Ariadne measured
+   (never model-authored), source-linked converted document evidence (exact
+   resource, sha256 digest, bounded text parts — a part is the whole text only
+   when `parts` is 1), and the optional already-approved `data/seed_notes.md`.
+   Local documents must live inside the operator-configured input roots
+   (default `data/docs/`); PDF/Office/HTML conversion needs the optional
+   `[documents]` extra, and unsupported or over-limit inputs fail explicitly.
+   Bound every batch: ≤16 documents per call, and fetch big documents part by
+   part instead of assuming one response holds everything.
+4. **draft from evidence, ask about the rest.** Your model proposes the complete
+   bundle: Seed Notes (`data/seed_notes.md`), OSI models, OKF pages. Data
+   distributions are not business-policy evidence: when documents and owner
+   statements do not establish a rule (say, whether returned orders count as
+   revenue), ask the owner or flag it for review — never present a plausible
+   rule as established. Cite the actual input and digest; quote only passages
+   you verified in the converted text.
+5. **submit** — `ariadne-authoring submit --file submission.json`, a JSON object
+   `{"files": [{path, content}], "documents": [reference, ...]}`. `files`
+   carries exactly one `data/seed_notes.md`, `semantic_layer/models/*.yml`, and
+   OKF pages under `context_layer/{tables,references/joins,policies,metrics,
+   skills}/` — never `index.md`/`log.md` or computation pages (both are
+   generated). `documents` names the input-area references the proposal cites;
+   Ariadne verifies each citation against the operator's document boundary
+   itself. Dataset sources may SELECT/join only approved registry identities —
+   never raw file paths or table functions. Validation errors name the affected
+   files and requirements: repair the SAME proposal with
+   `--base-digest DIGEST` (the CURRENT submission digest — a stale one fails
+   without replacing anything). Three rounds max; exhausted proposals stay
+   `review_needed` for the human, and re-submitting identical content changes
+   nothing.
+6. **inspect, then STOP for the human.** `ariadne-authoring review [--part N]`
+   returns the inventory, verified document citations, validation state, the
+   proposed bodies in bounded parts, and the exact content digest. Report that
+   digest to the human and stop: server-side Promotion on the reviewed digest
+   is a human-only decision, and review is readable state, never a sign-off.
+
+New metrics without an independent expected-value oracle are staged with
+`attestation: pending`: compile and grain checks passed, but no one verified
+the numbers independently. When serving such a metric after Promotion, say
+`governed: true means Promoted, not independently value-attested`.
 
 ## Agent rules
 
@@ -80,6 +144,14 @@ explicitly. Never start a server just to answer a question.
 - **`search_context` before novel questions.** The rule you are about to rediscover
   is probably already a policy page. Search first; if the question stays unmodeled,
   route it through `define_metric` so the definition lands in staging as a proposal.
+- **Harness-led authoring keeps both gates human.** Never run
+  `ariadne-authoring approve-sources` or `ariadne-promote` — operator source
+  approval and Promotion are human-only, and neither can be inferred from an
+  agent assertion, a successful validation, or a review you performed yourself.
+  Profile and document evidence is measured by Ariadne: propose from it, ask
+  the owner where it does not establish a rule, and stop at `review` with the
+  exact digest. A `review_needed` proposal or an interrupted bundle transition
+  needs human resolution, never an agent reset or replacement.
 
 ## Optional: MCP integration
 
@@ -102,6 +174,17 @@ server:
 ariadne-init --with-mcp .
 ariadne-serve --sources ariadne.yaml
 ```
+
+With the extra installed, the same local stdio server also exposes the five
+harness-led authoring tools — `authoring_propose_sources`,
+`authoring_inputs`, `authoring_upload_document` (one bounded document, ≤5 MiB
+decoded bytes), `authoring_submit_bundle`, `authoring_review_bundle` — with
+the SAME checks and response contracts as the `ariadne-authoring` commands
+above, and never a source-approval or Promotion tool. Stdio is local and
+needs no token; the server runs for one project root (`--project`, fixed at
+launch). The authoring tools work in an empty project before the first
+Promotion; query tools then surface the missing-served-model error until a
+human promotes.
 
 Reference: [references/grain-rubric.md](references/grain-rubric.md) — the five
 ADR-0006 resolution patterns for multi-cardinality joins.
