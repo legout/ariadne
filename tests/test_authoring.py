@@ -1774,3 +1774,94 @@ def test_review_refuses_a_source_invalidated_proposal_without_touching_it(tmp_pa
     assert (staging / "bundle-state.json").read_bytes() == state_before
     assert authoring._tree_digest(staging / "bundle") == tree_before
     assert not (project / "context_layer").exists()  # no served effects
+
+
+# ---- candidate citation repair (delta verdict P1s): a citation must be
+# convertible evidence, and changed document bytes cannot ride an identical
+# retry back to the old staged citation ----
+
+
+def test_unconvertible_cited_document_is_refused_before_any_write(tmp_path):
+    """Citation repair P1: a VERIFIED converted-document citation requires the
+    SAME conversion inputs would run — a valid-root ``policy.bin`` (unsupported
+    format) or a PDF whose converter errors is refused with the actionable
+    conversion error BEFORE anything is staged or written, exactly as
+    ``inputs`` would refuse it (spec §2–3: unsupported formats, missing
+    converters, and conversion failures fail explicitly)."""
+    project = approved_project(tmp_path)
+    docs = project / "data" / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    (docs / "policy.bin").write_bytes(b"\x00\x01binary policy")
+    (docs / "policy.pdf").write_bytes(b"this is not a pdf")  # converter errors
+    cases = (("policy.bin", "unsupported document type"), ("policy.pdf", "conversion failed"))
+    for reference, message in cases:
+        submission = bundle_submission()
+        submission["documents"] = [reference]
+        with pytest.raises(ValueError, match=message):
+            authoring.submit_bundle(write_submission(project, submission), project=project)
+    staging = project / "staging" / "authoring"
+    assert not (staging / "bundle").exists()  # nothing staged
+    assert not (staging / "bundle-state.json").exists()  # no state write
+
+
+def test_changed_document_bytes_break_the_same_reference_retry(tmp_path):
+    """Citation repair P1: the submission digest covers the SERVER-VERIFIED
+    citation triples, not just file bodies and reference strings — when
+    policy.md changes after the original submission, a same-files/
+    same-reference retry without the current base digest is refused instead of
+    silently returning the OLD staged citation and review digest; with the
+    current base it stages a correctly chained NEW revision whose citations
+    and review digest differ, and the earlier human review digest refuses
+    Promotion."""
+    project = approved_project(tmp_path)
+    docs = project / "data" / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    policy = docs / "policy.md"
+    policy.write_text("# Pricing policy\n\nUSD only.\n", encoding="utf-8")
+
+    early = authoring.harness_inputs(project=project, documents=["policy.md"])
+    submission = bundle_submission()
+    submission["documents"] = ["policy.md"]
+    a = authoring.submit_bundle(
+        write_submission(project, submission, name="a.json"), project=project
+    )
+    assert a["status"] == "validated"
+    old_citation = a["documents"][0]
+
+    policy.write_text("# Pricing policy v2\n\nEUR also allowed.\n", encoding="utf-8")
+    fresh = authoring.harness_inputs(project=project, documents=["policy.md"])
+    assert fresh["documents"][0]["digest"] != early["documents"][0]["digest"]
+
+    # same files, same reference, NO current base: the identical-retry branch
+    # must not hand back the old staged citation and old review digest
+    with pytest.raises(ValueError, match="base-digest mismatch"):
+        authoring.submit_bundle(
+            write_submission(project, submission, name="retry.json"), project=project
+        )
+
+    # with the CURRENT submission digest as base: a correctly chained new
+    # revision whose verified citations and review digest differ
+    b = authoring.submit_bundle(
+        write_submission(project, submission, name="b.json"),
+        project=project,
+        base_digest=a["digest"],
+    )
+    assert b["revision"] == 2 and b["attempts"] == 2
+    assert b["documents"][0]["digest"] == fresh["documents"][0]["digest"]
+    assert b["documents"][0] != old_citation
+    assert b["review_digest"] != a["review_digest"]
+
+    review = authoring.review_bundle(project=project)
+    assert review["documents"] == b["documents"]
+    assert review["digest"] == b["review_digest"]
+
+    # the earlier human review digest no longer covers the changed citation
+    with pytest.raises(ValueError, match="digest mismatch"):
+        promote_bundle(
+            a["review_digest"],
+            staging_root=project / "staging",
+            served_root=project,
+            by="human:tester",
+            assume_yes=True,
+        )
+    assert not (project / "context_layer").exists()  # nothing served

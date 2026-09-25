@@ -811,11 +811,16 @@ def _registry_sources(project: Path) -> list:
 
 def _citation_record(reference: str, project: Path) -> dict:
     """One VERIFIED document citation (candidate review P1): the reference is
-    checked at the operator's document boundary and the digest taken from the
-    CURRENT snapshot bytes — the resource/title/digest triple is
-    server-derived, never copied from client-supplied citation strings (the
-    client names a reference; the server states what it verified)."""
+    checked at the operator's document boundary, the digest taken from the
+    CURRENT snapshot bytes, AND conversion verified from that SAME snapshot
+    through the exact dispatch :func:`document_evidence` uses — an unsupported
+    format or a missing/failing converter is refused here (spec §2–3), so a
+    VERIFIED converted-document citation can never exist for bytes that
+    ``inputs`` could not convert. The converted body is verified, not stored;
+    the resource/title/digest triple is server-derived, never copied from
+    client-supplied citation strings."""
     resource, title, data = _document_bytes(reference, project)
+    _convert_snapshot(data, Path(title).suffix, display=title)  # verification only
     return {"resource": resource, "title": title, "digest": _sha256_hex(data)}
 
 
@@ -845,12 +850,16 @@ def _staged_citations(bundle_dir: Path) -> list:
     return citations
 
 
-def _submission_digest(files: list[tuple[str, str]], documents: list[str]) -> str:
-    """sha256 over the canonical submitted content INCLUDING the cited document
-    references: the proposal identity that repairs chain on and identical
-    retries are detected by (same files AND same citations)."""
+def _submission_digest(
+    files: list[tuple[str, str]], documents: list[str], citations: list[dict]
+) -> str:
+    """sha256 over the canonical submitted content INCLUDING the server-verified
+    citation triples (spec §25/§34-style source identity, spec §3): identical
+    bytes stay idempotent, but changed current-snapshot bytes change the
+    proposal identity — a same-reference retry can never silently reuse the
+    old staged citations and review digest."""
     canonical = json.dumps(
-        {"documents": list(documents), "files": sorted(files)},
+        {"citations": citations, "documents": list(documents), "files": sorted(files)},
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -1089,7 +1098,7 @@ def submit_bundle(
 
     sources = _registry_sources(project)
     sources_digest = _digest(sources)
-    submission = _submission_digest(files, documents)
+    submission = _submission_digest(files, documents, citations)
     # ONE interprocess lock per project: the state read, the staged swap, and
     # the state store are a single critical section, so two CLI processes with
     # the same base digest cannot both replace the active proposal and no
@@ -1121,6 +1130,13 @@ def submit_bundle(
                     "was made"
                 )
             if base != state["submission_digest"]:
+                if citations != _staged_citations(project / BUNDLE_STAGING_REL):
+                    raise ValueError(
+                        "base-digest mismatch: the cited documents changed since this "
+                        "proposal was staged (the server-verified citation digest "
+                        "differs) — re-fetch inputs, then retry with the CURRENT "
+                        "submission digest as --base-digest; no replacement was made"
+                    )
                 raise ValueError(
                     "base-digest mismatch: the active proposal moved on (stale or competing "
                     "submission) — repairs need the CURRENT submission digest; no "
