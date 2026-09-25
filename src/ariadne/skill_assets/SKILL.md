@@ -140,7 +140,10 @@ the numbers independently. When serving such a metric after Promotion, say
   `sources` list gives them (e.g. `context_layer/metrics/gross_margin.md` and
   `policies/emea-currency-cutover.md`) — never invented, remembered, or guessed
   paths. Ad-hoc answers are `governed: false` proposals — label them as such,
-  never as canonical.
+  never as canonical. For an ad-hoc definition informed by a served context
+  page, cite that page and its Policy paths from the actual `search-context`
+  result in the final answer, alongside the caveats; receiving the paths in
+  tool output without naming them in the answer is not a citation.
 - **`search_context` before novel questions.** The rule you are about to rediscover
   is probably already a policy page. Search first; if the question stays unmodeled,
   route it through `define_metric` so the definition lands in staging as a proposal.

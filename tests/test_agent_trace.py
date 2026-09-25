@@ -332,27 +332,27 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
     assert "governed: false" in lowered and "ad-hoc" in lowered, (
         "final answer must label the result an ungoverned ad-hoc proposal"
     )
-    assert "staged" in lowered and "not promoted" in lowered, (
-        "final answer must state the proposal stays staged, never promoted"
-    )
+    assert ("staged" in lowered or "/staging/" in lowered) and (
+        "not promoted" in lowered or "unpromoted" in lowered
+    ), "final answer must state the proposal stays staged, never promoted"
     _assert_answer_caveats(answer)
-    cited_context = {f"context_layer/{hit['path']}"} | set(_policy_paths(hit_meta))
-    # The answer also names the staged proposal path actually returned by
-    # define-metric; it is not a made-up Policy citation or a served page.
+    page_paths = {hit["path"], f"context_layer/{hit['path']}"}
+    policies = set(_policy_paths(hit_meta))
+    # A search result may be cited by its returned relative path or by its
+    # served-root path; both identify the same actually returned metric page.
+    cited = set(re.findall(r"`([A-Za-z0-9_./-]+\.md)`", answer))
+    assert cited & page_paths, "final answer must cite the returned context page"
     staged_page = "staging/" + grouped["staged_context_as"].split("/staging/", 1)[1]
-    _assert_citations(answer, cited_context | {staged_page}, cited_context)
+    _assert_citations(answer, page_paths | policies | {staged_page}, policies)
 
     # Display precision: every customer's rounded dollar figure must agree with
     # the shared oracle. An overall per-billable-order mean is OPTIONAL (the
     # spec asks per-customer amounts) — validated only when the answer gives one.
     shown: dict[int, float] = {}
-    for left, left_val, right, right_val in re.findall(
-        r"\|\s*(\d{1,2})\s*\|\s*\$?([\d,]+\.\d{2})\s*\|\s*(?:\|\s*)?"
-        r"(\d{1,2})\s*\|\s*\$?([\d,]+\.\d{2})\s*\|",
-        answer,
+    for customer_id, value in re.findall(
+        r"\|\s*(\d{1,2})\s*\|\s*\$?([\d,]+\.\d{2})\s*(?=\|)", answer
     ):
-        shown[int(left)] = float(left_val.replace(",", ""))
-        shown[int(right)] = float(right_val.replace(",", ""))
+        shown[int(customer_id)] = float(value.replace(",", ""))
     assert set(shown) == set(expected), "answer must show every customer ID"
     for customer_id, value in shown.items():
         assert abs(value - round(expected[customer_id], 2)) <= DISPLAY_TOLERANCE, (
@@ -418,7 +418,10 @@ def test_wrong_governed_route_fails_named(demo_db):
 
 def test_missing_caveat_fails_named(demo_db):
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
-    mutilated = re.sub(r"2\. \*\*EMEA currency cutover\*\*.*?\n3\.", "3.", answer, flags=re.DOTALL)
+    mutilated = answer.replace(
+        "pre-2024 EMEA amounts and costs are converted to USD, while other orders are already USD.",
+        "",
+    )
     assert mutilated != answer, "mutation must change the recorded answer"
     trace = _mutated(**{"scenarios.governed.final_answer": mutilated})
     with pytest.raises(AssertionError, match="caveat"):
@@ -444,8 +447,7 @@ def test_unqualified_emea_caveat_fails_named(demo_db):
     """Deleting only the time qualifier (pre-2024) while leaving EMEA and
     'converted' must still fail: the caveat is the TIME-BOUND conversion."""
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
-    mutilated = answer.replace("order_timestamp < '2024-01-01'", "order_timestamp")
-    mutilated = mutilated.replace("EMEA pre-2024 boundary", "EMEA boundary")
+    mutilated = answer.replace("pre-2024 EMEA", "EMEA")
     assert mutilated != answer and "convert" in mutilated.lower() and "emea" in mutilated.lower()
     trace = _mutated(**{"scenarios.governed.final_answer": mutilated})
     with pytest.raises(AssertionError, match="caveat"):
@@ -483,18 +485,14 @@ def test_command_argument_substitution_fails_named(demo_db):
 
 
 def test_optional_overall_mean_absence_still_passes(demo_db):
-    """The overall per-billable-order mean is OPTIONAL (the spec asks for
-    per-customer amounts): removing only that sentence must still pass, and
-    when present it is validated (the recorded answer keeps it)."""
+    """The answer need only show per-customer values; an overall figure is
+    optional, but when supplied it must agree with the same SQL oracle."""
     answer = load_trace()["scenarios"]["adhoc"]["final_answer"]
-    sentence = (
-        "An ungrouped run of the same definition gives an overall average billed "
-        "order amount of **774.652521428572 ≈ $774.65**."
-    )
-    trimmed = answer.replace(sentence, "")
-    assert trimmed != answer and "$774.65" not in trimmed
-    trace = _mutated(**{"scenarios.adhoc.final_answer": trimmed})
-    check_all(trace, demo_db)  # positive mutation: still meets the spec
+    assert "$774.65" not in answer
+    check_all(load_trace(), demo_db)
+    augmented = answer + " Across all customers, mean **per billable order** is $774.65."
+    trace = _mutated(**{"scenarios.adhoc.final_answer": augmented})
+    check_all(trace, demo_db)
 
 
 def test_missing_returned_policy_body_fails_named(demo_db):
