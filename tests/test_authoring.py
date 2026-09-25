@@ -1459,7 +1459,9 @@ def test_durability_barriers_precede_the_prior_copy_removal(tmp_path, monkeypatc
     """Issue #15 review P1: "durably stored" is a fsync barrier, not rename
     atomicity. Before ``bundle.discarded`` (prior proposal A) is removed, the
     transition must have synced B's staged file data, the staged tree's
-    directory entries, BOTH sides of the cross-directory rename (staging root
+    directory entries — INCLUDING the staged tree's own ``bundle-*`` root,
+    whose top-level entries no descendant's fsync persists — as well as BOTH
+    sides of the cross-directory rename (staging root
     and authoring/), the replaced state file's data, and the state file's
     containing directory — otherwise a power interruption can recover state A
     alongside a deleted A while B half-survives."""
@@ -1532,8 +1534,25 @@ def test_durability_barriers_precede_the_prior_copy_removal(tmp_path, monkeypatc
     assert staged, "no staged-tree file data was synced before the prior copy was removed"
     for rel in sorted(p.relative_to(bundle).as_posix() for p in bundle.rglob("*") if p.is_file()):
         assert any(p.endswith(rel) for p in staged), f"staged file never synced: {rel}"
-    assert any(p.startswith(str(staging_root) + "/bundle-") for p in synced_dirs), (
-        "the staged tree's directory entries were never synced"
+    # B's staged tree's own ROOT directory (the exact ``bundle-*`` dir, not a
+    # descendant) must be fsynced — its own top-level entries (data/,
+    # semantic_layer/, context_layer/, ...) are persisted only by syncing the
+    # root itself — and BEFORE the prior copy's rename-aside, let alone its
+    # removal below.
+    root_syncs = [
+        i
+        for i, (p, d) in enumerate(fsynced)
+        if d and Path(p).parent == staging_root and Path(p).name.startswith("bundle-")
+    ]
+    assert root_syncs, "B's staged root directory itself was never synced"
+    discarded_path = staging_root / "authoring" / authoring.BUNDLE_DISCARD_NAME
+    a_rename_at = next(
+        i
+        for i, (kind, p, _) in enumerate(barrier)
+        if kind == "rename" and p.endswith(f"-> {discarded_path}")
+    )
+    assert max(root_syncs) < a_rename_at, (
+        "B's staged root was synced only after the prior copy was renamed aside"
     )
 
     # BOTH sides of the cross-directory rename: the staging root lost the tmp

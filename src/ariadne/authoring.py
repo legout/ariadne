@@ -944,7 +944,9 @@ def _fsync_path(path: Path) -> None:
 def _fsync_tree(root: Path) -> None:
     """Make a staged tree durable: every file's data, then every directory's
     entries deepest-first (a parent synced before its children's entries could
-    miss them on some filesystems)."""
+    miss them on some filesystems), ending with the staged root itself — its
+    own top-level entries are persisted only by fsyncing the root, never by a
+    descendant's sync (issue #15 review P1)."""
     entries = sorted(root.rglob("*"))
     for path in entries:
         if path.is_file():
@@ -953,6 +955,7 @@ def _fsync_tree(root: Path) -> None:
         (p for p in entries if p.is_dir()), key=lambda p: len(p.parts), reverse=True
     ):
         _fsync_path(path)
+    _fsync_path(root)  # root's own entries, last (after its descendants)
 
 
 def _store_bundle_state(project: Path, state: dict) -> None:
