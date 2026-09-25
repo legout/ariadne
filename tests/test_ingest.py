@@ -235,6 +235,9 @@ def test_missing_pdf_converter_error_names_requirement(tmp_path, monkeypatch):
     doc = make_doc(tmp_path, suffix=".pdf", text="unused")
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
     monkeypatch.setitem(sys.modules, "liteparse", None)  # import raises ImportError
+    # also block a submodule an earlier test may really have imported: a
+    # surviving liteparse.parser entry would defeat the parent-module block
+    monkeypatch.setitem(sys.modules, "liteparse.parser", None)
     staged, errors = ingest([doc], staging_dir=tmp_path / "staging", complete=lambda _m: "")
 
     assert staged == []

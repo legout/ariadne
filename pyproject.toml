@@ -25,6 +25,7 @@ ariadne-promote = "ariadne.promote:main"
 ariadne-init = "ariadne.init:main"
 ariadne-skill = "ariadne.skill:main"
 ariadne-profiler = "ariadne.profiler:main"
+ariadne-authoring = "ariadne.authoring_cli:main"  # harness-led authoring (issue #13)
 
 [project.optional-dependencies]
 # ADR-0012/spec §7: MCP is the optional transport extra — the base install

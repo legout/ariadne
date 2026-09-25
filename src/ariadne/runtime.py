@@ -385,15 +385,17 @@ class AriadneRuntime:
         """Rev 10 (ADR-0011): the governed number ships with its caveats — the full
         served OKF metric page (``context_layer/metrics/<name>.md``) plus the full
         bodies of every policy page its frontmatter ``sources[]`` cites
-        (``policies/`` paths, resolved against the served context dir). Context
-        problems NEVER fail the query — the number is still governed: a missing
-        metric page or an unresolvable policy reference collapses to
-        ``{metric_page: null, policies: []}`` and is logged nowhere. Containment
-        (defense in depth — served YAML names are not fully trusted): the metric
-        page must resolve inside the context root and every cited policy under
-        ``policies/``; a ``../..``-style traversal is just another unresolvable
-        reference — the context collapses to the null form and nothing outside
-        the context dir is ever read."""
+        (``policies/`` paths, resolved against the served context dir). When the
+        metric's computation page declares ``attestation: pending`` (ADR-0013:
+        promoted is not independently value-attested), the context carries that
+        caveat explicitly. Context problems NEVER fail the query — the number is
+        still governed: a missing metric page or an unresolvable policy reference
+        collapses to ``{metric_page: null, policies: []}`` and is logged nowhere.
+        Containment (defense in depth — served YAML names are not fully trusted):
+        the metric page must resolve inside the context root and every cited policy
+        under ``policies/``; a ``../..``-style traversal is just another
+        unresolvable reference — the context collapses to the null form and
+        nothing outside the context dir is ever read."""
         try:
             root = self.context_dir.resolve()
             page = root / "metrics" / f"{name}.md"
@@ -415,9 +417,36 @@ class AriadneRuntime:
                 if not body.is_relative_to(policies_root):
                     raise ValueError(f"policy reference escapes policies/: {ref}")
                 policies.append(body.read_text(encoding="utf-8"))
-            return {"metric_page": text, "policies": policies}
+            context = {"metric_page": text, "policies": policies}
+            if self._computation_attestation(root, name) == "pending":
+                # ADR-0013/spec acceptance 5, and ONLY the pending case (the new
+                # harness-led bundles): governed:true means Promoted, never an
+                # independent numeric attestation — say so on every such answer.
+                # Existing attested bundles keep the established context shape.
+                context["attestation"] = "pending"
+                context["governed_note"] = (
+                    "governed: true means Promoted, not independently value-attested"
+                )
+            return context
         except Exception:  # missing page, unresolvable ref, traversal, unparsable frontmatter
             return {"metric_page": None, "policies": []}
+
+    def _computation_attestation(self, root: Path, name: str) -> str | None:
+        """The computation page's attestation caveat for ``name``: ``"pending"``
+        when the served computation declares it (ADR-0007 scoped extension),
+        the cited attester when one is present, None when there is no such
+        page. Read problems are just another missing caveat — never a failure."""
+        try:
+            page = root / "computations" / f"{name}.md"
+            if not page.resolve().is_relative_to(root) or not page.is_file():
+                return None
+            match = _FRONTMATTER_RE.match(page.read_text(encoding="utf-8"))
+            meta = (yaml.safe_load(match.group(1)) or {}) if match else {}
+            if meta.get("attestation") == "pending":
+                return "pending"
+            return str(meta["attester"]) if meta.get("attester") else None
+        except Exception:
+            return None
 
     async def define_metric(self, definition: dict) -> dict:
         """Ad-hoc path (spec rev 3 §4/§5): draft -> compile gate -> execute -> stage.

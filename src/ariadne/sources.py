@@ -53,8 +53,8 @@ SOURCE_KEYS = frozenset({"name", "type", "path", "connection_env", "table", "rea
 DSN_RE = re.compile(r"postgres(?:ql)?://")
 # URI-scheme prefix (ducklake:, https://, s3://, ...): never cwd-relative.
 _URI_SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*:")
-# scheme://user:password@host — the password NEVER survives into an error.
-_DSN_PASSWORD_RE = re.compile(r"(//[^\s/@:]+:)([^\s/@]+)(@)")
+# scheme://user:password@host (also empty user) — never echo a password.
+_DSN_PASSWORD_RE = re.compile(r"(//[^\s/@:]*:)([^\s/@]+)(@)")
 
 SOURCE_TYPES = (
     "sqlite",
@@ -129,8 +129,8 @@ def load_registry(path: str | Path = DEFAULT_PATH) -> Registry:
     """Parse and validate a source registry (ADR-0010). Raises ``ValueError``
     naming the offending entry for: a non-slug name, an unknown type, a missing
     ``path`` (file/attach types) or ``connection_env`` (postgres), an inline
-    connection string (ADR-0010), a glob without an explicit ``table:``, or
-    duplicate source names."""
+    connection string or credentialed URL (ADR-0010), a glob without an
+    explicit ``table:``, or duplicate source names."""
     registry_path = Path(path)
     try:
         doc = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
@@ -186,6 +186,12 @@ def _source(path: Path, index: int, entry: object, seen: set[str]) -> Source:
             raise ValueError(
                 f"{where}: {key} carries an inline connection string (ADR-0010): "
                 "reference an environment variable with connection_env: <NAME>"
+            )
+        if isinstance(value, str) and _DSN_PASSWORD_RE.search(value):
+            raise ValueError(
+                f"{where}: {key} carries inline URL credentials (ADR-0010): "
+                "remove the user:password userinfo — credentials live in the "
+                "environment, never in the registry"
             )
     unknown = sorted(set(entry) - SOURCE_KEYS)
     if unknown:

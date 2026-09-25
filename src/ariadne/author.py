@@ -463,10 +463,18 @@ def _enrich_metric_pages(staging: Path, models: dict[str, dict]) -> None:
         path.write_text(_set_frontmatter(existing, updates), encoding="utf-8")
 
 
-def _write_computations(staging: Path, models: dict[str, dict]) -> None:
+def _write_computations(
+    staging: Path, models: dict[str, dict], *, attester: str | None = "tests/test_evals.py"
+) -> None:
     """One computation page per governed metric (spec §8.15): the sanctioned
-    expression straight from the gate-checked model, runtime + attester. Deterministic:
-    the LLM is never asked to reproduce SQL the compile gate already sanctions.
+    expression straight from the gate-checked model, runtime + attestation
+    status. Deterministic: the LLM is never asked to reproduce SQL the compile
+    gate already sanctions.
+
+    ``attester=None`` is the harness-led mode (ADR-0013 / ADR-0007 scoped
+    extension): a metric with no independent expected-value oracle carries an
+    honest ``attestation: pending`` — never an invented attester such as the
+    demo's ``tests/test_evals.py``.
 
     ponytail: pages are deliberately term-sparse (generic h1, no name repetition,
     no filler prose) — serve.py ranks context hits by term frequency, so generated
@@ -482,7 +490,6 @@ def _write_computations(staging: Path, models: dict[str, dict]) -> None:
             "status": "draft",
             "governed_by": f"semantic_layer {info['model']}::{name}",
             "runtime": "duckdb",
-            "attester": "tests/test_evals.py",
             "sources": [
                 {
                     "id": f"model-{info['model']}",
@@ -491,19 +498,29 @@ def _write_computations(staging: Path, models: dict[str, dict]) -> None:
                 }
             ],
         }
+        if attester is None:
+            meta["attestation"] = "pending"
+        else:
+            meta["attester"] = attester
         front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
+        oracle = (
+            "independent attestation pending — no expected-value oracle is cited "
+            "(compile and grain checks are not independent numeric attestation)"
+            if attester is None
+            else f"attestation `{attester}` golden values"
+        )
         body = (
             "# Sanctioned computation\n\n"
             f"Sanctioned SQL (ANSI_SQL, `semantic_layer/models/{info['model']}.yml`); "
             "compile gate `ariadne.validate`; execution DuckDB via the local `ariadne` "
-            "command (`ariadne get-metric`); attestation `tests/test_evals.py` golden "
-            "values. Business rules: cited metric page.\n\n"
+            f"command (`ariadne get-metric`); {oracle}. "
+            "Business rules: cited metric page.\n\n"
             "```sql\n" + info["expression"].strip() + "\n```\n"
         )
         (comp_dir / f"{name}.md").write_text(f"---\n{front}\n---\n\n{body}", encoding="utf-8")
 
 
-def _stamp_pages(staging: Path, now: datetime) -> None:
+def _stamp_pages(staging: Path, now: datetime, *, by: str = "ariadne-author") -> None:
     """Stamp the trust/lifecycle frontmatter the LLM must never invent (ADR-0007):
     generated/verified/stale_after on every staged OKF page."""
     stale_after = (now + timedelta(days=90)).date().isoformat()
@@ -514,7 +531,7 @@ def _stamp_pages(staging: Path, now: datetime) -> None:
                 path.read_text(encoding="utf-8"),
                 {
                     "generated": {
-                        "by": "ariadne-author",
+                        "by": by,
                         "at": now.isoformat(timespec="seconds"),
                     },
                     "verified": [],
@@ -525,14 +542,21 @@ def _stamp_pages(staging: Path, now: datetime) -> None:
         )
 
 
-def _finalize_bundle(staging: Path) -> None:
+def _finalize_bundle(
+    staging: Path,
+    *,
+    generated_by: str = "ariadne-author",
+    attester: str | None = "tests/test_evals.py",
+) -> None:
     """Post-validation deterministic passes (ADR-0007): enrich metric pages from the
-    staged models, generate the computation pages, stamp lifecycle frontmatter."""
+    staged models, generate the computation pages, stamp lifecycle frontmatter.
+    Harness-led submission (spec 2026-09-24-0005) passes its own provenance and
+    ``attester=None`` (pending attestation, ADR-0013)."""
     now = datetime.now(UTC)
     models = _model_index(staging)
     _enrich_metric_pages(staging, models)
-    _write_computations(staging, models)
-    _stamp_pages(staging, now)
+    _write_computations(staging, models, attester=attester)
+    _stamp_pages(staging, now, by=generated_by)
 
 
 # ADR-0007 bundle contract: every content type must be present, keyed by its
@@ -606,9 +630,17 @@ def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list
                 "(a policies/... source)"
             )
     elif expected_type == "computation":
-        for key in ("governed_by", "runtime", "attester"):
+        for key in ("governed_by", "runtime"):
             if not meta.get(key):
                 errors.append(f"{rel}: computation page requires '{key}' frontmatter")
+        # ADR-0007 scoped extension (ADR-0013): the honest ``attestation: pending``
+        # state stands in for an attester a new metric does not have; a real
+        # attester may be cited instead. Neither present = contract violation.
+        if not meta.get("attester") and meta.get("attestation") != "pending":
+            errors.append(
+                f"{rel}: computation page requires 'attester' frontmatter or the honest "
+                "'attestation: pending' state (ADR-0007 scoped extension)"
+            )
     return errors
 
 
