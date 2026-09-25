@@ -352,7 +352,10 @@ def test_tool_descriptions_carry_routing_language(served):
     assert "dimensions" in desc["list_metrics"]
 
 
-def test_server_registers_exactly_five_tools(served):
+def test_server_registers_five_query_and_five_authoring_tools(served):
+    """Spec 2026-09-23-0001 §4 keeps exactly the five query/ad-hoc tools; spec
+    2026-09-24-0005 adds exactly five authoring tools (issue #16) — and never
+    a source-approval or Promotion tool (ADR-0013: human-only)."""
     from ariadne.serve import build_app
 
     served_dir, db = served
@@ -364,7 +367,13 @@ def test_server_registers_exactly_five_tools(served):
         "get_metric",
         "list_datasets",
         "define_metric",
+        "authoring_propose_sources",
+        "authoring_inputs",
+        "authoring_upload_document",
+        "authoring_submit_bundle",
+        "authoring_review_bundle",
     }
+    assert not [tool for tool in tools if "approve" in tool.name or "promot" in tool.name]
 
 
 # --- Ad-hoc query layer (spec revision 3, §8.8-8.11) -------------------------
