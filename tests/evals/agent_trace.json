@@ -1,27 +1,27 @@
 {
   "_meta": {
-    "description": "Recorded Pi answer-trace evidence (spec 2026-09-23-0003 revision 2, evidence tier 1): one GENUINE unscripted session answering both spec questions over the installed packaged Ariadne skill and the synthetic retail demo. Commands, selected result payloads, and final answers are verbatim observations, never edited to pass; changing this trace requires a new observed run (see tests/test_agent_trace.py). Refreshed 2026-09-25 from a fresh observed run after issue #17's packaged-skill guidance change.",
+    "description": "Recorded Pi answer-trace evidence (spec 2026-09-23-0003 revision 2): a fresh own-model session answered both questions with only the installed candidate Ariadne skill and retail demo; every call and final answer below was observed, not scripted for fixture assertions.",
     "host": "pi",
     "session": {
-      "run_id": "58e3ea2a-871d-4435-b6b7-77da1966b5c5",
-      "session_id": "01a0d25c-aef3-7616-a5e0-1a90586e42c6",
-      "started_at": "2026-09-25T13:19:32.427Z",
-      "cwd": "/tmp/issue17-trace/proj",
-      "jsonl_path": "/home/volker/.pi/agent/sessions/--home-volker-coding-ariadne--/2026-09-24T07-41-24-596Z_01a0d25c-aef3-7616-a5e0-1a90586e42c6/58e3ea2a-871d-4435-b6b7-77da1966b5c5/run-0/session.jsonl",
-      "jsonl_sha256": "a4910c1075e0ad867db654bfdee23bf96e29aa00993f1bb224510e0ffb7b2fe3",
-      "jsonl_sha256_note": "hash of the session log as captured at fixture-refresh time (the log continues after capture)",
-      "both_questions_in_one_session": true
+      "run_id": "340f963d-8d9c-4a28-ba5d-814b0239b34e",
+      "session_id": "01a0d8d2-8e33-7236-adeb-6e8a1e01d46b",
+      "started_at": "2026-09-25T13:47:52.756Z",
+      "cwd": "/tmp/issue17-fresh/proj",
+      "jsonl_path": "/home/volker/.pi/agent/sessions/--home-volker-coding-ariadne--/2026-09-24T07-41-24-596Z_01a0d25c-aef3-7616-a5e0-1a90586e42c6/79ee9852-9ec5-4703-b7ff-36d7661ba767/run-0/session.jsonl",
+      "jsonl_sha256": "5b189e065a5f596a1ad2fdc217ed0c020e62de37e4c03df5a664fbeda4aa0b79",
+      "both_questions_in_one_session": true,
+      "answer_artifact": "/home/volker/.pi/agent/sessions/--home-volker-coding-ariadne--/subagent-artifacts/outputs/340f963d-8d9c-4a28-ba5d-814b0239b34e/issue17/fresh-answer-session.md"
     },
     "skill": {
       "name": "ariadne",
       "install": "ariadne-skill install --scope project --agent pi",
       "skill_md_sha256": "35e7c92bcfb3022792fd4901a951eb623e8aa40401965a88218210ba37b1c736",
       "read_before_first_call": ".agents/skills/ariadne/SKILL.md",
-      "provenance": "installed from the issue #17 candidate checkout (uv pip install -e <worktree>; the ariadne console script resolves to the candidate code) and read in full before the first CLI call"
+      "provenance": "installed from candidate checkout into /tmp/issue17-fresh/proj before this fresh Pi session; first tool read is the installed skill"
     },
     "skill_read_before_first_call": true,
     "db": "/home/volker/coding/ariadne/examples/retail-demo/data/demo.db",
-    "selection": "All observed ariadne CLI calls preserved in order (the get-metric/define-metric --help probes and the four failed define-metric probes included); result payloads keep the ACTUAL public-CLI JSON fields — get-metric context carries the full metric_page string and full policy body strings, search-context keeps the first COMPLETE observed hit object, list-metrics/list-datasets entries keep their original public fields, failed define-metric calls keep their stderr error object, successful define-metric calls keep metric/columns/rows/governed/staged_as/staged_context_as — trimmed only by selection, no invented summary fields; --help probes record command + exit only (textual stdout not duplicated); per-call wall-clock offsets were not recorded, so no 'at' fields are present; harness recall tooling, hidden reasoning, credentials, and acceptance reports excluded; final answers are the assistant write payload before the harness acceptance-report block."
+    "selection": "All 12 observed Ariadne CLI invocations in order (shared list-metrics discovery appears in both scenario call lists with the SAME seq 1), including failed get-metric probe for the unpromoted metric, two failed define-metric probes, and both successful definitions; JSON result fields copied from session tool outputs. Search-context outputs exceeded the session tool limit; the first complete observed hit was extracted from each logged prefix. Final answer sections are verbatim slices of the session write payload at answer_artifact."
   },
   "scenarios": {
     "governed": {
@@ -29,7 +29,7 @@
       "calls": [
         {
           "seq": 1,
-          "command": "ariadne list-metrics --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo",
+          "command": "/tmp/issue17-trace/venv/bin/ariadne list-metrics --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo",
           "exit": 0,
           "result": [
             {
@@ -80,12 +80,24 @@
         },
         {
           "seq": 2,
-          "command": "ariadne get-metric --help",
-          "exit": 0
+          "command": "/tmp/issue17-trace/venv/bin/ariadne search-context \"gross margin by region\" --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo",
+          "exit": 0,
+          "result": [
+            {
+              "path": "metrics/gross_margin.md",
+              "score": 42,
+              "draft": false,
+              "content": "---\ntype: metric\nstatus: stable\ntitle: gross_margin\ndescription: Ratio of (billed revenue minus COGS) to billed revenue over non-cancelled,\n  non-returned orders, with EMEA pre-2024 currency conversion applied.\ntags:\n- metric\n- margin\n- kpi\nsources:\n- id: orders\n  resource: tables/orders.md\n  title: Orders table\n- id: order-status-billing\n  resource: policies/order-status-billing.md\n  title: 'Policy: order status billing'\n- id: emea-currency-cutover\n  resource: policies/emea-currency-cutover.md\n  title: 'Policy: EMEA currency cutover'\ngoverned_by: semantic_layer orders::gross_margin\ndimensions:\n- order_date\n- status\n- region\ngrain:\n  primary_key:\n  - order_id\n  cardinality_enforcement: STRICT_1_TO_1\ngenerated:\n  by: ariadne-author\n  at: '2026-09-16T16:59:23+00:00'\nverified:\n- by: human:volker\n  at: '2026-09-16T16:59:24+00:00'\nstale_after: '2026-12-15'\n---\n## Business rules that govern this metric\n\nTwo policies apply:\n\n1. **Status exclusion** (`policies/order-status-billing.md`). Rows with `status` in `('CANCELLED', 'RETURNED')` must be excluded from every revenue, margin, and billed-order-count number. Only rows with `status = 'COMPLETED'` contribute.\n2. **EMEA currency cutover** (`policies/emea-currency-cutover.md`). For rows where `region_code = 'EMEA'` and `order_timestamp < '2024-01-01'`, `amount` and `product_cost` are in local currency given by `currency` (`EUR` or `GBP`) and must be multiplied by `rate_to_usd` from `currency_conversion_rate` joined on `currency`. All other rows are already USD and use a multiplier of `1.0`:\n   - `region_code = 'EMEA'` with `order_timestamp >= '2024-01-01'` — migrated to USD at cutover, multiply by `1.0`.\n   - `region_code = 'NA'` — always USD, multiply by `1.0`.\n   - `region_code = 'APAC'` — always USD, multiply by `1.0`.\n\nConverting rows outside the EMEA pre-2024 boundary will silently deflate the figures.\n\n## Definition\n\nGross margin is a **ratio of sums**, not an average of per-row margins:\n\n```\n(sum(amount_converted) - sum(product_cost_converted)) / sum(amount_converted)\n```\n\nwhere `*_converted` applies rule 2 and the aggregate is taken only over rows surviving rule 1.\n",
+              "excerpt": "NCELLED', 'RETURNED')` must be excluded from every revenue, margin, and billed-order-count number. Only rows with `status = 'C",
+              "line_start": 42,
+              "line_end": 42,
+              "section": "Business rules that govern this metric"
+            }
+          ]
         },
         {
-          "seq": 3,
-          "command": "ariadne get-metric gross_margin --dimension region --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo",
+          "seq": 4,
+          "command": "/tmp/issue17-trace/venv/bin/ariadne get-metric gross_margin --dimension region --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo",
           "exit": 0,
           "result": {
             "metric": "gross_margin",
@@ -122,14 +134,14 @@
           }
         }
       ],
-      "final_answer": "**Gross margin by region (governed metric, no date filter)** — `governed: true`, served by `gross_margin`:\n\n| Region | Gross margin |\n| :--- | ---: |\n| APAC | 36.68% |\n| EMEA | 38.44% |\n| NA | 36.41% |\n\nCaveats (from the served context): **excludes CANCELLED and RETURNED orders** — cancelled and returned orders never count toward billed revenue or costs; and **pre-2024 EMEA revenue and costs are converted from local currency to USD before aggregation.**\n\nProvenance: Ariadne compiled the served model to SQL and ran it read-only; the returned context is the served page `context_layer/metrics/gross_margin.md` citing `policies/order-status-billing.md` and `policies/emea-currency-cutover.md`."
+      "final_answer": "**`governed: true`** (served metric `gross_margin`, model `orders::gross_margin`, verified `human:volker`), from:\n\n```\nariadne get-metric gross_margin --dimension region \\\n  --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db \\\n  --served /home/volker/coding/ariadne/examples/retail-demo\n```\n\n| region | gross_margin |\n|---|---|\n| NA   | 0.3640985278027471 (≈ 36.41 %) |\n| APAC | 0.3667576965122099 (≈ 36.68 %) |\n| EMEA | 0.3844192711869463 (≈ 38.44 %) |\n\nCaveats that ship with these numbers, cited from the `context` block the CLI returned — the served metric page `context_layer/metrics/gross_margin.md` and the full bodies of both policies it cites, `policies/order-status-billing.md` and `policies/emea-currency-cutover.md`:\n\n1. **Status exclusion** — rows with `status` in `('CANCELLED', 'RETURNED')` are excluded; only `COMPLETED` rows contribute. (\"Cancelled and returned orders are not revenue.\")\n2. **EMEA currency cutover** — EMEA rows with `order_timestamp < '2024-01-01'` are stored in local currency (`EUR`/`GBP`) and were multiplied by `rate_to_usd` from `currency_conversion_rate`; all other rows are already USD (×1.0). The policy warns that \"converting rows outside the EMEA pre-2024 boundary will silently deflate the figures.\"\n3. The metric page defines gross margin as a **ratio of sums** — `(sum(amount_converted) − sum(product_cost_converted)) / sum(amount_converted)` — \"not an average of per-row margins.\" The compiled SQL returned with the result implements exactly this (ratio of the two SUMs per `region`, with the `CASE WHEN` fx multiplier).\n\n---"
     },
     "adhoc": {
       "question": "What is the mean order amount per customer?",
       "calls": [
         {
-          "seq": 4,
-          "command": "ariadne list-metrics --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo",
+          "seq": 1,
+          "command": "/tmp/issue17-trace/venv/bin/ariadne list-metrics --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo",
           "exit": 0,
           "result": [
             {
@@ -179,8 +191,8 @@
           ]
         },
         {
-          "seq": 5,
-          "command": "ariadne search-context 'mean order amount per customer' --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo",
+          "seq": 3,
+          "command": "/tmp/issue17-trace/venv/bin/ariadne search-context \"mean order amount per customer\" --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo",
           "exit": 0,
           "result": [
             {
@@ -196,8 +208,19 @@
           ]
         },
         {
+          "seq": 5,
+          "command": "/tmp/issue17-trace/venv/bin/ariadne get-metric mean_order_amount_per_customer --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo",
+          "exit": 1,
+          "result": {
+            "error": {
+              "type": "ValueError",
+              "message": "unknown metric 'mean_order_amount_per_customer'; available metrics: cogs, customer_count, gross_margin, gross_revenue, order_count. If no governed metric above answers your question, route it to the ad-hoc path: call list_datasets() to see the queryable tables, then define_metric(definition) to compute the answer (compiled, executed read-only, auto-staged for human promotion)."
+            }
+          }
+        },
+        {
           "seq": 6,
-          "command": "ariadne list-datasets --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo",
+          "command": "/tmp/issue17-trace/venv/bin/ariadne list-datasets --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo",
           "exit": 0,
           "result": [
             {
@@ -271,34 +294,17 @@
         },
         {
           "seq": 7,
-          "command": "ariadne define-metric --help",
+          "command": "/tmp/issue17-trace/venv/bin/ariadne define-metric --help",
           "exit": 0
         },
         {
           "seq": 8,
-          "command": "printf '%s\\n' '{}' | ariadne define-metric --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo --staging /tmp/issue17-trace/proj/staging",
-          "exit": 1,
-          "result": {
-            "error": {
-              "type": "ValueError",
-              "message": "invalid metric name None: use a lowercase snake_case slug (letters, digits, single underscores, starting and ending alphanumeric)"
-            }
-          }
+          "command": "/tmp/issue17-trace/venv/bin/ariadne --help",
+          "exit": 0
         },
         {
           "seq": 9,
-          "command": "printf '%s\\n' '{\"name\":\"mean_order_amount_per_customer\"}' | ariadne define-metric --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo --staging /tmp/issue17-trace/proj/staging",
-          "exit": 1,
-          "result": {
-            "error": {
-              "type": "ValueError",
-              "message": "define_metric requires a non-empty string 'description'"
-            }
-          }
-        },
-        {
-          "seq": 10,
-          "command": "printf '%s\\n' '{\"name\": \"mean_order_amount_per_customer\", \"description\": \"Mean billable order amount per customer in USD: exclude CANCELLED/RETURNED, convert pre-2024 EMEA amounts to USD via currency_conversion_rate.rate_to_usd.\"}' | ariadne define-metric --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo --staging /tmp/issue17-trace/proj/staging",
+          "command": "cat <<'EOF' | /tmp/issue17-trace/venv/bin/ariadne define-metric --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo --staging /tmp/issue17-fresh/proj/staging\n{\"name\": \"mean_order_amount_per_customer\", \"description\": \"Average billed amount per billable order, grouped by customer\"}\nEOF",
           "exit": 1,
           "result": {
             "error": {
@@ -308,8 +314,8 @@
           }
         },
         {
-          "seq": 11,
-          "command": "printf '%s\\n' '{\"name\": \"mean_order_amount_per_customer\", \"description\": \"Mean billable order amount per customer in USD: exclude CANCELLED/RETURNED, convert pre-2024 EMEA amounts to USD via currency_conversion_rate.rate_to_usd.\", \"source\": \"SELECT o.order_id, o.customer_id, o.status, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN o.amount * COALESCE(r.rate_to_usd, 1.0) ELSE o.amount END AS amount_usd FROM orders o LEFT JOIN currency_conversion_rate r ON r.currency = o.currency\"}' | ariadne define-metric --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo --staging /tmp/issue17-trace/proj/staging",
+          "seq": 10,
+          "command": "cat <<'EOF' | /tmp/issue17-trace/venv/bin/ariadne define-metric --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo --staging /tmp/issue17-fresh/proj/staging\n{\"name\": \"mean_order_amount_per_customer\", \"description\": \"Average billed amount per billable order, grouped by customer\", \"source\": \"SELECT o.customer_id, o.status, o.region_code, o.order_timestamp, o.currency, o.amount, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate FROM demo.main.orders AS o LEFT JOIN demo.main.currency_conversion_rate AS r ON r.currency = o.currency\"}\nEOF",
           "exit": 1,
           "result": {
             "error": {
@@ -319,8 +325,8 @@
           }
         },
         {
-          "seq": 12,
-          "command": "printf '%s\\n' '{\"name\": \"mean_order_amount_per_customer\", \"description\": \"Mean billable order amount per customer in USD: exclude CANCELLED/RETURNED, convert pre-2024 EMEA amounts to USD via currency_conversion_rate.rate_to_usd.\", \"source\": \"SELECT o.order_id, o.customer_id, o.status, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN o.amount * COALESCE(r.rate_to_usd, 1.0) ELSE o.amount END AS amount_usd FROM orders o LEFT JOIN currency_conversion_rate r ON r.currency = o.currency\", \"expression\": \"AVG(CASE WHEN status NOT IN ('CANCELLED', 'RETURNED') THEN amount_usd END)\"}' | ariadne define-metric --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo --staging /tmp/issue17-trace/proj/staging",
+          "seq": 11,
+          "command": "cat <<'EOF' | /tmp/issue17-trace/venv/bin/ariadne define-metric --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo --staging /tmp/issue17-fresh/proj/staging\n{\"name\": \"mean_order_amount_per_customer\", \"description\": \"Average billed amount per billable order, grouped by customer. Applies order-status-billing (exclude CANCELLED/RETURNED) and emea-currency-cutover (convert amount to USD for EMEA pre-2024 rows).\", \"source\": \"SELECT o.customer_id, o.status, o.region_code, o.order_timestamp, o.currency, o.amount, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate FROM demo.main.orders AS o LEFT JOIN demo.main.currency_conversion_rate AS r ON r.currency = o.currency\", \"expression\": \"AVG(CASE WHEN status NOT IN ('CANCELLED', 'RETURNED') THEN amount * fx_rate END)\", \"dimension\": \"customer_id\"}\nEOF",
           "exit": 0,
           "result": {
             "metric": "mean_order_amount_per_customer",
@@ -332,14 +338,23 @@
                 "mean_order_amount_per_customer": 774.652521428572
               }
             ],
+            "sql": "SELECT AVG(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount * fx_rate END) AS mean_order_amount_per_customer FROM (SELECT o.customer_id, o.status, o.region_code, o.order_timestamp, o.currency, o.amount, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate FROM demo.main.orders AS o LEFT JOIN demo.main.currency_conversion_rate AS r ON r.currency = o.currency)",
             "governed": false,
-            "staged_as": "/tmp/issue17-trace/proj/staging/semantic_layer/models/adhoc/mean_order_amount_per_customer.yml",
-            "staged_context_as": "/tmp/issue17-trace/proj/staging/context_layer/metrics/mean_order_amount_per_customer.md"
+            "context": null,
+            "definition": {
+              "name": "mean_order_amount_per_customer",
+              "description": "Average billed amount per billable order, grouped by customer. Applies order-status-billing (exclude CANCELLED/RETURNED) and emea-currency-cutover (convert amount to USD for EMEA pre-2024 rows).",
+              "source": "SELECT o.customer_id, o.status, o.region_code, o.order_timestamp, o.currency, o.amount, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate FROM demo.main.orders AS o LEFT JOIN demo.main.currency_conversion_rate AS r ON r.currency = o.currency",
+              "expression": "AVG(CASE WHEN status NOT IN ('CANCELLED', 'RETURNED') THEN amount * fx_rate END)",
+              "dimensions": []
+            },
+            "staged_as": "/tmp/issue17-fresh/proj/staging/semantic_layer/models/adhoc/mean_order_amount_per_customer.yml",
+            "staged_context_as": "/tmp/issue17-fresh/proj/staging/context_layer/metrics/mean_order_amount_per_customer.md"
           }
         },
         {
-          "seq": 13,
-          "command": "printf '%s\\n' '{\"name\": \"mean_order_amount_per_customer\", \"description\": \"Mean billable order amount per customer in USD: exclude CANCELLED/RETURNED, convert pre-2024 EMEA amounts to USD via currency_conversion_rate.rate_to_usd.\", \"source\": \"SELECT o.order_id, o.customer_id, o.status, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN o.amount * COALESCE(r.rate_to_usd, 1.0) ELSE o.amount END AS amount_usd FROM orders o LEFT JOIN currency_conversion_rate r ON r.currency = o.currency\", \"expression\": \"AVG(CASE WHEN status NOT IN ('CANCELLED', 'RETURNED') THEN amount_usd END)\", \"dimensions\": [\"customer_id\"]}' | ariadne define-metric --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo --staging /tmp/issue17-trace/proj/staging",
+          "seq": 12,
+          "command": "cat <<'EOF' | /tmp/issue17-trace/venv/bin/ariadne define-metric --db /home/volker/coding/ariadne/examples/retail-demo/data/demo.db --served /home/volker/coding/ariadne/examples/retail-demo --staging /tmp/issue17-fresh/proj/staging\n{\"name\": \"mean_order_amount_per_customer\", \"description\": \"Average billed amount per billable order, grouped by customer. Applies order-status-billing (exclude CANCELLED/RETURNED) and emea-currency-cutover (convert amount to USD for EMEA pre-2024 rows).\", \"source\": \"SELECT o.customer_id, o.status, o.region_code, o.order_timestamp, o.currency, o.amount, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate FROM demo.main.orders AS o LEFT JOIN demo.main.currency_conversion_rate AS r ON r.currency = o.currency\", \"expression\": \"AVG(CASE WHEN status NOT IN ('CANCELLED', 'RETURNED') THEN amount * fx_rate END)\", \"dimensions\": [\"customer_id\"]}\nEOF",
           "exit": 0,
           "result": {
             "metric": "mean_order_amount_per_customer",
@@ -348,46 +363,6 @@
               "mean_order_amount_per_customer"
             ],
             "rows": [
-              {
-                "customer_id": 22,
-                "mean_order_amount_per_customer": 737.9621428571429
-              },
-              {
-                "customer_id": 14,
-                "mean_order_amount_per_customer": 780.7349666666669
-              },
-              {
-                "customer_id": 15,
-                "mean_order_amount_per_customer": 850.51722
-              },
-              {
-                "customer_id": 11,
-                "mean_order_amount_per_customer": 880.1427150000002
-              },
-              {
-                "customer_id": 9,
-                "mean_order_amount_per_customer": 820.7904454545455
-              },
-              {
-                "customer_id": 5,
-                "mean_order_amount_per_customer": 744.4105375000001
-              },
-              {
-                "customer_id": 16,
-                "mean_order_amount_per_customer": 758.7263833333333
-              },
-              {
-                "customer_id": 26,
-                "mean_order_amount_per_customer": 904.0878133333333
-              },
-              {
-                "customer_id": 17,
-                "mean_order_amount_per_customer": 605.4328571428572
-              },
-              {
-                "customer_id": 30,
-                "mean_order_amount_per_customer": 698.0641666666667
-              },
               {
                 "customer_id": 18,
                 "mean_order_amount_per_customer": 878.5494285714285
@@ -467,15 +442,66 @@
               {
                 "customer_id": 24,
                 "mean_order_amount_per_customer": 672.1690894736842
+              },
+              {
+                "customer_id": 22,
+                "mean_order_amount_per_customer": 737.9621428571429
+              },
+              {
+                "customer_id": 14,
+                "mean_order_amount_per_customer": 780.7349666666669
+              },
+              {
+                "customer_id": 15,
+                "mean_order_amount_per_customer": 850.51722
+              },
+              {
+                "customer_id": 11,
+                "mean_order_amount_per_customer": 880.1427150000002
+              },
+              {
+                "customer_id": 9,
+                "mean_order_amount_per_customer": 820.7904454545455
+              },
+              {
+                "customer_id": 5,
+                "mean_order_amount_per_customer": 744.4105375000001
+              },
+              {
+                "customer_id": 16,
+                "mean_order_amount_per_customer": 758.7263833333333
+              },
+              {
+                "customer_id": 26,
+                "mean_order_amount_per_customer": 904.0878133333333
+              },
+              {
+                "customer_id": 17,
+                "mean_order_amount_per_customer": 605.4328571428572
+              },
+              {
+                "customer_id": 30,
+                "mean_order_amount_per_customer": 698.0641666666667
               }
             ],
+            "sql": "SELECT customer_id AS customer_id, AVG(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount * fx_rate END) AS mean_order_amount_per_customer FROM (SELECT o.customer_id, o.status, o.region_code, o.order_timestamp, o.currency, o.amount, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate FROM demo.main.orders AS o LEFT JOIN demo.main.currency_conversion_rate AS r ON r.currency = o.currency) GROUP BY customer_id",
             "governed": false,
-            "staged_as": "/tmp/issue17-trace/proj/staging/semantic_layer/models/adhoc/mean_order_amount_per_customer-2.yml",
-            "staged_context_as": "/tmp/issue17-trace/proj/staging/context_layer/metrics/mean_order_amount_per_customer-2.md"
+            "context": null,
+            "definition": {
+              "name": "mean_order_amount_per_customer",
+              "description": "Average billed amount per billable order, grouped by customer. Applies order-status-billing (exclude CANCELLED/RETURNED) and emea-currency-cutover (convert amount to USD for EMEA pre-2024 rows).",
+              "source": "SELECT o.customer_id, o.status, o.region_code, o.order_timestamp, o.currency, o.amount, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate FROM demo.main.orders AS o LEFT JOIN demo.main.currency_conversion_rate AS r ON r.currency = o.currency",
+              "expression": "AVG(CASE WHEN status NOT IN ('CANCELLED', 'RETURNED') THEN amount * fx_rate END)",
+              "dimensions": [
+                "customer_id"
+              ]
+            },
+            "staged_as": "/tmp/issue17-fresh/proj/staging/semantic_layer/models/adhoc/mean_order_amount_per_customer-2.yml",
+            "staged_context_as": "/tmp/issue17-fresh/proj/staging/context_layer/metrics/mean_order_amount_per_customer-2.md"
           }
         }
       ],
-      "final_answer": "**Mean order amount per customer** — an ungoverned **ad-hoc** proposal (`governed: false`), computed read-only through `define-metric` and auto-staged for human review, **not promoted**:\n\n| Customer | Mean order | Customer | Mean order |\n| ---: | ---: | ---: | ---: |\n| 1 | $632.35 | 2 | $724.07 |\n| 3 | $815.30 | 4 | $843.39 |\n| 5 | $744.41 | 6 | $855.15 |\n| 7 | $532.67 | 8 | $568.53 |\n| 9 | $820.79 | 10 | $738.69 |\n| 11 | $880.14 | 12 | $597.58 |\n| 13 | $681.51 | 14 | $780.73 |\n| 15 | $850.52 | 16 | $758.73 |\n| 17 | $605.43 | 18 | $878.55 |\n| 19 | $1156.84 | 20 | $981.68 |\n| 21 | $837.37 | 22 | $737.96 |\n| 23 | $722.77 | 24 | $672.17 |\n| 25 | $954.03 | 26 | $904.09 |\n| 27 | $926.78 | 28 | $814.59 |\n| 29 | $863.31 | 30 | $698.06 |\n\nAcross all customers, the mean **per billable order** is $774.65 (weighted by order count, not the average of customer means). \n\nCaveats: **excludes CANCELLED and RETURNED orders**; **pre-2024 EMEA amounts are converted to USD** via `currency_conversion_rate.rate_to_usd` before averaging; other amounts stay in USD.\n\nThis number is a proposal (`governed: false`), staged under `staging/` as OSI proposal `mean_order_amount_per_customer-2.yml` plus its context draft — never canonical until a human promotes it. Note: a served context page exists (`context_layer/metrics/mean_order_amount_per_customer.md`, frontmatter `governed_by: adhoc_…`), citing `policies/order-status-billing.md` and `policies/emea-currency-cutover.md` — but `list-metrics` does not serve it as a governed semantic metric."
+      "final_answer": "**`governed: false`** — ad-hoc compiled proposal, not a canonical served number.\n\nRoute: the served context has a page for this metric (`context_layer/metrics/mean_order_amount_per_customer.md`, `governed_by: adhoc_mean_order_amount_per_customer...`), but `get-metric mean_order_amount_per_customer` fails with:\n\n> `unknown metric 'mean_order_amount_per_customer'; available metrics: cogs, customer_count, gross_margin, gross_revenue, order_count`\n\ni.e. the page's semantic model was never promoted into the served layer. Per the skill, the question was routed through the ad-hoc path: `list-datasets`, then `define-metric` (read-only compile gate, auto-staged for human promotion).\n\nDefinition submitted (mirrors the two served policies from the page above): source = `orders LEFT JOIN currency_conversion_rate` with `fx_rate = rate_to_usd` only for EMEA pre-2024 rows; expression = `AVG(CASE WHEN status NOT IN ('CANCELLED','RETURNED') THEN amount * fx_rate END)`; dimension `customer_id`. The CLI returned `governed: false` and staged the proposal under this project (`staging/semantic_layer/models/adhoc/mean_order_amount_per_customer-2.yml` + `staging/context_layer/metrics/mean_order_amount_per_customer-2.md`) — **not promoted**.\n\nPer-customer mean billed order amount (USD, all 30 customers):\n\n| customer_id | mean order amount |  | customer_id | mean order amount |\n|---|---|---|---|---|\n| 1 | 632.35 |  | 16 | 758.73 |\n| 2 | 724.07 |  | 17 | 605.43 |\n| 3 | 815.30 |  | 18 | 878.55 |\n| 4 | 843.39 |  | 19 | 1156.84 |\n| 5 | 744.41 |  | 20 | 981.68 |\n| 6 | 855.15 |  | 21 | 837.37 |\n| 7 | 532.67 |  | 22 | 737.96 |\n| 8 | 568.53 |  | 23 | 722.77 |\n| 9 | 820.79 |  | 24 | 672.17 |\n| 10 | 738.69 |  | 25 | 954.03 |\n| 11 | 880.14 |  | 26 | 904.09 |\n| 12 | 597.58 |  | 27 | 926.78 |\n| 13 | 681.51 |  | 28 | 814.59 |\n| 14 | 780.73 |  | 29 | 863.31 |\n| 15 | 850.52 |  | 30 | 698.06 |\n\nRange: lowest ≈ **532.67** (customer 7), highest ≈ **1156.84** (customer 19). An ungrouped run of the same definition gives an overall average billed order amount of **774.652521428572 ≈ $774.65**.\n\nCaveats (label and rules, as required): this number is a **`governed: false` ad-hoc proposal** — compiled and executed read-only through the same gate, but canonical only if a human promotes the staged proposal; treat it as provisional. It applies the two served policies — status exclusion (`policies/order-status-billing.md`) and EMEA pre-2024 currency conversion of `amount` (`policies/emea-currency-cutover.md`) — matching the served-but-unpromoted metric page's stated definition (\"average billed amount per billable order … computed as gross_revenue / NULLIF(order_count, 0) per customer\")."
     }
   }
 }

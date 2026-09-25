@@ -1,11 +1,11 @@
 """Deterministic recorded-trace check (spec 2026-09-23-0003, evidence tier 1).
 
-``tests/evals/agent_trace.json`` records a GENUINE unscripted Pi session (both
-spec questions asked in ONE session) over the installed packaged Ariadne skill
-and the synthetic retail demo: every observed ``ariadne`` CLI call in order —
-schema probes and the failed define-metric probes included — the minimal JSON
-outputs the assertions need, the packaged-skill digest, and the final answers
-verbatim (the assistant's write payload before the harness acceptance report).
+``tests/evals/agent_trace.json`` records a fresh Pi session (both questions
+asked in ONE session) over the installed packaged Ariadne skill and synthetic
+retail demo: every observed ``ariadne`` CLI call in order, including the failed
+unpromoted get-metric probe and two failed define-metric probes; the minimal
+JSON outputs the assertions need, packaged-skill digest, and final answers
+verbatim from the assistant's write payload.
 Nothing is scripted or edited to pass: this check validates the RECORDED run
 only. A separately reported fresh live smoke covers the current agent (spec
 tier 2); this test calls no model and makes no live-provider claim.
@@ -63,7 +63,11 @@ def _assert_answer_caveats(answer: str) -> None:
     assert "cancel" in lowered and "return" in lowered, (
         "final answer caveat missing: excluded CANCELLED/RETURNED orders"
     )
-    assert "emea" in lowered and "convert" in lowered and _EMEA_TIME_BOUNDARY.search(lowered), (
+    assert (
+        "emea" in lowered
+        and re.search(r"conver[ts]", lowered)
+        and _EMEA_TIME_BOUNDARY.search(lowered)
+    ), (
         "final answer caveat missing: pre-2024 EMEA currency conversion with its "
         "time qualifier (the unqualified 'EMEA amounts are converted' is not the caveat)"
     )
@@ -241,7 +245,9 @@ def check_governed(scenario: dict, sql_expected: dict, golden_expected: dict) ->
     # Display precision: the answer's rounded table must agree with the oracle.
     shown = {
         region: float(pct)
-        for region, pct in re.findall(r"\|\s*(NA|EMEA|APAC)\s*\|\s*([\d.]+)%", answer)
+        for region, pct in re.findall(
+            r"\|\s*(NA|EMEA|APAC)\s*\|[^|\n]*?([\d.]+)\s*%\s*\)?\s*\|", answer
+        )
     }
     assert set(shown) == set(sql_expected), "answer must show every region"
     for region, pct in shown.items():
@@ -261,7 +267,9 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
         "ad-hoc route: discovery (list-metrics) must precede list-datasets, "
         "which must precede the successful define-metric"
     )
-    assert not _real_calls(scenario, "get-metric"), (
+    assert not any(
+        scenario["calls"][i]["exit"] == 0 for i in _real_calls(scenario, "get-metric")
+    ), (
         "ad-hoc route: no governed get-metric may answer an unlisted metric"
     )
 
@@ -288,7 +296,7 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
         "a served context page whose governed_by is adhoc_* is not a governed metric"
     )
 
-    # Failed schema probes are preserved and precede the successes (nothing
+    # Failed definition probes are preserved and precede the successes (nothing
     # rewritten to look clean); every real define-metric before the first success failed.
     first_ok = min(define_ok)
     for i in _real_calls(scenario, "define-metric"):
@@ -328,15 +336,19 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
         "final answer must state the proposal stays staged, never promoted"
     )
     _assert_answer_caveats(answer)
-    supported = {f"context_layer/{hit['path']}"} | set(_policy_paths(hit_meta))
-    _assert_citations(answer, supported, supported)
+    cited_context = {f"context_layer/{hit['path']}"} | set(_policy_paths(hit_meta))
+    # The answer also names the staged proposal path actually returned by
+    # define-metric; it is not a made-up Policy citation or a served page.
+    staged_page = "staging/" + grouped["staged_context_as"].split("/staging/", 1)[1]
+    _assert_citations(answer, cited_context | {staged_page}, cited_context)
 
     # Display precision: every customer's rounded dollar figure must agree with
     # the shared oracle. An overall per-billable-order mean is OPTIONAL (the
     # spec asks per-customer amounts) — validated only when the answer gives one.
     shown: dict[int, float] = {}
     for left, left_val, right, right_val in re.findall(
-        r"\|\s*(\d{1,2})\s*\|\s*\$([\d,]+\.\d{2})\s*\|\s*(\d{1,2})\s*\|\s*\$([\d,]+\.\d{2})\s*\|",
+        r"\|\s*(\d{1,2})\s*\|\s*\$?([\d,]+\.\d{2})\s*\|\s*(?:\|\s*)?"
+        r"(\d{1,2})\s*\|\s*\$?([\d,]+\.\d{2})\s*\|",
         answer,
     ):
         shown[int(left)] = float(left_val.replace(",", ""))
@@ -346,7 +358,7 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
         assert abs(value - round(expected[customer_id], 2)) <= DISPLAY_TOLERANCE, (
             f"answer display value customer {customer_id}: ${value} disagrees with the oracle"
         )
-    overall_match = re.search(r"per billable order\*\* is \$([\d,]+\.\d{2})", answer)
+    overall_match = re.search(r"(?:per billable order\*\* is|≈)\s*\$([\d,]+\.\d{2})", answer)
     if overall_match is not None:
         overall_shown = float(overall_match.group(1).replace(",", ""))
         assert abs(overall_shown - round(oracle["overall"], 2)) <= DISPLAY_TOLERANCE, (
@@ -396,8 +408,9 @@ def _mutated(**overrides):
 
 
 def test_wrong_governed_route_fails_named(demo_db):
+    get_at = _real_calls(load_trace()["scenarios"]["governed"], "get-metric")[0]
     trace = _mutated(
-        **{"scenarios.governed.calls.2.command": "ariadne define-metric --file gm.json"}
+        **{f"scenarios.governed.calls.{get_at}.command": "ariadne define-metric --file gm.json"}
     )
     with pytest.raises(AssertionError, match="governed route"):
         check_all(trace, demo_db)
@@ -405,11 +418,7 @@ def test_wrong_governed_route_fails_named(demo_db):
 
 def test_missing_caveat_fails_named(demo_db):
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
-    mutilated = answer.replace(
-        "pre-2024 EMEA revenue and costs are converted from local currency to USD "
-        "before aggregation.",
-        "",
-    )
+    mutilated = re.sub(r"2\. \*\*EMEA currency cutover\*\*.*?\n3\.", "3.", answer, flags=re.DOTALL)
     assert mutilated != answer, "mutation must change the recorded answer"
     trace = _mutated(**{"scenarios.governed.final_answer": mutilated})
     with pytest.raises(AssertionError, match="caveat"):
@@ -435,7 +444,8 @@ def test_unqualified_emea_caveat_fails_named(demo_db):
     """Deleting only the time qualifier (pre-2024) while leaving EMEA and
     'converted' must still fail: the caveat is the TIME-BOUND conversion."""
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
-    mutilated = answer.replace("pre-2024 EMEA", "EMEA")
+    mutilated = answer.replace("order_timestamp < '2024-01-01'", "order_timestamp")
+    mutilated = mutilated.replace("EMEA pre-2024 boundary", "EMEA boundary")
     assert mutilated != answer and "convert" in mutilated.lower() and "emea" in mutilated.lower()
     trace = _mutated(**{"scenarios.governed.final_answer": mutilated})
     with pytest.raises(AssertionError, match="caveat"):
@@ -447,7 +457,7 @@ def test_negated_governed_label_fails_named(demo_db):
     governed label, even though the substring 'governed' is present."""
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
     for bad in ("not governed", "governed: false"):
-        relabeled = answer.replace("(governed metric, no date filter)", f"({bad}, no date filter)")
+        relabeled = answer.replace("`governed: true`", f"`{bad}`")
         assert relabeled != answer, f"mutation must change the recorded answer ({bad})"
         trace = _mutated(**{"scenarios.governed.final_answer": relabeled})
         with pytest.raises(AssertionError, match="positively label"):
@@ -458,7 +468,8 @@ def test_command_argument_substitution_fails_named(demo_db):
     """Stale rows behind a rewritten request must fail: the successful
     get-metric command must actually request gross_margin by region, and its
     returned metric/dimensions must match the request."""
-    original = load_trace()["scenarios"]["governed"]["calls"][2]["command"]
+    get_at = _real_calls(load_trace()["scenarios"]["governed"], "get-metric")[0]
+    original = load_trace()["scenarios"]["governed"]["calls"][get_at]["command"]
     assert "get-metric gross_margin --dimension region" in original
     for substitution in (
         "get-metric cogs --dimension region",  # wrong metric, stale rows
@@ -466,7 +477,7 @@ def test_command_argument_substitution_fails_named(demo_db):
     ):
         mutated_cmd = original.replace("get-metric gross_margin --dimension region", substitution)
         assert mutated_cmd != original
-        trace = _mutated(**{"scenarios.governed.calls.2.command": mutated_cmd})
+        trace = _mutated(**{f"scenarios.governed.calls.{get_at}.command": mutated_cmd})
         with pytest.raises(AssertionError, match="governed route"):
             check_all(trace, demo_db)
 
@@ -477,8 +488,8 @@ def test_optional_overall_mean_absence_still_passes(demo_db):
     when present it is validated (the recorded answer keeps it)."""
     answer = load_trace()["scenarios"]["adhoc"]["final_answer"]
     sentence = (
-        "Across all customers, the mean **per billable order** is $774.65 "
-        "(weighted by order count, not the average of customer means). "
+        "An ungrouped run of the same definition gives an overall average billed "
+        "order amount of **774.652521428572 ≈ $774.65**."
     )
     trimmed = answer.replace(sentence, "")
     assert trimmed != answer and "$774.65" not in trimmed
@@ -489,8 +500,11 @@ def test_optional_overall_mean_absence_still_passes(demo_db):
 def test_missing_returned_policy_body_fails_named(demo_db):
     """A context that returns the metric page's policy citations without the
     corresponding full body is incomplete evidence — named failure."""
-    policies = load_trace()["scenarios"]["governed"]["calls"][2]["result"]["context"]["policies"]
+    get_at = _real_calls(load_trace()["scenarios"]["governed"], "get-metric")[0]
+    policies = load_trace()["scenarios"]["governed"]["calls"][get_at]["result"]["context"][
+        "policies"
+    ]
     assert len(policies) == 2 and policies[1].strip()
-    trace = _mutated(**{"scenarios.governed.calls.2.result.context.policies.1": ""})
+    trace = _mutated(**{f"scenarios.governed.calls.{get_at}.result.context.policies.1": ""})
     with pytest.raises(AssertionError, match="policy"):
         check_all(trace, demo_db)
