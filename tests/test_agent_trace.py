@@ -269,9 +269,7 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
     )
     assert not any(
         scenario["calls"][i]["exit"] == 0 for i in _real_calls(scenario, "get-metric")
-    ), (
-        "ad-hoc route: no governed get-metric may answer an unlisted metric"
-    )
+    ), "ad-hoc route: no governed get-metric may answer an unlisted metric"
 
     # The trap the spec names: a served context page for the measure exists,
     # but list-metrics does not serve it as a semantic metric — the recorded
