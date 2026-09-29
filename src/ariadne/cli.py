@@ -11,6 +11,9 @@ in the runtime:
     ariadne search-context QUERY [--limit N]
     ariadne get-metric NAME [--dimension NAME ...] [--start VALUE] [--end VALUE]
     ariadne define-metric [--file PATH]        (stdin when --file is absent)
+    ariadne save-example [--file PATH]          (stdin when absent; issue #19 —
+                                               explicit answer-example submission)
+    ariadne search-examples QUERY [--limit N] [--include-history]
 
 Every successful invocation writes exactly one JSON value plus a newline to
 stdout and nothing else; temporal values serialize as ISO-8601 strings and
@@ -97,14 +100,14 @@ def _resolve_served_root(explicit: str | None) -> Path:
     return valid[0][1]
 
 
-def _read_definition(file: str | None, stdin: Any) -> dict:
-    """One JSON definition object from --file PATH or stdin (spec §4). Parsed
-    before the runtime is constructed, so invalid JSON can execute and stage
-    nothing (spec §9)."""
+def _read_definition(file: str | None, stdin: Any, what: str = "definition") -> dict:
+    """One JSON object from --file PATH or stdin (spec §4). Parsed before the
+    runtime is constructed, so invalid JSON can execute and stage nothing
+    (spec §9)."""
     try:
         text = Path(file).read_text(encoding="utf-8") if file else stdin.read()
     except OSError as exc:
-        raise ValueError(f"cannot read definition: {exc}") from exc
+        raise ValueError(f"cannot read {what}: {exc}") from exc
     # pi-lens-ignore: unchecked-throwing-call-python
     return json.loads(text)
 
@@ -157,6 +160,24 @@ def build_parser() -> _Parser:
 
     define = sub.add_parser("define-metric", parents=[common], help="define an ad-hoc metric")
     define.add_argument("--file", help="JSON definition file (stdin when absent)")
+
+    save = sub.add_parser(
+        "save-example",
+        parents=[common],
+        help="save an explicit answer-example draft (issue #19)",
+    )
+    save.add_argument("--file", help="JSON submission file (stdin when absent)")
+
+    examples = sub.add_parser(
+        "search-examples", parents=[common], help="search saved answer examples"
+    )
+    examples.add_argument("query")
+    examples.add_argument("--limit", type=int, default=10)
+    examples.add_argument(
+        "--include-history",
+        action="store_true",
+        help="include stale/superseded/rejected records as labeled history",
+    )
     return parser
 
 
@@ -166,7 +187,11 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
     # opens. Every earlier failure therefore precedes any connection, execution,
     # or staging.
     root = _resolve_served_root(args.served)
-    definition = _read_definition(args.file, stdin) if args.command == "define-metric" else None
+    definition = None
+    if args.command in ("define-metric", "save-example"):  # parsed pre-runtime (spec §9)
+        definition = _read_definition(
+            args.file, stdin, "submission" if args.command == "save-example" else "definition"
+        )
     sources_path = default_registry_path(args.sources, args.db)
     runtime = AriadneRuntime(
         root / "semantic_layer",
@@ -188,6 +213,15 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
             if value is not None
         }
         result = asyncio.run(runtime.get_metric(args.name, args.dimension, time_range or None))
+    elif args.command == "save-example":
+        assert definition is not None  # _read_definition ran above
+        result = asyncio.run(runtime.save_example(definition))
+    elif args.command == "search-examples":
+        result = asyncio.run(
+            runtime.search_examples(
+                args.query, limit=args.limit, include_history=args.include_history
+            )
+        )
     else:  # define-metric
         assert definition is not None  # _read_definition ran above
         result = asyncio.run(runtime.define_metric(definition))
