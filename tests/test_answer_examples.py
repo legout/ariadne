@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
 from ariadne.cli import main as cli  # noqa: E402
+from ariadne.promote import _plan  # noqa: E402
 from tests.test_cli import error_payload  # noqa: E402
 from tests.test_serve import (  # noqa: E402
     GOLDEN_OKF,
@@ -335,6 +336,32 @@ def test_staging_symlink_into_served_rejected_writes_nothing(served, tmp_path, c
     assert error_payload(capsys.readouterr().err)["message"]
     assert target.read_bytes() == b"reviewed index\n"
     assert [p.name for p in real_dir.iterdir()] == ["index.md"]  # no draft page written
+
+
+def test_staging_symlink_into_staged_context_layer_rejected_writes_nothing(
+    served, tmp_path, capsys
+):
+    """ADR-0014/ADR-0003: examples are a separate staged store — a symlinked
+    example directory may not redirect a save into staged Context Layer pages
+    that human batch promotion would then mark stable (delta finding)."""
+    root, _db = served
+    staging = tmp_path / "staging"
+    metrics = staging / "context_layer" / "metrics"
+    metrics.mkdir(parents=True)
+    os.symlink(metrics, staging / "answer_examples")
+
+    code = run_cli(
+        served, staging, "save-example", stdin=io.StringIO(json.dumps(_submission(_SMALL_RESULT)))
+    )
+    assert code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""  # no false success status
+    assert "symlink" in error_payload(captured.err)["message"]
+
+    # The staged Context Layer store is untouched: no example page/index/log,
+    # and the promotion gate receives no example page to batch-promote.
+    assert [p.name for p in metrics.iterdir()] == []
+    assert _plan(staging, root) == ([], [])
 
 
 def test_non_metric_citation_and_malformed_sources_rejected_writes_nothing(

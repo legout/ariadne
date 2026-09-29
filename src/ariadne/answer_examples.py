@@ -285,7 +285,15 @@ def _guard_staging(directory: Path, served_root: Path) -> None:
     """Staged examples live under the selected staging root and never in or
     through the served root (ADR-0014): a symlinked or overlapping example
     directory — or a symlinked bundle bookkeeping file — is refused before
-    any write, so no save can touch served artifacts."""
+    any write, so no save can touch served artifacts. The example directory
+    itself is refused as a symlink even when its target stays inside staging
+    (ADR-0003): redirects into a staged Context Layer bundle would ride its
+    human batch promotion; only the final path component is checked, so the
+    operator-selected staging root may still sit behind a symlinked ancestor."""
+    if directory.is_symlink():
+        raise ValueError(
+            f"staging example directory itself is a symlink — refusing to write: {directory}"
+        )
     resolved = directory.resolve()
     if not resolved.is_relative_to(directory.parent.resolve()):
         raise ValueError(
