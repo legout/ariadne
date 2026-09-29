@@ -6,7 +6,12 @@ All query behavior — compilation, execution, context attachment, grain checks,
 proposal staging — lives in :class:`ariadne.runtime.AriadneRuntime`
 (spec 2026-09-23-0001 §3, ADR-0012); this module only registers exactly five
 query tools (spec §4) over one runtime instance and parses the server
-arguments. All authoring behavior lives in :mod:`ariadne.authoring`
+arguments. All answer-example behavior lives in
+:mod:`ariadne.answer_examples` behind the runtime's transport-neutral
+``save_example``/``search_examples`` (issue #21): this adapter adds two thin
+tools sharing the local CLI's exact implementation, and the operator review
+command (``ariadne-example-review``) is never registered as a tool. All
+authoring behavior lives in :mod:`ariadne.authoring`
 (:func:`propose_sources`, :func:`harness_inputs`, :func:`store_upload`,
 :func:`submit_bundle`, :func:`review_bundle`); the adapter adds five stdio
 tools with the SAME checks and response contracts as ``ariadne-authoring`` —
@@ -169,6 +174,51 @@ def build_app(facade: FacadeSource, *, project: str | Path = "."):
                 context_layer/metrics/ that search_context can find).
         """
         return await _runtime().define_metric(definition)
+
+    # --- the two answer-example tools (issue #21, spec 2026-09-29-0006) ---
+    # Thin adapters over the runtime's transport-neutral save/search (issue
+    # #19): the local JSON CLI rides the exact same runtime methods, so a
+    # draft saved over one transport is immediately searchable over the other.
+    # The operator review command (ariadne-example-review, issue #20) is
+    # deliberately NOT registered as a tool — review is human-only.
+
+    @app.tool()
+    async def save_example(submission: dict) -> dict:
+        """Stage one explicit answer example as a labeled draft under
+        staging/answer_examples/ — an EXPLICIT user-confirmed submission only:
+        present the bounded record (result excerpt/digest, method/arguments,
+        question/interpretation/parameters, sources, submitter attestation)
+        for user confirmation BEFORE calling this. Never a governed write, a
+        promotion, or transcript harvesting; nothing about the example changes
+        the served catalog. Same contract as ``ariadne save-example``.
+
+        Args:
+            submission: {question, interpretation, parameters?, method:
+                {operation: get_metric|define_metric, arguments}, result: the
+                observed Ariadne envelope (metric/sql/columns/rows/governed),
+                submitter (self-declared), attestation, sources: cited served
+                metric/Policy paths}. Malformed input stores nothing.
+        """
+        return await _runtime().save_example(submission)
+
+    @app.tool()
+    async def search_examples(
+        query: str, limit: int = 10, include_history: bool = False
+    ) -> list[dict]:
+        """Search saved answer examples as labeled references (draft/stable,
+        staleness, provenance, path) — historical evidence to check a METHOD
+        against, never a cached answer. Similar words are not equivalence:
+        compare dates, filters, grain, metric identity and served Policies,
+        and rerun fresh. Never executes a query. Same contract as
+        ``ariadne search-examples``; stale/closed records stay history unless
+        include_history is set.
+
+        Args:
+            query: terms ranked against question/interpretation.
+            limit: maximum records returned.
+            include_history: include stale/superseded/rejected records, labeled.
+        """
+        return await _runtime().search_examples(query, limit=limit, include_history=include_history)
 
     # --- the five authoring tools (spec 2026-09-24-0005, issue #16) ---
     # The project root below was fixed at server launch (--project); no tool

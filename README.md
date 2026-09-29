@@ -27,8 +27,9 @@ host-integrated tool registration.
 
 ### For querying agents
 
-- **Five local commands** covering the full question lifecycle (see below) — governed answers
-  first, with a safe path for anything not yet modeled. No server required.
+- **Local commands** covering the full question lifecycle (see below) — governed answers
+  first, with a safe path for anything not yet modeled, plus saved answer examples as
+  labeled method references. No server required.
 - **Caveats attached to every number.** Governed answers include the full text of every
   business policy the metric cites. Ungoverned answers are clearly labeled
   `governed: false`.
@@ -156,7 +157,7 @@ token; the server runs for one project root. Source approval and Promotion are
 never exposed as tools.
 
 **Optional: MCP.** The base package is local-first and needs no server; MCP registers the
-same five operations as tools when you want them. Install the extra into the same Python
+same operations as tools when you want them. Install the extra into the same Python
 environment as `ariadne`, from the Ariadne package checkout (the directory containing
 `pyproject.toml`):
 
@@ -175,11 +176,11 @@ ariadne-serve --sources ariadne.yaml
 The scaffolded `.mcp.json` wires your agent to `ariadne-serve`; restart the agent after
 config changes.
 
-## Querying: the five local commands
+## Querying: the local commands
 
-All five print one JSON value; the common options (`--sources`/`--db`, `--served`) follow
+All commands print one JSON value; the common options (`--sources`/`--db`, `--served`) follow
 the subcommand. The CLI finds promoted artifacts in the working directory or `./served`.
-MCP registers the same five operations as tools when the `mcp` extra is installed.
+MCP registers the same operations as tools when the `mcp` extra is installed.
 
 | Command | What the agent uses it for |
 | --- | --- |
@@ -188,6 +189,12 @@ MCP registers the same five operations as tools when the `mcp` extra is installe
 | `ariadne search-context QUERY` | Look up business rules, policies, and table caveats before answering |
 | `ariadne list-datasets` | See every table across all registered sources |
 | `ariadne define-metric` | Answer an unmodeled question: draft a metric (JSON via `--file` or stdin), pass the safety checks, run it read-only, label it `governed: false`, and auto-stage it as a proposal |
+| `ariadne search-examples QUERY` | Find explicitly saved answer examples — labeled references (draft/stable, staleness, provenance) for checking a method, never cached answers; never executes a query |
+| `ariadne save-example` | Save one answer example after the user explicitly confirms the bounded record (question, interpretation, method, result excerpt, self-declared attestation); stages a draft under `staging/answer_examples/` for operator review |
+
+Saved examples are references, not caches: a similar question still compares dates, filters,
+grain and cited policies, and the answer is always produced fresh by the runtime. Reviewing
+submissions is an operator command (`ariadne-example-review`), never an agent action.
 
 ## Data sources
 

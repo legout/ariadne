@@ -284,6 +284,46 @@ def test_promote_refuses_review_needed_semantic_yaml(tmp_path, capsys):
     assert not served.exists() or tree(served) == {}  # nothing from the tree was served
 
 
+# ------------- issue #20: staged answer examples never block or join promotion -------------
+
+
+def test_promote_ignores_staging_answer_examples_but_refuses_layer_markers(tmp_path, capsys):
+    """ADR-0014 acceptance 7: an unreviewed (even review_needed-marked) staged
+    answer example neither blocks nor joins an unrelated Context Layer/OSI
+    promotion, while a marked Context Layer artifact is still refused."""
+    staging, served = make_staging(tmp_path / "staging"), tmp_path / "served"
+    examples = staging / "answer_examples"
+    examples.mkdir()
+    (examples / "unreviewed-example.md").write_text(
+        "---\n"
+        "type: answer_example\n"
+        "status: review_needed\n"
+        "question: gross margin by region\n"
+        "---\n\n# gross margin by region\n",
+        encoding="utf-8",
+    )
+
+    changes = run_promote(staging, served)  # the unrelated promotion succeeds
+    assert [c.rel for c in changes] == [
+        "context_layer/metrics/gross_margin.md",
+        "context_layer/policies/order-status-billing.md",
+        "semantic_layer/models/orders.yml",
+    ]
+    assert not (served / "answer_examples").exists()  # examples never merge
+    assert not (served / "staging").exists()
+
+    # A marked Context Layer artifact still refuses — and the refusal names it.
+    (staging / "context_layer" / "metrics" / "gross_margin.md").write_text(
+        STAGED_METRIC.replace("status: draft", "status: review_needed"), encoding="utf-8"
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        run_promote(staging, served)
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "context_layer/metrics/gross_margin.md" in err
+    assert "answer_examples" not in err
+
+
 def test_promote_cli_yes(tmp_path):
     staging, served = make_staging(tmp_path / "staging"), tmp_path / "served"
     code = main(["--yes", "--staging", str(staging), "--served", str(served), "--by", BY])
