@@ -35,11 +35,11 @@ The agent that profiles a database and drafts Context Layer and Semantic Layer a
 _Avoid_: generator
 
 **Staging**:
-The holding area (`staging/`) where authored artifacts await human review. The Authoring Agent never writes anywhere else.
+The holding area (`staging/`) where authored artifacts and explicitly submitted Answer Examples await human review. The Authoring Agent never writes anywhere else.
 _Avoid_: drafts, sandbox
 
 **Promotion**:
-The human act of moving a staged artifact into the served layers, marking it verified. Served artifacts only ever arrive by Promotion.
+The human act of admitting a staged artifact into its reviewed destination (served layers or the reviewed Answer Example store), marking its review. Discoverability in Staging is never Promotion.
 _Avoid_: publish, deploy
 
 **Seed Notes**:
@@ -55,6 +55,10 @@ _Avoid_: dynamic metric, on-the-fly metric
 **Proposal**:
 An auto-staged Ad-hoc Metric definition awaiting human promotion; successful questions leave their definitions in `staging/` as candidates for the catalog.
 _Avoid_: draft, candidate file
+
+**Answer Example**:
+An explicitly submitted OKF record of a question, intended meaning, used query method and bounded historical answer. Review approves it as a reusable reference, not a governed definition or an answer cache.
+_Avoid_: query snippet, cached answer
 
 ### Context Layer (OKF bundle)
 
