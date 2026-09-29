@@ -18,12 +18,16 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
 from ariadne.cli import main as cli  # noqa: E402
+from ariadne.example_review import (  # noqa: E402  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    main as review_cli,
+)
 from ariadne.promote import _plan  # noqa: E402
 from tests.test_cli import error_payload  # noqa: E402
 from tests.test_serve import (  # noqa: E402
@@ -380,6 +384,384 @@ def test_non_metric_citation_and_malformed_sources_rejected_writes_nothing(
             "metric or Policy page" in error["message"] or "'sources' must be" in error["message"]
         )
     assert not staging.exists() or not any(staging.rglob("*"))  # nothing staged
+
+
+# ------------- issue #20: operator review, staleness, promotion isolation -------------
+
+
+def run_review(served, staging, example_id, decision, tmp_path):
+    """Invoke the operator-only console entry with the exact argv a human runs."""
+    decision_file = tmp_path / "decision.json"
+    decision_file.write_text(json.dumps(decision), encoding="utf-8")
+    root, _db = served
+    return review_cli(
+        [example_id, "--file", str(decision_file), "--served", str(root), "--staging", str(staging)]
+    )
+
+
+def review_error(capsys):
+    """The same one-JSON-error-object contract as the ariadne CLI."""
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    return error_payload(captured.err)
+
+
+def test_maintainer_review_admits_exact_draft_then_policy_change_suspends_reuse(
+    served, tmp_path, capsys
+):
+    """AC3/AC4 red seam: submitter attestation + maintainer technical review
+    admits ONE exact staged ID to the served example store as stable (no metric
+    promotion); changing the cited served Policy then removes it from ordinary
+    method reuse while --include-history keeps it labeled and byte-preserved."""
+    root, db = served
+    staging = tmp_path / "staging"
+
+    assert run_cli(served, staging, "list-metrics") == 0
+    metrics_before = json.loads(capsys.readouterr().out)
+    assert run_cli(served, staging, "get-metric", "gross_margin", "--dimension", "region") == 0
+    examined = json.loads(capsys.readouterr().out)
+    policy = root / "context_layer" / "policies" / "order-status-billing.md"
+    policy_bytes = policy.read_bytes()
+
+    assert run_cli(
+        served,
+        staging,
+        "save-example",
+        stdin=io.StringIO(
+            json.dumps(
+                _submission(
+                    examined,
+                    sources=[
+                        "context_layer/metrics/gross_margin.md",
+                        "context_layer/policies/order-status-billing.md",
+                    ],
+                )
+            )
+        ),
+    ) == 0
+    saved = json.loads(capsys.readouterr().out)
+    staged = Path(saved["path"])
+    decision = {
+        "id": saved["id"],
+        "actor": "maintainer:reviewer",
+        "outcome": "approve",
+        "technical_review": (
+            "Method is the served gross_margin metric grouped by region; the cited "
+            "metric and billing Policy match the current served pages."
+        ),
+        "staged_digest": hashlib.sha256(staged.read_bytes()).hexdigest(),
+    }
+    assert run_review(served, staging, saved["id"], decision, tmp_path) == 0
+    approved = json.loads(capsys.readouterr().out)
+    assert approved["outcome"] == "approve" and approved["status"] == "stable"
+
+    served_page = root / "answer_examples" / f"{saved['id']}.md"
+    meta = yaml.safe_load(served_page.read_text(encoding="utf-8").split("---")[1])
+    assert meta["status"] == "stable"
+    assert meta["review"]["actor"] == "maintainer:reviewer"
+    assert meta["review"]["outcome"] == "approve"
+    assert meta["review"]["technical_review"] == decision["technical_review"]
+    assert meta["review"]["at"]  # review time retained
+    assert meta["submitter"]["attestation"]  # submitter meaning retained
+    assert not staged.exists()  # the review moved the exact staged record
+
+    # Ordinary search now serves the reviewed record as stable with its review
+    # provenance; no metric was promoted. (Earlier #19 tests leave reviewed
+    # records in the module-scoped served root, so locate this exact ID.)
+    assert run_cli(served, staging, "search-examples", "gross margin region") == 0
+    hits = json.loads(capsys.readouterr().out)
+    mine = next(hit for hit in hits if hit["id"] == saved["id"])
+    assert mine["status"] == "stable" and mine["stale"] is False
+    assert mine["provenance"]["review"]["actor"] == "maintainer:reviewer"
+    assert all(
+        hit["status"] == "stable" for hit in hits[: hits.index(mine) + 1]
+    )  # approved ranks ahead of drafts
+    assert run_cli(served, staging, "list-metrics") == 0
+    assert json.loads(capsys.readouterr().out) == metrics_before
+
+    # The cited Policy changes: normal reuse is suspended without rewriting
+    # history; labeled history preserves the exact record.
+    policy.write_bytes(policy_bytes + b"\nAmended 2026-09-29: returned orders restock.\n")
+    approved_bytes = served_page.read_bytes()
+    assert run_cli(served, staging, "search-examples", "gross margin region") == 0
+    assert all(hit["id"] != saved["id"] for hit in json.loads(capsys.readouterr().out))
+    assert run_cli(
+        served, staging, "search-examples", "gross margin region", "--include-history"
+    ) == 0
+    history = [hit for hit in json.loads(capsys.readouterr().out) if hit["id"] == saved["id"]]
+    assert history and history[0]["stale"] is True and history[0]["status"] == "stable"
+    assert served_page.read_bytes() == approved_bytes  # historical file untouched
+
+
+def _save_draft(served, staging, capsys, **overrides) -> dict:
+    """One staged draft through the public save-example seam."""
+    submission = _submission(_SMALL_RESULT, **overrides)
+    assert run_cli(
+        served, staging, "save-example", stdin=io.StringIO(json.dumps(submission))
+    ) == 0
+    return json.loads(capsys.readouterr().out)
+
+
+def _decision(saved: dict, staged: Path, **overrides) -> dict:
+    decision = {
+        "id": saved["id"],
+        "actor": "maintainer:reviewer",
+        "outcome": "approve",
+        "technical_review": "Method and cited served pages match the current definitions.",
+        "staged_digest": hashlib.sha256(staged.read_bytes()).hexdigest(),
+    }
+    decision.update(overrides)
+    return decision
+
+
+def _served_examples(root: Path) -> list[str]:
+    """The served example store's current records (module-scoped fixture:
+    refusals must not add to it)."""
+    directory = root / "answer_examples"
+    return sorted(p.name for p in directory.glob("*.md")) if directory.is_dir() else []
+
+
+def test_review_refuses_malformed_missing_and_escaped_ids(served, tmp_path, capsys):
+    """Fail closed on an unreachable ID before anything is read or written."""
+    root, _db = served
+    staging = tmp_path / "staging"
+    saved = _save_draft(
+        served, staging, capsys, question="Gross margin by region in the malformed ID case?"
+    )
+    staged = Path(saved["path"])
+    before = staged.read_bytes()
+    served_before = _served_examples(root)
+    for bad in ("../escape", "no-such-id", "a/b", ".hidden", "index", ""):
+        assert run_review(served, staging, bad, _decision(saved, staged), tmp_path) == 1
+        error = review_error(capsys)
+        assert error["type"] == "ValueError"
+        assert "ID" in error["message"] or "no staged" in error["message"]
+    assert staged.read_bytes() == before
+    assert _served_examples(root) == served_before
+
+
+def test_review_refuses_staged_content_changed_after_the_decision(served, tmp_path, capsys):
+    """The decision binds the exact staged bytes: an edited draft is not the
+    reviewed record and nothing is served."""
+    root, _db = served
+    staging = tmp_path / "staging"
+    saved = _save_draft(
+        served, staging, capsys, question="Gross margin by region with altered staged bytes?"
+    )
+    staged = Path(saved["path"])
+    decision = _decision(saved, staged)
+    staged.write_bytes(staged.read_bytes() + b"sneaked line\n")
+
+    assert run_review(served, staging, saved["id"], decision, tmp_path) == 1
+    error = review_error(capsys)
+    assert "changed after the decision" in error["message"]
+    assert "sneaked line" in staged.read_text(encoding="utf-8")  # staged bytes kept
+    assert not (root / "answer_examples" / f"{saved['id']}.md").exists()  # nothing served
+    # The edited draft is still an ordinary draft (no review block written).
+    assert run_cli(served, staging, "search-examples", "gross margin region") == 0
+    hit = next(h for h in json.loads(capsys.readouterr().out) if h["id"] == saved["id"])
+    assert hit["status"] == "draft" and hit["provenance"]["review"] is None
+
+
+def test_review_refuses_conflicting_reviewed_targets(served, tmp_path, capsys):
+    root, _db = served
+    staging = tmp_path / "staging"
+    saved = _save_draft(
+        served, staging, capsys, question="Gross margin by region with conflicting targets?"
+    )
+    decision = _decision(saved, Path(saved["path"]), id="a-different-record")
+
+    assert run_review(served, staging, saved["id"], decision, tmp_path) == 1
+    assert "conflicting reviewed targets" in review_error(capsys)["message"]
+    assert Path(saved["path"]).exists()  # the exact staged record is untouched
+    assert not (root / "answer_examples" / f"{saved['id']}.md").exists()
+
+
+def test_review_refuses_incomplete_evidence_and_overstated_claims(served, tmp_path, capsys):
+    root, _db = served
+    staging = tmp_path / "staging"
+    saved = _save_draft(
+        served, staging, capsys, question="Gross margin by region with incomplete evidence?"
+    )
+    staged = Path(saved["path"])
+    served_before = _served_examples(root)
+
+    for drop in ("actor", "technical_review"):
+        decision = dict(_decision(saved, staged))
+        del decision[drop]
+        assert run_review(served, staging, saved["id"], decision, tmp_path) == 1
+        assert "incomplete reviewer evidence" in review_error(capsys)["message"]
+
+    decision = _decision(saved, staged, historical_value_verified=True)
+    assert run_review(served, staging, saved["id"], decision, tmp_path) == 1
+    assert "historical numeric value" in review_error(capsys)["message"]
+
+    # A staged record without the submitter's attestation cannot be approved:
+    # the maintainer's technical review never substitutes for the submitter's
+    # business-meaning claim.
+    unattested = staging / "answer_examples" / "unattested.md"
+    unattested.parent.mkdir(parents=True, exist_ok=True)
+    unattested.write_text(
+        "---\n"
+        "type: answer_example\n"
+        "status: draft\n"
+        "generated: 2026-09-29T00:00:00+00:00\n"
+        "question: gross margin region without attestation\n"
+        "interpretation: meaning never attested by a submitter\n"
+        "method:\n  operation: get_metric\n  arguments: {name: gross_margin}\n"
+        "submitter:\n  identity: expert:dana\n"
+        "---\n\n# gross margin region without attestation\n",
+        encoding="utf-8",
+    )
+    decision = {
+        "id": "unattested",
+        "actor": "maintainer:reviewer",
+        "outcome": "approve",
+        "technical_review": "Method checks out.",
+        "staged_digest": hashlib.sha256(unattested.read_bytes()).hexdigest(),
+    }
+    assert run_review(served, staging, "unattested", decision, tmp_path) == 1
+    assert "attestation" in review_error(capsys)["message"]
+    assert _served_examples(root) == served_before  # every refusal wrote nothing
+
+
+def test_reject_and_request_revision_keep_labeled_audit_history(served, tmp_path, capsys):
+    """A closed record stays staged history: hidden from ordinary reuse,
+    labeled through --include-history, and never approvable afterwards."""
+    root, _db = served
+    staging = tmp_path / "staging"
+    saved = _save_draft(
+        served,
+        staging,
+        capsys,
+        question="Gross margin by region rejected by the maintainer?",
+    )
+    staged = Path(saved["path"])
+    served_before = _served_examples(root)
+    decision = _decision(
+        saved,
+        staged,
+        outcome="reject",
+        technical_review="The cited filter no longer matches the billing Policy.",
+    )
+
+    assert run_review(served, staging, saved["id"], decision, tmp_path) == 0
+    rejected = json.loads(capsys.readouterr().out)
+    assert rejected == {
+        "id": saved["id"],
+        "outcome": "reject",
+        "status": "rejected",
+        "path": str(staged),
+    }
+    meta = yaml.safe_load(staged.read_text(encoding="utf-8").split("---")[1])
+    assert meta["review"]["outcome"] == "reject"
+    assert meta["submitter"]["attestation"]  # history preserved, content kept
+    assert _served_examples(root) == served_before  # rejection serves nothing
+
+    assert run_cli(served, staging, "search-examples", "gross margin region") == 0
+    assert all(hit["id"] != saved["id"] for hit in json.loads(capsys.readouterr().out))
+    assert run_cli(
+        served, staging, "search-examples", "gross margin region", "--include-history"
+    ) == 0
+    history = next(
+        hit for hit in json.loads(capsys.readouterr().out) if hit["id"] == saved["id"]
+    )
+    assert history["status"] == "reject" and history["stale"] is False  # labeled, not stale
+    staged_index = (staging / "answer_examples" / "index.md").read_text(encoding="utf-8")
+    assert f"({saved['id']}.md) — reject (history)" in staged_index
+    assert "stable" not in staged_index  # staged bookkeeping still never claims stable
+
+    # The closed record cannot be approved afterwards: a revision is a new
+    # submission and a new review.
+    again = _decision(saved, staged, outcome="approve")
+    assert run_review(served, staging, saved["id"], again, tmp_path) == 1
+    assert "already carries a review outcome" in review_error(capsys)["message"]
+
+    # request-revision labels the same way.
+    other = _save_draft(served, staging, capsys, question="Gross margin by region revised?")
+    other_staged = Path(other["path"])
+    revision = _decision(other, other_staged, outcome="request-revision")
+    assert run_review(served, staging, other["id"], revision, tmp_path) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "revision_requested"
+    assert run_cli(
+        served, staging, "search-examples", "gross margin region", "--include-history"
+    ) == 0
+    labeled = next(
+        hit for hit in json.loads(capsys.readouterr().out) if hit["id"] == other["id"]
+    )
+    assert labeled["status"] == "request-revision"
+
+
+def test_fresh_revision_restores_reuse_and_preserves_the_old_record(served, tmp_path, capsys):
+    """AC4: after the dependency change, a NEW reviewed revision (distinct
+    record, linked through supersedes) restores normal reuse while the old
+    record stays byte-preserved history with its original (never flipped)
+    dependency digest."""
+    root, _db = served
+    staging = tmp_path / "staging"
+    policy = root / "context_layer" / "policies" / "order-status-billing.md"
+    policy_bytes = policy.read_bytes()
+    sources = [
+        "context_layer/metrics/gross_margin.md",
+        "context_layer/policies/order-status-billing.md",
+    ]
+
+    first = _save_draft(
+        served,
+        staging,
+        capsys,
+        sources=sources,
+        question="Gross margin ratio by region for the quarterly review?",
+    )
+    first_decision = _decision(first, Path(first["path"]))
+    assert run_review(served, staging, first["id"], first_decision, tmp_path) == 0
+    capsys.readouterr()
+    old_page = root / "answer_examples" / f"{first['id']}.md"
+    old_meta = yaml.safe_load(old_page.read_text(encoding="utf-8").split("---")[1])
+    old_digest = old_meta["sources"][1]["sha256"]
+
+    policy.write_bytes(policy_bytes + b"\nAmended 2026-09-29: returned orders restock.\n")
+    second = _save_draft(
+        served,
+        staging,
+        capsys,
+        sources=sources,
+        question="Gross margin ratio by region for the amended policy?",
+    )  # captures the new digest
+    decision = _decision(second, Path(second["path"]), supersedes=first["id"])
+    assert run_review(served, staging, second["id"], decision, tmp_path) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "stable"
+
+    # Normal reuse is restored by the fresh reviewed revision.
+    assert run_cli(served, staging, "search-examples", "gross margin region") == 0
+    hits = json.loads(capsys.readouterr().out)
+    fresh = next(hit for hit in hits if hit["id"] == second["id"])
+    assert fresh["status"] == "stable" and fresh["stale"] is False
+    assert all(hit["id"] != first["id"] for hit in hits)  # the old one no longer guides
+
+    # The superseded record is preserved history: its own question, answer and
+    # dependency digest survive verbatim — the old digest was never flipped.
+    assert old_page.exists()
+    superseded_meta = yaml.safe_load(old_page.read_text(encoding="utf-8").split("---")[1])
+    assert superseded_meta["status"] == "superseded"
+    assert superseded_meta["superseded_by"] == second["id"]
+    assert superseded_meta["question"] == old_meta["question"]
+    assert superseded_meta["sources"][1]["sha256"] == old_digest
+    assert run_cli(
+        served, staging, "search-examples", "gross margin region", "--include-history"
+    ) == 0
+    old_hit = next(
+        hit for hit in json.loads(capsys.readouterr().out) if hit["id"] == first["id"]
+    )
+    assert old_hit["status"] == "superseded" and old_hit["stale"] is True
+
+    # A supersedes reference to nothing fails closed.
+    third = _save_draft(
+        served, staging, capsys, sources=sources, question="Gross margin ratio by region once more?"
+    )
+    bad = _decision(third, Path(third["path"]), supersedes="ghost-record")
+    assert run_review(served, staging, third["id"], bad, tmp_path) == 1
+    assert "no served example" in review_error(capsys)["message"]
 
 
 def test_sql_only_method_rejected_real_arguments_accepted(served, tmp_path, capsys):

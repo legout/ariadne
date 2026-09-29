@@ -34,7 +34,10 @@ import os
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import (
+    UTC,  # pyright: ignore[reportAttributeAccessIssue] — resolver drift: UTC is py3.11+
+    datetime,
+)
 from getpass import getuser
 from pathlib import Path
 
@@ -150,12 +153,16 @@ _REVIEW_SUFFIXES = {".md", ".yml", ".yaml"}
 
 def _review_needed(staging: Path) -> list[str]:
     """Staging-relative paths of files carrying the spec §7 review_needed marker,
-    scanned across the WHOLE staging tree — context markdown frontmatter AND
-    semantic-layer YAML. Any hit refuses the promotion: nothing from the tree is
-    merged."""
+    scanned across the governed staged layers ONLY — ``context_layer/`` and
+    ``semantic_layer/`` markdown frontmatter and semantic-layer YAML. Any hit
+    refuses the promotion: nothing from the tree is merged. ``staging/
+    answer_examples/`` is deliberately outside the scan (ADR-0014, issue #20):
+    staged answer examples have their own operator review path and can neither
+    block nor slip into unrelated Context Layer/OSI promotion."""
     return [
         p.relative_to(staging).as_posix()
-        for p in sorted(staging.rglob("*"))
+        for layer in (_CONTEXT, "semantic_layer")
+        for p in sorted((staging / layer).rglob("*"))
         if p.is_file()
         and p.suffix in _REVIEW_SUFFIXES
         and "review_needed" in p.read_text(encoding="utf-8", errors="replace")

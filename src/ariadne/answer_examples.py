@@ -33,7 +33,10 @@ import hashlib
 import json
 import os
 import re
-from datetime import UTC, datetime
+from datetime import (
+    UTC,  # pyright: ignore[reportAttributeAccessIssue] — resolver drift: UTC is py3.11+
+    datetime,
+)
 from pathlib import Path
 from typing import Any
 
@@ -244,20 +247,42 @@ def _frontmatter(path: Path) -> dict | None:
     return meta if isinstance(meta, dict) else None
 
 
-def _refresh_bundle(directory: Path, example_id: str, record: dict) -> None:
-    """Generated OKF bundle bookkeeping for the example root: a regenerated
-    ``index.md`` over the current records and one ``log.md`` Creation entry —
-    the same shapes the promotion gate keeps for the Context Layer bundle."""
+def _staged_state(meta: dict) -> str:
+    """A staged page's honest state (issue #20): draft unless the operator
+    review command closed it (reject / request-revision audit history). Review
+    authority still derives from location (ADR-0014): closure is read only
+    from the recorded review evidence, and a staged page can never present
+    itself as stable."""
+    review = meta.get("review")
+    if isinstance(review, dict) and review.get("outcome") in ("reject", "request-revision"):
+        return str(review["outcome"])
+    return "draft"
+
+
+def _write_index(directory: Path, *, staged: bool) -> None:
+    """Regenerate the example root's ``index.md`` from the current records.
+    Staged pages label their honest state (draft or closed history — never a
+    self-declared stable); served pages label the system-written status."""
     lines = ["# Answer Examples", ""]
     for page in sorted(
         p for p in directory.glob("*.md") if p.name not in ("index.md", "log.md")
     ):
         meta = _frontmatter(page) or {}
         question = " ".join(str(meta.get("question") or page.stem).split())
-        # A staged page is a draft by location (ADR-0014): its self-declared
-        # status never reaches the generated staged index as review authority.
-        lines.append(f"* [{question}]({page.name}) — draft")
+        if staged:
+            state = _staged_state(meta)
+            label = "draft" if state == "draft" else f"{state} (history)"
+        else:
+            label = str(meta.get("status") or "stable")
+        lines.append(f"* [{question}]({page.name}) — {label}")
     (directory / "index.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _refresh_bundle(directory: Path, example_id: str, record: dict) -> None:
+    """Generated OKF bundle bookkeeping for the example root: a regenerated
+    ``index.md`` over the current records and one ``log.md`` Creation entry —
+    the same shapes the promotion gate keeps for the Context Layer bundle."""
+    _write_index(directory, staged=True)
 
     log = directory / "log.md"
     if log.is_file():
@@ -402,10 +427,11 @@ def search_examples(
                 continue
             status = meta.get("status")
             if not is_served:
-                # Review authority derives from location (ADR-0014): a staged
-                # page is a draft however it labels itself; only a served page
-                # may be reviewed/stable.
-                status = "draft"
+                # Issue #20: a staged page's state is draft unless the operator
+                # review command closed it (rejected / revision-requested
+                # history); location, never self-declaration, remains the
+                # review authority — a staged page can never claim stable.
+                status = _staged_state(meta)
             stale = _is_stale(meta, root)
             if not include_history and (stale or status not in ("draft", "stable")):
                 continue
@@ -433,6 +459,7 @@ def search_examples(
                             "submitter": submitter.get("identity"),
                             "generated": meta.get("generated"),
                             "sources": meta.get("sources") or [],
+                            "review": meta.get("review"),
                         },
                         "path": str(path),
                     },
