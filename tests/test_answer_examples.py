@@ -14,6 +14,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -762,6 +763,195 @@ def test_fresh_revision_restores_reuse_and_preserves_the_old_record(served, tmp_
     bad = _decision(third, Path(third["path"]), supersedes="ghost-record")
     assert run_review(served, staging, third["id"], bad, tmp_path) == 1
     assert "no served example" in review_error(capsys)["message"]
+
+
+def test_review_invalid_supersedes_predecessor_fails_before_any_served_write(
+    served, tmp_path, capsys
+):
+    """Boundary review finding 1: an invalid (non-OKF) predecessor frontmatter
+    fails closed BEFORE the first served write — no new stable record, staged
+    and served bytes exactly as they were."""
+    root, _db = served
+    staging = tmp_path / "staging"
+    first = _save_draft(
+        served, staging, capsys, question="Gross margin by region predating a corrupt record?"
+    )
+    assert (
+        run_review(served, staging, first["id"], _decision(first, Path(first["path"])), tmp_path)
+        == 0
+    )
+    capsys.readouterr()
+    old_page = root / "answer_examples" / f"{first['id']}.md"
+    old_page.write_text("not an okf page anymore\n", encoding="utf-8")  # corrupt predecessor
+    served_before = {p.name: p.read_bytes() for p in (root / "answer_examples").iterdir()}
+
+    second = _save_draft(
+        served, staging, capsys, question="Gross margin by region after the corrupt record?"
+    )
+    staged = Path(second["path"])
+    staged_before = staged.read_bytes()
+    decision = _decision(second, staged, supersedes=first["id"])
+    assert run_review(served, staging, second["id"], decision, tmp_path) == 1
+    assert "frontmatter" in review_error(capsys)["message"]
+    assert staged.read_bytes() == staged_before  # the staged record is untouched
+    assert (
+        {p.name: p.read_bytes() for p in (root / "answer_examples").iterdir()} == served_before
+    )  # no new stable record despite the refused approval
+
+
+def test_review_reject_through_staging_symlink_into_served_fails_closed(tmp_path, capsys):
+    """Boundary review finding 2: the review command enforces the same
+    stage-vs-served boundary as save — a symlinked staging example directory
+    must stop reject/request-revision before it writes audit history, index or
+    log into the served store."""
+    served_root = tmp_path / "isolated-served"
+    (served_root / "semantic_layer" / "models").mkdir(parents=True)
+    (served_root / "context_layer" / "metrics").mkdir(parents=True)
+    served_examples = served_root / "answer_examples"
+    served_examples.mkdir()
+    (served_examples / "sentinel-stable.md").write_text(
+        "---\ntype: answer_example\nstatus: stable\n---\n\n# sentinel\n", encoding="utf-8"
+    )
+    (served_examples / "index.md").write_text("# Answer Examples\n", encoding="utf-8")
+    (served_examples / "log.md").write_text("# Directory Update Log\n", encoding="utf-8")
+    # A staged draft a symlinked staging root would expose to the operator
+    # command as if it lived under staging.
+    draft = served_examples / "draft-via-symlink.md"
+    draft.write_text(
+        "---\n"
+        "type: answer_example\n"
+        "status: draft\n"
+        "question: gross margin region through a symlinked staging root\n"
+        "interpretation: misconfigured staging boundary\n"
+        "submitter:\n  identity: expert:dana\n  attestation: reviewed meaning\n"
+        "---\n\n# gross margin region through a symlinked staging root\n",
+        encoding="utf-8",
+    )
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    os.symlink(served_examples, staging / "answer_examples")
+    served_before = {p.name: p.read_bytes() for p in served_examples.iterdir()}
+
+    decision = {
+        "id": draft.stem,
+        "actor": "maintainer:reviewer",
+        "outcome": "reject",
+        "technical_review": "Rejected regardless of where the staged root points.",
+        "staged_digest": hashlib.sha256(draft.read_bytes()).hexdigest(),
+    }
+    decision_file = tmp_path / "decision.json"
+    decision_file.write_text(json.dumps(decision), encoding="utf-8")
+    assert (
+        review_cli(
+            [
+                draft.stem,
+                "--file",
+                str(decision_file),
+                "--served",
+                str(served_root),
+                "--staging",
+                str(staging),
+            ]
+        )
+        == 1
+    )
+    assert "symlink" in review_error(capsys)["message"]
+    assert {p.name: p.read_bytes() for p in served_examples.iterdir()} == served_before
+    # page, index and log all untouched — rejection reported failure and wrote nothing
+
+
+def test_review_approve_of_tampered_shapeless_record_fails_closed(served, tmp_path, capsys):
+    """Boundary review finding 3: an agent-edited staged page that keeps the
+    type and submitter attestation but drops the structured method and answer
+    evidence and tears out the dependency list (sources: false) cannot be
+    approved even when the decision digest matches the tampered bytes."""
+    root, _db = served
+    staging = tmp_path / "staging"
+    saved = _save_draft(
+        served, staging, capsys, question="Gross margin by region in a tampered record?"
+    )
+    staged = Path(saved["path"])
+    # The agent-writable edit: same page, same attestation, no structured
+    # method, no bounded answer evidence, dependency list replaced by a bare
+    # false.
+    parts = staged.read_text(encoding="utf-8").split("---")
+    meta = yaml.safe_load(parts[1])
+    del meta["method"]
+    meta["sources"] = False
+    stripped = re.sub(
+        r"Captured answer excerpt .*?````json\n.*?\n````",
+        "Answer evidence removed.",
+        parts[2],
+        flags=re.DOTALL,
+    )
+    staged.write_text(
+        f"---\n{yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)}---{stripped}",
+        encoding="utf-8",
+    )
+    tampered = staged.read_bytes()
+    served_before = _served_examples(root)
+
+    decision = _decision(saved, staged)  # digest of the tampered bytes — it matches
+    assert run_review(served, staging, saved["id"], decision, tmp_path) == 1
+    error = review_error(capsys)
+    assert "arguments" in error["message"] or "method" in error["message"]
+    assert staged.read_bytes() == tampered  # the staged bytes are kept as edited
+    assert _served_examples(root) == served_before  # nothing was served
+
+
+def test_review_second_supersede_of_superseded_predecessor_fails_unchanged(
+    served, tmp_path, capsys
+):
+    """Boundary review finding 4: once a predecessor is superseded, a second
+    approval naming it must fail before any write — the first lineage survives
+    and every served/staged record is unchanged."""
+    root, _db = served
+    staging = tmp_path / "staging"
+    anchor = _save_draft(
+        served, staging, capsys, question="Gross margin by region anchoring the lineage?"
+    )
+    assert (
+        run_review(served, staging, anchor["id"], _decision(anchor, Path(anchor["path"])), tmp_path)
+        == 0
+    )
+    capsys.readouterr()
+    first_revision = _save_draft(
+        served, staging, capsys, question="Gross margin by region first revision?"
+    )
+    assert (
+        run_review(
+            served,
+            staging,
+            first_revision["id"],
+            _decision(first_revision, Path(first_revision["path"]), supersedes=anchor["id"]),
+            tmp_path,
+        )
+        == 0
+    )
+    capsys.readouterr()
+    served_before = {p.name: p.read_bytes() for p in (root / "answer_examples").iterdir()}
+
+    second_revision = _save_draft(
+        served, staging, capsys, question="Gross margin by region second revision?"
+    )
+    capsys.readouterr()
+    second_staged = Path(second_revision["path"])
+    staged_dir = staging / "answer_examples"
+    staged_before = {p.name: p.read_bytes() for p in staged_dir.iterdir()}
+    decision = _decision(
+        second_revision, second_staged, supersedes=anchor["id"]
+    )  # the anchor is already superseded
+    assert run_review(served, staging, second_revision["id"], decision, tmp_path) == 1
+    assert "stable" in review_error(capsys)["message"]
+    assert (
+        {p.name: p.read_bytes() for p in (root / "answer_examples").iterdir()} == served_before
+    )
+    assert {p.name: p.read_bytes() for p in staged_dir.iterdir()} == staged_before
+    # First lineage retained: the anchor still points at its first successor.
+    anchor_page = root / "answer_examples" / f"{anchor['id']}.md"
+    anchor_meta = yaml.safe_load(anchor_page.read_text(encoding="utf-8").split("---")[1])
+    assert anchor_meta["status"] == "superseded"
+    assert anchor_meta["superseded_by"] == first_revision["id"]
 
 
 def test_sql_only_method_rejected_real_arguments_accepted(served, tmp_path, capsys):

@@ -47,8 +47,13 @@ from typing import Any
 import yaml
 
 from ariadne.answer_examples import (
+    _CITATION_KINDS,
     _FRONTMATTER_RE,
+    _OPERATION_ARGUMENTS,
     EXAMPLES_DIR,
+    MAX_EXCERPT_BYTES,
+    OPERATIONS,
+    _guard_staging,
     _is_stale,
     _sha256_hex,
     _write_index,
@@ -60,6 +65,14 @@ OUTCOMES = ("approve", "reject", "request-revision")
 # A staged/example ID is one safe path component — never a directory walk,
 # bookkeeping page, or hidden file.
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# A recorded sha256 digest (result or cited dependency) is lowercase hex.
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+# The bounded historical answer evidence a staged page records in its body
+# (save writes: "Captured answer excerpt (<time>; full structured-result
+# digest `<sha256>`):" before the fenced excerpt block).
+_ANSWER_EVIDENCE_RE = re.compile(
+    r"Captured answer excerpt \((.+?); full structured-result digest `([0-9a-f]{64})`\):"
+)
 # A decision must not overstate the review (spec): reproducing a current query
 # cannot verify the historical numeric value captured in the record.
 _NUMERIC_CLAIMS = ("historical_value_verified", "value_verified", "numerically_verified")
@@ -193,6 +206,80 @@ def _served_dir(served_root: Path) -> Path:
     return resolved
 
 
+def _validate_staged_record(meta: dict, body: str) -> None:
+    """The stored record shape approval requires (spec §"Location, format and
+    identity"): question, interpretation, a supported operation with its real
+    structured arguments, the bounded historical answer evidence with its
+    result digest in the page body, and the recorded dependency list. The
+    decision digest binds the reviewed BYTES, not their completeness: a locally
+    edited staged page that keeps type and attestation but drops the
+    method/answer and tears out the dependency list fails closed (boundary
+    review finding 3) — a methodless record must never become a served
+    reference. Shape checks over the save-side constants; no parallel schema."""
+    if meta.get("status") != "draft":
+        raise ValueError(
+            "the staged record must be a current draft, not "
+            f"{meta.get('status')!r} — review admits one exact staged submission"
+        )
+    for key in ("question", "interpretation"):
+        value = meta.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"the staged record needs a non-empty string {key!r}")
+    method = meta.get("method")
+    operation = method.get("operation") if isinstance(method, dict) else None
+    arguments = method.get("arguments") if isinstance(method, dict) else None
+    if operation not in OPERATIONS or not isinstance(arguments, dict) or not arguments:
+        raise ValueError(
+            "the staged record must record operation 'get_metric' or 'define_metric' "
+            "with its structured 'arguments' (never standalone SQL)"
+        )
+    missing = [
+        key
+        for key in _OPERATION_ARGUMENTS[operation]
+        if not isinstance(arguments.get(key), str) or not arguments[key].strip()
+    ]
+    if missing:
+        raise ValueError(
+            f"the staged record's {operation!r} method is missing its structured "
+            f"arguments (missing or non-string: {', '.join(missing)})"
+        )
+    evidence = _ANSWER_EVIDENCE_RE.search(body)
+    if evidence is None:
+        raise ValueError(
+            "the staged record must keep its bounded historical answer evidence "
+            "(captured excerpt and full structured-result digest) in the page body"
+        )
+    excerpt = re.search(r"````json\n(.*?)\n````", body, re.DOTALL)
+    if excerpt is None:
+        raise ValueError("the staged record's answer excerpt block is missing")
+    if len(excerpt.group(1).encode("utf-8")) > MAX_EXCERPT_BYTES:
+        raise ValueError(
+            f"the staged record's answer excerpt is over the {MAX_EXCERPT_BYTES}-byte "
+            "bound — submit a fresh bounded revision"
+        )
+    sources = meta.get("sources")
+    if not isinstance(sources, list):
+        raise ValueError(
+            "'sources' must be the recorded list of served metric/Policy digests "
+            "(an empty list records no dependency)"
+        )
+    for entry in sources:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        sha256 = entry.get("sha256") if isinstance(entry, dict) else None
+        if (
+            not isinstance(path, str)
+            or not path.strip()
+            or not path.startswith(_CITATION_KINDS)
+            or not path.endswith(".md")
+            or not isinstance(sha256, str)
+            or not _SHA256_RE.fullmatch(sha256)
+        ):
+            raise ValueError(
+                "each recorded citation must be a served metric/Policy page "
+                "(context_layer/metrics|policies/*.md) with its sha256 digest"
+            )
+
+
 def _approve(
     decision: dict,
     meta: dict,
@@ -210,6 +297,7 @@ def _approve(
             "approval requires the submitter's business-meaning attestation — the "
             "maintainer cannot substitute their own; submit an attested revision"
         )
+    _validate_staged_record(meta, body)
     if _is_stale(meta, served_root):
         raise ValueError(
             "a cited served metric/Policy is missing, unreadable or changed since the "
@@ -219,14 +307,25 @@ def _approve(
     served_page = directory / f"{decision['id']}.md"
     if served_page.exists() or served_page.is_symlink():
         raise ValueError(f"a served example with ID {decision['id']!r} already exists")
-    superseded = None
+    supersession = None
     if "supersedes" in decision:
         if decision["supersedes"] == decision["id"]:
             raise ValueError("an example cannot supersede itself")
         candidate = directory / f"{decision['supersedes']}.md"
         if not candidate.is_file():
             raise ValueError(f"'supersedes' names no served example: {decision['supersedes']!r}")
-        superseded = candidate
+        # The predecessor is fully parsed and validated BEFORE the first served
+        # write (boundary review findings 1 and 4): invalid frontmatter or a
+        # nonstable (e.g. already-superseded) target fails closed with the
+        # original served and staged bytes unchanged and no new stable record.
+        predecessor = _split_page(candidate.read_text(encoding="utf-8"))
+        if predecessor[0].get("status") != "stable":
+            raise ValueError(
+                "'supersedes' must name a current stable served example, but "
+                f"{decision['supersedes']!r} has status {predecessor[0].get('status')!r} "
+                "— the first successor link stands; supersede that instead"
+            )
+        supersession = (candidate, *predecessor)
 
     review = {
         "actor": decision["actor"],
@@ -234,27 +333,27 @@ def _approve(
         "outcome": "approve",
         "technical_review": decision["technical_review"],
     }
-    if superseded is not None:
+    if supersession is not None:
         review["supersedes"] = decision["supersedes"]
     stable = dict(meta)
     stable["status"] = "stable"
     stable["review"] = review
     _atomic_write(served_page, _page_bytes(stable, body))
-    if superseded is not None:
+    if supersession is not None:
         # A revision closes its predecessor without erasing it: only the status
         # flips — the old question, answer, attestation and dependency digests
         # stay byte-for-byte history (a stale old digest is never flipped).
-        old_meta, old_body = _split_page(superseded.read_text(encoding="utf-8"))
+        old_page, old_meta, old_body = supersession  # parsed before any write above
         old_meta["status"] = "superseded"
         old_meta["superseded_by"] = decision["id"]
-        _atomic_write(superseded, _page_bytes(old_meta, old_body))
+        _atomic_write(old_page, _page_bytes(old_meta, old_body))
     _write_index(directory, staged=False)
     _log_review(
         directory,
         f"**Review**: {EXAMPLES_DIR}/{decision['id']}.md — approved by {decision['actor']}"
         + (
             f" (supersedes {decision['supersedes']})"
-            if superseded is not None
+            if supersession is not None
             else ""
         ),
         at,
@@ -292,6 +391,11 @@ def review_example(
     # The exact staged record resolves first: an invalid, missing or escaped ID
     # fails closed as an ID problem, then the decision binds to that exact ID.
     served_root = Path(served_root)
+    # The same stage-vs-served boundary as save (ADR-0014, boundary review
+    # finding 2) at the one operator-command choke point: a symlinked or
+    # served-overlapping staging example root is refused before either review
+    # outcome can access or mutate the staged page.
+    _guard_staging(Path(staging_dir) / EXAMPLES_DIR, served_root)
     staged_dir = (Path(staging_dir) / EXAMPLES_DIR).resolve()
     page = _staged_page(example_id, Path(staging_dir))
     validated = _validated_decision(example_id, decision)
