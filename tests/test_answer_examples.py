@@ -899,6 +899,56 @@ def test_review_approve_of_tampered_shapeless_record_fails_closed(served, tmp_pa
     assert _served_examples(root) == served_before  # nothing was served
 
 
+def test_review_approve_of_citation_resolving_to_served_example_fails_closed(
+    served, tmp_path, capsys
+):
+    """Delta recheck finding 3 (resolved citations): a staged record's
+    citations are validated by their RESOLVED location, not their lexical
+    prefix — a locally edited source pointing through ``..`` at a served
+    answer-example page, carrying that page's correct digest, must fail
+    approval even when the decision digest matches the tampered bytes."""
+    root, _db = served
+    staging = tmp_path / "staging"
+    old = _save_draft(
+        served, staging, capsys, question="Gross margin by region predating the edited source?"
+    )
+    assert (
+        run_review(served, staging, old["id"], _decision(old, Path(old["path"])), tmp_path) == 0
+    )
+    capsys.readouterr()
+    served_page = root / "answer_examples" / f"{old['id']}.md"
+    served_before = {p.name: p.read_bytes() for p in (root / "answer_examples").iterdir()}
+
+    saved = _save_draft(
+        served, staging, capsys, question="Gross margin by region through an edited citation?"
+    )
+    staged = Path(saved["path"])
+    # The agent-writable edit: the recorded source keeps its metric-looking
+    # lexical prefix but resolves to the served example page above, with that
+    # page's correct sha256 — both the old prefix check and _is_stale pass it.
+    meta = yaml.safe_load(staged.read_text(encoding="utf-8").split("---", 2)[1])
+    meta["sources"] = [
+        {
+            "path": f"context_layer/metrics/../../answer_examples/{old['id']}.md",
+            "sha256": hashlib.sha256(served_page.read_bytes()).hexdigest(),
+        }
+    ]
+    body = staged.read_text(encoding="utf-8").split("---", 2)[2]
+    staged.write_text(
+        f"---\n{yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)}---{body}",
+        encoding="utf-8",
+    )
+    tampered = staged.read_bytes()
+
+    decision = _decision(saved, staged)  # digest of the edited bytes — it matches
+    assert run_review(served, staging, saved["id"], decision, tmp_path) == 1
+    assert "metric or Policy" in review_error(capsys)["message"]
+    assert staged.read_bytes() == tampered  # the staged bytes are kept as edited
+    assert (
+        {p.name: p.read_bytes() for p in (root / "answer_examples").iterdir()} == served_before
+    )  # no new stable record: an example page was never cited as metric evidence
+
+
 def test_review_second_supersede_of_superseded_predecessor_fails_unchanged(
     served, tmp_path, capsys
 ):

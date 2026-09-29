@@ -47,7 +47,6 @@ from typing import Any
 import yaml
 
 from ariadne.answer_examples import (
-    _CITATION_KINDS,
     _FRONTMATTER_RE,
     _OPERATION_ARGUMENTS,
     EXAMPLES_DIR,
@@ -55,6 +54,7 @@ from ariadne.answer_examples import (
     OPERATIONS,
     _guard_staging,
     _is_stale,
+    _resolve_citation,
     _sha256_hex,
     _write_index,
 )
@@ -206,7 +206,7 @@ def _served_dir(served_root: Path) -> Path:
     return resolved
 
 
-def _validate_staged_record(meta: dict, body: str) -> None:
+def _validate_staged_record(meta: dict, body: str, served_root: Path) -> None:
     """The stored record shape approval requires (spec §"Location, format and
     identity"): question, interpretation, a supported operation with its real
     structured arguments, the bounded historical answer evidence with its
@@ -215,7 +215,11 @@ def _validate_staged_record(meta: dict, body: str) -> None:
     edited staged page that keeps type and attestation but drops the
     method/answer and tears out the dependency list fails closed (boundary
     review finding 3) — a methodless record must never become a served
-    reference. Shape checks over the save-side constants; no parallel schema."""
+    reference. Every recorded citation is validated by its RESOLVED location
+    through the save-side citation rule (delta recheck finding 3): a
+    metric-looking lexical prefix reaching a served answer-example page through
+    ``..`` is a malformed record, not metric evidence. Shape checks over the
+    save-side constants; no parallel schema."""
     if meta.get("status") != "draft":
         raise ValueError(
             "the staged record must be a current draft, not "
@@ -269,7 +273,6 @@ def _validate_staged_record(meta: dict, body: str) -> None:
         if (
             not isinstance(path, str)
             or not path.strip()
-            or not path.startswith(_CITATION_KINDS)
             or not path.endswith(".md")
             or not isinstance(sha256, str)
             or not _SHA256_RE.fullmatch(sha256)
@@ -277,6 +280,14 @@ def _validate_staged_record(meta: dict, body: str) -> None:
             raise ValueError(
                 "each recorded citation must be a served metric/Policy page "
                 "(context_layer/metrics|policies/*.md) with its sha256 digest"
+            )
+        # The resolved location, never the lexical prefix, decides the page
+        # kind (delta recheck finding 3): reuse the save-side rule, which
+        # already checks canonical resolved kind, containment and existence.
+        if _resolve_citation(path, served_root)["sha256"] != sha256:
+            raise ValueError(
+                f"recorded citation {path!r} no longer matches the current served "
+                "metric/Policy bytes — submit and review a fresh revision"
             )
 
 
@@ -297,7 +308,7 @@ def _approve(
             "approval requires the submitter's business-meaning attestation — the "
             "maintainer cannot substitute their own; submit an attested revision"
         )
-    _validate_staged_record(meta, body)
+    _validate_staged_record(meta, body, served_root)
     if _is_stale(meta, served_root):
         raise ValueError(
             "a cited served metric/Policy is missing, unreadable or changed since the "
