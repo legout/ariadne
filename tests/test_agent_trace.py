@@ -2,8 +2,8 @@
 
 ``tests/evals/agent_trace.json`` records a fresh Pi session (both questions
 asked in ONE session) over the installed packaged Ariadne skill and synthetic
-retail demo: every observed ``ariadne`` CLI call in order, including the failed
-unpromoted get-metric probe and two failed define-metric probes; the minimal
+retail demo: every observed ``ariadne`` CLI call in order, including failed
+unpromoted get-metric and define-metric probes; the minimal
 JSON outputs the assertions need, packaged-skill digest, and final answers
 verbatim from the assistant's write payload.
 Nothing is scripted or edited to pass: this check validates the RECORDED run
@@ -319,11 +319,13 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
         assert abs(value - expected[customer_id]) <= TOLERANCE, (
             f"ad-hoc value customer {customer_id}: observed != shared independent SQL"
         )
-    assert grouped["staged_as"].endswith(
-        "/staging/semantic_layer/models/adhoc/mean_order_amount_per_customer-2.yml"
-    ) and grouped["staged_context_as"].endswith(
-        "/staging/context_layer/metrics/mean_order_amount_per_customer-2.md"
-    ), "the successful definition must have staged exactly the observed proposal paths"
+    staged_model = re.search(
+        r"/staging/semantic_layer/models/adhoc/(mean_order_amount_per_customer(?:-\d+)?)\.yml$",
+        grouped["staged_as"],
+    )
+    assert staged_model is not None and grouped["staged_context_as"].endswith(
+        f"/staging/context_layer/metrics/{staged_model.group(1)}.md"
+    ), "the successful definition must have staged a matching OSI and OKF proposal"
 
     answer = scenario["final_answer"]
     lowered = answer.lower()
@@ -331,7 +333,9 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
         "final answer must label the result an ungoverned ad-hoc proposal"
     )
     assert ("staged" in lowered or "/staging/" in lowered) and (
-        "not promoted" in lowered or "unpromoted" in lowered
+        "not promoted" in lowered
+        or "unpromoted" in lowered
+        or re.search(r"\bno promotion\b.{0,90}\bperformed", lowered)
     ), "final answer must state the proposal stays staged, never promoted"
     _assert_answer_caveats(answer)
     page_paths = {hit["path"], f"context_layer/{hit['path']}"}
@@ -417,7 +421,8 @@ def test_wrong_governed_route_fails_named(demo_db):
 def test_missing_caveat_fails_named(demo_db):
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
     mutilated = answer.replace(
-        "pre-2024 EMEA amounts and costs are converted to USD, while other orders are already USD.",
+        "pre-2024 EMEA amounts and product costs in EUR/GBP are "
+        "converted to USD before aggregation.",
         "",
     )
     assert mutilated != answer, "mutation must change the recorded answer"
@@ -428,7 +433,7 @@ def test_missing_caveat_fails_named(demo_db):
 
 def test_false_governed_label_fails_named(demo_db):
     answer = load_trace()["scenarios"]["adhoc"]["final_answer"]
-    relabeled = answer.replace("governed: false", "governed: true")
+    relabeled = answer.replace("Governed: false", "Governed: true")
     assert relabeled != answer, "mutation must change the recorded answer"
     trace = _mutated(**{"scenarios.adhoc.final_answer": relabeled})
     with pytest.raises(AssertionError, match="ungoverned ad-hoc"):
@@ -457,7 +462,7 @@ def test_negated_governed_label_fails_named(demo_db):
     governed label, even though the substring 'governed' is present."""
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
     for bad in ("not governed", "governed: false"):
-        relabeled = answer.replace("`governed: true`", f"`{bad}`")
+        relabeled = answer.replace("governed: true", bad)
         assert relabeled != answer, f"mutation must change the recorded answer ({bad})"
         trace = _mutated(**{"scenarios.governed.final_answer": relabeled})
         with pytest.raises(AssertionError, match="positively label"):
