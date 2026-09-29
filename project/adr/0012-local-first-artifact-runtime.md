@@ -7,3 +7,5 @@ Ariadne's governed behavior will live in a transport-neutral runtime used direct
 **Considered options:** a thin CLI importing the facade from `serve.py` was rejected because it keeps the core conceptually owned by an optional transport; skill-authored direct SQL was rejected because it duplicates and can bypass compilation, grain, context, and staging rules.
 
 **Consequences:** the local `ariadne` command and MCP tools must remain adapters over one runtime; the base package cannot import MCP; existing `ariadne.serve.Facade` consumers retain a compatibility alias; initialization and skills teach local usage first.
+
+**Later packaging amendment** (owner, pi conversation 2026-09-29; not implemented yet): when the root distribution changes from `ariadne` to `ariadne-core`, the same optional transport extra is installed as `ariadne-core[mcp]`. The `ariadne.*` import namespace, local `ariadne` command and DuckDB-only runtime do not change; the original `ariadne[mcp]` spelling above describes the installation before the rename.

@@ -4,6 +4,16 @@ Ariadne lets autonomous AI agents query heterogeneous data stores through govern
 
 ## Language
 
+### Agents
+
+**Ariadne Agent**:
+The conversational Python backend that uses one user-selected role to work with Ariadne's governed query or staged authoring capabilities. It does not calculate or approve business definitions itself.
+_Avoid_: agent framework, semantic engine
+
+**Data Analyst Agent**:
+The Ariadne Agent role that answers data questions through governed metrics and Context Layer guidance, or clearly labels an unmodeled Ad-hoc Metric as ungoverned.
+_Avoid_: text-to-SQL agent
+
 ### Layers
 
 **Context Layer**:

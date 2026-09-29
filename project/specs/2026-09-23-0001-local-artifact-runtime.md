@@ -9,6 +9,7 @@
 | **Decision** | [ADR-0012](../adr/0012-local-first-artifact-runtime.md) |
 | **Contract** | planning-contract v1; installed skill provenance unknown |
 | **Later scoped extension** | [Harness-led authoring, revision 2](2026-09-24-0005-harness-led-authoring.md) adds optional authoring tools and private HTTP MCP for a server-configured project. This document's five-tool and no-HTTP constraints still govern its original query-runtime scope. |
+| **Packaging amendment** | Owner, pi conversation 2026-09-29: the root distribution will be renamed to `ariadne-core`; the Python `ariadne.*` imports, CLI names, optional MCP extra, DuckDB engine and runtime behavior stay unchanged. Pending implementation in the Agent plan; the original `ariadne[mcp]` spelling below describes the pre-rename installation. |
 
 ## 1. Purpose
 
@@ -124,7 +125,7 @@ There remains no path from local CLI arguments, stdin, or MCP tool arguments to 
 
 `mcp>=1.2,<2` moves from base dependencies to the `mcp` optional extra. The base installation supports the full local interface without importing or installing MCP.
 
-`ariadne-serve` remains installed. When its optional dependency is absent, it exits nonzero with an actionable instruction to install `ariadne[mcp]`; local commands remain unaffected.
+`ariadne-serve` remains installed. When its optional dependency is absent, it exits nonzero with an actionable instruction to install the root distribution's `mcp` extra (`ariadne[mcp]` before the rename, `ariadne-core[mcp]` afterward); local commands remain unaffected.
 
 `ariadne-init` does not create `.mcp.json` by default. `ariadne-init --with-mcp` creates the registry-aware MCP configuration. Existing `.mcp.json` files are never deleted.
 
@@ -164,7 +165,7 @@ The demo and README show local querying first. Optional MCP examples remain avai
 6. An invalid definition executes nothing and stages nothing; the CLI emits one JSON error on stderr and exits nonzero.
 7. Root discovery succeeds independently for root and `./served` layouts, and fails deterministically for missing and ambiguous layouts.
 8. CLI stdout parses as exactly one JSON value for results containing dates and decimals.
-9. The existing MCP acceptance suite passes with `ariadne[mcp]` installed and observes the same result envelopes as the local CLI.
+9. The existing MCP acceptance suite passes with the root distribution's `mcp` extra installed (`ariadne[mcp]` before the rename, `ariadne-core[mcp]` afterward) and observes the same result envelopes as the local CLI.
 10. Without the extra, `ariadne-serve` prints the optional-extra installation hint and exits nonzero.
 11. `ariadne-init` omits `.mcp.json` by default and creates it only with `--with-mcp`, without removing an existing file.
 12. A fresh agent using only the installed skill and base package answers one governed and one unmodeled question, includes required caveats/governance labels, and starts no MCP server.
