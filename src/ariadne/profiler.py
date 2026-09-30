@@ -170,6 +170,7 @@ def _profile_table(
     table: str,
     cols: list[tuple[str, str]],
     allowed: set[str],
+    sampled: bool = False,
 ) -> tuple[int, list[str], dict]:
     """Return (row_count, pk_candidates, column profiles); ``cols`` comes from
     the builder's catalog (name, type) pairs in ordinal order."""
@@ -186,11 +187,15 @@ def _profile_table(
         )
         counts[name] = (row[0][0], row[0][1])  # (non_null, distinct)
 
-    pk_candidates = [
-        name
-        for name in names
-        if row_count > 0 and counts[name][0] == row_count and counts[name][1] == row_count
-    ]
+    pk_candidates = (
+        []
+        if sampled
+        else [
+            name
+            for name in names
+            if row_count > 0 and counts[name][0] == row_count and counts[name][1] == row_count
+        ]
+    )
 
     cur = con.sql(f"SUMMARIZE {ref}.{_q(table)}")
     fields = [d[0] for d in cur.description]
@@ -296,7 +301,9 @@ def _fk_candidates(
     return candidates
 
 
-def _profile_source(con: duckdb.DuckDBPyConnection, entry: dict) -> dict:
+def _profile_source(
+    con: duckdb.DuckDBPyConnection, entry: dict, *, sample_rows: int | None = None
+) -> dict:
     """Profile every table of one builder-catalog source: attaches address
     tables as ``<catalog>.<schema>.<table>``, file views as
     ``<schema>.<table>`` — both are the per-table ``ref`` the builder emits."""
@@ -311,7 +318,9 @@ def _profile_source(con: duckdb.DuckDBPyConnection, entry: dict) -> dict:
     profiles: dict[str, tuple] = {}
     for name in cols_by_table:  # builder catalog order == information_schema order
         cols = cols_by_table[name]
-        row_count, pk_candidates, columns = _profile_table(con, refs[name], name, cols, allowed)
+        row_count, pk_candidates, columns = _profile_table(
+            con, refs[name], name, cols, allowed, sampled=sample_rows is not None
+        )
         profiles[name] = (cols, row_count, pk_candidates, columns)
         pk_by_table[name] = pk_candidates
     for name, (cols, row_count, pk_candidates, columns) in profiles.items():
@@ -319,7 +328,9 @@ def _profile_source(con: duckdb.DuckDBPyConnection, entry: dict) -> dict:
         tables[name] = {
             "row_count": row_count,
             "primary_key_candidates": pk_candidates,
-            "foreign_key_candidates": _fk_candidates(
+            "foreign_key_candidates": []
+            if sample_rows is not None
+            else _fk_candidates(
                 con,
                 refs[name],
                 name,
@@ -332,13 +343,22 @@ def _profile_source(con: duckdb.DuckDBPyConnection, entry: dict) -> dict:
             ),
             "columns": columns,
         }
+        if sample_rows is not None:
+            tables[name].update(sampled=True, sample_limit=sample_rows)
     return {"name": entry["name"], "type": entry["type"], "tables": tables}
 
 
-def profile(db_path: str | Path | None = None, *, sources_path: str | Path | None = None) -> dict:
+def profile(
+    db_path: str | Path | None = None,
+    *,
+    sources_path: str | Path | None = None,
+    sample_rows: int | None = None,
+) -> dict:
     """Profile every table of every source (shapes documented in the module
     docstring): the legacy single-sqlite call via ``db_path``, the full
     registry via ``sources_path`` (ADR-0010, shared connection builder)."""
+    if sample_rows is not None and (not isinstance(sample_rows, int) or sample_rows < 1):
+        raise ValueError("sample_rows must be a positive integer")
     if sources_path is not None:
         registry = load_registry(sources_path)
     elif db_path is not None:
@@ -349,7 +369,18 @@ def profile(db_path: str | Path | None = None, *, sources_path: str | Path | Non
         raise ValueError("profile requires db_path or sources_path")
     con, catalog = build_connection(registry)
     try:
-        sources = [_profile_source(con, entry) for entry in catalog]
+        if sample_rows is not None:
+            for entry in catalog:
+                schema = f"__ariadne_sample_{entry['name']}"
+                con.execute(f"CREATE SCHEMA {schema}")
+                for table in entry["tables"]:
+                    name = _q(table["name"])
+                    con.execute(
+                        f"CREATE TABLE {schema}.{name} AS SELECT * FROM "
+                        f"{table['ref']}.{name} LIMIT {sample_rows}"
+                    )
+                    table["ref"] = schema
+        sources = [_profile_source(con, entry, sample_rows=sample_rows) for entry in catalog]
     finally:
         con.close()
     if sources_path is not None:

@@ -97,6 +97,12 @@ def build_parser() -> _Parser:
         help="which bounded part of each document's converted text (default: 1)",
     )
     inputs.add_argument(
+        "--sample-rows",
+        type=int,
+        default=None,
+        help="profile only the first N rows per table; sample statistics are not full-table facts",
+    )
+    inputs.add_argument(
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
 
@@ -146,7 +152,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "propose-sources":
             result: Any = propose_sources(args.file, project=args.project)
         elif args.command == "inputs":
-            result = harness_inputs(project=args.project, documents=args.documents, part=args.part)
+            result = harness_inputs(
+                project=args.project,
+                documents=args.documents,
+                part=args.part,
+                sample_rows=args.sample_rows,
+            )
         elif args.command == "submit":
             result = submit_bundle(args.file, project=args.project, base_digest=args.base_digest)
         elif args.command == "review":

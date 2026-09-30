@@ -300,7 +300,8 @@ def build_connection(
     echoes the SQL text, so a failed ATTACH would leak credentials)."""
     loads, statements = plan(registry, read_only=read_only)
     secrets = [_resolve_dsn(src) for src in registry.sources if src.type == "postgres"]
-    con = duckdb.connect()
+    cert = os.getenv("SSL_CERT_FILE")
+    con = duckdb.connect(config={"ca_cert_file": cert} if cert else {})
     for extension in loads:
         # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
         con.execute(f"LOAD {extension}")

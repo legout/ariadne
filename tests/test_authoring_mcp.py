@@ -153,6 +153,24 @@ def test_stdio_tool_boundary_authoring_without_approval_or_promotion(tmp_path):
         ), name
 
 
+def test_stdio_authoring_inputs_supports_bounded_profile(tmp_path):
+    """MCP harnesses can request the same sampled approved-source profile as
+    the local CLI without claiming keys from an incomplete table."""
+    project = _approved_project(tmp_path)
+
+    async def run() -> dict:
+        async with _launch(project) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return _payload(await session.call_tool("authoring_inputs", {"sample_rows": 1}))
+
+    result = asyncio.run(run())
+    table = result["profile"]["sources"][0]["tables"]["events"]
+    assert table["row_count"] == 1
+    assert table["sampled"] is True and table["sample_limit"] == 1
+    assert table["primary_key_candidates"] == table["foreign_key_candidates"] == []
+
+
 def test_stdio_authoring_journey_matches_cli_contracts(tmp_path):
     """The five authoring operations over real stdio return EXACTLY what the
     shared service returns to the local CLI — propose/inputs/submit/review by

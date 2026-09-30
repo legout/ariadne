@@ -339,6 +339,32 @@ def test_quote_bearing_dsn_error_does_not_echo_the_value(monkeypatch, tmp_path):
     assert "pa'ss" not in str(excinfo.value)
 
 
+def test_remote_parquet_uses_operator_ca_bundle(monkeypatch, tmp_path):
+    """An internal S3 endpoint needs the CA bundle on DuckDB's connection."""
+    ca = tmp_path / "corporate-ca.pem"
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+    seen = {}
+
+    def connect(*args, **kwargs):
+        seen.update(kwargs)
+        return RecordingConnection()
+
+    monkeypatch.setattr(duckdb, "connect", connect)
+    reg = write_registry(
+        tmp_path,
+        [
+            {
+                "name": "remote",
+                "type": "parquet",
+                "path": "s3://bucket/orders/*.parquet",
+                "table": "orders",
+            }
+        ],
+    )
+    build_connection(load_registry(reg))
+    assert seen["config"] == {"ca_cert_file": str(ca)}
+
+
 def test_remote_parquet_loads_httpfs_once(recorded, tmp_path):
     """Two remote file sources -> httpfs LOADed exactly once, first."""
     reg = write_registry(

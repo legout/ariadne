@@ -339,6 +339,20 @@ def test_cli_malformed_invocation_writes_one_json_error(tmp_path, capsys):
     assert "retention_days: 90" in (project / "ariadne.yaml").read_text(encoding="utf-8")
 
 
+def test_cli_inputs_can_bound_approved_profile(tmp_path, capsys):
+    project = scaffold_project(tmp_path)
+    parquet = write_parquet(tmp_path / "data" / "events.parquet")
+    digest = authoring.propose_sources(
+        write_proposal(tmp_path, [{"name": "events", "type": "parquet", "path": str(parquet)}]),
+        project=project,
+    )["digest"]
+    authoring.approve_sources(digest, project=project)
+    assert authoring_cli(["inputs", "--sample-rows", "1", "--project", str(project)]) == 0
+    table = json.loads(capsys.readouterr().out)["profile"]["sources"][0]["tables"]["events"]
+    assert table["row_count"] == 1 and table["sampled"] is True
+    assert table["primary_key_candidates"] == []
+
+
 # ------------------------------------------- slice 2 (issue #14): harness evidence
 
 

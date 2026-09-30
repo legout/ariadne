@@ -243,7 +243,9 @@ def build_app(facade: FacadeSource, *, project: str | Path = "."):
             return authoring.propose_sources(file, project=authoring_project)
 
     @app.tool()
-    async def authoring_inputs(documents: list[str] | None = None, part: int = 1) -> dict:
+    async def authoring_inputs(
+        documents: list[str] | None = None, part: int = 1, sample_rows: int | None = None
+    ) -> dict:
         """The harness's measured inputs (no model anywhere): the deterministic
         profile of the APPROVED registry (null before operator source
         approval), source-linked converted evidence for referenced documents,
@@ -255,9 +257,14 @@ def build_app(facade: FacadeSource, *, project: str | Path = "."):
             documents: input-area references (e.g. uploaded filenames); at most
                 16 per call, each inside the operator-configured roots.
             part: which bounded part of each document's converted text.
+            sample_rows: optional positive per-table profile row bound; sampled
+                statistics do not claim primary or foreign key candidates.
         """
         return authoring.harness_inputs(
-            project=authoring_project, documents=documents or [], part=part
+            project=authoring_project,
+            documents=documents or [],
+            part=part,
+            sample_rows=sample_rows,
         )
 
     @app.tool()

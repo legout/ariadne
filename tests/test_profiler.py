@@ -124,6 +124,23 @@ def demo_db(tmp_path):
     return make_demo_db(tmp_path / "demo.db")
 
 
+def test_bounded_registry_profile_uses_only_sample_rows(tmp_path):
+    path = tmp_path / "events.parquet"
+    duckdb.sql("SELECT i AS id, i % 2 AS category FROM range(20) t(i)").write_parquet(str(path))
+    registry = tmp_path / "ariadne.yaml"
+    registry.write_text(
+        yaml.safe_dump({"sources": [{"name": "events", "type": "parquet", "path": str(path)}]}),
+        encoding="utf-8",
+    )
+    result = profile(sources_path=registry, sample_rows=3)
+    table = result["sources"][0]["tables"]["events"]
+    assert table["row_count"] == 3
+    assert table["sampled"] is True and table["sample_limit"] == 3
+    assert table["primary_key_candidates"] == table["foreign_key_candidates"] == []
+    assert table["columns"]["id"]["pk_candidate"] is False
+    assert table["columns"]["id"]["distinct_count"] == 3
+
+
 def test_expected_columns_present(demo_db):
     tables = profile(demo_db)["tables"]
     assert set(tables) == set(EXPECTED_COLUMNS)

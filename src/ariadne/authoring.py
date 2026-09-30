@@ -520,7 +520,11 @@ def document_evidence(
 
 
 def harness_inputs(
-    *, project: str | Path = ".", documents: Sequence[str] = (), part: int = 1
+    *,
+    project: str | Path = ".",
+    documents: Sequence[str] = (),
+    part: int = 1,
+    sample_rows: int | None = None,
 ) -> dict:
     """The harness's measured inputs (spec §3), no model anywhere: the
     deterministic per-source profile of the APPROVED registry (only
@@ -544,7 +548,7 @@ def harness_inputs(
     if registry_path.is_file():
         doc = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
         if isinstance(doc, dict) and doc.get("sources"):  # approved entries only
-            profile = profiler.profile(sources_path=registry_path)
+            profile = profiler.profile(sources_path=registry_path, sample_rows=sample_rows)
     seed_notes = None
     notes_path = project / SEED_NOTES_REL
     if notes_path.is_file():
