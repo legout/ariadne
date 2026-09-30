@@ -15,6 +15,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -354,8 +355,10 @@ def test_tool_descriptions_carry_routing_language(served):
 
 def test_server_registers_five_query_and_five_authoring_tools(served):
     """Spec 2026-09-23-0001 §4 keeps exactly the five query/ad-hoc tools; spec
-    2026-09-24-0005 adds exactly five authoring tools (issue #16) — and never
-    a source-approval or Promotion tool (ADR-0013: human-only)."""
+    2026-09-24-0005 adds exactly five authoring tools (issue #16); issue #21
+    adds exactly the two answer-example tools over the shared runtime — and
+    never a source-approval, Promotion or example-review tool (ADR-0013/#20:
+    review is human-only)."""
     from ariadne.serve import build_app
 
     served_dir, db = served
@@ -367,6 +370,8 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
         "get_metric",
         "list_datasets",
         "define_metric",
+        "save_example",
+        "search_examples",
         "authoring_propose_sources",
         "authoring_inputs",
         "authoring_upload_document",
@@ -374,6 +379,91 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
         "authoring_review_bundle",
     }
     assert not [tool for tool in tools if "approve" in tool.name or "promot" in tool.name]
+
+
+def test_mcp_example_tools_parity_with_local_transport(served, tmp_path):
+    """Issue #21 (spec 2026-09-29-0007 §interfaces, AC6): the optional MCP tools
+    save_example/search_examples are thin adapters over the SAME transport-neutral
+    runtime the local JSON CLI calls — a draft saved over one transport is
+    immediately searchable over the other with the same ID/status — and the
+    example-review command is never registered as a tool (operator-only, #20)."""
+    from ariadne.serve import build_app
+
+    def _json(result_blocks) -> Any:
+        """FastMCP (mcp<2) emits one text block per element for list returns
+        and wraps those in a (blocks, structured) tuple (see
+        tests/test_authoring_mcp._payload): one block IS the value, several
+        blocks are the list elements."""
+
+        if isinstance(result_blocks, tuple):
+            result_blocks = result_blocks[0]
+
+        def _element(block):
+            try:
+                return json.loads(block.text)
+            except ValueError:
+                return block.text
+
+        if len(result_blocks) == 1:
+            return _element(result_blocks[0])
+        return [_element(block) for block in result_blocks]
+
+    served_dir, db = served
+    local = Facade(
+        served_dir / "semantic_layer",
+        served_dir / "context_layer",
+        db,
+        staging_dir=tmp_path / "staging",
+    )
+    app = build_app(local)
+
+    # Registration seam: exactly the two example tools, never a review tool.
+    names = {tool.name for tool in asyncio.run(app.list_tools())}
+    assert {name for name in names if "example" in name} == {"save_example", "search_examples"}
+
+    submission = {
+        "question": "What is the gross margin ratio by region?",
+        "interpretation": "Ratio of sums over billable orders, EMEA cutover applied",
+        "parameters": {"dimensions": ["region"], "grain": "one row per region"},
+        "method": {
+            "operation": "get_metric",
+            "arguments": {"name": "gross_margin", "dimensions": ["region"]},
+        },
+        "result": {
+            "metric": "gross_margin",
+            "columns": ["region", "gross_margin"],
+            "rows": [{"region": "EMEA", "gross_margin": 0.5}],
+            "sql": "SELECT region, 0.5 AS gross_margin",
+            "governed": True,
+        },
+        "submitter": "expert:dana",
+        "attestation": "The saved interpretation states the business meaning I intended.",
+        "sources": ["context_layer/metrics/gross_margin.md"],
+    }
+
+    # Save over MCP -> immediately searchable from a SECOND runtime over the
+    # same checkout (the exact object the local CLI constructs), same ID/status.
+    saved = _json(asyncio.run(app.call_tool("save_example", {"submission": submission})))
+    assert saved["status"] == "draft"
+    other = Facade(
+        served_dir / "semantic_layer",
+        served_dir / "context_layer",
+        db,
+        staging_dir=tmp_path / "staging",
+    )
+    hits = asyncio.run(other.search_examples("gross margin region"))
+    assert hits and hits[0]["id"] == saved["id"] and hits[0]["status"] == "draft"
+
+    # And the reverse direction: save over the local runtime, search over MCP.
+    saved_local = asyncio.run(
+        other.save_example({**submission, "question": "What is the order count by region?"})
+    )
+    assert saved_local["status"] == "draft"
+    hits_mcp = _json(asyncio.run(app.call_tool("search_examples", {"query": "order count"})))
+    if isinstance(hits_mcp, dict):  # one hit arrives as one content block
+        hits_mcp = [hits_mcp]
+    assert hits_mcp and hits_mcp[0]["id"] == saved_local["id"]
+    assert hits_mcp[0]["status"] == "draft"
 
 
 # --- Ad-hoc query layer (spec revision 3, §8.8-8.11) -------------------------

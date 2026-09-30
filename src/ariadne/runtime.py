@@ -64,6 +64,13 @@ from typing import Any
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
 
+# Issue #19 (ADR-0015, spec 2026-09-29-0007): the answer-example store is a
+# separate transport-neutral module — the runtime only contributes its selected
+# roots; examples never touch compilation, execution or governed context.
+from ariadne import (
+    answer_examples,  # pyright: ignore[reportMissingImports] — new-module resolver drift
+)
+
 # The grain guard lives in ariadne.grain (shared with the validate audit — mvp-5
 # round 2 convergence); check_grain_preserving is the runtime's entry into it.
 from ariadne.grain import check_grain_preserving
@@ -380,6 +387,34 @@ class AriadneRuntime:
             "governed": True,  # spec rev 3 §8.10: symmetry with define_metric
             "context": self._metric_context(name),  # spec rev 10 §8.21 (ADR-0011)
         }
+
+    async def save_example(self, submission: dict) -> dict:
+        """Issue #19 (spec 2026-09-29-0007, ADR-0015): stage one explicitly
+        submitted answer example as a labeled ``status: draft`` OKF record
+        under ``staging/answer_examples/`` — transport-neutral, so the local
+        CLI and the optional MCP adapter share exactly this path. Validated
+        before any write: malformed submissions, oversized excerpts/records,
+        citations that do not resolve inside the selected served root, and
+        claimed (rather than self-declared) identity or verification all store
+        nothing. The served roots are never touched."""
+        return answer_examples.save_example(submission, self.context_dir.parent, self.staging_dir)
+
+    async def search_examples(
+        self, query: str, limit: int = 10, include_history: bool = False
+    ) -> list[dict]:
+        """Issue #19: ranked labeled example records (draft/stable identity,
+        staleness, question/interpretation, method summary, provenance, path)
+        from the current served and staging example roots — re-read on each
+        request, no query execution, no saved rows. ``search_context`` and
+        governed ``get_metric.context`` are unaffected: examples live outside
+        ``context_layer/`` and never enter them."""
+        return answer_examples.search_examples(
+            self.context_dir.parent,
+            self.staging_dir,
+            query,
+            limit=limit,
+            include_history=include_history,
+        )
 
     def _metric_context(self, name: str) -> dict:
         """Rev 10 (ADR-0011): the governed number ships with its caveats — the full

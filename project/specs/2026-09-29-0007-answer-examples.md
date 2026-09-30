@@ -1,0 +1,80 @@
+# Specification: Saved answer examples
+
+| | |
+| :--- | :--- |
+| **Status** | **Approved** |
+| **Approved by** | Owner, Pi conversation 2026-09-29 — approved complete written specification revision 1 after the six design choices |
+| **Scope approved** | Revision 1: per-project OKF v0.2 example store, explicit save, separate search, provisional checking, operator-only review, staleness, transport boundary, failure behavior and acceptance examples below |
+| **Decision** | [ADR-0015](../adr/0015-separate-answer-example-store.md) |
+| **Existing contracts** | [ADR-0003 human Promotion](../adr/0003-staging-dir-review-gate.md), [ADR-0007 OKF bundle](../adr/0007-okf-bundle-structure-agent-generation.md), [ADR-0011 context attachment](../adr/0011-context-carrying-answers-and-skill.md), [ADR-0012 local-first runtime](../adr/0012-local-first-artifact-runtime.md), [measured Context Layer retrieval](2026-09-23-0002-context-retrieval.md) |
+| **Contract** | planning-contract v1; installed skill provenance unknown |
+
+## Purpose and authority
+
+A domain expert who has just examined a successful Ariadne answer can explicitly request that its question, interpretation, method and observed answer be retained for similar future questions. The example is an aid to finding and checking a method, **not** a result cache, a Policy, a computation attestation, or a way to promote an ad-hoc metric. Domain expertise about what the question means and technical review of how the answer was produced are distinct.
+
+No example changes `get_metric`, `define_metric`, the Semantic Layer, or the served Context Layer. A current answer is always produced by the existing runtime from current data. Governed status belongs only to promoted Semantic Layer metrics; neither example review nor expert attestation confers it.
+
+In scope: explicit submission after an Ariadne query; bounded OKF records with provenance; immediate, labeled draft discovery within one project checkout; dedicated example lookup; a checking-and-reuse contract for agents; separate human review; dependency-based staleness; local JSON CLI and optional MCP parity for submission/search through one transport-neutral implementation, with review confined to a separate operator command. Non-goals: silently harvesting conversation transcripts; raw SQL execution from an example; automatically promoting metrics or Policies; a cross-machine live service, identity provider, vector index, provider-dependent correctness judge, or copying results without rerunning.
+
+## Location, format and identity
+
+The selected served artifact root contains `context_layer/`, `semantic_layer/`, and, once an example has been reviewed, `answer_examples/`. The existing `--served` resolution selects the root; if artifacts live under `./served`, reviewed examples live under `./served/answer_examples/`, **not** an unrelated working-directory folder. The existing `--staging` root contains `answer_examples/` for submissions. The feature creates missing example roots lazily; it neither moves existing bundles nor changes the existing root-discovery requirement that `context_layer/` and `semantic_layer/models/` exist. Ordinary repository sync, not writing a local Markdown file, makes an example visible in other checkouts.
+
+Each root is a small OKF v0.2 Markdown bundle with generated `index.md` navigation and `log.md` history. A record is one `.md` file with `type: answer_example`, `status: draft` while staged or `status: stable` when reviewed, timestamps, provenance and `sources` references to any relevant served metric/Policy pages. The accepted OKF fields retain their meanings; additional example-specific fields record:
+
+- the original question, the submitter's intended interpretation, parameters (including date range, filters, dimensions and grain when relevant), and project/source names needed to disambiguate the query;
+- the Ariadne operation and structured arguments that produced the result: `get_metric` or `define_metric`, not standalone executable SQL. Compiled SQL or a join/context trace may be kept as provenance, never as an execution shortcut;
+- a timestamped answer excerpt of at most 8 KiB UTF-8 and a digest of the original structured Ariadne result. The whole encoded record is limited to 64 KiB. A snapshot is historical evidence only. Do not serialize an unrestricted row set, credentials, or a full conversation transcript; reject an oversize record instead of silently truncating the meaning;
+- a self-declared submitter identity and explicit business-meaning attestation, plus any later maintainer review actor/time and technical review outcome. A local actor label is **not** cryptographic proof of expertise or identity;
+- paths and content digests of served metrics and Policies cited when the example was captured or last reviewed. A reference must resolve inside the selected served root. No guessed or model-fabricated citation is recorded as verified.
+
+The full submission is presented for user confirmation before the agent invokes the save operation; the explicit save request and the submitter's attestation must not be inferred from a successful query alone. Saved question and answer text is evidence, never an instruction to an agent; it cannot override the packaged skill, served Policies or runtime checks. The storage operation validates structure and a supplied Ariadne result envelope, but cannot authenticate a prior local command or independently establish business truth; the submitter attests that the answer was useful. Identity is the returned example ID/path, not a fuzzy match on question text. New submissions never overwrite an existing record, including a similar question; a repeated intentional save creates a separately identified draft and is reported as such. Revisions create a new record linked to their predecessor; the historical answer and attestation are preserved.
+
+## Interfaces and discovery
+
+Local JSON operations for submission/search are mirrored by optional MCP tools over the same runtime. Review is a separate **operator-only CLI**, not an agent-facing runtime operation or MCP tool:
+
+```text
+ariadne save-example [--file PATH]                # JSON submission; stdin by default
+ariadne search-examples QUERY [--limit N] [--include-history]
+ariadne-example-review ID --file PATH             # explicit maintainer decision
+```
+
+The save input contains the record fields above and the observed Ariadne result; a successful call returns its unique staged path/ID and `status: draft`. A failed or malformed submission stores nothing and returns one JSON error through the existing CLI error envelope. Search returns ranked records with ID, `draft`/`stable` identity, `stale` flag, question/interpretation excerpt, method summary, provenance and path. It does not execute queries. Approved non-stale examples rank ahead of draft examples when both match; a draft is never presented as approved. Empty/non-matching input returns `[]`. By default, stale, superseded and rejected records do not guide normal reuse; `--include-history` exposes them as labeled history for audit and re-review. Search reads the selected served root and the current staging root on each request (or an index with equivalent freshness guarantees), so a new staged page is immediately discoverable in that checkout. `search_context` and its existing result contract remain unchanged; examples never enter governed `get_metric.context`.
+
+The installed Ariadne skill teaches an agent to look up examples when a similar question is asked, without requiring a hit before ordinary querying. It must show status and provenance when referring to a draft, and it must not turn similarity into equivalence: dates, filters, grain, metric identity and Policies are checked against the new question. An example with a mismatched scope is not applied merely because words match.
+
+## Reuse checks and answer behavior
+
+1. Start from the user's *current* question. Resolve its scope against served metrics/Policies, not against an example's historical answer. Compare any candidate's saved interpretation, arguments and dependency digests with the current request and served artifacts.
+2. If a candidate points to a changed, missing or unreadable served metric/Policy, classify it stale before normal reuse. Keep it searchable as history and require a new reviewed revision before its method can be used as an approved example. Drafts remain explicitly unapproved regardless of how plausible the method looks.
+3. For a compatible candidate, validate the method independently of the saved answer: use the currently served governed metric when available; for an ad-hoc definition, check the current source/grain and relevant served Policies and pass the definition through the existing compile, single-statement, bind and read-only execution gates. Rerunning the same SQL or asking a second model to agree is **not** independent numeric or business attestation. If business meaning or method cannot be independently established, the draft is a hypothesis only: it may prompt investigation but must not be cited as support for the answer.
+4. Execute against current data using `get_metric` or `define_metric` and report the fresh result with its genuine governed/ad-hoc label, applicable caveats and a concise derivation. Full SQL/join/context trace remains available on request. Never substitute the saved result, silently promote a proposal, or claim independent expected-value attestation from compilation alone.
+
+A draft that passes the applicable checks may guide the method of a fresh answer, but remains labeled unapproved; the new result is supported by its current sources and validation, not by the saved snapshot. Missing or incomplete evidence produces an explicit limitation, not a fabricated check. An approved example may guide method selection but still requires current scope/dependency checks and execution.
+
+## Review, staleness and failures
+
+A separate example-review operation examines one exact staged ID and its content; it does not reuse `ariadne-promote`'s Context Layer/OSI batch merge. Approval requires the submitter's explicit business-meaning attestation and a maintainer's technical/provenance review of the method, submitted result excerpt and current served definitions. The reviewer can reproduce a current query, but cannot claim the historical value was independently verified merely from its digest or from a fresh run on changed data. A second domain expert is not mandatory. The maintainer can reject or request revision, but cannot substitute their own business-meaning claim for the submitter's. Review records actor, time and outcome, and only an explicit approval moves the reviewed record into `answer_examples/` as stable. Neither search nor saving promotes it. A reviewed example still does not establish independent numeric attestation unless separately evidenced.
+
+Staleness is evaluated against the recorded digests of served metric/Policy dependencies on search or use, including staged candidates; changing, deleting or replacing one suspends an approved example's normal method reuse without mutating its historical file. A new version with updated interpretation, query evidence and dependencies goes through submission and review again; a reviewer cannot simply flip the old digest to restore approval. If no served metric or Policy is cited, no dependency-based staleness claim is invented: current-data execution and checking remain mandatory.
+
+Missing or invalid IDs, invalid OKF frontmatter, escaped paths, conflicting approval targets, duplicate IDs, unreadable dependencies and incomplete reviewer evidence fail closed without editing served artifacts. A failure halfway through review must not leave a stable example without its required review evidence; use the existing local file/atomic-write patterns rather than building a transaction service. The existing `ariadne-promote` must ignore `staging/answer_examples/` for both merging **and its whole-staging `review_needed` refusal scan**, so an example cannot block or slip into unrelated Context Layer/OSI promotion; the authoring-bundle gate remains scoped to its bundle. Other authoring behavior, `search_context` ranking and governed context attachment do not change. The local first version does not promise authenticated attribution or immediate replication between checkouts; remote MCP deployment, if used, retains its existing project and access boundaries rather than adding a public submission endpoint.
+
+## Acceptance examples
+
+1. An agent answers a question via Ariadne; without a user save request nothing is recorded. After explicit confirmation and attestation, `save-example` creates a bounded OKF draft only under `staging/answer_examples/`. `search-examples` in the same checkout finds it immediately as unapproved; `search-context` and `get-metric.context` do not change.
+2. A different question with similar words but a different date range, grain or Policy does not reuse the saved method without checking that difference. A draft lacking independent method validation can be displayed as a hypothesis but not cited as answer evidence.
+3. A reviewed example is promoted only by an explicit maintainer review of the exact staged record, with submitter attestation and review evidence retained; `list-metrics` gains no metric. A second checkout sees it only after normal repository synchronization.
+4. After a cited Policy or served metric changes, ordinary search/use does not recommend the formerly approved method; history search returns the old record as stale. A fresh reviewed revision can restore normal reuse without erasing the earlier question and historical result.
+5. Using either a draft that passed checks or a reviewed example still executes the current metric/validated ad-hoc path and reports current values and the right governance label; an old snapshot cannot answer directly. A successful compile or model agreement alone cannot be reported as independent numeric attestation.
+6. Invalid input, an oversized answer, a forged path outside the selected roots, or a failed review writes no stable example and leaves existing records unchanged. Local CLI and optional MCP expose the same search/save behavior without importing MCP in the base package; the review command is local operator-only.
+7. With an unreviewed example in `staging/answer_examples/`, ordinary `ariadne-promote` still promotes an unrelated validated Context Layer/OSI proposal, and never merges the example. Its review-needed check still refuses marked files inside the Context Layer/OSI staging roots.
+
+## Shaping capture checkpoint
+
+- **Vocabulary:** `Answer Example` and the enlarged scope of `Staging` belong in [`CONTEXT.md`](../../CONTEXT.md). `Proposal` continues to mean an ad-hoc metric definition, not an example.
+- **Decision:** [ADR-0015](../adr/0015-separate-answer-example-store.md) records the approved, consequential separation from Context Layer rules and the local-first trust boundary. No second ADR is warranted for the reversible CLI spelling or ranking choices.
+- **Behavior:** This approved revision 1 owns the scope, interfaces, record format, failure behavior, non-goals and acceptance examples. Approval of the design does not authorize implementation or publication.
+- **Uncertainty:** No material owner decision remains for planning. The limitation that local actor labels are self-declared is explicit, not silently treated as authenticated identity.
