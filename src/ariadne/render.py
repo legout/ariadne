@@ -292,13 +292,18 @@ def render(
     dimensions: list[str] | None = None,
     time_range: dict | None = None,
     metric: str | None = None,
+    carry: list[str] | tuple[str, ...] | None = None,
 ) -> str:
     """Render the model to one SQL SELECT (DuckDB dialect).
 
     ``metric`` selects one metric (with its dependency closure); ``None`` renders
     every metric of the model — aggregate metrics in the inner GROUP BY, each
     derived level nested above the previous. ``dimensions`` must name dimension
-    fields of the model's dataset. The rendered SQL is re-parsed as a self-check.
+    fields of the model's dataset. ``carry`` names metrics whose outputs must
+    survive every derived layer (a branch that aggregates a base metric AND a
+    same-fact derived metric on top of it needs both, issue #27 fix pass F5);
+    the default keeps each level's own single-output shape. The rendered SQL is
+    re-parsed as a self-check.
     """
     source, field_exprs, metric_sqls, dimension_flags = _model_parts(model_dict)
     dims = list(dimensions or [])
@@ -315,6 +320,16 @@ def render(
         )
     levels, deps = _metric_levels(metric_sqls)
     wanted = _closure(metric, deps) if metric is not None else set(metric_sqls)
+    carried = set(carry or ())
+    unknown = sorted(carried - set(metric_sqls))
+    if unknown:
+        raise RenderError(
+            f"unknown carried metric(s) {unknown}; "
+            f"available: {', '.join(sorted(metric_sqls))}"
+        )
+    stray = sorted(carried - wanted)
+    if stray:
+        raise RenderError(f"carried metric(s) {stray} are not part of the rendered set")
     parsed = {
         name: _resolve_fields(
             _strip_qualifiers(_parse(sql, f"metric {name!r}")), field_exprs, set(metric_sqls)
@@ -346,6 +361,8 @@ def render(
         for name in sorted(wanted):
             if levels[name] == level:
                 outer = outer.select(exp.alias_(parsed[name].copy(), name))
+            elif name in carried and levels[name] < level:
+                outer = outer.select(exp.column(name))  # keep the lower output
         select = outer.from_(exp.Subquery(this=select))
     sql = select.sql(dialect="duckdb")
     try:  # self-check: the compiler's own output must round-trip through the parser

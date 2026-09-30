@@ -16,8 +16,12 @@ become one validated graph, and graph failures (duplicate metrics, ambiguous
 fail structurally BEFORE any SELECT is compiled. Domain models compile
 per-owning-dataset through the same single-dataset ``render()``. The result
 carries a digest-bound :class:`ValidationReport` (consumed model/graph/context
-bytes, registry identity, validator version, distinct check outcomes); live
-relationship-target audits are task 2 (#27) and always report not-run.
+bytes, registry identity, validator version, distinct check outcomes). Since
+issue #27 the live stage additionally audits every declared relationship's
+target key (exact composite tuple uniqueness + non-NULL components,
+:func:`ariadne.grain.relationship_target_audit`); the planner rechecks the
+participating subset per request. A compile-only report keeps reporting the
+relationship audit as not-run.
 
 With ``db_path`` (``--db``, passed by the author loop), the rendered SQL also
 passes an EXPLAIN bind-check on a read-only DuckDB attach of the SQLite database
@@ -57,7 +61,8 @@ import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
 
-from ariadne.grain import check_grain_preserving
+from ariadne.grain import check_grain_preserving, relationship_target_audit
+from ariadne.planner import resolved_target_keys
 from ariadne.render import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     RenderError,
     _dialect_expression,
@@ -84,7 +89,7 @@ _ADR_TOLERANCE = 1e-9
 
 # The validator's own identity in the digest-bound report: bump when the checks
 # performed change (spec rev 1, "Validation, admission, and labels").
-VALIDATOR_VERSION = "ariadne-validate/2"  # 2: normalized graph + report (issue #26)
+VALIDATOR_VERSION = "ariadne-validate/3"  # 3: live relationship-target audits (issue #27)
 
 
 @dataclass(frozen=True)
@@ -575,6 +580,51 @@ def _compile_graph(graph: SemanticGraph) -> tuple[list[tuple[str, str]], list[st
     return rendered, errors, skipped
 
 
+def _relationship_audit(
+    graph: SemanticGraph, con: duckdb.DuckDBPyConnection
+) -> tuple[list[str], str]:
+    """Live composite target-key audit over every DECLARED relationship edge
+    (issue #27; ADR-0006 §5): exact tuple uniqueness + non-NULL key components
+    on the target source. Admission-time validation checks the whole declared
+    graph; the planner rechecks the participating subset per request. Returns
+    (errors, detail) — fail-closed per edge on anything that does not bind."""
+    if not graph.relationships:
+        return [], "0 relationships declared"
+    errors: list[str] = []
+    names: list[str] = []
+    for edge in graph.relationships:
+        names.append(edge.name)
+        source = graph.datasets[edge.to_dataset].source
+        try:
+            audit = relationship_target_audit(con, source, resolved_target_keys(graph, edge))
+        except Exception as exc:
+            errors.append(
+                f"relationship '{edge.name}': target-key audit did not bind: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            continue
+        keys = list(edge.to_fields)
+        if audit.duplicates:
+            errors.append(
+                f"grain audit failed for relationship '{edge.name}' (ADR-0006 target-key "
+                f"uniqueness): target key {keys} on dataset '{edge.to_dataset}' is not "
+                f"unique — {audit.duplicates} duplicate key tuple(s) over {audit.rows} "
+                "rows; the planner refuses any request traversing it"
+            )
+        if audit.null_rows:
+            errors.append(
+                f"grain audit failed for relationship '{edge.name}' (ADR-0006 target-key "
+                f"NULL components): target key {keys} on dataset '{edge.to_dataset}' has "
+                f"{audit.null_rows} row(s) with a NULL key component; the planner refuses "
+                "any request traversing it"
+            )
+    detail = (
+        f"{len(graph.relationships)} declared relationship(s) target-key audited "
+        f"({', '.join(names)})"
+    )
+    return errors, detail
+
+
 def validate(
     staging_dir: str | Path,
     db_path: str | Path | None = None,
@@ -632,6 +682,10 @@ def validate(
             )
 
     bind_outcome = grain_outcome = "not-run"
+    relationship_outcome, relationship_detail = "not-run", (
+        "compile-only validation performs no live relationship audit; the planner "
+        "rechecks participating relationships per request (ariadne.planner.plan_query)"
+    )
     if graph is not None and not errors and live:
         # bind check + audit only what compiles; one audit connection for both
         # (the shared registry builder, ADR-0010 — or the legacy demo attach).
@@ -648,6 +702,10 @@ def validate(
             else:
                 errors.extend(grain_errors)
                 grain_outcome = "failed" if grain_errors else "passed"
+            if graph is not None and not errors:
+                relationship_errors, relationship_detail = _relationship_audit(graph, con)
+                errors.extend(relationship_errors)
+                relationship_outcome = "failed" if relationship_errors else "passed"
         finally:
             con.close()
 
@@ -690,12 +748,7 @@ def validate(
             CheckOutcome("conformance", conformance_outcome, conformance_detail),
             CheckOutcome("bind", bind_outcome),
             CheckOutcome("grain", grain_outcome),
-            CheckOutcome(
-                "relationship_audit",
-                "not-run",
-                "live relationship-target audits land in task 2 (#27) — "
-                "reported not-run, never as passed",
-            ),
+            CheckOutcome("relationship_audit", relationship_outcome, relationship_detail),
         ),
     )
     return ValidationResult(not errors, errors, report=report)
@@ -722,7 +775,12 @@ def main(argv: list[str] | None = None) -> int:
     if sources_path is not None:
         args.db = None  # the registry connection replaces the single-sqlite attach
     result = validate(args.staging_dir, db_path=args.db, sources_path=sources_path)
-    scope = f"scope: {result.report.scope}; relationship-audit: not-run" if result.report else ""
+    scope = (
+        f"scope: {result.report.scope}; relationship-audit: "
+        f"{result.report.outcome('relationship_audit')}"
+        if result.report
+        else ""
+    )
     if result.ok:
         audited = (
             " and pass the grain audit (ADR-0006 §5)"
