@@ -60,6 +60,30 @@ TASKS = [(1, 1, 1, 3.0), (2, 1, 2, 4.0), (3, 2, 1, 5.0)]
 TEAMS = [(1, 1, "alpha"), (1, 2, "beta"), (2, 1, "gamma")]
 
 
+# Task 4 (issue #29): a time-conformance fact pair whose business dates are
+# DIFFERENTLY NAMED (orders.ordered_on, day grain; order lines shipped_on,
+# month grain) — conformance is by declaration, never by column name. The
+# line for order 4 ships one month later than its order, so March is an
+# orders-only month and April a lines-only month: the aligned keys union must
+# keep both unmatched groups.
+DATED_ORDERS = [
+    (1, "NA", "2026-01-10", 100.0, 1),
+    (2, "NA", "2026-01-20", 200.0, 2),
+    (3, "EMEA", "2026-02-05", 400.0, 1),
+    (4, "EMEA", "2026-03-15", 50.0, 2),
+]
+DATED_LINES = [
+    (11, 1, "NA", "2026-01-01", 60.0),
+    (12, 1, "NA", "2026-01-01", 30.0),
+    (13, 1, "NA", "2026-01-01", 10.0),
+    (21, 2, "NA", "2026-01-01", 150.0),
+    (22, 2, "NA", "2026-01-01", 50.0),
+    (31, 3, "EMEA", "2026-02-01", 250.0),
+    (41, 4, "EMEA", "2026-04-01", 75.0),
+]
+DATED_CUSTOMERS = [(1, "gold"), (2, "standard")]
+
+
 def build_source_fixture(root: Path) -> Path:
     """The registered SQLite source (``ariadne.yaml`` + ``mf.db``); returns the
     registry path — the sanctioned source-backed audit connection."""
@@ -110,6 +134,24 @@ def build_source_fixture(root: Path) -> Path:
                 team_b    INTEGER NOT NULL,
                 team_name TEXT NOT NULL
             );
+            CREATE TABLE dated_orders (
+                order_id    INTEGER PRIMARY KEY,
+                region      TEXT NOT NULL,
+                ordered_on  DATE NOT NULL,
+                amount      REAL NOT NULL,
+                customer_id INTEGER NOT NULL REFERENCES dated_customers (customer_id)
+            );
+            CREATE TABLE dated_customers (
+                customer_id INTEGER PRIMARY KEY,
+                tier        TEXT NOT NULL
+            );
+            CREATE TABLE dated_lines (
+                line_id     INTEGER PRIMARY KEY,
+                order_id    INTEGER NOT NULL REFERENCES dated_orders (order_id),
+                region      TEXT NOT NULL,
+                shipped_on  DATE NOT NULL,
+                line_amount REAL NOT NULL
+            );
             """
         )
         # static literal SQL with ?-bound parameters; rows are module constants
@@ -122,6 +164,9 @@ def build_source_fixture(root: Path) -> Path:
             ("INSERT INTO owners VALUES (?, ?)", OWNERS),
             ("INSERT INTO tasks VALUES (?, ?, ?, ?)", TASKS),
             ("INSERT INTO teams VALUES (?, ?, ?)", TEAMS),
+            ("INSERT INTO dated_orders VALUES (?, ?, ?, ?, ?)", DATED_ORDERS),
+            ("INSERT INTO dated_customers VALUES (?, ?)", DATED_CUSTOMERS),
+            ("INSERT INTO dated_lines VALUES (?, ?, ?, ?, ?)", DATED_LINES),
         ):
             con.executemany(statement, rows)  # pi-lens-ignore: python-sql-injection
         con.commit()
@@ -1045,7 +1090,7 @@ def test_plan_query_refusals_are_structured(tmp_path):
     assert bad_request.value.code == "request_invalid"
 
     # cross-fact derived metrics compute after branch alignment (task 4, #29):
-    # the request is refused instead of silently narrowed to one fact
+    # the ratio resolves over the aligned outputs — hand-derived 700 / 700
     with_ratio = DOMAIN_YML + (
         "      - name: order_line_ratio\n"
         "        description: Derived ratio across both facts\n"
@@ -1057,9 +1102,8 @@ def test_plan_query_refusals_are_structured(tmp_path):
     ratio_graph = load_graph(
         _staging(tmp_path / "ratio", {"sales.yml": with_ratio}) / "semantic_layer"
     )
-    with pytest.raises(PlannerError) as cross_fact:
-        plan_query(ratio_graph, {"metrics": ["order_line_ratio"]}, con)
-    assert cross_fact.value.code == "derived_cross_fact_unsupported"
+    ratio = plan_query(ratio_graph, {"metrics": ["order_line_ratio"]}, con)
+    assert con.execute(ratio.sql).fetchall() == [(1.0,)]
 
 
 # --- Fix pass (review c90ca081): the five accepted findings F1–F5 ------------
@@ -2088,3 +2132,479 @@ def test_t3_detail_nonaggregating_analytic_field_projects_one_row_per_key(tmp_pa
                 bad_graph, {"dataset": "orders", "fields": ["previous_amount"]}, con
             )
         assert refused.value.code == "detail_field_aggregate"
+
+
+# --- Task 4 (issue #29): conformed business time + post-aggregate windows ----
+
+# The two facts pair their DIFFERENTLY NAMED business dates explicitly through
+# the declared conformed primary business time (native grains included), never
+# through identical column names. lines_total declares an explicit fill: 0 —
+# output only, never a hidden ratio denominator. The five window metrics cover
+# every declared window form (spec rev 1 "Query and result contract").
+TIME_YML = """\
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales_time
+    description: Task 4 fixture (differently named business dates)
+    requires: ["ariadne.conformed_dimensions@1"]
+    datasets:
+      - name: dated_orders
+        source: demo.main.dated_orders
+        primary_key: [order_id]
+        fields:
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+          - name: region
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: region
+            dimension: {}
+          - name: ordered_on
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ordered_on
+            dimension:
+              is_time: true
+          - name: amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: amount
+          - name: customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_id
+      - name: dated_customers
+        source: demo.main.dated_customers
+        primary_key: [customer_id]
+        fields:
+          - name: customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_id
+          - name: tier
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: tier
+            dimension: {}
+      - name: dated_lines
+        source: demo.main.dated_lines
+        primary_key: [line_id]
+        fields:
+          - name: line_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: line_id
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+          - name: region
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: region
+            dimension: {}
+          - name: shipped_on
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: shipped_on
+            dimension:
+              is_time: true
+          - name: line_amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: line_amount
+    relationships:
+      - name: order_dated_customer
+        cardinality: many_to_one
+        from_dataset: dated_orders
+        from_fields: [customer_id]
+        to_dataset: dated_customers
+        to_fields: [customer_id]
+    conformed_dimensions:
+      - name: region
+        members:
+          - dataset: dated_orders
+            field: region
+          - dataset: dated_lines
+            field: region
+      - name: business_date
+        members:
+          - dataset: dated_orders
+            field: ordered_on
+            native_grain: day
+          - dataset: dated_lines
+            field: shipped_on
+            native_grain: month
+    metrics:
+      - name: orders_total
+        dataset: dated_orders
+        description: Sum of order amounts at order grain
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(amount)
+      - name: lines_total
+        dataset: dated_lines
+        description: Sum of line amounts, filled with 0 on output only
+        fill: 0
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(line_amount)
+      - name: order_line_ratio
+        description: Derived ratio across both facts (resolves after merge)
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: orders_total / lines_total
+      - name: orders_rolling_3
+        description: Rolling 3-group sum of orders_total
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: orders_total
+        window:
+          kind: rolling
+          size: 3
+          function: sum
+      - name: orders_cumulative
+        description: Cumulative sum of orders_total
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: orders_total
+        window:
+          kind: cumulative
+          function: sum
+      - name: orders_prior
+        description: Preceding-period orders_total
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: orders_total
+        window:
+          kind: prior_period
+      - name: orders_rank
+        description: Rank of the group by orders_total, descending
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: orders_total
+        window:
+          kind: ranking
+          direction: desc
+      - name: orders_value_1m
+        description: Value-window sum of orders_total, one grain period back
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: orders_total
+        window:
+          kind: value_window
+          size: 1
+          function: sum
+"""
+
+
+def _t4_graph(root: Path):
+    """The task 4 graph over the registered source fixture."""
+    registry = build_source_fixture(root / "src")
+    staging = _staging(root / "t4", {"sales_time.yml": TIME_YML})
+    return load_graph(staging / "semantic_layer"), _duck_connection(registry)
+
+
+def _month(value) -> str:
+    """One grouped time key as 'YYYY-MM' (grain-independent label)."""
+    return str(value)[:7]
+
+
+def test_t4_differently_named_dates_align_monthly_with_ratio_and_fill(tmp_path):
+    # Hand-derived from the fixture rows, monthly over [2026-01-01, 2026-05-01):
+    # Jan orders 100+200=300 vs lines 60+30+10+150+50=300 -> ratio 1.0; Feb
+    # 400 vs 250 -> 1.6; March is orders-only (50, lines NULL -> ratio NULL,
+    # filled output 0 — the fill never reaches the hidden denominator); April
+    # is lines-only (75, orders NULL -> ratio NULL). Both unmatched groups
+    # survive: the time filter never drops another fact's groups.
+    graph, con = _t4_graph(tmp_path)
+    plan = plan_query(
+        graph,
+        {
+            "metrics": ["orders_total", "lines_total", "order_line_ratio"],
+            "time": {
+                "dimension": "business_date",
+                "grain": "month",
+                "start": "2026-01-01",
+                "end": "2026-05-01",
+            },
+        },
+        con,
+    )
+    assert plan.time_dimension == "business_date"
+    assert plan.time_grain == "month"
+    assert sorted(branch.dataset for branch in plan.branches) == ["dated_lines", "dated_orders"]
+    rows = {
+        _month(month): tuple(values) for month, *values in con.execute(plan.sql).fetchall()
+    }
+    assert rows == {
+        "2026-01": (300.0, 300.0, 1.0),
+        "2026-02": (400.0, 250.0, 1.6),
+        "2026-03": (50.0, 0, None),
+        "2026-04": (None, 75.0, None),
+    }
+    assert len(sqlglot.parse(plan.sql)) == 1  # still one guarded SELECT
+
+    # the range is HALF-OPEN: the line shipped exactly on 2026-04-01 falls
+    # outside [.., 2026-04-01) and April disappears from the displayed groups
+    clipped = plan_query(
+        graph,
+        {
+            "metrics": ["orders_total", "lines_total"],
+            "time": {
+                "dimension": "business_date",
+                "grain": "month",
+                "start": "2026-01-01",
+                "end": "2026-04-01",
+            },
+        },
+        con,
+    )
+    assert sorted(_month(row[0]) for row in con.execute(clipped.sql).fetchall()) == [
+        "2026-01",
+        "2026-02",
+        "2026-03",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("metric", "expected"),
+    [
+        # rolling 3 groups over the month rows 300, 400, 50
+        ("orders_rolling_3", {"2026-01": 300.0, "2026-02": 700.0, "2026-03": 750.0}),
+        ("orders_cumulative", {"2026-01": 300.0, "2026-02": 700.0, "2026-03": 750.0}),
+        ("orders_prior", {"2026-01": None, "2026-02": 300.0, "2026-03": 400.0}),
+        # rank by value desc: Feb 400 -> 1, Jan 300 -> 2, Mar 50 -> 3
+        ("orders_rank", {"2026-01": 2, "2026-02": 1, "2026-03": 3}),
+        # RANGE frame one grain period back: Feb sums Jan+Feb, Mar sums Feb+Mar
+        ("orders_value_1m", {"2026-01": 300.0, "2026-02": 700.0, "2026-03": 450.0}),
+    ],
+)
+def test_t4_each_declared_window_form_computes_post_aggregate(tmp_path, metric, expected):
+    # One focused parameterized check per declared window form (completion
+    # criterion), monthly over Jan..Mar where every month exists on the orders
+    # fact. Expected values hand-derived from the month totals 300/400/50.
+    graph, con = _t4_graph(tmp_path)
+    plan = plan_query(
+        graph,
+        {
+            "metrics": [metric],
+            "time": {
+                "dimension": "business_date",
+                "grain": "month",
+                "start": "2026-01-01",
+                "end": "2026-04-01",
+            },
+        },
+        con,
+    )
+    assert plan.windows == (metric,)
+    rows = {_month(month): value for month, value in con.execute(plan.sql).fetchall()}
+    assert rows == expected
+    assert len(sqlglot.parse(plan.sql)) == 1
+
+
+def test_t4_lookback_precedes_the_displayed_range_trim(tmp_path):
+    # The displayed range starts AFTER the lookback: exactly one displayed row,
+    # whose preceding-period value (Feb 400) and rolling 3-group total
+    # (Jan 300 + Feb 400 + Mar 50 = 750) need the preceding groups fetched
+    # BEFORE the trim (spec rev 1 "Query and result contract").
+    graph, con = _t4_graph(tmp_path)
+    plan = plan_query(
+        graph,
+        {
+            "metrics": ["orders_total", "orders_prior", "orders_rolling_3"],
+            "time": {
+                "dimension": "business_date",
+                "grain": "month",
+                "start": "2026-03-01",
+                "end": "2026-04-01",
+            },
+        },
+        con,
+    )
+    rows = con.execute(plan.sql).fetchall()
+    assert len(rows) == 1  # the lookback groups are fetched, then trimmed away
+    assert _month(rows[0][0]) == "2026-03"
+    assert tuple(rows[0][1:]) == (50.0, 400.0, 750.0)
+
+    # cumulative windows need EVERY preceding group: the fetch start opens up
+    # while the displayed range still trims to March
+    cumulative = plan_query(
+        graph,
+        {
+            "metrics": ["orders_cumulative"],
+            "time": {
+                "dimension": "business_date",
+                "grain": "month",
+                "start": "2026-03-01",
+                "end": "2026-04-01",
+            },
+        },
+        con,
+    )
+    assert [_month(row[0]) for row in con.execute(cumulative.sql).fetchall()] == ["2026-03"]
+    assert con.execute(cumulative.sql).fetchall()[0][1] == 750.0
+
+
+def test_t4_windows_partition_by_non_time_dimensions_through_lookups(tmp_path):
+    # tier reaches the orders branch through the order_dated_customer lookup,
+    # so the branch compiles through the in-branch join builder while grouping
+    # by its truncated native time — and the window PARTITIONS by tier. No
+    # implicit spine: standard has no February row, so March's preceding period
+    # is January (200), not an invented February. Hand-derived: gold Jan 100 /
+    # Feb 400; standard Jan 200 / Mar 50.
+    graph, con = _t4_graph(tmp_path)
+    plan = plan_query(
+        graph,
+        {
+            "metrics": ["orders_total", "orders_prior"],
+            "dimensions": ["tier"],
+            "time": {
+                "dimension": "business_date",
+                "grain": "month",
+                "start": "2026-01-01",
+                "end": "2026-04-01",
+            },
+        },
+        con,
+    )
+    (branch,) = plan.branches
+    assert branch.joins == ("order_dated_customer",)
+    rows = {
+        (tier, _month(month)): tuple(values)
+        for tier, month, *values in con.execute(plan.sql).fetchall()
+    }
+    assert rows == {
+        ("gold", "2026-01"): (100.0, None),
+        ("gold", "2026-02"): (400.0, 100.0),
+        ("standard", "2026-01"): (200.0, None),
+        ("standard", "2026-03"): (50.0, 200.0),
+    }
+
+
+def test_t4_finer_than_native_grain_refuses(tmp_path):
+    # dated_lines declares a month native grain: a day request is finer than a
+    # declared native grain and refuses BEFORE any SELECT executes, naming the
+    # offending member (spec rev 1 acceptance 4). The request spans BOTH
+    # facts, so both members' native grains gate the grain.
+    graph, con = _t4_graph(tmp_path)
+    with pytest.raises(PlannerError) as refused:
+        plan_query(
+            graph,
+            {
+                "metrics": ["orders_total", "lines_total"],
+                "time": {
+                    "dimension": "business_date",
+                    "grain": "day",
+                    "start": "2026-01-01",
+                    "end": "2026-01-31",
+                },
+            },
+            con,
+        )
+    assert refused.value.code == "time_grain_too_fine"
+    assert "dated_lines" in str(refused.value) and "month" in str(refused.value)
+
+
+def test_t4_cyclic_derivation_fails_at_load(tmp_path):
+    # metric_a -> metric_b -> metric_a: dependency cycles are rejected at load,
+    # before any branch, alignment or window stage is compiled (spec rev 1 §5).
+    cyclic = TIME_YML + (
+        "      - name: metric_a\n"
+        "        description: cyclic pair a\n"
+        "        expression:\n"
+        "          dialects:\n"
+        "            - dialect: ANSI_SQL\n"
+        "              expression: metric_b + 1\n"
+        "      - name: metric_b\n"
+        "        description: cyclic pair b\n"
+        "        expression:\n"
+        "          dialects:\n"
+        "            - dialect: ANSI_SQL\n"
+        "              expression: metric_a + 1\n"
+    )
+    build_source_fixture(tmp_path / "src")
+    staging = _staging(tmp_path / "cyclic", {"cyclic.yml": cyclic})
+    with pytest.raises(GraphError, match="cycle"):
+        load_graph(staging / "semantic_layer")
+
+
+def test_t4_time_and_window_refusals_are_structured(tmp_path):
+    graph, con = _t4_graph(tmp_path)
+    month_time = {"dimension": "business_date", "grain": "month"}
+
+    # a time-frame window needs the declared conformed business time
+    with pytest.raises(PlannerError) as no_time:
+        plan_query(graph, {"metrics": ["orders_rolling_3"]}, con)
+    assert no_time.value.code == "window_requires_time"
+    assert "orders_rolling_3" in str(no_time.value)
+
+    # the time dimension must be a declared conformed TIME dimension
+    with pytest.raises(PlannerError) as not_time:
+        plan_query(
+            graph,
+            {"metrics": ["orders_total"], "time": month_time | {"dimension": "region"}},
+            con,
+        )
+    assert not_time.value.code == "time_dimension_invalid"
+    assert "business_date" in not_time.value.candidates
+
+    # unknown grain and malformed declarations refuse
+    with pytest.raises(PlannerError) as bad_grain:
+        plan_query(
+            graph,
+            {
+                "metrics": ["orders_total"],
+                "time": {"dimension": "business_date", "grain": "fortnight"},
+            },
+            con,
+        )
+    assert bad_grain.value.code == "time_grain_invalid"
+
+    for bad_time in (
+        {"dimension": "business_date", "grain": "month", "start": "January"},  # not ISO
+        {
+            "dimension": "business_date",
+            "grain": "month",
+            "start": "2026-03-01",
+            "end": "2026-01-01",
+        },
+        {"dimension": "business_date"},  # no grain
+        "monthly",  # not a mapping
+        {"dimension": "business_date", "grain": "month", "quarter": 1},  # unknown key
+    ):
+        with pytest.raises(PlannerError) as malformed:
+            plan_query(graph, {"metrics": ["orders_total"], "time": bad_time}, con)
+        assert malformed.value.code == "time_invalid"
+
+    # the time dimension may not also be a requested dimension
+    with pytest.raises(PlannerError) as duplicated:
+        plan_query(
+            graph,
+            {"metrics": ["orders_total"], "dimensions": ["business_date"], "time": month_time},
+            con,
+        )
+    assert duplicated.value.code == "time_invalid"
