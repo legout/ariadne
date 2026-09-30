@@ -51,6 +51,7 @@ from ariadne.answer_examples import (
     _OPERATION_ARGUMENTS,
     EXAMPLES_DIR,
     MAX_EXCERPT_BYTES,
+    MAX_RECORD_BYTES,
     OPERATIONS,
     _guard_staging,
     _is_stale,
@@ -83,6 +84,20 @@ def _require(decision: dict, key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"incomplete reviewer evidence: the decision needs a non-empty {key!r}")
     return value
+
+
+def _bounded_page(meta: dict, body: str) -> bytes:
+    """Encode a reviewed page inside the spec's whole-record bound: review
+    evidence is the only field that grows a record after the bounded save, so
+    the final encoded bytes are checked before any write — an oversize record
+    is refused, never truncated."""
+    page = _page_bytes(meta, body)
+    if len(page) > MAX_RECORD_BYTES:
+        raise ValueError(
+            f"the reviewed record would be {len(page)} bytes, over the "
+            f"{MAX_RECORD_BYTES}-byte bound — shorten the technical review"
+        )
+    return page
 
 
 def _validated_decision(example_id: str, decision: Any) -> dict:
@@ -349,7 +364,7 @@ def _approve(
     stable = dict(meta)
     stable["status"] = "stable"
     stable["review"] = review
-    _atomic_write(served_page, _page_bytes(stable, body))
+    _atomic_write(served_page, _bounded_page(stable, body))
     if supersession is not None:
         # A revision closes its predecessor without erasing it: only the status
         # flips — the old question, answer, attestation and dependency digests
@@ -433,7 +448,7 @@ def review_example(
         "outcome": validated["outcome"],
         "technical_review": validated["technical_review"],
     }
-    _atomic_write(page, _page_bytes(meta, body))
+    _atomic_write(page, _bounded_page(meta, body))
     _write_index(staged_dir, staged=True)
     _log_review(
         staged_dir,

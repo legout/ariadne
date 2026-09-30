@@ -522,6 +522,35 @@ def _served_examples(root: Path) -> list[str]:
     return sorted(p.name for p in directory.glob("*.md")) if directory.is_dir() else []
 
 
+def test_review_refuses_an_oversize_reviewed_record_before_any_write(
+    served, tmp_path, capsys
+):
+    """The whole encoded record is bounded in BOTH roots (spec "Location,
+    format and identity"): review evidence that would push the record over the
+    64 KiB bound is refused before any write — the staged draft stays
+    byte-identical and nothing is served, for approval and rejection alike."""
+    root, _db = served
+    staging = tmp_path / "staging"
+    saved = _save_draft(served, staging, capsys)
+    staged = Path(saved["path"])
+    staged_bytes = staged.read_bytes()
+    served_before = _served_examples(root)
+
+    approve = _decision(saved, staged, technical_review="x" * 70_000)
+    assert run_review(served, staging, saved["id"], approve, tmp_path) == 1
+    error = review_error(capsys)
+    assert error["type"] == "ValueError"
+    assert "65536-byte bound" in error["message"]
+    assert staged.read_bytes() == staged_bytes
+    assert _served_examples(root) == served_before
+
+    reject = _decision(saved, staged, outcome="reject", technical_review="x" * 70_000)
+    assert run_review(served, staging, saved["id"], reject, tmp_path) == 1
+    assert "65536-byte bound" in review_error(capsys)["message"]
+    assert staged.read_bytes() == staged_bytes  # rejection records nothing either
+    assert _served_examples(root) == served_before
+
+
 def test_review_refuses_malformed_missing_and_escaped_ids(served, tmp_path, capsys):
     """Fail closed on an unreachable ID before anything is read or written."""
     root, _db = served
