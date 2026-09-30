@@ -16,6 +16,8 @@ tracer patching):
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -39,6 +41,84 @@ GRAIN_GUIDANCE = (
     "(Pattern 5) — the many side must be pre-aggregated to the fact grain inside "
     "source before registration; nothing staged, nothing executed."
 )
+
+
+@dataclass(frozen=True)
+class TargetKeyAudit:
+    """Live audit facts for one relationship target key (issue #27; ADR-0006
+    §5 composite-key exactness): full TUPLE uniqueness plus non-NULL key
+    components, distinct from :func:`check_grain_preserving`'s stricter
+    per-column legacy check."""
+
+    rows: int
+    duplicates: int
+    null_rows: int
+
+    @property
+    def ok(self) -> bool:
+        return self.duplicates == 0 and self.null_rows == 0
+
+
+def _audit_statement(source: str, keys: tuple[str, ...]) -> str:
+    """Assemble the one-scan audit SELECT from compiler-rendered key
+    expressions (fix pass F1: nothing here interpolates raw field text)."""
+    wrapped = f"({source})" if re.match(r"(?is)\s*(select|with)\b", source) else (
+        f"(SELECT * FROM {source})"
+    )
+    key_list = ", ".join(keys)
+    complete = " AND ".join(f"{key} IS NOT NULL" for key in keys)
+    nulls = " OR ".join(f"{key} IS NULL" for key in keys)
+    # duplicates counts repeated COMPLETE non-null key tuples: COUNT(DISTINCT)
+    # skips NULLs for single-column keys, so NULL rows must not be counted as
+    # duplicates — they are their own null_rows finding.
+    return (
+        f"SELECT COUNT(*), COUNT(DISTINCT ({key_list})) FILTER (WHERE {complete}), "
+        f"COUNT(*) FILTER (WHERE {nulls}) FROM {wrapped}"
+    )
+
+
+def relationship_target_audit(
+    con: DuckDBPyConnection, source: str, keys: tuple[str, ...]
+) -> TargetKeyAudit:
+    """Exact composite target-key uniqueness + NULL-component audit over a
+    relationship target source, one scan (issue #27). Returns facts; callers
+    own error reporting. Unlike :func:`check_grain_preserving` (per-column,
+    stricter, for legacy authored sources), this is exact tuple uniqueness —
+    the many_to_one/one_to_one guarantee the planner's in-branch lookup joins
+    and the validation graph audit rely on.
+
+    ``keys`` are key EXPRESSIONS (a field name or its resolved expression SQL).
+    Graph validation accepts quote-bearing field names, so no key may reach the
+    statement as raw text: every key is parsed and re-rendered by sqlglot
+    (embedded quotes double into one quoted identifier), and the assembled
+    audit must parse back as exactly ONE statement — anything else fails
+    closed before execution (fix pass F1; no-unvalidated-execution, spec §6).
+    """
+    if not keys:
+        raise ValueError("relationship target key audit requires at least one key field")
+    try:
+        rendered = tuple(sqlglot.parse_one(key).sql(dialect="duckdb") for key in keys)
+        sql = _audit_statement(source, rendered)
+        statements = sqlglot.parse(sql)
+    except Exception as exc:
+        raise ValueError(
+            f"relationship target-key audit did not compile as one statement: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    if len(statements) != 1 or statements[0] is None:
+        raise ValueError(
+            f"relationship target-key audit must be exactly one statement, got "
+            f"{len(statements)} — refusing (no-unvalidated-execution invariant, spec §6)"
+        )
+    # nosemgrep — never raw field text: every key above is compiler-rendered
+    # with correct identifier quoting, the assembled statement is proven single
+    # above, and the source is the staged authored declaration (spec §6).
+    # pi-lens-ignore: python-sql-injection — compiler-rendered identifiers, proven single statement
+    fetched = con.execute(sql).fetchone()  # nosemgrep — read-only attach, compiler-rendered keys
+    rows, distinct_complete, null_rows = fetched or (0, 0, 0)
+    return TargetKeyAudit(
+        rows=rows, duplicates=rows - null_rows - distinct_complete, null_rows=null_rows
+    )
 
 
 def check_grain_preserving(con: DuckDBPyConnection, source: str) -> None:
