@@ -31,10 +31,13 @@ from ariadne.semantic_graph import GraphError, load_graph  # noqa: E402
 from ariadne.sources import build_connection, load_registry  # noqa: E402
 from ariadne.validate import validate  # noqa: E402
 
-# (order_id, region, amount) / (line_id, order_id, region, line_amount): the
-# per-order line sums equal the order amounts, and each line carries its order's
-# region — the conformed business key is real on both facts.
-ORDERS = [(1, "NA", 100.0), (2, "NA", 200.0), (3, "EMEA", 400.0)]
+# (order_id, region, amount, customer_id) / (line_id, order_id, region,
+# line_amount): the per-order line sums equal the order amounts, and each line
+# carries its order's region — the conformed business key is real on both facts.
+# customer_id adds the task 3 lookup chain orders -> customers (tier), making
+# tier a TWO-hop dimension from the order_lines branch.
+ORDERS = [(1, "NA", 100.0, 1), (2, "NA", 200.0, 2), (3, "EMEA", 400.0, 1)]
+CUSTOMERS = [(1, "gold"), (2, "standard")]
 LINES = [
     (11, 1, "NA", 60.0),
     (12, 1, "NA", 30.0),
@@ -67,9 +70,14 @@ def build_source_fixture(root: Path) -> Path:
         con.executescript(
             """
             CREATE TABLE orders (
-                order_id INTEGER PRIMARY KEY,
-                region   TEXT NOT NULL,
-                amount   REAL NOT NULL
+                order_id    INTEGER PRIMARY KEY,
+                region      TEXT NOT NULL,
+                amount      REAL NOT NULL,
+                customer_id INTEGER NOT NULL REFERENCES customers (customer_id)
+            );
+            CREATE TABLE customers (
+                customer_id INTEGER PRIMARY KEY,
+                tier        TEXT NOT NULL
             );
             CREATE TABLE order_lines (
                 line_id     INTEGER PRIMARY KEY,
@@ -106,7 +114,8 @@ def build_source_fixture(root: Path) -> Path:
         )
         # static literal SQL with ?-bound parameters; rows are module constants
         for statement, rows in (
-            ("INSERT INTO orders VALUES (?, ?, ?)", ORDERS),
+            ("INSERT INTO orders VALUES (?, ?, ?, ?)", ORDERS),
+            ("INSERT INTO customers VALUES (?, ?)", CUSTOMERS),
             ("INSERT INTO order_lines VALUES (?, ?, ?, ?)", LINES),
             ("INSERT INTO shipments VALUES (?, ?, ?)", SHIPMENTS),
             ("INSERT INTO events VALUES (?, ?, ?)", EVENTS),
@@ -1032,7 +1041,7 @@ def test_plan_query_refusals_are_structured(tmp_path):
 
     # no silent narrowing of the request shape itself
     with pytest.raises(PlannerError) as bad_request:
-        plan_query(graph, {"metrics": ["orders_total"], "filters": []}, con)
+        plan_query(graph, {"metrics": ["orders_total"], "where": "1=1"}, con)
     assert bad_request.value.code == "request_invalid"
 
     # cross-fact derived metrics compute after branch alignment (task 4, #29):
@@ -1371,3 +1380,711 @@ def test_f5_base_and_same_fact_derived_metric_both_return(tmp_path):
     # each metric alone keeps its own single-output shape
     alone = plan_query(graph, {"metrics": ["double_total"]}, con)
     assert con.execute(alone.sql).fetchall() == [(1400.0,)]
+
+
+# --- Task 3 (issue #28): scoped filters, parameters, segments, detail -------
+
+# Task 3 fixture model: customers adds the orders -> customers lookup so `tier`
+# is a TWO-hop dimension from the order_lines branch (line_to_order ->
+# order_customer) and a one-hop dimension from orders. events deliberately has
+# NO member of the conformed `region` dimension — the unpaired-filter refusal.
+# amount exists on orders AND events, so those metrics qualify their fields.
+TASK3_YML = """\
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales_t3
+    description: Task 3 fixture (two-hop lookup + fact without the conformed member)
+    requires: ["ariadne.conformed_dimensions@1"]
+    datasets:
+      - name: customers
+        source: demo.main.customers
+        primary_key: [customer_id]
+        fields:
+          - name: customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_id
+          - name: tier
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: tier
+            dimension: {}
+      - name: orders
+        source: demo.main.orders
+        primary_key: [order_id]
+        fields:
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+          - name: region
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: region
+            dimension: {}
+          - name: amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: amount
+          - name: customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_id
+      - name: order_lines
+        source: demo.main.order_lines
+        primary_key: [line_id]
+        fields:
+          - name: line_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: line_id
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+          - name: region
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: region
+            dimension: {}
+          - name: line_amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: line_amount
+      - name: events
+        source: demo.main.events
+        primary_key: [event_id]
+        fields:
+          - name: event_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: event_id
+          - name: owner_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: owner_id
+          - name: amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: amount
+    relationships:
+      - name: line_to_order
+        cardinality: many_to_one
+        from_dataset: order_lines
+        from_fields: [order_id]
+        to_dataset: orders
+        to_fields: [order_id]
+      - name: order_customer
+        cardinality: many_to_one
+        from_dataset: orders
+        from_fields: [customer_id]
+        to_dataset: customers
+        to_fields: [customer_id]
+    conformed_dimensions:
+      - name: region
+        members:
+          - dataset: orders
+            field: region
+          - dataset: order_lines
+            field: region
+    metrics:
+      - name: orders_total
+        dataset: orders
+        description: Sum of order amounts at order grain
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(orders.amount)
+      - name: lines_total
+        dataset: order_lines
+        description: Sum of line amounts at line grain
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(line_amount)
+      - name: events_total
+        dataset: events
+        description: Sum of event amounts at event grain
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(events.amount)
+"""
+
+
+def _t3_graph(root: Path):
+    """The task 3 graph over the registered source fixture."""
+    registry = build_source_fixture(root / "src")
+    staging = _staging(root / "t3", {"sales_t3.yml": TASK3_YML})
+    return load_graph(staging / "semantic_layer"), _duck_connection(registry)
+
+
+# mf-t3 review F2: an orders field whose declared expression is an AGGREGATE —
+# accepted by graph validation while unused, but projecting it in detail would
+# collapse the root grain to one row (spec rev 1, acceptance 5).
+AGG_FIELD_YML = TASK3_YML.replace(
+    """          - name: customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_id
+      - name: order_lines
+""",
+    """          - name: customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_id
+          - name: collapsed
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: SUM(amount)
+      - name: order_lines
+""",
+)
+
+
+def _agg_field_graph(root: Path):
+    """The task 3 graph plus the aggregate declared field on orders."""
+    registry = build_source_fixture(root / "src")
+    staging = _staging(root / "t3agg", {"sales_agg.yml": AGG_FIELD_YML})
+    return load_graph(staging / "semantic_layer"), _duck_connection(registry)
+
+
+def test_t3_two_hop_dimension_and_typed_segment_filter_both_facts(tmp_path):
+    # Hand-derived from the fixture rows: gold is customer 1 (orders 1 NA/100
+    # and 3 EMEA/400; their lines 60+30+10 and 400); standard is customer 2
+    # (order 2 NA/200; its lines 150+50). `tier` is a customers field — ONE hop
+    # from the orders branch, TWO hops from the lines branch — and the named
+    # segment's typed parameter narrows BOTH branch populations independently.
+    graph, con = _t3_graph(tmp_path)
+    request = {
+        "metrics": ["orders_total", "lines_total"],
+        "dimensions": ["tier"],
+        "segments": [
+            {
+                "name": "gold_tier",
+                "filters": [{"field": "tier", "op": "=", "value": {"param": "tier"}}],
+            }
+        ],
+        "parameters": {"tier": {"type": "string", "value": "gold", "max_length": 16}},
+    }
+    plan = plan_query(graph, request, con)
+    rows = {tier: (total, lines) for tier, total, lines in con.execute(plan.sql).fetchall()}
+    assert rows == {"gold": (500.0, 500.0)}  # the segment narrows BOTH facts to gold
+
+    # each branch traversed its OWN lookup chain for the same dimension and
+    # routed the segment predicate (bounded lineage)
+    joins = {branch.dataset: branch.joins for branch in plan.branches}
+    assert joins["orders"] == ("order_customer",)
+    assert joins["order_lines"] == ("line_to_order", "order_customer")
+    routed = {branch.dataset: branch.filters for branch in plan.branches}
+    assert routed == {"orders": ("tier",), "order_lines": ("tier",)}
+
+    # the typed parameter drives the population: swapping it swaps the result
+    swapped = plan_query(
+        graph,
+        {**request, "parameters": {"tier": {"type": "string", "value": "standard"}}},
+        con,
+    )
+    assert con.execute(swapped.sql).fetchall() == [("standard", 200.0, 200.0)]
+
+
+def test_t3_unpaired_filter_refuses_before_execution(tmp_path):
+    # events has no member of the conformed `region` dimension: a row filter on
+    # region in a request spanning orders + events is UNPAIRED — it must refuse
+    # before any result SELECT instead of silently narrowing one fact (spec rev
+    # 1 "Query and result contract"; acceptance 2).
+    graph, con = _t3_graph(tmp_path)
+    with pytest.raises(PlannerError) as refused:
+        plan_query(
+            graph,
+            {
+                "metrics": ["orders_total", "events_total"],
+                "filters": [{"field": "region", "op": "=", "value": "NA"}],
+            },
+            con,
+        )
+    assert refused.value.code == "unpaired_filter"
+    assert "region" in str(refused.value)
+
+
+def test_t3_child_side_detail_traversal_refuses_before_execution(tmp_path):
+    # line_amount lives on order_lines — the CHILD side of line_to_order. A
+    # detail rooted at orders that projected it would multiply the root grain;
+    # the traversal refuses before execution (spec rev 1, acceptance 5).
+    from ariadne.planner import plan_detail  # lazy import: the task 3 seam
+
+    graph, con = _t3_graph(tmp_path)
+    with pytest.raises(PlannerError) as refused:
+        plan_detail(graph, {"dataset": "orders", "fields": ["line_amount"]}, con)
+    assert refused.value.code == "detail_child_side"
+    assert "line_to_order" in str(refused.value)
+
+
+def test_t3_filter_values_cannot_inject_sql(tmp_path):
+    # Typed binding: a filter value (direct or parameter) becomes ONE quoted
+    # string literal in the AST — quotes double, nothing concatenates — so a
+    # payload naming a second statement can neither execute nor broaden the
+    # predicate (completion criterion: predicates cannot smuggle a statement).
+    graph, con = _t3_graph(tmp_path)
+    payload = "gold' OR '1'='1; DROP TABLE customers; --"
+    plan = plan_query(
+        graph,
+        {
+            "metrics": ["orders_total"],
+            "dimensions": ["region"],
+            "filters": [{"field": "tier", "op": "=", "value": payload}],
+        },
+        con,
+    )
+    assert len(sqlglot.parse(plan.sql)) == 1
+    assert "'gold'' OR ''1''=''1; DROP TABLE customers; --'" in plan.sql
+    assert con.execute(plan.sql).fetchall() == []  # no tier equals the payload
+    assert con.execute("SELECT COUNT(*) FROM demo.main.customers").fetchone() == (2,)
+
+    parameterized = plan_query(
+        graph,
+        {
+            "metrics": ["orders_total"],
+            "dimensions": ["region"],
+            "filters": [{"field": "tier", "op": "=", "value": {"param": "tier"}}],
+            "parameters": {"tier": {"type": "string", "value": payload, "max_length": 128}},
+        },
+        con,
+    )
+    assert len(sqlglot.parse(parameterized.sql)) == 1
+    assert "'gold'' OR ''1''=''1; DROP TABLE customers; --'" in parameterized.sql
+    assert con.execute(parameterized.sql).fetchall() == []
+    assert con.execute("SELECT COUNT(*) FROM demo.main.customers").fetchone() == (2,)
+
+
+def test_t3_result_filter_orders_and_limits_after_grouping(tmp_path):
+    # Aggregate/result filters run AFTER grouping on the aligned output, then
+    # declared ordering and the bounded limit. Hand-derived: NA 300/300,
+    # EMEA 400/400 — orders_total > 300 keeps only EMEA; ordering by
+    # orders_total desc with limit 1 keeps the EMEA row.
+    graph, con = _t3_graph(tmp_path)
+    plan = plan_query(
+        graph,
+        {
+            "metrics": ["orders_total", "lines_total"],
+            "dimensions": ["region"],
+            "filters": [{"field": "orders_total", "op": ">", "value": 300}],
+            "order": [{"field": "orders_total", "direction": "desc"}],
+            "limit": 1,
+        },
+        con,
+    )
+    assert plan.segments == ()
+    assert con.execute(plan.sql).fetchall() == [("EMEA", 400.0, 400.0)]
+
+    # ordering and limiting WITHOUT a result filter: both regions, EMEA first
+    both = plan_query(
+        graph,
+        {
+            "metrics": ["orders_total", "lines_total"],
+            "dimensions": ["region"],
+            "order": [{"field": "region"}],
+            "limit": 5,
+        },
+        con,
+    )
+    assert con.execute(both.sql).fetchall() == [("EMEA", 400.0, 400.0), ("NA", 300.0, 300.0)]
+
+    # an IN list binds as one bounded predicate: both tiers keep all orders
+    # (no declared ordering: compare unordered)
+    tiers = plan_query(
+        graph,
+        {
+            "metrics": ["orders_total"],
+            "dimensions": ["region"],
+            "filters": [{"field": "tier", "op": "in", "value": ["gold", "standard"]}],
+        },
+        con,
+    )
+    assert sorted(con.execute(tiers.sql).fetchall()) == [("EMEA", 400.0), ("NA", 300.0)]
+
+    # bounded limits and output-column ordering refuse structurally
+    for bad_limit in (0, -1, 10001, "5"):
+        with pytest.raises(PlannerError) as refused:
+            plan_query(
+                graph,
+                {"metrics": ["orders_total"], "limit": bad_limit},
+                con,
+            )
+        assert refused.value.code == "limit_invalid"
+    with pytest.raises(PlannerError) as bad_order:
+        plan_query(
+            graph,
+            {"metrics": ["orders_total"], "order": [{"field": "tier"}]},
+            con,
+        )
+    assert bad_order.value.code == "order_invalid"
+    assert "orders_total" in bad_order.value.candidates  # output columns offered
+
+
+def test_t3_segment_with_metric_predicate_refuses(tmp_path):
+    # F4 (mf-t3 review): named segments expand to validated ROW predicates
+    # (spec rev 1 "Query and result contract"). A segment containing
+    # orders_total > 300 used to route silently into the post-grouping result
+    # filter and drop NA; it must refuse instead — direct result filters stay
+    # supported (test_t3_result_filter_orders_and_limits_after_grouping).
+    graph, con = _t3_graph(tmp_path)
+    with pytest.raises(PlannerError) as refused:
+        plan_query(
+            graph,
+            {
+                "metrics": ["orders_total", "lines_total"],
+                "dimensions": ["region"],
+                "segments": [
+                    {
+                        "name": "big_orders",
+                        "filters": [
+                            {"field": "orders_total", "op": ">", "value": 300}
+                        ],
+                    }
+                ],
+            },
+            con,
+        )
+    assert refused.value.code == "filter_invalid"
+    assert "big_orders" in str(refused.value)
+
+    # the same refusal for a segment naming a declared metric NOT in the
+    # request — routing it through 'add it to metrics' advice would land in
+    # the same unsupported segment position
+    with pytest.raises(PlannerError) as unrequested:
+        plan_query(
+            graph,
+            {
+                "metrics": ["orders_total"],
+                "segments": [
+                    {
+                        "name": "lines_over",
+                        "filters": [
+                            {"field": "lines_total", "op": ">", "value": 100}
+                        ],
+                    }
+                ],
+            },
+            con,
+        )
+    assert unrequested.value.code == "filter_invalid"
+    assert "lines_over" in str(unrequested.value)
+
+
+def test_t3_parameter_refusals_are_structured(tmp_path):
+    graph, con = _t3_graph(tmp_path)
+    filter_on_tier = {"field": "tier", "op": "=", "value": {"param": "tier"}}
+
+    def request(parameters):
+        return {
+            "metrics": ["orders_total"],
+            "dimensions": ["region"],
+            "filters": [filter_on_tier],
+            "parameters": parameters,
+        }
+
+    # untyped, mistyped and oversized declarations refuse; a type is declared
+    for parameters in (
+        {"tier": "gold"},  # untyped: no declaration
+        {"tier": {"value": "gold"}},  # no 'type'
+        {"tier": {"type": "string", "value": "gold", "max_length": 3}},  # oversized
+        {"tier": {"type": "int", "value": "gold"}},  # mistyped
+        {"tier": {"type": "float", "value": 5, "min": 10}},  # below declared bound
+        {"tier": {"type": "date", "value": "2026-13-40"}},  # not an ISO date
+        {"tier": {"type": "string", "value": "x" * 5000}},  # over the hard ceiling
+    ):
+        with pytest.raises(PlannerError) as refused:
+            plan_query(graph, request(parameters), con)
+        assert refused.value.code == "parameter_invalid"
+
+    # a filter referencing an undeclared parameter names it and its candidates
+    with pytest.raises(PlannerError) as missing:
+        plan_query(
+            graph,
+            {
+                "metrics": ["orders_total"],
+                "filters": [{"field": "tier", "op": "=", "value": {"param": "nope"}}],
+                "parameters": {"tier": {"type": "string", "value": "gold"}},
+            },
+            con,
+        )
+    assert missing.value.code == "unknown_parameter"
+    assert "tier" in missing.value.candidates
+
+    # a date parameter binds as a CAST literal, not a fragment
+    dated = plan_query(
+        graph,
+        {
+            "metrics": ["orders_total"],
+            "filters": [{"field": "tier", "op": "=", "value": {"param": "day"}}],
+            "parameters": {"day": {"type": "date", "value": "2026-09-30"}},
+        },
+        con,
+    )
+    assert "CAST('2026-09-30' AS DATE)" in dated.sql
+
+
+def test_t3_malformed_discriminators_refuse_structured(tmp_path):
+    # F3 (mf-t3 review): malformed JSON discriminators — "op": [], "type": []
+    # — reach hash-based membership checks and raised raw TypeError. They are
+    # user/model-supplied values and must surface as the SAME structured
+    # refusal codes as any other invalid filter/parameter (spec rev 1
+    # "Failure and compatibility behavior": error codes are stable API).
+    graph, con = _t3_graph(tmp_path)
+    with pytest.raises(PlannerError) as bad_op:
+        plan_query(
+            graph,
+            {
+                "metrics": ["orders_total"],
+                "filters": [{"field": "region", "op": [], "value": "NA"}],
+            },
+            con,
+        )
+    assert bad_op.value.code == "filter_invalid"
+    assert "op" in str(bad_op.value)
+
+    with pytest.raises(PlannerError) as bad_type:
+        plan_query(
+            graph,
+            {"metrics": ["orders_total"], "parameters": {"tier": {"type": [], "value": "gold"}}},
+            con,
+        )
+    assert bad_type.value.code == "parameter_invalid"
+    assert "type" in str(bad_type.value)
+
+
+def test_t3_fact_local_filter_changes_only_its_fact_population(tmp_path):
+    # line_amount lives on order_lines only: the predicate routes to the LINES
+    # branch alone (disclosed in its lineage) and leaves the orders population
+    # untouched. Hand-derived: lines > 100 keep 150 (o2, NA) and 400 (o3, EMEA)
+    # -> lines NA=150/EMEA=400 while orders keep NA=300/EMEA=400.
+    graph, con = _t3_graph(tmp_path)
+    plan = plan_query(
+        graph,
+        {
+            "metrics": ["orders_total", "lines_total"],
+            "dimensions": ["region"],
+            "filters": [{"field": "line_amount", "op": ">", "value": 100}],
+        },
+        con,
+    )
+    rows = {region: (total, lines) for region, total, lines in con.execute(plan.sql).fetchall()}
+    assert rows == {"NA": (300.0, 150.0), "EMEA": (400.0, 400.0)}
+    routed = {branch.dataset: branch.filters for branch in plan.branches}
+    assert routed == {"orders": (), "order_lines": ("line_amount",)}
+
+    # an ambiguous filter field (amount on orders AND events in one model)
+    # refuses instead of inferring equivalence from identical names
+    with pytest.raises(PlannerError) as refused:
+        plan_query(
+            graph,
+            {"metrics": ["orders_total"], "filters": [{"field": "amount", "op": ">", "value": 1}]},
+            con,
+        )
+    assert refused.value.code == "ambiguous_filter"
+
+    # a filter naming an unrequested metric is not a result filter
+    with pytest.raises(PlannerError) as not_requested:
+        plan_query(
+            graph,
+            {
+                "metrics": ["orders_total"],
+                "dimensions": ["region"],
+                "filters": [{"field": "lines_total", "op": ">", "value": 100}],
+            },
+            con,
+        )
+    assert not_requested.value.code == "unknown_filter"
+    assert "orders_total" in not_requested.value.candidates
+
+
+def test_t3_row_filters_do_not_persist_into_subsequent_requests(tmp_path):
+    # F1 (mf-t3 review): one graph, filtered request then unfiltered request —
+    # the second must return BOTH regions. A row filter narrows its request's
+    # branch population only; it must not overwrite the graph's dataset source
+    # (spec rev 1 "Query and result contract": querying a metric must not
+    # change its definition).
+    graph, con = _t3_graph(tmp_path)
+    filtered = plan_query(
+        graph,
+        {
+            "metrics": ["orders_total"],
+            "dimensions": ["region"],
+            "filters": [{"field": "region", "op": "=", "value": "NA"}],
+        },
+        con,
+    )
+    assert con.execute(filtered.sql).fetchall() == [("NA", 300.0)]
+
+    # the SAME graph, no filters: EMEA must be back
+    plain = plan_query(
+        graph, {"metrics": ["orders_total"], "dimensions": ["region"]}, con
+    )
+    assert sorted(con.execute(plain.sql).fetchall()) == [
+        ("EMEA", 400.0),
+        ("NA", 300.0),
+    ]
+
+
+def test_t3_detail_multi_hop_projection_preserves_root_grain(tmp_path):
+    # Hand-derived: orders detail over (order_id, region, tier) is one row per
+    # order with its customer's tier through the ONE-hop order_customer lookup;
+    # lines detail over (line_id, tier) reaches tier through TWO hops and still
+    # returns exactly one row per line — six rows, no fan-out, no aggregates.
+    from ariadne.planner import plan_detail  # lazy import: the task 3 seam
+
+    graph, con = _t3_graph(tmp_path)
+    plan = plan_detail(graph, {"dataset": "orders", "fields": ["order_id", "region", "tier"]}, con)
+    assert plan.relationship_audit == "passed"
+    assert plan.joins == ("order_customer",)
+    assert [(field.name, field.dataset, field.path) for field in plan.fields] == [
+        ("order_id", "orders", ()),
+        ("region", "orders", ()),
+        ("tier", "customers", ("order_customer",)),
+    ]
+    assert sorted(con.execute(plan.sql).fetchall()) == [
+        (1, "NA", "gold"),
+        (2, "NA", "standard"),
+        (3, "EMEA", "gold"),
+    ]
+
+    two_hop = plan_detail(graph, {"dataset": "order_lines", "fields": ["line_id", "tier"]}, con)
+    assert two_hop.joins == ("line_to_order", "order_customer")
+    rows = sorted(con.execute(two_hop.sql).fetchall())
+    assert len(rows) == 6  # one row per root line key: the grain is preserved
+    assert {line_id: tier for line_id, tier in rows} == {
+        11: "gold",
+        12: "gold",
+        13: "gold",
+        21: "standard",
+        22: "standard",
+        31: "gold",
+    }
+
+    # detail requests stay strict: no ad-hoc keys, no unknown datasets/fields,
+    # and an ambiguous field name (customer_id on orders AND customers) refuses
+    with pytest.raises(PlannerError) as bad_key:
+        plan_detail(graph, {"dataset": "orders", "fields": ["order_id"], "filters": []}, con)
+    assert bad_key.value.code == "request_invalid"
+    with pytest.raises(PlannerError) as bad_dataset:
+        plan_detail(graph, {"dataset": "nope", "fields": ["order_id"]}, con)
+    assert bad_dataset.value.code == "unknown_dataset"
+    with pytest.raises(PlannerError) as bad_field:
+        plan_detail(graph, {"dataset": "orders", "fields": ["nope"]}, con)
+    assert bad_field.value.code == "unknown_field"
+    assert "order_id" in bad_field.value.candidates
+    with pytest.raises(PlannerError) as ambiguous:
+        plan_detail(graph, {"dataset": "customers", "fields": ["region"]}, con)
+    assert ambiguous.value.code == "ambiguous_field"
+
+    # a compile-only detail plan performs no live relationship audit
+    compile_only = plan_detail(graph, {"dataset": "orders", "fields": ["tier"]})
+    assert compile_only.relationship_audit == "not-run"
+
+
+def test_t3_detail_aggregate_field_refuses_before_execution(tmp_path):
+    # F2 (mf-t3 review): a declared field whose resolved expression aggregates
+    # (collapsed = SUM(amount)) is a metric in field clothing — projecting it in
+    # detail would emit an aggregate SELECT returning ONE row instead of one
+    # row per root key. The refusal must come before audits/execution (spec rev
+    # 1, acceptance 5: detail has no aggregates or fan-out).
+    from ariadne.planner import plan_detail  # lazy import: the task 3 seam
+
+    graph, con = _agg_field_graph(tmp_path)
+    with pytest.raises(PlannerError) as refused:
+        plan_detail(graph, {"dataset": "orders", "fields": ["collapsed"]}, con)
+    assert refused.value.code == "detail_field_aggregate"
+    assert "collapsed" in str(refused.value)
+
+    # the aggregate smuggle refuses even mixed with safe fields, and the safe
+    # projection on the same graph still works
+    with pytest.raises(PlannerError) as mixed:
+        plan_detail(graph, {"dataset": "orders", "fields": ["order_id", "collapsed"]}, con)
+    assert mixed.value.code == "detail_field_aggregate"
+    assert sorted(con.execute(
+        plan_detail(graph, {"dataset": "orders", "fields": ["order_id"]}, con).sql
+    ).fetchall()) == [(1,), (2,), (3,)]
+
+
+def test_t3_detail_nonaggregating_analytic_field_projects_one_row_per_key(tmp_path):
+    # Recheck micro-fix finding: sqlglot types LAG/LEAD/rank-family functions
+    # as AggFunc SUBCLASSES, so the blanket F2 guard refused grain-preserving
+    # per-row analytics. LAG(amount) OVER (ORDER BY order_id) leaves one row
+    # per root key and must project; a true aggregate window (SUM OVER) and a
+    # nested aggregate (LAG(SUM(x))) must still refuse.
+    import yaml
+
+    from ariadne.planner import plan_detail
+
+    doc = yaml.safe_load(DOMAIN_YML)
+    for model in doc["semantic_model"]:
+        for dataset in model["datasets"]:
+            if dataset["name"] == "orders":
+                dataset["fields"].append(
+                    {
+                        "name": "previous_amount",
+                        "expression": {
+                            "dialects": [
+                                {
+                                    "dialect": "ANSI_SQL",
+                                    "expression": "LAG(amount) OVER (ORDER BY order_id)",
+                                }
+                            ]
+                        },
+                    }
+                )
+    registry = build_source_fixture(tmp_path / "src")
+    staging = _staging(tmp_path / "lag", {"lag.yml": yaml.safe_dump(doc, sort_keys=False)})
+    graph = load_graph(staging / "semantic_layer")
+    con = _duck_connection(registry)
+
+    plan = plan_detail(
+        graph, {"dataset": "orders", "fields": ["order_id", "previous_amount"]}, con
+    )
+    # hand-derived: orders 1,2,3 carry amounts 100,200,400 → LAG yields NULL,100,200
+    assert sorted(
+        (row[0], row[1]) if row[1] is None else row for row in con.execute(plan.sql).fetchall()
+    ) == [(1, None), (2, 100.0), (3, 200.0)]
+
+    for index, bad in enumerate((
+        "SUM(amount) OVER (ORDER BY order_id)",
+        "LAG(SUM(amount)) OVER (ORDER BY order_id)",
+    )):
+        evil = yaml.safe_load(DOMAIN_YML)
+        for model in evil["semantic_model"]:
+            for dataset in model["datasets"]:
+                if dataset["name"] == "orders":
+                    dataset["fields"].append(
+                        {
+                            "name": "previous_amount",
+                            "expression": {
+                                "dialects": [{"dialect": "ANSI_SQL", "expression": bad}]
+                            },
+                        }
+                    )
+        bad_graph = load_graph(
+            _staging(tmp_path / f"bad{index}", {"bad.yml": yaml.safe_dump(evil, sort_keys=False)})
+            / "semantic_layer"
+        )
+        with pytest.raises(PlannerError) as refused:
+            plan_detail(
+                bad_graph, {"dataset": "orders", "fields": ["previous_amount"]}, con
+            )
+        assert refused.value.code == "detail_field_aggregate"
