@@ -22,8 +22,9 @@ this module never reports them as passed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import yaml
 from sqlglot import (  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -55,7 +56,24 @@ _RELATIONSHIP_KEYS = frozenset(
     {"name", "cardinality", "from_dataset", "from_fields", "to_dataset", "to_fields"}
 )
 _CONFORMED_KEYS = frozenset({"name", "members"})
-_MEMBER_KEYS = frozenset({"dataset", "field"})
+_MEMBER_KEYS = frozenset({"dataset", "field", "native_grain"})
+
+# Declared time grains a conformed primary business time may group at, finest
+# first (spec rev 1 "Query and result contract": day/week/month/quarter/year;
+# a request finer than a declared native grain refuses).
+TIME_GRAINS = ("day", "week", "month", "quarter", "year")
+
+# Declared window forms (spec rev 1 "Query and result contract"): rolling,
+# cumulative, prior-period, ranking and value windows all operate at their
+# declared POST-aggregate stage over the aligned output — never inside a fact
+# branch. ``size`` is whole groups for ``rolling`` and grain periods for
+# ``value_window`` (a RANGE frame over the time axis).
+WINDOW_KINDS = frozenset(
+    {"rolling", "cumulative", "prior_period", "ranking", "value_window"}
+)
+_WINDOW_KEYS = frozenset({"kind", "size", "function", "direction"})
+_WINDOW_FUNCTIONS = frozenset({"sum", "avg", "min", "max", "count"})
+_SIZED_KINDS = frozenset({"rolling", "value_window"})
 
 
 class GraphError(ValueError):
@@ -92,20 +110,40 @@ class RelationshipEdge:
 
 @dataclass(frozen=True)
 class ConformedEdge:
-    """Equivalent business group keys on multiple facts — never a raw join."""
+    """Equivalent business group keys on multiple facts — never a raw join.
+
+    ``native_grains`` carries each member's declared native time grain and is
+    nonempty exactly for a conformed primary business time (all members are
+    time fields; spec rev 1 "Query and result contract")."""
 
     name: str
     members: tuple[tuple[str, str], ...]  # (dataset, field)
     # True only when every member carried parseable type evidence that agreed;
     # absent evidence is disclosed by the validator, never treated as established
     type_verified: bool
+    native_grains: dict[str, str] = field(default_factory=dict)  # dataset -> grain
+
+
+@dataclass(frozen=True)
+class WindowDecl:
+    """One declared post-aggregate window (issue #29; spec rev 1 "Query and
+    result contract"): the declared form operates over the ALIGNED output,
+    after fact branches merge."""
+
+    kind: str  # one of WINDOW_KINDS
+    size: int | None = None  # rolling: groups; value_window: grain periods
+    function: str = "sum"  # window aggregate (not prior_period/ranking)
+    direction: str = "desc"  # ranking order only
 
 
 @dataclass(frozen=True)
 class MetricNode:
     """One entry of the project-wide metric index. Base aggregates carry exactly
     one owning dataset; derived metrics (referencing other metrics) resolve
-    ownership from their dependencies instead."""
+    ownership from their dependencies instead. ``fill`` (an explicit metric
+    fill rule) applies to the OUTPUT only, never to a hidden ratio denominator;
+    ``window`` moves the metric's declared expression to the post-aggregate
+    window stage (issue #29)."""
 
     name: str
     owner: str | None
@@ -113,6 +151,8 @@ class MetricNode:
     derived: bool
     model: str
     deps: tuple[str, ...]
+    fill: Any = None
+    window: WindowDecl | None = None
 
 
 @dataclass(frozen=True)
@@ -135,8 +175,9 @@ def load_graph(semantic_dir: str | Path) -> SemanticGraph:
         raise GraphError(f"no semantic models under {models_dir}")
     datasets: dict[str, DatasetNode] = {}
     envelopes: dict[str, dict] = {}
-    # metric name -> (model, file, expression SQL, explicit dataset owner | None)
-    raw_metrics: dict[str, tuple[str, str, str, str | None]] = {}
+    # metric name -> (model, file, expression SQL, explicit owner | None, fill,
+    # window declaration | None)
+    raw_metrics: dict[str, tuple[str, str, str, str | None, Any, WindowDecl | None]] = {}
     raw_relationships: list[tuple[object, str]] = []
     raw_conformed: list[tuple[object, str]] = []
     files: list[str] = []
@@ -303,8 +344,54 @@ def _load_datasets(model: dict, model_name: str, file: str, datasets: dict[str, 
         )
 
 
+def _parse_window(raw: Any, where: str) -> WindowDecl | None:
+    """One declared window form (issue #29): strict keys, one of the five
+    declared kinds, a positive integer size for the sized forms, an aggregate
+    function for the aggregating forms and an order direction for ranking."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise GraphError(f"{where}: 'window' must be a mapping of window declarations")
+    unknown = sorted(set(raw) - _WINDOW_KEYS)
+    if unknown:
+        raise GraphError(
+            f"{where}: window unknown key(s) {unknown}; allowed: {sorted(_WINDOW_KEYS)}"
+        )
+    kind = raw.get("kind")
+    if kind not in WINDOW_KINDS:
+        raise GraphError(
+            f"{where}: window 'kind' must be one of {sorted(WINDOW_KINDS)}, got {kind!r}"
+        )
+    size = raw.get("size")
+    if kind in _SIZED_KINDS:
+        if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+            raise GraphError(f"{where}: a {kind} window needs a positive integer 'size'")
+    elif size is not None:
+        raise GraphError(f"{where}: a {kind} window takes no 'size'")
+    function = raw.get("function", "sum")
+    if kind in ("prior_period", "ranking"):
+        if "function" in raw:
+            raise GraphError(f"{where}: a {kind} window takes no 'function'")
+    elif function not in _WINDOW_FUNCTIONS:
+        raise GraphError(
+            f"{where}: window 'function' must be one of {sorted(_WINDOW_FUNCTIONS)}, "
+            f"got {function!r}"
+        )
+    direction = raw.get("direction", "desc")
+    if kind != "ranking" and "direction" in raw:
+        raise GraphError(f"{where}: only a ranking window declares 'direction'")
+    if direction not in ("asc", "desc"):
+        raise GraphError(
+            f"{where}: window 'direction' must be 'asc' or 'desc', got {direction!r}"
+        )
+    return WindowDecl(kind=kind, size=size, function=function, direction=direction)
+
+
 def _collect_metrics(
-    model: dict, model_name: str, file: str, raw: dict[str, tuple[str, str, str, str | None]]
+    model: dict,
+    model_name: str,
+    file: str,
+    raw: dict[str, tuple[str, str, str, str | None, Any, WindowDecl | None]],
 ) -> None:
     metrics = model.get("metrics")
     if not isinstance(metrics, list) or not metrics:
@@ -329,7 +416,15 @@ def _collect_metrics(
             raise GraphError(
                 f"{file} model '{model_name}' metric '{name}': dataset owner must be a name"
             )
-        raw[name] = (model_name, file, expression, owner)
+        fill = entry.get("fill")
+        if fill is not None and not isinstance(fill, (str, int, float, bool)):
+            raise GraphError(
+                f"{file} model '{model_name}' metric '{name}': 'fill' must be a scalar "
+                "output value (applies to the output only, never a hidden ratio "
+                "denominator)"
+            )
+        window = _parse_window(entry.get("window"), f"{file} model '{model_name}' metric '{name}'")
+        raw[name] = (model_name, file, expression, owner, fill, window)
 
 
 def _resolve_field_dataset(
@@ -376,11 +471,12 @@ def _assert_acyclic(deps: dict[str, tuple[str, ...]]) -> None:
 
 
 def _resolve_metrics(
-    raw: dict[str, tuple[str, str, str, str | None]], datasets: dict[str, DatasetNode]
+    raw: dict[str, tuple[str, str, str, str | None, Any, WindowDecl | None]],
+    datasets: dict[str, DatasetNode],
 ) -> dict[str, MetricNode]:
     names = set(raw)
     parsed: dict[str, tuple[list[tuple[str, str]], tuple[str, ...]]] = {}
-    for name, (model_name, file, expression, _owner) in raw.items():
+    for name, (model_name, file, expression, _owner, _fill, _window) in raw.items():
         try:
             tree = _parse(expression, f"metric {name!r}")
         except RenderError as exc:
@@ -412,7 +508,7 @@ def _resolve_metrics(
     # expression would compile against the wrong dataset after qualifier
     # stripping.
     owner_of: dict[str, str] = {}
-    for name, (model_name, file, expression, explicit) in raw.items():
+    for name, (model_name, file, expression, explicit, _fill, _window) in raw.items():
         if parsed[name][1]:
             continue  # derived: second pass below
         where = f"{file} model '{model_name}' metric '{name}'"
@@ -461,8 +557,18 @@ def _resolve_metrics(
                 changed = True
 
     metrics: dict[str, MetricNode] = {}
-    for name, (model_name, file, expression, explicit) in raw.items():
+    for name, (model_name, file, expression, explicit, fill, window) in raw.items():
         deps = parsed[name][1]
+        # a windowed output is terminal: a metric referencing one would nest a
+        # window stage inside another expression (issue #29 — one declared
+        # post-aggregate stage per metric)
+        for dep in sorted(deps):
+            if raw[dep][5] is not None:
+                raise GraphError(
+                    f"{file} model '{model_name}' metric '{name}': references windowed "
+                    f"metric '{dep}' — a windowed metric is a terminal post-aggregate "
+                    "output, not a dependency"
+                )
         if not deps:
             metrics[name] = MetricNode(
                 name=name,
@@ -471,6 +577,8 @@ def _resolve_metrics(
                 derived=False,
                 model=model_name,
                 deps=deps,
+                fill=fill,
+                window=window,
             )
             continue
         where = f"{file} model '{model_name}' metric '{name}'"
@@ -503,6 +611,8 @@ def _resolve_metrics(
             derived=True,
             model=model_name,
             deps=deps,
+            fill=fill,
+            window=window,
         )
     return metrics
 
@@ -694,11 +804,16 @@ def _resolve_conformed(
         member_types: list[str | None] = []
         seen: set[str] = set()
         time_roles: set[bool] = set()
+        native_grains: dict[str, str] = {}
         for member in members_raw:
-            if not isinstance(member, dict) or set(member) != _MEMBER_KEYS:
+            if not isinstance(member, dict) or set(member) - _MEMBER_KEYS or not {
+                "dataset",
+                "field",
+            } <= set(member):
                 raise GraphError(
-                    f"{where} conformed dimension '{name}': each member is exactly "
-                    "'dataset' + 'field'"
+                    f"{where} conformed dimension '{name}': each member is "
+                    f"'dataset' + 'field' plus optional 'native_grain'; allowed: "
+                    f"{sorted(_MEMBER_KEYS)}"
                 )
             dataset, field_name = member["dataset"], member["field"]
             if not isinstance(dataset, str) or not isinstance(field_name, str):
@@ -722,7 +837,23 @@ def _resolve_conformed(
                     "two members — one dataset, one member per class"
                 )
             seen.add(dataset)
-            time_roles.add(field_name in node.time_fields)
+            is_time = field_name in node.time_fields
+            time_roles.add(is_time)
+            grain = member.get("native_grain")
+            if grain is not None:
+                if not is_time:
+                    raise GraphError(
+                        f"{where} conformed dimension '{name}': member "
+                        f"'{dataset}.{field_name}' declares native_grain but is not a "
+                        "time field (dimension.is_time)"
+                    )
+                if grain not in TIME_GRAINS:
+                    raise GraphError(
+                        f"{where} conformed dimension '{name}': member "
+                        f"'{dataset}.{field_name}' native_grain must be one of "
+                        f"{list(TIME_GRAINS)}, got {grain!r}"
+                    )
+                native_grains[dataset] = grain
             member_types.append(
                 _value_type(node.expressions.get(field_name), f"field {field_name!r}")
             )
@@ -731,6 +862,15 @@ def _resolve_conformed(
             raise GraphError(
                 f"{where} conformed dimension '{name}': incompatible time roles — "
                 "members must all be time fields or none"
+            )
+        if time_roles == {True} and len(native_grains) != len(members):
+            # a declared conformed primary business time carries its native
+            # grain on every member — the planner refuses requests finer than
+            # the coarsest of them (issue #29)
+            missing = sorted(dataset for dataset, _field in members if dataset not in native_grains)
+            raise GraphError(
+                f"{where} conformed dimension '{name}': a conformed primary business "
+                f"time declares 'native_grain' on EVERY member — missing on {missing}"
             )
         evidence = sorted({kind for kind in member_types if kind is not None})
         if len(evidence) > 1:
@@ -743,6 +883,7 @@ def _resolve_conformed(
                 name=name,
                 members=tuple(members),
                 type_verified=all(kind is not None for kind in member_types),
+                native_grains=native_grains,
             )
         )
     return tuple(out)

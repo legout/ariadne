@@ -32,8 +32,27 @@ bounded plan metadata:
 Refusals are structured: :class:`PlannerError` carries a stable ``code`` plus
 candidate names; message prose is not API (spec rev 1, "Failure and
 compatibility behavior"). There is no unchecked-SQL fallback: the planner only
-assembles sqlglot ASTs it derived itself. Cross-fact derived metrics compute
-after alignment and land with task 4 (#29); served operations are task 5 (#30).
+assembles sqlglot ASTs it derived itself. Served operations are task 5 (#30).
+
+Task 4 (issue #29) adds conformed business time and the post-aggregate stage:
+
+- a declared **conformed primary business time** (time-field members carrying
+  declared native grains) maps the half-open ``[start, end)`` request range
+  onto EACH fact's own native time field and groups at the requested
+  ``day/week/month/quarter/year`` grain — differently named date columns align
+  by declaration, never by column name. A requested grain finer than a
+  member's declared native grain refuses; there is no implicit calendar spine
+  (only groups occurring in some branch exist).
+- **post-aggregate metrics** resolve AFTER the branches merge: cross-fact
+  derived metrics (and every metric declaring a window) compute level by level
+  over the aligned output columns, with every division guarded — a zero or
+  missing denominator yields NULL. An explicit metric ``fill`` applies to the
+  OUTPUT projection only, never to a hidden denominator.
+- **declared window forms** — rolling, cumulative, prior-period, ranking and
+  value windows — run at that stage, ordered by the conformed time key and
+  partitioned by the non-time dimensions. Window lookback (preceding groups,
+  or all of them for a cumulative frame) is fetched BEFORE the displayed
+  range trims; ranking orders the displayed rows, so it runs after the trim.
 
 Task 3 (issue #28) adds the scoped request surface on the same contract:
 
@@ -56,9 +75,10 @@ Task 3 (issue #28) adds the scoped request surface on the same contract:
 
 from __future__ import annotations
 
+import calendar
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -79,23 +99,48 @@ from ariadne.render import (  # pyright: ignore[reportMissingImports] — drift
     render,
 )
 from ariadne.semantic_graph import (  # pyright: ignore[reportMissingImports] — drift
+    TIME_GRAINS,
     RelationshipEdge,
     SemanticGraph,
+    WindowDecl,
 )
 
 _REQUEST_KEYS = frozenset(
-    {"metrics", "dimensions", "filters", "segments", "parameters", "order", "limit"}
+    {"metrics", "dimensions", "filters", "segments", "parameters", "order", "limit", "time"}
 )
 _DETAIL_REQUEST_KEYS = frozenset({"dataset", "fields"})
 _FILTER_KEYS = frozenset({"field", "op", "value"})
 _SEGMENT_KEYS = frozenset({"name", "filters"})
 _PARAMETER_KEYS = frozenset({"type", "value", "min", "max", "max_length"})
 _ORDER_KEYS = frozenset({"field", "direction"})
+_TIME_KEYS = frozenset({"dimension", "grain", "start", "end"})
 _COMPARISONS = {"=": exp.EQ, "!=": exp.NEQ, "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE}
 PARAMETER_TYPES = frozenset({"string", "int", "float", "date"})
 MAX_PARAMETER_LENGTH = 4096  # hard ceiling even without a declared max_length
 MAX_LIMIT = 10_000  # bounded result limits
 MAX_IN_VALUES = 100  # bounded IN lists
+
+# finest-first grain order: a requested grain finer than a declared native one
+# refuses (spec rev 1 "Query and result contract")
+_GRAIN_RANK = {grain: rank for rank, grain in enumerate(TIME_GRAINS)}
+# a value-window RANGE frame over the time axis, expressed in calendar units
+_INTERVAL_UNIT = {
+    "day": ("DAY", 1),
+    "week": ("DAY", 7),
+    "month": ("MONTH", 1),
+    "quarter": ("MONTH", 3),
+    "year": ("YEAR", 1),
+}
+_WINDOW_FUNCTIONS = {
+    "sum": exp.Sum,
+    "avg": exp.Avg,
+    "min": exp.Min,
+    "max": exp.Max,
+    "count": exp.Count,
+}
+# window forms whose frame needs the time axis (ranking ranks displayed rows
+# by value and needs neither the axis nor preceding groups)
+_TIME_FRAME_KINDS = frozenset({"rolling", "cumulative", "prior_period", "value_window"})
 
 
 class PlannerError(ValueError):
@@ -134,7 +179,8 @@ class AuditRecord:
 @dataclass(frozen=True)
 class QueryPlan:
     """The guarded SELECT plus bounded plan metadata (SQL, fact branches,
-    conformed keys, applied segments, performed audits)."""
+    conformed keys, applied segments, performed audits, and the declared
+    conformed business time / windowed-metric lineage of issue #29)."""
 
     sql: str
     metrics: tuple[str, ...]
@@ -144,6 +190,9 @@ class QueryPlan:
     audits: tuple[AuditRecord, ...]
     relationship_audit: str  # passed | not-run (never silently passed)
     segments: tuple[str, ...] = ()
+    time_dimension: str | None = None  # the conformed primary business time
+    time_grain: str | None = None  # its requested grouping grain
+    windows: tuple[str, ...] = ()  # requested metrics with a declared window
 
 
 @dataclass(frozen=True)
@@ -438,6 +487,142 @@ def _parse_order_limit(request: dict) -> tuple[list[tuple[str, bool]], int | Non
     return order, raw_limit
 
 
+@dataclass(frozen=True)
+class _TimeRequest:
+    """One declared conformed primary business time request (issue #29): the
+    conformed dimension, the requested grouping grain and the half-open
+    ``[start, end)`` display range (spec rev 1 "Query and result contract")."""
+
+    dimension: str
+    grain: str
+    start: date | None
+    end: date | None
+
+
+def _parse_time(raw: Any) -> _TimeRequest:
+    """``{'dimension', 'grain', 'start'?, 'end'?}`` — the conformed primary
+    business time to align on, its grouping grain and the half-open display
+    range. Strict keys; dates are ISO 8601; the grain must be one of the five
+    declared grains."""
+    if not isinstance(raw, dict):
+        raise PlannerError(
+            "time_invalid",
+            "'time' must be a mapping {'dimension': ..., 'grain': ..., 'start': ..., "
+            "'end': ...}",
+        )
+    unknown = sorted(set(raw) - _TIME_KEYS)
+    if unknown:
+        raise PlannerError(
+            "time_invalid", f"unknown time key(s) {unknown}; allowed: {sorted(_TIME_KEYS)}"
+        )
+    dimension = raw.get("dimension")
+    grain = raw.get("grain")
+    if not isinstance(dimension, str) or not dimension.strip():
+        raise PlannerError(
+            "time_invalid",
+            "'time.dimension' must name the declared conformed primary business time",
+        )
+    if not isinstance(grain, str) or not grain.strip():
+        raise PlannerError(
+            "time_invalid", "'time.grain' must declare one of the grouping grains"
+        )
+    if grain not in TIME_GRAINS:
+        raise PlannerError(
+            "time_grain_invalid",
+            f"'time.grain' must be one of {list(TIME_GRAINS)}, got {grain!r}",
+        )
+    bounds: dict[str, date] = {}
+    for key in ("start", "end"):
+        value = raw.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise PlannerError(
+                "time_invalid", f"'time.{key}' must be an ISO 8601 date string"
+            )
+        try:
+            bounds[key] = date.fromisoformat(value)
+        except ValueError as exc:
+            raise PlannerError(
+                "time_invalid", f"'time.{key}': {value!r} is not an ISO 8601 date"
+            ) from exc
+    start, end = bounds.get("start"), bounds.get("end")
+    if start is not None and end is not None and start >= end:
+        raise PlannerError(
+            "time_invalid",
+            f"the half-open range [start, end) requires start < end, got [{start}, {end})",
+        )
+    return _TimeRequest(dimension=dimension, grain=grain, start=start, end=end)
+
+
+def _truncate(grain: str, value: date) -> date:
+    """The grain-period start of ``value`` (mirrors SQL ``DATE_TRUNC``; DuckDB
+    weeks start Monday)."""
+    if grain == "day":
+        return value
+    if grain == "week":
+        return value - timedelta(days=value.weekday())
+    if grain == "month":
+        return date(value.year, value.month, 1)
+    if grain == "quarter":
+        return date(value.year, 3 * ((value.month - 1) // 3) + 1, 1)
+    return date(value.year, 1, 1)
+
+
+def _shift_months(value: date, months: int) -> date:
+    """``value`` shifted by whole months, clamped to the target month's last
+    day (2026-03-31 - 1 month -> 2026-02-28)."""
+    total = value.year * 12 + (value.month - 1) + months
+    year, month = divmod(total, 12)
+    month += 1
+    last = calendar.monthrange(year, month)[1]
+    return date(year, month, min(value.day, last))
+
+
+def _shift_periods(grain: str, value: date, periods: int) -> date:
+    """``value`` shifted by whole grain periods (lookback arithmetic)."""
+    if grain == "day":
+        return value + timedelta(days=periods)
+    if grain == "week":
+        return value + timedelta(weeks=periods)
+    if grain == "month":
+        return _shift_months(value, periods)
+    if grain == "quarter":
+        return _shift_months(value, 3 * periods)
+    return _shift_months(value, 12 * periods)
+
+
+def _lookback_groups(window: WindowDecl) -> int | None:
+    """Preceding groups a window form needs before the display range (spec rev
+    1: lookback includes the necessary preceding groups). ``None`` means EVERY
+    preceding group — a cumulative frame — so its fetch start opens up while
+    the displayed range still trims."""
+    if window.kind == "rolling":
+        size = window.size or 1  # a rolling window always carries a positive size (load)
+        return size - 1
+    if window.kind == "prior_period":
+        return 1
+    if window.kind == "value_window":
+        return window.size
+    if window.kind == "ranking":
+        return 0  # ranking orders displayed rows by value: no preceding groups
+    return None  # cumulative
+
+
+def _date_literal(value: date) -> exp.Expression:
+    """One ISO date as a bound CAST literal — never SQL text."""
+    return exp.Cast(this=exp.Literal.string(value.isoformat()), to=exp.DataType.build("DATE"))
+
+
+def _fill_literal(value: Any) -> exp.Expression:
+    """One declared fill value as a bound literal (output projection only)."""
+    if isinstance(value, bool):
+        return exp.Boolean(this=value)
+    if isinstance(value, (int, float)):
+        return exp.Literal.number(value)
+    return exp.Literal.string(str(value))
+
+
 def _parse_request(request: Any) -> tuple[list[str], list[str]]:
     """``{'metrics': [...], 'dimensions': [...]}`` — strict keys (an unknown key
     is an explicit error, never a silently ignored narrowing)."""
@@ -524,12 +709,31 @@ def _lookup_path(
 class _DimKey:
     """One resolved requested dimension: the canonical name, each branch's
     native member field, the lookup edges each branch traverses for it, and
-    the conformed-dimension name when alignment relies on conformance."""
+    the conformed-dimension name when alignment relies on conformance.
+
+    A conformed primary business time key additionally carries the requested
+    grain: branches group by ``DATE_TRUNC(grain, member)`` and project it under
+    a per-branch output column distinct from the native field (``outputs``),
+    while ``members`` keeps naming the native business time field for lineage
+    and the range predicate (issue #29)."""
 
     dimension: str
     members: dict[str, str]  # branch dataset -> native field
     paths: dict[str, tuple[RelationshipEdge, ...]]  # branch dataset -> edges
     conformed: str | None
+    outputs: dict[str, str] | None = None  # branch output column (time keys)
+    grain: str | None = None  # requested time grain (time keys only)
+
+    def output(self, dataset: str) -> str:
+        """The branch's output column for this key (the native member name,
+        except for time keys whose group expression is a truncation)."""
+        return self.members[dataset] if self.outputs is None else self.outputs[dataset]
+
+    def group_expression(self, column: exp.Expression) -> exp.Expression:
+        """The branch group expression over the native member column."""
+        if self.grain is None:
+            return column
+        return exp.DateTrunc(unit=exp.Literal.string(self.grain), this=column)
 
 
 def _resolve_field_key(
@@ -609,9 +813,83 @@ def _resolve_field_key(
     return _DimKey(name, members, paths, None)
 
 
-def _submodel(graph: SemanticGraph, dataset: str, metric_names: list[str]) -> dict:
+@dataclass(frozen=True)
+class _PostMetric:
+    """One post-aggregate metric computation (issue #29): the metric's declared
+    expression resolved over the ALIGNED output columns (cross-fact derived
+    metrics and every windowed metric land here — never inside a branch), plus
+    its declared window form when it has one."""
+
+    name: str
+    expression: str
+    level: int  # dependency level among post-aggregate metrics
+    window: WindowDecl | None
+
+
+def _resolve_time_key(
+    graph: SemanticGraph,
+    request: _TimeRequest,
+    branch_datasets: list[str],
+    conformed_by_name: dict[str, Any],
+) -> _DimKey:
+    """The conformed primary business time as one alignment key: it must be a
+    declared conformed dimension whose members are time fields carrying native
+    grains, it must pair every branch, and the requested grain may not be finer
+    than any member's declared native grain (spec rev 1 "Query and result
+    contract", acceptance 4)."""
+    edge = conformed_by_name.get(request.dimension)
+    if edge is None or not edge.native_grains:
+        raise PlannerError(
+            "time_dimension_invalid",
+            f"time dimension {request.dimension!r} is not a declared conformed primary "
+            "business time (time-field members with declared native grains)",
+            candidates=tuple(
+                sorted(name for name, other in conformed_by_name.items() if other.native_grains)
+            ),
+        )
+    key = _resolve_field_key(
+        graph, request.dimension, branch_datasets, conformed_by_name, "time_dimension"
+    )
+    for dataset in sorted(key.members):
+        native = edge.native_grains[dataset]
+        if _GRAIN_RANK[request.grain] < _GRAIN_RANK[native]:
+            raise PlannerError(
+                "time_grain_too_fine",
+                f"requested grain {request.grain!r} is finer than the declared native "
+                f"grain {native!r} of dataset '{dataset}' — no implicit time spine and "
+                "no finer-than-native grouping (spec rev 1, acceptance 4)",
+            )
+    outputs: dict[str, str] = {}
+    for dataset in key.members:
+        # the branch output column names the canonical time key; it must not
+        # collide with the dataset's own fields (the branch groups by a
+        # truncation of the native member, projected under this name)
+        column = request.dimension
+        while column in graph.datasets[dataset].fields:
+            column += "_"
+        outputs[dataset] = column
+    return _DimKey(
+        dimension=request.dimension,
+        members=key.members,
+        paths=key.paths,
+        conformed=request.dimension,
+        outputs=outputs,
+        grain=request.grain,
+    )
+
+
+def _submodel(
+    graph: SemanticGraph,
+    dataset: str,
+    metric_names: list[str],
+    time_key: _DimKey | None = None,
+) -> dict:
     """The dataset's single-dataset envelope slice (one dataset + exactly the
-    metrics the branch aggregates) — the render() input shape."""
+    metrics the branch aggregates) — the render() input shape. A conformed
+    business time key injects ONE synthetic field grouping by the truncation of
+    the dataset's native time member: the single-dataset renderer groups by
+    field name, so the truncated key projects under the time key's output
+    column while the native field keeps feeding the range predicate."""
     node = graph.datasets[dataset]
     envelope = graph.models[node.model]
     model = envelope["semantic_model"][0]
@@ -625,6 +903,23 @@ def _submodel(graph: SemanticGraph, dataset: str, metric_names: list[str]) -> di
         for candidate in model.get("datasets") or []
         if isinstance(candidate, dict) and candidate.get("name") == dataset
     )
+    fields = list(entry.get("fields") or [])
+    if time_key is not None and time_key.grain is not None:
+        native = time_key.members[dataset]
+        fields.append(
+            {
+                "name": time_key.output(dataset),
+                "expression": {
+                    "dialects": [
+                        {
+                            "dialect": "ANSI_SQL",
+                            "expression": f"DATE_TRUNC('{time_key.grain}', {native})",
+                        }
+                    ]
+                },
+                "dimension": {},
+            }
+        )
     return {
         "version": envelope.get("version"),
         "semantic_model": [
@@ -634,7 +929,7 @@ def _submodel(graph: SemanticGraph, dataset: str, metric_names: list[str]) -> di
                 # overwrites this mapping's 'source' with filtered SQL, and the
                 # graph's own declaration must not change with any one request
                 # (mf-t3 review F1)
-                "datasets": [{**entry}],
+                "datasets": [{**entry, "fields": fields}],
                 "metrics": [raw_metrics[name] for name in sorted(metric_names)],
             }
         ],
@@ -694,6 +989,7 @@ def _joined_branch_sql(
     metric_names: list[str],
     row_preds: Sequence[tuple[_Predicate, _DimKey]] = (),
     parameters: dict[str, tuple[str, Any]] | None = None,
+    fetch_bounds: tuple[date | None, date | None] = (None, None),
 ) -> tuple[str, list[RelationshipEdge]]:
     """A branch that reaches dimension or filter fields through relationship
     lookup paths: LEFT joins onto each proven unique target INSIDE the branch,
@@ -702,8 +998,10 @@ def _joined_branch_sql(
     aggregation — a filter that reaches a lookup field filters that branch's
     population). Every field resolves against the dataset that declares it
     and each source-column reference carries that dataset's branch alias, so
-    dataset scope survives the lowering (fix pass F3). Derived metrics over
-    lookup branches land with #29."""
+    dataset scope survives the lowering (fix pass F3). A conformed business
+    time key groups by its truncation of the native member (issue #29); the
+    half-open fetch range (lookback already included) predicates the native
+    member before aggregation."""
     node = graph.datasets[dataset]
     collected: dict[str, RelationshipEdge] = {}
     for key in dim_keys:
@@ -787,22 +1085,28 @@ def _joined_branch_sql(
     for key in dim_keys:
         path = key.paths[dataset]
         home = path[-1].to_dataset if path else dataset
-        expression = lower(
+        native = lower(
             exp.column(key.members[dataset]), home, f"dimension '{key.dimension}'"
         )
+        expression = key.group_expression(native)
         group_exprs.append(expression)
-        # F4: project under the NATIVE member name — the alignment layer (keys
-        # CTE, LEFT JOIN) references key.members[dataset] for BOTH branch kinds,
-        # and a conformed key's native member may differ from the canonical name.
-        select = select.select(exp.alias_(expression, key.members[dataset], quoted=True))
+        # F4: project under the branch's OUTPUT column — the alignment layer
+        # (keys CTE, LEFT JOIN) references key.output(dataset) for BOTH branch
+        # kinds, and a conformed key's native member may differ from the
+        # canonical name (a time key's truncation differs from the raw member).
+        select = select.select(exp.alias_(expression, key.output(dataset), quoted=True))
     for metric_name in sorted(metric_names):
         metric_node = graph.metrics[metric_name]
         if metric_node.derived:
+            # a single-fact derived metric whose branch needs a lookup join: its
+            # single-dataset layering cannot run here and it carries no window
+            # declaration that would move it to the post-aggregate stage
             raise PlannerError(
                 "derived_lookup_unsupported",
-                f"metric '{metric_name}' is derived and branch '{dataset}' traverses a "
-                "relationship lookup path — derived metrics over lookup branches land "
-                "with post-alignment derivation (#29)",
+                f"metric '{metric_name}' is a single-fact derived metric and branch "
+                f"'{dataset}' traverses a relationship lookup path — request it "
+                "without the lookup dimension, or compute it post-aggregate with a "
+                "window declaration",
             )
         tree = _parse(metric_node.expression, f"metric {metric_name!r}")
         tree = lower(tree, dataset, f"metric {metric_name!r}")
@@ -817,6 +1121,20 @@ def _joined_branch_sql(
         )
         condition = _predicate_ast(column, predicate, parameters or {})
         where = condition if where is None else exp.And(this=where, expression=condition)
+    # the conformed business time fetch range (half-open, lookback already
+    # included) predicates this branch's NATIVE time member
+    time_key = next((key for key in dim_keys if key.grain is not None), None)
+    if time_key is not None:
+        member = time_key.members[dataset]
+        column = lower(exp.column(member), dataset, f"time range on '{member}'")
+        for bound, comparison in (
+            (fetch_bounds[0], exp.GTE),
+            (fetch_bounds[1], exp.LT),
+        ):
+            if bound is None:
+                continue
+            condition = comparison(this=column.copy(), expression=_date_literal(bound))
+            where = condition if where is None else exp.And(this=where, expression=condition)
     if where is not None:
         select = select.where(where)
     if group_exprs:
@@ -851,6 +1169,35 @@ def _plain_predicates(
     return out
 
 
+def _time_fetch_predicate(
+    graph: SemanticGraph,
+    dataset: str,
+    time_key: _DimKey,
+    bounds: tuple[date | None, date | None],
+) -> exp.Expression | None:
+    """The half-open fetch range on this branch's NATIVE time member, lowered
+    unqualified against the branch dataset's own field declarations (lookback
+    already folded into the start bound by the caller)."""
+    member = time_key.members[dataset]
+    field_asts = {
+        name: _strip_qualifiers(_parse(sql, f"field {name!r} of dataset '{dataset}'"))
+        for name, sql in graph.datasets[dataset].expressions.items()
+    }
+    tree = field_asts.get(member)
+    column = (
+        _resolve_fields(tree.copy(), field_asts, set())
+        if tree is not None
+        else exp.column(member)  # no usable dialect declaration: the column itself
+    )
+    where = None
+    for bound, comparison in ((bounds[0], exp.GTE), (bounds[1], exp.LT)):
+        if bound is None:
+            continue
+        condition = comparison(this=column.copy(), expression=_date_literal(bound))
+        where = condition if where is None else exp.And(this=where, expression=condition)
+    return where
+
+
 def _branch_sql(
     graph: SemanticGraph,
     dataset: str,
@@ -859,23 +1206,33 @@ def _branch_sql(
     requested: list[str],
     row_preds: Sequence[tuple[_Predicate, _DimKey]] = (),
     parameters: dict[str, tuple[str, Any]] | None = None,
+    fetch_bounds: tuple[date | None, date | None] = (None, None),
 ) -> tuple[str, list[RelationshipEdge]]:
     """The branch SELECT (group keys in requested order, then its metrics).
     Branches whose dimensions OR routed row filters need a lookup path compile
     through the in-branch join builder; branches with no lookup path compile
     through the single-dataset renderer — including single-dataset derived
     layering — so both authoring layouts and legacy models share one compiler
-    (ADR-0008), with row predicates pre-filtering the branch source.
-    ``requested`` are the metrics the request itself asks of this branch: the
-    renderer must keep their outputs through any derived layer (F5 — a base
-    metric requested together with a same-fact derived metric on top of it
-    needs both columns)."""
+    (ADR-0008), with row predicates pre-filtering the branch source. A
+    conformed business time key groups every branch by the truncation of its
+    native member under the key's output column, and the half-open fetch range
+    (lookback included) predicates the native member before aggregation.
+    ``requested`` are the metrics whose outputs the branch must keep through
+    any derived layer (F5 — a base metric requested together with a same-fact
+    derived metric on top of it needs both columns)."""
     if any(key.paths[dataset] for key in dim_keys) or any(
         key.paths[dataset] for _predicate, key in row_preds
     ):
-        return _joined_branch_sql(graph, dataset, dim_keys, metric_names, row_preds, parameters)
-    sub = _submodel(graph, dataset, metric_names)
+        return _joined_branch_sql(
+            graph, dataset, dim_keys, metric_names, row_preds, parameters, fetch_bounds
+        )
+    time_key = next((key for key in dim_keys if key.grain is not None), None)
+    sub = _submodel(graph, dataset, metric_names, time_key)
     plain = _plain_predicates(graph, dataset, row_preds, parameters or {})
+    if time_key is not None:
+        fetch = _time_fetch_predicate(graph, dataset, time_key, fetch_bounds)
+        if fetch is not None:
+            plain.append(fetch)
     if plain:
         filtered = exp.Select().select("*").from_(
             _source_subquery(
@@ -893,7 +1250,7 @@ def _branch_sql(
         return (
             render(
                 sub,
-                dimensions=[key.members[dataset] for key in dim_keys],
+                dimensions=[key.output(dataset) for key in dim_keys],
                 carry=[name for name in requested if name in metric_names],
             ),
             [],
@@ -912,25 +1269,133 @@ def _is_bare_count(expression: str) -> bool:
     return isinstance(tree, exp.Count)
 
 
+@dataclass(frozen=True)
+class _PostStage:
+    """The declared post-alignment computation (issue #29): cross-fact derived
+    metrics and windowed metrics in dependency level order, the aligned output
+    projection with explicit fills, and the display trim over the conformed
+    time column. Derived arithmetic and rolling, cumulative, prior-period,
+    ranking and value windows operate HERE — after the branches merge, never
+    inside a fact branch (spec rev 1 "Query and result contract")."""
+
+    metrics: tuple[_PostMetric, ...]  # level-ordered, deps before dependents
+    time_column: str | None  # the aligned conformed time key, when declared
+    grain: str | None  # the requested time grain (value-window RANGE frames)
+    trim: tuple[date | None, date | None]  # half-open display range
+    partition: tuple[str, ...]  # non-time dimensions (window PARTITION BY)
+    output: tuple[str, ...]  # final output columns: dims, time, requested metrics
+    fills: dict[str, Any]  # metric -> explicit output fill (never a denominator)
+
+
+def _post_expression(sql: str, context: str) -> exp.Expression:
+    """One declared post-aggregate expression over aligned metric columns,
+    with every division guarded: a zero or missing denominator yields NULL,
+    never an error or an infinity (spec rev 1 "Query and result contract")."""
+    try:
+        tree = _strip_qualifiers(_parse(sql, context))
+    except RenderError as exc:
+        raise PlannerError("compile_failed", str(exc)) from exc
+    for div in list(tree.find_all(exp.Div)):
+        div.set(
+            "expression",
+            exp.Nullif(this=div.expression, expression=exp.Literal.number(0)),
+        )
+    return tree
+
+
+def _window_expression(name: str, window: WindowDecl, stage: _PostStage) -> exp.Expression:
+    """The declared window form over the metric's own aligned column: ordered
+    by the conformed time key and partitioned by the non-time dimensions, so a
+    window never leaks across dimension groups."""
+    column = exp.column(name, quoted=True)
+    partition = [exp.column(member, quoted=True) for member in stage.partition] or None
+    if window.kind == "prior_period":
+        return exp.Window(
+            this=exp.Lag(this=column),
+            partition_by=partition,
+            order=exp.Order(
+                expressions=[exp.Ordered(this=exp.column(stage.time_column or "", quoted=True))]
+            ),
+        )
+    if window.kind == "ranking":
+        # ranking orders the DISPLAYED rows by value: it runs after the trim
+        return exp.Window(
+            this=exp.Rank(),
+            partition_by=partition,
+            order=exp.Order(
+                expressions=[exp.Ordered(this=column, desc=window.direction == "desc")]
+            ),
+        )
+    order = exp.Order(
+        expressions=[exp.Ordered(this=exp.column(stage.time_column or "", quoted=True))]
+    )
+    if window.kind == "rolling":
+        size = window.size or 1  # a rolling window always carries a size (load)
+        spec = exp.WindowSpec(kind="ROWS", start=f"{size - 1} PRECEDING", end="CURRENT ROW")
+    elif window.kind == "cumulative":
+        spec = exp.WindowSpec(
+            kind="ROWS", start="UNBOUNDED PRECEDING", end="CURRENT ROW"
+        )
+    else:  # value_window: a RANGE frame over the time axis by grain periods
+        unit, per = _INTERVAL_UNIT[stage.grain or "day"]
+        size = window.size or 1
+        spec = exp.WindowSpec(
+            kind="RANGE",
+            start=f"INTERVAL {size * per} {unit} PRECEDING",
+            end="CURRENT ROW",
+        )
+    return exp.Window(
+        this=_WINDOW_FUNCTIONS[window.function](this=column),
+        partition_by=partition,
+        order=order,
+        spec=spec,
+    )
+
+
+def _layer(
+    tree: exp.Expression, columns: list[str], additions: Sequence[tuple[str, exp.Expression]]
+) -> tuple[exp.Select, list[str]]:
+    """One projection layer above ``tree``: carries ``columns``, computes each
+    addition over the INPUT columns (a replaced column keeps its position, a
+    new one is appended) — the same one-level-at-a-time shape as the
+    single-dataset renderer's derived layering."""
+    added = dict(additions)
+    select = exp.Select()
+    for name in columns:
+        expression = added.pop(name, None)
+        if expression is None:
+            expression = exp.column(name, quoted=True)
+        select = select.select(exp.alias_(expression, name, quoted=True))
+    for name, expression in added.items():
+        select = select.select(exp.alias_(expression, name, quoted=True))
+        columns.append(name)
+    return select.from_(exp.Subquery(this=tree)), columns
+
+
 def _final_sql(
     branch_sqls: list[str],
-    branch_keys: list[list[tuple[str, str]]],  # per branch: (canonical, native col)
+    branch_keys: list[list[tuple[str, str]]],  # per branch: (canonical, output col)
     columns: list[tuple[str, int, str, bool]],  # (metric, branch idx, col, bare count)
     result_filters: Sequence[_Predicate] = (),
     order: Sequence[tuple[str, bool]] = (),
     limit: int | None = None,
     parameters: dict[str, tuple[str, Any]] | None = None,
+    stage: _PostStage | None = None,
 ) -> str:
     """The ONE guarded SELECT: CTE per branch, a keys CTE unioning the branch
     group keys (UNION dedupes, NULL-inclusive), and an outer SELECT aligning
     aggregate outputs with null-safe equality. No-dimension plans cross-join
-    the single-row aggregates instead. Aggregate/RESULT filters, declared
-    ordering and the bounded limit apply AFTER grouping, on a wrapper SELECT
-    over the aligned output (its WHERE/ORDER BY reference real subquery
-    columns, never select aliases — spec rev 1, "Query and result")."""
+    the single-row aggregates instead. Above the aligned output the declared
+    post-aggregate stage runs in order (issue #29): derived metrics level by
+    level (division guarded against zero/missing denominators), time-frame
+    windows, the display trim, ranking windows, then the output projection
+    with explicit fills. Aggregate/RESULT filters, declared ordering and the
+    bounded limit apply AFTER all of that, on a wrapper SELECT over the final
+    output (its WHERE/ORDER BY reference real subquery columns, never select
+    aliases — spec rev 1, "Query and result")."""
     names = [f"b{index}" for index in range(len(branch_sqls))]
     outer = exp.Select()
-    for canonical, _native in branch_keys[0] if branch_keys else []:
+    for canonical, _output in branch_keys[0] if branch_keys else []:
         outer = outer.select(
             exp.alias_(
                 exp.column(canonical, table="keys", quoted=True), canonical, quoted=True
@@ -972,8 +1437,66 @@ def _final_sql(
         for projection in projections[1:]:
             union = exp.union(union, projection)
         tree = tree.with_("keys", as_=union, copy=False)
+    current = [*([canonical for canonical, _output in branch_keys[0]] if branch_keys else [])]
+    current.extend(metric for metric, _index, _column, _bare in columns)
+    if stage is not None:
+        # derived metrics, one level per dependency level
+        for level in sorted({metric.level for metric in stage.metrics}):
+            tree, current = _layer(
+                tree,
+                current,
+                [
+                    (metric.name, _post_expression(metric.expression, f"metric {metric.name!r}"))
+                    for metric in stage.metrics
+                    if metric.level == level
+                ],
+            )
+        # time-frame windows run over the fetched range, BEFORE the trim
+        for metric in stage.metrics:
+            window = metric.window
+            if window is None or window.kind not in _TIME_FRAME_KINDS:
+                continue
+            tree, current = _layer(
+                tree,
+                current,
+                [(metric.name, _window_expression(metric.name, window, stage))],
+            )
+        # the displayed range trims the fetched lookback away
+        if stage.time_column is not None and any(
+            bound is not None for bound in stage.trim
+        ):
+            column = exp.column(stage.time_column, quoted=True)
+            trim = None
+            if stage.trim[0] is not None:
+                trim = exp.GTE(this=column.copy(), expression=_date_literal(stage.trim[0]))
+            if stage.trim[1] is not None:
+                condition = exp.LT(this=column.copy(), expression=_date_literal(stage.trim[1]))
+                trim = condition if trim is None else exp.And(this=trim, expression=condition)
+            tree = exp.Select().select("*").from_(exp.Subquery(this=tree)).where(trim)
+        # ranking windows order the DISPLAYED rows, so they run after the trim
+        for metric in stage.metrics:
+            window = metric.window
+            if window is None or window.kind != "ranking":
+                continue
+            tree, current = _layer(
+                tree,
+                current,
+                [(metric.name, _window_expression(metric.name, window, stage))],
+            )
+        # the output projection: requested columns only, explicit fills applied
+        # here and nowhere earlier (never a hidden denominator)
+        if stage.fills or list(stage.output) != current:
+            projection = exp.Select()
+            for name in stage.output:
+                expression = exp.column(name, quoted=True)
+                if name in stage.fills:
+                    expression = exp.Coalesce(
+                        this=expression, expressions=[_fill_literal(stage.fills[name])]
+                    )
+                projection = projection.select(exp.alias_(expression, name, quoted=True))
+            tree = projection.from_(exp.Subquery(this=tree))
     if result_filters or order or limit:
-        wrapper = exp.Select().select("*").from_(exp.Subquery(this=outer))
+        wrapper = exp.Select().select("*").from_(exp.Subquery(this=tree))
         where = None
         for predicate in result_filters:
             condition = _predicate_ast(
@@ -1101,29 +1624,24 @@ def plan_query(
         )
 
     memo: dict[str, str | None] = {}
-    owner_of: dict[str, str] = {}
-    for name in sorted(metric_names):
-        owner = _resolve_owner(graph, name, memo)
-        if owner is None:
-            raise PlannerError(
-                "derived_cross_fact_unsupported",
-                f"metric '{name}' derives across fact datasets — cross-fact derived "
-                "metrics compute after branch alignment (task 4, #29)",
-                candidates=tuple(
-                    sorted(
-                        candidate
-                        for candidate, node in graph.metrics.items()
-                        if not (node.derived and _resolve_owner(graph, candidate, memo) is None)
-                    )
-                ),
-            )
-        owner_of[name] = owner
+    # Stage classification (issue #29): a metric aggregates INSIDE its fact
+    # branch unless it is a windowed metric (its declared window moves the
+    # computation to the post-aggregate stage) or a cross-fact derived metric
+    # (no single owning dataset — it resolves after the branches merge).
+    owner_of: dict[str, str | None] = {}
+    closures = {name: _closure(graph, name) for name in metric_names}
+    for name in sorted({member for closure in closures.values() for member in closure}):
+        owner_of[name] = (
+            None
+            if graph.metrics[name].window is not None
+            else _resolve_owner(graph, name, memo)
+        )
 
-    branch_datasets = sorted(set(owner_of.values()))
+    branch_datasets = sorted({owner for owner in owner_of.values() if owner is not None})
     branch_metrics: dict[str, list[str]] = {dataset: [] for dataset in branch_datasets}
     for name in metric_names:
-        for member in _closure(graph, name):
-            owner = _resolve_owner(graph, member, memo)
+        for member in closures[name]:
+            owner = owner_of[member]
             if (
                 owner is not None
                 and owner in branch_metrics
@@ -1132,15 +1650,82 @@ def plan_query(
                 branch_metrics[owner].append(member)
 
     conformed_by_name = {edge.name: edge for edge in graph.conformed_dimensions}
+    time_request = _parse_time(request["time"]) if request.get("time") is not None else None
+    if time_request is not None:
+        if time_request.dimension in dimension_names:
+            raise PlannerError(
+                "time_invalid",
+                f"the time dimension {time_request.dimension!r} may not also be a "
+                "requested dimension — the aligned time key is one output column",
+            )
+        if time_request.dimension in metric_names:
+            raise PlannerError(
+                "name_collision",
+                f"{time_request.dimension!r} names both the requested time dimension and "
+                "a metric — output columns must stay unambiguous",
+            )
+
+    # every requested windowed metric names its declared form; a time-frame
+    # window needs the declared conformed business time as its ordering axis
+    windowed = [name for name in metric_names if graph.metrics[name].window is not None]
+    time_frame = [
+        name
+        for name in windowed
+        if graph.metrics[name].window.kind in _TIME_FRAME_KINDS  # pyright: ignore[reportOptionalMemberAccess]
+    ]
+    if time_frame and time_request is None:
+        raise PlannerError(
+            "window_requires_time",
+            f"metric(s) {time_frame} declare a time-frame window but the request "
+            "declares no conformed primary business time — declare 'time' with the "
+            "window's ordering axis",
+            candidates=tuple(sorted(metric_names)),
+        )
+
     dim_keys = [
         _resolve_field_key(graph, name, branch_datasets, conformed_by_name, "dimension")
         for name in dimension_names
     ]
+    time_key = (
+        _resolve_time_key(graph, time_request, branch_datasets, conformed_by_name)
+        if time_request is not None
+        else None
+    )
+    if time_key is not None:
+        dim_keys.append(time_key)
+
+    # the fetch range: lookback precedes the trim (spec rev 1 "Query and result
+    # contract"). A cumulative frame needs EVERY preceding group, so its fetch
+    # start opens up while the displayed range still trims.
+    fetch_start = fetch_end = None
+    if time_request is not None:
+        lookbacks: list[int] = []
+        unbounded = False
+        for name in windowed:
+            window = graph.metrics[name].window
+            if window is None:
+                continue
+            lookback = _lookback_groups(window)
+            if lookback is None:
+                unbounded = True  # a cumulative frame needs every preceding group
+            else:
+                lookbacks.append(lookback)
+        fetch_end = time_request.end
+        needed = max(lookbacks, default=0)
+        if time_request.start is not None and not unbounded and needed > 0:
+            fetch_start = _shift_periods(
+                time_request.grain,
+                _truncate(time_request.grain, time_request.start),
+                -needed,
+            )
+    fetch_bounds = (fetch_start, fetch_end)
 
     parameters = _parse_parameters(request.get("parameters"))
     predicates, segment_names = _parse_predicates(request)
     order, limit = _parse_order_limit(request)
     output_columns = set(metric_names) | set(dimension_names)
+    if time_request is not None:
+        output_columns.add(time_request.dimension)
     for field, _descending in order:
         if field not in output_columns:
             raise PlannerError(
@@ -1193,6 +1778,15 @@ def plan_query(
             )
         )
 
+    # the aligned projection carries the requested branch metrics plus every
+    # branch metric a post-aggregate metric consumes (its expression resolves
+    # over the ALIGNED columns, so the branches must expose the dependencies)
+    post_needed: list[str] = []
+    for name in metric_names:
+        for member in closures[name]:
+            if owner_of[member] is None and member not in post_needed:
+                post_needed.append(member)
+    has_post = bool(post_needed)
     branch_sqls: list[str] = []
     branch_plans: list[BranchPlan] = []
     branch_keys: list[list[tuple[str, str]]] = []
@@ -1206,9 +1800,16 @@ def plan_query(
             dataset,
             dim_keys,
             branch_metrics[dataset],
-            [name for name in metric_names if owner_of[name] == dataset],
+            # without post-aggregate metrics the branch keeps exactly the
+            # requested outputs; with them it also exposes their dependencies
+            [
+                name
+                for name in branch_metrics[dataset]
+                if has_post or name in metric_names
+            ],
             routed,
             parameters,
+            fetch_bounds,
         )
         branch_sqls.append(sql)
         branch_plans.append(
@@ -1222,19 +1823,71 @@ def plan_query(
                 ),
             )
         )
-        branch_keys.append([(key.dimension, key.members[dataset]) for key in dim_keys])
+        branch_keys.append([(key.dimension, key.output(dataset)) for key in dim_keys])
         for edge in edges:
             participating[edge.name] = edge
 
-    columns = [
-        (
-            name,
-            branch_datasets.index(owner_of[name]),
-            name,
-            _is_bare_count(graph.metrics[name].expression),
+    aligned_metrics = [name for name in metric_names if owner_of[name] is not None]
+    if has_post:
+        # the branches exposed their post-aggregate dependencies as outputs
+        for dataset in branch_datasets:
+            for name in branch_metrics[dataset]:
+                if name not in aligned_metrics:
+                    aligned_metrics.append(name)
+    columns: list[tuple[str, int, str, bool]] = []
+    for name in aligned_metrics:
+        owner = owner_of[name]
+        if owner is None:
+            continue  # a post-aggregate metric: no branch column of its own
+        columns.append(
+            (
+                name,
+                branch_datasets.index(owner),
+                name,
+                _is_bare_count(graph.metrics[name].expression),
+            )
         )
-        for name in metric_names
-    ]
+
+    # the post-aggregate stage: derived metrics level by level (deps first),
+    # each windowed metric windowed over its own column, fills on the OUTPUT
+    def post_level(name: str) -> int:
+        deps = [dep for dep in graph.metrics[name].deps if owner_of.get(dep) is None]
+        return 0 if not deps else 1 + max(post_level(dep) for dep in deps)
+
+    post_metrics = tuple(
+        _PostMetric(
+            name=name,
+            expression=graph.metrics[name].expression,
+            level=post_level(name),
+            window=graph.metrics[name].window,
+        )
+        for name in post_needed
+    )
+    stage = (
+        _PostStage(
+            metrics=post_metrics,
+            time_column=time_request.dimension if time_request is not None else None,
+            grain=time_request.grain if time_request is not None else None,
+            trim=(
+                (time_request.start, time_request.end)
+                if time_request is not None
+                else (None, None)
+            ),
+            partition=tuple(dimension_names),
+            output=(
+                (*dimension_names, time_request.dimension, *metric_names)
+                if time_request is not None
+                else (*dimension_names, *metric_names)
+            ),
+            fills={
+                name: graph.metrics[name].fill
+                for name in metric_names
+                if graph.metrics[name].fill is not None
+            },
+        )
+        if (has_post or time_request is not None)
+        else None
+    )
     sql = _final_sql(
         branch_sqls,
         branch_keys,
@@ -1243,6 +1896,7 @@ def plan_query(
         order,
         limit,
         parameters,
+        stage,
     )
     statements = sqlglot.parse(sql)
     if len(statements) != 1:  # self-check: the guarded SELECT is one statement
@@ -1273,6 +1927,9 @@ def plan_query(
         audits=tuple(audits),
         relationship_audit=relationship_outcome,
         segments=segment_names,
+        time_dimension=time_request.dimension if time_request is not None else None,
+        time_grain=time_request.grain if time_request is not None else None,
+        windows=tuple(name for name in metric_names if graph.metrics[name].window is not None),
     )
 
 
