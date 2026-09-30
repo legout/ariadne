@@ -13,3 +13,4 @@ examples/retail-demo/staging/
 examples/retail-demo/context_layer/
 examples/retail-demo/semantic_layer/
 data/support_tickets/
+/examples/trace-data/

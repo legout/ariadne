@@ -1,7 +1,0 @@
-data/*.db
-staging/
-context_layer/
-semantic_layer/
-.env
-__pycache__/
-.venv/
