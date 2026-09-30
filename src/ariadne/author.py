@@ -399,7 +399,7 @@ def _user_prompt(profile: dict, notes: str, catalog_lines: str) -> str:
         "  ariadne define-metric --file def.json --served examples/retail-demo "
         "--sources examples/retail-demo/ariadne.yaml "
         "--staging examples/retail-demo/staging (stdin also works)\n"
-        "- Optional MCP transport (needs the extra installed: pip install 'ariadne[mcp]'):\n"
+        "- Optional MCP transport (needs the extra installed: pip install 'ariadne-core[mcp]'):\n"
         "  python -m ariadne.serve --sources examples/retail-demo/ariadne.yaml "
         "--semantic examples/retail-demo/semantic_layer "
         "--context examples/retail-demo/context_layer "
