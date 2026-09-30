@@ -31,12 +31,20 @@ _Avoid_: schema, data model
 ### Quality
 
 **Governed Metric**:
-A named measure served only through the Semantic Layer, with one canonical definition. Never computed by ad-hoc agent SQL.
+A named measure with one canonical Semantic Layer definition admitted by human Promotion (dev/test) or a human-reviewed, validated Git revision (production). Never computed by ad-hoc agent SQL.
 _Avoid_: KPI, ad-hoc metric
 
 **Fan-out**:
-Join multiplication that silently inflates aggregates when a query fans one row into many. Prevention is the facade's grain guard on agent-authored ad-hoc sources plus modeling discipline (pre-aggregate one-to-many to the fact grain) — the compiler does not prevent it (Datus-ai/Datus-agent#1426).
+A row join that repeats one fact's measures and inflates their aggregates. Aggregating each fact before alignment avoids cross-fact fan-out, but a pre-joined dataset can still contain it.
 _Avoid_: row explosion
+
+**Conformed Dimension**:
+An explicitly reviewed equivalence between grouping keys on different fact datasets (such as their business dates), not permission to join their raw rows.
+_Avoid_: same-named columns, foreign-key join
+
+**Fact Branch**:
+One fact's independently filtered and aggregated part of a multi-fact query, before its result is aligned with other facts.
+_Avoid_: joined fact rows
 
 ### Authoring workflow
 
@@ -49,8 +57,12 @@ The holding area (`staging/`) where authored artifacts and explicitly submitted 
 _Avoid_: drafts, sandbox
 
 **Promotion**:
-The human act of admitting a staged artifact into its reviewed destination (served layers or the reviewed Answer Example store), marking its review. Discoverability in Staging is never Promotion.
+The local human act of admitting a staged artifact into its reviewed destination (served dev/test layers or the reviewed Answer Example store), marking its review. Discoverability in Staging is never Promotion. Production semantic models instead use Git Review Admission.
 _Avoid_: publish, deploy
+
+**Git Review Admission**:
+The production route that serves a human-reviewed Git revision only after validation of the exact committed semantic artifact. A commit or validator label alone does not mean review; this route does not run local Promotion.
+_Avoid_: automatic promotion, validated commit
 
 **Seed Notes**:
 The human-owned data dictionary (`data/seed_notes.md`) carrying business rules that statistics cannot derive; an input to the Authoring Agent alongside the statistical profile. It may be drafted by a harness from domain evidence, but its rules become authoritative only after human approval.
@@ -77,7 +89,7 @@ The OKF v0.2 structure of `context_layer/`: typed folders (tables, references, p
 _Avoid_: knowledge base directory, docs folder
 
 **Grain**:
-The declared row identity of a dataset (its primary key in analytical terms). Every model maps to exactly one grain; additive measures only on fields native to it (ADR-0006).
+The declared row identity of a dataset (its primary key in analytical terms). Each dataset has one grain; a model may contain several differently grained datasets. Base measures stay at their owning dataset's grain, and multi-fact results align only after fact-local aggregation (ADR-0006).
 _Avoid_: granularity, level
 
 **Policy**:

@@ -1,12 +1,14 @@
-# Grain governance for multi-cardinality joins (datus-semantic-osi + OKF)
+# Grain governance for multi-cardinality joins (Ariadne + historical Datus/OKF evidence)
 
-Status: accepted (owner, 2026-09-15). Imported from selayer's ADR-0042 and adapted to ariadne; independently confirmed by our fan-out trap finding (run mvp-4: `datus-semantic-osi` 0.1.7 aggregates at joined-row grain — upstream issue [Datus-ai/Datus-agent#1426](https://github.com/Datus-ai/Datus-agent/issues/1426)).
+Status: accepted (owner, 2026-09-15; scoped multi-fact planner revision approved by owner, 2026-09-30). Imported from selayer's ADR-0042 and adapted to Ariadne; independently confirmed by the fan-out trap (`datus-semantic-osi` 0.1.7 aggregates at joined-row grain — upstream issue [Datus-ai/Datus-agent#1426](https://github.com/Datus-ai/Datus-agent/issues/1426)).
 
-**Decision:** the engine never arbitrates multi-grain joins, so grain alignment is enforced upstream during dataset construction and strictly constrained at metric-definition time. In ariadne: the facade guard (`_check_grain_preserving`) rejects non-grain-preserving ad-hoc sources before compile; the audit protocol in §5 belongs to `ariadne/validate.py` using profiler uniqueness evidence; the rubric in §3 guides the authoring agent and the guard's rejection guidance.
+**Decision, revised:** each **dataset** has exactly one declared and audited grain; a semantic model may contain multiple datasets. The existing guard rejects unsafe pre-joined/ad-hoc sources. The approved Ariadne-owned sqlglot planner may combine measures from different facts **only after independently aggregating each fact** and aligning on explicitly conformed dimensions. It never treats a conformed mapping as a raw fact join. Both a domain-style multi-dataset OSI file and separate single-dataset OSI files plus a cross-file graph normalize to the same planner graph; conflicting declarations fail. The [approved behavioral specification](../specs/2026-09-30-0008-multi-fact-planner.md) owns the query and audit requirements. The 2026-09-15 rules below still govern constructing a **single dataset source** and the existing ad-hoc path; their former one-grain-*per-model* and blanket no-multi-fact limitations are superseded by this scoped decision, not yet implemented.
 
-Related: ADR-0005 (no-unvalidated-execution invariant) · spec §13 (trap, guard, sentinel) · CONTEXT.md (Fan-out term).
+**Alternatives:** continue forcing every requested multi-fact comparison into one flattened dataset (fails the order/line fan-out trap); import Datus execution (conflicts with [ADR-0008](0008-own-sqlglot-compiler-agpl-exit.md)); or implement parallel layout-specific planners (duplicates grain and safety policy). One normalized graph and independently aggregated branches retain source-layout choice without splitting semantics.
 
-The normative rubric, OKF metadata contract, audit protocol, and implementation contract follow — body preserved from the source ADR, section numbering kept for cross-project reference.
+Related: [ADR-0005](0005-adhoc-validated-execution-invariant.md) (no-unvalidated-execution) · [ADR-0008](0008-own-sqlglot-compiler-agpl-exit.md) (own compiler) · [multi-fact specification](../specs/2026-09-30-0008-multi-fact-planner.md) · [CONTEXT.md](../../CONTEXT.md) (Grain, Fan-out, Conformed Dimension).
+
+The original rubric and example audit protocol retain their section numbering for cross-project reference; read them with the revised single-dataset scope above.
 
 ---
 
@@ -14,7 +16,7 @@ The normative rubric, OKF metadata contract, audit protocol, and implementation 
 
 ### 1.1 The Engine Limitation (Apache Ossie / `datus-semantic-osi`)
 
-The semantic execution engine exhibits the following architectural behaviors:
+The **historical external `datus-semantic-osi` engine**, not the approved Ariadne multi-fact planner, exhibits the following architectural behaviors:
 
 1. **Joined-Row Execution Grain:** All declared metric expressions (aggregations) compile directly over the flattened, post-join tabular result set.
 2. **Absence of Symmetric Aggregates:** The engine lacks automated fan-out protection (e.g., primary-key hashing, automatic subquery pushdown, or Looker-style symmetric aggregation).
@@ -23,27 +25,25 @@ The semantic execution engine exhibits the following architectural behaviors:
 
 ### 1.2 The Failure Mode (Silent Aggregate Inflation)
 
-When an agent defines a semantic model comprising non-isomorphic cardinalities (1:N or N:M), metric calculations belonging to the upper ("one" or "parent") grain are silently multiplied by the fan-out factor of the lower ("many") side. This results in corrupt metrics without throwing query or validation errors.
+When a single flattened dataset source joins non-isomorphic cardinalities (1:N or N:M), metrics belonging to the upper ("one" or "parent") grain are multiplied by the fan-out factor of the lower ("many") side. Merely placing that flattened source in a multi-dataset model does not repair it; separate fact branches do.
 
 ---
 
 ## 2. Decision & Core Principles
 
-To guarantee deterministic, mathematically sound analytics, the Semantic Modeling and Audit Agents **MUST NOT** rely on the semantic engine to arbitrate multi-grain joins.
-
-Grain alignment and fan-out prevention **must be enforced upstream during dataset construction** or **strictly constrained at metric definition time**.
+To guarantee sound analytics, agents **MUST NOT** rely on a raw multi-grain row join to calculate measures. Grain alignment and fan-out prevention occur in single-dataset source construction or in the validated multi-fact planner's separate aggregate branches.
 
 ### Golden Rules for Model Generation Agents
 
-1. **Rule of Single Declared Grain:** Every Ossie Semantic Model must map to exactly one declared semantic grain.
-2. **Rule of Additive Metric Ownership:** An additive measure (`SUM`, `AVG`, `STDDEV`) may **only** be declared for fields that originate natively at the model's declared grain.
-3. **Rule of Cardinality Elimination:** 1:N (attribute logs) and N:M (junctions) must be resolved into 1:1 or single-grain representations prior to semantic layer registration.
+1. **Rule of Single Declared Dataset Grain:** Every dataset has exactly one declared grain. A model may group differently grained datasets, but never claim that their joined rows share a grain.
+2. **Rule of Metric Ownership:** A base aggregate (`SUM`, `AVG`, `STDDEV`, `COUNT`) belongs to one owning dataset and may use measures native to its row grain. A parent-grain measure must not be computed over child rows; the planner may compute it in a separate parent branch.
+3. **Rule of Safe Cardinality:** Resolve 1:N logs and N:M bridges before embedding them in a **single dataset source** used for duplicate-sensitive measures. Separately modeled facts may instead align their already aggregated results through explicit conformed dimensions. Dimension traversals require proven many-to-one/one-to-one cardinality.
 
 ---
 
 ## 3. Normative Resolution Patterns (Agent Decision Rubric)
 
-Autonomous agents must classify target source relations into one of three structural archetypes and apply the corresponding architectural pattern.
+When authoring a flattened **single dataset source**, agents classify its source relations and use an appropriate pattern below. For a multi-fact query, keeping the parent and child as separate audited datasets and aggregating each before alignment is now another permitted solution. The patterns do not authorize row-level parent/child joins for metrics.
 
 ```mermaid
 flowchart TD
@@ -96,8 +96,8 @@ flowchart TD
 * **Agent Directive:**
   1. Define the semantic model strictly at the **Child Grain**.
   2. Denormalize parent attributes down into the child view strictly as **Dimensions** (categories/filters).
-  3. **Strict Ban:** Do not register any parent-level additive measures (`SUM`).
-  4. Parent entity counting must strictly use `COUNT(DISTINCT parent_id)`.
+  3. **Strict Ban at child grain:** Do not register parent-level additive measures (`SUM`) on this child dataset; a separate parent-grain dataset may own and aggregate them.
+  4. Parent entity counting **on these child rows** uses `COUNT(DISTINCT parent_id)`.
 
 #### Examples
 
@@ -242,9 +242,9 @@ measures:
 
 ## 5. Autonomous Audit Agent: Pre-Flight Verification Protocol
 
-*Ariadne mapping: the Audit Agent role is `ariadne/validate.py` at the pre-flight compile step — Assertion 1 reuses the profiler's unique-ratio evidence; Assertion 2 runs on the read-only DuckDB attach.*
+*Ariadne mapping: `ariadne/validate.py` performs the existing single-source pre-flight. The approved planner additionally requires per-dataset key checks, relationship-target uniqueness, conformance/reference checks, and runtime evidence relevant to each query; the [specification](../specs/2026-09-30-0008-multi-fact-planner.md) owns those conditions. A profiler's sampled unique ratio alone cannot prove a key.*
 
-Before writing an Ossie configuration, the Audit Agent must execute the following automated validation protocol against the physical warehouse:
+Before admitting a source dataset containing a flattened join, validate its grain against the physical source; the original illustrations follow:
 
 ### Assertion 1: Uniqueness Test (Grain Verification)
 
@@ -257,12 +257,12 @@ SELECT
 FROM {candidate_dataset_or_view};
 ```
 
-* **Failure Condition:** `total_rows != distinct_keys`.  
-* **Remediation:** Halt generation. Trigger Pattern 1 (Pivot) or Pattern 2 (Child Grain Fallback).
+* **Failure Condition:** a duplicate full declared key tuple **or any NULL key component**. The SQL above illustrates a single-column key; composite keys require grouping by the complete tuple and checking every component for NULL.
+* **Remediation:** Halt admission. Pivot, choose a truthful child grain, or separately model another fact branch as appropriate.
 
 ### Assertion 2: Parent Aggregate Invariance Test
 
-Ensure that metrics from the parent side have not undergone fan-out inflation:
+When a candidate **single source** includes a parent-grain additive measure, ensure it has not undergone fan-out inflation. A separately aggregated parent branch is checked by the planner's independent trap oracle instead:
 
 ```sql
 WITH baseline AS (
@@ -291,7 +291,7 @@ FROM baseline b, modeled m;
 | **2. Pattern Selection** | Apply the Decision Rubric to select Pattern 1, 2, 3, 4, or 5. | Architecture Decision Log |
 | **3. Upstream DDL** | Emit dbt model / SQL view containing pivots, rollups, or allocations. | Transformed View SQL |
 | **4. Pre-Flight Audit** | Execute Assertions 1 & 2 against target data. | Verification Result (Pass/Fail) |
-| **5. Ossie Config** | Emit OSI YAML/JSON declaring measures strictly aligned with target grain. | `ossie_model.yaml` |
+| **5. OSI Config** | Emit OSI YAML with one grain per dataset and unambiguous metric owners; a model may include several separate datasets. | `semantic_layer/models/*.yml` |
 | **6. OKF Decoration** | Document semantic grain, cardinality resolution, and metadata. | `okf_context_v02.json/yaml` |
 
-*Ariadne mapping: Inspection → `ariadne/profiler.py` · Pattern Selection → authoring-agent prompt + `define_metric` rejection guidance · Upstream DDL → agent-authored `source` SQL (ad-hoc path) or staged authoring output · Pre-Flight Audit → `ariadne/validate.py` · Ossie Config → `semantic_layer/` · OKF Decoration → `context_layer/` pages.*
+*Ariadne mapping: Inspection → `ariadne/profiler.py` · Pattern Selection → authoring guidance plus `define_metric` rejection (single-dataset path), or separately modeled fact branches in the approved planner · Upstream DDL → only when a dataset source needs flattening · Pre-Flight Audit → `ariadne/validate.py` and the new graph checks specified above · OSI Config → `semantic_layer/` · OKF Decoration → `context_layer/` pages. This mapping describes an approved design, not completed planner implementation.*
