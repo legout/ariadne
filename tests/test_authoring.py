@@ -1138,6 +1138,36 @@ def test_unapproved_dataset_source_is_refused_before_any_duckdb_execution(tmp_pa
     assert not (project / "staging" / "authoring" / "bundle-state.json").exists()
 
 
+def test_domain_layout_bundle_is_refused_at_the_source_boundary(tmp_path):
+    """mf-t1 review finding F1: the source-access boundary walks the rendered
+    SQL of ONE dataset per envelope, so a multi-dataset (domain-layout) model
+    can carry an unauthorized second-dataset source past render-based
+    authorization while a graph-aware validator would bind it. Fail closed at
+    the boundary until authorization understands the normalized graph."""
+    project = approved_project(tmp_path)
+    secret = write_parquet(project / "data" / "unregistered.parquet")  # outside the registry
+    second_dataset = f"""      - name: event_details
+        source: (SELECT * FROM read_parquet('{secret}'))
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+"""
+    submission = bundle_submission()
+    # one semantic_model entry carrying TWO datasets: the domain authoring layout
+    submission["files"][1]["content"] = MODEL_YML.format(pk="id").replace(
+        "    metrics:", second_dataset + "    metrics:"
+    )
+    file = write_submission(project, submission)
+    with pytest.raises(ValueError, match="multi-dataset"):
+        authoring.submit_bundle(file, project=project)
+    assert not (project / "staging" / "authoring" / "bundle").exists()
+    assert not (project / "staging" / "authoring" / "bundle-state.json").exists()
+
+
 def test_empty_registry_cannot_validate_a_full_bundle(tmp_path):
     """Review finding P1: with NO approved sources, a full bundle must never
     be marked validated through the compile-only path — there is no approved

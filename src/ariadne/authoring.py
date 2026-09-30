@@ -895,6 +895,17 @@ def _authorize_dataset_sources(staging: Path, approved: set[str]) -> None:
     nothing is approvable, so a full bundle can never be validated by the
     compile-only path."""
     for name, envelope in _model_entries(staging):
+        model = envelope["semantic_model"][0]
+        if isinstance(model, dict) and len(model.get("datasets") or []) > 1:
+            # Fail closed (mf-t1 review F1): render-based authorization walks one
+            # dataset per envelope, so a multi-dataset (domain-layout) model could
+            # skip it while a graph-aware validator binds its sources. Refused
+            # here until authorization understands the normalized graph.
+            raise ValueError(
+                f"model '{name}': multi-dataset (domain-layout) models are refused "
+                "at the source-access boundary until authorization understands the "
+                "normalized graph — submit one dataset per model"
+            )
         try:
             rendered = render(envelope)
         except Exception:  # RenderError et al.: the compile gate owns the error
