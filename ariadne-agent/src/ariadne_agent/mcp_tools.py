@@ -127,7 +127,22 @@ class SessionMcp:
         try:
             eager.result(_INIT_TIMEOUT)
         except TimeoutError:
-            self._eager_error = f"eager start did not finish within {_INIT_TIMEOUT}s"
+            # Name the still-starting server(s): the dependency contract
+            # requires a *named* error for a permitted-but-unavailable
+            # server, not a generic timeout (issue #25 recheck P2).
+            eager_names = {
+                name for name, cfg in settings.servers.items()
+                if cfg.lifecycle == "eager"
+            }
+            not_ready = {
+                status.name for status in self._registry.statuses()
+                if status.state != "ready"
+            }
+            pending = ", ".join(sorted((eager_names & not_ready) or eager_names))
+            self._eager_error = (
+                f"eager start did not finish within {_INIT_TIMEOUT}s "
+                f"(still starting: {pending or 'unknown eager server'})"
+            )
         except Exception as exc:
             self._eager_error = f"{type(exc).__name__}: {exc}"
 
@@ -194,13 +209,16 @@ class SessionMcp:
         if self._eager_error is not None and "connect" not in arguments:
             # A failed eager start is reported honestly exactly once, as a
             # bounded tool result; connect stays open as the retry path.
+            # The stored text can carry a server's verbatim exception, so it
+            # passes the same 256 KiB output bound as every other result
+            # (issue #25 recheck P1).
             error = self._eager_error
             self._eager_error = None
-            return _text(
+            return _text(_truncate(
                 f"MCP eager-server startup failed at session open ({error}). "
                 "Other operations now proceed; connect(<server>) retries a "
                 "failed server."
-            )
+            ))
         if "search" in arguments:
             query = arguments["search"]
             if not isinstance(query, str):

@@ -49,6 +49,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 TOOLS = [
@@ -86,6 +87,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pid-file", type=Path, required=True)
     parser.add_argument("--event-file", type=Path, required=True)
+    parser.add_argument("--stall-list", type=float, default=0.0)
     args = parser.parse_args()
     args.pid_file.parent.mkdir(parents=True, exist_ok=True)
     args.event_file.parent.mkdir(parents=True, exist_ok=True)
@@ -116,6 +118,8 @@ def main():
         elif method == "ping":
             send({"jsonrpc": "2.0", "id": request_id, "result": {}})
         elif method == "tools/list":
+            if args.stall_list:
+                time.sleep(args.stall_list)
             send({"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}})
         elif method == "tools/call":
             params = message.get("params", {})
@@ -167,19 +171,22 @@ def mcp(tmp_path):
     pid_file = tmp_path / "obs" / "server.pid"
     event_file = tmp_path / "obs" / "events.log"
 
-    def settings(*, lifecycle: str = "lazy") -> McpSettings:
+    def settings(*, lifecycle: str = "lazy", stall_list: float = 0.0) -> McpSettings:
+        args_list = [
+            str(server),
+            "--pid-file",
+            str(pid_file),
+            "--event-file",
+            str(event_file),
+        ]
+        if stall_list:
+            args_list += ["--stall-list", str(stall_list)]
         return McpSettings(
             servers={
                 "demo": ServerConfig(
                     name="demo",
                     command=sys.executable,
-                    args=(
-                        str(server),
-                        "--pid-file",
-                        str(pid_file),
-                        "--event-file",
-                        str(event_file),
-                    ),
+                    args=tuple(args_list),
                     request_timeout_ms=5000,
                     lifecycle=lifecycle,
                 )
@@ -487,3 +494,57 @@ def test_failed_eager_start_surfaces_as_a_named_tool_error(mcp, project):
     assert surfaced.result != following.result, (
         "the error surfaces once; the next operation proceeds normally"
     )
+
+
+def test_eager_start_timeout_names_the_stalled_server(mcp, project, monkeypatch):
+    """Recheck P2: the dependency contract requires a NAMED error for a
+    permitted-but-unavailable server — a stalled eager start must say which
+    server is still starting, not just "did not finish"."""
+    from ariadne_agent import mcp_tools
+
+    monkeypatch.setattr(mcp_tools, "_INIT_TIMEOUT", 0.4)
+    provider = FakeProvider(
+        [
+            turn(calls=[("mcp", {"search": "orders"})]),
+            turn(text="done"),
+        ]
+    )
+    session = open_session(
+        role="analyst",
+        project=project,
+        model="fake-analyst",
+        provider=provider,
+        mcp_settings=mcp.settings(lifecycle="eager", stall_list=5.0),
+    )
+    try:
+        events = asyncio.run(drive(session, "what MCP tools are there?"))
+    finally:
+        session.close()
+
+    activity = _tool_events(events)
+    surfaced = activity[0]
+    assert surfaced.is_error is False
+    assert "eager" in surfaced.result.lower()
+    assert "demo" in surfaced.result, (
+        "the still-starting server is named in the surfaced error"
+    )
+    assert "still starting: demo" in surfaced.result
+
+
+def test_eager_startup_error_respects_the_output_bound(mcp):
+    """Recheck P1: the surfaced eager-start error is bounded by the same
+    256 KiB output limit as every other MCP tool result, even when the stored
+    startup failure text is huge."""
+    from ariadne_agent import mcp_tools
+
+    sm = mcp_tools.SessionMcp(mcp.settings(), "analyst")
+    try:
+        sm._eager_error = "x" * (mcp_tools._OUTPUT_LIMIT + 50_000)
+        result = asyncio.run(sm._execute_proxy({}))
+        text = "".join(getattr(item, "text", "") for item in result.content)
+        assert len(text.encode()) <= mcp_tools._OUTPUT_LIMIT, (
+            "the startup-error tool result must respect the output bound"
+        )
+        assert "truncated" in text
+    finally:
+        sm.shutdown()
