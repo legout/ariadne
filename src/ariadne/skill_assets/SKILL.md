@@ -204,7 +204,7 @@ the numbers independently. When serving such a metric after Promotion, say
 MCP registers the same five operations as tools over a server — useful for
 remote or host-integrated tool registration. It is optional; the local CLI
 above is the default workflow and works without any of this. Install
-`ariadne[mcp]` into the same Python environment that provides the `ariadne`
+`ariadne-core[mcp]` into the same Python environment that provides the `ariadne`
 CLI. For this source checkout, run the install from the Ariadne package
 checkout (the directory containing `pyproject.toml`), not from the data project
 root:

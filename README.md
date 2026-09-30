@@ -20,7 +20,7 @@ with a governed catalog:
 
 Agents query Ariadne through the local `ariadne` command line — no server to run,
 no extra setup. Ariadne also speaks [MCP](https://modelcontextprotocol.io/), the
-standard tool protocol, as an optional extra (`ariadne[mcp]`) for remote or
+standard tool protocol, as an optional extra (`ariadne-core[mcp]`) for remote or
 host-integrated tool registration.
 
 ## What you get
