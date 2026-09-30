@@ -4,21 +4,24 @@ The installable Ariadne Agent backend: a fixed-role, in-memory conversation
 over **native Ariadne Python tools** — no CLI, no shell, no server, no raw SQL
 ([spec 2026-09-29-0006](../project/specs/2026-09-29-0006-ariadne-agent-backend.md),
 [ADR-0014](../project/adr/0014-embedded-tau-agent-backend.md), issue #23).
-This revision ships the **Analyst** role; the Authoring role and external MCP
-tools arrive in their own lanes.
+This revision ships the **Analyst** and **Authoring** roles plus optionally
+configured **role-restricted stdio MCP** tools (issue #25).
 
 ## Install
 
-Depends on `ariadne-core` (never the unrelated PyPI `ariadne` GraphQL project)
-and the verified Tau release `tau-ai==0.4.6`, whose embeddable
+Depends on `ariadne-core` (never the unrelated PyPI `ariadne` GraphQL project),
+the verified Tau release `tau-ai==0.4.6`, whose embeddable
 `tau_agent.AgentHarness` / `tau_ai.OpenAICompatibleProvider` import paths this
-package uses. The `tau-ai` wheel also installs `tau_coding`'s files, but this
-package never imports or invokes `tau_coding` at runtime, and never launches a
+package uses, and the owned `tau-mcp` embeddable stdio MCP core. The `tau-ai`
+wheel also installs `tau_coding`'s files, but this package never imports or
+invokes `tau_coding` at runtime (the `tau_mcp.proxy` module is likewise not
+imported here because it is the Tau-extension flavor), and never launches a
 server — installing `ariadne-core` alone does not install the agent.
 
 Local development resolves `ariadne-core` from the repository checkout through
 `[tool.uv.sources]` in `pyproject.toml` (non-published tool configuration
-only; the published dependency metadata names the distribution):
+only; the published dependency metadata names the distribution); `tau-mcp`
+resolves the same way from its own repository checkout:
 
 ```bash
 cd ariadne-agent && uv run pytest -q tests/test_analyst.py
@@ -45,6 +48,36 @@ async for event in session.send("gross margin by region?"):
 session.cancel()   # cooperative: ends subsequent model turns
 session.close()
 ```
+
+## MCP (optional, role-restricted)
+
+Passing `mcp_settings` attaches ONE restricted MCP registry to that session,
+built from host-supplied configuration only — validated stdio server entries,
+a cache root, and each role's operator-approved qualified tool names. No
+`~/.tau/mcp.json` or any other ambient MCP configuration is ever loaded, and a
+model request can never alter server commands, the allowlist, or credentials:
+
+```python
+from ariadne_agent.mcp_tools import McpSettings
+from tau_mcp.config import ServerConfig
+
+mcp = McpSettings(
+    servers={"weather": ServerConfig(name="weather", command="...", args=(...))},
+    cache_root=Path("/var/cache/ariadne-mcp"),
+    role_tools={"analyst": ("weather__lookup",)},  # authoring absent => no MCP tools
+)
+session = open_session(role="analyst", ..., mcp_settings=mcp)
+```
+
+Permitted tools surface to the model as one `mcp` proxy tool (search and call
+by `server__tool` name); direct MCP registration stays a Tau extension and is
+not offered. The registry's frozen per-instance allowlist restricts discovery
+**and** dispatch, so a forbidden name the model supplies through the proxy is
+rejected before any spawn or call — the server never sees it. `close()` reaps
+every MCP child this session spawned; a call already executing finishes or
+times out under the MCP client's bounded request timeout (no immediate
+interruption is promised). Omit `mcp_settings` and the native tool surface is
+exactly as before.
 
 The project root must contain the served `semantic_layer/` and `context_layer/`
 directories and either a source registry (`ariadne.yaml`) or a `demo.db`; every

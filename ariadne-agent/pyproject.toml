@@ -14,6 +14,9 @@ dependencies = [
     # The release whose embeddable tau_agent.AgentHarness / tau_ai.OpenAICompatibleProvider
     # import paths were verified for this package (ADR-0014: pin what was tested).
     "tau-ai==0.4.6",
+    # The owned embeddable stdio MCP core (spec 2026-09-29-0006; dependency
+    # contract legout/tau-mcp spec 2026-09-29-0002, accepted M2).
+    "tau-mcp>=0.1.0",
 ]
 
 [dependency-groups]
@@ -27,6 +30,9 @@ dev = [
 # without publishing it. This is uv tool configuration, never published
 # dependency metadata (issue #23).
 ariadne-core = { path = ".." }
+# Same non-published pattern for the owned tau-mcp core (issue #25): the
+# separate repository checkout, never a PyPI substitute.
+tau-mcp = { path = "/home/volker/coding/tau-mcp" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
