@@ -14,7 +14,7 @@ No ambient working-directory selection, no user-message-selected project root,
 no model-supplied credentials.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,9 +30,10 @@ from tau_agent.messages import AgentMessage, AssistantMessage
 from tau_agent.provider import ModelProvider
 
 from ariadne_agent.analyst import analyst_tools
-from ariadne_agent.skills import analyst_guidance
+from ariadne_agent.authoring import authoring_tools
+from ariadne_agent.skills import analyst_guidance, authoring_guidance
 
-ROLES = ("analyst",)  # the Authoring role arrives with its own lane (A2)
+ROLES = ("analyst", "authoring")  # one more role per session contract (A2/#24)
 
 # The Analyst flow, verbatim from the spec's role rules: discovery before
 # routing, context before novelty, honest governed/ad-hoc labeling.
@@ -56,6 +57,34 @@ tools only.
   Layer page alone makes an ad-hoc calculation governed.
 - A missing promoted catalog is an error you report; you cannot approve
   sources, promote, bypass the compile gate, or run SQL yourself.
+"""
+
+# The Authoring flow, verbatim from the spec's role rules: work before first
+# Promotion, human-only approval and Promotion outside the session.
+_AUTHORING_RULES = """\
+
+## Role: Ariadne Authoring
+
+You author one project that may have nothing Promoted yet, through the
+harness-led authoring service only.
+
+- Propose inert source entries (`propose_sources`), report the exact digest
+  the service returns, then STOP: the operator approves sources outside this
+  session with that digest. You have no tool that approves, and none exists.
+- After the operator approves, read the measured inputs in bounded parts
+  (`harness_inputs`); where evidence does not establish a business rule, ask
+  the owner or mark the uncertainty — never invent a rule.
+- Submit the complete Seed Notes, OSI models and OKF pages through the
+  service's validation (`submit_bundle`); repair the SAME proposal only with
+  its current digest and inside the attempt limit. An unavailable source, a
+  failed check, a stale digest, an interrupted transition or a
+  `review_needed` state surfaces as-is; you cannot clear or override it.
+- Review the staged proposal (`review_bundle`), report the EXACT reviewed
+  digest, and stop: Promotion is human-only and happens outside this
+  session. Staging never serves; nothing you do writes to `context_layer/`
+  or `semantic_layer/`.
+- The grain rubric above governs every join: many-to-one on a key unique on
+  the joined side, or one of its five resolution patterns.
 """
 
 
@@ -151,7 +180,7 @@ class AgentSession:
         role: str,
         project: Path,
         model: str,
-        runtime: AriadneRuntime,
+        runtime: AriadneRuntime | None = None,
         harness: AgentHarness,
     ) -> None:
         self._role = role
@@ -245,7 +274,8 @@ class AgentSession:
             return
         self._closed = True
         self._harness.cancel()
-        self._runtime.con.close()
+        if self._runtime is not None:  # Authoring sessions own no query runtime
+            self._runtime.con.close()
 
 
 def _translate(event: object, pending_args: dict[str, dict]) -> list[AgentSessionEvent]:
@@ -283,12 +313,15 @@ def open_session(
     project: str | Path,
     model: str,
     provider: ModelProvider,
+    skill_roots: Sequence[str | Path] = (),
 ) -> AgentSession:
     """Open one in-memory session for a role, a configured project, and a model.
 
     The host supplies the fully configured provider (identity, endpoint,
     credentials) outside any user message. A different role, project, or model
-    requires a new session.
+    requires a new session. ``skill_roots`` declares the role-scoped trusted
+    skill roots a host adds alongside the packaged skill (Authoring reads
+    bounded references through them); no global scan ever happens.
     """
     if role not in ROLES:
         raise ValueError(
@@ -296,6 +329,20 @@ def open_session(
             "role needs a new session in a build that provides it"
         )
     root = Path(project).resolve()
+    if role == "authoring":
+        # Authoring works in a project with nothing Promoted yet and builds NO
+        # query runtime (spec 2026-09-29-0006 acceptance 2): the Analyst's
+        # missing-catalog failure is session-local and never blocks this open.
+        roots = [Path(extra).resolve() for extra in skill_roots]
+        harness = AgentHarness(
+            AgentHarnessConfig(
+                provider=provider,
+                model=model,
+                system=authoring_guidance() + _AUTHORING_RULES,
+                tools=authoring_tools(root, roots),
+            )
+        )
+        return AgentSession(role=role, project=root, model=model, harness=harness)
     runtime = _open_runtime(root)
     system = analyst_guidance() + _ANALYST_RULES
     harness = AgentHarness(

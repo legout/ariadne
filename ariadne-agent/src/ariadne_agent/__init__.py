@@ -5,7 +5,8 @@ depends on ``ariadne-core`` (never the unrelated PyPI ``ariadne`` GraphQL
 project) and ``tau-ai``, uses ``tau_agent.AgentHarness`` for the loop and
 ``tau_ai`` providers for the model, and never imports or invokes ``tau_coding``
 at runtime, never launches a server, and never grants CLI, shell, or raw SQL
-tools. Analyst role only in this revision (issue #23).
+tools. Analyst (issue #23) and Authoring (issue #24) roles in this revision;
+source approval and Promotion stay human-only, outside the agent.
 """
 
 from ariadne_agent.session import (
