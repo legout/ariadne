@@ -8,7 +8,15 @@ global agent directories and no model-invocable skill script execution — and
 no CLI or shell tool is granted to read the skill's commands literally.
 """
 
+from collections.abc import Sequence
+from pathlib import Path, PurePosixPath
+
 from ariadne.skill import ASSETS
+
+# One bounded page of skill-reference text (the packaged rubric is ~3.5 KB;
+# anything far larger is not a skill reference — spec: bounded references,
+# no script execution).
+MAX_REFERENCE_BYTES = 256 * 1024
 
 # The packaged skill documents the local-CLI workflow. This session has no CLI
 # and no shell, so the mapping restates each command as the native tool that
@@ -40,3 +48,84 @@ def packaged_skill() -> str:
 def analyst_guidance() -> str:
     """Analyst guidance: the native-tool mapping followed by the packaged skill."""
     return _TOOL_MAP + "\n" + packaged_skill()
+
+
+_AUTHORING_TOOL_MAP = """\
+## Native tool mapping
+
+This session has no CLI and no shell. The packaged skill's authoring
+workflow is native tools here — call them directly, never through a command:
+
+- `ariadne-authoring propose-sources` -> `propose_sources(sources)`
+- upload a document                   -> `store_upload(name, content)`
+- `ariadne-authoring inputs`          -> `harness_inputs(documents?, part?)`
+- `ariadne-authoring submit`          -> `submit_bundle(submission, base_digest?)`
+- `ariadne-authoring review`          -> `review_bundle(part?)`
+- skill reference                     -> `read_skill_reference(reference)`
+
+Every rule in the skill below applies unchanged; substitute the native tool
+for each CLI command it names.
+"""
+
+
+def authoring_guidance() -> str:
+    """Authoring guidance: the native-tool mapping, the packaged skill, and
+    the packaged grain rubric — the one bounded reference this role always
+    needs (spec 2026-09-29-0006 Skills: notably ``grain-rubric.md`` for
+    authoring). Host-declared trusted roots add references read through
+    ``read_skill_reference`` at run time."""
+    return (
+        _AUTHORING_TOOL_MAP
+        + "\n"
+        + packaged_skill()
+        + "\n\n---\n\n# Packaged reference: references/grain-rubric.md\n\n"
+        + packaged_reference("references/grain-rubric.md")
+    )
+
+
+def packaged_reference(reference: str) -> str:
+    """One bounded reference under the packaged skill assets — version-matched
+    with the installed ``ariadne-core``, exactly like :func:`packaged_skill`."""
+    return read_skill_reference(reference)
+
+
+def read_skill_reference(
+    reference: str, trusted_roots: Sequence[str | Path] = ()
+) -> str:
+    """One bounded ``.md`` skill reference under the packaged skill or a
+    host-declared trusted skill root (spec 2026-09-29-0006 Skills).
+
+    A reference is a plain relative POSIX ``.md`` path (``SKILL.md`` counts):
+    absolute paths, traversal (``..``), anything that is not ``.md``, and
+    anything outside the roots are refused BEFORE any read — scripts are
+    never read and never executed, and there is no directory scan. Roots are
+    consulted packaged-first, then each host-declared root in order; a
+    symlinked entry whose target resolves outside its root fails the same
+    containment check."""
+    pure = PurePosixPath(reference)
+    if (
+        not reference
+        or pure.is_absolute()
+        or "\\" in reference
+        or any(part in ("", ".", "..") for part in pure.parts)
+        or pure.suffix != ".md"
+    ):
+        raise ValueError(
+            f"{reference!r}: a skill reference is one relative .md path under a "
+            "trusted skill root — absolute paths, traversal ('..'), and anything "
+            "that is not .md are refused; scripts are never read or executed"
+        )
+    for root in (ASSETS, *trusted_roots):
+        base = Path(root).resolve()
+        resolved = (base / pure).resolve()
+        if resolved.is_relative_to(base) and resolved.is_file():
+            if resolved.stat().st_size > MAX_REFERENCE_BYTES:
+                raise ValueError(
+                    f"{reference}: reference exceeds the {MAX_REFERENCE_BYTES}-byte "
+                    "bound — bounded references only"
+                )
+            return resolved.read_text(encoding="utf-8")
+    raise ValueError(
+        f"{reference}: not a declared reference under the packaged skill or this "
+        "session's trusted skill roots — reads stay inside them (no scan)"
+    )
