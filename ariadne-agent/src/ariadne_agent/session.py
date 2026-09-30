@@ -31,6 +31,7 @@ from tau_agent.provider import ModelProvider
 
 from ariadne_agent.analyst import analyst_tools
 from ariadne_agent.authoring import authoring_tools
+from ariadne_agent.mcp_tools import McpSettings, SessionMcp
 from ariadne_agent.skills import analyst_guidance, authoring_guidance
 
 ROLES = ("analyst", "authoring")  # one more role per session contract (A2/#24)
@@ -182,12 +183,14 @@ class AgentSession:
         model: str,
         runtime: AriadneRuntime | None = None,
         harness: AgentHarness,
+        mcp: SessionMcp | None = None,
     ) -> None:
         self._role = role
         self._project = project
         self._model = model
         self._runtime = runtime
         self._harness = harness
+        self._mcp = mcp
         self._active = False
         self._closed = False
         # cancel()/close() can arrive between send() and the first
@@ -269,11 +272,17 @@ class AgentSession:
         self._harness.cancel()
 
     def close(self) -> None:
-        """Release the session's resources; the session refuses further sends."""
+        """Release the session's resources; the session refuses further sends.
+
+        MCP children are reaped here; a call already executing finishes or
+        times out under the MCP client's bounded request timeout — immediate
+        interruption is not promised."""
         if self._closed:
             return
         self._closed = True
         self._harness.cancel()
+        if self._mcp is not None:
+            self._mcp.shutdown()
         if self._runtime is not None:  # Authoring sessions own no query runtime
             self._runtime.con.close()
 
@@ -307,6 +316,23 @@ def _translate(event: object, pending_args: dict[str, dict]) -> list[AgentSessio
     return []
 
 
+def _attach_mcp(
+    mcp_settings: McpSettings | None, role: str, tools: list
+) -> SessionMcp | None:
+    """Attach this session's role-restricted MCP proxy after the native tools.
+
+    No MCP settings means exactly the native surface; a role with an empty
+    operator allowlist gets no proxy tool at all (issue #25). The native
+    Analyst/Authoring tool sets are never altered by this attachment."""
+    if mcp_settings is None:
+        return None
+    session_mcp = SessionMcp(mcp_settings, role)
+    proxy = session_mcp.proxy_tool()
+    if proxy is not None:
+        tools.append(proxy)
+    return session_mcp
+
+
 def open_session(
     *,
     role: str,
@@ -314,6 +340,7 @@ def open_session(
     model: str,
     provider: ModelProvider,
     skill_roots: Sequence[str | Path] = (),
+    mcp_settings: McpSettings | None = None,
 ) -> AgentSession:
     """Open one in-memory session for a role, a configured project, and a model.
 
@@ -322,7 +349,10 @@ def open_session(
     requires a new session. ``skill_roots`` declares the role-scoped trusted
     skill roots a host adds alongside the packaged skill (Authoring reads
     bounded references through them); no global scan ever happens.
-    """
+    ``mcp_settings`` optionally declares the host-validated stdio MCP servers,
+    cache root and per-role qualified-tool allowlist — one restricted registry
+    per session, absent by default so the native surface is unchanged
+    (issue #25)."""
     if role not in ROLES:
         raise ValueError(
             f"unknown role {role!r}; this build serves {ROLES} — a different "
@@ -334,25 +364,36 @@ def open_session(
         # query runtime (spec 2026-09-29-0006 acceptance 2): the Analyst's
         # missing-catalog failure is session-local and never blocks this open.
         roots = [Path(extra).resolve() for extra in skill_roots]
+        tools = authoring_tools(root, roots)
+        session_mcp = _attach_mcp(mcp_settings, role, tools)
         harness = AgentHarness(
             AgentHarnessConfig(
                 provider=provider,
                 model=model,
                 system=authoring_guidance() + _AUTHORING_RULES,
-                tools=authoring_tools(root, roots),
+                tools=tools,
             )
         )
-        return AgentSession(role=role, project=root, model=model, harness=harness)
+        return AgentSession(
+            role=role, project=root, model=model, harness=harness, mcp=session_mcp
+        )
     runtime = _open_runtime(root)
     system = analyst_guidance() + _ANALYST_RULES
+    tools = analyst_tools(runtime)
+    session_mcp = _attach_mcp(mcp_settings, role, tools)
     harness = AgentHarness(
         AgentHarnessConfig(
             provider=provider,
             model=model,
             system=system,
-            tools=analyst_tools(runtime),
+            tools=tools,
         )
     )
     return AgentSession(
-        role=role, project=root, model=model, runtime=runtime, harness=harness
+        role=role,
+        project=root,
+        model=model,
+        runtime=runtime,
+        harness=harness,
+        mcp=session_mcp,
     )
