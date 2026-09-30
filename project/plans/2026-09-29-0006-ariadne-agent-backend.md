@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Proposed — owner review required; no execution authorized** |
+| **Status** | **Approved — owner approval 2026-09-30; execution authorization still required** |
 | **Goal** | Rename the existing root distribution to `ariadne-core`, then deliver a separately installable, Python-callable Ariadne Agent with user-selected Analyst/Authoring roles and events a later UI can consume. |
 | **Behavioral source** | [Ariadne Agent specification](../specs/2026-09-29-0006-ariadne-agent-backend.md), approved revision 2 (scoped packaging amendment, owner pi conversation 2026-09-29); revision 1 owns unchanged Agent behavior. Exact scope: `ariadne-core` distribution with unchanged `ariadne.*` imports, CLI names and DuckDB runtime; OpenAI-compatible Tau model/loop, in-memory role-bound sessions, native Ariadne query/authoring tools, curated skills and references, explicitly allowed stdio MCP tools, no `tau_coding` runtime use. `ariadne-query`, BI/UI, multi-engine execution and durable storage are deferred. |
 | **Decisions** | [ADR-0014](../adr/0014-embedded-tau-agent-backend.md); existing [ADR-0012](../adr/0012-local-first-artifact-runtime.md) and [ADR-0013](../adr/0013-harness-led-authoring-boundary.md) retain their local-first and human-only gates. Dependency contract: `legout/tau-mcp:project/specs/2026-09-29-0002-embeddable-mcp-core.md`; execution map: `legout/tau-mcp:project/plans/2026-09-29-0002-embeddable-mcp-core.md`. |
