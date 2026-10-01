@@ -1132,8 +1132,7 @@ def _graph_citation_errors(staging: Path) -> list[str]:
         cited = [ref for ref in refs if ref.startswith("policies/")]
         if not cited:
             errors.append(
-                f"{rel}: multi-fact admission must cite at least one governing "
-                "policies/... page"
+                f"{rel}: multi-fact admission must cite at least one governing policies/... page"
             )
         for ref in cited:
             # mf-t5 fix F3: resolve against — and require containment within —
