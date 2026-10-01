@@ -1921,3 +1921,34 @@ def test_graph_yml_is_the_one_non_model_semantic_submission_path():
     for bad in ("semantic_layer/graph.yaml", "semantic_layer/other.yml"):
         with pytest.raises(ValueError, match="outside the documented submission roots"):
             authoring._check_submission(files + [(bad, "version: 1\n")])
+
+
+def test_submit_normalizes_escaped_multiline_sources_to_block_scalars(tmp_path):
+    """Issue #31: an agent draft serializes a dataset source as ONE double-
+    quoted line full of \\n escapes — unreadable at the human staging gate.
+    Ariadne re-emits semantic-layer YAML with multi-line scalars as literal
+    blocks when it stages the bundle; parsed meaning is unchanged."""
+    project = approved_project(tmp_path)
+    submission = bundle_submission()
+    submission["files"][1]["content"] = MODEL_YML.format(pk="id").replace(
+        "source: events.events",
+        'source: "SELECT id, label\\nFROM events.events\\nWHERE id IS NOT NULL"',
+    )
+    file = write_submission(project, submission)
+    result = authoring.submit_bundle(file, project=project)
+    assert result["status"] in ("validated", "review_needed"), result.get("errors")
+
+    staged = (
+        project / "staging" / "authoring" / "bundle"
+        / "semantic_layer" / "models" / "events.yml"
+    ).read_text(encoding="utf-8")
+    # the literal block form: no escaped newlines, SQL readable on its own lines
+    assert "\\n" not in staged
+    assert "source: |" in staged
+    assert "FROM events.events" in staged
+    # meaning preserved: the parsed source is the same SQL string
+    doc = yaml.safe_load(staged)
+    dataset = doc["semantic_model"][0]["datasets"][0]
+    assert dataset["source"] == (
+        "SELECT id, label\nFROM events.events\nWHERE id IS NOT NULL"
+    )
