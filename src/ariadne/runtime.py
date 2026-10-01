@@ -53,6 +53,7 @@ actively blocks the retired datus packages -> fail fast with the historical
 install hint.
 """
 
+import json
 import os
 import re
 import sys
@@ -75,16 +76,35 @@ from ariadne import (
 # round 2 convergence); check_grain_preserving is the runtime's entry into it.
 from ariadne.grain import check_grain_preserving
 
+# Issue #30: the multi-fact query path rides the validated private planner
+# (issues #27-#29) and the normalized graph (issue #26) — both internal seams;
+# the transport-neutral query_metrics/query_detail below are their only public
+# surface, and no call reaches execution without admission, planning, binding,
+# and the per-request live audits.
+from ariadne.planner import (  # pyright: ignore[reportMissingImports] — drift
+    PlannerError,
+    plan_detail,
+    plan_query,
+)
+
 # (the pyright ignore below: the analyzer may bind `ariadne` to a copy predating
 # this lane's render module — see ADR-0008; runtime and uvx pyright resolve it)
 from ariadne.render import render  # pyright: ignore[reportMissingImports]
 
 # ADR-0010: the runtime's DuckDB session comes from the shared registry builder
 # (ariadne.yaml --sources, or the legacy --db single-sqlite shorthand).
+from ariadne.semantic_graph import (  # pyright: ignore[reportMissingImports] — drift
+    SemanticGraph,
+    load_graph,
+)
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     build_connection,
     implicit_registry,
     load_registry,
+)
+from ariadne.validate import (  # pyright: ignore[reportMissingImports] — drift
+    _registry_identity,
+    served_tree_digest,
 )
 
 # ADR-0008: the compile path is ariadne.render (own sqlglot compiler) — datus is
@@ -303,6 +323,21 @@ class AriadneRuntime:
         # lifetime (ponytail: one COUNT scan per join key, paid once per process;
         # re-key by model file mtime if served models ever hot-reload).
         self._grain_checked: set[str] = set()
+        # Issue #30: the admitted multi-fact graph. Admission is the human local
+        # Promotion of a validated bundle — the promotion-written admission record
+        # under the served semantic layer binds the post-Promotion served-tree
+        # digest; a graph without it (hand-placed, or plain staging promotion) is
+        # never governed. Production Git-review admission is a separate blocked
+        # workstream: this runtime has no code path that could label an unreviewed
+        # commit governed, and reports only the route it actually served. The
+        # bound identity (db/sources) is kept for the per-query staleness recheck.
+        self._graph: SemanticGraph | None = None
+        self._admission: dict | None = None
+        self._admission_reason: str | None = None
+        self._admission_db = db_path
+        self._admission_sources = sources
+        self._semantic_dir = Path(semantic_dir)
+        self._load_admission(Path(semantic_dir), db_path, sources)
 
     async def list_metrics(self) -> list[dict | str]:
         """Governed metrics with descriptions and available dimensions; the list
@@ -386,6 +421,200 @@ class AriadneRuntime:
             "sql": sql,
             "governed": True,  # spec rev 3 §8.10: symmetry with define_metric
             "context": self._metric_context(name),  # spec rev 10 §8.21 (ADR-0011)
+        }
+
+    def _load_admission(
+        self, semantic_dir: Path, db_path: str | Path, sources: str | Path | None
+    ) -> None:
+        """Resolve the served tree's multi-fact admission (issue #30). The
+        promotion-written ``semantic_layer/admission.json`` maps the exact
+        staged review digest to the POST-Promotion served-tree digest together
+        with the persisted technical validation scope; the graph serves only
+        while the CURRENT served bytes still match it. No record, a corrupt
+        record, changed served bytes, or a changed approved registry each leave
+        the runtime unadmitted — ``query_metrics``/``query_detail`` refuse with
+        that reason while the legacy single-metric path keeps its behavior
+        (spec rev 1 AC7)."""
+        record_path = semantic_dir / "admission.json"
+        if not record_path.is_file():
+            self._admission_reason = (
+                "the served tree carries no multi-fact admission record — admit the "
+                "graph by submitting the bundle, having a human review it, and running "
+                "the exact-digest ariadne-promote --digest (local route); an unadmitted "
+                "graph is never governed"
+            )
+            return
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            if not isinstance(record, dict) or not record.get("served_digest"):
+                raise ValueError("not an admission record")
+        except ValueError as exc:
+            self._admission_reason = (
+                f"{record_path}: unreadable admission record ({exc}) — the multi-fact "
+                "query interface stays refused until a human re-promotes a validated "
+                "bundle"
+            )
+            return
+        current = served_tree_digest(semantic_dir, self.context_dir)
+        if current != record["served_digest"]:
+            self._admission_reason = (
+                "the served layers changed after admission "
+                f"(served digest {current[:12]}… != recorded {record['served_digest'][:12]}…) "
+                "— revalidate and re-promote before serving the graph as governed"
+            )
+            return
+        bound = (record.get("validation") or {}).get("registry_digest")
+        registry_digest, _label = _registry_identity(db_path, sources)
+        if bound is not None and registry_digest != bound:
+            self._admission_reason = (
+                "the approved source registry changed after admission — revalidate and "
+                "re-promote before serving the graph as governed"
+            )
+            return
+        try:
+            self._graph = load_graph(semantic_dir)
+        except Exception as exc:  # fail fast: an admitted tree that cannot load
+            raise RuntimeError(f"admitted graph under {semantic_dir} does not load: {exc}") from exc
+        self._admission = record
+
+    def _admitted(self) -> tuple[SemanticGraph, dict]:
+        """The admitted graph + record, or the structured refusal (spec rev 1
+        "Failure and compatibility behavior": a stable error code, before any
+        SELECT executes). The served-tree digest is RE-CHECKED here, not just at
+        construction: a long-lived server must see a hand-edited model, graph,
+        or cited Policy as a stale admission, exactly like one constructed after
+        the edit (the digest re-hash is a handful of small files; the loaded
+        graph itself stays the admitted bytes)."""
+        if self._admission is None or self._graph is None:
+            raise PlannerError(
+                "not_admitted",
+                self._admission_reason or "the served tree carries no admitted multi-fact graph",
+            )
+        current = served_tree_digest(self._semantic_dir, self.context_dir)
+        if current != self._admission["served_digest"]:
+            raise PlannerError(
+                "admission_stale",
+                "the served layers changed after admission "
+                f"(served digest {current[:12]}… != recorded "
+                f"{self._admission['served_digest'][:12]}…) — revalidate and re-promote "
+                "before serving the graph as governed",
+            )
+        bound = (self._admission.get("validation") or {}).get("registry_digest")
+        registry_digest, _label = _registry_identity(self._admission_db, self._admission_sources)
+        if bound is not None and registry_digest != bound:
+            raise PlannerError(
+                "admission_stale",
+                "the approved source registry changed after admission — revalidate and "
+                "re-promote before serving the graph as governed",
+            )
+        return self._graph, self._admission
+
+    def _admission_view(self, record: dict) -> dict:
+        """The response's local admission provenance: route, the exact reviewed
+        digest, the served-tree digest it is bound to, the persisted technical
+        validation scope, and the human promotion identity."""
+        return {
+            "route": record.get("route"),
+            "reviewed_digest": record.get("reviewed_digest"),
+            "served_digest": record.get("served_digest"),
+            "revision": record.get("revision"),
+            "validation": record.get("validation"),
+            "promoted": record.get("promoted"),
+        }
+
+    async def query_metrics(self, request: dict) -> dict:
+        """Governed multi-fact query (issue #30, spec rev 1 "Query and result
+        contract"): a nonempty list of PREDEFINED metric names over the ADMITTED
+        served graph — never agent-authored SQL. The request carries declared
+        dimensions, optional typed parameters, named segments, row/result
+        filters, an optional conformed time range/grain, order and limit. Every
+        call passes admission, planning (fact-local aggregation, safe
+        many-to-one paths, aligned aggregate merge), the per-request live
+        relationship audits, the single-statement guard, and an EXPLAIN bind
+        before the one guarded SELECT executes. The response carries the rows,
+        the compiled SQL, a bounded lineage plan, per-metric OKF metric + Policy
+        context with the independent attestation state, and the local admission
+        provenance — ``governed: true`` only because a human Promoted the exact
+        validated bytes."""
+        graph, admission = self._admitted()
+        plan = plan_query(graph, request, self.con)
+        assert_single_statement(plan.sql)
+        try:
+            self.con.execute(f"EXPLAIN {plan.sql}")  # nosemgrep — planner output (spec §6)
+        except Exception as exc:  # spec §7: the binder's text, verbatim
+            raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+        relation = self.con.sql(plan.sql)
+        columns = list(relation.columns)
+        rows = [dict(zip(columns, row)) for row in relation.fetchall()]
+        return {
+            "metrics": list(plan.metrics),
+            "dimensions": list(plan.dimensions),
+            "columns": columns,
+            "rows": rows,
+            "sql": plan.sql,
+            "plan": {
+                "branches": [
+                    {
+                        "dataset": branch.dataset,
+                        "metrics": list(branch.metrics),
+                        "joins": list(branch.joins),
+                        "keys": [[key, column] for key, column in branch.keys],
+                        "filters": list(branch.filters),
+                    }
+                    for branch in plan.branches
+                ],
+                "conformed_keys": list(plan.conformed_keys),
+                "segments": list(plan.segments),
+                "time_dimension": plan.time_dimension,
+                "time_grain": plan.time_grain,
+                "windows": list(plan.windows),
+                "audits": [
+                    {"name": audit.name, "outcome": audit.outcome, "detail": audit.detail}
+                    for audit in plan.audits
+                ],
+                "relationship_audit": plan.relationship_audit,
+            },
+            "governed": True,
+            "context": {name: self._metric_context(name) for name in plan.metrics},
+            "admission": self._admission_view(admission),
+        }
+
+    async def query_detail(self, request: dict) -> dict:
+        """Governed detail projection (issue #30 over issue #28): one declared
+        root dataset's fields — its own directly, others only through proven
+        many_to_one/one_to_one lookup paths — with no aggregates and no
+        fan-out, over the ADMITTED served graph, behind the same admission,
+        single-statement, and EXPLAIN bind gauntlet."""
+        graph, admission = self._admitted()
+        plan = plan_detail(graph, request, self.con)
+        assert_single_statement(plan.sql)
+        try:
+            self.con.execute(f"EXPLAIN {plan.sql}")  # nosemgrep — planner output (spec §6)
+        except Exception as exc:  # spec §7: the binder's text, verbatim
+            raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+        relation = self.con.sql(plan.sql)
+        columns = list(relation.columns)
+        rows = [dict(zip(columns, row)) for row in relation.fetchall()]
+        return {
+            "dataset": plan.dataset,
+            "fields": [field.name for field in plan.fields],
+            "columns": columns,
+            "rows": rows,
+            "sql": plan.sql,
+            "plan": {
+                "fields": [
+                    {"name": field.name, "dataset": field.dataset, "path": list(field.path)}
+                    for field in plan.fields
+                ],
+                "joins": list(plan.joins),
+                "audits": [
+                    {"name": audit.name, "outcome": audit.outcome, "detail": audit.detail}
+                    for audit in plan.audits
+                ],
+                "relationship_audit": plan.relationship_audit,
+            },
+            "governed": True,
+            "admission": self._admission_view(admission),
         }
 
     async def save_example(self, submission: dict) -> dict:

@@ -117,10 +117,12 @@ from ariadne.author import (
     MAX_ROUNDS,
     _bundle_errors,
     _finalize_bundle,
+    _load_frontmatter_meta,
     _mark_review_needed,
 )
 from ariadne.ingest import _SECRET_PATTERNS, _ConversionError, _convert
 from ariadne.render import render
+from ariadne.semantic_graph import load_graph
 from ariadne.sources import (
     _DSN_PASSWORD_RE,
     _URI_SCHEME_RE,
@@ -742,6 +744,12 @@ def _check_submission(files: list[tuple[str, str]]) -> None:
                     "are refused before any write"
                 )
             continue
+        if rel == "semantic_layer/graph.yml":
+            # Issue #30: the ONE non-model semantic path a remote submission may
+            # carry — the cross-file graph (relationships + conformed dimensions)
+            # of the source layout. Nothing broader: any other semantic_layer/
+            # path outside models/*.yml stays refused.
+            continue
         if (
             len(parts) == 3
             and parts[:2] == ("semantic_layer", "models")
@@ -754,7 +762,8 @@ def _check_submission(files: list[tuple[str, str]]) -> None:
             continue
         raise ValueError(
             f"{where}: outside the documented submission roots "
-            f"({SEED_NOTES_SUBMIT_REL}, semantic_layer/models/*.yml, context_layer/"
+            f"({SEED_NOTES_SUBMIT_REL}, semantic_layer/models/*.yml, "
+            "semantic_layer/graph.yml, context_layer/"
             "{tables,references,policies,metrics,skills}/)"
         )
     if seed_notes != 1:
@@ -1079,10 +1088,89 @@ def _state_view(state: dict) -> dict:
         "attempts": state["attempts"],
         "status": state["status"],
         "errors": state.get("errors") or [],
+        "validation": state.get("validation"),
         "provenance": state["provenance"],
         "sources": state.get("sources") or [],
         "project": state["project"],
         "staging": state["staging"],
+    }
+
+
+def _graph_citation_errors(staging: Path) -> list[str]:
+    """Issue #30: NEW multi-fact admission requires cited context — every
+    metric of the admitted graph carries a staged ``context_layer/metrics/``
+    page whose ``sources`` cite at least one ``policies/`` page that RESOLVES
+    inside the served Policy directory (the runtime's containment contract —
+    mf-t5 fix F3). A missing or broken cited page fails the admission: an
+    uncited definition can never become a governed multi-fact answer. Only the
+    cross-file graph triggers this (the multi-fact admission form; the
+    multi-dataset domain layout is already refused at the source boundary) —
+    legacy single-dataset bundles keep the established bundle gate."""
+    if not (staging / "semantic_layer" / "graph.yml").is_file():
+        return []
+    try:
+        graph = load_graph(staging / "semantic_layer")
+    except Exception:
+        return []  # the validator's graph diagnostics already failed the bundle
+    context = staging / "context_layer"
+    errors: list[str] = []
+    for name in sorted(graph.metrics):
+        page = context / "metrics" / f"{name}.md"
+        rel = f"context_layer/metrics/{name}.md"
+        if not page.is_file():
+            errors.append(
+                f"{rel}: multi-fact admission requires a cited metric page for every "
+                f"graph metric — '{name}' has none (issue #30); an uncited definition "
+                "cannot become a governed multi-fact answer"
+            )
+            continue
+        meta = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
+        refs = [
+            str(source.get("resource") if isinstance(source, dict) else source or "")
+            for source in meta.get("sources") or []
+        ]
+        cited = [ref for ref in refs if ref.startswith("policies/")]
+        if not cited:
+            errors.append(
+                f"{rel}: multi-fact admission must cite at least one governing "
+                "policies/... page"
+            )
+        for ref in cited:
+            # mf-t5 fix F3: resolve against — and require containment within —
+            # the Policy directory, exactly the runtime's served contract
+            # (runtime._metric_context): a 'policies/../…' traversal that stays
+            # inside context_layer/ would admit a citation whose served
+            # context collapses to null while the answer stays governed.
+            body = (context / ref).resolve()
+            policies_root = (context / "policies").resolve()
+            if not body.is_relative_to(policies_root) or not body.is_file():
+                errors.append(
+                    f"{rel}: cited policy '{ref}' does not resolve inside "
+                    "context_layer/policies/ — a citation outside the Policy "
+                    "directory fails multi-fact admission"
+                )
+    return errors
+
+
+def _validation_scope(result) -> dict | None:
+    """The persisted full technical validation scope (issue #30): the
+    digest-bound report of the checks the bundle actually passed, carried in
+    the proposal state so human Promotion can bind and record it — never a
+    free-form ``validated: true`` label."""
+    report = result.report
+    if report is None:
+        return None
+    return {
+        "scope": report.scope,
+        "digest": report.digest,
+        "validator_version": report.validator_version,
+        "registry_digest": report.registry_digest,
+        "registry_label": report.registry_label,
+        "files": list(report.files),
+        "checks": [
+            {"name": check.name, "outcome": check.outcome, "detail": check.detail}
+            for check in report.checks
+        ],
     }
 
 
@@ -1193,7 +1281,7 @@ def submit_bundle(
                 except Exception as exc:
                     errors = [f"authored bundle violates the OKF frontmatter contract: {exc}"]
                 else:
-                    errors = _bundle_errors(tmp)
+                    errors = _bundle_errors(tmp) + _graph_citation_errors(tmp)
             if errors and attempts >= MAX_ROUNDS:
                 _mark_review_needed(tmp, errors)
             status = (
@@ -1244,6 +1332,7 @@ def submit_bundle(
             "attempts": attempts,
             "status": status,
             "errors": errors,
+            "validation": _validation_scope(result),
             "provenance": {
                 "mode": "harness-led",
                 "generated_by": _HARNESS_LED_BY,

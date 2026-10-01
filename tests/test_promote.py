@@ -472,6 +472,37 @@ def test_governed_query_carries_the_pending_attestation_caveat(tmp_path, capsys)
     )
 
 
+def test_legacy_graphless_promotion_writes_no_multifact_admission(tmp_path, capsys):
+    """mf-t5 fix F1: an ordinary legacy (graph-less) Promotion never issues
+    multi-fact admission — no admission.json is served, ``query_metrics``
+    refuses as not_admitted, and the legacy single-metric path keeps its
+    behavior (spec rev 1 AC7: compatibility is not an admission bypass)."""
+    from ariadne.runtime import AriadneRuntime
+
+    project, digest = validated_project(tmp_path, capsys)
+    applied = promote_bundle(
+        digest,
+        staging_root=project / "staging",
+        served_root=project,
+        by=BY,
+        assume_yes=True,
+        at=AT,
+    )
+    assert applied  # the legacy bundle promoted through the ordinary gate
+    assert not (project / "semantic_layer" / "admission.json").exists()
+    runtime = AriadneRuntime(
+        project / "semantic_layer",
+        project / "context_layer",
+        db_path=project / "ariadne.yaml",
+        staging_dir=project / "staging",
+        sources=project / "ariadne.yaml",
+    )
+    legacy = asyncio.run(runtime.get_metric("event_count"))
+    assert legacy["governed"] is True
+    with pytest.raises(ValueError, match="no multi-fact admission record"):
+        asyncio.run(runtime.query_metrics({"metrics": ["event_count"]}))
+
+
 def test_digest_promotion_refuses_changed_staged_content(tmp_path, capsys):
     """The exact-content rule: staging edited after the review (same digest)
     refuses promotion before any served write."""

@@ -194,3 +194,17 @@ def test_rubric_states_the_real_grain_audit_order():
     rubric = (ASSETS / "references" / "grain-rubric.md").read_text(encoding="utf-8")
     assert "validate audit reject non-grain-preserving sources before compile" not in rubric
     assert "after render/bind compilation, before execution" in rubric
+
+
+def test_skill_teaches_the_admitted_multifact_query_commands():
+    """Issue #30: the packaged skill teaches the two multi-fact commands — that
+    they answer only over a graph admitted by human Promotion of a validated
+    bundle, and that their responses are governed through that local route
+    (never a claim that a validated-but-unpromoted graph is governed)."""
+    skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
+    for cmd in ("query-metrics", "query-detail"):
+        assert f"ariadne {cmd} --file" in skill, cmd
+    assert "admitted" in skill and "unadmitted" in skill
+    assert "route: local-promotion" in skill
+    # the submission boundary names the graph path (the one extra semantic file)
+    assert "semantic_layer/graph.yml" in skill

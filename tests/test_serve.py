@@ -354,11 +354,13 @@ def test_tool_descriptions_carry_routing_language(served):
 
 
 def test_server_registers_five_query_and_five_authoring_tools(served):
-    """Spec 2026-09-23-0001 §4 keeps exactly the five query/ad-hoc tools; spec
-    2026-09-24-0005 adds exactly five authoring tools (issue #16); issue #21
-    adds exactly the two answer-example tools over the shared runtime — and
-    never a source-approval, Promotion or example-review tool (ADR-0013/#20:
-    review is human-only)."""
+    """Spec 2026-09-23-0001 §4 keeps exactly the five legacy query/ad-hoc tools;
+    spec 2026-09-24-0005 adds exactly five authoring tools (issue #16); issue #21
+    adds exactly the two answer-example tools over the shared runtime; issue #30
+    adds exactly the two admitted multi-fact query tools (query_metrics/
+    query_detail, thin adapters over the same transport-neutral runtime the
+    local CLI calls) — and never a source-approval, Promotion or example-review
+    tool (ADR-0013/#20: review is human-only)."""
     from ariadne.serve import build_app
 
     served_dir, db = served
@@ -370,6 +372,8 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
         "get_metric",
         "list_datasets",
         "define_metric",
+        "query_metrics",
+        "query_detail",
         "save_example",
         "search_examples",
         "authoring_propose_sources",

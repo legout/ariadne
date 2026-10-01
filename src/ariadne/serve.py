@@ -4,13 +4,18 @@ plus the five harness-led authoring tools (issue #16, spec 2026-09-24-0005
 
 All query behavior — compilation, execution, context attachment, grain checks,
 proposal staging — lives in :class:`ariadne.runtime.AriadneRuntime`
-(spec 2026-09-23-0001 §3, ADR-0012); this module only registers exactly five
-query tools (spec §4) over one runtime instance and parses the server
-arguments. All answer-example behavior lives in
+(spec 2026-09-23-0001 §3, ADR-0012); this module only registers the legacy five
+query tools (spec §4) plus the two admitted multi-fact query tools (issue #30)
+over one runtime instance and parses the server arguments. All answer-example
+behavior lives in
 :mod:`ariadne.answer_examples` behind the runtime's transport-neutral
 ``save_example``/``search_examples`` (issue #21): this adapter adds two thin
 tools sharing the local CLI's exact implementation, and the operator review
-command (``ariadne-example-review``) is never registered as a tool. All
+command (``ariadne-example-review``) is never registered as a tool. The
+multi-fact ``query_metrics``/``query_detail`` tools ride the same pattern —
+thin adapters over the runtime's transport-neutral operations, the exact
+implementation the local ``ariadne query-metrics``/``query-detail`` commands
+call. All
 authoring behavior lives in :mod:`ariadne.authoring`
 (:func:`propose_sources`, :func:`harness_inputs`, :func:`store_upload`,
 :func:`submit_bundle`, :func:`review_bundle`); the adapter adds five stdio
@@ -87,8 +92,10 @@ def _intake(content: str, suffix: str):
 
 def build_app(facade: FacadeSource, *, project: str | Path = "."):
     """Wire the runtime and the authoring service onto one MCP stdio server:
-    exactly five query tools (spec §4) plus exactly five authoring tools
-    (spec 2026-09-24-0005) — never source approval or Promotion.
+    the five legacy query/ad-hoc tools (spec §4), the two admitted multi-fact
+    query tools (issue #30), the two answer-example tools, and exactly five
+    authoring tools (spec 2026-09-24-0005) — never source approval or
+    Promotion.
 
     ``project`` is the ONE configured project root the authoring tools operate
     on; the default is the current directory because :func:`main` chdir'd into
@@ -174,6 +181,43 @@ def build_app(facade: FacadeSource, *, project: str | Path = "."):
                 context_layer/metrics/ that search_context can find).
         """
         return await _runtime().define_metric(definition)
+
+    @app.tool()
+    async def query_metrics(request: dict) -> dict:
+        """Query one or more governed metrics TOGETHER over the admitted multi-fact
+        graph: each fact aggregates at its own grain and the branches align on
+        conformed keys — a raw fact-to-fact join never executes. Same contract as
+        ``ariadne query-metrics``. Only predefined metric names: never raw SQL.
+        Requires the served graph to be admitted (human Promotion of a validated
+        bundle); an unadmitted or hand-edited graph refuses with that reason.
+
+        The response carries rows, the compiled single-SELECT SQL, a bounded
+        lineage plan (fact branches, joins, conformed keys, filters, windows,
+        performed audits), per-metric OKF metric page + cited Policy bodies with
+        the attestation state, and the local admission provenance. Report the
+        caveats and the admission route with every number.
+
+        Args:
+            request: {metrics: [names], dimensions?: [names], filters?: [{field,
+                op, value}], segments?: [{name, filters}], parameters?: {name:
+                {type, value, min?, max?, max_length?}}, order?: [{field,
+                direction}], limit?: int, time?: {dimension, grain, start, end}}.
+        """
+        return await _runtime().query_metrics(request)
+
+    @app.tool()
+    async def query_detail(request: dict) -> dict:
+        """Project one declared root dataset's fields through safe
+        many-to_one/one_to_one lookup paths — no aggregates, no fan-out: exactly
+        one row per root key. Same contract as ``ariadne query-detail``, over the
+        same admitted graph (an unadmitted graph refuses).
+
+        Args:
+            request: {dataset: the root dataset name, fields: [field names]} — a
+                field lives on the root directly or on a dataset reachable from
+                it through proven unique-target paths; child-side fields refuse.
+        """
+        return await _runtime().query_detail(request)
 
     # --- the two answer-example tools (issue #21, spec 2026-09-29-0007) ---
     # Thin adapters over the runtime's transport-neutral save/search (issue

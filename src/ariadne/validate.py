@@ -471,6 +471,49 @@ def _digest_files(files: list[tuple[str, Path, bytes]]) -> str:
     return digest.hexdigest()
 
 
+# Bookkeeping the promotion gate regenerates on every merge (verified stamps,
+# indexes, the log): excluded from the admission digest because their bytes are
+# promotion-owned, never reviewed content (issue #30).
+_BOOKKEEPING_NAMES = frozenset({"index.md", "log.md"})
+
+
+def served_tree_files(
+    semantic_dir: str | Path, context_dir: str | Path
+) -> list[tuple[str, Path, bytes]]:
+    """The admission-scope walker (issue #30): every model YAML plus the
+    optional ``graph.yml`` the graph loads, and the cited-context pages under
+    ``context_layer/`` (except promotion bookkeeping) that ride the governed
+    answers. One walker behind both the admission digest and the promotion
+    survivor gate, so neither can drift from the other."""
+    files: list[tuple[str, Path, bytes]] = []
+    semantic = Path(semantic_dir)
+    models = semantic / "models"
+    if models.is_dir():
+        for path in sorted(models.glob("*.yml")):
+            files.append((f"semantic_layer/models/{path.name}", path, path.read_bytes()))
+    graph = semantic / "graph.yml"
+    if graph.is_file():
+        files.append(("semantic_layer/graph.yml", graph, graph.read_bytes()))
+    context = Path(context_dir)
+    if context.is_dir():
+        for path in sorted(p for p in context.rglob("*.md") if p.name not in _BOOKKEEPING_NAMES):
+            files.append(
+                (f"context_layer/{path.relative_to(context)}", path, path.read_bytes())
+            )
+    return files
+
+
+def served_tree_digest(semantic_dir: str | Path, context_dir: str | Path) -> str:
+    """The digest of the corpus the runtime actually serves for an admitted
+    multi-fact graph (issue #30). ``promote_bundle`` records this POST-merge
+    digest so the runtime can refuse any served tree that changed after the
+    human Promotion — the staged review digest and the served bytes differ by
+    promotion decoration, and this is the binding between them. Same hashing
+    scheme as the validation report, so one helper cannot drift from the
+    other."""
+    return _digest_files(served_tree_files(semantic_dir, context_dir))
+
+
 def _registry_identity(
     db_path: str | Path | None, sources_path: str | Path | None
 ) -> tuple[str | None, str | None]:
