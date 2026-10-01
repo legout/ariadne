@@ -21,7 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
+import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
@@ -509,3 +509,21 @@ def test_serve_main_startup_failure_not_masked_as_missing_mcp(tmp_path, monkeypa
     err = capsys.readouterr().err
     assert "pip install 'ariadne-core[mcp]'" not in err  # the hint never masks startup failures
     assert "error:" in err  # the runtime startup failure itself
+
+
+def test_query_metrics_without_admission_errors_per_the_json_contract(served, tmp_path, capsys):
+    """Issue #30: on a served root with no admission record (the legacy
+    single-dataset layout), ``query-metrics`` keeps the §4 contract — exactly
+    one JSON error object on stderr, nonzero exit, no success value on stdout —
+    and names the admission route instead of serving an ungoverned graph."""
+    served_dir, db = served
+    code = cli(
+        ["query-metrics", "--served", str(served_dir), "--db", str(db)],
+        io.StringIO('{"metrics": ["gross_margin"]}'),
+    )
+    assert code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    error = json.loads(captured.err)
+    assert error["error"]["type"] == "PlannerError"
+    assert "no multi-fact admission record" in error["error"]["message"]

@@ -29,6 +29,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -47,12 +48,14 @@ from ariadne.author import _FRONTMATTER_RE
 from ariadne.authoring import (
     BUNDLE_DISCARD_NAME,
     _digest,
+    _graph_citation_errors,
     _registry_sources,
     _tree_digest,
     bundle_lock,
     bundle_staging_dir,
     bundle_state_path,
 )
+from ariadne.validate import _digest_files, served_tree_files
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONTEXT = "context_layer"
@@ -143,6 +146,106 @@ def _staged_files(staging: Path) -> list[Path]:
     return sorted(
         p for layer in (_CONTEXT, "semantic_layer") for p in (staging / layer).rglob("*") if raw(p)
     )
+
+
+# The admission record (issue #30): the human Promotion writes this mapping of
+# the staged review digest to the POST-Promotion served digest under the served
+# semantic layer, together with the persisted full technical validation scope.
+# The runtime refuses any graph whose served bytes do not match it — the record
+# is promotion-owned bookkeeping, never a submitted or agent-editable label.
+ADMISSION_NAME = "admission.json"
+# Checks a multi-fact graph admission requires to have PASSED (a compile-only
+# or otherwise partial report is visibly partial, never a full pass — the
+# promoter refuses it before any served write; conformance stays a disclosed
+# not-run, not a failure).
+_ADMISSION_REQUIRED_CHECKS = (
+    "structural",
+    "compile",
+    "bind",
+    "grain",
+    "relationship_audit",
+)
+
+
+def _admission_files(served_root: Path) -> list[tuple[str, Path, bytes]]:
+    """The served admission-scope corpus (one walker with the runtime's
+    digest, validate.served_tree_files)."""
+    return served_tree_files(served_root / "semantic_layer", served_root / _CONTEXT)
+
+
+def _write_admission(
+    served_root: Path, digest: str, state: dict, by: str, at: str
+) -> Path:
+    """Record the local admission (issue #30): the exact reviewed digest the
+    human promoted, the post-merge served-tree digest that binds it, the
+    persisted technical validation scope, and the promotion identity — written
+    atomically inside the bundle lock, also on a no-op re-promotion (a deleted
+    record is healed rather than silently refusing every graph query). The
+    per-file digests give the NEXT admission refresh the provenance to verify
+    merge survivors against (mf-t5 fix F2)."""
+    target = served_root / "semantic_layer" / ADMISSION_NAME
+    files = _admission_files(served_root)
+    record = {
+        "route": "local-promotion",
+        "reviewed_digest": digest,
+        "served_digest": _digest_files(files),
+        "files": {
+            rel: hashlib.sha256(data).hexdigest() for rel, _path, data in files
+        },
+        "revision": state.get("revision"),
+        "validation": state.get("validation"),
+        "promoted": {"by": by, "at": at, "digest": digest},
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(record, fh, sort_keys=True)
+    os.replace(tmp, target)
+    return target
+
+
+def _refuse_unadmitted_survivors(staging: Path, served_root: Path) -> None:
+    """mf-t5 fix F2: admission certifies only reviewed bytes. Every served
+    admission-scope file that SURVIVES this merge — present under served/,
+    absent from the reviewed proposal — must hash to what the current
+    admission record certified (unchanged admitted provenance). A hand-added
+    or hand-edited survivor (e.g. a model dropped straight into served
+    semantic_layer/models/) refuses BEFORE any served write: the refreshed
+    digest would otherwise govern unreviewed content under the original
+    validation report (spec rev 1 admission / AC6). Files the proposal stages
+    are exempt — the merge serves their reviewed bytes."""
+    served = {
+        rel: hashlib.sha256(data).hexdigest() for rel, _path, data in _admission_files(served_root)
+    }
+    if not served:
+        return
+    staged = {
+        rel
+        for rel, _path, _data in served_tree_files(
+            staging / "semantic_layer", staging / _CONTEXT
+        )
+    }
+    record_path = served_root / "semantic_layer" / ADMISSION_NAME
+    admitted: dict[str, str] = {}
+    if record_path.is_file():
+        try:
+            admitted = dict(
+                (json.loads(record_path.read_text(encoding="utf-8")) or {}).get("files") or {}
+            )
+        except (OSError, ValueError):
+            admitted = {}  # an unreadable record proves no provenance: fail closed
+    refused = sorted(
+        rel for rel, sha in served.items() if rel not in staged and admitted.get(rel) != sha
+    )
+    if refused:
+        raise ValueError(
+            "served admission-scope files are neither in the reviewed proposal nor "
+            "unchanged from the recorded admission: "
+            + ", ".join(refused)
+            + " — a merge survivor with unreviewed provenance never rides an "
+            "admission refresh; resubmit the bundle including it (or remove the "
+            "file by hand), re-review, and promote that digest; nothing was served"
+        )
 
 
 # Suffixes the spec §7 review_needed marker can live on: OKF page frontmatter
@@ -427,6 +530,53 @@ def promote_bundle(
                 "staged files carry status: review_needed — human review required: "
                 + ", ".join(refused)
             )
+        # Issue #30: a multi-fact graph enters the served tree ONLY through this
+        # exact-digest Promotion of a bundle that passed the FULL technical
+        # validation — a missing, partial (compile-only), or failed-check scope
+        # refuses before any served write; there is no free-form label to trust.
+        # mf-t5 fix F1: ONLY this graph route issues multi-fact admission — an
+        # ordinary legacy (graph-less) Promotion serves its bytes through the
+        # ordinary gate but never writes an admission record, so a legacy or
+        # pre-upgrade bundle can never serve query_metrics as governed; and
+        # the issuing route itself enforces the complete-report AND per-metric
+        # citation requirements (independent of what the submission gate
+        # happened to check when the proposal was authored).
+        graph_staged = (bundle / "semantic_layer" / "graph.yml").is_file()
+        validation = state.get("validation")
+        if graph_staged:
+            outcomes = {
+                check.get("name"): check.get("outcome")
+                for check in (validation or {}).get("checks") or []
+            }
+            partial = [
+                name for name in _ADMISSION_REQUIRED_CHECKS if outcomes.get(name) != "passed"
+            ]
+            if not isinstance(validation, dict) or not validation.get("scope") or partial:
+                raise ValueError(
+                    "the reviewed multi-fact graph proposal carries no complete "
+                    "technical validation scope ("
+                    + (
+                        "no persisted validation state"
+                        if not isinstance(validation, dict)
+                        else f"scope {validation.get('scope')!r}, "
+                        f"checks not passed: {', '.join(partial) or 'absent'}"
+                    )
+                    + ") — a compile-only or partial report never admits a graph; "
+                    "resubmit the bundle so the full validation is recorded, then "
+                    "promote that digest"
+                )
+            citations = _graph_citation_errors(bundle)
+            if citations:
+                raise ValueError(
+                    "the reviewed multi-fact graph proposal breaks the cited-context "
+                    "admission requirement: "
+                    + "; ".join(citations)
+                    + " — re-review a proposal whose metric pages cite resolvable "
+                    "policies/ pages; nothing was served"
+                )
+            # mf-t5 fix F2: no admission refresh while an unreviewed merge
+            # survivor sits in the served admission scope — BEFORE any write.
+            _refuse_unadmitted_survivors(bundle, served_root)
         notes_src = bundle / "data" / "seed_notes.md"
         if not notes_src.is_file():
             raise ValueError(
@@ -441,6 +591,12 @@ def promote_bundle(
             )
         page_plan, raw_plan = _plan(bundle, served_root)
         if not page_plan and not raw_plan and notes_change is None:
+            # Still (re)write the admission record: a no-op re-promotion heals a
+            # missing/deleted record instead of leaving the served graph
+            # unadmitted (issue #30) — but ONLY for the graph route (mf-t5 fix
+            # F1: legacy Promotion never issues admission).
+            if graph_staged:
+                _write_admission(served_root, digest, state, by, now.isoformat(timespec="seconds"))
             print("nothing to promote: served layers already match the reviewed bundle/")
             return []
         if not assume_yes:
@@ -459,6 +615,13 @@ def promote_bundle(
             notes_dst.parent.mkdir(parents=True, exist_ok=True)
             notes_dst.write_bytes(notes_src.read_bytes())
             applied.append(notes_change)
+        # Issue #30: the served bytes now differ from the reviewed staged bytes by
+        # the promotion bookkeeping — record the local admission binding the
+        # staged review digest to the POST-merge served digest (the runtime
+        # refuses any later served-tree change against it). Graph route only
+        # (mf-t5 fix F1: legacy Promotion never issues admission).
+        if graph_staged:
+            _write_admission(served_root, digest, state, by, now.isoformat(timespec="seconds"))
         # The proposal is served: record it so the active slot's history is honest.
         state["status"] = "promoted"
         state["promoted"] = {"by": by, "at": now.isoformat(timespec="seconds"), "digest": digest}

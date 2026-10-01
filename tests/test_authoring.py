@@ -1909,3 +1909,15 @@ def test_changed_document_bytes_break_the_same_reference_retry(tmp_path):
             assume_yes=True,
         )
     assert not (project / "context_layer").exists()  # nothing served
+
+
+def test_graph_yml_is_the_one_non_model_semantic_submission_path():
+    """Issue #30: the remote-submission path gate admits exactly
+    ``semantic_layer/graph.yml`` (the cross-file graph of the source layout) —
+    nothing broader: any other semantic_layer/ path outside models/*.yml stays
+    refused before any write."""
+    files = [(entry["path"], entry["content"]) for entry in bundle_submission()["files"]]
+    authoring._check_submission(files + [("semantic_layer/graph.yml", "version: 1\n")])
+    for bad in ("semantic_layer/graph.yaml", "semantic_layer/other.yml"):
+        with pytest.raises(ValueError, match="outside the documented submission roots"):
+            authoring._check_submission(files + [(bad, "version: 1\n")])

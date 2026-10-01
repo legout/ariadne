@@ -31,15 +31,35 @@ explicitly. Never start a server just to answer a question.
    region --start 2024-01-01 --sources ariadne.yaml`. The result carries
    `governed: true`, the compiled SQL, and a `context` block: the served
    metric page plus the full body of every policy it cites.
-4. **Unmodeled question?** `ariadne list-datasets --sources ariadne.yaml`,
+4. **Multi-metric questions over an admitted graph** — when the served tree
+   carries a multi-fact graph (one dataset per model plus
+   `semantic_layer/graph.yml`), `ariadne query-metrics --file req.json`
+   answers SEVERAL governed metrics together: `{"metrics": ["orders_total",
+   "lines_total"], "dimensions": ["region"], "time": {"dimension":
+   "business_date", "grain": "month", "start": "2026-01-01"}, "filters":
+   [...], "order": [...], "limit": 100}`. Each fact aggregates at its own
+   grain and branches align on conformed keys — a raw fact-to-fact join never
+   runs. The response carries the rows, the compiled single-SELECT SQL, a
+   bounded lineage plan, per-metric metric-page + Policy bodies, and the
+   admission block (`route: local-promotion`, the reviewed digest, the
+   validation scope). `ariadne query-detail --file req.json` projects one
+   root dataset's fields through safe many-to-one lookups (`{"dataset":
+   "order_lines", "fields": ["line_id", "amount"]}`) with no fan-out.
+   These commands serve ONLY a graph admitted by human Promotion of a
+   validated bundle — an unadmitted or hand-edited graph refuses with that
+   reason; never call them governed by another route, and never present a
+   validated-but-unpromoted graph as governed.
+5. **Unmodeled question?** `ariadne list-datasets --sources ariadne.yaml`,
    then `ariadne define-metric --file def.json --sources ariadne.yaml` (or
    pipe the JSON definition via stdin when `--file` is absent). The definition
    runs read-only through the same compile gate, returns `governed: false`,
    and stages an OSI proposal plus an OKF draft under `staging/` for human
    promotion.
-5. **Label answers accurately.** Governed numbers ship with their caveats and
+6. **Label answers accurately.** Governed numbers ship with their caveats and
    `governed: true`; ad-hoc numbers are `governed: false` proposals — label
-   them as such, never as canonical.
+   them as such, never as canonical. `query-metrics` responses are governed
+   through local Promotion only: say so, and keep attestation honest
+   (`attestation: pending` means Promoted, not independently value-attested).
 
 ## Answer examples — references, not caches
 
@@ -137,10 +157,14 @@ operator source approval and Promotion.
    you verified in the converted text.
 5. **submit** — `ariadne-authoring submit --file submission.json`, a JSON object
    `{"files": [{path, content}], "documents": [reference, ...]}`. `files`
-   carries exactly one `data/seed_notes.md`, `semantic_layer/models/*.yml`, and
+   carries exactly one `data/seed_notes.md`, `semantic_layer/models/*.yml`, the
+   optional multi-fact `semantic_layer/graph.yml` (one dataset per model — a
+   model file with several datasets is refused), and
    OKF pages under `context_layer/{tables,references/joins,policies,metrics,
    skills}/` — never `index.md`/`log.md` or computation pages (both are
-   generated). `documents` names the input-area references the proposal cites;
+   generated). A submitted graph additionally requires a cited metric page
+   for EVERY graph metric, each citing a resolvable Policy page. `documents`
+   names the input-area references the proposal cites;
    Ariadne verifies each citation against the operator's document boundary
    itself. Dataset sources may SELECT/join only approved registry identities —
    never raw file paths or table functions. Validation errors name the affected

@@ -9,16 +9,19 @@ SQLite source (source-backed, not an in-memory dict); live relationship-target
 audits are task 2 (#27) and must surface as not-run, never as a pass.
 """
 
+import asyncio
+import json
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Any
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-from sqlglot import (
-    exp,  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+from sqlglot import (  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+    exp,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -881,6 +884,7 @@ def test_plan_query_aggregates_fact_branches_before_alignment(tmp_path):
     # LEFT JOINs of aligned aggregate branches — never a raw fact-to-fact join.
     statements = sqlglot.parse(plan.sql)
     assert len(statements) == 1
+    assert statements[0] is not None
     joins = list(statements[0].find_all(exp.Join))
     assert joins, "expected branch-alignment joins over aggregate CTEs"
     assert all(join.side == "LEFT" for join in joins)
@@ -2505,6 +2509,115 @@ def test_t4_windows_partition_by_non_time_dimensions_through_lookups(tmp_path):
     }
 
 
+def test_t4_sparse_group_lookback_fetches_the_preceding_actual_group(tmp_path):
+    # The lookback needs preceding ACTUAL groups, not calendar periods:
+    # standard tier has no February row, so March's preceding group is January
+    # (200). Displaying March only must still fetch January — a calendar-shifted
+    # fetch start would drop it and leave the LAG (and any ROWS frame) reading
+    # sparse history as if it were contiguous (candidate review C1).
+    graph, con = _t4_graph(tmp_path)
+    plan = plan_query(
+        graph,
+        {
+            "metrics": ["orders_total", "orders_prior"],
+            "dimensions": ["tier"],
+            "time": {
+                "dimension": "business_date",
+                "grain": "month",
+                "start": "2026-03-01",
+                "end": "2026-04-01",
+            },
+        },
+        con,
+    )
+    rows = con.execute(plan.sql).fetchall()
+    assert [(tier, _month(month)) for tier, month, *_ in rows] == [("standard", "2026-03")]
+    assert rows[0][2:] == (50.0, 200.0)  # the preceding ACTUAL group is January
+
+
+def test_t4_mid_month_range_keeps_the_overlapping_start_bucket(tmp_path):
+    # The display range [2026-01-15, 2026-02-01) at month grain: the January
+    # bucket OVERLAPS the range start (the Jan 20 order qualifies on native
+    # time), so it stays displayed with its in-range population (200) — the
+    # Jan 10 order falls outside the half-open native population. A trim that
+    # compares the grouped key (Jan 1) against Jan 15 deletes the whole bucket
+    # (candidate review C2).
+    graph, con = _t4_graph(tmp_path)
+    plan = plan_query(
+        graph,
+        {
+            "metrics": ["orders_total"],
+            "time": {
+                "dimension": "business_date",
+                "grain": "month",
+                "start": "2026-01-15",
+                "end": "2026-02-01",
+            },
+        },
+        con,
+    )
+    rows = con.execute(plan.sql).fetchall()
+    assert [(_month(month), value) for month, value in rows] == [("2026-01", 200.0)]
+
+
+def test_t4_declared_fill_applies_without_time_or_derived_stage(tmp_path):
+    # lines_total declares fill: 0. Requested ALONE, with no time alignment
+    # and no derived metric, filtered to an absent region: the empty-population
+    # aggregate reads 0, not NULL — the fill projection must not depend on
+    # unrelated request features (candidate review C3).
+    graph, con = _t4_graph(tmp_path)
+    plan = plan_query(
+        graph,
+        {
+            "metrics": ["lines_total"],
+            "filters": [{"field": "region", "op": "=", "value": "APAC"}],
+        },
+        con,
+    )
+    assert con.execute(plan.sql).fetchall() == [(0,)]
+
+
+def test_t4_windowed_base_metric_keeps_its_fact_branch(tmp_path):
+    # A BASE aggregate declaring a window directly (SUM(amount), not a
+    # windowed derived metric), queried alone with conformed time: it keeps
+    # its home fact branch — the aggregate computes in-branch, the cumulative
+    # window applies post-alignment over the aligned column (candidate review
+    # C4). Hand-derived from the month totals 300/400/50.
+    windowed_base = TIME_YML + (
+        "      - name: orders_base_cumulative\n"
+        "        dataset: dated_orders\n"
+        "        description: Cumulative sum of the base order aggregate\n"
+        "        expression:\n"
+        "          dialects:\n"
+        "            - dialect: ANSI_SQL\n"
+        "              expression: SUM(amount)\n"
+        "        window:\n"
+        "          kind: cumulative\n"
+        "          function: sum\n"
+    )
+    registry = build_source_fixture(tmp_path / "src")
+    staging = _staging(tmp_path / "wb", {"windowed_base.yml": windowed_base})
+    graph = load_graph(staging / "semantic_layer")
+    con = _duck_connection(registry)
+    plan = plan_query(
+        graph,
+        {
+            "metrics": ["orders_base_cumulative"],
+            "time": {
+                "dimension": "business_date",
+                "grain": "month",
+                "start": "2026-01-01",
+                "end": "2026-04-01",
+            },
+        },
+        con,
+    )
+    assert [branch.dataset for branch in plan.branches] == ["dated_orders"]
+    assert plan.windows == ("orders_base_cumulative",)
+    rows = {_month(month): value for month, value in con.execute(plan.sql).fetchall()}
+    assert rows == {"2026-01": 300.0, "2026-02": 700.0, "2026-03": 750.0}
+
+
 def test_t4_finer_than_native_grain_refuses(tmp_path):
     # dated_lines declares a month native grain: a day request is finer than a
     # declared native grain and refuses BEFORE any SELECT executes, naming the
@@ -2608,3 +2721,567 @@ def test_t4_time_and_window_refusals_are_structured(tmp_path):
             con,
         )
     assert duplicated.value.code == "time_invalid"
+
+
+# --- Task 5 (issue #30): admit local models and expose CLI/MCP queries -------
+#
+# The public submission/runtime seam: a validated source-layout graph proposal
+# (one dataset per model + semantic_layer/graph.yml + cited OKF context) is
+# locally Promoted through the existing locked bundle machinery, and the SAME
+# rows/context come back through the runtime, the local JSON CLI, and the MCP
+# tools. Unadmitted graphs never serve as governed; post-validation edits never
+# promote; a NEW multi-fact admission without cited context is refused.
+
+# One dataset per model (the b09f649 source-boundary shape), the cross-file
+# graph supplying the relationship and the conformed dimension.
+T5_ORDERS_YML = """\
+version: 0.2.0.dev0
+semantic_model:
+  - name: orders
+    description: Orders fact (task 5 source layout)
+    datasets:
+      - name: orders
+        source: demo.main.orders
+        primary_key: [order_id]
+        fields:
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+          - name: region
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: region
+            dimension: {}
+          - name: amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: amount
+    metrics:
+      - name: orders_total
+        dataset: orders
+        description: Sum of order amounts at order grain
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(amount)
+"""
+
+T5_LINES_YML = """\
+version: 0.2.0.dev0
+semantic_model:
+  - name: order_lines
+    description: Order lines fact (task 5 source layout)
+    datasets:
+      - name: order_lines
+        source: demo.main.order_lines
+        primary_key: [line_id]
+        fields:
+          - name: line_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: line_id
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+          - name: region
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: region
+            dimension: {}
+          - name: line_amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: line_amount
+    metrics:
+      - name: lines_total
+        dataset: order_lines
+        description: Sum of line amounts at line grain
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(line_amount)
+"""
+
+
+def _t5_page(page_type: str, title: str, *, status: str | None = None, sources: str = "") -> str:
+    """One minimal gate-clean OKF page of ``page_type`` (ADR-0007 frontmatter)."""
+    front = (
+        f"type: {page_type}\ntitle: {title}\n"
+        f"description: One {page_type} page.\ntags: [{page_type}]\n"
+    )
+    if status:
+        front += f"status: {status}\n"
+    front += (
+        "sources:\n  - id: seed-notes\n    resource: data/seed_notes.md\n    title: Seed notes\n"
+    )
+    return f"---\n{front}---\n\n# {title}\n" + sources
+
+
+def _t5_metric_page(name: str, policy: str = "policies/region-rollup.md") -> str:
+    """A metric page whose ``sources`` cite one governing Policy page."""
+    front = (
+        f"type: metric\nstatus: draft\ntitle: {name}\n"
+        f"description: The {name} metric.\ntags: [metric]\n"
+        "sources:\n"
+        "  - id: region-rollup\n"
+        f"    resource: {policy}\n"
+        "    title: Region rollup policy\n"
+    )
+    return f"---\n{front}---\n\n# {name}\n"
+
+
+def _t5_bundle(
+    *,
+    lines_page: str | None = "default",
+    orders_policy: str = "policies/region-rollup.md",
+) -> dict:
+    """One complete source-layout graph bundle: Seed Notes, one dataset per
+    model, the cross-file graph, and the six OKF sections (computations are
+    generated). ``lines_page=None`` drops the lines_total metric page (the
+    missing-cited-context case); ``orders_policy`` points the orders_total
+    citation at a Policy path (the broken-citation case)."""
+    files = [
+        {
+            "path": "data/seed_notes.md",
+            "content": "# Seed notes\n\nEach fact aggregates at its own grain.\n",
+        },
+        {"path": "semantic_layer/models/orders.yml", "content": T5_ORDERS_YML},
+        {"path": "semantic_layer/models/order_lines.yml", "content": T5_LINES_YML},
+        {"path": "semantic_layer/graph.yml", "content": GRAPH_YML},
+        {
+            "path": "context_layer/tables/orders.md",
+            "content": (
+                "---\ntype: table\ntitle: Orders\ndescription: One row per order.\n"
+                "tags: [table]\nsources:\n  - id: orders\n    resource: demo.main.orders\n"
+                "    title: orders\ngrain:\n  primary_key: [order_id]\n"
+                "  cardinality_enforcement: STRICT_1_TO_1\n---\n\n# Orders\n"
+            ),
+        },
+        {
+            "path": "context_layer/references/joins/orders--order-lines.md",
+            "content": _t5_page("reference", "orders to order lines"),
+        },
+        {
+            "path": "context_layer/policies/region-rollup.md",
+            "content": _t5_page("policy", "Region rollup", status="draft"),
+        },
+        {
+            "path": "context_layer/metrics/orders_total.md",
+            "content": _t5_metric_page("orders_total", orders_policy),
+        },
+        {
+            "path": "context_layer/skills/query-multi-fact.md",
+            "content": _t5_page("skill", "query multi fact"),
+        },
+    ]
+    if lines_page is not None:
+        content = (
+            _t5_metric_page("lines_total")
+            if lines_page == "default"
+            else lines_page
+        )
+        files.append({"path": "context_layer/metrics/lines_total.md", "content": content})
+    return {"files": files}
+
+
+def _t5_admitted(tmp_path: Path, bundle: dict | None = None) -> tuple[Path, dict]:
+    """One project whose source-layout graph bundle was submitted (validated),
+    humanly Promoted through the exact-digest gate, and left with its review
+    view returned. ``served/`` is the admitted served root."""
+    from ariadne import authoring
+    from ariadne.promote import promote_bundle
+
+    project = tmp_path / "proj"
+    build_source_fixture(project)  # project/ariadne.yaml + project/mf.db (approved registry)
+    submission = tmp_path / "submission.json"
+    submission.write_text(json.dumps(bundle or _t5_bundle()), encoding="utf-8")
+    view = authoring.submit_bundle(submission, project=project)
+    if view["status"] != "validated":
+        raise AssertionError(f"bundle did not validate: {view['errors']}")
+    promote_bundle(
+        view["review_digest"],
+        staging_root=project / "staging",
+        served_root=project / "served",
+        by="human:test",
+        assume_yes=True,
+    )
+    return project, view
+
+
+def _t5_runtime(project: Path):
+    from ariadne.runtime import AriadneRuntime
+
+    return AriadneRuntime(
+        project / "served" / "semantic_layer",
+        project / "served" / "context_layer",
+        project / "mf.db",
+        staging_dir=project / "staging",
+        sources=project / "ariadne.yaml",
+    )
+
+
+def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mcp(
+    tmp_path, capsys
+):
+    # Spec rev 1 acceptance 1/AC6-local at the public seam: the hand-derived
+    # trap values (NA 300/300, EMEA 400/400) come back governed through the
+    # runtime, the local JSON CLI, and the MCP tool — one implementation.
+    import io
+
+    from ariadne.cli import main as cli_main
+    from ariadne.serve import build_app
+
+    project, view = _t5_admitted(tmp_path)
+    runtime = _t5_runtime(project)
+    request = {"metrics": ["orders_total", "lines_total"], "dimensions": ["region"]}
+
+    result = asyncio.run(runtime.query_metrics(request))
+    assert result["governed"] is True
+    assert result["metrics"] == ["orders_total", "lines_total"]
+    rows = {row["region"]: (row["orders_total"], row["lines_total"]) for row in result["rows"]}
+    assert rows == {"NA": (300.0, 300.0), "EMEA": (400.0, 400.0)}
+    assert result["sql"] and len(sqlglot.parse(result["sql"])) == 1  # one guarded SELECT
+    # the bounded lineage names both fact branches and the conformed key
+    assert sorted(branch["dataset"] for branch in result["plan"]["branches"]) == [
+        "order_lines",
+        "orders",
+    ]
+    assert result["plan"]["conformed_keys"] == ["region"]
+    # local admission provenance: the exact reviewed digest, the full persisted
+    # technical validation scope, and the human Promotion identity
+    admission = result["admission"]
+    assert admission["route"] == "local-promotion"
+    assert admission["reviewed_digest"] == view["review_digest"]
+    assert admission["served_digest"]
+    assert admission["validation"]["scope"] == "structural+bind+grain"
+    assert admission["validation"]["digest"]
+    assert admission["promoted"]["by"] == "human:test"
+    # per-metric cited context: the served metric page plus the cited Policy
+    # body, and the honest pending attestation state (ADR-0013)
+    for name in ("orders_total", "lines_total"):
+        context = result["context"][name]
+        assert f"# {name}" in context["metric_page"]
+        assert context["policies"] and "Region rollup" in context["policies"][0]
+        assert context["attestation"] == "pending"
+
+    # the local JSON CLI returns the SAME value over its own runtime instance
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(request), encoding="utf-8")
+    capsys.readouterr()  # drop the promotion chatter: the CLI writes exactly one JSON value
+    code = cli_main(
+        [
+            "query-metrics",
+            "--file",
+            str(request_file),
+            "--sources",
+            str(project / "ariadne.yaml"),
+            "--served",
+            str(project / "served"),
+            "--staging",
+            str(project / "staging"),
+        ],
+        io.StringIO(""),
+    )
+    assert code == 0
+
+    def _normalized(response: dict) -> dict:
+        # without an explicit `order`, the aligned keys-UNION row order is not
+        # part of the contract — parity is over the value, not the sequencing
+        return {**response, "rows": sorted(response["rows"], key=lambda row: row["region"])}
+
+    cli_result = json.loads(capsys.readouterr().out)
+    assert _normalized(cli_result) == _normalized(result)
+
+    # the MCP tool is a thin adapter over the same runtime method
+    app = build_app(runtime)
+
+    def _payload(blocks) -> Any:
+        if isinstance(blocks, tuple):
+            blocks = blocks[0]
+        parsed = [json.loads(block.text) for block in blocks]
+        return parsed[0] if len(parsed) == 1 else parsed
+
+    mcp_result = _payload(asyncio.run(app.call_tool("query_metrics", {"request": request})))
+    assert _normalized(mcp_result) == _normalized(result)
+
+
+def test_t5_query_detail_projects_through_the_admitted_graph(tmp_path):
+    # Spec rev 1 acceptance 5 (safe detail): the root keeps its grain and a
+    # parent field arrives through the proven many-to-one path — hand-derived
+    # line -> order amounts from the fixture rows.
+    project, _view = _t5_admitted(tmp_path)
+    runtime = _t5_runtime(project)
+    result = asyncio.run(
+        runtime.query_detail({"dataset": "order_lines", "fields": ["line_id", "amount"]})
+    )
+    assert result["governed"] is True
+    assert result["dataset"] == "order_lines"
+    amounts = {row["line_id"]: row["amount"] for row in result["rows"]}
+    assert amounts == {11: 100.0, 12: 100.0, 13: 100.0, 21: 200.0, 22: 200.0, 31: 400.0}
+    assert result["admission"]["route"] == "local-promotion"
+
+
+def test_t5_mutating_model_policy_graph_or_registry_after_validation_blocks_promotion(tmp_path):
+    # Spec rev 1 acceptance 6 (local): the promoter refuses changed bytes (a
+    # staged model, the graph, a cited Policy) and a changed approved source
+    # registry — nothing is served on any of them.
+    from ariadne.promote import promote_bundle
+
+    project, view = _t5_admitted(tmp_path)
+    bundle = project / "staging" / "authoring" / "bundle"
+    digest = view["review_digest"]
+    cases = [
+        (
+            bundle / "semantic_layer" / "models" / "orders.yml",
+            T5_ORDERS_YML.replace("SUM(amount)", "SUM(amount) + 0"),
+        ),
+        (bundle / "semantic_layer" / "graph.yml", GRAPH_YML + "# touched\n"),
+        (
+            bundle / "context_layer" / "policies" / "region-rollup.md",
+            _t5_page("policy", "Region rollup", status="draft") + "changed\n",
+        ),
+    ]
+    for path, mutated in cases:
+        original = path.read_bytes()
+        path.write_text(mutated, encoding="utf-8")
+        try:
+            with pytest.raises(ValueError, match="staged content changed after the review"):
+                promote_bundle(
+                    digest,
+                    staging_root=project / "staging",
+                    served_root=project / "served",
+                    by="human:test",
+                    assume_yes=True,
+                )
+        finally:
+            path.write_bytes(original)
+    registry = project / "ariadne.yaml"
+    original = registry.read_bytes()
+    registry.write_text(
+        "sources:\n  - name: demo\n    type: sqlite\n    path: mf.db\n  - name: other\n"
+        "    type: sqlite\n    path: mf.db\n",
+        encoding="utf-8",
+    )
+    try:
+        with pytest.raises(ValueError, match="approved source registry changed"):
+            promote_bundle(
+                digest,
+                staging_root=project / "staging",
+                served_root=project / "served",
+                by="human:test",
+                assume_yes=True,
+            )
+    finally:
+        registry.write_bytes(original)
+
+
+def test_t5_unadmitted_graph_cannot_be_served_as_governed(tmp_path):
+    # Spec rev 1 admission: a served graph without a matching Promotion
+    # admission record (hand-placed, or plain-staging promotion) never answers
+    # as governed, while the legacy single-metric path keeps working (AC7).
+    import shutil
+
+    from ariadne.runtime import AriadneRuntime
+
+    project, _view = _t5_admitted(tmp_path)
+    unadmitted = tmp_path / "unadmitted"
+    shutil.copytree(project / "served", unadmitted)
+    (unadmitted / "semantic_layer" / "admission.json").unlink()  # no admission record
+    runtime = AriadneRuntime(
+        unadmitted / "semantic_layer",
+        unadmitted / "context_layer",
+        project / "mf.db",
+        staging_dir=tmp_path / "staging",
+        sources=project / "ariadne.yaml",
+    )
+    legacy = asyncio.run(runtime.get_metric("orders_total", ["region"]))  # AC7: unaffected
+    assert {row["region"]: row["orders_total"] for row in legacy["rows"]} == {
+        "NA": 300.0,
+        "EMEA": 400.0,
+    }
+    for call in (
+        lambda: runtime.query_metrics({"metrics": ["orders_total"]}),
+        lambda: runtime.query_detail({"dataset": "orders", "fields": ["order_id"]}),
+    ):
+        with pytest.raises(ValueError, match="admission"):
+            asyncio.run(call())
+
+    # and post-admission edits to the served graph invalidate the record's digest
+    admitted = _t5_runtime(project)
+    graph = project / "served" / "semantic_layer" / "graph.yml"
+    original = graph.read_bytes()
+    graph.write_text(GRAPH_YML + "# hand-edited after admission\n", encoding="utf-8")
+    try:
+        with pytest.raises(ValueError, match="changed after admission"):
+            asyncio.run(admitted.query_metrics({"metrics": ["orders_total"]}))
+    finally:
+        graph.write_bytes(original)
+
+
+def test_t5_missing_cited_context_refuses_new_multifact_admission(tmp_path):
+    # Spec rev 1: a missing/broken cited page fails validation for a newly
+    # admitted multi-fact definition — it can never become an uncited governed
+    # multi-fact answer. Legacy single-dataset bundles keep the old gate.
+    from ariadne import authoring
+
+    for index, (bundle, fragment) in enumerate(
+        (
+            (_t5_bundle(lines_page=None), "lines_total"),
+            (_t5_bundle(orders_policy="policies/no-such-policy.md"), "no-such-policy"),
+        )
+    ):
+        project = tmp_path / f"proj{index}"
+        build_source_fixture(project)
+        submission = project / "submission.json"
+        submission.write_text(json.dumps(bundle), encoding="utf-8")
+        view = authoring.submit_bundle(submission, project=project)
+        assert view["status"] == "invalid", view
+        assert any(fragment in error for error in view["errors"]), view["errors"]
+
+
+def test_t5_citation_escape_outside_the_policy_directory_refuses_admission(tmp_path):
+    # mf-t5 fix F3: authoring resolves metric citations against the Policy
+    # directory exactly like the runtime — a 'policies/../skills/...' traversal
+    # that satisfies a context-root containment check (and a staged file) never
+    # reaches admission, whose served context would otherwise collapse to null
+    # while the answer stays governed.
+    from ariadne import authoring
+
+    project = tmp_path / "proj"
+    build_source_fixture(project)
+    submission = project / "submission.json"
+    submission.write_text(
+        json.dumps(_t5_bundle(orders_policy="policies/../skills/query-multi-fact.md")),
+        encoding="utf-8",
+    )
+    view = authoring.submit_bundle(submission, project=project)
+    assert view["status"] == "invalid", view
+    assert any(
+        "does not resolve inside context_layer/policies/" in error
+        for error in view["errors"]
+    ), view["errors"]
+
+
+def test_t5_unreviewed_merge_survivor_refuses_the_admission_refresh(tmp_path):
+    # mf-t5 fix F2: a valid, uniquely named model dropped directly under the
+    # served semantic_layer/models/ (absent from the reviewed proposal) is an
+    # unreviewed merge survivor — the unchanged re-Promotion must refuse the
+    # admission refresh, and the runtime must never serve it governed (spec
+    # rev 1 admission / AC6: admission binds reviewed, validated artifacts).
+    from ariadne.promote import promote_bundle
+
+    project, view = _t5_admitted(tmp_path)
+    rogue_yml = T5_ORDERS_YML.replace("orders", "rogue").replace(
+        "demo.main.rogue", "demo.main.orders"
+    )
+    (project / "served" / "semantic_layer" / "models" / "rogue.yml").write_text(
+        rogue_yml, encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="rogue.yml"):
+        promote_bundle(
+            view["review_digest"],
+            staging_root=project / "staging",
+            served_root=project / "served",
+            by="human:test",
+            assume_yes=True,
+        )
+    runtime = _t5_runtime(project)
+    for call in (
+        lambda: runtime.query_metrics({"metrics": ["rogue_total"]}),
+        lambda: runtime.query_metrics({"metrics": ["orders_total"]}),
+    ):
+        with pytest.raises(ValueError, match="changed after admission"):
+            asyncio.run(call())
+
+
+def test_t5_cli_query_metrics_error_keeps_the_planner_code_and_candidates(tmp_path, capsys):
+    # mf-t5 fix F4: the CLI error envelope keeps the planner's stable failure
+    # fields (spec rev 1: error codes and candidate/retry information are API
+    # fields, message prose is not) — an unknown metric reports code
+    # unknown_metric plus the real candidates over the admitted graph.
+    import io
+
+    from ariadne.cli import main as cli_main
+
+    project, _view = _t5_admitted(tmp_path)
+    request_file = tmp_path / "bad-request.json"
+    request_file.write_text(json.dumps({"metrics": ["no_such_metric"]}), encoding="utf-8")
+    capsys.readouterr()  # drop the promotion chatter: the CLI writes exactly one JSON error
+    code = cli_main(
+        [
+            "query-metrics",
+            "--file",
+            str(request_file),
+            "--sources",
+            str(project / "ariadne.yaml"),
+            "--served",
+            str(project / "served"),
+            "--staging",
+            str(project / "staging"),
+        ],
+        io.StringIO(""),
+    )
+    assert code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    error = json.loads(captured.err)["error"]
+    assert error["type"] == "PlannerError"
+    assert error["code"] == "unknown_metric"
+    assert "orders_total" in error["candidates"]
+    assert "lines_total" in error["candidates"]
+
+
+def test_t4_windowed_base_alongside_a_derived_window_computes(tmp_path):
+    # C4 recheck residual: requesting the windowed BASE aggregate together
+    # with a derived window metric re-applied the base's SUM(amount) in the
+    # derived-expression layer, where raw columns no longer exist — a bind
+    # failure for a valid combined request. The base's aligned column is
+    # reused; only its window applies post-alignment. Hand-derived: months
+    # 300/400/50 → cumulative 300/700/750 and prior NULL/300/400.
+    windowed_base = TIME_YML + (
+        "      - name: orders_base_cumulative\n"
+        "        dataset: dated_orders\n"
+        "        description: Cumulative sum of the base order aggregate\n"
+        "        expression:\n"
+        "          dialects:\n"
+        "            - dialect: ANSI_SQL\n"
+        "              expression: SUM(amount)\n"
+        "        window:\n"
+        "          kind: cumulative\n"
+        "          function: sum\n"
+    )
+    registry = build_source_fixture(tmp_path / "src")
+    staging = _staging(tmp_path / "wb2", {"windowed_base.yml": windowed_base})
+    graph = load_graph(staging / "semantic_layer")
+    con = _duck_connection(registry)
+    plan = plan_query(
+        graph,
+        {
+            "metrics": ["orders_base_cumulative", "orders_prior"],
+            "time": {
+                "dimension": "business_date",
+                "grain": "month",
+                "start": "2026-01-01",
+                "end": "2026-04-01",
+            },
+        },
+        con,
+    )
+    rows = {
+        _month(month): (cumulative, prior)
+        for month, cumulative, prior in con.execute(plan.sql).fetchall()
+    }
+    assert rows == {
+        "2026-01": (300.0, None),
+        "2026-02": (700.0, 300.0),
+        "2026-03": (750.0, 400.0),
+    }

@@ -11,6 +11,9 @@ in the runtime:
     ariadne search-context QUERY [--limit N]
     ariadne get-metric NAME [--dimension NAME ...] [--start VALUE] [--end VALUE]
     ariadne define-metric [--file PATH]        (stdin when --file is absent)
+    ariadne query-metrics [--file PATH]        (the admitted multi-fact graph,
+                                               issue #30; stdin when absent)
+    ariadne query-detail [--file PATH]         (root-dataset projection, no fan-out)
     ariadne save-example [--file PATH]          (stdin when absent; issue #19 —
                                                explicit answer-example submission)
     ariadne search-examples QUERY [--limit N] [--include-history]
@@ -39,6 +42,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, NoReturn
 
+from ariadne.planner import PlannerError
 from ariadne.runtime import AriadneRuntime
 from ariadne.sources import default_registry_path
 
@@ -161,6 +165,18 @@ def build_parser() -> _Parser:
     define = sub.add_parser("define-metric", parents=[common], help="define an ad-hoc metric")
     define.add_argument("--file", help="JSON definition file (stdin when absent)")
 
+    metrics = sub.add_parser(
+        "query-metrics", parents=[common], help="query the admitted multi-fact graph"
+    )
+    metrics.add_argument("--file", help="JSON request file (stdin when absent)")
+
+    detail = sub.add_parser(
+        "query-detail",
+        parents=[common],
+        help="project one root dataset's fields through safe lookup paths",
+    )
+    detail.add_argument("--file", help="JSON request file (stdin when absent)")
+
     save = sub.add_parser(
         "save-example",
         parents=[common],
@@ -188,9 +204,16 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
     # or staging.
     root = _resolve_served_root(args.served)
     definition = None
-    if args.command in ("define-metric", "save-example"):  # parsed pre-runtime (spec §9)
+    if args.command in (  # parsed pre-runtime (spec §9)
+        "define-metric",
+        "save-example",
+        "query-metrics",
+        "query-detail",
+    ):
         definition = _read_definition(
-            args.file, stdin, "submission" if args.command == "save-example" else "definition"
+            args.file,
+            stdin,
+            "submission" if args.command == "save-example" else "request",
         )
     sources_path = default_registry_path(args.sources, args.db)
     runtime = AriadneRuntime(
@@ -222,6 +245,12 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
                 args.query, limit=args.limit, include_history=args.include_history
             )
         )
+    elif args.command == "query-metrics":
+        assert definition is not None  # _read_definition ran above
+        result = asyncio.run(runtime.query_metrics(definition))
+    elif args.command == "query-detail":
+        assert definition is not None  # _read_definition ran above
+        result = asyncio.run(runtime.query_detail(definition))
     else:  # define-metric
         assert definition is not None  # _read_definition ran above
         result = asyncio.run(runtime.define_metric(definition))
@@ -235,10 +264,17 @@ def main(argv: list[str] | None = None, stdin: Any = None) -> int:
     try:
         return _dispatch(build_parser().parse_args(argv), sys.stdin if stdin is None else stdin)
     except Exception as exc:  # one JSON error object, message verbatim (spec §4)
-        print(
-            json.dumps({"error": {"type": type(exc).__name__, "message": str(exc)}}),
-            file=sys.stderr,
-        )
+        error: dict[str, Any] = {"type": type(exc).__name__, "message": str(exc)}
+        if isinstance(exc, PlannerError):
+            # mf-t5 fix F4 (spec rev 1 "Failure and compatibility behavior"):
+            # the planner's stable failure fields ride the envelope for the new
+            # query-metrics/query-detail operations — code, plus candidates
+            # when the refusal carries retry guidance. Legacy commands raise
+            # plain errors and keep the {type, message} shape unchanged.
+            error["code"] = exc.code
+            if exc.candidates:
+                error["candidates"] = list(exc.candidates)
+        print(json.dumps({"error": error}), file=sys.stderr)
         return 1
 
 

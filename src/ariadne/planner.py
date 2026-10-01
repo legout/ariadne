@@ -595,13 +595,14 @@ def _shift_periods(grain: str, value: date, periods: int) -> date:
 def _lookback_groups(window: WindowDecl) -> int | None:
     """Preceding groups a window form needs before the display range (spec rev
     1: lookback includes the necessary preceding groups). ``None`` means EVERY
-    preceding group — a cumulative frame — so its fetch start opens up while
-    the displayed range still trims."""
+    preceding group: the cumulative frame, and the ACTUAL-group forms (ROWS
+    frames, LAG) whose inputs are data-dependent under sparse history — the
+    group preceding March may be January, never an invented February, so the
+    fetch start cannot be a calendar shift for them."""
     if window.kind == "rolling":
-        size = window.size or 1  # a rolling window always carries a positive size (load)
-        return size - 1
+        return None  # a ROWS frame counts actual groups across sparse history
     if window.kind == "prior_period":
-        return 1
+        return None  # LAG reads the preceding ACTUAL group
     if window.kind == "value_window":
         return window.size
     if window.kind == "ranking":
@@ -817,13 +818,16 @@ def _resolve_field_key(
 class _PostMetric:
     """One post-aggregate metric computation (issue #29): the metric's declared
     expression resolved over the ALIGNED output columns (cross-fact derived
-    metrics and every windowed metric land here — never inside a branch), plus
-    its declared window form when it has one."""
+    metrics and windowed derived metrics land here — never inside a branch),
+    plus its declared window form when it has one. A windowed BASE aggregate
+    (``base``) skips the expression layer — its home branch already produced
+    the aligned column — and only its window applies here (C4)."""
 
     name: str
     expression: str
     level: int  # dependency level among post-aggregate metrics
     window: WindowDecl | None
+    base: bool = False  # the aggregate column comes from a home branch
 
 
 def _resolve_time_key(
@@ -1440,15 +1444,23 @@ def _final_sql(
     current = [*([canonical for canonical, _output in branch_keys[0]] if branch_keys else [])]
     current.extend(metric for metric, _index, _column, _bare in columns)
     if stage is not None:
-        # derived metrics, one level per dependency level
-        for level in sorted({metric.level for metric in stage.metrics}):
+        # derived metrics, one level per dependency level — a windowed BASE
+        # aggregate skips the expression layer: its branch already produced
+        # the aligned column, only its window applies below (C4)
+        for level in sorted(
+            {metric.level for metric in stage.metrics if not metric.base}
+        ):
             tree, current = _layer(
                 tree,
                 current,
                 [
                     (metric.name, _post_expression(metric.expression, f"metric {metric.name!r}"))
                     for metric in stage.metrics
-                    if metric.level == level
+                    # a windowed BASE already produced its aligned column in
+                    # its branch; re-applying its aggregate expression here
+                    # would reference raw columns that no longer exist above
+                    # the alignment (C4 recheck residual)
+                    if metric.level == level and not metric.base
                 ],
             )
         # time-frame windows run over the fetched range, BEFORE the trim
@@ -1461,14 +1473,23 @@ def _final_sql(
                 current,
                 [(metric.name, _window_expression(metric.name, window, stage))],
             )
-        # the displayed range trims the fetched lookback away
+        # the displayed range trims the fetched lookback away. A bucket whose
+        # period OVERLAPS the display start stays displayed (the January group
+        # of a [2026-01-15, ...) range): grouped keys are period starts, so the
+        # start bound compares one grain period back, keeping every bucket
+        # whose period reaches past the display start (C2, candidate review)
         if stage.time_column is not None and any(
             bound is not None for bound in stage.trim
         ):
             column = exp.column(stage.time_column, quoted=True)
             trim = None
             if stage.trim[0] is not None:
-                trim = exp.GTE(this=column.copy(), expression=_date_literal(stage.trim[0]))
+                trim = exp.GT(
+                    this=column.copy(),
+                    expression=_date_literal(
+                        _shift_periods(stage.grain or "day", stage.trim[0], -1)
+                    ),
+                )
             if stage.trim[1] is not None:
                 condition = exp.LT(this=column.copy(), expression=_date_literal(stage.trim[1]))
                 trim = condition if trim is None else exp.And(this=trim, expression=condition)
@@ -1625,15 +1646,19 @@ def plan_query(
 
     memo: dict[str, str | None] = {}
     # Stage classification (issue #29): a metric aggregates INSIDE its fact
-    # branch unless it is a windowed metric (its declared window moves the
-    # computation to the post-aggregate stage) or a cross-fact derived metric
-    # (no single owning dataset — it resolves after the branches merge).
+    # branch unless it is a cross-fact derived metric (no single owning
+    # dataset — it resolves after the branches merge) or a windowed DERIVED
+    # metric (its declared window moves the computation to the post-aggregate
+    # stage). A windowed BASE aggregate keeps its home branch (C4): the branch
+    # exposes the aggregate column and the declared window applies
+    # post-alignment over it — never inside the branch.
     owner_of: dict[str, str | None] = {}
     closures = {name: _closure(graph, name) for name in metric_names}
     for name in sorted({member for closure in closures.values() for member in closure}):
+        node = graph.metrics[name]
         owner_of[name] = (
             None
-            if graph.metrics[name].window is not None
+            if node.window is not None and node.derived
             else _resolve_owner(graph, name, memo)
         )
 
@@ -1712,11 +1737,18 @@ def plan_query(
                 lookbacks.append(lookback)
         fetch_end = time_request.end
         needed = max(lookbacks, default=0)
-        if time_request.start is not None and not unbounded and needed > 0:
-            fetch_start = _shift_periods(
-                time_request.grain,
-                _truncate(time_request.grain, time_request.start),
-                -needed,
+        if time_request.start is not None and not unbounded:
+            # the native population is the half-open range on each fact's
+            # NATIVE time; a bounded lookback (value windows) extends it back
+            # by whole grain periods from the display start's period
+            fetch_start = (
+                _shift_periods(
+                    time_request.grain,
+                    _truncate(time_request.grain, time_request.start),
+                    -needed,
+                )
+                if needed > 0
+                else time_request.start
             )
     fetch_bounds = (fetch_start, fetch_end)
 
@@ -1781,10 +1813,15 @@ def plan_query(
     # the aligned projection carries the requested branch metrics plus every
     # branch metric a post-aggregate metric consumes (its expression resolves
     # over the ALIGNED columns, so the branches must expose the dependencies)
+    # plus every windowed metric — a windowed BASE aggregate rides the stage
+    # for its window alone, its column already aggregated in-branch (C4)
     post_needed: list[str] = []
     for name in metric_names:
         for member in closures[name]:
-            if owner_of[member] is None and member not in post_needed:
+            if (
+                owner_of[member] is None
+                or graph.metrics[member].window is not None
+            ) and member not in post_needed:
                 post_needed.append(member)
     has_post = bool(post_needed)
     branch_sqls: list[str] = []
@@ -1860,9 +1897,18 @@ def plan_query(
             expression=graph.metrics[name].expression,
             level=post_level(name),
             window=graph.metrics[name].window,
+            base=owner_of[name] is not None,
         )
         for name in post_needed
     )
+    # a declared fill is an output-stage obligation of its own: the projection
+    # runs whenever a requested metric declares one, never only because an
+    # unrelated request feature (a derived metric, time) built the stage (C3)
+    fills = {
+        name: graph.metrics[name].fill
+        for name in metric_names
+        if graph.metrics[name].fill is not None
+    }
     stage = (
         _PostStage(
             metrics=post_metrics,
@@ -1879,13 +1925,9 @@ def plan_query(
                 if time_request is not None
                 else (*dimension_names, *metric_names)
             ),
-            fills={
-                name: graph.metrics[name].fill
-                for name in metric_names
-                if graph.metrics[name].fill is not None
-            },
+            fills=fills,
         )
-        if (has_post or time_request is not None)
+        if (has_post or time_request is not None or fills)
         else None
     )
     sql = _final_sql(
