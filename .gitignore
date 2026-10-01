@@ -1,4 +1,6 @@
 .pi/npm/
+.pi/settings.json
+examples/trace-data-smoke.py
 .venv/
 uv.lock
 *.egg-info/
