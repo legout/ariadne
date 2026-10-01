@@ -410,6 +410,45 @@ def _user_prompt(profile: dict, notes: str, catalog_lines: str) -> str:
     )
 
 
+class _LayerDumper(yaml.SafeDumper):  # type: ignore[no-any-unimported]
+    """safe_dump plus the block-scalar str representer; wide width so long
+    single-line scalars never wrap into backslash continuations."""
+
+
+def _block_str_representer(dumper: _LayerDumper, data: str):  # type: ignore[no-any-unimported]
+    """Multi-line strings as readable literal blocks (issue #31) instead of
+    one escaped double-quoted line; scalars PyYAML cannot emit as a literal
+    (e.g. lines with trailing spaces) fall back to its quoted style."""
+    style = "|" if "\n" in data else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+
+_LayerDumper.add_representer(str, _block_str_representer)
+
+
+def normalize_layer_yaml(content: str) -> str:
+    """Re-emit a semantic-layer YAML with multi-line scalars (dataset source
+    SQL) as literal blocks: agent drafts sometimes serialize them as one
+    double-quoted \\n-escaped line no human can review at the staging gate
+    (issue #31). Parse + re-dump; parsed meaning is preserved, and the staged
+    bytes this produces are what validation and the review digest bind to.
+    Non-YAML or non-mapping content returns unchanged."""
+    try:
+        doc = yaml.safe_load(content)
+    except yaml.YAMLError:
+        return content
+    if not isinstance(doc, dict):
+        return content
+    return yaml.dump(
+        doc,
+        Dumper=_LayerDumper,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=True,
+        width=4096,
+    )
+
+
 def _model_index(staging: Path) -> dict[str, dict]:
     """metric name -> {model, primary_key, dimensions, expression} from the staged OSI
     models — the mechanical source of truth for enrichment and computations."""
@@ -777,6 +816,9 @@ def author(
                 continue
             target = _safe_path(staging, rel_path)
             target.parent.mkdir(parents=True, exist_ok=True)
+            in_layer = "semantic_layer" in target.parts
+            if in_layer and target.suffix in (".yml", ".yaml"):
+                content = normalize_layer_yaml(content)  # issue #31: readable blocks
             target.write_text(content, encoding="utf-8")
         result = gate(staging)
         errors = result.errors

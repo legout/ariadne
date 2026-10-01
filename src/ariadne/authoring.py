@@ -119,6 +119,7 @@ from ariadne.author import (
     _finalize_bundle,
     _load_frontmatter_meta,
     _mark_review_needed,
+    normalize_layer_yaml,
 )
 from ariadne.ingest import _SECRET_PATTERNS, _ConversionError, _convert
 from ariadne.render import render
@@ -1132,8 +1133,7 @@ def _graph_citation_errors(staging: Path) -> list[str]:
         cited = [ref for ref in refs if ref.startswith("policies/")]
         if not cited:
             errors.append(
-                f"{rel}: multi-fact admission must cite at least one governing "
-                "policies/... page"
+                f"{rel}: multi-fact admission must cite at least one governing policies/... page"
             )
         for ref in cited:
             # mf-t5 fix F3: resolve against — and require containment within —
@@ -1264,6 +1264,12 @@ def submit_bundle(
             for rel, content in files:
                 target = tmp / Path(*PurePosixPath(rel).parts)
                 target.parent.mkdir(parents=True, exist_ok=True)
+                if (
+                    "semantic_layer" in target.parts
+                    and target.suffix in (".yml", ".yaml")
+                ):
+                    # issue #31: readable block scalars for multi-line sources
+                    content = normalize_layer_yaml(content)
                 target.write_text(content, encoding="utf-8")
             # Source authorization comes BEFORE any bind/audit: nothing outside
             # the approved registry identities is ever opened or executed here.
