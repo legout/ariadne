@@ -95,6 +95,7 @@ from ariadne.execution import (  # pyright: ignore[reportMissingImports] — new
     DuckDBExecution,
 )
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    Registry,
     default_registry_path,
     implicit_registry,
     load_registry,
@@ -355,22 +356,30 @@ def profile(
     db_path: str | Path | None = None,
     *,
     sources_path: str | Path | None = None,
+    registry: Registry | None = None,
     sample_rows: int | None = None,
 ) -> dict:
     """Profile every table of every source (shapes documented in the module
     docstring): the legacy single-sqlite call via ``db_path``, the full
-    registry via ``sources_path`` (ADR-0010, shared connection builder)."""
+    registry via ``sources_path`` (ADR-0010, shared connection builder), or an
+    already-validated :class:`ariadne.sources.Registry` via ``registry`` (the
+    Git authoring route's APPROVED resolved identity, issue #35/G3 — no
+    registry file exists for a candidate commit). Exactly one of the three."""
     if sample_rows is not None and (not isinstance(sample_rows, int) or sample_rows < 1):
         raise ValueError("sample_rows must be a positive integer")
-    if sources_path is not None:
-        registry = load_registry(sources_path)
+    if registry is not None:
+        if sources_path is not None or db_path is not None:
+            raise ValueError("profile takes one of db_path, sources_path or registry")
+        reg = registry
+    elif sources_path is not None:
+        reg = load_registry(sources_path)
     elif db_path is not None:
-        registry = implicit_registry(db_path)
+        reg = implicit_registry(db_path)
         if not Path(db_path).is_file():
             raise FileNotFoundError(f"database not found: {db_path}")
     else:
-        raise ValueError("profile requires db_path or sources_path")
-    execution = DuckDBExecution(registry)
+        raise ValueError("profile requires db_path, sources_path or registry")
+    execution = DuckDBExecution(reg)
     con, catalog = execution.con, execution.catalog
     try:
         if sample_rows is not None:
@@ -387,6 +396,8 @@ def profile(
         sources = [_profile_source(con, entry, sample_rows=sample_rows) for entry in catalog]
     finally:
         execution.close()
+    if registry is not None:
+        return {"sources": sources}  # the approved identity has no registry file
     if sources_path is not None:
         return {"sources_path": str(sources_path), "sources": sources}
     (only,) = sources  # the legacy shape: one sqlite source, historical keys

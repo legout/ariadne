@@ -32,7 +32,10 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 import ariadne.execution  # noqa: E402
 import ariadne.profiler  # noqa: E402
 import ariadne.sources  # noqa: E402
-from ariadne import authoring  # noqa: E402
+from ariadne import (  # noqa: E402 — inputs: the moved evidence seam (#35)
+    authoring,
+    authoring_inputs,
+)
 from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
 from ariadne.promote import main as promote_main  # noqa: E402
 from ariadne.promote import promote_bundle  # noqa: E402
@@ -437,7 +440,9 @@ def test_unapproved_object_reference_is_refused_before_any_fetch(tmp_path, monke
     an unapproved s3 URI or any other scheme (owner decision 2026-09-24)."""
     project = scaffold_project(tmp_path)
     fetched: list[str] = []
-    monkeypatch.setattr(authoring, "_fetch_object_bytes", lambda uri: fetched.append(uri) or b"x")
+    monkeypatch.setattr(
+        authoring_inputs, "_fetch_object_bytes", lambda uri: fetched.append(uri) or b"x"
+    )
     for reference in (
         "s3://ariadne-docs/policies/secret.md",
         "https://cdn.example.com/doc.md",
@@ -468,7 +473,7 @@ def test_approved_object_reference_converts_with_retained_bytes(tmp_path, monkey
         fetched.append(uri)
         return payload
 
-    monkeypatch.setattr(authoring, "_fetch_object_bytes", fake_fetch)
+    monkeypatch.setattr(authoring_inputs, "_fetch_object_bytes", fake_fetch)
 
     evidence = authoring.document_evidence(approved, project=project)
     assert evidence["resource"] == approved  # the exact approved URI, not a local path
@@ -590,7 +595,7 @@ def test_document_evidence_digest_and_text_come_from_one_stable_snapshot(tmp_pat
     doc.write_text("# original policy\n", encoding="utf-8")
     original_bytes = doc.read_bytes()
 
-    real_convert = authoring._convert
+    real_convert = authoring_inputs._convert
 
     def convert_then_replace(path):  # the replacement lands between the two reads
         text = real_convert(path)
@@ -598,7 +603,7 @@ def test_document_evidence_digest_and_text_come_from_one_stable_snapshot(tmp_pat
             doc.write_text("# replaced mid-flight\n", encoding="utf-8")
         return text
 
-    monkeypatch.setattr(authoring, "_convert", convert_then_replace)
+    monkeypatch.setattr(authoring_inputs, "_convert", convert_then_replace)
     evidence = authoring.document_evidence("raced.md", project=project)
     assert evidence["text"].startswith("# original policy")
     assert evidence["digest"] == hashlib.sha256(original_bytes).hexdigest()
@@ -613,14 +618,14 @@ def test_seed_notes_digest_and_text_come_from_one_stable_snapshot(tmp_path, monk
     notes.write_text("# original seed notes\n", encoding="utf-8")
     original_bytes = notes.read_bytes()
 
-    real_digest = authoring._sha256_hex
+    real_digest = authoring_inputs._sha256_hex
 
     def digest_then_replace(data):  # replacement lands after the digest read
         value = real_digest(data)
         notes.write_text("# replaced seed notes\n", encoding="utf-8")
         return value
 
-    monkeypatch.setattr(authoring, "_sha256_hex", digest_then_replace)
+    monkeypatch.setattr(authoring_inputs, "_sha256_hex", digest_then_replace)
     inputs = authoring.harness_inputs(project=project)
     assert inputs["seed_notes"]["text"].startswith("# original seed notes")
     assert inputs["seed_notes"]["digest"] == real_digest(original_bytes)
@@ -1739,7 +1744,9 @@ def test_unapproved_cited_document_is_refused_before_any_write(tmp_path, monkeyp
     project = approved_project(tmp_path)
     (project / "server-secret.md").write_text("server-side secret", encoding="utf-8")
     fetched: list[str] = []
-    monkeypatch.setattr(authoring, "_fetch_object_bytes", lambda uri: fetched.append(uri) or b"x")
+    monkeypatch.setattr(
+        authoring_inputs, "_fetch_object_bytes", lambda uri: fetched.append(uri) or b"x"
+    )
     for reference in ("../server-secret.md", "s3://ariadne-docs/policies/secret.md"):
         submission = bundle_submission()
         submission["documents"] = [reference]

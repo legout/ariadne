@@ -1,15 +1,22 @@
 """``ariadne-authoring`` — the local command surface of harness-led authoring
 (spec 2026-09-24-0005 "Authoring interface and lifecycle"; issue #13 exposes
 the source-proposal pair, issue #14 adds inputs, issue #15 adds submit/review,
-issue #34 adds the Git-backed proposal seam start/read/edit).
+issue #34 adds the Git-backed proposal seam start/read/edit, issue #35 adds
+the Git-aware propose-sources/approve-sources/inputs).
 
 Follows the ``ariadne`` CLI's JSON contract: one JSON value on stdout for
 success; one ``{"error": {"type", "message"}}`` object on stderr plus exit 1
 for failure, message verbatim.
 
     ariadne-authoring propose-sources --file FILE [--project DIR]
+    ariadne-authoring propose-sources --proposal ID --expected-revision REV
+                                       --file FILE [--project DIR]
     ariadne-authoring approve-sources --digest DIGEST [--project DIR]
+    ariadne-authoring approve-sources --proposal ID --revision REV
+                                       --source-digest DIGEST [--project DIR]
     ariadne-authoring inputs [--document REF ...] [--part N] [--project DIR]
+    ariadne-authoring inputs --proposal ID [--document REF ...] [--part N]
+                             [--sample-rows N] [--project DIR]
     ariadne-authoring submit --file FILE [--base-digest DIGEST] [--project DIR]
     ariadne-authoring review [--part N] [--project DIR]
     ariadne-authoring start [--base-revision REV] [--project DIR]
@@ -20,19 +27,29 @@ for failure, message verbatim.
 
 ``approve-sources`` is HUMAN-ONLY and runs on the server host (ADR-0013): the
 packaged skill must never invoke it, and it is excluded from every MCP tool
-surface. ``submit`` and ``review`` are harness-invocable; they stage and expose
-proposals but NEVER approve, promote, or serve anything — the exact-digest
-Promotion gate is the separate human-only ``ariadne-promote --digest DIGEST``
-(ADR-0003). The ``--project`` default is the working directory — locally the
-project root; remotely the server's single configured project, whose
-filesystem root no client argument ever selects.
+surface. The legacy ``--digest`` route installs entries into the project's
+``ariadne.yaml``; the Git mode (``--proposal``/``--revision``/
+``--source-digest``) records the operator's permission for the proposal's
+EXACT resolved source identity in the operator-owned
+``.ariadne/source-approvals.json`` without editing the already-committed
+candidate (issue #35/G3, spec §5). ``submit`` and ``review`` are
+harness-invocable; they stage and expose proposals but NEVER approve,
+promote, or serve anything — the exact-digest Promotion gate is the separate
+human-only ``ariadne-promote --digest DIGEST`` (ADR-0003). The ``--project``
+default is the working directory — locally the project root; remotely the
+server's single configured project, whose filesystem root no client argument
+ever selects.
 
 ``start``/``read``/``edit`` (issue #34/G2, spec 2026-10-02-0009 §§3–4) drive
 isolated Git authoring proposals over the project's own Git repository:
 ``start`` derives the system-generated proposal ID, branch and worktree;
 ``edit`` applies one complete artifact edit revision-checked (``--file -``
 reads the edit JSON from stdin); ``read`` returns one bounded artifact part of
-the current candidate. Validation and review of a candidate are LATER
+the current candidate. Git-mode ``propose-sources``/``inputs`` (issue #35/G3)
+address the same proposals: a typed source proposal commits into the candidate
+registry and returns the resolved identity digest (never opening anything);
+``inputs`` measures ONLY the operator-approved resolved identity plus the
+operator-bound documents. Validation and review of a candidate are LATER
 slices and have no command here yet.
 """
 
@@ -43,6 +60,8 @@ import json
 import sys
 from pathlib import Path
 from typing import Any, NoReturn
+
+import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
 from ariadne.authoring import (
     AuthoringProject,
@@ -80,6 +99,17 @@ def build_parser() -> _Parser:
     )
     propose.add_argument("--file", required=True, help="proposal YAML (registry-shaped)")
     propose.add_argument(
+        "--proposal",
+        default=None,
+        help="Git mode: append the entries to this proposal's candidate registry "
+        "(requires --expected-revision); returns the resolved identity digest",
+    )
+    propose.add_argument(
+        "--expected-revision",
+        default=None,
+        help="Git mode: the CURRENT candidate revision the proposal is based on",
+    )
+    propose.add_argument(
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
 
@@ -88,7 +118,28 @@ def build_parser() -> _Parser:
         help="install the digest-matched pending proposal into ariadne.yaml "
         "(HUMAN-ONLY, server host; the skill never invokes this)",
     )
-    approve.add_argument("--digest", required=True, help="the reviewed proposal digest")
+    approve.add_argument(
+        "--digest",
+        default=None,
+        help="legacy route: the reviewed pending-proposal digest to install",
+    )
+    approve.add_argument(
+        "--proposal",
+        default=None,
+        help="Git mode: the proposal whose candidate registry is approved "
+        "(requires --revision and --source-digest; records the permission in "
+        ".ariadne/source-approvals.json without editing the candidate)",
+    )
+    approve.add_argument(
+        "--revision",
+        default=None,
+        help="Git mode: the proposal's CURRENT candidate revision",
+    )
+    approve.add_argument(
+        "--source-digest",
+        default=None,
+        help="Git mode: the resolved source digest propose-sources returned",
+    )
     approve.add_argument(
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
@@ -97,6 +148,12 @@ def build_parser() -> _Parser:
         "inputs",
         help="measured harness inputs (harness-invocable, no model): approved-source "
         "profile, source-linked converted document evidence, optional Seed Notes",
+    )
+    inputs.add_argument(
+        "--proposal",
+        default=None,
+        help="Git mode: measure this proposal's candidate — the profile opens only "
+        "the operator-APPROVED resolved source identity (issue #35/G3)",
     )
     inputs.add_argument(
         "--document",
@@ -231,18 +288,48 @@ def _read_edit_document(file: str) -> dict:
         raise UsageError(f"{file}: edit is not valid JSON: {exc}") from None
 
 
+def _read_source_entries(file: str) -> list[dict]:
+    """The typed source entries of a registry-shaped intake document (the
+    same shape the legacy route validates): its ``sources:`` list."""
+    try:
+        doc = yaml.safe_load(Path(file).read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise UsageError(f"{file}: not valid YAML: {exc}") from None
+    entries = doc.get("sources") if isinstance(doc, dict) else None
+    if not isinstance(entries, list) or not entries:
+        raise UsageError(f"{file}: no 'sources:' entries — declare the proposed sources")
+    return entries
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = build_parser().parse_args(argv)
         if args.command == "propose-sources":
-            result: Any = propose_sources(args.file, project=args.project)
+            if args.proposal is not None:
+                if args.expected_revision is None:
+                    raise UsageError(
+                        "Git-mode propose-sources requires --expected-revision"
+                    )
+                result: Any = AuthoringProject(args.project).propose_sources(
+                    args.proposal, args.expected_revision, _read_source_entries(args.file)
+                )
+            else:
+                result = propose_sources(args.file, project=args.project)
         elif args.command == "inputs":
-            result = harness_inputs(
-                project=args.project,
-                documents=args.documents,
-                part=args.part,
-                sample_rows=args.sample_rows,
-            )
+            if args.proposal is not None:
+                result = AuthoringProject(args.project).inputs(
+                    args.proposal,
+                    documents=args.documents,
+                    part=args.part,
+                    sample_rows=args.sample_rows,
+                )
+            else:
+                result = harness_inputs(
+                    project=args.project,
+                    documents=args.documents,
+                    part=args.part,
+                    sample_rows=args.sample_rows,
+                )
         elif args.command == "submit":
             result = submit_bundle(args.file, project=args.project, base_digest=args.base_digest)
         elif args.command == "review":
@@ -262,8 +349,29 @@ def main(argv: list[str] | None = None) -> int:
             result = AuthoringProject(args.project).edit_proposal(
                 args.proposal, args.expected_revision, _read_edit_document(args.file)
             )
-        else:  # approve-sources
-            result = approve_sources(args.digest, project=args.project)
+        else:  # approve-sources: legacy --digest, or Git-mode identity approval
+            git_mode = (args.proposal, args.revision, args.source_digest)
+            if any(flag is not None for flag in git_mode):
+                if args.digest is not None:
+                    raise UsageError(
+                        "approve-sources takes either --digest (legacy) or "
+                        "--proposal/--revision/--source-digest (Git mode), not both"
+                    )
+                if any(flag is None for flag in git_mode):
+                    raise UsageError(
+                        "Git-mode approve-sources requires --proposal, --revision "
+                        "and --source-digest together"
+                    )
+                result = AuthoringProject(args.project).approve_sources(
+                    args.proposal, args.revision, args.source_digest
+                )
+            else:
+                if args.digest is None:
+                    raise UsageError(
+                        "approve-sources requires --digest DIGEST (legacy) or "
+                        "--proposal/--revision/--source-digest (Git mode)"
+                    )
+                result = approve_sources(args.digest, project=args.project)
     except Exception as exc:  # one JSON error object, message verbatim
         print(
             json.dumps({"error": {"type": type(exc).__name__, "message": str(exc)}}),

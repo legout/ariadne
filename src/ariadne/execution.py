@@ -25,9 +25,10 @@ from pathlib import Path
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
+from ariadne import sources
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     Registry,
-    build_connection,
+    build_connection,  # noqa: F401 — re-export: the historical patch seam stays importable
 )
 
 
@@ -59,8 +60,10 @@ class DuckDBExecution:
         """The one DuckDB session over the registry sources (ADR-0010):
         :func:`ariadne.sources.build_connection` executes its deterministic
         statement plan verbatim and returns the connection plus the per-source
-        catalog (cheap enumeration only — no profiling here)."""
-        self.con, self.catalog = build_connection(registry)
+        catalog (cheap enumeration only — no profiling here). The call resolves
+        through the :mod:`ariadne.sources` module, so the builder stays ONE
+        shared chokepoint every caller (and test canary) sees (issue #35/G3)."""
+        self.con, self.catalog = sources.build_connection(registry)
 
     @classmethod
     def legacy_sqlite(cls, db_path: str | Path) -> DuckDBExecution:

@@ -126,6 +126,30 @@ def default_registry_path(
     return None
 
 
+def validate_entries(entries: object, where: str | Path, base: Path) -> list[Source]:
+    """Validate one raw ``sources:`` list with the load_registry rules
+    (ADR-0010: slugs, known types, inline-credential rejection, duplicates)
+    and resolve relative paths against ``base`` — the shared entry validation
+    behind :func:`load_registry` and the Git authoring source proposals
+    (issue #35/G3, which resolve against the configured data-project root
+    instead of a registry file's directory). ``where`` names the entries'
+    origin in errors."""
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(
+            f"{where}: no 'sources:' entries (a commented template counts "
+            "as absent — declare sources or use --db)"
+        )
+    prefix = Path(where)
+    validated: list[Source] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(entries):
+        validated.append(_source(prefix, index, entry, seen))
+    for src in validated:  # init.py's promise: paths are relative to the registry
+        if src.path:
+            src.path = _resolve_against(base, src.path)
+    return validated
+
+
 def load_registry(path: str | Path = DEFAULT_PATH) -> Registry:
     """Parse and validate a source registry (ADR-0010). Raises ``ValueError``
     naming the offending entry for: a non-slug name, an unknown type, a missing
@@ -137,21 +161,12 @@ def load_registry(path: str | Path = DEFAULT_PATH) -> Registry:
         doc = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as exc:
         raise ValueError(f"{registry_path}: not valid YAML: {exc}") from exc
-    entries = doc.get("sources")
-    if not isinstance(entries, list) or not entries:
-        raise ValueError(
-            f"{registry_path}: no 'sources:' entries (a commented template counts "
-            "as absent — declare sources or use --db)"
-        )
-    sources: list[Source] = []
-    seen: set[str] = set()
-    for index, entry in enumerate(entries):
-        sources.append(_source(registry_path, index, entry, seen))
-    base = registry_path.parent.resolve()
-    for src in sources:  # init.py's promise: paths are relative to THIS file
-        if src.path:
-            src.path = _resolve_against(base, src.path)
-    return Registry(sources=sources, path=str(registry_path))
+    return Registry(
+        sources=validate_entries(
+            doc.get("sources"), registry_path, registry_path.parent.resolve()
+        ),
+        path=str(registry_path),
+    )
 
 
 def implicit_registry(db_path: str | Path) -> Registry:
