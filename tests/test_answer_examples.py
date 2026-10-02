@@ -531,7 +531,9 @@ def test_review_refuses_an_oversize_reviewed_record_before_any_write(
     byte-identical and nothing is served, for approval and rejection alike."""
     root, _db = served
     staging = tmp_path / "staging"
-    saved = _save_draft(served, staging, capsys)
+    saved = _save_draft(
+        served, staging, capsys, question="Gross margin by region under an oversize review?"
+    )
     staged = Path(saved["path"])
     staged_bytes = staged.read_bytes()
     served_before = _served_examples(root)
