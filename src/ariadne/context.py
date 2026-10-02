@@ -15,7 +15,9 @@ never reimplemented:
 - deterministic OKF checks and generation: the per-type frontmatter contract
   (:func:`_page_contract_errors`, :func:`_bundle_errors`), the post-validation
   enrichment/computation/stamping passes (:func:`_finalize_bundle`) and the
-  auto-staged ad-hoc draft page (:func:`_build_adhoc_page`);
+  auto-staged ad-hoc draft page (:func:`_build_adhoc_page`); the WALL-CLOCK-FREE
+  Git-candidate variant (:func:`finalize_candidate`, issue #36/G4) finalizes
+  enrichment/computations/indexes before the candidate commit is validated;
 - deterministic promotion bookkeeping: the promoted page form (verified append,
   status flip), the regenerated ``index.md`` trees and the ``log.md`` append
   (:func:`_promoted_text`, :func:`_regenerate_indexes`, :func:`_append_log`).
@@ -417,14 +419,28 @@ def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list
     return errors
 
 
+# System-generated promotion bookkeeping (index trees, log): never authored
+# content pages, so the per-type bundle gate does not check them (issue #36:
+# the Git candidate's finalize pass generates the index trees BEFORE
+# validation; legacy staging still has none at gate time — no behavior change
+# for the legacy route).
+_BOOKKEEPING_NAMES = frozenset({"index.md", "log.md"})
+
+
 def _bundle_errors(staging: Path) -> list[str]:
     """The hard ADR-0007 bundle contract gate (spec §5: no silent success): all six
     content types present under context_layer/, per-type required frontmatter, and
-    every metric page citing at least one governing policy."""
+    every metric page citing at least one governing policy. System-generated
+    bookkeeping (index.md/log.md) is not an authored page and is skipped."""
     context = staging / "context_layer"
     errors: list[str] = []
     for section, expected_type in _BUNDLE_TYPES.items():
-        pages = sorted((context / section).glob("*.md")) if (context / section).is_dir() else []
+        section_dir = context / section
+        pages = (
+            sorted(p for p in section_dir.glob("*.md") if p.name not in _BOOKKEEPING_NAMES)
+            if section_dir.is_dir()
+            else []
+        )
         if not pages:
             errors.append(
                 f"authored bundle is incomplete: no pages under context_layer/{section}/ "
@@ -440,33 +456,79 @@ def _bundle_errors(staging: Path) -> list[str]:
 # ---------------------------------------------- post-validation OKF enrichment
 
 
-def _model_index(staging: Path) -> dict[str, dict]:
-    """metric name -> {model, primary_key, dimensions, expression} from the staged OSI
-    models — the mechanical source of truth for enrichment and computations."""
+def _model_index(staging: Path) -> tuple[dict[str, dict], bool]:
+    """``(metric name -> {model, primary_key, dimensions, dataset_sources,
+    expression}, all_parsed)`` from the staged OSI models — the mechanical
+    source of truth for enrichment and computations. A model file whose YAML
+    does not parse — or whose structures are malformed (a non-list
+    ``semantic_model``, a non-mapping model/dataset/metric entry) — is SKIPPED
+    and reported through ``all_parsed=False`` (its failure belongs to the
+    validation gate, which reports it structurally); the legacy finalize runs
+    only after validation passed, so nothing changes for the legacy route —
+    the Git candidate's finalize (issue #36/G4) runs BEFORE validation and
+    must leave invalid drafts to the gate, never crash on them (and never
+    treat an unparseable draft's metrics as removed)."""
     index: dict[str, dict] = {}
+    all_parsed = True
     models_dir = staging / "semantic_layer" / "models"
     for path in sorted(models_dir.glob("*.yml")) if models_dir.is_dir() else []:
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for model in doc.get("semantic_model") or []:
+        try:
+            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            all_parsed = False  # unparseable draft: the validation gate owns the error
+            continue
+        if not isinstance(doc, dict):
+            all_parsed = False
+            continue
+        models = doc.get("semantic_model")
+        if not isinstance(models, list):
+            all_parsed = False  # malformed draft: the gate owns the error
+            continue
+        for model in models:
+            if not isinstance(model, dict):
+                all_parsed = False
+                continue
             pk: list[str] = []
             dimensions: list[str] = []
+            dataset_sources: list[str] = []
             for dataset in model.get("datasets") or []:
+                if not isinstance(dataset, dict):
+                    all_parsed = False
+                    continue
                 pk = pk or [str(key) for key in dataset.get("primary_key") or []]
+                source = dataset.get("source")
+                if (
+                    isinstance(source, str)
+                    and source.strip()
+                    and source.strip() not in dataset_sources
+                ):
+                    dataset_sources.append(source.strip())
                 for field in dataset.get("fields") or []:
                     if isinstance(field, dict) and field.get("name") and "dimension" in field:
                         dimensions.append(str(field["name"]))
             for metric in model.get("metrics") or []:
+                if not isinstance(metric, dict):
+                    all_parsed = False
+                    continue
                 name = metric.get("name")
                 if not name:
                     continue
-                dialects = (metric.get("expression") or {}).get("dialects") or [{}]
+                block = metric.get("expression")
+                dialects = (block.get("dialects") if isinstance(block, dict) else None) or [
+                    {}
+                ]
+                lead = dialects[0]
+                if not isinstance(lead, dict):
+                    all_parsed = False
+                    lead = {}
                 index[str(name)] = {
                     "model": str(model.get("name") or path.stem),
                     "primary_key": pk,
                     "dimensions": dimensions,
-                    "expression": str(dialects[0].get("expression") or ""),
+                    "dataset_sources": dataset_sources,
+                    "expression": str(lead.get("expression") or ""),
                 }
-    return index
+    return index, all_parsed
 
 
 def _enrich_metric_pages(staging: Path, models: dict[str, dict]) -> None:
@@ -480,6 +542,10 @@ def _enrich_metric_pages(staging: Path, models: dict[str, dict]) -> None:
         if not info:
             continue
         existing = path.read_text(encoding="utf-8")
+        try:
+            description_missing = not _load_frontmatter_meta(existing).get("description")
+        except yaml.YAMLError:
+            continue  # unparseable draft frontmatter: the gate owns the error
         updates = {
             "governed_by": f"semantic_layer {info['model']}::{path.stem}",
             "dimensions": info["dimensions"],
@@ -488,7 +554,7 @@ def _enrich_metric_pages(staging: Path, models: dict[str, dict]) -> None:
                 "cardinality_enforcement": "STRICT_1_TO_1",
             },
         }
-        if not _load_frontmatter_meta(existing).get("description"):
+        if description_missing:
             updates["description"] = f"{path.stem.replace('_', ' ')} — governed metric"
         path.write_text(_set_frontmatter(existing, updates), encoding="utf-8")
 
@@ -521,6 +587,11 @@ def _write_computations(
             "status": "draft",
             "governed_by": f"semantic_layer {info['model']}::{name}",
             "runtime": "duckdb",
+            # the computation's recorded dataset sources — the semantic inputs
+            # attestation preservation is bound to (issue #36 criterion 2): a
+            # page that cannot prove its inputs unchanged conservatively
+            # regenerates instead of inheriting an attester
+            "dataset_sources": list(info["dataset_sources"]),
             "sources": [
                 {
                     "id": f"model-{info['model']}",
@@ -584,10 +655,84 @@ def _finalize_bundle(
     Harness-led submission (spec 2026-09-24-0005) passes its own provenance and
     ``attester=None`` (pending attestation, ADR-0013)."""
     now = datetime.now(UTC)
-    models = _model_index(staging)
+    models, _all_parsed = _model_index(staging)  # post-validation: always parsed
     _enrich_metric_pages(staging, models)
     _write_computations(staging, models, attester=attester)
     _stamp_pages(staging, now, by=generated_by)
+
+
+# ------------------------------------------- the Git-candidate finalize pass
+
+_SQL_FENCE_RE = re.compile(r"```sql\n(.*?)\n```", re.DOTALL)
+
+
+def _computation_matches(page: Path, name: str, info: dict) -> bool:
+    """True when the existing computation page is the SAME computation: same
+    governed_by identity, same sanctioned SQL expression AND the same dataset
+    sources — the computation's full semantic dependencies. A model edit that
+    keeps the expression text but changes what it reads (``events.events`` →
+    a filtered SELECT) is a CHANGED computation: identical SQL over different
+    inputs does not preserve an expected-value attestation (issue #36
+    criterion 2). Only a full match may keep its bytes — an unchanged
+    computation preserves its provenance and any independent expected-value
+    attestation it carries; a CHANGED computation cannot inherit its
+    predecessor's attestation and is regenerated with the honest
+    ``attestation: pending`` state (ADR-0013). A page recording no dataset
+    sources (a form the finalize never generated) proves nothing about its
+    inputs and conservatively regenerates."""
+    if not page.is_file():
+        return False
+    text = page.read_text(encoding="utf-8")
+    try:
+        meta = _load_frontmatter_meta(text)
+    except yaml.YAMLError:
+        return False  # malformed draft frontmatter: the gate owns the error
+    fence = _SQL_FENCE_RE.search(text)
+    return (
+        meta.get("governed_by") == f"semantic_layer {info['model']}::{name}"
+        and meta.get("dataset_sources") == info["dataset_sources"]
+        and fence is not None
+        and fence.group(1).strip() == info["expression"].strip()
+    )
+
+
+def finalize_candidate(staging: Path) -> None:
+    """The deterministic finalize pass for Git-backed proposals (issue #36/G4,
+    spec §4: generated artifact content is finalized BEFORE the candidate
+    commit is validated): metric-page enrichment, computation pages and the
+    index trees — with NO wall-clock lifecycle stamping and no review
+    decoration. Existing page lifecycle frontmatter is not Git admission
+    authority: reviewed/governed state is supplied by the external admission
+    record (G5), so the committed pages are never restamped, and unchanged
+    inherited pages keep their bytes verbatim (deterministic output ⇒ an
+    unchanged retry is byte-identical and no-op revisions stay no-ops).
+
+    Unchanged computations are preserved byte-for-byte — their independent
+    attestation stays earned (unchanged is the FULL semantic dependency match:
+    governed identity, sanctioned SQL and dataset sources); changed or new
+    ones carry ``attestation:
+    pending`` — and computations of metrics that no longer exist are removed
+    (the generated set is always exactly the governed metric set). A model
+    file that does not parse — or whose structures are malformed — is an
+    invalid DRAFT (allowed at the edit seam):
+    the computation set cannot be derived, so nothing is generated or removed
+    and the validation gate reports the structural failure."""
+    models, all_parsed = _model_index(staging)
+    _enrich_metric_pages(staging, models)
+    comp_dir = staging / "context_layer" / "computations"
+    if all_parsed:
+        changed = {
+            name: info
+            for name, info in sorted(models.items())
+            if not _computation_matches(comp_dir / f"{name}.md", name, info)
+        }
+        if changed:
+            _write_computations(staging, changed, attester=None)
+        if comp_dir.is_dir():
+            for page in sorted(comp_dir.glob("*.md")):
+                if page.stem not in models:
+                    page.unlink()
+    _regenerate_indexes(staging / "context_layer")
 
 
 # -------------------------------------------- deterministic promotion bookkeeping
@@ -655,7 +800,10 @@ def _index_for(directory: Path, served_context: Path) -> str:
         blurb = _FOLDER_BLURBS.get(sub.name, "")
         lines.append(f"* [{sub.name.capitalize()}]({rel.as_posix()}/) - {blurb}".rstrip(" -"))
     for page in sorted(p for p in directory.glob("*.md") if p.name != "index.md"):
-        meta, _ = _load(page.read_text(encoding="utf-8"))
+        try:
+            meta, _ = _load(page.read_text(encoding="utf-8"))
+        except yaml.YAMLError:
+            meta = None  # unparseable frontmatter: fall back to the file stem
         title = str((meta or {}).get("title") or page.stem.replace("_", " "))
         desc = str((meta or {}).get("description") or "")
         lines.append(f"* [{title}]({page.name}) - {desc}".rstrip(" -"))

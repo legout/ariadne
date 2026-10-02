@@ -101,8 +101,25 @@ layer-specific edits in :mod:`ariadne.authoring_semantic` (model/graph) and
 :mod:`ariadne.authoring_context` (page/seed notes), the Git-aware source
 proposals/operator approval/measured inputs in :mod:`ariadne.authoring_sources`
 (issue #35/G3), and the bounded document/evidence preparation in
-:mod:`ariadne.authoring_inputs`. Validation and review of a candidate are G4
-and deliberately absent here.
+:mod:`ariadne.authoring_inputs`.
+
+Slice 5 — :func:`validate_proposal` / :func:`review_proposal` (issue #36/G4,
+spec §§3–4 "Validate the effective candidate"/"Review exposes the exact
+revision", AC2/4/6, plan §2 rows ``validate_proposal``/``review_proposal``):
+validation finalizes the deterministic generated artifacts (the wall-clock-free
+:func:`ariadne.context.finalize_candidate`), commits any generated changes,
+validates the EXACT final commit — the complete effective project through the
+existing schema/page-contract/compile/bind/grain/citation checks against the
+operator-APPROVED resolved source identity (the G3 seam) — and stores the
+evidence separately under the operator-owned ignored ``.ariadne/validation/``
+bound to that commit, the COMPLETE artifact digest (generated/bookkeeping/Seed
+Notes bytes included, unlike the legacy served-tree walker), the source
+identity, the verified citations and the validator identity. The bounded
+repair policy is per-proposal and never reset by creating another commit.
+Review is read-only (reading it is never sign-off; admission is G5): exact
+revisions, change inventory, bounded effective bodies, citations, the full
+check scope and a review digest, with changed candidates or changed document
+evidence reported as stale — never as an unchanged validated candidate.
 """
 
 from __future__ import annotations
@@ -128,6 +145,7 @@ from ariadne import (
     authoring_inputs,  # noqa: F401 — re-export: the historical seam
     authoring_semantic,
     authoring_sources,
+    context,
     profiler,
     proposals,
 )
@@ -163,7 +181,14 @@ from ariadne.sources import (
     _resolve_against,
     load_registry,
 )
-from ariadne.validate import _model_entries, validate
+from ariadne.validate import (
+    VALIDATOR_VERSION,
+    CheckOutcome,
+    _model_entries,
+    candidate_scope_digest,
+    validate,
+    validator_identity,
+)
 
 # One pending source proposal per project, in the agent-writable staging area
 # (a dedicated subdir: never collides with ad-hoc metric or ingest proposals).
@@ -848,7 +873,11 @@ def _graph_citation_errors(staging: Path) -> list[str]:
                 "cannot become a governed multi-fact answer"
             )
             continue
-        meta = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
+        try:
+            meta = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            errors.append(f"{rel}: frontmatter is not valid YAML: {exc}")
+            continue
         refs = [
             str(source.get("resource") if isinstance(source, dict) else source or "")
             for source in meta.get("sources") or []
@@ -1282,3 +1311,578 @@ class AuthoringProject:
         area of the fixed project (never a Git artifact): retain the original
         bytes and return the stable identity ``{resource, digest}``."""
         return store_upload(name, data, project=self.project, max_bytes=max_bytes)
+
+    # ----------------------- G4 (issue #36): validate and review the candidate
+
+    def validate_proposal(self, proposal: str, expected_revision: str) -> dict:
+        """Validate the proposal's effective candidate at its EXACT final
+        revision: finalize the deterministic generated artifacts, commit any
+        generated changes, then run the complete check stack — existing
+        schema/compile/bind/grain/relationship audits over the approved source
+        identity plus the page-contract and citation gates — against the
+        materialized final commit (never the earlier input commit). Returns
+        that revision with the report/errors; the evidence is stored separately
+        under ``.ariadne/validation/``. Validation is not admission (G5)."""
+        return validate_proposal(self.project, proposal, expected_revision)
+
+    def review_proposal(self, proposal: str, *, part: int = 1) -> dict:
+        """Read the proposal's candidate (read-only; reading is never
+        sign-off): current/base revisions, change inventory, bounded effective
+        bodies, citations, the validation report with its full check scope and
+        a review digest binding the exact reviewed identity."""
+        return review_proposal(self.project, proposal, part=part)
+
+
+
+# ------------------------------------- slice 5 (issue #36/G4): validation/review
+
+# The finalize commit's fixed message (the only commits validation itself
+# creates): deterministic generated artifacts only, never a review decoration.
+FINALIZE_COMMIT_MESSAGE = "ariadne: finalize generated artifacts"
+
+
+def _cited_resources(meta: dict) -> list[str]:
+    """The distinct citation resources of one page's frontmatter ``sources``
+    (a mapping's ``resource`` — the rev 10 context field — or the plain
+    string itself)."""
+    resources: list[str] = []
+    for source in meta.get("sources") or []:
+        resource = (
+            source.get("resource")
+            if isinstance(source, dict) and "resource" in source
+            else source
+        )
+        if isinstance(resource, str) and resource and resource not in resources:
+            resources.append(resource)
+    return resources
+
+
+def _tree_citation(tree: Path, page: Path, resource: str) -> str | None:
+    """The tree-relative path of a citation that resolves INSIDE the effective
+    bundle — context-root-relative first (``policies/x.md`` — the runtime's
+    citation contract), then the citing page's own directory (the generated
+    computations cite ``../../semantic_layer/...``), then bundle-root-relative
+    (``data/seed_notes.md``); None when it resolves nowhere. Containment is
+    checked against the materialized TREE (the whole candidate is the citation
+    universe): an escaping traversal is just another unresolvable reference."""
+    root = tree.resolve()
+    context = tree / "context_layer"
+    for base in (context, page.parent, tree):
+        try:
+            resolved = (base / resource).resolve()
+        except OSError:  # pragma: no cover - pathological resource spellings
+            return None
+        if resolved.is_relative_to(root) and resolved.is_file():
+            return resolved.relative_to(root).as_posix()
+    return None
+
+
+def _verified_citations(
+    tree: Path, project: Path, source_names: set[str]
+) -> tuple[list[dict], list[str]]:
+    """Verify every citation of the effective bundle's OKF pages (spec §3–4):
+    a citation resolves as a CANDIDATE page (inside the effective tree), an
+    APPROVED source-table identity, or a DOCUMENT inside the operator's input
+    boundary — verified through the shared boundary seam with its sha256
+    (:func:`_citation_record`), exactly the legacy bundle review's verified
+    citation. Returns (verified citations, errors): a citation resolving
+    nowhere is broken, and broken INHERITED citations block even when only one
+    file changed (AC2)."""
+    citations: dict[tuple[str, str], dict] = {}
+    errors: list[str] = []
+    context_dir = tree / "context_layer"
+    pages = sorted(context_dir.rglob("*.md")) if context_dir.is_dir() else []
+    for page in pages:
+        rel = f"context_layer/{page.relative_to(context_dir)}"
+        try:
+            meta = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            # a malformed draft page is a validation FAILURE the page gate
+            # already names structurally; here it becomes a citation
+            # diagnostic in the report — never an exception that escapes
+            # validate_proposal with the whole report (spec §4)
+            errors.append(
+                f"{rel}: frontmatter is not valid YAML — its citations cannot "
+                f"be verified: {exc}"
+            )
+            continue
+        for resource in _cited_resources(meta):
+            if (bundle_rel := _tree_citation(tree, page, resource)) is not None:
+                citations[("bundle", resource)] = {
+                    "resource": resource,
+                    "kind": "bundle",
+                    "path": bundle_rel,
+                }
+            elif resource in source_names or resource.split(".", 1)[0] in source_names:
+                citations[("source", resource)] = {"resource": resource, "kind": "source"}
+            else:
+                try:  # the operator's document boundary (verified, digest-bound)
+                    citation = _citation_record(resource, project)
+                except ValueError as exc:
+                    errors.append(
+                        f"{rel}: cited resource {resource!r} does not resolve as a "
+                        "bundle page, approved source identity or operator-bound "
+                        f"document — broken citation: {exc}"
+                    )
+                    continue
+                citations[("document", resource)] = {
+                    "resource": resource,
+                    "kind": "document",
+                    "title": citation["title"],
+                    "digest": citation["digest"],
+                    "location": citation["resource"],
+                }
+    return [citations[key] for key in sorted(citations)], errors
+
+
+def _document_digests_current(project: Path, citations: list[dict]) -> bool:
+    """True when every recorded DOCUMENT citation still resolves to the exact
+    verified bytes — changed document evidence must never be presented as the
+    unchanged validated candidate's linkage."""
+    for citation in citations or []:
+        if citation.get("kind") != "document":
+            continue
+        try:
+            _resource, _title, data = _document_bytes(citation["resource"], project)
+        except ValueError:
+            return False
+        if _sha256_hex(data) != citation.get("digest"):
+            return False
+    return True
+
+
+def _materialize(project: Path, proposal: str, revision: str, target: Path) -> list[str]:
+    """Materialize the EXACT candidate-scope bytes of ``revision`` into
+    ``target`` (read from the commit, never a mutable worktree) and return the
+    sorted scope paths — the validated/reviewed effective project. An
+    empty-project onboarding candidate (no models yet) materializes fine:
+    review stays readable and ``validate`` reports the missing models itself."""
+    rels: list[str] = []
+    for rel, blob in proposals.scope_blobs(project, revision):
+        path = target.joinpath(*PurePosixPath(rel).parts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(blob)
+        rels.append(rel)
+    return rels
+
+
+def _report_view(report) -> dict:
+    """The JSON view of one digest-bound ValidationReport."""
+    return {
+        "scope": report.scope,
+        "digest": report.digest,
+        "validator_version": report.validator_version,
+        "registry_digest": report.registry_digest,
+        "registry_label": report.registry_label,
+        "files": list(report.files),
+        "checks": [
+            {"name": check.name, "outcome": check.outcome, "detail": check.detail}
+            for check in report.checks
+        ],
+    }
+
+
+def _validate_view(evidence: dict, evidence_path: Path, *, idempotent: bool) -> dict:
+    """The validate_proposal response envelope (reused verbatim by the
+    idempotent no-op retry)."""
+    view = {
+        "proposal": evidence["proposal"],
+        "revision": evidence["commit"],
+        "input_revision": evidence["input_revision"],
+        "finalized": evidence["commit"] != evidence["input_revision"],
+        "ok": evidence["ok"],
+        "status": evidence["status"],
+        "errors": list(evidence["errors"]),
+        "attempts": evidence["repair"]["attempts"],
+        "repair_status": evidence["repair"]["status"],
+        "artifact_digest": evidence["artifact_digest"],
+        "artifact_files": list(evidence["artifact_files"]),
+        "source_digest": evidence["source_digest"],
+        "citations": list(evidence["citations"]),
+        "report": evidence["report"],
+        "performed_checks": list(evidence["performed_checks"]),
+        "validator_identity": evidence["validator_identity"],
+        "evidence": str(evidence_path),
+    }
+    if idempotent:
+        view["idempotent"] = True
+    return view
+
+
+def validate_proposal(project: str | Path, proposal: str, expected_revision: str) -> dict:
+    """Validate the proposal's effective candidate at its EXACT final revision
+    (plan §2 ``validate_proposal``, spec §4): finalize the deterministic
+    generated artifacts, commit any generated changes, materialize the final
+    commit's candidate scope, and run the complete existing check stack over
+    it — :func:`ariadne.validate` schema/compile/bind/grain/relationship
+    audits against the operator-APPROVED resolved source identity (the G3
+    seam; a declared-but-unapproved identity is an explicit error before
+    anything opens), the ADR-0007 per-type page contract, the graph-citation
+    gate and the verified-citation check. Returns the FINAL revision with the
+    report and errors — never the earlier input commit when bytes changed.
+
+    Evidence is stored separately (``.ariadne/validation/<proposal>/<
+    commit>.json``, never a committed artifact) binding the commit, the
+    COMPLETE artifact digest (generated/bookkeeping/Seed Notes bytes included,
+    unlike the legacy served-tree walker), the resolved source identity, the
+    verified citations, the performed check set and the validator identity.
+    The bounded repair state is per-proposal and persistent: an unchanged
+    retry is idempotent (no attempt consumed, no reset), a changed candidate
+    consumes one of the authoring rounds, and exhausting them stays
+    ``review_needed`` for the human — creating another commit never resets it."""
+    project = Path(project).resolve()
+    proposals._load_record(project, proposal)  # identity/belonging errors early
+    worktree_root = project / proposals.WORKTREES_REL / proposal
+    with proposals._file_lock(project / proposals.LOCKS_REL / f"{proposal}.lock"):
+        record = proposals._load_record(project, proposal)  # authoritative under the lock
+        proposals._check_coherent(project, record)
+        current = record["candidate_revision"]
+        if expected_revision != current:
+            raise ValueError(
+                f"stale revision: proposal {proposal} is at candidate {current}, the "
+                f"validation expected {expected_revision} — re-read the candidate and "
+                "retry with the current revision; nothing was written"
+            )
+        # The G3 seam BEFORE any finalize commit: the candidate's resolved
+        # source identity must carry the operator's approval. The finalize
+        # pass touches only context_layer bytes, so the input revision's
+        # registry identity IS the final revision's identity.
+        resolved_sources, source_digest = authoring_sources.candidate_sources(
+            project, current
+        )
+        approval = None
+        if resolved_sources is not None:
+            approval = authoring_sources._approved_identity(
+                project, source_digest, proposal, current
+            )
+        # Idempotent no-op retry: stored evidence for the EXACT current commit
+        # with unchanged binding context returns as-is — nothing re-runs and
+        # the bounded repair state is neither reset nor advanced.
+        stored = proposals.load_validation(project, proposal, current)
+        if (
+            stored is not None
+            and stored.get("source_digest") == source_digest
+            and _document_digests_current(project, stored.get("citations") or [])
+        ):
+            return _validate_view(
+                stored,
+                proposals._validation_path(project, proposal, current),
+                idempotent=True,
+            )
+        repair = dict(record.get("repair") or {"attempts": 0, "status": "open"})
+        if repair["attempts"] >= MAX_ROUNDS or repair["status"] == "review_needed":
+            raise ValueError(
+                f"proposal {proposal} exhausted its {MAX_ROUNDS} bounded validation "
+                f"rounds ({repair['attempts']} attempts) and remains review_needed — "
+                "this needs human resolution; no agent validation resets the repair "
+                "state (spec §4); nothing was written"
+            )
+        # Finalize BEFORE validation (spec §4): deterministic generated content
+        # (no wall-clock restamp), committed as the exact final candidate.
+        proposals.refuse_untracked_scope(project, record)
+        context.finalize_candidate(worktree_root)
+        final = (
+            proposals.commit_generated(project, record, message=FINALIZE_COMMIT_MESSAGE)
+            or current
+        )
+        with tempfile.TemporaryDirectory(prefix="ariadne-candidate-") as tmp:
+            root = Path(tmp)
+            tree = root / "bundle"
+            tree.mkdir()
+            rels = _materialize(project, proposal, final, tree)
+            # The audit connection opens ONLY the operator-approved resolved
+            # identity (the G3 seam): one temp registry carrying exactly those
+            # resolved entries, outside the materialized tree.
+            sources_path = None
+            if approval is not None:
+                sources_path = root / "approved-registry.yaml"
+                sources_path.write_text(
+                    yaml.safe_dump({"sources": approval["sources"]}, sort_keys=False),
+                    encoding="utf-8",
+                )
+            names = {entry["name"] for entry in (approval["sources"] if approval else [])}
+            try:  # the source-access boundary BEFORE any bind/audit execution
+                _authorize_dataset_sources(tree, names)
+                auth_error = None
+            except (ValueError, yaml.YAMLError) as exc:
+                # an unauthorizable or unparseable model set never reaches the
+                # audit connection; the structural gate reports the parse error
+                auth_error = str(exc)
+            if auth_error is None:
+                result = validate(tree, sources_path=sources_path)
+                errors = list(result.errors)
+            else:  # never open the audit connection for an unauthorized source
+                result = validate(tree)  # compile-only: the boundary error blocks
+                errors = [auth_error, *result.errors]
+            page_errors = _bundle_errors(tree) + _graph_citation_errors(tree)
+            citations, citation_errors = _verified_citations(tree, project, names)
+            errors.extend(page_errors)
+            errors.extend(citation_errors)
+            # validate() carries no report at all when the tree has no semantic
+            # models directory (the empty-project onboarding case): the
+            # structural outcome owns that failure explicitly
+            base_checks = (
+                result.report.checks
+                if result.report is not None
+                else (CheckOutcome("structural", "failed", "; ".join(result.errors)),)
+            )
+            checks = (
+                CheckOutcome(
+                    "source_boundary", "failed" if auth_error else "passed", auth_error or ""
+                ),
+                *base_checks,
+                CheckOutcome(
+                    "page_contract",
+                    "failed" if page_errors else "passed",
+                    "; ".join(page_errors),
+                ),
+                CheckOutcome(
+                    "citations",
+                    "failed" if citation_errors else "passed",
+                    "; ".join(citation_errors),
+                ),
+            )
+            performed = [check.name for check in checks if check.outcome != "not-run"]
+            artifact_digest = candidate_scope_digest(tree)
+            report_view = (
+                _report_view(result.report)
+                if result.report is not None
+                else {
+                    "scope": "none (no semantic models)",
+                    "digest": None,
+                    "validator_version": VALIDATOR_VERSION,
+                    "registry_digest": None,
+                    "registry_label": None,
+                    "files": [],
+                    "checks": [],
+                }
+            )
+            # the report the evidence binds carries the FULL check scope: the
+            # compiler/audit outcomes plus the wrapper-level gates
+            report_view["checks"] = [
+                {"name": check.name, "outcome": check.outcome, "detail": check.detail}
+                for check in checks
+            ]
+        ok = not errors
+        status = "validated" if ok else "invalid"
+        # Bounded repair accounting: one round per CHANGED validation (a
+        # different commit or a changed binding context); an identical retry
+        # of the same key consumes nothing.
+        key = {
+            "commit": final,
+            "source_digest": source_digest,
+            "documents": sorted(
+                f"{c['resource']}:{c['digest']}"
+                for c in citations
+                if c["kind"] == "document"
+            ),
+        }
+        previous = record.get("validation") or {}
+        attempts = repair["attempts"] + (1 if previous.get("key") != key else 0)
+        repair = {
+            "attempts": attempts,
+            "status": "review_needed" if (errors and attempts >= MAX_ROUNDS) else "open",
+        }
+        evidence = {
+            "proposal": proposal,
+            "project": str(project),
+            "commit": final,
+            "input_revision": expected_revision,
+            "ok": ok,
+            "status": status,
+            "errors": errors,
+            "artifact_digest": artifact_digest,
+            "artifact_files": rels,
+            "source_digest": source_digest,
+            "source_identity": resolved_sources,
+            "source_approval": (
+                {"digest": source_digest, "approved_at": approval["approved_at"]}
+                if approval is not None
+                else None
+            ),
+            "citations": citations,
+            "report": report_view,
+            "performed_checks": performed,
+            "validator_identity": validator_identity(performed),
+            "repair": repair,
+            "validated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
+        # The proposal record's persistent repair/validation state and the
+        # verified citation identities (plan §2) — never reset by a new commit.
+        record["repair"] = repair
+        record["validation"] = {"commit": final, "ok": ok, "key": key, "attempts": attempts}
+        record["citations"] = citations
+        proposals._store_record(project, record)
+        evidence_path = proposals.store_validation(project, evidence)
+        return _validate_view(evidence, evidence_path, idempotent=False)
+
+
+def _review_body(rel: str, data: bytes, *, part: int) -> dict:
+    """One bounded body entry of the review inventory: part ``part`` of the
+    artifact when it has one, and an honestly EMPTY ``exhausted`` entry when
+    the artifact has no such part. The part bound applies PER-ARTIFACT (plan
+    §2 bounded-part review contract), so a short artifact (e.g.
+    ``ariadne.yaml``) never makes the later parts of a longer one
+    unreachable — every part of every artifact stays retrievable through
+    successive review calls, and no truncated part is ever claimed complete."""
+    text = data.decode("utf-8", errors="replace")
+    parts = max(1, -(-len(text) // EVIDENCE_PART_CHARS))
+    if part > parts:
+        return {
+            "resource": rel,
+            "title": PurePosixPath(rel).name,
+            "digest": _sha256_hex(data),
+            "chars": len(text),
+            "part": part,
+            "parts": parts,
+            "text": "",
+            "complete": False,
+            "exhausted": True,  # no part N exists — earlier parts hold the whole body
+        }
+    record = _evidence_record(
+        rel,
+        PurePosixPath(rel).name,
+        _sha256_hex(data),
+        text,
+        part=part,
+        part_chars=EVIDENCE_PART_CHARS,
+    )
+    record["exhausted"] = False
+    return record
+
+
+def _change_inventory(project: Path, record: dict) -> list[dict]:
+    """The candidate's change inventory versus its base revision, bounded to
+    the candidate artifact scope (an unrelated tracked file never leaks into a
+    review)."""
+    scope = [
+        proposals._literal(prefix)
+        for prefix in (
+            "ariadne.yaml",
+            "data/seed_notes.md",
+            "semantic_layer",
+            "context_layer",
+        )
+    ]
+    diff = proposals._git(
+        [
+            "diff",
+            "--name-status",
+            "--no-renames",
+            record["base_revision"],
+            record["candidate_revision"],
+            "--",
+            *scope,
+        ],
+        project,
+    ).stdout
+    inventory = []
+    for line in diff.splitlines():
+        if not line.strip():
+            continue
+        status, _, path = line.partition("\t")
+        inventory.append({"change": status[0], "path": path})
+    return inventory
+
+
+def review_proposal(project: str | Path, proposal: str, *, part: int = 1) -> dict:
+    """Read the proposal's effective candidate (plan §2 ``review_proposal``;
+    spec §4 — reading a review response is NOT sign-off, and admission is a
+    separate human decision in G5): current/base revisions, the change
+    inventory, bounded effective bodies with stable digests (the requested
+    part applies PER-ARTIFACT; artifacts without that many parts keep their
+    inventory entry as an honestly empty ``exhausted`` record), the CURRENT
+    source identity and approval state, the verified citations (re-verified
+    now: changed document evidence or a moved candidate is reported stale,
+    never as an unchanged validated candidate), the stored validation report
+    with its full check scope, and a review digest binding exactly what was
+    reviewed. Read-only: nothing is written, moved or reset."""
+    project = Path(project).resolve()
+    proposals._load_record(project, proposal)
+    with proposals._file_lock(project / proposals.LOCKS_REL / f"{proposal}.lock"):
+        record = proposals._load_record(project, proposal)  # authoritative under the lock
+        proposals._check_coherent(project, record)
+        base = record["base_revision"]
+        current = record["candidate_revision"]
+        with tempfile.TemporaryDirectory(prefix="ariadne-review-") as tmp:
+            tree = Path(tmp) / "bundle"
+            tree.mkdir()
+            rels = _materialize(project, proposal, current, tree)
+            resolved_sources, source_digest = authoring_sources.candidate_sources(
+                project, current
+            )
+            bodies = []
+            for rel in rels:
+                data = (tree / Path(*PurePosixPath(rel).parts)).read_bytes()
+                bodies.append(_review_body(rel, data, part=part))
+            source_names = {entry["name"] for entry in resolved_sources or []}
+            citations, _citation_errors = _verified_citations(tree, project, source_names)
+            approved = (
+                authoring_sources._load_approvals(project).get(source_digest or "")
+                is not None
+            )
+            artifact_digest = candidate_scope_digest(tree)
+            # The stored report binds the exact candidate commit or is absent:
+            # a candidate that moved past its validation, a changed source
+            # identity, changed document evidence or changed artifact bytes can
+            # never be presented as an unchanged validated candidate.
+            report = proposals.load_validation(project, proposal, current)
+            stale_reasons: list[str] = []
+            if report is not None:
+                if report.get("source_digest") != source_digest:
+                    stale_reasons.append(
+                        "the resolved source identity changed since validation"
+                    )
+                if not _document_digests_current(project, report.get("citations") or []):
+                    stale_reasons.append(
+                        "cited document evidence changed since validation"
+                    )
+                if report.get("artifact_digest") != artifact_digest:
+                    stale_reasons.append(
+                        "the candidate's artifact bytes differ from the validated digest"
+                    )
+            inventory = _change_inventory(project, record)
+            review_digest = hashlib.sha256(
+                json.dumps(
+                    {
+                        "proposal": proposal,
+                        "base_revision": base,
+                        "revision": current,
+                        "changes": inventory,
+                        "artifact_digest": artifact_digest,
+                        "citations": citations,
+                        "validation": None
+                        if report is None
+                        else {
+                            "commit": report["commit"],
+                            "ok": report["ok"],
+                            "artifact_digest": report["artifact_digest"],
+                        },
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            return {
+                "proposal": proposal,
+                "project": str(project),
+                "base_revision": base,
+                "revision": current,
+                "part": part,
+                "changes": inventory,
+                "files": bodies,
+                "sources": resolved_sources or [],
+                "sources_digest": source_digest,
+                "source_approved": approved,
+                "citations": citations,
+                "report": None
+                if report is None
+                else _validate_view(
+                    report,
+                    proposals._validation_path(project, proposal, current),
+                    idempotent=False,
+                ),
+                "validation_stale": bool(stale_reasons),
+                "stale_reasons": stale_reasons,
+                "review_digest": review_digest,
+            }

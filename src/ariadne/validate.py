@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import sys
 from dataclasses import dataclass, field
@@ -92,6 +93,30 @@ _ADR_TOLERANCE = 1e-9
 # The validator's own identity in the digest-bound report: bump when the checks
 # performed change (spec rev 1, "Validation, admission, and labels").
 VALIDATOR_VERSION = "ariadne-validate/3"  # 3: live relationship-target audits (issue #27)
+
+
+def validator_identity(performed_checks: list[str] | tuple[str, ...]) -> dict:
+    """The validator identity a Git-proposal validation record binds (plan §2):
+    the core distribution version, the validation/compiler/execution
+    implementations and a digest over that check configuration — so a report
+    from an older checker configuration can never pose as current evidence."""
+    try:
+        import importlib.metadata
+
+        core = importlib.metadata.version("ariadne-core")
+    except Exception:  # PackageNotFoundError and metadata errors: unknown, never fatal
+        core = "unknown"
+    config = {
+        "core_version": core,
+        "validator_version": VALIDATOR_VERSION,
+        "compiler": f"sqlglot/{getattr(sqlglot, '__version__', 'unknown')}",
+        "execution": f"duckdb/{getattr(duckdb, '__version__', 'unknown')}",
+        "checks": list(performed_checks),
+    }
+    digest = hashlib.sha256(
+        json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {**config, "check_config_digest": digest}
 
 
 @dataclass(frozen=True)
@@ -510,6 +535,46 @@ def served_tree_digest(semantic_dir: str | Path, context_dir: str | Path) -> str
     scheme as the validation report, so one helper cannot drift from the
     other."""
     return _digest_files(served_tree_files(semantic_dir, context_dir))
+
+
+# The COMPLETE candidate-scope walker (issue #36/G4, plan §2 "Project storage
+# and authority"): unlike served_tree_files above — the LEGACY admission walker
+# that deliberately excludes promotion bookkeeping and stays for its legacy
+# callers (promote/query) — this walks the WHOLE candidate snapshot identity of
+# a Git authoring proposal: registry, Seed Notes, models, graph and ALL OKF
+# pages INCLUDING the system-generated computations and the bookkeeping
+# (index.md/log.md). The new complete artifact digest therefore changes when
+# ANY candidate-scope byte changes; nothing silently rides outside the binding.
+def candidate_scope_files(staging: str | Path) -> list[tuple[str, Path, bytes]]:
+    """Every byte of the candidate artifact scope under ``staging`` — the exact
+    artifact set a Git proposal validates, reviews and admits (one walker
+    behind the complete digest and the review inventory, so neither can drift
+    from the other)."""
+    staging = Path(staging)
+    files: list[tuple[str, Path, bytes]] = []
+    for rel in ("ariadne.yaml", "data/seed_notes.md", "semantic_layer/graph.yml"):
+        path = staging / rel
+        if path.is_file():
+            files.append((rel, path, path.read_bytes()))
+    models = staging / "semantic_layer" / "models"
+    if models.is_dir():
+        for path in sorted(list(models.glob("*.yml")) + list(models.glob("*.yaml"))):
+            files.append(
+                (f"semantic_layer/models/{path.name}", path, path.read_bytes())
+            )
+    context = staging / "context_layer"
+    if context.is_dir():
+        for path in sorted(p for p in context.rglob("*.md") if p.is_file()):
+            files.append(
+                (f"context_layer/{path.relative_to(context)}", path, path.read_bytes())
+            )
+    return files
+
+
+def candidate_scope_digest(staging: str | Path) -> str:
+    """The COMPLETE artifact digest of a candidate tree (issue #36/G4): same
+    hashing scheme as the validation report, over :func:`candidate_scope_files`."""
+    return _digest_files(candidate_scope_files(staging))
 
 
 def _registry_identity(

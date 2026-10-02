@@ -19,11 +19,14 @@ for failure, message verbatim.
                              [--sample-rows N] [--project DIR]
     ariadne-authoring submit --file FILE [--base-digest DIGEST] [--project DIR]
     ariadne-authoring review [--part N] [--project DIR]
+    ariadne-authoring review --proposal ID [--part N] [--project DIR]
     ariadne-authoring start [--base-revision REV] [--project DIR]
     ariadne-authoring read --proposal ID --kind KIND [--name N] [--section S]
                             [--part N] [--project DIR]
     ariadne-authoring edit --proposal ID --expected-revision REV --file FILE
                             [--project DIR]
+    ariadne-authoring validate --proposal ID --expected-revision REV
+                              [--project DIR]
 
 ``approve-sources`` is HUMAN-ONLY and runs on the server host (ADR-0013): the
 packaged skill must never invoke it, and it is excluded from every MCP tool
@@ -49,8 +52,12 @@ the current candidate. Git-mode ``propose-sources``/``inputs`` (issue #35/G3)
 address the same proposals: a typed source proposal commits into the candidate
 registry and returns the resolved identity digest (never opening anything);
 ``inputs`` measures ONLY the operator-approved resolved identity plus the
-operator-bound documents. Validation and review of a candidate are LATER
-slices and have no command here yet.
+operator-bound documents. ``validate`` (issue #36/G4) finalizes the generated
+artifacts, commits any generated changes, validates the EXACT final commit
+against the approved source identity and returns that revision with its
+report/errors — never a signoff. ``review --proposal`` (issue #36/G4) is the
+read-only Git-candidate review; ``review`` without ``--proposal`` keeps its
+legacy staged-bundle meaning.
 """
 
 from __future__ import annotations
@@ -208,6 +215,13 @@ def build_parser() -> _Parser:
         "readable, never a signoff",
     )
     review_cmd.add_argument(
+        "--proposal",
+        default=None,
+        help="Git mode: review this proposal's effective candidate — exact "
+        "revisions, change inventory, bounded bodies, citations, the validation "
+        "report and a review digest (issue #36/G4; read-only, never a signoff)",
+    )
+    review_cmd.add_argument(
         "--part",
         type=int,
         default=1,
@@ -275,6 +289,24 @@ def build_parser() -> _Parser:
     edit_cmd.add_argument(
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
+
+    validate_cmd = sub.add_parser(
+        "validate",
+        help="validate one Git proposal's effective candidate at its EXACT final "
+        "revision: finalize generated artifacts, commit any generated changes, "
+        "run the complete check stack against the approved source identity and "
+        "return that revision with its report/errors (issue #36/G4; never a signoff)",
+    )
+    validate_cmd.add_argument("--proposal", required=True, help="the proposal ID")
+    validate_cmd.add_argument(
+        "--expected-revision",
+        required=True,
+        help="the CURRENT candidate revision the validation is based on (the "
+        "response returns the FINAL revision after the finalize commit)",
+    )
+    validate_cmd.add_argument(
+        "--project", default=".", help="project root holding ariadne.yaml (default: .)"
+    )
     return parser
 
 
@@ -333,7 +365,16 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "submit":
             result = submit_bundle(args.file, project=args.project, base_digest=args.base_digest)
         elif args.command == "review":
-            result = review_bundle(project=args.project, part=args.part)
+            if args.proposal is not None:
+                result = AuthoringProject(args.project).review_proposal(
+                    args.proposal, part=args.part
+                )
+            else:
+                result = review_bundle(project=args.project, part=args.part)
+        elif args.command == "validate":
+            result = AuthoringProject(args.project).validate_proposal(
+                args.proposal, args.expected_revision
+            )
         elif args.command == "start":
             result = AuthoringProject(args.project).start_proposal(args.base_revision)
         elif args.command == "read":

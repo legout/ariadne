@@ -10,7 +10,11 @@ Query (:mod:`ariadne.query`) share ONE implementation:
   (``ariadne/proposal/<id>``), one worktree per active writer under the
   ignored operator-owned ``.ariadne/`` state dir (``worktrees/<id>/``,
   ``proposals/<id>.json`` records), revision-checked complete-artifact edits,
-  and the shared pre-write content boundary (bounds + credential classes) the
+  the finalize pass's generated-artifact commit (issue #36/G4), the COMPLETE
+  candidate-scope snapshot walker behind exact-final-commit
+  validation/review, and the separately stored validation evidence
+  (``validation/<id>/<commit>.json`` — operator-owned, never committed) plus
+  the shared pre-write content boundary (bounds + credential classes) the
   legacy bundle submission also uses;
 - :func:`stage_ad_hoc`, the existing compiled ad-hoc staging/label operation
   moved INTACT out of the Query runtime (issue #34/G2) so Query stages ad-hoc
@@ -59,6 +63,7 @@ ARIADNE_STATE_DIR = Path(".ariadne")
 PROPOSALS_REL = ARIADNE_STATE_DIR / "proposals"  # <id>.json records
 WORKTREES_REL = ARIADNE_STATE_DIR / "worktrees"  # <id>/ per active writer
 LOCKS_REL = ARIADNE_STATE_DIR / "locks"  # <id>.lock per proposal + project.lock
+VALIDATION_REL = ARIADNE_STATE_DIR / "validation"  # <id>/<commit>.json evidence
 PROPOSAL_BRANCH_PREFIX = "ariadne/proposal/"  # ariadne/proposal/<id>
 
 # A generated proposal ID: lowercase slug, never option-shaped (no leading '-').
@@ -493,6 +498,19 @@ def _assert_scope(rel: str) -> None:
     that reaches Git must be one of the allowed candidate paths (plan §2
     candidate scope), explicitly staged — never a directory, never a traversal,
     never a generated artifact."""
+    if not _in_user_scope(rel):
+        raise ValueError(
+            f"artifact path {rel!r} is outside the proposal artifact scope (ariadne.yaml, "
+            "data/seed_notes.md, semantic_layer/models/*.yml, semantic_layer/graph.yml, "
+            "context_layer/{tables,references/joins,policies,metrics,skills}/*.md)"
+        )
+    refuse_generated(rel)  # generated artifacts are never USER-editable
+
+
+def _in_user_scope(rel: str) -> bool:
+    """True when ``rel`` matches the allowed USER-editable candidate path
+    grammar (the predicate behind :func:`_assert_scope`; generated artifacts
+    inside the scope return True here and are refused separately)."""
     pure = PurePosixPath(rel)
     if (
         not isinstance(rel, str)
@@ -502,36 +520,54 @@ def _assert_scope(rel: str) -> None:
         or rel.startswith("-")
         or any(part in ("", ".", "..") for part in pure.parts)
     ):
-        raise ValueError(f"artifact path {rel!r} is not an allowed relative artifact path")
+        return False
     parts = pure.parts
     if rel in ("ariadne.yaml", "data/seed_notes.md", "semantic_layer/graph.yml"):
-        refuse_generated(rel)
-        return
+        return True
     if (
         len(parts) == 3
         and parts[:2] == ("semantic_layer", "models")
         and pure.suffix in _MODEL_SUFFIXES
     ):
-        refuse_generated(rel)
-        return
+        return True
     if (
         parts[0] == "context_layer"
         and len(parts) >= 3
         and parts[1] in _OKF_PAGE_SECTIONS
         and pure.suffix == ".md"
     ):
-        if parts[1] == "references" and (len(parts) != 4 or parts[2] != "joins"):
-            raise ValueError(
-                f"{rel}: reference pages are .md files directly under "
-                "context_layer/references/joins/ (the checked bundle layout)"
-            )
-        refuse_generated(rel)
-        return
-    raise ValueError(
-        f"artifact path {rel!r} is outside the proposal artifact scope (ariadne.yaml, "
-        "data/seed_notes.md, semantic_layer/models/*.yml, semantic_layer/graph.yml, "
-        "context_layer/{tables,references/joins,policies,metrics,skills}/*.md)"
-    )
+        if parts[1] == "references":
+            return len(parts) == 4 and parts[2] == "joins"
+        return True
+    return False
+
+
+def _in_snapshot(rel: str) -> bool:
+    """True when ``rel`` is inside the COMPLETE candidate snapshot scope
+    (issue #36/G4): the user-editable paths above PLUS the system-generated
+    artifacts the finalize pass owns — computation pages and the bookkeeping
+    index trees — because the complete artifact digest and the review walk the
+    whole candidate identity, never just the user-editable half."""
+    pure = PurePosixPath(rel)
+    parts = pure.parts
+    if (
+        not isinstance(rel, str)
+        or not rel
+        or pure.is_absolute()
+        or "\\" in rel
+        or rel.startswith("-")
+        or any(part in ("", ".", "..") for part in parts)
+    ):
+        return False
+    if rel in ("ariadne.yaml", "data/seed_notes.md", "semantic_layer/graph.yml"):
+        return True
+    if (
+        len(parts) == 3
+        and parts[:2] == ("semantic_layer", "models")
+        and pure.suffix in _MODEL_SUFFIXES
+    ):
+        return True
+    return parts[0] == "context_layer" and pure.suffix == ".md"
 
 
 def _scope_files(project: Path) -> list[str]:
@@ -858,6 +894,151 @@ def edit_proposal(
         record["candidate_revision"] = new_revision
         _store_record(project, record)
     return {"proposal": proposal, "revision": new_revision, "changed": True, "path": rel}
+
+
+# ------------------------------------------- G4 (issue #36): finalize + evidence
+
+# The ONLY paths the deterministic finalize pass may change in a worktree
+# (issue #36/G4): metric pages (mechanical enrichment), computation pages and
+# the bookkeeping index trees (spec §4). Any OTHER change at finalize time
+# marks an interrupted transition — human resolution, never a silent commit.
+_FINALIZE_PATH_RE = re.compile(
+    r"^(?:context_layer/metrics/[^/]+\.md"
+    r"|context_layer/computations/[^/]+\.md"
+    r"|context_layer(?:/[^/]+)*/index\.md)$"
+)
+
+
+def scope_blobs(project: Path, revision: str) -> list[tuple[str, bytes]]:
+    """The COMPLETE candidate-scope artifact bytes at one exact revision
+    (issue #36/G4): every tracked path inside the snapshot scope — registry,
+    Seed Notes, models, graph and ALL context_layer pages including the
+    system-generated computations and bookkeeping — read from the commit
+    blob store, never a mutable worktree. This is the materialization behind
+    exact-final-commit validation and review."""
+    tracked = _git(["ls-tree", "-r", "--name-only", revision], project).stdout.split("\n")
+    blobs: list[tuple[str, bytes]] = []
+    for rel in sorted(path for path in tracked if _in_snapshot(path)):
+        blob = _read_blob(project, revision, rel)
+        if blob is not None:  # pragma: no cover - ls-tree paths always resolve
+            blobs.append((rel, blob))
+    return blobs
+
+
+def refuse_untracked_scope(project: Path, record: dict) -> None:
+    """Refuse before the finalize pass when an UNTRACKED file sits inside the
+    candidate artifact scope: it is the preserved evidence of an interrupted
+    artifact creation (the edit seam writes before it stages), and the
+    finalize pass reads pages from disk — indexing an untracked page while it
+    never enters the commit would split the effective bundle from the
+    candidate. Human resolution, bytes preserved (spec §4). Untracked files
+    OUTSIDE the artifact scope stay tolerated scratch."""
+    proposal = record["id"]
+    worktree = project / WORKTREES_REL / proposal
+    for line in _git(
+        ["status", "--porcelain", "--untracked-files=all"], worktree
+    ).stdout.splitlines():
+        if line.startswith("??"):
+            rel = line[3:].rsplit(" -> ", 1)[-1]
+            if _in_snapshot(rel):
+                raise ValueError(
+                    f"the worktree of proposal {proposal} carries the untracked artifact "
+                    f"draft {rel!r} — an interrupted artifact creation left it as "
+                    "evidence" + _HUMAN_RESOLUTION
+                )
+
+
+def commit_generated(project: Path, record: dict, *, message: str) -> str | None:
+    """Commit the finalize pass's changes in the proposal worktree: stage and
+    commit EXACTLY the service-generated paths that changed (each pinned as a
+    LITERAL pathspec, never ``git add .``), persist the new candidate revision
+    durably, and return it — or None when nothing changed (the deterministic
+    no-op: no commit, the candidate revision stays). CALLER holds the proposal
+    lock and ran :func:`_check_coherent` before the finalize pass; any change
+    outside the finalize-owned set is an interrupted transition refused for
+    human resolution."""
+    proposal = record["id"]
+    worktree = project / WORKTREES_REL / proposal
+    changed: list[str] = []
+    for line in _git(
+        ["status", "--porcelain", "--untracked-files=all"], worktree
+    ).stdout.splitlines():
+        if not line.strip():
+            continue
+        rel = line[3:].rsplit(" -> ", 1)[-1]
+        if _FINALIZE_PATH_RE.match(rel):
+            changed.append(rel)
+        else:
+            raise ValueError(
+                f"the worktree of proposal {proposal} carries the change {rel!r} outside "
+                "the generated-artifact paths the finalize pass owns" + _HUMAN_RESOLUTION
+            )
+    if not changed:
+        return None
+    _require_git_identity(project)
+    literal = [_literal(rel) for rel in changed]
+    _git(["add", "-f", "-A", "--", *literal], worktree)
+    _git(["commit", "-m", message, "--", *literal], worktree)
+    record["candidate_revision"] = _git(["rev-parse", "HEAD"], worktree).stdout.strip()
+    _store_record(project, record)
+    return record["candidate_revision"]
+
+
+def _validation_path(project: Path, proposal: str, revision: str) -> Path:
+    """Where one exact candidate revision's validation evidence lives."""
+    return project / VALIDATION_REL / proposal / f"{revision}.json"
+
+
+def store_validation(project: Path, evidence: dict) -> Path:
+    """Persist one validation evidence record atomically and durably (the
+    proposal-record discipline) under the operator-owned ignored
+    ``.ariadne/validation/<proposal>/<commit>.json`` — SEPARATE from the
+    committed artifact content, so evidence never changes the revision it
+    describes (spec §4, plan §2)."""
+    path = _validation_path(project, evidence["proposal"], evidence["commit"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(evidence, fh, sort_keys=True)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    _fsync_path(path.parent)
+    return path
+
+
+def load_validation(project: Path, proposal: str, revision: str) -> dict | None:
+    """The stored validation evidence of one EXACT candidate revision (None
+    when that revision was never validated). A non-regular, unreadable or
+    malformed record is operator-owned state needing human resolution — never
+    a silent reset."""
+    path = _validation_path(project, proposal, revision)
+    entry = _lstat(path)
+    if entry is None:
+        return None
+    if not stat.S_ISREG(entry.st_mode):
+        raise ValueError(
+            f"{path}: refusing a non-regular validation record — operator-owned "
+            "state, inspect it by hand"
+        )
+    try:
+        evidence = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ValueError(
+            f"{path}: unreadable validation evidence ({exc}) — this needs human "
+            "resolution, not an agent reset"
+        ) from None
+    if (
+        not isinstance(evidence, dict)
+        or evidence.get("commit") != revision
+        or evidence.get("proposal") != proposal
+    ):
+        raise ValueError(
+            f"{path}: malformed validation evidence — this needs human resolution, "
+            "not an agent reset"
+        )
+    return evidence
 
 
 # -------------------------------------------- the shared ad-hoc staging operation
