@@ -168,9 +168,7 @@ def _split_page(text: str) -> tuple[dict, str]:
 
 
 def _page_bytes(meta: dict, body: str) -> bytes:
-    return (
-        f"---\n{yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)}---\n{body}"
-    ).encode()
+    return (f"---\n{yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)}---\n{body}").encode()
 
 
 def _atomic_write(path: Path, payload: bytes) -> None:
@@ -377,11 +375,7 @@ def _approve(
     _log_review(
         directory,
         f"**Review**: {EXAMPLES_DIR}/{decision['id']}.md — approved by {decision['actor']}"
-        + (
-            f" (supersedes {decision['supersedes']})"
-            if supersession is not None
-            else ""
-        ),
+        + (f" (supersedes {decision['supersedes']})" if supersession is not None else ""),
         at,
     )
     # The exact staged record is consumed: served-first, then the staged copy
@@ -493,9 +487,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         decision = json.loads(Path(args.file).read_text(encoding="utf-8"))
-        result = review_example(
-            args.id, decision, _resolve_served_root(args.served), args.staging
-        )
+        result = review_example(args.id, decision, _resolve_served_root(args.served), args.staging)
     except Exception as exc:
         print(
             json.dumps({"error": {"type": type(exc).__name__, "message": str(exc)}}),

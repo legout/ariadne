@@ -8,6 +8,7 @@
 | **Existing contracts** | [MVP vertical slice](mvp-vertical-slice.md) (search over served and draft Context Layer pages; full-page results; governed policy attachment), [local artifact runtime](2026-09-23-0001-local-artifact-runtime.md) (one transport-neutral operation shared by local CLI and optional MCP), [ADR-0011](../adr/0011-context-carrying-answers-and-skill.md) (full policy bodies travel with governed answers) |
 | **Evidence** | [Comparison and recommendation 4](../research/2026-09-23-ariadne-ktx-nao-omnigraph-comparison.md); [Lumio retrieval evaluation](https://github.com/legout/lumio-wiki/blob/93951f8/eval/README.md) and [section evidence](https://github.com/legout/lumio-wiki/blob/93951f8/packages/lumio-wiki/src/lumio_wiki/evidence.py); [second-brain disposable FTS5 index](https://github.com/legout/skills/blob/f89af46/skills/second-brain/scripts/sb.py) (patterns considered, not code dependencies) |
 | **Contract** | planning-contract v1; installed skill provenance unknown |
+| **Later terminology extension** | Owner-approved [specification 0010, revision 1](2026-10-02-0010-context-layer-schema-and-identifiers.md), 2026-10-02: adds structured References and a separate read-only term resolver, plus context-only Git discovery. It does not waive this specification's measured ranking gates, full-page/passage evidence, draft labeling or complete metric/Policy context requirements. |
 
 ## Purpose and boundary
 

@@ -1939,8 +1939,7 @@ def test_submit_normalizes_escaped_multiline_sources_to_block_scalars(tmp_path):
     assert result["status"] in ("validated", "review_needed"), result.get("errors")
 
     staged = (
-        project / "staging" / "authoring" / "bundle"
-        / "semantic_layer" / "models" / "events.yml"
+        project / "staging" / "authoring" / "bundle" / "semantic_layer" / "models" / "events.yml"
     ).read_text(encoding="utf-8")
     # the literal block form: no escaped newlines, SQL readable on its own lines
     assert "\\n" not in staged
@@ -1949,6 +1948,4 @@ def test_submit_normalizes_escaped_multiline_sources_to_block_scalars(tmp_path):
     # meaning preserved: the parsed source is the same SQL string
     doc = yaml.safe_load(staged)
     dataset = doc["semantic_model"][0]["datasets"][0]
-    assert dataset["source"] == (
-        "SELECT id, label\nFROM events.events\nWHERE id IS NOT NULL"
-    )
+    assert dataset["source"] == ("SELECT id, label\nFROM events.events\nWHERE id IS NOT NULL")

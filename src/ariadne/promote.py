@@ -173,9 +173,7 @@ def _admission_files(served_root: Path) -> list[tuple[str, Path, bytes]]:
     return served_tree_files(served_root / "semantic_layer", served_root / _CONTEXT)
 
 
-def _write_admission(
-    served_root: Path, digest: str, state: dict, by: str, at: str
-) -> Path:
+def _write_admission(served_root: Path, digest: str, state: dict, by: str, at: str) -> Path:
     """Record the local admission (issue #30): the exact reviewed digest the
     human promoted, the post-merge served-tree digest that binds it, the
     persisted technical validation scope, and the promotion identity — written
@@ -189,9 +187,7 @@ def _write_admission(
         "route": "local-promotion",
         "reviewed_digest": digest,
         "served_digest": _digest_files(files),
-        "files": {
-            rel: hashlib.sha256(data).hexdigest() for rel, _path, data in files
-        },
+        "files": {rel: hashlib.sha256(data).hexdigest() for rel, _path, data in files},
         "revision": state.get("revision"),
         "validation": state.get("validation"),
         "promoted": {"by": by, "at": at, "digest": digest},
@@ -221,9 +217,7 @@ def _refuse_unadmitted_survivors(staging: Path, served_root: Path) -> None:
         return
     staged = {
         rel
-        for rel, _path, _data in served_tree_files(
-            staging / "semantic_layer", staging / _CONTEXT
-        )
+        for rel, _path, _data in served_tree_files(staging / "semantic_layer", staging / _CONTEXT)
     }
     record_path = served_root / "semantic_layer" / ADMISSION_NAME
     admitted: dict[str, str] = {}

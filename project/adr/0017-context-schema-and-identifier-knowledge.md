@@ -1,0 +1,9 @@
+# One OKF authority for schemas and identifier knowledge
+
+Status: accepted (owner, Pi conversation 2026-10-02: selected closer generation, automatic hypothesis drafts and equality/prefix/lookup discovery; approved the complete in-chat design and its capture, including relevant-pages-only bundles and context-only human admission). Approval does not authorize implementation, ticket changes or publication.
+
+Extend Ariadne's OKF profile with physical source overviews, core-generated schema facts and shared References for scoped terminology/identifier mappings, rather than introducing a second synonym/rule registry or generic OKF import/execution. Keep sourced business meaning in authored pages, executable transformations in OSI, and measured mapping evidence under the core's authority: duplicating these meanings or trusting model-authored measurements would undermine the shared governance boundary.
+
+Automatically retain mapping hypotheses in Git Authoring Proposals, but separate an admitted investigative page from a human-confirmed mapping assertion. Support context-only onboarding and require applicable pages/checks rather than invented metrics, Policies or keys. Exact-revision source approval, validation and human admission remain distinct; sampled matches never establish universal business truth or replace required live Grain/relationship checks.
+
+**Alternatives:** a separate registry offers structured lookup but adds synchronization/authority drift; generic OKF import/export and richer computation receipts broaden portability beyond the current need. The [approved specification](../specs/2026-10-02-0010-context-layer-schema-and-identifiers.md) owns behavior and scoped amendments to the existing authoring/Context profile; ADR-0016 continues to own shared modules and the Git lifecycle.

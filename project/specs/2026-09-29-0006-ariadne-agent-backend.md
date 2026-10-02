@@ -7,6 +7,7 @@
 | **Scope** | Local Python conversation backend with Analyst and Authoring roles, streamed events, curated skill guidance, native Ariadne tools, and approved stdio MCP tools. A future UI can consume its Python interface. |
 | **Sources** | [Ariadne vocabulary](../../CONTEXT.md), [local-first runtime](2026-09-23-0001-local-artifact-runtime.md), [harness-led authoring](2026-09-24-0005-harness-led-authoring.md), [human Promotion gate](../adr/0003-staging-dir-review-gate.md), [Ariadne Agent decision](../adr/0014-embedded-tau-agent-backend.md). Dependency contract: `legout/tau-mcp:project/specs/2026-09-29-0002-embeddable-mcp-core.md`. |
 | **Contract** | planning-contract v1; installed skill provenance unknown. |
+| **Later Context capability extension** | Owner-approved [specification 0010, revision 1](2026-10-02-0010-context-layer-schema-and-identifiers.md), 2026-10-02: Analyst gains admitted-context terminology resolution even before metrics exist; Authoring gains selected-proposal resolution, bounded mapping inspection and automatic hypothesis persistence. Fixed roles, host-owned project/access, core-owned checks and absence of arbitrary SQL/source-approval/admission tools remain binding; the Agent's in-memory transcript is not represented as durable knowledge storage. |
 
 ## Purpose and boundary
 

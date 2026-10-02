@@ -1264,10 +1264,7 @@ def submit_bundle(
             for rel, content in files:
                 target = tmp / Path(*PurePosixPath(rel).parts)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                if (
-                    "semantic_layer" in target.parts
-                    and target.suffix in (".yml", ".yaml")
-                ):
+                if "semantic_layer" in target.parts and target.suffix in (".yml", ".yaml"):
                     # issue #31: readable block scalars for multi-line sources
                     content = normalize_layer_yaml(content)
                 target.write_text(content, encoding="utf-8")

@@ -8,6 +8,7 @@
 | **Authority** | [CONTEXT.md](../../CONTEXT.md) owns terms; [ADR-0006](../adr/0006-grain-governance-multi-cardinality-joins.md) owns the revised grain rule; [ADR-0003](../adr/0003-staging-dir-review-gate.md) owns the scoped dev/test versus production admission choice; [ADR-0008](../adr/0008-own-sqlglot-compiler-agpl-exit.md) keeps compiler ownership. This specification owns behavior and acceptance, not implementation tasks. |
 | **Evidence** | [Dosi/Datus/KTX comparison](../research/2026-09-29-dosi-datus-agent-ariadne-comparison.md) and the existing [orders/lines trap fixture](../../tests/evals/build_trap_fixture.py); the owner-approved design choices are recorded in the 2026-09-30 Pi conversation. |
 | **Contract** | planning-contract v1; installed shape-design/planning-contract skill provenance unknown. |
+| **Later scoped amendment** | Owner-approved [modular-core/Git authoring design, revision 1](2026-10-02-0009-modular-core-git-authoring.md), 2026-10-02: the new full-bundle authoring route adds local Git Review Admission in place of its staging-only dev/test route. Pinned reviewed/validated revisions and separate approval evidence replace post-review artifact mutation there. All query semantics, live audits, digest-bound checks, governed/attestation distinctions and the production review requirement below remain binding. Hosted Git and production deployment automation remain outside the new scope. |
 
 ## Purpose and boundary
 

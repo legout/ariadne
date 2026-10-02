@@ -7,7 +7,7 @@ Ariadne lets autonomous AI agents query heterogeneous data stores through govern
 ### Agents
 
 **Ariadne Agent**:
-The conversational Python backend that uses one user-selected role to work with Ariadne's governed query or staged authoring capabilities. It does not calculate or approve business definitions itself.
+The conversational Python backend that uses one user-selected role to work with Ariadne's governed query or proposed authoring capabilities. It does not calculate or approve business definitions itself.
 _Avoid_: agent framework, semantic engine
 
 **Data Analyst Agent**:
@@ -17,7 +17,7 @@ _Avoid_: text-to-SQL agent
 ### Layers
 
 **Context Layer**:
-The business guide: tribal knowledge, filtering rules, routing instructions, and provenance as version-controlled OKF Markdown. Routes and guides; never calculates.
+The source-linked physical schemas and business guide: tribal knowledge, filtering rules, terminology, identifier relationships and provenance as version-controlled OKF Markdown. Routes and guides; never calculates.
 _Avoid_: documentation, business glossary, wiki
 
 **Semantic Layer**:
@@ -31,7 +31,7 @@ _Avoid_: schema, data model
 ### Quality
 
 **Governed Metric**:
-A named measure with one canonical Semantic Layer definition admitted by human Promotion (dev/test) or a human-reviewed, validated Git revision (production). Never computed by ad-hoc agent SQL.
+A named measure with one canonical Semantic Layer definition admitted by human review through the applicable Promotion or Git Review Admission route. Never computed by ad-hoc agent SQL.
 _Avoid_: KPI, ad-hoc metric
 
 **Fan-out**:
@@ -52,16 +52,28 @@ _Avoid_: joined fact rows
 The agent that profiles a database and drafts Context Layer and Semantic Layer artifacts from statistical profiles and documentation.
 _Avoid_: generator
 
+**Authoring Proposal**:
+A proposed change to the project's source declarations, Seed Notes, Semantic Layer or Context Layer, based on an identified artifact revision and awaiting human review. It is distinct from an ad-hoc Proposal and from served state.
+_Avoid_: approved change, served branch
+
+**Candidate Revision**:
+The exact effective artifact state of an Authoring Proposal, including inherited artifacts and explicit edits, evaluated and reviewed as a unit. It is not an admitted revision merely because validation succeeds.
+_Avoid_: admitted revision, validation label
+
+**Source Approval**:
+The operator's explicit permission to open identified source locations. Artifact review, a source declaration and technical validation do not grant this permission.
+_Avoid_: source discovery, artifact admission
+
 **Staging**:
-The holding area (`staging/`) where authored artifacts and explicitly submitted Answer Examples await human review. The Authoring Agent never writes anywhere else.
+The holding area (`staging/`) for legacy authored artifacts, standalone-ingest and ad-hoc proposals, and explicitly submitted Answer Examples awaiting their applicable human review. Git-backed Authoring Proposals are also unadmitted, but do not use Staging as their revision model.
 _Avoid_: drafts, sandbox
 
 **Promotion**:
-The local human act of admitting a staged artifact into its reviewed destination (served dev/test layers or the reviewed Answer Example store), marking its review. Discoverability in Staging is never Promotion. Production semantic models instead use Git Review Admission.
+The local human act of admitting a staged artifact into its reviewed destination, marking its review. Discoverability in Staging is never Promotion; Git-backed full-bundle authoring instead uses Git Review Admission.
 _Avoid_: publish, deploy
 
 **Git Review Admission**:
-The production route that serves a human-reviewed Git revision only after validation of the exact committed semantic artifact. A commit or validator label alone does not mean review; this route does not run local Promotion.
+The route that serves a human-reviewed Git artifact revision only after validation of the exact revision, including local Git-backed authoring and the production review route. A commit or validator label alone does not mean review; this route is distinct from staged-artifact Promotion.
 _Avoid_: automatic promotion, validated commit
 
 **Seed Notes**:
@@ -71,7 +83,7 @@ _Avoid_: hints file
 ### Querying
 
 **Ad-hoc Metric**:
-An agent-drafted, one-shot metric: validated by the deterministic compile gate and executed read-only, but never promoted. Queryable now, canonical never, until promoted.
+An agent-drafted, one-shot metric: validated by the deterministic compile gate and executed read-only, but not admitted. Queryable now, canonical never, until human admission.
 _Avoid_: dynamic metric, on-the-fly metric
 
 **Proposal**:
@@ -85,8 +97,28 @@ _Avoid_: query snippet, cached answer
 ### Context Layer (OKF bundle)
 
 **Bundle**:
-The OKF v0.2 structure of `context_layer/`: typed folders (tables, references, policies, metrics, computations, skills) with an `index.md` per directory and a `log.md` change log.
+The project's version-controlled OKF Context Layer, containing the typed pages relevant to its documented sources and modeled meaning, with generated navigation and change history. It can describe sources before any metric is modeled.
 _Avoid_: knowledge base directory, docs folder
+
+**Dataset Overview**:
+An OKF page describing an identified physical source or collection and its related tables. It is not a Semantic Layer dataset or a metric definition.
+_Avoid_: OSI dataset, semantic model
+
+**Schema Observation**:
+An identified catalog description or measurement of a physical table's structure and statistics at a stated source version or time. Observations do not by themselves establish business meaning or permanent constraints.
+_Avoid_: declared business key, permanent guarantee
+
+**Term Reference**:
+An OKF Reference naming a shared business concept, its language aliases and its scoped field representations. A language alias is not proof that field values are interchangeable.
+_Avoid_: synonym database, automatic field substitution
+
+**Identifier Mapping**:
+A declaration relating identified, scoped identifier representations through equality, prefix construction or an explicit lookup. A hypothesized relationship is distinct from an asserted relationship confirmed by exact-revision human admission.
+_Avoid_: same-named columns, approved join
+
+**Mapping Evidence**:
+Core-produced measurements of an identified mapping candidate over stated sources, scope and time. Measured matches support investigation, not automatic confirmation of business meaning.
+_Avoid_: model confidence, business approval
 
 **Grain**:
 The declared row identity of a dataset (its primary key in analytical terms). Each dataset has one grain; a model may contain several differently grained datasets. Base measures stay at their owning dataset's grain, and multi-fact results align only after fact-local aggregation (ADR-0006).
