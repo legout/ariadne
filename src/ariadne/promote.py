@@ -24,6 +24,12 @@ Usage::
     python ariadne-promote                 # interactive: lists the plan, asks
     python ariadne-promote --yes           # unattended (demo.sh, CI)
     python ariadne-promote --by human:alice
+
+This is the LEGACY staged-project gate. A Git-managed data project does not
+call it: its full-bundle route is human Git Review Admission of an exact
+reviewed, validated candidate revision (``ariadne-admit --confirm``, issue
+#37) — and promoting here never writes a Git admission record. The complete
+legacy → new mapping lives in docs/how-to/git-authoring.md (issue #39/G7).
 """
 
 from __future__ import annotations

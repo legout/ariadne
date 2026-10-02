@@ -44,7 +44,7 @@ host-integrated tool registration.
   served until a human reviews and promotes it.
 - **Bring your own agent.** In harness-led authoring, your agent's *own* model drafts
   the catalog from measured profiles and converted documents (`ariadne-authoring`) —
-  no server-side LLM. Source access and Promotion stay human decisions.
+  no server-side LLM. Source access, admission and Promotion stay human decisions.
 - **Everything is files.** Metrics are YAML, business knowledge is Markdown. Review in
   pull requests, diff definitions, roll back with git. No server database to migrate.
 - **Self-improving catalog.** When an agent answers an unmodeled question, its working
@@ -76,12 +76,17 @@ host-integrated tool registration.
 1. **Register your sources** in one `ariadne.yaml` file.
 2. **Profile & author**: `ariadne-author` inspects the actual data and combines it with
    your seed notes (the rules statistics can't see) to draft the catalog into `staging/`.
-   Or let your own agent's model do the drafting with `ariadne-authoring` (see
-   "Harness-led authoring" below) — either way, a human reviews and promotes.
-3. **Review & promote**: a human reads the staging area, then `ariadne-promote` merges
-   approved artifacts into the served catalog and marks them verified.
-4. **Query**: your agent runs `ariadne` locally against the promoted catalog — or
-   connects over MCP with the optional extra.
+   Or let your own agent's model draft through `ariadne-authoring` Git proposals (see
+   "Harness-led authoring" below) — either way, a human reviews, and only a human
+   promotes or admits.
+3. **Review & promote (legacy staged project)**: a human reads the staging area, then
+   `ariadne-promote` merges approved artifacts into the served catalog and marks them
+   verified. **Git-managed project**: a human admits the exact reviewed, validated
+   candidate revision with `ariadne-admit --confirm` (see
+   [docs/how-to/git-authoring.md](docs/how-to/git-authoring.md)).
+4. **Query**: your agent runs `ariadne` locally against the promoted catalog (`--served`)
+   or the pinned admitted snapshot (`--project DIR`) — or connects over MCP with the
+   optional extra.
 
 ## Quickstart
 
@@ -114,6 +119,34 @@ ariadne list-metrics --sources ariadne.yaml      # query locally — no server n
 ariadne get-metric gross_margin --sources ariadne.yaml
 ```
 
+Or run the same project Git-managed — isolated revision-checked proposals, exact-
+revision human admission, pinned snapshots (the full legacy → new mapping lives in
+[docs/how-to/git-authoring.md](docs/how-to/git-authoring.md)):
+
+```bash
+ariadne-init --git my-project && cd my-project && git init
+# declare sources, then (agent or you):
+ariadne-authoring start --project .
+ariadne-authoring propose-sources --proposal ID --expected-revision REV --file sources.yaml
+#    HUMAN: ariadne-authoring approve-sources --project . --proposal ID \
+#             --revision REV --source-digest DIGEST
+ariadne-authoring edit --proposal ID --expected-revision REV --file edit.json
+ariadne-authoring validate --proposal ID --expected-revision REV
+ariadne-authoring review --proposal ID
+#    HUMAN: ariadne-admit --project . --proposal ID --revision REV \
+#             --reviewed-digest DIGEST --confirm
+ariadne list-metrics --project .   # queries the pinned admitted snapshot
+```
+
+Already have a legacy staged project? The human import moves its served artifacts
+into an unadmitted Git proposal without touching pending staging work — never
+admission:
+
+```bash
+ariadne-init --git . && git init
+ariadne-authoring import-legacy --project . --from-root .   # HUMAN
+```
+
 Installing the packaged skill (`ariadne-skill install --scope user`) teaches your agent
 the whole workflow — query governed metrics first, respect the staging boundary, report
 caveats with every number.
@@ -123,7 +156,10 @@ caveats with every number.
 `ariadne-author` above drafts using an LLM configured on the host (`.env`). If your
 agent harness has its own model, it authors instead through the local
 `ariadne-authoring` commands — base install only, no OpenAI-compatible endpoint, no
-extra credential:
+extra credential. In a Git-managed project (scaffolded with `ariadne-init --git`, the
+flow above) the agent drafts through isolated proposals; `ariadne-author --git` runs
+the same drafting loop straight into an unadmitted proposal. The legacy staged route
+below keeps working for non-Git projects:
 
 ```bash
 ariadne-init my-project && cd my-project
@@ -148,13 +184,20 @@ inputs are bounded (converted text arrives in parts). Metrics without an
 independent expected-value oracle are staged with `attestation: pending` —
 `governed: true` means Promoted, not independently value-attested.
 
-**Optional: stdio MCP for authoring.** With the `mcp` extra installed (see below),
-the same local stdio server exposes the five authoring tools
-(`authoring_propose_sources`, `authoring_inputs`, `authoring_upload_document` for
-bounded ≤5 MiB uploads, `authoring_submit_bundle`, `authoring_review_bundle`) with
-identical contracts — plus the five query tools. Stdio is local and needs no
-token; the server runs for one project root. Source approval and Promotion are
-never exposed as tools.
+**Optional: stdio MCP toolsets.** With the `mcp` extra installed (see below),
+the same local stdio server exposes the role toolsets over one core — pick the
+registration at launch: `python -m ariadne.serve --project DIR` (combined,
+the default), `--toolset analyst` (the query tools `list_metrics`,
+`search_context`, `get_metric`, `list_datasets`, `define_metric`,
+`query_metrics`, `query_detail`, `save_example`, `search_examples`), or
+`--toolset authoring` (the Git proposal contract:
+`authoring_start_proposal`, `authoring_read_artifact`,
+`authoring_edit_proposal`, `authoring_propose_sources`, `authoring_inputs`,
+`authoring_upload_document` for bounded ≤5 MiB uploads,
+`authoring_validate_proposal`, `authoring_review_proposal`) with identical
+contracts to the `ariadne-authoring` commands. Stdio is local and needs no
+token; the server runs for one project root. Source approval, admission,
+reconciliation, the legacy import and Promotion are never exposed as tools.
 
 **Optional: MCP.** The base package is local-first and needs no server; MCP registers the
 same operations as tools when you want them. Install the extra into the same Python

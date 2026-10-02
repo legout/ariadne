@@ -34,8 +34,10 @@ tests/test_validate.py and the live run.
 Interfaces::
 
     author(db_path, notes_path) -> list[Path]   # staged files
+    author_to_proposal(notes_path, project=...) -> (paths, envelope)  # --git: unadmitted proposal
     # from examples/retail-demo/:
     #   python -m ariadne.author --db data/demo.db --notes seed_notes.md
+    #   python -m ariadne.author --git --sources ariadne.yaml --notes data/seed_notes.md
 """
 
 from __future__ import annotations
@@ -44,7 +46,10 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -129,11 +134,14 @@ bundle: every folder below PLUS the semantic models.
   rules are why the numbers come out right; omitting one makes it wrong. Do
   NOT write `governed_by`, `dimensions`, or `grain` on metric pages: they are
   attached mechanically from the OSI models after validation.
-- `context_layer/skills/<slug>.md` — exactly three guides: `run-the-demo`,
-  `promote-artifacts`, `query-artifacts`. Frontmatter: `type: skill`, `title`,
-  `description`, `tags`, `sources` (cite the script/module). Body: the exact
-  commands from the operational facts below and what each step does. The
-  query guide is local-first: it cites the `ariadne` executable (spec
+- `context_layer/skills/<slug>.md` — exactly four guides: `run-the-demo`,
+  `promote-artifacts`, `import-to-git`, `query-artifacts`. Frontmatter:
+  `type: skill`, `title`, `description`, `tags`, `sources` (cite the
+  script/module). Body: the exact commands from the operational facts below
+  and what each step does, naming WHO runs each human gate (source approval,
+  Promotion, Git Review Admission) — a guide never teaches running a human
+  gate itself or mutating Git branches, shell commands or files directly.
+  The query guide is local-first: it cites the `ariadne` executable (spec
   2026-09-23-0001 §8) and must never claim a server or MCP is required.
 - NEVER write `index.md` or `log.md` — the promotion gate owns them.
 - Never invent `generated`, `verified`, or `stale_after` frontmatter — stamped
@@ -407,6 +415,15 @@ def _user_prompt(profile: dict, notes: str, catalog_lines: str) -> str:
         "  ariadne define-metric --file def.json --served examples/retail-demo "
         "--sources examples/retail-demo/ariadne.yaml "
         "--staging examples/retail-demo/staging (stdin also works)\n"
+        "- Git authoring route (a data project with its own Git repository — the human\n"
+        "  gates stay human, an agent never mutates Git itself):\n"
+        "  python -m ariadne.author --git --notes data/seed_notes.md --project . \n"
+        "  ariadne-authoring import-legacy --from-root LEGACY_DIR  (HUMAN import)\n"
+        "  ariadne-authoring approve-sources --proposal ID --revision REV --source-digest D\n"
+        "    (HUMAN — source approval is never an agent action)\n"
+        "  ariadne-authoring validate --proposal ID --expected-revision REV\n"
+        "  ariadne-authoring review --proposal ID\n"
+        "  ariadne-admit --proposal ID --revision REV --reviewed-digest DIGEST --confirm  (HUMAN)\n"
         "- Optional MCP transport (needs the extra installed: pip install 'ariadne-core[mcp]'):\n"
         "  python -m ariadne.serve --sources examples/retail-demo/ariadne.yaml "
         "--semantic examples/retail-demo/semantic_layer "
@@ -499,6 +516,7 @@ def author(
     validate_fn=None,
     rounds: int = MAX_ROUNDS,
     sources_path: str | Path | None = None,
+    stamp_lifecycle: bool = True,
 ) -> list[Path]:
     """Run the authoring loop; return the staged file paths.
 
@@ -506,7 +524,11 @@ def author(
     OpenAI-compatible endpoint); ``validate_fn(staging_dir) -> ValidationResult``
     is the validation gate (default: real compile plus the ADR-0006 §5 grain
     audit over this author run's connection — spec rev 6 §8.14 — the legacy
-    ``db_path`` sqlite attach, or the ADR-0010 registry via ``sources_path``)."""
+    ``db_path`` sqlite attach, or the ADR-0010 registry via ``sources_path``).
+    ``stamp_lifecycle=False`` (the ``--git`` mode) skips the legacy finalizer's
+    wall-clock generated/verified/stale_after stamping — lifecycle claims are
+    owned by the deterministic finalize/promotion passes of the route the
+    drafts enter, never by the drafting loop (issue #39/G7 fix)."""
     if rounds > MAX_ROUNDS:
         raise ValueError(
             f"rounds={rounds} exceeds the spec §5 hard cap of {MAX_ROUNDS} "
@@ -562,7 +584,7 @@ def author(
         errors = result.errors
         if result.ok:  # deterministic post-passes and the bundle contract may still reject
             try:
-                _finalize_bundle(staging)
+                _finalize_bundle(staging, stamp_lifecycle=stamp_lifecycle)
             except Exception as exc:  # e.g. frontmatter that is not valid YAML
                 errors = [
                     f"authored bundle violates the OKF frontmatter contract: {exc}. "
@@ -595,6 +617,91 @@ def _needs_human_review(paths: list[Path]) -> bool:
     return any("review_needed" in path.read_text(encoding="utf-8") for path in paths)
 
 
+# Where an exhausted --git run's evidence lands: the project's staging area is
+# the human-facing pending-work store (ignored by Git), and this clearly named
+# subtree keeps the run's REVIEW_NEEDED.md + partial drafts durable.
+_REVIEW_EVIDENCE_REL = Path("staging") / "author-review-needed"
+
+
+def _preserve_review_evidence(draft: Path, project: Path) -> Path | None:
+    """Copy an exhausted run's review-needed evidence — the root
+    REVIEW_NEEDED.md plus every partial marked draft — out of the TEMPORARY
+    drafting dir into the project's staging area (issue #39/G7 fix: three
+    unparseable responses leave nothing the import can select, so the import
+    fails and the temp dir's deletion would otherwise destroy the ONLY
+    evidence of the run). Returns the durable evidence dir, or None when the
+    project directory does not exist (nothing durable to attach to)."""
+    if not project.is_dir():
+        return None
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    target = project / _REVIEW_EVIDENCE_REL / stamp
+    shutil.copytree(draft, target)
+    return target
+
+
+def author_to_proposal(
+    notes_path: str | Path,
+    *,
+    project: str | Path = ".",
+    db_path: str | Path | None = None,
+    sources_path: str | Path | None = None,
+    complete=None,
+    validate_fn=None,
+    rounds: int = MAX_ROUNDS,
+) -> tuple[list[Path], dict]:
+    """The SAME bounded authoring loop (≤3 rounds, deterministic checks,
+    ``review_needed`` marking — never a second model loop), but its drafted
+    output lands in the NEW Git proposal workflow (issue #39/G7 migration):
+    the drafts are written to a TEMPORARY staging dir and carry NO wall-clock
+    lifecycle stamps (the deterministic finalize pass of the Git route owns
+    stamping — fresh author-time stamps would be refused as forged claims
+    when imported into an existing artifact revision). The project's legacy
+    ``staging/`` tree is never touched by the drafts or the import; only an
+    exhausted run's review-needed evidence is preserved under
+    ``staging/author-review-needed/`` BEFORE the import, so it survives the
+    temp dir's deletion even when the import itself fails. The human-explicit
+    legacy import (:func:`ariadne.migration.import_legacy`) copies the drafts
+    into a fresh UNADMITTED Git authoring proposal (or the initial artifact
+    revision of a project with none yet). Returns ``(drafted paths, import
+    envelope)``: the envelope names the human steps (source approval,
+    validate, review, ``ariadne-admit --confirm``) that alone admit anything —
+    the import never admits and never infers review from the drafts (AC9)."""
+    project_path = Path(project)
+    with tempfile.TemporaryDirectory(prefix="ariadne-author-git-") as tmp:
+        draft = Path(tmp) / "draft"
+        staged = author(
+            db_path,
+            notes_path,
+            staging_dir=draft,
+            complete=complete,
+            validate_fn=validate_fn,
+            rounds=rounds,
+            sources_path=sources_path,
+            stamp_lifecycle=False,  # lifecycle stamping belongs to the Git route
+        )
+        # computed BEFORE the temporary dir goes away: the drafts' spec §7
+        # review_needed marker rides the envelope (the CLI cannot re-read them)
+        review_required = _needs_human_review(staged)
+        evidence = (
+            _preserve_review_evidence(draft, project_path) if review_required else None
+        )
+        from ariadne import migration  # function-level: ariadne.authoring imports this module
+
+        try:
+            envelope = migration.import_legacy(project=project, from_root=draft)
+        except Exception as exc:
+            if evidence is not None:  # the evidence outlives the temp dir; name it
+                raise ValueError(
+                    f"{exc} — the review-needed evidence of this exhausted authoring "
+                    f"run is preserved for human resolution at {evidence}"
+                ) from exc
+            raise
+    envelope["review_required"] = review_required
+    if evidence is not None:
+        envelope["review_evidence"] = str(evidence)
+    return staged, envelope
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m ariadne.author",
@@ -614,6 +721,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--notes", required=True, help="path to the seed notes markdown")
     parser.add_argument("--staging", default="staging", help="staging directory (default: staging)")
     parser.add_argument("--rounds", type=int, default=MAX_ROUNDS)
+    parser.add_argument(
+        "--git",
+        action="store_true",
+        help="draft into a fresh UNADMITTED Git authoring proposal of the data "
+        "project's own repository instead of staging/ (issue #39/G7): the same "
+        "bounded loop, output imported through the human seam; source approval "
+        "and ariadne-admit stay human-only",
+    )
+    parser.add_argument(
+        "--project",
+        default=".",
+        help="the managed Git data project for --git (default: the working directory)",
+    )
     args = parser.parse_args(argv)
 
     if not 1 <= args.rounds <= MAX_ROUNDS:
@@ -625,6 +745,39 @@ def main(argv: list[str] | None = None) -> int:
         _validate_staging(Path(args.staging))
     except ValueError as exc:
         parser.error(str(exc))
+
+    if args.git:
+        try:
+            staged, envelope = author_to_proposal(
+                args.notes,
+                project=args.project,
+                db_path=args.db,
+                sources_path=sources_path,
+                rounds=args.rounds,
+            )
+        except ValueError as exc:
+            # e.g. an exhausted run left nothing the import can select — the
+            # error already names the preserved review-needed evidence, if any
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(envelope))
+        for step in envelope["admission_required"]:
+            print(f"  human step: {step}")
+        if envelope["review_required"]:  # the drafted bundle needs the human first
+            location = envelope.get("review_evidence")
+            print(
+                "error: drafted files carry status: review_needed — human review "
+                "required; the imported proposal stays unadmitted"
+                + (
+                    "; this run's review-needed evidence is preserved at "
+                    f"{location}"
+                    if location
+                    else ""
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        return 0
 
     paths = author(
         args.db,

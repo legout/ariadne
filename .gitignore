@@ -14,6 +14,7 @@ examples/retail-demo/staging/
 .hermes/
 examples/retail-demo/context_layer/
 examples/retail-demo/semantic_layer/
+examples/retail-demo/git-demo/
 data/support_tickets/
 /examples/trace-data/
 .pi/

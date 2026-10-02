@@ -79,9 +79,16 @@ times out under the MCP client's bounded request timeout (no immediate
 interruption is promised). Omit `mcp_settings` and the native tool surface is
 exactly as before.
 
-The project root must contain the served `semantic_layer/` and `context_layer/`
-directories and either a source registry (`ariadne.yaml`) or a `demo.db`; every
-path resolves against that root, never the ambient working directory.
+The project root selects one of the two runtime kinds (issue #38/G6): a
+**managed Git data project** — one carrying Ariadne's `.ariadne/` operator
+state — resolves through `QueryRuntime.open_project` and serves its pinned
+human-admitted snapshot (a missing admission is an explicit error naming the
+human `ariadne-admit` step, never a fallback to mutable files), while an
+**explicit legacy artifact-root project** must contain the served
+`semantic_layer/` and `context_layer/` directories and either a source
+registry (`ariadne.yaml`) or a `demo.db`; every path resolves against that
+root, never the ambient working directory. The legacy → new mapping lives in
+[docs/how-to/git-authoring.md](../docs/how-to/git-authoring.md).
 
 ## Contract
 
@@ -102,5 +109,6 @@ path resolves against that root, never the ambient working directory.
   from the installed `ariadne-core`, plus a short native-tool mapping. No
   global skill scans, no model-invocable skill scripts.
 - **Missing promoted catalog**: opening an Analyst session fails fast with an
-  actionable error naming the human promotion step. The failure is
-  session-local — it cannot block a later (e.g. Authoring) session.
+  actionable error naming the human step — Promotion for a legacy project,
+  `ariadne-admit` for a managed Git project. The failure is session-local — it
+  cannot block a later (e.g. Authoring) session.

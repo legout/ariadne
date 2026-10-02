@@ -33,8 +33,10 @@ The three registrations (spec §6, AC7):
 
 Explicit migration of the legacy complete-bundle wrappers (spec §6 permits
 breaking interfaces when explicitly mapped; the legacy staged-bundle route
-itself stays available through the local ``ariadne-authoring`` CLI until the
-G7 cleanup, and legacy pending work keeps its review path):
+itself is retained, documented, for its named local consumers —
+tests/test_authoring.py, tests/test_promote.py, tests/test_multifact.py and
+tests/test_authoring_mcp.py plus every legacy staged project — and legacy
+pending work keeps its review path; see docs/how-to/git-authoring.md):
 
 - ``authoring_submit_bundle`` (one complete bundle) is REPLACED by
   ``authoring_start_proposal`` + one ``authoring_edit_proposal`` per artifact

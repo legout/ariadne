@@ -1,6 +1,6 @@
 ---
 name: ariadne
-description: Work in an ariadne data project — query governed metrics with the local ariadne CLI (caveats attached), author context/semantic layers through the staging-to-promotion gate, harness-led authoring with ariadne-authoring (operator-approved sources, human-only promotion), find labeled answer examples as method references (never cached answers), and draft ad-hoc metrics without ever bypassing the compile gate.
+description: Work in an ariadne data project — query governed metrics with the local ariadne CLI (caveats attached), author context/semantic layers through Git proposals with ariadne-authoring (operator-approved sources, human-only admission) or the retained staging-to-promotion gate, hand off legacy migration to the human import command, find labeled answer examples as method references (never cached answers), and draft ad-hoc metrics without ever bypassing the compile gate.
 ---
 
 # Ariadne data projects
@@ -13,12 +13,25 @@ calculates; no computation ever bypasses the compile gate.
 
 ## Querying — the default workflow
 
-Common options follow the subcommand: `--sources ariadne.yaml` (or `--db
-PATH`), and `--served PATH` when the promoted root is not discoverable. Run
-from the project root: the CLI finds promoted artifacts in the working
-directory or under `./served`; if both match (ambiguous) or neither does, it
-fails with an actionable error — pass `--served PATH` to select the root
-explicitly. Never start a server just to answer a question.
+Pick the route that matches the project — the two never mix:
+
+- **A Git-managed data project** (the `ariadne-authoring` proposal workflow):
+  query with `--project DIR` — from the project root, `--project .`. Every
+  command then serves the pinned human-ADMITTED SNAPSHOT and its
+  operator-approved sources (`route: git-review-admission`); a project with
+  no valid admission fails with that exact error and never falls back to
+  proposal worktrees or mutable project files. Do not pass `--served` or
+  `--sources` here: they select legacy roots, miss the admitted catalog and
+  can read stale root artifacts.
+- **A retained legacy (staged) project**: common options follow the
+  subcommand — `--sources ariadne.yaml` (or `--db PATH`), and `--served PATH`
+  when the promoted root is not discoverable. Run from the project root: the
+  CLI finds promoted artifacts in the working directory or under `./served`;
+  if both match (ambiguous) or neither does, it fails with an actionable
+  error — pass `--served PATH` to select the root explicitly.
+
+The numbered commands below show the legacy options; on a Git-managed project
+pass `--project .` instead. Never start a server just to answer a question.
 
 1. **List governed metrics** — `ariadne list-metrics --sources ariadne.yaml`.
    Start every question here: if a governed metric answers it, query it
@@ -41,14 +54,19 @@ explicitly. Never start a server just to answer a question.
    grain and branches align on conformed keys — a raw fact-to-fact join never
    runs. The response carries the rows, the compiled single-SELECT SQL, a
    bounded lineage plan, per-metric metric-page + Policy bodies, and the
-   admission block (`route: local-promotion`, the reviewed digest, the
-   validation scope). `ariadne query-detail --file req.json` projects one
+   admission block naming the route that actually served it —
+   `route: local-promotion` after legacy Promotion,
+   `route: git-review-admission` for a Git-admitted snapshot — plus the
+   reviewed digest/pinned revision and the validation scope.
+   `ariadne query-detail --file req.json` projects one
    root dataset's fields through safe many-to-one lookups (`{"dataset":
    "order_lines", "fields": ["line_id", "amount"]}`) with no fan-out.
-   These commands serve ONLY a graph admitted by human Promotion of a
-   validated bundle — an unadmitted or hand-edited graph refuses with that
-   reason; never call them governed by another route, and never present a
-   validated-but-unpromoted graph as governed.
+   These commands serve ONLY a graph admitted by one of the two human
+   governance routes — legacy Promotion of a validated bundle, or human Git
+   Review Admission of an exact reviewed, validated revision. An unadmitted
+   or hand-edited graph refuses with that reason; never call them governed
+   by another route, and never present a validated-but-unadmitted graph as
+   governed.
 5. **Unmodeled question?** `ariadne list-datasets --sources ariadne.yaml`,
    then `ariadne define-metric --file def.json --sources ariadne.yaml` (or
    pipe the JSON definition via stdin when `--file` is absent). The definition
@@ -58,8 +76,10 @@ explicitly. Never start a server just to answer a question.
 6. **Label answers accurately.** Governed numbers ship with their caveats and
    `governed: true`; ad-hoc numbers are `governed: false` proposals — label
    them as such, never as canonical. `query-metrics` responses are governed
-   through local Promotion only: say so, and keep attestation honest
-   (`attestation: pending` means Promoted, not independently value-attested).
+   through human admission — legacy Promotion or Git Review Admission: name
+   the route the response's admission block reports, and keep attestation
+   honest (`attestation: pending` means admitted/Promoted, not independently
+   value-attested).
 
 ## Answer examples — references, not caches
 
@@ -102,8 +122,11 @@ yours.
 ## The authoring loop
 
 This loop drafts with a server-configured LLM (`ariadne-author`, credentials in
-`.env`). When the agent itself is the author — its own model, no server LLM —
-use the harness-led loop below instead.
+`.env`) and is the retained legacy route for staged (non-Git) projects. When
+the agent itself is the author — its own model, no server LLM — use the
+Git-backed loop below instead. For a Git-managed data project,
+`ariadne-author --git` runs this same drafting loop straight into an
+unadmitted Git proposal.
 
 1. **profile** — `ariadne-profiler` summarizes every source declared in
    `ariadne.yaml` (schemas, keys, cardinalities) so models fit the real data.
@@ -120,75 +143,94 @@ use the harness-led loop below instead.
    `define-metric` for anything unmodeled (auto-staged as a promotion
    proposal).
 
-## Harness-led authoring — the agent as author
+## Git-backed authoring — the agent as author
 
 The `ariadne-authoring` commands let the agent's own model onboard data and
-domain documents with no server LLM and no second credential. Ariadne measures
-the data and validates every proposal; two decisions stay strictly human:
-operator source approval and Promotion.
+domain documents with no server LLM and no second credential. Ariadne
+measures the data and validates every proposal; three decisions stay
+strictly human: operator source approval, Git Review Admission, and (for a
+legacy staged project) Promotion. In a Git-managed data project the agent
+works through isolated proposals — never by mutating Git itself (no `git
+commit`, branch, checkout, merge or push, no direct edits to served layers,
+proposal worktrees or `.ariadne/` state).
 
-1. **propose sources** — write a registry-shaped `sources:` YAML (same shape as
-   `ariadne.yaml`, no inline credentials) and run
-   `ariadne-authoring propose-sources --file proposal.yaml`. The proposal is
-   inert data: no location is opened, profiled, or connected. You get back a
-   digest and the precise proposed locations. Local paths resolve against the
-   project root; large datasets are pre-staged by the operator, never uploaded.
-2. **STOP — operator source approval.** Only a human runs
-   `ariadne-authoring approve-sources --digest DIGEST` on the project host to
-   install the exact reviewed entries into `ariadne.yaml`. The agent NEVER runs
-   it, and no agent assertion counts as approval. Until it happens,
-   `ariadne-authoring inputs` returns `profile: null` and nothing is opened.
-3. **read measured inputs** — `ariadne-authoring inputs --document notes.md
-   [--part N]` returns the deterministic per-source profile Ariadne measured
-   (never model-authored), source-linked converted document evidence (exact
-   resource, sha256 digest, bounded text parts — a part is the whole text only
-   when `parts` is 1), and the optional already-approved `data/seed_notes.md`.
-   Local documents must live inside the operator-configured input roots
-   (default `data/docs/`); PDF/Office/HTML conversion needs the optional
-   `[documents]` extra, and unsupported or over-limit inputs fail explicitly.
-   Bound every batch: ≤16 documents per call, and fetch big documents part by
-   part instead of assuming one response holds everything.
-4. **draft from evidence, ask about the rest.** Your model proposes the complete
-   bundle: Seed Notes (`data/seed_notes.md`), OSI models, OKF pages. Data
-   distributions are not business-policy evidence: when documents and owner
-   statements do not establish a rule (say, whether returned orders count as
-   revenue), ask the owner or flag it for review — never present a plausible
-   rule as established. Cite the actual input and digest; quote only passages
-   you verified in the converted text.
-5. **submit** — `ariadne-authoring submit --file submission.json`, a JSON object
-   `{"files": [{path, content}], "documents": [reference, ...]}`. `files`
-   carries exactly one `data/seed_notes.md`, `semantic_layer/models/*.yml`, the
-   optional multi-fact `semantic_layer/graph.yml` (one dataset per model — a
-   model file with several datasets is refused), and
-   OKF pages under `context_layer/{tables,references/joins,policies,metrics,
-   skills}/` — never `index.md`/`log.md` or computation pages (both are
-   generated). A submitted graph additionally requires a cited metric page
-   for EVERY graph metric, each citing a resolvable Policy page. `documents`
-   names the input-area references the proposal cites;
-   Ariadne verifies each citation against the operator's document boundary
-   itself. Dataset sources may SELECT/join only approved registry identities —
-   never raw file paths or table functions. Validation errors name the affected
-   files and requirements: repair the SAME proposal with
-   `--base-digest DIGEST` (the CURRENT submission digest — a stale one fails
-   without replacing anything). Three rounds max; exhausted proposals stay
-   `review_needed` for the human, and re-submitting identical content changes
-   nothing.
-6. **inspect, then STOP for the human.** `ariadne-authoring review [--part N]`
-   returns the inventory, verified document citations, validation state, the
-   proposed bodies in bounded parts, and the exact content digest. Report that
-   digest to the human and stop: server-side Promotion on the reviewed digest
-   is a human-only decision, and review is readable state, never a sign-off.
+1. **start a proposal** — `ariadne-authoring start --project .` returns a
+   system-generated proposal ID with its base and candidate revisions (equal
+   until the first edit); every later command addresses that ID and its
+   current revision.
+2. **propose sources** — `ariadne-authoring propose-sources --proposal ID
+   --expected-revision REV --file proposal.yaml` appends validated typed
+   entries (the same registry shape, no inline credentials) to the
+   candidate's `ariadne.yaml` and returns the RESOLVED source-identity
+   digest. The proposal is inert data: no location is opened, profiled or
+   connected.
+3. **STOP — operator source approval.** Only a human runs
+   `ariadne-authoring approve-sources --project . --proposal ID --revision
+   REV --source-digest DIGEST`, recording permission for that exact resolved
+   identity. The agent NEVER runs it, and no agent assertion counts as
+   approval. Until it happens, `inputs` returns `profile: null` and nothing
+   is opened.
+4. **read measured inputs** — `ariadne-authoring inputs --proposal ID
+   [--document notes.md] [--part N]` returns the deterministic per-source
+   profile Ariadne measured of the APPROVED identity (never model-authored),
+   source-linked converted document evidence (exact resource, sha256 digest,
+   bounded text parts), and the candidate's Seed Notes evidence. Local
+   documents must live inside the operator-configured input roots (default
+   `data/docs/`); PDF/Office/HTML conversion needs the optional `[documents]`
+   extra. Bound every batch: ≤16 documents per call, big documents part by
+   part.
+5. **edit complete artifacts** — `ariadne-authoring read --proposal ID
+   --kind page --section policies --name my-policy` (bounded parts) and
+   `ariadne-authoring edit --proposal ID --expected-revision REV --file
+   edit.json` with one discriminated object per edit — `{kind: model, name,
+   content}`, `{kind: graph, content}`, `{kind: page, section, name,
+   content}`, `{kind: seed_notes, content}`. One COMPLETE artifact per edit,
+   revision-checked: a stale expected revision is refused without
+   overwriting, and an identical edit is a no-op. Unchanged artifacts are
+   inherited from the base revision — you never resend the whole bundle.
+   Never edit `index.md`, `log.md` or computations pages: they are
+   system-generated. Dataset sources may SELECT/join only approved registry
+   identities — never raw file paths or table functions. Draft from measured
+   evidence; ask the owner where documents and distributions do not
+   establish a rule.
+6. **validate, review, then STOP for the human.** Validate finalizes the
+   generated artifacts, commits any generated changes and validates the
+   EXACT final commit against the approved source identity (bounded repair
+   rounds, never reset by another commit):
+   `ariadne-authoring validate --proposal ID --expected-revision REV`.
+   `ariadne-authoring review --proposal ID` returns the revisions, change
+   inventory, bounded bodies, citations, the validation report and a review
+   digest. Report that digest to the human and stop: `ariadne-admit
+   --confirm` is the human-only admission of that exact reviewed revision —
+   a commit, a validation report or your own reading of a review is never
+   sign-off. If the admitted baseline advanced, the human records their
+   rebase/merge with `ariadne-authoring reconcile`; never merge or reset
+   anything yourself.
+
+Legacy routes that stay: a staged (non-Git) project keeps
+`ariadne-authoring submit --file submission.json` (one complete bundle,
+repaired with `--base-digest`, three rounds max, exhausted proposals stay
+`review_needed` for the human) plus `ariadne-authoring review` and the
+human `ariadne-promote` on the reviewed digest. Migrating a legacy
+project's served artifacts into a Git proposal is the HUMAN
+`ariadne-authoring import-legacy --project DIR --from-root ROOT` — an
+import is never admission, and the legacy `staging/` tree keeps its own
+pending work untouched.
 
 New metrics without an independent expected-value oracle are staged with
 `attestation: pending`: compile and grain checks passed, but no one verified
-the numbers independently. When serving such a metric after Promotion, say
-`governed: true means Promoted, not independently value-attested`.
+the numbers independently. When serving such a metric after Promotion or
+admission, say `governed: true means Promoted/admitted, not independently
+value-attested`.
 
 ## Agent rules
 
-- **Staging never serves.** Served artifacts arrive only by human promotion. Write
-  only under `staging/`; never edit `context_layer/`, `semantic_layer/`, or the
-  bundle's `index.md`/`log.md` (the promotion gate owns them).
+- **Staging never serves; proposals never admit.** Served artifacts arrive only
+  by human promotion (a staged project) or human Git Review Admission of an
+  exact reviewed, validated revision (a Git-managed project). Write only under
+  `staging/` (the legacy route) or through typed proposal edits (the Git
+  route); never edit `context_layer/`, `semantic_layer/`, the bundle's
+  `index.md`/`log.md` (the gates own them), or anything under `.ariadne/`.
 - **Grain before joins.** A `define_metric` source must be grain-preserving: every
   join runs many-to-one on a key that is unique on the joined side. Resolve
   one-to-many and many-to-many per [references/grain-rubric.md](references/grain-rubric.md)
@@ -214,14 +256,22 @@ the numbers independently. When serving such a metric after Promotion, say
 - **`search_context` before novel questions.** The rule you are about to rediscover
   is probably already a policy page. Search first; if the question stays unmodeled,
   route it through `define_metric` so the definition lands in staging as a proposal.
-- **Harness-led authoring keeps both gates human.** Never run
-  `ariadne-authoring approve-sources` or `ariadne-promote` — operator source
-  approval and Promotion are human-only, and neither can be inferred from an
-  agent assertion, a successful validation, or a review you performed yourself.
-  Profile and document evidence is measured by Ariadne: propose from it, ask
-  the owner where it does not establish a rule, and stop at `review` with the
-  exact digest. A `review_needed` proposal or an interrupted bundle transition
-  needs human resolution, never an agent reset or replacement.
+- **Both authoring gates stay human.** Never run
+  `ariadne-authoring approve-sources`, `ariadne-admit`, `ariadne-promote`,
+  `ariadne-authoring reconcile` or `ariadne-authoring import-legacy` — operator
+  source approval, admission, Promotion, rebase recording and legacy migration
+  are human-only, and none can be inferred from an agent assertion, a successful
+  validation, a commit you created, or a review you performed yourself. Profile
+  and document evidence is measured by Ariadne: propose from it, ask the owner
+  where it does not establish a rule, and stop at `review` with the exact
+  digest. A `review_needed` proposal or an interrupted transition needs human
+  resolution, never an agent reset or replacement.
+- **No direct Git, shell or file mutation.** Artifact changes go only through
+  the typed `ariadne-authoring` seams — never run `git commit`, `git branch`,
+  `git checkout`, `git merge`, `git rebase`, `git push` or arbitrary shell
+  commands against the data project yourself, and never edit served layers,
+  proposal worktrees or `.ariadne/` state by hand. The ariadne commands are the
+  only route.
 
 ## Optional: MCP integration
 
@@ -245,19 +295,27 @@ ariadne-init --with-mcp .
 ariadne-serve --sources ariadne.yaml
 ```
 
-With the extra installed, the same local stdio server also exposes the five
-harness-led authoring tools — `authoring_propose_sources`,
-`authoring_inputs`, `authoring_upload_document` (one bounded document, ≤5 MiB
-decoded bytes), `authoring_submit_bundle`, `authoring_review_bundle` — with
-the SAME checks and response contracts as the `ariadne-authoring` commands
-above, and never a source-approval or Promotion tool. The answer-example tools
-`save_example` and `search_examples` ride the same runtime with identical
+With the extra installed, the same local stdio server exposes the role
+toolsets over one core — pick the registration at launch:
+`python -m ariadne.serve --project DIR` (combined, the default; a legacy
+artifact-root project keeps `ariadne-serve --sources ariadne.yaml`),
+`--toolset analyst` (Query only: `list_metrics`, `search_context`,
+`get_metric`, `list_datasets`, `define_metric`, `query_metrics`,
+`query_detail`, `save_example`, `search_examples`), or `--toolset
+authoring` (the Git proposal contract: `authoring_start_proposal`,
+`authoring_read_artifact`, `authoring_edit_proposal`,
+`authoring_propose_sources`, `authoring_inputs`,
+`authoring_upload_document` — one bounded document, ≤5 MiB decoded bytes —
+`authoring_validate_proposal`, `authoring_review_proposal`) — with the SAME
+checks and response contracts as the `ariadne-authoring` commands above. The
+answer-example tools ride the Analyst/Combined registrations with identical
 contracts to `ariadne save-example`/`search-examples` (same confirmation
-rules); example review stays operator-only. Stdio is local and needs no
-token; the server runs for one project root (`--project`, fixed at launch).
-The authoring tools work in an empty project before the first Promotion;
-query tools then surface the missing-served-model error until a human
-promotes.
+rules); example review stays operator-only. No registration ever exposes
+source approval, admission, reconciliation, the legacy migration or
+Promotion. Stdio is local and needs no token; the server runs for one
+project root (`--project`, fixed at launch). The authoring tools work in an
+empty project before the first admission; query tools then surface the
+managed route's missing-admission error until a human admits.
 
 Reference: [references/grain-rubric.md](references/grain-rubric.md) — the five
 ADR-0006 resolution patterns for multi-cardinality joins.

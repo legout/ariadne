@@ -84,6 +84,27 @@ def test_skill_teaches_answer_example_guidance():
     assert "never run the operator-only `ariadne-example-review`" in normalized
 
 
+def test_skill_separates_managed_project_queries_from_legacy_roots():
+    """G7 fix pass F3: the default query workflow must not send Git-project
+    operators to mutable legacy roots — managed queries go through
+    `--project DIR` (the pinned human-admitted snapshot, route
+    git-review-admission), the retained legacy route keeps --served/--sources,
+    and multi-metric governance names BOTH human routes (legacy Promotion AND
+    Git Review Admission), not Promotion exclusively."""
+    skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
+    querying = skill[: skill.index("## Answer examples")]  # the query workflow
+    assert "--project DIR" in querying  # the managed route is taught
+    assert "--project ." in querying  # with its concrete invocation
+    assert "git-review-admission" in querying
+    assert "admitted snapshot" in querying
+    # the legacy roots stay documented as the RETAINED route, never the default
+    assert "--served PATH" in querying and "--sources ariadne.yaml" in querying
+    # multi-metric governance names both human routes
+    assert "route: local-promotion" in querying
+    assert "Git Review Admission" in querying
+    assert "local Promotion only" not in querying  # the exclusive claim is gone
+
+
 def test_path_prints_packaged_dir(project, capsys):
     assert main(["path"]) == 0
     assert capsys.readouterr().out.strip() == str(ASSETS)
@@ -208,3 +229,35 @@ def test_skill_teaches_the_admitted_multifact_query_commands():
     assert "route: local-promotion" in skill
     # the submission boundary names the graph path (the one extra semantic file)
     assert "semantic_layer/graph.yml" in skill
+
+
+def test_skill_teaches_git_proposal_workflow_and_stops_at_human_gates():
+    """Issue #39/G7 (spec 2026-10-02-0009 §6–7): the packaged skill teaches the
+    Git proposal workflow — start/read/edit/validate/review with revisions —
+    keeps the legacy submit/review/promote route documented as legacy, hands
+    import-legacy and ariadne-admit to the human, and never teaches arbitrary
+    Git branch/shell/file mutation."""
+    skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
+    for cmd in (
+        "ariadne-authoring start",
+        "ariadne-authoring read",
+        "ariadne-authoring edit",
+        "ariadne-authoring validate",
+        "ariadne-authoring review --proposal",
+        "ariadne-authoring propose-sources --proposal",
+        "ariadne-authoring inputs --proposal",
+    ):
+        assert cmd in skill, cmd
+    assert "--expected-revision" in skill  # revision-checked edits
+    # the human gates: admission and the legacy import are never agent actions
+    assert "ariadne-admit" in skill and "--confirm" in skill
+    assert "import-legacy" in skill
+    assert "Never run" in skill and "human-only" in skill.lower()
+    # Git operations appear ONLY as named prohibitions, never as instructions
+    rules_at = skill.index("## Agent rules")
+    assert "never run" in skill[rules_at:].lower() and "git" in skill[rules_at:]
+    # the legacy staged route stays documented as legacy, not primary
+    assert "ariadne-authoring submit --file submission.json" in skill
+    assert "--base-digest" in skill
+    assert "ariadne-promote" in skill
+    assert "--toolset" in skill  # split vs combined registrations taught

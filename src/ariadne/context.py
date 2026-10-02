@@ -649,16 +649,23 @@ def _finalize_bundle(
     *,
     generated_by: str = "ariadne-author",
     attester: str | None = "tests/test_evals.py",
+    stamp_lifecycle: bool = True,
 ) -> None:
     """Post-validation deterministic passes (ADR-0007): enrich metric pages from the
     staged models, generate the computation pages, stamp lifecycle frontmatter.
     Harness-led submission (spec 2026-09-24-0005) passes its own provenance and
-    ``attester=None`` (pending attestation, ADR-0013)."""
+    ``attester=None`` (pending attestation, ADR-0013). ``stamp_lifecycle=False``
+    (the Git-authoring mode, issue #39/G7 fix) skips the WALL-CLOCK
+    generated/verified/stale_after stamping: lifecycle claims belong to the
+    deterministic finalize/promotion passes of the route the drafts enter, and
+    fresh stamps would be refused as forged claims the moment the drafts are
+    imported into a project that already carries an artifact revision."""
     now = datetime.now(UTC)
     models, _all_parsed = _model_index(staging)  # post-validation: always parsed
     _enrich_metric_pages(staging, models)
     _write_computations(staging, models, attester=attester)
-    _stamp_pages(staging, now, by=generated_by)
+    if stamp_lifecycle:
+        _stamp_pages(staging, now, by=generated_by)
 
 
 # ------------------------------------------- the Git-candidate finalize pass

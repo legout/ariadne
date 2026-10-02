@@ -22,6 +22,14 @@ refused unless ``--force``; so is an unparsable ``pyproject.toml`` (ambiguous
 project). Fail closed on symlinks: if any scaffold path under TARGET — or a
 parent of it — is a symlink (e.g. ``data`` linked outside TARGET, or a dangling
 ``.env.example``), nothing is written through the link.
+
+``--git`` (issue #39/G7) scaffolds for the Git authoring workflow: the
+artifact layers become TRACKED artifacts (the ignore template drops the
+``context_layer/``/``semantic_layer/`` rules and ignores ``.ariadne/``
+instead), the pointer page describes the proposal/admission layout and gate,
+and still no OUTPUT is pre-seeded — an existing ``.gitignore`` or AGENTS.md is
+never overwritten, so adopting Git over a legacy scaffold keeps its rules
+while the proposal seams track chosen artifacts explicitly.
 """
 
 from __future__ import annotations
@@ -42,6 +50,27 @@ semantic_layer/
 .env
 __pycache__/
 .venv/
+"""
+
+# The Git-mode scaffold (issue #39/G7, spec 2026-10-02-0009 §7): the served
+# artifact layers are TRACKED Git artifacts (the proposal/admission workflow
+# owns them), while the operator-owned state dir, pending proposals and
+# inputs/secrets stay ignored. The supported INPUT locations under data/ —
+# databases, parquet/csv/json/delta datasets, data/docs/ documents — are
+# ignored wholesale; ONLY data/seed_notes.md is re-included because it is an
+# artifact the proposal seams track through the allowlisted literal-pathspec
+# seam (G7 fix pass: ordinary git add must never pick up local data inputs).
+# An existing .gitignore is never rewritten — a legacy scaffold's ignore
+# rules stay, and the proposal seams track chosen artifacts explicitly
+# (git add -f with literal pathspecs) despite them.
+GIT_MODE_GITIGNORE = """\
+data/*
+!data/seed_notes.md
+staging/
+.env
+__pycache__/
+.venv/
+.ariadne/
 """
 
 # Same variables ariadne.author loads from ARIADNE_ENV (default .env next to
@@ -111,6 +140,42 @@ workflow and the grain rules. This file holds only project facts.
 Served artifacts arrive ONLY by human promotion (`ariadne-promote`): agents never
 write outside `staging/`, and anything staged with `status: review_needed` refuses
 promotion until a human resolves it.
+"""
+
+# The Git-mode scaffold's pointer page (issue #39/G7): same project-facts
+# contract (ADR-0011), but the layout and the human gate describe the Git
+# authoring workflow — tracked artifact layers, operator-owned state, and
+# human Git Review Admission instead of staging promotion.
+AGENTS_MD_GIT = """\
+# Ariadne project facts
+
+## What this project is
+
+TODO: one paragraph — what the database is about, who owns it, which questions
+the governed metrics answer. The human-owned rules live in `data/seed_notes.md`;
+served policy pages cite them.
+
+## The ariadne skill
+
+Load the ariadne skill (`ariadne-skill install` if absent) — it carries the
+workflow and the grain rules. This file holds only project facts.
+
+## Layout
+
+| Directory | Role |
+| :--- | :--- |
+| `data/` | Inputs: the database(s), `data/seed_notes.md`, `data/docs/` source documents. |
+| `semantic_layer/` | OSI models — tracked Git artifacts edited through proposals. |
+| `context_layer/` | OKF bundle (policies, metrics, computations) — tracked Git artifacts. |
+| `staging/` | Pending ad-hoc/standalone-ingest/example proposals in their own stores. |
+| `.ariadne/` | Operator-owned state: proposals, approvals, snapshots (never committed). |
+
+## Admission gate
+
+Served state arrives ONLY by human Git Review Admission (`ariadne-admit`) of an
+exact reviewed, validated candidate revision. Agents draft through
+`ariadne-authoring` proposals; source approval (`approve-sources`), admission
+and any direct Git/shell/file mutation are human operations, never agent ones.
 """
 
 SEED_NOTES = """\
@@ -198,6 +263,14 @@ def main(argv: list[str] | None = None) -> int:
         help="also scaffold .mcp.json, the registry-aware MCP server config "
         "(optional transport — the local ariadne CLI needs no server)",
     )
+    parser.add_argument(
+        "--git",
+        action="store_true",
+        help="scaffold for the Git authoring workflow: the artifact layers "
+        "(context_layer/, semantic_layer/) are TRACKED artifacts while "
+        ".ariadne/, staging/ and inputs/secrets stay ignored; existing files "
+        "(including an existing .gitignore) are never overwritten",
+    )
     args = parser.parse_args(argv)
 
     target = Path(args.target)
@@ -211,9 +284,9 @@ def main(argv: list[str] | None = None) -> int:
     files = [
         ("data/seed_notes.md", SEED_NOTES),
         ("ariadne.yaml", ARIADNE_YAML),
-        ("AGENTS.md", AGENTS_MD),
+        ("AGENTS.md", AGENTS_MD_GIT if args.git else AGENTS_MD),
         (".env.example", ENV_EXAMPLE),
-        (".gitignore", GITIGNORE),
+        (".gitignore", GIT_MODE_GITIGNORE if args.git else GITIGNORE),
     ]
     if args.with_mcp:  # opt-in only (spec §7): the local CLI needs no MCP config
         files.append((".mcp.json", json.dumps(MCP_JSON, indent=2) + "\n"))
@@ -246,9 +319,13 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"ariadne project ready in {target}: {created} file(s) created, "
         f"{skipped} skipped — next: cp .env.example .env, add credentials, "
-        "then ariadne-author --db data/YOURDB.db --notes data/seed_notes.md "
-        "(source documents for ariadne-ingest go in data/docs/); query with the "
-        "local ariadne CLI (MCP config: re-run with --with-mcp)"
+        + (
+            "git init && ariadne-authoring start (Git authoring workflow), "
+            if args.git
+            else "then ariadne-author --db data/YOURDB.db --notes data/seed_notes.md "
+            "(source documents for ariadne-ingest go in data/docs/), "
+        )
+        + "query with the local ariadne CLI (MCP config: re-run with --with-mcp)"
     )
     return 0
 

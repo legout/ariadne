@@ -29,6 +29,7 @@ for failure, message verbatim.
                               [--project DIR]
     ariadne-authoring reconcile --proposal ID --expected-revision OLD
                                 --revision NEW [--project DIR]
+    ariadne-authoring import-legacy --from-root ROOT [--project DIR]   (HUMAN-ONLY)
 
 ``approve-sources`` is HUMAN-ONLY and runs on the server host (ADR-0013): the
 packaged skill must never invoke it, and it is excluded from every MCP tool
@@ -52,10 +53,11 @@ GIT contract above — ``authoring_start_proposal``/``authoring_read_artifact``/
 (Git mode: ``--proposal``)/``authoring_upload_document``/
 ``authoring_validate_proposal``/``authoring_review_proposal`` — with model
 arguments carrying only proposal IDs, revisions and typed artifact
-identities. The legacy complete-bundle ``submit``/``review`` payloads exist
-only on this local CLI until the G7 cleanup: an MCP caller composes them as
+identities. A legacy complete-bundle ``submit``/``review`` payload composes as
 ``start`` + one ``edit`` per artifact + ``validate``/``review --proposal``
-instead, and no MCP entry ever guesses a proposal for an old bundle payload.
+instead, and no MCP entry ever guesses a proposal for an old bundle payload
+(the local legacy staged-bundle route is retained documented for its named
+consumers — never an MCP surface).
 
 ``start``/``read``/``edit`` (issue #34/G2, spec 2026-10-02-0009 §§3–4) drive
 isolated Git authoring proposals over the project's own Git repository:
@@ -78,6 +80,19 @@ records the clean new HEAD — requiring the current admitted revision in the
 candidate's ancestry — and invalidates the old revision's validation/review; it
 never merges automatically or clears an inconsistent interrupted transition or
 exhausted repair state.
+
+``import-legacy`` (issue #39/G7) is HUMAN-ONLY the same way: the explicit
+legacy-artifact migration of :mod:`ariadne.migration` (spec §7/AC9), exposed
+ONLY here — never an MCP or Agent tool. It copies a legacy project's selected
+artifacts (registry, Seed Notes, models, graph, OKF pages) into a fresh
+UNADMITTED Git proposal — or into the human-created initial artifact revision
+when the project has none yet — preserving pending legacy staging byte-for-byte
+and NEVER admitting: a Git commit of existing files is not human review. The
+retained legacy ``submit``/``review`` staged-bundle route keeps its named
+consumers (tests/test_authoring.py, tests/test_promote.py,
+tests/test_multifact.py, tests/test_authoring_mcp.py and every legacy staged
+project); see docs/how-to/git-authoring.md for the complete legacy → new
+mapping.
 """
 
 from __future__ import annotations
@@ -99,6 +114,7 @@ from ariadne.authoring import (
     review_bundle,
     submit_bundle,
 )
+from ariadne.migration import import_legacy
 
 
 class UsageError(ValueError):
@@ -351,6 +367,22 @@ def build_parser() -> _Parser:
     reconcile_cmd.add_argument(
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
+
+    import_cmd = sub.add_parser(
+        "import-legacy",
+        help="HUMAN-ONLY: copy a legacy project's selected artifacts (registry, Seed "
+        "Notes, models, graph, OKF pages) into a fresh UNADMITTED Git proposal — or "
+        "the initial artifact revision when the project has none; never admission",
+    )
+    import_cmd.add_argument(
+        "--from-root",
+        required=True,
+        help="the legacy project root to import from (its ariadne.yaml, seed notes, "
+        "served semantic/context layers; pending staging is preserved untouched)",
+    )
+    import_cmd.add_argument(
+        "--project", default=".", help="the managed Git data project (default: .)"
+    )
     return parser
 
 
@@ -425,6 +457,10 @@ def main(argv: list[str] | None = None) -> int:
             result = reconcile(
                 args.project, args.proposal, args.expected_revision, args.revision
             )
+        elif args.command == "import-legacy":
+            # HUMAN-ONLY (issue #39/G7): the explicit legacy-artifact migration —
+            # never an MCP/Agent tool, never admission.
+            result = import_legacy(project=args.project, from_root=args.from_root)
         elif args.command == "start":
             result = AuthoringProject(args.project).start_proposal(args.base_revision)
         elif args.command == "read":

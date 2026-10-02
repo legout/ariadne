@@ -285,8 +285,10 @@ def _digest(entries: list[dict]) -> str:
 # The measured-evidence implementations were MOVED INTACT to
 # :mod:`ariadne.authoring_inputs` (issue #35/G3) so the legacy route here and
 # the Git-backed proposal route share ONE implementation; the names stay
-# importable from this module (top-of-module re-export above) for the CLI,
-# serve, promote and test callers.
+# importable from this module (top-of-module re-export above) for their named
+# real consumers — tests/test_authoring.py's legacy-route fixtures (the
+# documented retained legacy surface, issue #39/G7) and promote.py's digest
+# gate (``_digest``/``_registry_sources``/``_tree_digest`` below).
 
 
 def harness_inputs(

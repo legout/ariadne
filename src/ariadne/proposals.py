@@ -580,7 +580,10 @@ def _in_snapshot(rel: str) -> bool:
 def _scope_files(project: Path) -> list[str]:
     """The concrete EXISTING files inside the allowed candidate scope — the
     human-created initial artifact revision commits exactly these, never an
-    unrelated user file and never ``git add .`` (plan §2)."""
+    unrelated user file and never ``git add .`` (plan §2). The
+    system-generated bookkeeping (``index.md``/``log.md``) is EXCLUDED: the
+    finalize pass owns and regenerates it, so a legacy served tree adopting
+    Git imports its pages without stale generated indexes (issue #39/G7)."""
     rels: list[str] = []
     for rel in ("ariadne.yaml", "data/seed_notes.md", "semantic_layer/graph.yml"):
         if (project / rel).is_file():
@@ -598,7 +601,7 @@ def _scope_files(project: Path) -> list[str]:
             rels.extend(
                 path.relative_to(project).as_posix()
                 for path in sorted(root.rglob("*.md"))
-                if path.is_file()
+                if path.is_file() and path.name not in _GENERATED_FILES
             )
     return rels
 
@@ -651,6 +654,25 @@ def _create_initial_revision(project: Path) -> str:
             )
         _git(["commit", "--allow-empty", "-m", "ariadne: initial artifact revision"], project)
     return _current_head(project) or ""
+
+
+def create_initial_revision(project: str | Path) -> str:
+    """Public seam for the HUMAN legacy import (issue #39/G7,
+    :mod:`ariadne.migration`): establish the human-created initial artifact
+    revision from the project's CURRENT in-scope files when the repository
+    commits history but no artifact revision yet (the fresh-Git-adoption case
+    whose files were just copied in by the operator's import). The same
+    discipline ``start_proposal`` uses for a repository with no commits: the
+    shared credential boundary BEFORE any staging, explicit allowlisted
+    LITERAL pathspecs (never ``git add .``, tracked even under an old ignore
+    rule), and the state dir recorded in the repo-LOCAL exclude file."""
+    project = Path(project).resolve()
+    _require_repo(project)
+    _refuse_symlinked_component(project, ARIADNE_STATE_DIR)
+    _require_git_identity(project)
+    with _file_lock(project / LOCKS_REL / "project.lock"):
+        _ensure_state_ignored(project)
+        return _create_initial_revision(project)
 
 
 # ------------------------------------------------------- the proposal lifecycle

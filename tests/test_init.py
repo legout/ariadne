@@ -36,6 +36,20 @@ GITIGNORE_LINES = (
     ".venv/",
 )
 
+# The Git-mode scaffold (issue #39/G7): the artifact layers are TRACKED Git
+# artifacts; the operator state dir, pending proposals, the supported input
+# locations under data/ (except the Seed Notes artifact) and secrets stay
+# ignored.
+GIT_MODE_GITIGNORE_LINES = (
+    "data/*",
+    "!data/seed_notes.md",
+    "staging/",
+    ".env",
+    "__pycache__/",
+    ".venv/",
+    ".ariadne/",
+)
+
 
 def test_scaffold_creates_expected_inputs(tmp_path):
     """Default scaffold (spec §7): local-first — .mcp.json is NOT created."""
@@ -146,6 +160,89 @@ def test_existing_gitignore_is_not_overwritten(tmp_path):
     (target / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
     assert main([str(target)]) == 0
     assert (target / ".gitignore").read_text(encoding="utf-8") == "*.tmp\n"
+
+
+def test_git_scaffold_tracks_artifact_layers_and_ignores_state_and_inputs(tmp_path):
+    """Issue #39 [2]: ``--git`` scaffolds for the Git authoring workflow —
+    the served artifact layers are TRACKED (not ignored), while ``.ariadne/``
+    state, pending ``staging/`` and inputs/secrets stay ignored, and no
+    output layer is pre-seeded."""
+    target = tmp_path / "proj"
+    assert main([str(target), "--git"]) == 0
+    gitignore = (target / ".gitignore").read_text(encoding="utf-8")
+    for line in GIT_MODE_GITIGNORE_LINES:
+        assert line in gitignore, line
+    assert "context_layer" not in gitignore and "semantic_layer" not in gitignore
+    for rel in ("data/seed_notes.md", "ariadne.yaml", "AGENTS.md", ".env.example"):
+        assert (target / rel).is_file(), rel
+    # no pre-seeded outputs: the artifact layers arrive only through proposals
+    assert not (target / "context_layer").exists()
+    assert not (target / "semantic_layer").exists()
+    assert not (target / "staging").exists()
+    # the pointer page names the Git admission gate, not staging promotion
+    agents = (target / "AGENTS.md").read_text(encoding="utf-8")
+    assert "ariadne-admit" in agents and "`.ariadne/`" in agents
+    assert "ariadne-promote" not in agents
+    assert "profile" not in agents.lower()  # still a pointer page, no loop prose
+
+
+def test_git_scaffold_keeps_existing_files_and_ignore_rules(tmp_path, capsys):
+    """Issue #39 [2]/[3]: adopting Git over an existing legacy project keeps
+    every existing file — including a legacy ``.gitignore`` whose rules still
+    exclude the served layers (the proposal seams track chosen artifacts
+    explicitly, so the old rules never block the migration)."""
+    target = tmp_path / "legacy"
+    target.mkdir()
+    (target / ".gitignore").write_text("*.tmp\ncontext_layer/\nsemantic_layer/\n", encoding="utf-8")
+    (target / "data").mkdir()
+    (target / "data" / "seed_notes.md").write_text("# my notes\n", encoding="utf-8")
+    (target / "AGENTS.md").write_text("# my project\n", encoding="utf-8")
+    assert main([str(target), "--git"]) == 0
+    assert (target / ".gitignore").read_text(encoding="utf-8") == (
+        "*.tmp\ncontext_layer/\nsemantic_layer/\n"
+    )  # existing rules are NOT rewritten
+    assert (target / "data" / "seed_notes.md").read_text(encoding="utf-8") == "# my notes\n"
+    assert (target / "AGENTS.md").read_text(encoding="utf-8") == "# my project\n"
+    assert not (target / ".mcp.json").exists()  # still opt-in only
+
+
+def test_git_scaffold_ignores_supported_input_locations_but_keeps_seed_notes(tmp_path):
+    """G7 fix pass F4: the --git ignore template covers the supported INPUT
+    locations (databases, parquet/csv/json/delta datasets under data/, and
+    documents under data/docs/), so ordinary ``git add`` never picks up local
+    inputs — while ``data/seed_notes.md`` stays trackable (the artifact the
+    allowlisted ``-f`` literal-pathspec seam commits)."""
+    import subprocess
+
+    target = tmp_path / "proj"
+    assert main([str(target), "--git"]) == 0
+
+    def git(*argv: str) -> subprocess.CompletedProcess:
+        proc = subprocess.run(
+            ["git", *argv], cwd=target, capture_output=True, text=True, check=False
+        )
+        assert proc.returncode == 0, f"git {argv} failed: {proc.stderr}"
+        return proc
+
+    git("init", "-q")
+    git("config", "user.name", "Ariadne Tests")
+    git("config", "user.email", "tests@ariadne.local")
+    (target / "data" / "events.parquet").write_bytes(b"PAR1\n")
+    (target / "data" / "lake").mkdir()
+    (target / "data" / "lake" / "part-0.parquet").write_bytes(b"PAR1\n")
+    (target / "data" / "docs" / "notes.md").write_text("# notes\n", encoding="utf-8")
+    (target / "data" / "demo.db").write_bytes(b"sqlite bytes\n")
+
+    git("add", "-A")  # ordinary staging: local inputs never ride along
+    staged = git("status", "--porcelain").stdout
+    assert "events.parquet" not in staged
+    assert "part-0.parquet" not in staged
+    assert "docs/notes.md" not in staged
+    assert "demo.db" not in staged
+
+    git("add", "--", "data/seed_notes.md")  # plainly trackable, -f unneeded
+    staged = git("status", "--porcelain").stdout
+    assert "data/seed_notes.md" in staged
 
 
 def test_refuses_ariadne_checkout_unless_force(tmp_path):
