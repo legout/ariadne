@@ -27,7 +27,7 @@ trusted to LLM recall: every assembled page carries
 <filename>}]``, ``generated: {by: ariadne-ingest:<model>, at: <iso>}`` and
 ``status: draft``; the LLM supplies only the classification, title,
 description, tags and body. Pages are gated with the author's per-type contract
-(:func:`ariadne.author._page_contract_errors`) BEFORE anything touches staging,
+(:func:`ariadne.context._page_contract_errors`) BEFORE anything touches staging,
 with at most 2 retry rounds feeding violations back; a document that never
 passes stages nothing.
 
@@ -66,11 +66,10 @@ from typing import Any, cast
 
 import yaml
 
-from ariadne.author import (
+from ariadne.author import _default_complete, _validate_staging
+from ariadne.context import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     _FRONTMATTER_RE,
-    _default_complete,
     _page_contract_errors,
-    _validate_staging,
 )
 from ariadne.init import _symlink_under
 

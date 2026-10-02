@@ -45,11 +45,21 @@ import json
 import os
 import re
 import sys
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
 import yaml
+
+# Shared Context Layer (issue #33, ADR-0016): the deterministic OKF contract,
+# enrichment and frontmatter primitives moved to ariadne.context; this module
+# calls the shared implementations. ``_load_frontmatter_meta`` is re-exported
+# for its existing ariadne.authoring import (unchanged in this slice).
+from ariadne.context import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    _bundle_errors,
+    _finalize_bundle,
+    _load_frontmatter_meta,  # noqa: F401 — re-export: ariadne.authoring imports it from here
+    _set_frontmatter,
+)
 
 # ADR-0010: the author loop runs on the shared registry connection when a
 # registry is in play (--sources / ariadne.yaml), else the legacy --db sqlite.
@@ -65,8 +75,6 @@ ENV_PATH = Path(os.environ.get("ARIADNE_ENV", "/home/volker/coding/ariadne/.env"
 MAX_ROUNDS = 3  # spec §5 hard cap on the validate/error loop
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SERVED_LAYERS = ("context_layer", "semantic_layer")  # only ever human-promoted (spec §6)
-
-_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)\Z", re.DOTALL)
 
 # Assembled as string pieces so every source line stays under the lint limit.
 # Both patterns are execution-verified against tests/fixtures/expected_metrics.json.
@@ -447,276 +455,6 @@ def normalize_layer_yaml(content: str) -> str:
         allow_unicode=True,
         width=4096,
     )
-
-
-def _model_index(staging: Path) -> dict[str, dict]:
-    """metric name -> {model, primary_key, dimensions, expression} from the staged OSI
-    models — the mechanical source of truth for enrichment and computations."""
-    index: dict[str, dict] = {}
-    models_dir = staging / "semantic_layer" / "models"
-    for path in sorted(models_dir.glob("*.yml")) if models_dir.is_dir() else []:
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for model in doc.get("semantic_model") or []:
-            pk: list[str] = []
-            dimensions: list[str] = []
-            for dataset in model.get("datasets") or []:
-                pk = pk or [str(key) for key in dataset.get("primary_key") or []]
-                for field in dataset.get("fields") or []:
-                    if isinstance(field, dict) and field.get("name") and "dimension" in field:
-                        dimensions.append(str(field["name"]))
-            for metric in model.get("metrics") or []:
-                name = metric.get("name")
-                if not name:
-                    continue
-                dialects = (metric.get("expression") or {}).get("dialects") or [{}]
-                index[str(name)] = {
-                    "model": str(model.get("name") or path.stem),
-                    "primary_key": pk,
-                    "dimensions": dimensions,
-                    "expression": str(dialects[0].get("expression") or ""),
-                }
-    return index
-
-
-def _enrich_metric_pages(staging: Path, models: dict[str, dict]) -> None:
-    """Attach governed_by/dimensions/grain to staged metric pages (spec §8.15) —
-    derived from the staged OSI models, never trusted to LLM recall. A missing
-    description defaults to the metric name: index links carry it, and the
-    metric's own page must answer its name best in term-frequency search."""
-    metrics_dir = staging / "context_layer" / "metrics"
-    for path in sorted(metrics_dir.glob("*.md")) if metrics_dir.is_dir() else []:
-        info = models.get(path.stem)
-        if not info:
-            continue
-        existing = path.read_text(encoding="utf-8")
-        updates = {
-            "governed_by": f"semantic_layer {info['model']}::{path.stem}",
-            "dimensions": info["dimensions"],
-            "grain": {
-                "primary_key": info["primary_key"],
-                "cardinality_enforcement": "STRICT_1_TO_1",
-            },
-        }
-        if not _load_frontmatter_meta(existing).get("description"):
-            updates["description"] = f"{path.stem.replace('_', ' ')} — governed metric"
-        path.write_text(_set_frontmatter(existing, updates), encoding="utf-8")
-
-
-def _write_computations(
-    staging: Path, models: dict[str, dict], *, attester: str | None = "tests/test_evals.py"
-) -> None:
-    """One computation page per governed metric (spec §8.15): the sanctioned
-    expression straight from the gate-checked model, runtime + attestation
-    status. Deterministic: the LLM is never asked to reproduce SQL the compile
-    gate already sanctions.
-
-    ``attester=None`` is the harness-led mode (ADR-0013 / ADR-0007 scoped
-    extension): a metric with no independent expected-value oracle carries an
-    honest ``attestation: pending`` — never an invented attester such as the
-    demo's ``tests/test_evals.py``.
-
-    ponytail: pages are deliberately term-sparse (generic h1, no name repetition,
-    no filler prose) — serve.py ranks context hits by term frequency, so generated
-    boilerplate must never outrank the metric's narrative page (spec §8.4)."""
-    comp_dir = staging / "context_layer" / "computations"
-    comp_dir.mkdir(parents=True, exist_ok=True)
-    for name, info in sorted(models.items()):
-        meta = {
-            "type": "computation",
-            "title": f"sanctioned SQL — {info['model']}::{name}",
-            "description": "Sanctioned computation: SQL, runtime, attester.",
-            "tags": ["computation"],
-            "status": "draft",
-            "governed_by": f"semantic_layer {info['model']}::{name}",
-            "runtime": "duckdb",
-            "sources": [
-                {
-                    "id": f"model-{info['model']}",
-                    "resource": f"../../semantic_layer/models/{info['model']}.yml",
-                    "title": f"{info['model']} OSI model",
-                }
-            ],
-        }
-        if attester is None:
-            meta["attestation"] = "pending"
-        else:
-            meta["attester"] = attester
-        front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
-        oracle = (
-            "independent attestation pending — no expected-value oracle is cited "
-            "(compile and grain checks are not independent numeric attestation)"
-            if attester is None
-            else f"attestation `{attester}` golden values"
-        )
-        body = (
-            "# Sanctioned computation\n\n"
-            f"Sanctioned SQL (ANSI_SQL, `semantic_layer/models/{info['model']}.yml`); "
-            "compile gate `ariadne.validate`; execution DuckDB via the local `ariadne` "
-            f"command (`ariadne get-metric`); {oracle}. "
-            "Business rules: cited metric page.\n\n"
-            "```sql\n" + info["expression"].strip() + "\n```\n"
-        )
-        (comp_dir / f"{name}.md").write_text(f"---\n{front}\n---\n\n{body}", encoding="utf-8")
-
-
-def _stamp_pages(staging: Path, now: datetime, *, by: str = "ariadne-author") -> None:
-    """Stamp the trust/lifecycle frontmatter the LLM must never invent (ADR-0007):
-    generated/verified/stale_after on every staged OKF page."""
-    stale_after = (now + timedelta(days=90)).date().isoformat()
-    context_dir = staging / "context_layer"
-    for path in sorted(context_dir.rglob("*.md")) if context_dir.is_dir() else []:
-        path.write_text(
-            _set_frontmatter(
-                path.read_text(encoding="utf-8"),
-                {
-                    "generated": {
-                        "by": by,
-                        "at": now.isoformat(timespec="seconds"),
-                    },
-                    "verified": [],
-                    "stale_after": stale_after,
-                },
-            ),
-            encoding="utf-8",
-        )
-
-
-def _finalize_bundle(
-    staging: Path,
-    *,
-    generated_by: str = "ariadne-author",
-    attester: str | None = "tests/test_evals.py",
-) -> None:
-    """Post-validation deterministic passes (ADR-0007): enrich metric pages from the
-    staged models, generate the computation pages, stamp lifecycle frontmatter.
-    Harness-led submission (spec 2026-09-24-0005) passes its own provenance and
-    ``attester=None`` (pending attestation, ADR-0013)."""
-    now = datetime.now(UTC)
-    models = _model_index(staging)
-    _enrich_metric_pages(staging, models)
-    _write_computations(staging, models, attester=attester)
-    _stamp_pages(staging, now, by=generated_by)
-
-
-# ADR-0007 bundle contract: every content type must be present, keyed by its
-# context_layer section and the frontmatter ``type`` its pages must carry.
-_BUNDLE_TYPES = {
-    "tables": "table",
-    "references/joins": "reference",
-    "policies": "policy",
-    "metrics": "metric",
-    "computations": "computation",
-    "skills": "skill",
-}
-
-# Per-type required frontmatter beyond ``type`` itself (ADR-0007 bundle
-# contract, as documented in the authoring prompt and asserted per type in
-# tests/test_author.py). Fields attached mechanically after validation (metric
-# governed_by/dimensions/grain, computation runtime/attester) carry their own
-# targeted errors below, not this shared list.
-_BUNDLE_REQUIRED_FIELDS = {
-    "table": ("title", "description", "tags", "sources"),
-    "reference": ("title", "description", "tags", "sources"),
-    "policy": ("status", "title", "description", "tags", "sources"),
-    "metric": ("status", "title", "description", "tags", "sources"),
-    "computation": ("status", "title", "description", "tags", "sources"),
-    "skill": ("title", "description", "tags", "sources"),
-}
-
-
-def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list[str]:
-    """Contract violations of one staged page (ADR-0007 required frontmatter per
-    type: every field the bundle contract documents and the per-type bundle
-    tests assert — an omission anywhere fails the gate with the field named)."""
-    rel = page.relative_to(staging).as_posix()
-    try:
-        meta = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
-        return [f"{rel}: frontmatter is not valid YAML: {exc}"]
-    if not meta:
-        return [f"{rel}: no frontmatter (needs type: {expected_type})"]
-    errors: list[str] = []
-    if str(meta.get("type") or "") != expected_type:
-        errors.append(f"{rel}: frontmatter type must be '{expected_type}'")
-    for key in _BUNDLE_REQUIRED_FIELDS[expected_type]:
-        if not meta.get(key):
-            errors.append(f"{rel}: {expected_type} page requires '{key}' frontmatter")
-    if expected_type == "table":
-        grain = meta.get("grain")
-        if (
-            not isinstance(grain, dict)
-            or not grain.get("primary_key")
-            or not grain.get("cardinality_enforcement")
-        ):
-            errors.append(
-                f"{rel}: table page requires a grain block with primary_key and "
-                "cardinality_enforcement"
-            )
-    elif expected_type == "metric":
-        for key in ("governed_by", "dimensions", "grain"):  # attached mechanically
-            if not meta.get(key):
-                errors.append(
-                    f"{rel}: metric page lacks governed '{key}' frontmatter (no "
-                    "matching staged OSI model metric?)"
-                )
-        resources = [
-            str(s.get("resource") if isinstance(s, dict) else s or "")
-            for s in meta.get("sources") or []
-        ]
-        if not any(r.startswith("policies/") for r in resources):
-            errors.append(
-                f"{rel}: metric page must cite at least one governing policy "
-                "(a policies/... source)"
-            )
-    elif expected_type == "computation":
-        for key in ("governed_by", "runtime"):
-            if not meta.get(key):
-                errors.append(f"{rel}: computation page requires '{key}' frontmatter")
-        # ADR-0007 scoped extension (ADR-0013): the honest ``attestation: pending``
-        # state stands in for an attester a new metric does not have; a real
-        # attester may be cited instead. Neither present = contract violation.
-        if not meta.get("attester") and meta.get("attestation") != "pending":
-            errors.append(
-                f"{rel}: computation page requires 'attester' frontmatter or the honest "
-                "'attestation: pending' state (ADR-0007 scoped extension)"
-            )
-    return errors
-
-
-def _bundle_errors(staging: Path) -> list[str]:
-    """The hard ADR-0007 bundle contract gate (spec §5: no silent success): all six
-    content types present under context_layer/, per-type required frontmatter, and
-    every metric page citing at least one governing policy."""
-    context = staging / "context_layer"
-    errors: list[str] = []
-    for section, expected_type in _BUNDLE_TYPES.items():
-        pages = sorted((context / section).glob("*.md")) if (context / section).is_dir() else []
-        if not pages:
-            errors.append(
-                f"authored bundle is incomplete: no pages under context_layer/{section}/ "
-                "(ADR-0007 requires all six content types: tables, references/joins, "
-                "policies, metrics, computations, skills)"
-            )
-            continue
-        for page in pages:
-            errors.extend(_page_contract_errors(staging, page, expected_type))
-    return errors
-
-
-def _load_frontmatter_meta(text: str) -> dict:
-    """Frontmatter meta of an OKF page (empty dict when absent)."""
-    match = _FRONTMATTER_RE.match(text)
-    return (yaml.safe_load(match.group(1)) or {}) if match else {}
-
-
-def _set_frontmatter(text: str, updates: dict) -> str:
-    """Update (or add) YAML frontmatter on an OKF page, preserving the body."""
-    match = _FRONTMATTER_RE.match(text)
-    meta = (yaml.safe_load(match.group(1)) or {}) if match else {}
-    meta.update(updates)
-    front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
-    body = match.group(2) if match else text
-    return f"---\n{front}\n---\n\n{body}"
 
 
 def _mark_review_needed(staging: Path, errors: list[str]) -> None:

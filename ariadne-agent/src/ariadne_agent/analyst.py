@@ -1,4 +1,4 @@
-"""Analyst role tools: AriadneRuntime's five public operations as native tools.
+"""Analyst role tools: QueryRuntime's five public operations as native tools.
 
 Thin wrappers only (spec 2026-09-29-0006 session/role interface): compilation,
 grain checks, read-only execution, context attachment and proposal staging all
@@ -12,7 +12,7 @@ no source-approval or Promotion tool.
 
 import json
 
-from ariadne.runtime import AriadneRuntime
+from ariadne.query import QueryRuntime
 from tau_agent.messages import TextContent
 from tau_agent.tools import AgentTool, AgentToolResult, ToolExecutor
 
@@ -24,7 +24,7 @@ def _payload(value: object) -> AgentToolResult:
     return AgentToolResult(content=[TextContent(text=json.dumps(value, default=str))])
 
 
-def analyst_tools(runtime: AriadneRuntime) -> list[AgentTool]:
+def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
     """The Analyst tool set: exactly Ariadne's five query operations."""
     # Each wrapper mirrors the runtime's own signature and the routing language
     # the ariadne-core MCP facade uses (spec rev 4 §8.12: fresh consuming agents

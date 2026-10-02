@@ -1,10 +1,12 @@
-"""MCP adapter: registers the five AriadneRuntime operations as stdio tools,
+"""MCP adapter: registers the five QueryRuntime operations as stdio tools,
 plus the five harness-led authoring tools (issue #16, spec 2026-09-24-0005
 "Authoring interface and lifecycle" — local clauses).
 
 All query behavior — compilation, execution, context attachment, grain checks,
-proposal staging — lives in :class:`ariadne.runtime.AriadneRuntime`
-(spec 2026-09-23-0001 §3, ADR-0012); this module only registers the legacy five
+proposal staging — lives in :class:`ariadne.query.QueryRuntime`
+(spec 2026-09-23-0001 §3, ADR-0012; moved from ``ariadne.runtime`` in the
+modular-core extraction, issue #33/ADR-0016); this module only registers the
+legacy five
 query tools (spec §4) plus the two admitted multi-fact query tools (issue #30)
 over one runtime instance and parses the server arguments. All answer-example
 behavior lives in
@@ -22,7 +24,9 @@ authoring behavior lives in :mod:`ariadne.authoring`
 tools with the SAME checks and response contracts as ``ariadne-authoring`` —
 and never a source-approval or Promotion tool (those are human-only server
 host commands, ADR-0013). ``Facade`` remains import-compatible here as a plain
-alias of the runtime class — never a subclass or wrapper that could diverge.
+alias of the query runtime class (:class:`ariadne.query.QueryRuntime`;
+``ariadne.runtime.AriadneRuntime`` is the same class's other documented alias)
+— never a subclass or wrapper that could diverge.
 
 The server is launched for ONE locally configured project (``--project DIR``):
 the caller cannot select another project root or source credentials through
@@ -60,19 +64,19 @@ from ariadne import authoring
 # The grain guidance constant lives in ariadne.grain; it stays importable from
 # this module for backward compatibility (tests import it from here).
 from ariadne.grain import GRAIN_GUIDANCE  # noqa: F401 — re-export
-from ariadne.runtime import AriadneRuntime
+from ariadne.query import QueryRuntime  # pyright: ignore[reportMissingImports] — drift
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     default_registry_path,
 )
 
 # Back-compat alias (spec 2026-09-23-0001 §3): ariadne.serve.Facade IS the
-# runtime class — a plain assignment, not a subclass or wrapper.
-Facade = AriadneRuntime
+# query runtime class — a plain assignment, not a subclass or wrapper.
+Facade = QueryRuntime
 
 # A live query runtime, or a zero-arg factory for a project with no promoted
 # models yet (spec 2026-09-24-0005: the promoted-models requirement "cannot
 # block startup of the authoring tools"; query calls re-attempt construction).
-FacadeSource = AriadneRuntime | Callable[[], AriadneRuntime]
+FacadeSource = QueryRuntime | Callable[[], QueryRuntime]
 
 
 @contextmanager
@@ -106,7 +110,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = "."):
 
     app: FastMCP = FastMCP("ariadne")
 
-    def _runtime() -> AriadneRuntime:
+    def _runtime() -> QueryRuntime:
         """The query runtime — a live instance, or the launch-time factory
         (empty project: the authoring tools work, query calls surface the
         construction error)."""
@@ -401,7 +405,7 @@ def _mcp_sdk_absent() -> bool:
 def _missing_served_models(exc: BaseException) -> bool:
     """True for the runtime's promoted-models startup errors (no semantic
     models directory yet / no governed metrics under it — the exact messages
-    AriadneRuntime raises; runtime.py is outside this adapter's scope). Spec
+    QueryRuntime raises; query.py is outside this adapter's scope). Spec
     2026-09-24-0005: an empty project must not block MCP startup of the
     authoring tools, and query tool calls surface this same error."""
     message = str(exc)
@@ -459,8 +463,8 @@ def main(argv: list[str] | None = None) -> int:
     sources_path = default_registry_path(args.sources, args.db)
     db = args.db or "examples/retail-demo/data/demo.db"
 
-    def _new_runtime() -> AriadneRuntime:
-        return AriadneRuntime(
+    def _new_runtime() -> QueryRuntime:
+        return QueryRuntime(
             args.semantic,
             args.context,
             db,
@@ -486,9 +490,9 @@ def main(argv: list[str] | None = None) -> int:
         # 2026-09-24-0005); the first query tool call re-attempts
         # construction — surfacing the same missing-served-model error
         # until the project is promoted, memoized once it succeeds.
-        memo: list[AriadneRuntime] = []
+        memo: list[QueryRuntime] = []
 
-        def lazy_facade() -> AriadneRuntime:
+        def lazy_facade() -> QueryRuntime:
             if not memo:
                 memo.append(_new_runtime())
             return memo[0]

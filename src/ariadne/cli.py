@@ -1,7 +1,7 @@
 """Local JSON CLI: the five Ariadne operations as flat subcommands (spec
 2026-09-23-0001 §4, ADR-0012).
 
-A thin adapter over :class:`ariadne.runtime.AriadneRuntime` — this module owns
+A thin adapter over :class:`ariadne.query.QueryRuntime` — this module owns
 argument parsing, promoted-root discovery, and the JSON wire contract only;
 all governed behavior (compilation, execution, context, grain, staging) stays
 in the runtime:
@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from ariadne.planner import PlannerError
-from ariadne.runtime import AriadneRuntime
+from ariadne.query import QueryRuntime  # pyright: ignore[reportMissingImports] — drift
 from ariadne.sources import default_registry_path
 
 
@@ -216,7 +216,7 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
             "submission" if args.command == "save-example" else "request",
         )
     sources_path = default_registry_path(args.sources, args.db)
-    runtime = AriadneRuntime(
+    runtime = QueryRuntime(
         root / "semantic_layer",
         root / "context_layer",
         args.db or "examples/retail-demo/data/demo.db",

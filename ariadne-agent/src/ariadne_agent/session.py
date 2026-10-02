@@ -18,7 +18,7 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from ariadne.runtime import AriadneRuntime
+from ariadne.query import QueryRuntime
 from tau_agent.events import (
     AgentEndEvent,
     MessageEndEvent,
@@ -125,16 +125,17 @@ AgentSessionEvent = AssistantText | ToolActivity | SessionError | RunCompleted
 
 def _missing_served_catalog(exc: BaseException) -> bool:
     """The runtime's promoted-catalog startup errors. The message text is owned
-    by ariadne-core's runtime.py; ariadne.serve holds the same predicate but is
-    the optional server transport — importing it here would defeat this
-    package's no-server guarantee, so the two substrings are restated."""
+    by ariadne-core's query.py (QueryRuntime; formerly runtime.py).
+    ariadne.serve holds the same predicate but is the optional server transport
+    — importing it here would defeat this package's no-server guarantee, so the
+    two substrings are restated."""
     message = str(exc)
     return "promote staging/semantic_layer/ first" in message or (
         "no governed metrics found under" in message
     )
 
 
-def _open_runtime(project: Path) -> AriadneRuntime:
+def _open_runtime(project: Path) -> QueryRuntime:
     """Build the session's runtime from the host-selected project root only.
 
     Every path resolves against ``project`` — never the ambient working
@@ -148,7 +149,7 @@ def _open_runtime(project: Path) -> AriadneRuntime:
             "host must configure the project before opening a session"
         )
     try:
-        return AriadneRuntime(
+        return QueryRuntime(
             project / "semantic_layer",
             project / "context_layer",
             db,
@@ -181,7 +182,7 @@ class AgentSession:
         role: str,
         project: Path,
         model: str,
-        runtime: AriadneRuntime | None = None,
+        runtime: QueryRuntime | None = None,
         harness: AgentHarness,
         mcp: SessionMcp | None = None,
     ) -> None:

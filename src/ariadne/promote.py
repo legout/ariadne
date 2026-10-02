@@ -42,9 +42,6 @@ from datetime import (
 from getpass import getuser
 from pathlib import Path
 
-import yaml
-
-from ariadne.author import _FRONTMATTER_RE
 from ariadne.authoring import (
     BUNDLE_DISCARD_NAME,
     _digest,
@@ -55,32 +52,21 @@ from ariadne.authoring import (
     bundle_staging_dir,
     bundle_state_path,
 )
+
+# Shared Context Layer (issue #33, ADR-0016): the deterministic OKF promotion
+# bookkeeping (page form, index regeneration, log append) lives in
+# ariadne.context; this gate calls the shared implementations.
+from ariadne.context import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    _append_log,
+    _content_key,
+    _load,
+    _promoted_text,
+    _regenerate_indexes,
+)
 from ariadne.validate import _digest_files, served_tree_files
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONTEXT = "context_layer"
-
-# Section heading for a folder's index.md (SPEC §8 example form: "# Metric").
-_SECTION_TITLES = {
-    "tables": "Table",
-    "references": "Reference",
-    "joins": "Join",
-    "policies": "Policy",
-    "metrics": "Metric",
-    "computations": "Computation",
-    "skills": "Skill",
-}
-# One-line blurb used when an index links a subdirectory (directories carry no
-# frontmatter to take a description from).
-_FOLDER_BLURBS = {
-    "tables": "Physical tables: row meaning, schema, join hints.",
-    "references": "Cross-table reference notes.",
-    "joins": "Join catalog: keys, cardinality evidence, grain safety.",
-    "policies": "Human-owned business rules the metrics cite.",
-    "metrics": "Governed metrics and the rules that make them right.",
-    "computations": "Sanctioned computations: SQL, runtime, attester.",
-    "skills": "Operational guides: run, promote, query.",
-}
 
 
 @dataclass
@@ -89,39 +75,6 @@ class Change:
 
     rel: str  # path relative to the served layer root (context_layer/…)
     action: str  # "created" | "updated"
-
-
-def _load(text: str) -> tuple[dict | None, str]:
-    """Split a file into (frontmatter meta or None, body)."""
-    match = _FRONTMATTER_RE.match(text)
-    if not match:
-        return None, text
-    return (yaml.safe_load(match.group(1)) or {}), match.group(2)
-
-
-def _content_key(text: str) -> str:
-    """Canonical form for change detection: everything EXCEPT verified/status.
-    Equal keys mean the promotion bookkeeping would be byte-identical — no-op."""
-    meta, body = _load(text)
-    if meta is None:
-        return body
-    meta = {k: v for k, v in meta.items() if k not in ("verified", "status")}
-    return yaml.safe_dump(meta, sort_keys=True) + body
-
-
-def _promoted_text(text: str, by: str, at: str, prior_verified: list | None = None) -> str:
-    """The served form of a staged OKF page: status flipped, verified appended.
-    ``prior_verified`` (the served page's existing list) is preserved, so a
-    re-promoted update APPENDS to the verification history."""
-    meta, body = _load(text)
-    if meta is None:  # callers route non-OKF files to the raw merge
-        return text
-    meta["status"] = "stable"
-    verified = list(prior_verified or [])
-    verified.append({"by": by, "at": at})
-    meta["verified"] = verified
-    front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
-    return f"---\n{front}\n---\n{body}"
 
 
 def _staged_pages(staging: Path) -> list[Path]:
@@ -330,72 +283,6 @@ def _apply(staging: Path, served_root: Path, by: str, at: str) -> list[Change]:
     _regenerate_indexes(served_root / _CONTEXT)
     _append_log(served_root / _CONTEXT, page_changes, by, at[:10])  # ISO date heading
     return applied
-
-
-def _index_for(directory: Path, served_context: Path) -> str:
-    """One index.md body: subdirectory links, then page links with the target's
-    frontmatter description (SPEC §8 progressive disclosure)."""
-    if directory == served_context:
-        heading = "Context Layer"
-    else:
-        heading = _SECTION_TITLES.get(directory.name, directory.name.capitalize())
-    lines = [f"# {heading}", ""]
-    for sub in sorted(p for p in directory.iterdir() if p.is_dir()):
-        if not any(sub.rglob("*.md")):
-            continue
-        rel = sub.relative_to(served_context)
-        blurb = _FOLDER_BLURBS.get(sub.name, "")
-        lines.append(f"* [{sub.name.capitalize()}]({rel.as_posix()}/) - {blurb}".rstrip(" -"))
-    for page in sorted(p for p in directory.glob("*.md") if p.name != "index.md"):
-        meta, _ = _load(page.read_text(encoding="utf-8"))
-        title = str((meta or {}).get("title") or page.stem.replace("_", " "))
-        desc = str((meta or {}).get("description") or "")
-        lines.append(f"* [{title}]({page.name}) - {desc}".rstrip(" -"))
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def _has_pages(directory: Path) -> bool:
-    """True when the directory or any descendant holds .md pages."""
-    return any(directory.rglob("*.md"))
-
-
-def _regenerate_indexes(served_context: Path) -> None:
-    """Regenerate index.md at the bundle root and in every folder that holds
-    pages (directly or below — the root links its section subdirs), from the
-    CURRENT served contents, so merge-surviving pages are indexed too."""
-    if not served_context.is_dir():
-        return
-    dirs = [served_context, *sorted(p for p in served_context.rglob("*") if p.is_dir())]
-    for directory in dirs:
-        if _has_pages(directory):
-            text = _index_for(directory, served_context)
-            (directory / "index.md").write_text(text, encoding="utf-8")
-
-
-def _append_log(served_context: Path, changes: list[Change], by: str, date: str) -> None:
-    """Append Creation/Update entries under today's heading (newest-first)."""
-    if not changes:
-        return
-    path = served_context / "log.md"
-    if path.is_file():
-        lines = path.read_text(encoding="utf-8").rstrip("\n").split("\n")
-    else:
-        lines = ["# Directory Update Log"]
-    heading = f"## {date}"
-    entries = [
-        f"**{'Update' if c.action == 'updated' else 'Creation'}**: {c.rel} — verified {by}"
-        for c in changes
-    ]
-    if heading in lines:
-        pos = lines.index(heading) + 1
-        while pos < len(lines) and lines[pos].startswith("**"):
-            pos += 1
-    else:
-        pos = 1 if lines and lines[0].startswith("# ") else 0
-        lines[pos:pos] = ["", heading]
-        pos += 2
-    lines[pos:pos] = entries
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def promote(

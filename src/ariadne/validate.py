@@ -33,7 +33,7 @@ source; Assertion 2 — parent aggregate invariance: for dataset sources contain
 JOINs, additive parent-table columns must sum identically over the raw parent table
 and the joined source (fan-out inflation -> fail, remediation names the ADR-0006
 rubric patterns). mvp-5 round 2 (owner decision: structural guard reuse): the
-audit's AUTHORITATIVE gate is the facade's shared structural guard
+audit's AUTHORITATIVE gate is the query runtime's shared structural guard
 (:func:`ariadne.grain.check_grain_preserving`) applied to every authored dataset
 source — any join ANYWHERE in the tree (CTEs included) whose ON key is not unique
 on the joined side fails the audit; the sum-invariance assertion stays as
@@ -61,6 +61,9 @@ import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
 
+from ariadne.execution import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    DuckDBExecution,
+)
 from ariadne.grain import check_grain_preserving, relationship_target_audit
 from ariadne.planner import resolved_target_keys
 from ariadne.render import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
@@ -75,7 +78,6 @@ from ariadne.semantic_graph import (  # pyright: ignore[reportMissingImports] �
     load_graph,
 )
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
-    build_connection,
     default_registry_path,
     load_registry,
 )
@@ -221,21 +223,17 @@ def _schema_errors(envelope: dict, require_metrics: bool = True) -> list[str]:
     return errors
 
 
-def _audit_connection(
+def _audit_execution(
     db_path: str | Path | None, sources_path: str | Path | None
-) -> duckdb.DuckDBPyConnection:
-    """The audit's DuckDB session via the shared registry builder (ADR-0010):
-    a --sources registry connection when given, else the legacy read-only
-    attach of the single SQLite database as catalog ``demo``."""
+) -> DuckDBExecution:
+    """The audit's DuckDB session, owned by the shared execution module
+    (ADR-0010/0016): a --sources registry connection when given, else the
+    legacy read-only attach of the single SQLite database as catalog ``demo``."""
     if sources_path is not None:
-        return build_connection(load_registry(sources_path))[0]
+        return DuckDBExecution(load_registry(sources_path))
     if db_path is None:
         raise ValueError("audit connection requires --sources or --db")
-    con = duckdb.connect()
-    # db_path is the author loop's own --db (trusted input; spec §6 accepted
-    # boundary) and DuckDB's ATTACH takes no bind parameters — a formatter.
-    con.execute(f"ATTACH '{Path(db_path)}' AS demo (TYPE SQLITE, READ_ONLY)")  # nosemgrep
-    return con
+    return DuckDBExecution.legacy_sqlite(db_path)
 
 
 def _bind_check(rendered: list[tuple[str, str]], con: duckdb.DuckDBPyConnection) -> list[str]:
@@ -293,9 +291,9 @@ def _structural_join_errors(
     con: duckdb.DuckDBPyConnection, model: str, dataset: str, source: str
 ) -> list[str]:
     """The audit's authoritative structural gate (mvp-5 round 2 owner decision:
-    converge on the facade's join-uniqueness guard — one implementation, shared
-    with serve.py via :mod:`ariadne.grain`): every join anywhere in the source
-    tree (CTEs included) must be grain-preserving — each ON key unique on the
+    converge on the query runtime's join-uniqueness guard — one implementation,
+    shared with ariadne.query via :mod:`ariadne.grain`): every join anywhere in
+    the source tree (CTEs included) must be grain-preserving — each ON key unique on the
     joined side; cartesian / ``ON TRUE`` / inequality / OR'd joins fail closed.
     This closes the Assertion 2 bypass where a fan-out join hides inside a CTE
     the outer SELECT merely reads: no parent projection is directly traceable,
@@ -731,8 +729,9 @@ def validate(
     )
     if graph is not None and not errors and live:
         # bind check + audit only what compiles; one audit connection for both
-        # (the shared registry builder, ADR-0010 — or the legacy demo attach).
-        con = _audit_connection(db_path, sources_path)
+        # (the shared execution owner, ADR-0010/0016 — or the legacy demo attach).
+        execution = _audit_execution(db_path, sources_path)
+        con = execution.con
         try:
             bind_errors = _bind_check(rendered, con)
             errors.extend(bind_errors)
@@ -750,7 +749,7 @@ def validate(
                 errors.extend(relationship_errors)
                 relationship_outcome = "failed" if relationship_errors else "passed"
         finally:
-            con.close()
+            execution.close()
 
     # The digest may only attest bytes that were actually validated: a file
     # that changed while validation ran voids the report instead of being

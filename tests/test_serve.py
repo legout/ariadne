@@ -967,9 +967,9 @@ def test_startup_fails_fast_without_models(tmp_path):
 
 
 def test_startup_fails_fast_when_datus_absent(tmp_path, monkeypatch):
-    import ariadne.runtime as runtime_module
+    import ariadne.query as query_module
 
-    monkeypatch.setattr(runtime_module, "_DATUS_IMPORT_ERROR", ImportError("no datus"))
+    monkeypatch.setattr(query_module, "_DATUS_IMPORT_ERROR", ImportError("no datus"))
     with pytest.raises(RuntimeError, match="datus-semantic-osi"):
         Facade(tmp_path / "semantic_layer", tmp_path / "context_layer", tmp_path / "demo.db")
 

@@ -1,8 +1,9 @@
 """Database profiler: DuckDB SUMMARIZE + PK/FK heuristics over the source registry (ticket #3).
 
 Reads every source of the ADR-0010 registry (``ariadne.yaml``) — or the legacy
-single SQLite file (``--db``) — read-only through the shared connection builder
-(:mod:`ariadne.sources`), profiles every table, and emits a JSON-serializable
+single SQLite file (``--db``) — read-only through the shared execution owner
+(:class:`ariadne.execution.DuckDBExecution` over :mod:`ariadne.sources`'
+connection builder), profiles every table, and emits a JSON-serializable
 dict. This output is the input contract of the authoring agent
 (``ariadne.author``, ticket #4), which combines it with ``examples/retail-demo/seed_notes.md``;
 the profiler surfaces statistics only — business rules live in the seed notes,
@@ -90,8 +91,10 @@ from pathlib import Path
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
+from ariadne.execution import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    DuckDBExecution,
+)
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
-    build_connection,
     default_registry_path,
     implicit_registry,
     load_registry,
@@ -367,7 +370,8 @@ def profile(
             raise FileNotFoundError(f"database not found: {db_path}")
     else:
         raise ValueError("profile requires db_path or sources_path")
-    con, catalog = build_connection(registry)
+    execution = DuckDBExecution(registry)
+    con, catalog = execution.con, execution.catalog
     try:
         if sample_rows is not None:
             for entry in catalog:
@@ -382,7 +386,7 @@ def profile(
                     table["ref"] = schema
         sources = [_profile_source(con, entry, sample_rows=sample_rows) for entry in catalog]
     finally:
-        con.close()
+        execution.close()
     if sources_path is not None:
         return {"sources_path": str(sources_path), "sources": sources}
     (only,) = sources  # the legacy shape: one sqlite source, historical keys

@@ -29,6 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
+import ariadne.execution  # noqa: E402
 import ariadne.profiler  # noqa: E402
 import ariadne.sources  # noqa: E402
 from ariadne import authoring  # noqa: E402
@@ -70,8 +71,8 @@ def write_proposal(tmp_path: Path, sources: list[dict], name: str = "proposed.ya
 @pytest.fixture
 def connection_spy(monkeypatch):
     """Record every registry handed to THE connection builder (the single
-    chokepoint serve/author/validate/profiler all share) — the canary proving a
-    proposed location is never opened."""
+    chokepoint query/profiler/validate share through ariadne.execution) — the
+    canary proving a proposed location is never opened."""
     opened: list[list[str | None]] = []
     real = ariadne.sources.build_connection
 
@@ -80,7 +81,7 @@ def connection_spy(monkeypatch):
         return real(registry, read_only)
 
     monkeypatch.setattr(ariadne.sources, "build_connection", spy)
-    monkeypatch.setattr(ariadne.profiler, "build_connection", spy)
+    monkeypatch.setattr(ariadne.execution, "build_connection", spy)
     return opened
 
 

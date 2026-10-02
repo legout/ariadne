@@ -24,7 +24,8 @@ import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack
 import yaml
 
 from ariadne import promote as promote_module
-from ariadne.promote import Change, _index_for, main, promote, promote_bundle
+from ariadne.context import _index_for
+from ariadne.promote import Change, main, promote, promote_bundle
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree

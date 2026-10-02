@@ -1,4 +1,4 @@
-"""The grain-preservation guard, shared by the facade and the validate audit.
+"""The grain-preservation guard, shared by the Query runtime and the validate audit.
 
 Spec rev 5 §13: agent-authored sources whose joins fan out the fact grain are
 rejected (upstream finding Datus-ai/Datus-agent#1426: the compiler aggregates
@@ -6,8 +6,8 @@ at joined-row grain and does NOT prevent this). ONE implementation, two entry
 points (mvp-5 round 2 owner decision — structural guard reuse over further
 tracer patching):
 
-- ``ariadne.serve`` applies it to ad-hoc ``define_metric`` sources before
-  compile: nothing staged, nothing executed.
+- ``ariadne.query`` (the QueryRuntime) applies it to ad-hoc ``define_metric``
+  sources before compile: nothing staged, nothing executed.
 - ``ariadne.validate``'s grain audit applies it to every authored dataset
   source — any join ANYWHERE in the tree (CTEs included) must be
   grain-preserving; the audit's sum-invariance assertions stay as secondary

@@ -2,8 +2,9 @@
 spec rev 9 §8.20).
 
 ``ariadne.yaml`` (scaffolded by ``ariadne-init``) declares every source in one
-``sources:`` block; :func:`build_connection` produces THE DuckDB session for
-serve/author/validate/profiler, so every source is addressable as
+``sources:`` block; :func:`build_connection` produces THE DuckDB session behind
+:class:`ariadne.execution.DuckDBExecution` for query/profiler/validate/author,
+so every source is addressable as
 ``<source>.<table>`` and the compiler, grain guard, and audit operate unchanged
 over the unified connection.
 
