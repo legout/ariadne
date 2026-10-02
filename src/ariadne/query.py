@@ -74,6 +74,7 @@ import yaml
 # operation — Query stages ad-hoc definitions through it WITHOUT importing the
 # Authoring workflow or touching any Git proposal store (spec 2026-10-02-0009 §2).
 from ariadne import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    admission,  # issue #37/G5: pinned-snapshot resolution for open_project
     answer_examples,
     proposals,  # pyright: ignore[reportMissingImports] — drift
 )
@@ -115,11 +116,13 @@ from ariadne.semantic_graph import (  # pyright: ignore[reportMissingImports] �
     load_graph,
 )
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    Registry,
     implicit_registry,
     load_registry,
 )
 from ariadne.validate import (  # pyright: ignore[reportMissingImports] — drift
     _registry_identity,
+    candidate_scope_digest,
     served_tree_digest,
 )
 
@@ -168,7 +171,21 @@ class QueryRuntime:
         db_path: str | Path,
         staging_dir: str | Path = "staging",
         sources: str | Path | None = None,
+        *,
+        registry: Registry | None = None,
+        admission_record: dict | None = None,
+        project_root: str | Path | None = None,
     ):
+        """``db_path``/``sources`` select the LEGACY explicit source identity
+        (the ``--db`` shorthand or an ADR-0010 registry file). The keyword-only
+        parameters carry the MANAGED Git route (issue #37/G5):
+        ``registry`` is an already-resolved approved identity (never a file),
+        ``admission_record`` the pinned Git-review admission
+        (:meth:`open_project` resolves both), and ``project_root`` the logical
+        project root that anchors the staging/ad-hoc/Answer Example stores —
+        separate from the pinned artifact root, which is derived from
+        ``context_dir``. An explicit legacy construction (no ``registry``/
+        ``admission_record``) keeps its legacy behavior exactly."""
         if _DATUS_IMPORT_ERROR is not None:  # spec §7: fail fast with the hint
             raise RuntimeError(f"{INSTALL_HINT}: {_DATUS_IMPORT_ERROR}")
 
@@ -217,12 +234,16 @@ class QueryRuntime:
         # non-DuckDB attaches are connection-local, so this happens exactly
         # once. Compiled SQL references <catalog>.<schema>.<table> — the legacy
         # shorthand keeps the authoring contract's catalog name demo.
-        registry = load_registry(sources) if sources is not None else implicit_registry(db_path)
-        self._execution = DuckDBExecution(registry)
+        source_registry = (
+            registry
+            if registry is not None
+            else (load_registry(sources) if sources is not None else implicit_registry(db_path))
+        )
+        self._execution = DuckDBExecution(source_registry)
         # The connection/catalog aliases preserve the historical runtime surface
         # (consumers close via con; list_datasets reads the catalog).
         self.con, self.catalog = self._execution.con, self._execution.catalog
-        self._qualified = sources is not None
+        self._qualified = sources is not None or registry is not None
         if not self._qualified:
             # Bare table names in agent-authored ad-hoc sources resolve against the attach.
             self.con.execute("USE demo.main")
@@ -246,11 +267,61 @@ class QueryRuntime:
         self._admission_db = db_path
         self._admission_sources = sources
         self._semantic_dir = Path(semantic_dir)
-        self._load_admission(Path(semantic_dir), db_path, sources)
+        # The managed Git route (issue #37/G5): the session pins ONE coherent
+        # admitted revision — snapshot bytes, approved source identity and the
+        # logical project root that anchors the ORIGINAL project-owned staging
+        # and Answer Example stores (never the pinned artifact root).
+        self._managed = admission_record
+        self._project = Path(project_root).resolve() if project_root is not None else None
+        # Issue #37 fix pass: the Answer Example store stays anchored at the
+        # LOGICAL project root on the managed route (operator-reviewed stable
+        # examples under <project>/answer_examples stay discoverable), while
+        # citations and staleness keep resolving against the PINNED artifact
+        # root (context_dir.parent) — the legacy route keeps its single shared
+        # root (examples_root=None).
+        self._examples_root = self._project
+        if admission_record is not None:
+            self._load_managed_graph(self._semantic_dir)
+        else:
+            self._load_admission(Path(semantic_dir), db_path, sources)
+
+    @classmethod
+    def open_project(
+        cls, project: str | Path, *, staging_dir: str | Path | None = None
+    ) -> "QueryRuntime":
+        """The managed-project factory (issue #37/G5, plan §2): resolve the
+        pinned snapshot and its approved source configuration of a Git-managed
+        data project and construct the runtime over them. EVERY query method
+        of the returned runtime therefore requires admission by construction —
+        a Git-managed project with no valid admission is refused here, never a
+        silent fallback to proposal worktrees or mutable project files, while
+        the explicit legacy artifact-root constructors keep legacy behavior for
+        fixtures/operators. Source locations resolve through the
+        operator-approved identity (never snapshot-relative paths); the
+        staging/ad-hoc/Answer Example stores stay at their ORIGINAL
+        project-owned locations (default ``<project>/staging``), separate from
+        the pinned artifact root. Each session pins one coherent admitted
+        revision; a later session picks up a later admission."""
+        root = Path(project).resolve()
+        record, snapshot = admission.resolve_admission(root)
+        return cls(
+            snapshot / "semantic_layer",
+            snapshot / "context_layer",
+            None,
+            staging_dir=(root / "staging") if staging_dir is None else staging_dir,
+            registry=admission.approved_registry(record),
+            admission_record=record,
+            project_root=root,
+        )
 
     async def list_metrics(self) -> list[dict | str]:
         """Governed metrics with descriptions and available dimensions; the list
-        ends with the explicit routing hint to the ad-hoc path (spec rev 4 §8.12)."""
+        ends with the explicit routing hint to the ad-hoc path (spec rev 4 §8.12).
+        Serves pinned snapshot bytes (the envelope metadata), so the managed
+        route re-checks them first — mid-session tampering refuses here too
+        (issue #37 fix pass)."""
+        if self._managed is not None:
+            self._recheck_pinned()
         entries: list[dict | str] = [
             {
                 "name": name,
@@ -293,6 +364,11 @@ class QueryRuntime:
             raise ValueError(
                 f"unknown metric {name!r}; available metrics: {available}. {ROUTING_HINT}"
             )
+        if self._managed is not None:
+            # Issue #37/G5: a governed answer on the managed route re-checks the
+            # session's pinned snapshot bytes and source identity first — a
+            # hand-edited snapshot or a withdrawn approval is a staleness refusal.
+            self._recheck_pinned()
         # Compiled by our sqlglot renderer (ADR-0008) from the served OSI models —
         # never tool input (spec §6): the executor only ever receives SQL returned
         # by the compile step. The statement guard is defense in depth on this
@@ -316,7 +392,7 @@ class QueryRuntime:
             self._grain_checked.add(name)
         # sql is the render compile step's output and nothing else (spec §6).
         columns, rows = self._execution.fetch(sql)
-        return {
+        result = {
             "metric": name,
             "dimensions": dimensions or [],
             "columns": columns,
@@ -325,6 +401,59 @@ class QueryRuntime:
             "governed": True,  # spec rev 3 §8.10: symmetry with define_metric
             "context": self._metric_context(name),  # spec rev 10 §8.21 (ADR-0011)
         }
+        if self._managed is not None:
+            # Issue #37/G5: revision/route provenance alongside the existing
+            # caveats (spec §5: governed answers identify the admitted revision
+            # and route) — legacy responses keep their exact shape.
+            result["admission"] = self._admission_view(self._managed)
+        return result
+
+    def _load_managed_graph(self, semantic_dir: Path) -> None:
+        """The managed route's multi-fact gate (issue #37/G5): the pinned
+        Git-review admission IS the graph's admission — the legacy
+        promotion-written ``admission.json`` never exists inside a snapshot
+        (it is not admitted artifact scope), so ``query_metrics``/
+        ``query_detail`` serve only when the pinned snapshot itself carries a
+        loadable graph."""
+        if (semantic_dir / "graph.yml").is_file():
+            try:
+                self._graph = load_graph(semantic_dir)
+            except Exception as exc:  # fail fast: an admitted graph that cannot load
+                raise RuntimeError(
+                    f"the admitted graph under {semantic_dir} does not load: {exc}"
+                ) from exc
+            return
+        self._admission_reason = (
+            "the pinned snapshot carries no multi-fact graph (semantic_layer/graph.yml) "
+            "— query_metrics/query_detail stay refused; governed single-metric answers "
+            "serve from the pinned admitted revision"
+        )
+
+    def _recheck_pinned(self) -> None:
+        """Issue #37/G5: re-verify the session's bound snapshot bytes and
+        source identity on every governed answer — a hand-edited snapshot file
+        or a withdrawn source approval is a staleness refusal (the runtime
+        never serves mutated pinned bytes), exactly like the legacy admission
+        digest recheck."""
+        record = self._managed
+        assert record is not None  # only the managed route calls this
+        digest = candidate_scope_digest(self.context_dir.parent)
+        if digest != record["artifact_digest"]:
+            raise PlannerError(
+                "admission_stale",
+                "the pinned snapshot changed after admission "
+                f"(snapshot digest {digest[:12]}… != admitted "
+                f"{record['artifact_digest'][:12]}…) — the runtime never serves "
+                "hand-edited snapshot bytes; re-admit a reviewed/validated revision",
+            )
+        if self._project is not None and not admission.approval_present(
+            self._project, record["source_digest"]
+        ):
+            raise PlannerError(
+                "admission_stale",
+                "the admitted source identity no longer carries the operator's "
+                "approval — re-approve the exact resolved identity before serving",
+            )
 
     def _load_admission(
         self, semantic_dir: Path, db_path: str | Path, sources: str | Path | None
@@ -387,7 +516,18 @@ class QueryRuntime:
         construction: a long-lived server must see a hand-edited model, graph,
         or cited Policy as a stale admission, exactly like one constructed after
         the edit (the digest re-hash is a handful of small files; the loaded
-        graph itself stays the admitted bytes)."""
+        graph itself stays the admitted bytes). The MANAGED Git route (issue
+        #37/G5) pins the admission the same way over its snapshot bytes and
+        approved source identity."""
+        if self._managed is not None:
+            if self._graph is None:
+                raise PlannerError(
+                    "not_admitted",
+                    self._admission_reason
+                    or "the pinned snapshot carries no admitted multi-fact graph",
+                )
+            self._recheck_pinned()
+            return self._graph, self._managed
         if self._admission is None or self._graph is None:
             raise PlannerError(
                 "not_admitted",
@@ -413,9 +553,20 @@ class QueryRuntime:
         return self._graph, self._admission
 
     def _admission_view(self, record: dict) -> dict:
-        """The response's local admission provenance: route, the exact reviewed
-        digest, the served-tree digest it is bound to, the persisted technical
-        validation scope, and the human promotion identity."""
+        """The response's local admission provenance. The managed Git route
+        (issue #37/G5) reports the pinned revision/route evidence: route,
+        pinned commit, proposal, the human-confirmed review digest, the bound
+        artifact digest and the recorded validation scope."""
+        if record is self._managed:
+            return {
+                "route": record.get("route"),
+                "revision": record.get("commit"),
+                "proposal": record.get("proposal"),
+                "review_digest": record.get("review_digest"),
+                "artifact_digest": record.get("artifact_digest"),
+                "confirmed": record.get("confirmed"),
+                "validation": record.get("validation"),
+            }
         return {
             "route": record.get("route"),
             "reviewed_digest": record.get("reviewed_digest"),
@@ -518,8 +669,15 @@ class QueryRuntime:
         before any write: malformed submissions, oversized excerpts/records,
         citations that do not resolve inside the selected served root, and
         claimed (rather than self-declared) identity or verification all store
-        nothing. The served roots are never touched."""
-        return answer_examples.save_example(submission, self.context_dir.parent, self.staging_dir)
+        nothing. The served roots are never touched. Citations resolve against
+        the PINNED artifact root on the managed route; the staging store stays
+        at its original project-owned location (issue #37 fix pass)."""
+        return answer_examples.save_example(
+            submission,
+            self.context_dir.parent,
+            self.staging_dir,
+            examples_root=self._examples_root,
+        )
 
     async def search_examples(
         self, query: str, limit: int = 10, include_history: bool = False
@@ -527,15 +685,19 @@ class QueryRuntime:
         """Issue #19: ranked labeled example records (draft/stable identity,
         staleness, question/interpretation, method summary, provenance, path)
         from the current served and staging example roots — re-read on each
-        request, no query execution, no saved rows. ``search_context`` and
-        governed ``get_metric.context`` are unaffected: examples live outside
-        ``context_layer/`` and never enter them."""
+        request, no query execution, no saved rows. On the managed route the
+        served example store is anchored at the LOGICAL project root (issue
+        #37 fix pass), while citation staleness checks the pinned artifact
+        root. ``search_context`` and governed ``get_metric.context`` are
+        unaffected: examples live outside ``context_layer/`` and never enter
+        them."""
         return answer_examples.search_examples(
             self.context_dir.parent,
             self.staging_dir,
             query,
             limit=limit,
             include_history=include_history,
+            examples_root=self._examples_root,
         )
 
     def _metric_context(self, name: str) -> dict:
@@ -610,7 +772,12 @@ class QueryRuntime:
         (spec 2026-09-23-0002; the shared ranking implementation and its
         contract live in :func:`ariadne.context.search_pages`): deterministic
         token-aware ranking over the served context dir plus the staged context
-        drafts, served hits ``draft: false`` and staged hits ``draft: true``."""
+        drafts, served hits ``draft: false`` and staged hits ``draft: true``.
+        Serves pinned snapshot bytes on the managed route, so the pinned digest
+        is re-checked first — mid-session tampering refuses here exactly like
+        ``get_metric`` (issue #37 fix pass)."""
+        if self._managed is not None:
+            self._recheck_pinned()
         return search_pages(
             query, limit, [(self.context_dir, False), (self.staging_dir / "context_layer", True)]
         )

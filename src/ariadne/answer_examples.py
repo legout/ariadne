@@ -306,7 +306,9 @@ def _refresh_bundle(directory: Path, example_id: str, record: dict) -> None:
     log.write_text("\n".join(entries) + "\n", encoding="utf-8")
 
 
-def _guard_staging(directory: Path, served_root: Path) -> None:
+def _guard_staging(
+    directory: Path, served_root: Path, examples_root: Path | None = None
+) -> None:
     """Staged examples live under the selected staging root and never in or
     through the served root (ADR-0015): a symlinked or overlapping example
     directory — or a symlinked bundle bookkeeping file — is refused before
@@ -314,7 +316,10 @@ def _guard_staging(directory: Path, served_root: Path) -> None:
     itself is refused as a symlink even when its target stays inside staging
     (ADR-0003): redirects into a staged Context Layer bundle would ride its
     human batch promotion; only the final path component is checked, so the
-    operator-selected staging root may still sit behind a symlinked ancestor."""
+    operator-selected staging root may still sit behind a symlinked ancestor.
+    ``examples_root`` is the separate example-store root (issue #37 fix pass:
+    the managed route anchors stable examples at the logical project root) —
+    staging overlaps it just as little as the citation/artifact root."""
     if directory.is_symlink():
         raise ValueError(
             f"staging example directory itself is a symlink — refusing to write: {directory}"
@@ -326,15 +331,31 @@ def _guard_staging(directory: Path, served_root: Path) -> None:
         )
     if resolved.is_relative_to(served_root.resolve()):
         raise ValueError(f"staging example directory overlaps the served root: {resolved}")
+    if examples_root is not None and resolved.is_relative_to(
+        (Path(examples_root) / EXAMPLES_DIR).resolve()
+    ):
+        raise ValueError(
+            f"staging example directory overlaps the example store root: {resolved}"
+        )
     for name in ("index.md", "log.md"):
         if (directory / name).is_symlink():
             raise ValueError(f"staged bundle file {name!r} is a symlink — refusing to write")
 
 
-def save_example(submission: Any, served_root: str | Path, staging_dir: str | Path) -> dict:
+def save_example(
+    submission: Any,
+    served_root: str | Path,
+    staging_dir: str | Path,
+    *,
+    examples_root: str | Path | None = None,
+) -> dict:
     """Stage one explicit answer-example draft (spec 2026-09-29-0007). Returns
     the unique staged ID/path with ``status: "draft"``. Every validation runs
-    before the first write: a failed or malformed submission stores nothing."""
+    before the first write: a failed or malformed submission stores nothing.
+    ``served_root`` is the CITATION root cited pages resolve against (the
+    pinned artifact root on the managed route); ``examples_root`` optionally
+    names the separate example-store root the guard also protects (issue #37
+    fix pass — defaults to ``served_root`` for the legacy shared root)."""
     record = _normalize_submission(submission, Path(served_root))
     result = submission["result"]
     captured = datetime.now(UTC).isoformat(timespec="seconds")
@@ -365,7 +386,7 @@ def save_example(submission: Any, served_root: str | Path, staging_dir: str | Pa
         )
     example_id = _example_id(record["question"], datetime.now(UTC))
     directory = Path(staging_dir) / EXAMPLES_DIR
-    _guard_staging(directory, Path(served_root))
+    _guard_staging(directory, Path(served_root), Path(examples_root) if examples_root else None)
     staged = _claim_draft(directory, example_id, page)
     _refresh_bundle(directory, staged.stem, record)
     return {"id": staged.stem, "path": str(staged), "status": "draft"}
@@ -401,22 +422,30 @@ def search_examples(
     query: str,
     limit: int = 10,
     include_history: bool = False,
+    *,
+    examples_root: str | Path | None = None,
 ) -> list[dict]:
     """Ranked labeled example records from the current served and staging
     example roots, read on each request so a new staged draft is immediately
     discoverable in this checkout (spec §interfaces). Approved non-stale
     records rank ahead of drafts; by default stale and closed (superseded/
     rejected) records stay history — ``include_history`` exposes them labeled.
-    No query is ever executed and no saved row is returned."""
+    No query is ever executed and no saved row is returned. ``served_root`` is
+    the CITATION root dependency staleness is checked against;
+    ``examples_root`` optionally names a separate example-store root (issue
+    #37 fix pass: the managed route anchors the operator-reviewed stable
+    store at the logical project root, separate from the pinned artifact
+    root — default ``served_root`` keeps the legacy shared root)."""
     if limit <= 0:
         return []
     terms = _QUERY_TOKEN_RE.findall(query.lower())
     if not terms:
         return []
     root = Path(served_root)
+    examples = Path(examples_root) if examples_root is not None else root
     ranked: list[tuple[int, int, str, dict]] = []
     for is_served, directory in (
-        (True, root / EXAMPLES_DIR),
+        (True, examples / EXAMPLES_DIR),
         (False, Path(staging_dir) / EXAMPLES_DIR),
     ):
         if not directory.is_dir():

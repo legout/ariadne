@@ -131,6 +131,14 @@ def build_parser() -> _Parser:
         "default: examples/retail-demo/data/demo.db when no --sources/ariadne.yaml "
         "applies)",
     )
+    group.add_argument(
+        "--project",
+        default=None,
+        help="managed Git data project: query its pinned human-admitted snapshot and "
+        "approved source identity (issue #37/G5; mutually exclusive with --sources/--db "
+        "and --served — a project without a valid admission is an error, never a "
+        "fallback)",
+    )
     common.add_argument(
         "--served",
         default=None,
@@ -202,7 +210,19 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
     # runtime construction — which is where the read-only source connection
     # opens. Every earlier failure therefore precedes any connection, execution,
     # or staging.
-    root = _resolve_served_root(args.served)
+    if args.project is not None:
+        # The managed Git route (issue #37/G5): the pinned admitted snapshot and
+        # its approved source identity replace the explicit legacy roots; a
+        # project without a valid admission is an explicit error, never a
+        # fallback to proposal worktrees or mutable project files.
+        if args.served is not None:
+            raise ValueError(
+                "--project (managed Git route) and --served (explicit legacy root) are "
+                "mutually exclusive — pass one artifact root, not both"
+            )
+        root = None
+    else:
+        root = _resolve_served_root(args.served)
     definition = None
     if args.command in (  # parsed pre-runtime (spec §9)
         "define-metric",
@@ -215,14 +235,17 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
             stdin,
             "submission" if args.command == "save-example" else "request",
         )
-    sources_path = default_registry_path(args.sources, args.db)
-    runtime = QueryRuntime(
-        root / "semantic_layer",
-        root / "context_layer",
-        args.db or "examples/retail-demo/data/demo.db",
-        staging_dir=args.staging,
-        sources=sources_path,
-    )
+    if root is None:
+        runtime = QueryRuntime.open_project(args.project, staging_dir=args.staging)
+    else:
+        sources_path = default_registry_path(args.sources, args.db)
+        runtime = QueryRuntime(
+            root / "semantic_layer",
+            root / "context_layer",
+            args.db or "examples/retail-demo/data/demo.db",
+            staging_dir=args.staging,
+            sources=sources_path,
+        )
     if args.command == "list-metrics":
         result = asyncio.run(runtime.list_metrics())
     elif args.command == "list-datasets":

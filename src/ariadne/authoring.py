@@ -1795,94 +1795,112 @@ def review_proposal(project: str | Path, proposal: str, *, part: int = 1) -> dic
     source identity and approval state, the verified citations (re-verified
     now: changed document evidence or a moved candidate is reported stale,
     never as an unchanged validated candidate), the stored validation report
-    with its full check scope, and a review digest binding exactly what was
-    reviewed. Read-only: nothing is written, moved or reset."""
+    with its full check scope, the expected admitted baseline the record
+    binds, and a review digest binding exactly what was reviewed (baseline
+    included — a review made against a different served baseline is a
+    different review identity). Read-only: nothing is written, moved or reset.
+    """
     project = Path(project).resolve()
     proposals._load_record(project, proposal)
     with proposals._file_lock(project / proposals.LOCKS_REL / f"{proposal}.lock"):
         record = proposals._load_record(project, proposal)  # authoritative under the lock
-        proposals._check_coherent(project, record)
-        base = record["base_revision"]
-        current = record["candidate_revision"]
-        with tempfile.TemporaryDirectory(prefix="ariadne-review-") as tmp:
-            tree = Path(tmp) / "bundle"
-            tree.mkdir()
-            rels = _materialize(project, proposal, current, tree)
-            resolved_sources, source_digest = authoring_sources.candidate_sources(
-                project, current
-            )
-            bodies = []
-            for rel in rels:
-                data = (tree / Path(*PurePosixPath(rel).parts)).read_bytes()
-                bodies.append(_review_body(rel, data, part=part))
-            source_names = {entry["name"] for entry in resolved_sources or []}
-            citations, _citation_errors = _verified_citations(tree, project, source_names)
-            approved = (
-                authoring_sources._load_approvals(project).get(source_digest or "")
-                is not None
-            )
-            artifact_digest = candidate_scope_digest(tree)
-            # The stored report binds the exact candidate commit or is absent:
-            # a candidate that moved past its validation, a changed source
-            # identity, changed document evidence or changed artifact bytes can
-            # never be presented as an unchanged validated candidate.
-            report = proposals.load_validation(project, proposal, current)
-            stale_reasons: list[str] = []
-            if report is not None:
-                if report.get("source_digest") != source_digest:
-                    stale_reasons.append(
-                        "the resolved source identity changed since validation"
-                    )
-                if not _document_digests_current(project, report.get("citations") or []):
-                    stale_reasons.append(
-                        "cited document evidence changed since validation"
-                    )
-                if report.get("artifact_digest") != artifact_digest:
-                    stale_reasons.append(
-                        "the candidate's artifact bytes differ from the validated digest"
-                    )
-            inventory = _change_inventory(project, record)
-            review_digest = hashlib.sha256(
-                json.dumps(
-                    {
-                        "proposal": proposal,
-                        "base_revision": base,
-                        "revision": current,
-                        "changes": inventory,
-                        "artifact_digest": artifact_digest,
-                        "citations": citations,
-                        "validation": None
-                        if report is None
-                        else {
-                            "commit": report["commit"],
-                            "ok": report["ok"],
-                            "artifact_digest": report["artifact_digest"],
-                        },
+        return _review_candidate(project, proposal, part=part, record=record)
+
+
+def _review_candidate(
+    project: Path, proposal: str, *, part: int = 1, record: dict | None = None
+) -> dict:
+    """The lock-free review core (issue #37/G5): exactly the envelope
+    :func:`review_proposal` returns, computed for one loaded record — the
+    caller holds the proposal lock (the public review takes it; admission
+    already holds the project+proposal locks when it re-derives the review
+    digest, and a nested lock acquisition would self-deadlock)."""
+    if record is None:
+        record = proposals._load_record(project, proposal)
+    proposals._check_coherent(project, record)
+    base = record["base_revision"]
+    current = record["candidate_revision"]
+    with tempfile.TemporaryDirectory(prefix="ariadne-review-") as tmp:
+        tree = Path(tmp) / "bundle"
+        tree.mkdir()
+        rels = _materialize(project, proposal, current, tree)
+        resolved_sources, source_digest = authoring_sources.candidate_sources(
+            project, current
+        )
+        bodies = []
+        for rel in rels:
+            data = (tree / Path(*PurePosixPath(rel).parts)).read_bytes()
+            bodies.append(_review_body(rel, data, part=part))
+        source_names = {entry["name"] for entry in resolved_sources or []}
+        citations, _citation_errors = _verified_citations(tree, project, source_names)
+        approved = (
+            authoring_sources._load_approvals(project).get(source_digest or "")
+            is not None
+        )
+        artifact_digest = candidate_scope_digest(tree)
+        # The stored report binds the exact candidate commit or is absent:
+        # a candidate that moved past its validation, a changed source
+        # identity, changed document evidence or changed artifact bytes can
+        # never be presented as an unchanged validated candidate.
+        report = proposals.load_validation(project, proposal, current)
+        stale_reasons: list[str] = []
+        if report is not None:
+            if report.get("source_digest") != source_digest:
+                stale_reasons.append(
+                    "the resolved source identity changed since validation"
+                )
+            if not _document_digests_current(project, report.get("citations") or []):
+                stale_reasons.append(
+                    "cited document evidence changed since validation"
+                )
+            if report.get("artifact_digest") != artifact_digest:
+                stale_reasons.append(
+                    "the candidate's artifact bytes differ from the validated digest"
+                )
+        inventory = _change_inventory(project, record)
+        review_digest = hashlib.sha256(
+            json.dumps(
+                {
+                    "proposal": proposal,
+                    "base_revision": base,
+                    "revision": current,
+                    "expected_baseline": record.get("expected_baseline"),
+                    "changes": inventory,
+                    "artifact_digest": artifact_digest,
+                    "citations": citations,
+                    "validation": None
+                    if report is None
+                    else {
+                        "commit": report["commit"],
+                        "ok": report["ok"],
+                        "artifact_digest": report["artifact_digest"],
                     },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
-            return {
-                "proposal": proposal,
-                "project": str(project),
-                "base_revision": base,
-                "revision": current,
-                "part": part,
-                "changes": inventory,
-                "files": bodies,
-                "sources": resolved_sources or [],
-                "sources_digest": source_digest,
-                "source_approved": approved,
-                "citations": citations,
-                "report": None
-                if report is None
-                else _validate_view(
-                    report,
-                    proposals._validation_path(project, proposal, current),
-                    idempotent=False,
-                ),
-                "validation_stale": bool(stale_reasons),
-                "stale_reasons": stale_reasons,
-                "review_digest": review_digest,
-            }
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return {
+            "proposal": proposal,
+            "project": str(project),
+            "base_revision": base,
+            "revision": current,
+            "expected_baseline": record.get("expected_baseline"),
+            "part": part,
+            "changes": inventory,
+            "files": bodies,
+            "sources": resolved_sources or [],
+            "sources_digest": source_digest,
+            "source_approved": approved,
+            "citations": citations,
+            "report": None
+            if report is None
+            else _validate_view(
+                report,
+                proposals._validation_path(project, proposal, current),
+                idempotent=False,
+            ),
+            "validation_stale": bool(stale_reasons),
+            "stale_reasons": stale_reasons,
+            "review_digest": review_digest,
+        }

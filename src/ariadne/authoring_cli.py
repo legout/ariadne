@@ -27,6 +27,8 @@ for failure, message verbatim.
                             [--project DIR]
     ariadne-authoring validate --proposal ID --expected-revision REV
                               [--project DIR]
+    ariadne-authoring reconcile --proposal ID --expected-revision OLD
+                                --revision NEW [--project DIR]
 
 ``approve-sources`` is HUMAN-ONLY and runs on the server host (ADR-0013): the
 packaged skill must never invoke it, and it is excluded from every MCP tool
@@ -57,7 +59,13 @@ artifacts, commits any generated changes, validates the EXACT final commit
 against the approved source identity and returns that revision with its
 report/errors — never a signoff. ``review --proposal`` (issue #36/G4) is the
 read-only Git-candidate review; ``review`` without ``--proposal`` keeps its
-legacy staged-bundle meaning.
+legacy staged-bundle meaning. ``reconcile`` (issue #37/G5) is HUMAN-ONLY like
+``approve-sources`` and never an MCP/native Agent tool: after the human performs
+a local rebase/merge (the admitted baseline advanced past the branch), it
+records the clean new HEAD — requiring the current admitted revision in the
+candidate's ancestry — and invalidates the old revision's validation/review; it
+never merges automatically or clears an inconsistent interrupted transition or
+exhausted repair state.
 """
 
 from __future__ import annotations
@@ -70,6 +78,7 @@ from typing import Any, NoReturn
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
+from ariadne.admission import reconcile
 from ariadne.authoring import (
     AuthoringProject,
     approve_sources,
@@ -307,6 +316,29 @@ def build_parser() -> _Parser:
     validate_cmd.add_argument(
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
+
+    reconcile_cmd = sub.add_parser(
+        "reconcile",
+        help="record the clean new HEAD a human created by a local rebase/merge after "
+        "the admitted baseline advanced (HUMAN-ONLY; requires the current admitted "
+        "revision in the new revision's ancestry, invalidates old validation/review, "
+        "never merges automatically)",
+    )
+    reconcile_cmd.add_argument("--proposal", required=True, help="the proposal ID")
+    reconcile_cmd.add_argument(
+        "--expected-revision",
+        required=True,
+        help="the proposal's CURRENT recorded candidate revision (the branch state "
+        "before the human rebase/merge)",
+    )
+    reconcile_cmd.add_argument(
+        "--revision",
+        required=True,
+        help="the clean new HEAD the human created in the proposal worktree",
+    )
+    reconcile_cmd.add_argument(
+        "--project", default=".", help="project root holding ariadne.yaml (default: .)"
+    )
     return parser
 
 
@@ -374,6 +406,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "validate":
             result = AuthoringProject(args.project).validate_proposal(
                 args.proposal, args.expected_revision
+            )
+        elif args.command == "reconcile":
+            # HUMAN-ONLY (issue #37/G5): records a local rebase/merge; never an
+            # MCP/Agent tool and never an automatic merge.
+            result = reconcile(
+                args.project, args.proposal, args.expected_revision, args.revision
             )
         elif args.command == "start":
             result = AuthoringProject(args.project).start_proposal(args.base_revision)

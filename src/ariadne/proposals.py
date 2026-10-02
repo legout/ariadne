@@ -98,6 +98,13 @@ _HUMAN_RESOLUTION = (
     "hand; no agent command resets, deletes or merges them"
 )
 
+# Every core-authored transition commit (the edit seam, the finalize pass, the
+# onboarding initial revision) carries this fixed message prefix. The proposal
+# record — written AFTER the commit — is the only authority that a core
+# transition COMPLETED: a core-authored commit the record never saw is the
+# signature of an interrupted transition (issue #37 fix pass).
+_CORE_COMMIT_PREFIX = "ariadne: "
+
 
 class GitError(RuntimeError):
     """A Git-level blocker (missing git, missing identity, failed command) —
@@ -693,14 +700,31 @@ def _check_coherent(project: Path, record: dict) -> None:
         )
 
 
+def _admitted_baseline(project: Path) -> str | None:
+    """The project's CURRENT admitted revision (None with no admission) — the
+    default proposal base and the recorded expected admitted baseline (plan
+    §2). :mod:`ariadne.admission` imports this module, so its descriptor
+    reader is resolved lazily at call time (both modules are loaded then); a
+    malformed descriptor is the same human-resolution failure
+    :func:`ariadne.admission.load_current` reports."""
+    from ariadne import admission  # lazy: admission imports proposals at load
+
+    current = admission.load_current(project)
+    return None if current is None else current["commit"]
+
+
 def start_proposal(project: str | Path, *, base_revision: str | None = None) -> dict:
     """Start ONE isolated authoring proposal in the fixed data project: a
     system-generated ID, its branch ``ariadne/proposal/<id>`` and its dedicated
     worktree under the ignored ``.ariadne/worktrees/<id>/`` — every location
     derived, never caller-supplied. The base is the optional known revision or
-    the current HEAD; a repository with no commits yet gets its human-created
-    initial artifact revision first (allowed scope only). Returns the proposal
-    ID with its base and candidate revisions (equal until the first edit)."""
+    the CURRENT ADMITTED revision (plan §2: a new proposal builds on the served
+    state, never an unserved checkout); with no admission, the current HEAD —
+    and a repository with no commits yet gets its human-created initial
+    artifact revision first (allowed scope only). The record persists the
+    expected admitted baseline at start time — the binding admission compares
+    it (issue #37 fix pass). Returns the proposal ID with its base and candidate
+    revisions (equal until the first edit)."""
     project = Path(project).resolve()
     _require_repo(project)
     _refuse_symlinked_component(project, ARIADNE_STATE_DIR)
@@ -708,8 +732,15 @@ def start_proposal(project: str | Path, *, base_revision: str | None = None) -> 
     with _file_lock(project / LOCKS_REL / "project.lock"):
         _ensure_state_ignored(project)  # inside the lock: concurrent starts
         # never interleave their exclude-file append
+        baseline = _admitted_baseline(project)
         head = _current_head(project)
-        if head is None:
+        if baseline is not None:
+            base = (
+                _validate_revision(project, base_revision)
+                if base_revision is not None
+                else _validate_revision(project, baseline)
+            )
+        elif head is None:
             if base_revision is not None:
                 raise ValueError(
                     "the project repository has no commits yet — start without "
@@ -734,6 +765,7 @@ def start_proposal(project: str | Path, *, base_revision: str | None = None) -> 
             "project": str(project),
             "base_revision": base,
             "candidate_revision": base,
+            "expected_baseline": baseline,
             "branch": branch,
             "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
         }
