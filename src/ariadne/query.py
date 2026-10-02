@@ -38,7 +38,8 @@ is executed read-only and the definition is auto-staged as a proposal: the OSI
 model under ``staging/semantic_layer/models/adhoc/`` plus a minimal OKF draft
 under ``staging/context_layer/metrics/`` so ``search_context`` can discover it
 (numeric suffix on name collision, never overwrite); promotion stays human
-(ADR-0003). Query stages ad-hoc definitions without importing the Authoring
+(ADR-0003). Query stages ad-hoc definitions through the shared
+:func:`ariadne.proposals.stage_ad_hoc` operation without importing the Authoring
 workflow (spec 2026-10-02-0009 §2).
 
 Routing contract (spec rev 4 §8.12): fresh consuming agents discover the ad-hoc
@@ -58,7 +59,6 @@ install hint.
 """
 
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -69,14 +69,18 @@ import yaml
 # Issue #19 (ADR-0015, spec 2026-09-29-0007): the answer-example store is a
 # separate transport-neutral module — the runtime only contributes its selected
 # roots; examples never touch compilation, execution or governed context.
+#
+# Shared Proposals (issue #34, ADR-0016): the compiled ad-hoc staging/label
+# operation — Query stages ad-hoc definitions through it WITHOUT importing the
+# Authoring workflow or touching any Git proposal store (spec 2026-10-02-0009 §2).
 from ariadne import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     answer_examples,
+    proposals,  # pyright: ignore[reportMissingImports] — drift
 )
 
 # Shared Context Layer (issue #33, ADR-0016): retrieval, citation attachment and
 # deterministic OKF generation live in ariadne.context.
 from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
-    _build_adhoc_page,
     metric_context,
     search_pages,
 )
@@ -569,17 +573,12 @@ class QueryRuntime:
         # sql is the render compile step's output and nothing else (spec §6): the
         # definition reached execution exclusively through the compiler above.
         columns, rows = self._execution.fetch(sql)
-        staged_as = self._stage_atomic(
-            self.staging_dir / "semantic_layer" / "models" / "adhoc",
-            params["name"],
-            ".yml",
-            yaml.safe_dump(envelope, sort_keys=False).encode("utf-8"),
-        )
-        staged_page = self._stage_atomic(
-            self.staging_dir / "context_layer" / "metrics",
-            params["name"],
-            ".md",
-            _build_adhoc_page(params),
+        # The SHARED compiled ad-hoc staging operation (moved intact into
+        # ariadne.proposals, issue #34): the OSI model + draft OKF page land in
+        # the legacy staging store — ungoverned, discoverable, never a Git
+        # proposal, never admitted.
+        staged_as, staged_page = proposals.stage_ad_hoc(
+            self.staging_dir, params["name"], envelope, params
         )
         return {
             "metric": params["name"],
@@ -605,27 +604,6 @@ class QueryRuntime:
             raise  # RenderError already carries the verbatim reason (spec §7)
         except Exception as exc:  # defense in depth — surface it verbatim
             raise ValueError(f"{type(exc).__name__}: {exc}") from exc
-
-    def _stage_atomic(self, directory: Path, stem: str, ext: str, payload: bytes) -> Path:
-        """Auto-stage one proposal artifact after successful execution (ADR-0003:
-        promotion stays human). Numeric suffix on collision — never overwrites
-        (spec §8.11): the O_CREAT|O_EXCL claim is atomic, so racing facade
-        processes suffix off each other instead of overwriting (no
-        exists()-then-write TOCTOU). Same discipline for the model (.yml) and
-        the context page (.md) — spec rev 4 §4."""
-        directory.mkdir(parents=True, exist_ok=True)
-        candidate = directory / f"{stem}{ext}"
-        suffix = 2
-        while True:
-            try:
-                fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-            except FileExistsError:
-                candidate = directory / f"{stem}-{suffix}{ext}"
-                suffix += 1
-                continue
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(payload)
-            return candidate
 
     async def search_context(self, query: str, limit: int = 10) -> list[dict]:
         """Search the served Context Layer and staged drafts for business rules

@@ -89,6 +89,18 @@ changes to the reviewed identity the way it binds bodies — it is never a
 signoff. Serving is the human-only exact-digest Promotion
 (:func:`ariadne.promote.promote_bundle`), which refuses changed, incomplete,
 or ``review_needed`` proposals before any served write.
+
+Slice 4 — :class:`AuthoringProject` (issue #34/G2, spec 2026-10-02-0009 §§3–4,
+plan §2 "Project storage and authority" + "Authoring call contract"): the
+host-configured data project and its Git-backed authoring proposals —
+``start_proposal`` / ``read_artifact`` / ``edit_proposal`` returning
+JSON-shaped envelopes reusable by CLI/MCP/Agent adapters. This module keeps
+the orchestration only: the Git identity/worktree/revision machinery and the
+shared credential/payload boundary live in :mod:`ariadne.proposals`, the
+layer-specific edits in :mod:`ariadne.authoring_semantic` (model/graph) and
+:mod:`ariadne.authoring_context` (page/seed notes). Validation, review,
+source proposals and measured inputs are LATER slices (G3/G4) and are
+deliberately absent here.
 """
 
 from __future__ import annotations
@@ -98,7 +110,6 @@ import fcntl
 import hashlib
 import json
 import os
-import re
 import shutil
 import stat
 import tempfile
@@ -112,7 +123,7 @@ import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lac
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 from sqlglot import exp  # pyright: ignore[reportMissingImports] — same
 
-from ariadne import profiler
+from ariadne import authoring_context, authoring_semantic, profiler, proposals
 from ariadne.author import (
     MAX_ROUNDS,
     _bundle_errors,
@@ -121,11 +132,10 @@ from ariadne.author import (
     _mark_review_needed,
     normalize_layer_yaml,
 )
-from ariadne.ingest import _SECRET_PATTERNS, _ConversionError, _convert
+from ariadne.ingest import _ConversionError, _convert
 from ariadne.render import render
 from ariadne.semantic_graph import load_graph
 from ariadne.sources import (
-    _DSN_PASSWORD_RE,
     _URI_SCHEME_RE,
     _resolve_against,
     load_registry,
@@ -607,9 +617,9 @@ MAX_BUNDLE_BYTES = 2 * 1024 * 1024  # bounded payload; large evidence is referen
 # Named env-style credential assignments the URL-password rule misses (review
 # finding: ``AWS_SECRET_ACCESS_KEY=...``). The value is never echoed; the
 # same-line ``=`` keeps prose that merely MENTIONS the variable from matching.
-_AWS_ASSIGNMENT_RE = re.compile(
-    r"\b(AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN)[ \t]*=[ \t]*\S+"
-)
+# The pattern and its checks are SHARED with the Git proposal edits (issue #34):
+# one implementation lives in ariadne.proposals (check_artifact_content).
+_AWS_ASSIGNMENT_RE = proposals._AWS_ASSIGNMENT_RE
 
 
 def bundle_state_path(staging_root: str | Path) -> Path:
@@ -773,25 +783,10 @@ def _check_submission(files: list[tuple[str, str]]) -> None:
             f"{SEED_NOTES_SUBMIT_REL} (got {seed_notes})"
         )
     for rel, content in files:
-        if match := _DSN_PASSWORD_RE.search(content):  # ADR-0010 credential shape
-            raise ValueError(
-                f"files[] entry {rel!r} carries inline URL credentials "
-                f"({match.group(1)}***{match.group(3)}) — credentials never live in a "
-                "submitted bundle"
-            )
-        for label, pattern in _SECRET_PATTERNS:  # ingest's classes, reused verbatim
-            if pattern.search(content):
-                raise ValueError(
-                    f"files[] entry {rel!r} appears to carry a {label} credential — "
-                    "credential-free submissions only; the matched value is never "
-                    "echoed, remove it and resubmit"
-                )
-        if _AWS_ASSIGNMENT_RE.search(content):
-            raise ValueError(
-                f"files[] entry {rel!r} carries a named AWS credential assignment "
-                "(AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_SESSION_TOKEN = value) — "
-                "credential-free submissions only; the matched value is never echoed"
-            )
+        # The SHARED pre-write credential boundary (ariadne.proposals), the
+        # same one Git proposal edits pass through — bounds and the three
+        # credential classes, values never echoed (issue #34).
+        proposals.check_artifact_content(f"files[] entry {rel!r}", content)
 
 
 def _refuse_symlinked_staging(project: Path, rel: Path) -> None:
@@ -1429,3 +1424,80 @@ def review_bundle(*, project: str | Path = ".", part: int = 1) -> dict:
         view["documents"] = _staged_citations(bundle_dir)  # covered by that digest
         view["files"] = bodies
     return view
+
+
+# --- slice 4 (issue #34/G2): Git-backed authoring proposal orchestration ---
+
+# The discriminated edit contract (plan §2): one COMPLETE artifact per edit,
+# routed to its layer-specific resolver. Sources are deliberately absent —
+# typed source proposals are a later slice (G3), so a source-shaped edit is
+# refused cleanly instead of being smuggled through a file write.
+_LAYER_EDITORS = {
+    "model": authoring_semantic,
+    "graph": authoring_semantic,
+    "page": authoring_context,
+    "seed_notes": authoring_context,
+}
+EDIT_KINDS = tuple(sorted(_LAYER_EDITORS))
+
+
+class AuthoringProject:
+    """One host-configured data project and its Git-backed authoring proposals
+    (spec 2026-10-02-0009 §3–4, plan §2). Callers address system-generated
+    proposal IDs and typed artifact identities within this fixed project —
+    never repository/worktree roots, operational state files or arbitrary
+    filesystem paths. Every method returns a JSON-shaped envelope reusable by
+    the CLI, MCP and Agent adapters; every failure is an explicit, actionable
+    error that preserves the worktree, history and evidence.
+
+    This slice (G2) owns proposal lifecycle and complete artifact edits only:
+    ``validate_proposal``/``review_proposal`` are G4, ``propose_sources``/
+    ``inputs`` in Git mode are G3 — they do not exist here yet.
+    """
+
+    def __init__(self, project: str | Path = "."):
+        self.project = Path(project)
+
+    def start_proposal(self, base_revision: str | None = None) -> dict:
+        """Start one isolated proposal: a system-generated ID, its branch and
+        worktree (derived, never caller-supplied), from the optional known base
+        revision or the current one; a repository with no commits yet gets its
+        human-created initial artifact revision first. Returns
+        ``{proposal, base_revision, candidate_revision}``."""
+        return proposals.start_proposal(self.project, base_revision=base_revision)
+
+    def read_artifact(self, proposal: str, identity: dict, *, part: int = 1) -> dict:
+        """Read one artifact of the proposal's current candidate revision —
+        inherited from the base when never edited — addressed by a typed
+        identity (``{kind: model, name}``, ``{kind: graph}``,
+        ``{kind: page, section, name}``, ``{kind: seed_notes}``), in bounded
+        parts. Returns ``{proposal, revision, path, content, part, parts,
+        chars, complete}`` or a specific missing-artifact error."""
+        if not isinstance(identity, dict) or identity.get("kind") not in _LAYER_EDITORS:
+            got = identity.get("kind") if isinstance(identity, dict) else identity
+            raise ValueError(
+                "an artifact identity is a typed object with kind one of "
+                f"{EDIT_KINDS}, got {got!r}"
+            )
+        rel = _LAYER_EDITORS[identity["kind"]].resolve_identity(identity)
+        return proposals.read_artifact(self.project, proposal, rel, part=part)
+
+    def edit_proposal(self, proposal: str, expected_revision: str, edit: dict) -> dict:
+        """Apply one complete artifact edit — a discriminated JSON object
+        (``{kind: model, name, content}``, ``{kind: graph, content}``,
+        ``{kind: page, section, name, content}``, ``{kind: seed_notes,
+        content}``) — to the proposal, requiring the expected candidate
+        revision (stale or competing writers are refused before any write; an
+        identical edit at the current revision is a no-op). Returns
+        ``{proposal, revision, changed, path}``."""
+        if not isinstance(edit, dict) or edit.get("kind") not in _LAYER_EDITORS:
+            got = edit.get("kind") if isinstance(edit, dict) else edit
+            raise ValueError(
+                "an edit is a discriminated JSON object with kind one of "
+                f"{EDIT_KINDS} (typed source proposals arrive through their own "
+                f"later operation), got kind {got!r}"
+            )
+        rel, content = _LAYER_EDITORS[edit["kind"]].resolve_edit(edit)
+        return proposals.edit_proposal(
+            self.project, proposal, expected_revision, rel, content
+        )
