@@ -60,30 +60,33 @@ tools only.
   sources, promote, bypass the compile gate, or run SQL yourself.
 """
 
-# The Authoring flow, verbatim from the spec's role rules: work before first
-# Promotion, human-only approval and Promotion outside the session.
+# The Authoring flow over the Git proposal contract (spec 2026-10-02-0009
+# §3–4, migrated in G6/issue #38): work before the first admission, human-only
+# approval/admission outside the session.
 _AUTHORING_RULES = """\
 
 ## Role: Ariadne Authoring
 
-You author one project that may have nothing Promoted yet, through the
-harness-led authoring service only.
+You author one data project through its Git authoring proposals, which may
+have nothing admitted yet.
 
-- Propose inert source entries (`propose_sources`), report the exact digest
-  the service returns, then STOP: the operator approves sources outside this
-  session with that digest. You have no tool that approves, and none exists.
+- Start a proposal (`start_proposal`), then propose inert source entries
+  (`propose_sources`) and report the exact resolved digest the service
+  returns, then STOP for sources: the operator approves the exact digest
+  outside this session. You have no tool that approves, and none exists.
 - After the operator approves, read the measured inputs in bounded parts
-  (`harness_inputs`); where evidence does not establish a business rule, ask
-  the owner or mark the uncertainty — never invent a rule.
-- Submit the complete Seed Notes, OSI models and OKF pages through the
-  service's validation (`submit_bundle`); repair the SAME proposal only with
-  its current digest and inside the attempt limit. An unavailable source, a
-  failed check, a stale digest, an interrupted transition or a
-  `review_needed` state surfaces as-is; you cannot clear or override it.
-- Review the staged proposal (`review_bundle`), report the EXACT reviewed
-  digest, and stop: Promotion is human-only and happens outside this
-  session. Staging never serves; nothing you do writes to `context_layer/`
-  or `semantic_layer/`.
+  (`inputs`); where evidence does not establish a business rule, ask the
+  owner or mark the uncertainty — never invent a rule.
+- Edit artifacts independently (`edit_proposal`) with the expected candidate
+  revision each time: one complete model, graph, page or Seed Notes edit —
+  unchanged artifacts are inherited from the base, never resubmitted. A
+  stale revision or a competing writer is refused; read the artifact first
+  (`read_artifact`) when unsure.
+- Validate the effective candidate (`validate_proposal`) and read its review
+  (`review_proposal`); report the EXACT revision and review digest, and
+  stop: admission is human-only (`ariadne-admit`) and happens outside this
+  session. Validation and review are never a signoff; nothing you do serves
+  the project.
 - The grain rubric above governs every join: many-to-one on a key unique on
   the joined side, or one of its five resolution patterns.
 """
@@ -138,9 +141,24 @@ def _missing_served_catalog(exc: BaseException) -> bool:
 def _open_runtime(project: Path) -> QueryRuntime:
     """Build the session's runtime from the host-selected project root only.
 
-    Every path resolves against ``project`` — never the ambient working
-    directory. A registry (``ariadne.yaml``) wins when present; otherwise the
-    project's ``demo.db`` selects the legacy single-sqlite shorthand."""
+    A MANAGED Git data project — one carrying Ariadne's operator state (the
+    ignored ``.ariadne/`` directory its Git proposals/admissions create, plan
+    §2; never mere ``.git`` presence, which a legacy checkout also has) —
+    resolves through :meth:`QueryRuntime.open_project` (issue #38/G6): its
+    pinned human-admitted snapshot and approved source identity, refusing a
+    project with no valid admission instead of falling back to mutable
+    files. An explicit legacy artifact-root project (no Ariadne state) keeps
+    the legacy construction and its behavior exactly."""
+    if (project / ".ariadne").exists():
+        try:
+            return QueryRuntime.open_project(project)
+        except Exception as exc:
+            raise RuntimeError(
+                f"analyst session for {project} cannot query the managed Git "
+                f"project — {exc}. Report this to the operator; admission is "
+                "human-only and the Analyst cannot query, define, or admit its "
+                "way past it."
+            ) from exc
     registry = project / "ariadne.yaml"
     db = project / "demo.db"
     if not registry.is_file() and not db.is_file():

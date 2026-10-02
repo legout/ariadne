@@ -1,0 +1,692 @@
+"""MCP adapter: three tool registrations over one core (spec
+2026-10-02-0009 §6, issue #38/G6; ADR-0002's facade decision as amended by
+ADR-0016 — tool-surface separation, never a new account system).
+
+All query behavior — compilation, execution, context attachment, grain checks,
+proposal staging — lives in :class:`ariadne.query.QueryRuntime` (spec
+2026-09-23-0001 §3, ADR-0012; moved from ``ariadne.runtime`` in the
+modular-core extraction, issue #33/ADR-0016); this module only registers
+tools over one runtime instance and parses the server arguments. All
+answer-example behavior lives in :mod:`ariadne.answer_examples` behind the
+runtime's transport-neutral ``save_example``/``search_examples`` (issue #21),
+and the operator review command (``ariadne-example-review``) is never
+registered as a tool. All authoring behavior lives in
+:class:`ariadne.authoring.AuthoringProject` (plan §2's Authoring call
+contract, issues #34–#36): this adapter adds thin ``authoring_``-prefixed
+wrappers over its methods. ``Facade`` remains import-compatible here as a
+plain alias of the query runtime class — never a subclass or wrapper that
+could diverge.
+
+The three registrations (spec §6, AC7):
+
+- **analyst** — the Query operations under their established names:
+  ``list_metrics``, ``search_context``, ``get_metric``, ``list_datasets``,
+  ``define_metric`` (ad-hoc), ``query_metrics``/``query_detail`` (issue #30),
+  ``save_example``/``search_examples`` (issue #21). No authoring operation.
+- **authoring** — the Git authoring contract with one stable prefix:
+  ``authoring_start_proposal``, ``authoring_read_artifact``,
+  ``authoring_edit_proposal``, ``authoring_propose_sources``,
+  ``authoring_inputs``, ``authoring_upload_document``,
+  ``authoring_validate_proposal``, ``authoring_review_proposal``. No query
+  operation; the registration starts without a governed catalog (AC5).
+- **combined** (the ``ariadne-serve`` default) — their union.
+
+Explicit migration of the legacy complete-bundle wrappers (spec §6 permits
+breaking interfaces when explicitly mapped; the legacy staged-bundle route
+itself stays available through the local ``ariadne-authoring`` CLI until the
+G7 cleanup, and legacy pending work keeps its review path):
+
+- ``authoring_submit_bundle`` (one complete bundle) is REPLACED by
+  ``authoring_start_proposal`` + one ``authoring_edit_proposal`` per artifact
+  + ``authoring_validate_proposal`` — independent edits against revision-
+  checked candidates, never a resubmitted whole bundle. No legacy complete-
+  bundle entry is retained on any MCP surface, so no caller can silently map
+  an old bundle payload onto a guessed proposal.
+- ``authoring_review_bundle`` is REPLACED by ``authoring_review_proposal``
+  (proposal ID + bounded part).
+- The legacy ``authoring_propose_sources``/``authoring_inputs`` payloads
+  (registry-shaped YAML text / project-level call) map to the Git-mode
+  arguments: proposal ID + expected revision + typed source entries, and
+  proposal ID + documents/part/sample bound.
+
+No registration ever exposes source approval (``ariadne-authoring
+approve-sources``), artifact admission (``ariadne-admit``), reconciliation
+(``ariadne-authoring reconcile``) or Promotion (``ariadne-promote``): those
+are human-only server-host commands (ADR-0013, spec §5), and no tool argument
+ever selects a project root, worktree path or credential.
+
+The server is launched for ONE locally configured project (``--project DIR``):
+the caller cannot select another project root or source credentials through
+any tool argument, and stdio needs no bearer token (that is the #18 HTTP
+transport's rule). A Git-managed data project is served through its pinned
+human admission (``QueryRuntime.open_project``, issue #37): a project with no
+admission yet still starts its Authoring/Combined surfaces, and query tool
+calls surface the managed route's missing-admission error instead of blocking
+authoring (AC5). A legacy (non-Git) project keeps the empty-project behavior:
+the authoring tools work before the first Promotion, and query tool calls
+surface the runtime's existing missing-served-model error.
+
+Routing contract (spec rev 4 §8.12): fresh consuming agents discover the ad-hoc
+path through the facade itself — the tool descriptions carry the same routing
+language ``list_metrics`` and the unknown-metric error use (the MCP registry is
+the agent's map).
+
+Usage::
+
+    python -m ariadne.serve --project /path/to/project            # combined
+    python -m ariadne.serve --project DIR --toolset analyst       # Query only
+    python -m ariadne.serve --project DIR --toolset authoring     # no queries
+    ariadne-analyst-mcp --project DIR   # the same adapter, toolset fixed
+    ariadne-authoring-mcp --project DIR
+"""
+
+import argparse
+import base64
+import os
+import sys
+from collections.abc import Callable
+from pathlib import Path
+
+# The transport-neutral authoring service (plan §2's Authoring call contract):
+# one import, the tool bodies are one-line delegations with its verbatim
+# contracts.
+from ariadne.authoring import AuthoringProject
+
+# The grain guidance constant lives in ariadne.grain; it stays importable from
+# this module for backward compatibility (tests import it from here).
+from ariadne.grain import GRAIN_GUIDANCE  # noqa: F401 — re-export
+from ariadne.query import QueryRuntime  # pyright: ignore[reportMissingImports] — drift
+from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    default_registry_path,
+)
+
+# Back-compat alias (spec 2026-09-23-0001 §3): ariadne.serve.Facade IS the
+# query runtime class — a plain assignment, not a subclass or wrapper.
+Facade = QueryRuntime
+
+# A live query runtime, or a zero-arg factory for a project whose query
+# surface is not available yet (spec 2026-09-24-0005: the promoted-models
+# requirement "cannot block startup of the authoring tools"; query calls
+# re-attempt construction).
+FacadeSource = QueryRuntime | Callable[[], QueryRuntime]
+
+# The three registrations (spec §6): Query under its established names, the
+# authoring contract under one stable prefix, and their union.
+TOOLSETS = ("analyst", "authoring", "combined")
+
+
+def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str = "combined"):
+    """Wire one tool registration of the shared core onto one MCP stdio
+    server (spec §6): ``analyst`` registers the Query operations, ``authoring``
+    the ``authoring_``-prefixed Git authoring contract, ``combined`` (the
+    default, the historic facade) their union — and never source approval,
+    admission, reconciliation or Promotion.
+
+    ``project`` is the ONE configured project root the authoring tools operate
+    on; the default is the current directory because :func:`main` chdir'd into
+    the ``--project`` root at launch (direct in-process callers pass theirs).
+    Model arguments carry only proposal/artifact identities, revisions and
+    content — never paths, worktrees or credentials."""
+    if toolset not in TOOLSETS:
+        raise ValueError(f"unknown toolset {toolset!r}; this build serves {TOOLSETS}")
+    from mcp.server.fastmcp import (  # pyright: ignore[reportMissingImports, reportAttributeAccessIssue]
+        FastMCP,  # mcp<2 (pinned) exports FastMCP; the 2.x shim renames it
+    )
+
+    app: FastMCP = FastMCP("ariadne")
+
+    # ---------------------- the Query registration (analyst, combined) ------
+
+    if toolset in ("analyst", "combined"):
+
+        def _runtime() -> QueryRuntime:
+            """The query runtime — a live instance, or the launch-time factory
+            (empty project: the authoring tools work, query calls surface the
+            construction error)."""
+            return facade() if callable(facade) else facade
+
+        # --- the five query/ad-hoc tools (spec 2026-09-23-0001, unchanged) ---
+
+        @app.tool()
+        async def list_metrics() -> list[dict | str]:
+            """List served governed metrics with descriptions and available dimensions.
+
+            The response ends with a routing hint: questions no listed metric answers
+            go to list_datasets() + define_metric (the ad-hoc path).
+            """
+            return await _runtime().list_metrics()
+
+        @app.tool()
+        async def search_context(query: str) -> list[dict]:
+            """Search the Context Layer (OKF pages) for business rules; ranked matches.
+
+            Includes auto-staged ad-hoc proposals awaiting promotion; those hits are
+            marked draft: true (served pages are draft: false).
+            """
+            return await _runtime().search_context(query)
+
+        @app.tool()
+        async def get_metric(
+            name: str, dimensions: list[str] | None = None, range: dict | None = None
+        ) -> dict:
+            """Rows plus compiled SQL for a named governed metric — never raw SQL.
+
+            The response carries a context field: the full served OKF metric page
+            plus the full bodies of every policy it cites. Report those caveats
+            with every number (context is null-shaped when no page is served yet).
+
+            Args:
+                name: governed metric name (see list_metrics).
+                dimensions: dimensions to group by (e.g. ["region"]).
+                range: optional {"start", "end"} dates on the primary date dimension.
+            """
+            return await _runtime().get_metric(name, dimensions, range)
+
+        @app.tool()
+        async def list_datasets() -> list[dict]:
+            """List every table in the attached database with its columns and types.
+
+            Pairs with define_metric: pick tables here, then define an ad-hoc metric
+            for any question no governed metric answers.
+            """
+            return await _runtime().list_datasets()
+
+        @app.tool()
+        async def define_metric(definition: dict) -> dict:
+            """Define an ad-hoc metric for a question no governed metric answers:
+            compiled, executed read-only, auto-staged for human promotion.
+
+            Args:
+                definition: {name, description, source, expression, dimensions?, time_field?}
+                    where name is a lowercase snake_case slug, source is a table name or a
+                    SELECT (joins allowed), expression is an aggregate SQL expression
+                    (any business filter belongs in it), and dimensions/time_field are
+                    column names of the source. Joins must be grain-preserving: every
+                    join key must be unique on the joined side — resolve one-to-many
+                    relationships per the ADR-0006 rubric (upstream conditional pivot,
+                    child-grain fact model, or fact weight allocation), i.e. pre-aggregate
+                    the many side to the fact grain inside source, or the definition is
+                    rejected. Invalid definitions return the compiler
+                    errors verbatim; nothing is staged or executed. Success returns rows,
+                    the compiled SQL (provenance), governed: false, the echoed definition,
+                    and the staging paths of the auto-staged proposal (OSI model under
+                    semantic_layer/models/adhoc/ plus an OKF draft under
+                    context_layer/metrics/ that search_context can find).
+            """
+            return await _runtime().define_metric(definition)
+
+        @app.tool()
+        async def query_metrics(request: dict) -> dict:
+            """Query one or more governed metrics TOGETHER over the admitted multi-fact
+            graph: each fact aggregates at its own grain and the branches align on
+            conformed keys — a raw fact-to-fact join never executes. Same contract as
+            ``ariadne query-metrics``. Only predefined metric names: never raw SQL.
+            Requires the served graph to be admitted (human Promotion of a validated
+            bundle); an unadmitted or hand-edited graph refuses with that reason.
+
+            The response carries rows, the compiled single-SELECT SQL, a bounded
+            lineage plan (fact branches, joins, conformed keys, filters, windows,
+            performed audits), per-metric OKF metric page + cited Policy bodies with
+            the attestation state, and the local admission provenance. Report the
+            caveats and the admission route with every number.
+
+            Args:
+                request: {metrics: [names], dimensions?: [names], filters?: [{field,
+                    op, value}], segments?: [{name, filters}], parameters?: {name:
+                    {type, value, min?, max?, max_length?}}, order?: [{field,
+                    direction}], limit?: int, time?: {dimension, grain, start, end}}.
+            """
+            return await _runtime().query_metrics(request)
+
+        @app.tool()
+        async def query_detail(request: dict) -> dict:
+            """Project one declared root dataset's fields through safe
+            many-to_one/one_to_one lookup paths — no aggregates, no fan-out: exactly
+            one row per root key. Same contract as ``ariadne query-detail``, over the
+            same admitted graph (an unadmitted graph refuses).
+
+            Args:
+                request: {dataset: the root dataset name, fields: [field names]} — a
+                    field lives on the root directly or on a dataset reachable from
+                    it through proven unique-target paths; child-side fields refuse.
+            """
+            return await _runtime().query_detail(request)
+
+        # --- the two answer-example tools (issue #21, spec 2026-09-29-0007) ---
+        # Thin adapters over the runtime's transport-neutral save/search (issue
+        # #19): the local JSON CLI rides the exact same runtime methods, so a
+        # draft saved over one transport is immediately searchable over the other.
+        # The operator review command (ariadne-example-review, issue #20) is
+        # deliberately NOT registered as a tool — review is human-only.
+
+        @app.tool()
+        async def save_example(submission: dict) -> dict:
+            """Stage one explicit answer example as a labeled draft under
+            staging/answer_examples/ — an EXPLICIT user-confirmed submission only:
+            present the bounded record (result excerpt/digest, method/arguments,
+            question/interpretation/parameters, sources, submitter attestation)
+            for user confirmation BEFORE calling this. Never a governed write, a
+            promotion, or transcript harvesting; nothing about the example changes
+            the served catalog. Same contract as ``ariadne save-example``.
+
+            Args:
+                submission: {question, interpretation, parameters?, method:
+                    {operation: get_metric|define_metric, arguments}, result: the
+                    observed Ariadne envelope (metric/sql/columns/rows/governed),
+                    submitter (self-declared), attestation, sources: cited served
+                    metric/Policy paths}. Malformed input stores nothing.
+            """
+            return await _runtime().save_example(submission)
+
+        @app.tool()
+        async def search_examples(
+            query: str, limit: int = 10, include_history: bool = False
+        ) -> list[dict]:
+            """Search saved answer examples as labeled references (draft/stable,
+            staleness, provenance, path) — historical evidence to check a METHOD
+            against, never a cached answer. Similar words are not equivalence:
+            compare dates, filters, grain, metric identity and served Policies,
+            and rerun fresh. Never executes a query. Same contract as
+            ``ariadne search-examples``; stale/closed records stay history unless
+            include_history is set.
+
+            Args:
+                query: terms ranked against question/interpretation.
+                limit: maximum records returned.
+                include_history: include stale/superseded/rejected records, labeled.
+            """
+            return await _runtime().search_examples(
+                query, limit=limit, include_history=include_history
+            )
+
+    # ------------------ the Authoring registration (authoring, combined) ----
+
+    if toolset in ("authoring", "combined"):
+        # The project root below was fixed at server launch (--project); every
+        # tool argument carries only proposal IDs, revisions, typed identities
+        # and content — never a filesystem root, worktree or credential.
+        authoring_api = AuthoringProject(Path(project).resolve())
+
+        @app.tool()
+        async def authoring_start_proposal(base_revision: str | None = None) -> dict:
+            """Start one isolated Git authoring proposal in the launch-selected
+            project: a system-generated proposal ID with its branch and worktree,
+            from the optional known base revision or the current admitted/HEAD
+            revision (an empty repository gets its human-created initial artifact
+            revision first). Returns {proposal, base_revision, candidate_revision}.
+            Never approval, validation or admission. Same contract as
+            ``ariadne-authoring start``.
+
+            Args:
+                base_revision: optional known base commit SHA (default: the
+                    current admitted revision, or HEAD before the first admission).
+            """
+            return authoring_api.start_proposal(base_revision)
+
+        @app.tool()
+        async def authoring_read_artifact(
+            proposal: str,
+            kind: str,
+            name: str | None = None,
+            section: str | None = None,
+            part: int = 1,
+        ) -> dict:
+            """Read one artifact of the proposal's current candidate revision —
+            inherited from the base when never edited — in bounded parts.
+            Returns {proposal, revision, path, content, part, parts, chars,
+            complete} or a specific missing-artifact error. Same contract as
+            ``ariadne-authoring read``.
+
+            Args:
+                proposal: the proposal ID (authoring_start_proposal returned it).
+                kind: one of model, graph, page, seed_notes.
+                name: artifact name (model/page).
+                section: OKF page section (page).
+                part: which bounded part (default 1).
+            """
+            identity: dict = {"kind": kind}
+            if name is not None:
+                identity["name"] = name
+            if section is not None:
+                identity["section"] = section
+            return authoring_api.read_artifact(proposal, identity, part=part)
+
+        @app.tool()
+        async def authoring_edit_proposal(
+            proposal: str, expected_revision: str, edit: dict
+        ) -> dict:
+            """Apply one complete artifact edit to the proposal, requiring the
+            expected candidate revision — a stale revision or a competing writer
+            is refused before any write; an identical edit at the current
+            revision is a no-op. Returns {proposal, revision, changed, path}.
+            Same contract as ``ariadne-authoring edit``.
+
+            Args:
+                proposal: the proposal ID.
+                expected_revision: the CURRENT candidate revision the edit is
+                    based on (the response of the previous edit/read).
+                edit: one discriminated JSON object — {kind: model, name,
+                    content}, {kind: graph, content}, {kind: page, section,
+                    name, content}, or {kind: seed_notes, content}. Typed source
+                    proposals arrive through authoring_propose_sources.
+            """
+            return authoring_api.edit_proposal(proposal, expected_revision, edit)
+
+        @app.tool()
+        async def authoring_propose_sources(
+            proposal: str, expected_revision: str, sources: list[dict]
+        ) -> dict:
+            """Append typed source-registry entries to the candidate's registry
+            — inert DATA: nothing is opened or connected; the candidate cannot
+            grant itself approval. Returns {proposal, revision, changed,
+            source_digest, sources} naming the precise resolved locations; the
+            digest is what the operator approves OUTSIDE this surface. Same
+            contract as Git-mode ``ariadne-authoring propose-sources``.
+
+            Args:
+                proposal: the proposal ID.
+                expected_revision: the CURRENT candidate revision.
+                sources: registry-shaped entries (name/type/path or
+                    connection_env); invalid shapes and inline credentials are
+                    rejected before anything is written.
+            """
+            return authoring_api.propose_sources(proposal, expected_revision, sources)
+
+        @app.tool()
+        async def authoring_inputs(
+            proposal: str,
+            documents: list[str] | None = None,
+            part: int = 1,
+            sample_rows: int | None = None,
+        ) -> dict:
+            """The proposal's measured inputs (no model anywhere): the
+            deterministic profile of the operator-APPROVED resolved registry
+            identity (an unapproved or changed entry is an explicit error),
+            source-linked converted evidence for the referenced documents, and
+            the candidate's Seed Notes — each in bounded parts (part 1 of N;
+            complete only when N is 1). Same contract as Git-mode
+            ``ariadne-authoring inputs``.
+
+            Args:
+                proposal: the proposal ID.
+                documents: input-area references (e.g. uploaded filenames); at
+                    most 16 per call, each inside the operator-configured roots.
+                part: which bounded part of each document's converted text.
+                sample_rows: optional positive per-table profile row bound;
+                    sampled statistics do not claim primary or foreign key
+                    candidates.
+            """
+            return authoring_api.inputs(
+                proposal, documents=documents or [], part=part, sample_rows=sample_rows
+            )
+
+        @app.tool()
+        async def authoring_upload_document(name: str, content_b64: str) -> dict:
+            """Upload one bounded document (base64 bytes) into the project input
+            area; its original bytes are retained under the name's stable identity
+            {resource, digest}. No Git artifact staging. Large documents belong in
+            the operator input area or object storage instead (the bound is
+            enforced before any write). Same contract as the local CLI.
+
+            Args:
+                name: a plain filename (no directories).
+                content_b64: the document's raw bytes, base64-encoded; at most
+                    5 MiB decoded.
+            """
+            try:
+                data = base64.b64decode(content_b64, validate=True)
+            except ValueError as exc:  # binascii.Error included
+                raise ValueError(
+                    f"{name}: upload content is not valid base64: {exc}"
+                ) from None
+            return authoring_api.upload_document(name, data)
+
+        @app.tool()
+        async def authoring_validate_proposal(
+            proposal: str, expected_revision: str
+        ) -> dict:
+            """Validate the proposal's effective candidate at its EXACT final
+            revision: finalize the deterministic generated artifacts, commit any
+            generated changes, run the complete check stack against the
+            operator-approved source identity and return that revision with its
+            report/errors — never validation of the earlier input commit, never
+            a signoff. Same contract as ``ariadne-authoring validate``.
+
+            Args:
+                proposal: the proposal ID.
+                expected_revision: the CURRENT candidate revision the validation
+                    is based on (the response returns the FINAL revision after
+                    the finalize commit).
+            """
+            return authoring_api.validate_proposal(proposal, expected_revision)
+
+        @app.tool()
+        async def authoring_review_proposal(proposal: str, part: int = 1) -> dict:
+            """Read the proposal's candidate — read-only, NEVER a signoff
+            (admission is the separate human-only ``ariadne-admit``): current and
+            base revisions, change inventory, bounded effective bodies,
+            citations, the validation report with its full check scope, and a
+            review digest binding the exact reviewed identity. Same contract as
+            Git-mode ``ariadne-authoring review --proposal``.
+
+            Args:
+                proposal: the proposal ID.
+                part: which bounded part of each body.
+            """
+            return authoring_api.review_proposal(proposal, part=part)
+
+    return app
+
+
+def _mcp_missing(exc: BaseException) -> bool:
+    """True only when the MCP SDK itself is absent (spec §7): the failing
+    import names the mcp package and ``import mcp`` genuinely fails. An
+    internal mcp import failure or a missing mcp dependency surfaces itself —
+    the hint never masks it."""
+    if not isinstance(exc, ModuleNotFoundError):
+        return False
+    name = getattr(exc, "name", None)
+    if name != "mcp" and not (isinstance(name, str) and name.startswith("mcp.")):
+        return False
+    try:
+        import mcp  # noqa: F401  # pyright: ignore[reportMissingImports] — [mcp] extra
+    except ImportError:
+        return True
+    return False
+
+
+def _mcp_sdk_absent() -> bool:
+    """True when the optional MCP SDK is genuinely not importable (the [mcp]
+    extra, ADR-0012/spec §7) — the granularity :func:`_mcp_missing` probes."""
+    try:
+        import mcp  # noqa: F401  # pyright: ignore[reportMissingImports] — [mcp] extra
+    except ImportError:
+        return True
+    return False
+
+
+def _missing_served_models(exc: BaseException) -> bool:
+    """True for the runtime's promoted-models startup errors (no semantic
+    models directory yet / no governed metrics under it — the exact messages
+    QueryRuntime raises; query.py is outside this adapter's scope). Spec
+    2026-09-24-0005: an empty project must not block MCP startup of the
+    authoring tools, and query tool calls surface this same error."""
+    message = str(exc)
+    return "promote staging/semantic_layer/ first" in message or (
+        "no governed metrics found under" in message
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m ariadne.serve",
+        description="MCP stdio facade over the served context and semantic layers.",
+    )
+    parser.add_argument(
+        "--project",
+        default=".",
+        help="the ONE locally configured project root (default: the working "
+        "directory): anchors the authoring tools and every default below; no "
+        "tool argument ever selects a project",
+    )
+    parser.add_argument(
+        "--toolset",
+        choices=TOOLSETS,
+        default="combined",
+        help="which registration this server exposes (spec 2026-10-02-0009 §6; "
+        "default combined, the historic facade union): analyst = the Query "
+        "operations only; authoring = the authoring_ Git authoring contract "
+        "only; combined = their union",
+    )
+    parser.add_argument(
+        "--db",
+        default=None,
+        help="SQLite database to attach read-only (default: examples/retail-demo/data/demo.db when "
+        "no --sources/ariadne.yaml applies)",
+    )
+    parser.add_argument(
+        "--sources",
+        default=None,
+        help="source registry YAML (ADR-0010; default: ./ariadne.yaml only when "
+        "neither --sources nor --db is given)",
+    )
+    parser.add_argument("--semantic", default="semantic_layer", help="served OSI layer directory")
+    parser.add_argument("--context", default="context_layer", help="served OKF layer directory")
+    parser.add_argument(
+        "--staging", default="staging", help="staging root for auto-staged ad-hoc proposals"
+    )
+    args = parser.parse_args(argv)
+
+    # One project root anchors everything (issue #16: the server is launched
+    # for one locally configured project): chdir so every existing
+    # cwd-relative default — the ambient ./ariadne.yaml registry, the served
+    # layer dirs, the staging root — resolves against it exactly as in a
+    # project-root launch, whatever directory the server was started from.
+    project = Path(args.project).resolve()
+    try:
+        os.chdir(project)
+    except OSError as exc:
+        print(f"error: --project {args.project}: {exc}", file=sys.stderr)
+        return 1
+
+    # A Git-managed data project is served through its pinned human admission
+    # (issue #37/G5). The marker is Ariadne's OWN operator state — the ignored
+    # ``.ariadne/`` directory the first Git proposal/admission creates (plan §2
+    # "Project storage and authority") — not mere ``.git`` presence: a legacy
+    # artifact-root project that merely happens to live in a Git repository
+    # never opted into the managed route and keeps its legacy construction.
+    # Once the state exists, a missing/incoherent admission is a query-only
+    # refusal that never falls back to the mutable files and never blocks the
+    # authoring surface (spec §5, AC5).
+    managed = (project / ".ariadne").exists()
+
+    # Explicit --db/--sources always win over the ambient ./ariadne.yaml
+    # (shared resolution, ADR-0010); the legacy default fills in only when
+    # --db is not given (unused by the runtime whenever a registry applies).
+    sources_path = default_registry_path(args.sources, args.db)
+    db = args.db or "examples/retail-demo/data/demo.db"
+
+    def _new_runtime() -> QueryRuntime:
+        if managed:
+            return QueryRuntime.open_project(project)
+        return QueryRuntime(
+            args.semantic,
+            args.context,
+            db,
+            staging_dir=args.staging,
+            sources=sources_path,
+        )
+
+    facade: FacadeSource
+    if args.toolset == "authoring":
+        # No query operation is registered, so no runtime is ever built (spec
+        # §6: the Authoring registration starts without a governed catalog).
+        def _no_runtime() -> QueryRuntime:
+            raise RuntimeError(
+                "the authoring toolset registers no query tool — this factory "
+                "is never called"
+            )
+
+        facade = _no_runtime
+    else:
+        try:
+            facade = _new_runtime()
+        except Exception as exc:  # fail fast before any MCP traffic
+            # A query-only startup failure keeps the authoring surface alive.
+            # On the Combined registration (issue #38 criterion 2) EVERY
+            # Query construction failure is query-only: fresh onboarding is
+            # exactly when human-seeded drafts fail to compile, so the
+            # present-but-broken served model is treated like the empty
+            # legacy project (promoted-models errors, spec 2026-09-24-0005)
+            # and every managed-route admission refusal (fresh onboarding /
+            # incoherent admission, spec §5/AC5) — the authoring surface of
+            # the same session must still boot. The pure Analyst registration
+            # keeps the historical fail-fast exit on a legacy project (no
+            # authoring surface to protect) except the empty-project case.
+            # Query tool calls re-attempt construction and surface the same
+            # error — memoized once it succeeds.
+            query_only = (
+                managed
+                or args.toolset == "combined"
+                or (isinstance(exc, RuntimeError) and _missing_served_models(exc))
+            )
+            if not query_only:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            if _mcp_sdk_absent():
+                # Without the optional transport there is no authoring tool surface
+                # to protect, and the local ariadne-authoring CLI still works — the
+                # startup failure itself is the honest report (the install hint
+                # never masks it; spec 2026-09-23-0001 §7).
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            memo: list[QueryRuntime] = []
+
+            def lazy_facade() -> QueryRuntime:
+                if not memo:
+                    memo.append(_new_runtime())
+                return memo[0]
+
+            facade = lazy_facade
+    try:
+        app = build_app(facade, toolset=args.toolset)  # project anchored by the chdir
+    except ModuleNotFoundError as exc:  # the optional transport is not installed
+        if _mcp_missing(exc):
+            print(
+                f"error: {exc} — the MCP transport is an optional extra; "
+                "install it with: pip install 'ariadne-core[mcp]'",
+                file=sys.stderr,
+            )
+            return 1
+        raise
+    app.run()  # stdio transport
+    return 0
+
+
+def _fixed_toolset_main(toolset: str, argv: list[str] | None) -> int:
+    """The ``ariadne-analyst-mcp``/``ariadne-authoring-mcp`` console entries:
+    the same adapter with the registration fixed at the entry point (spec §6,
+    issue #38). An explicit ``--toolset`` is refused — the entry IS the choice."""
+    args = sys.argv[1:] if argv is None else list(argv)
+    if "--toolset" in args or any(arg.startswith("--toolset=") for arg in args):
+        print(
+            f"error: this entry point fixes --toolset {toolset}; launch "
+            "ariadne-serve to select a toolset",
+            file=sys.stderr,
+        )
+        return 2
+    return main([f"--toolset={toolset}", *args])
+
+
+def analyst_main(argv: list[str] | None = None) -> int:
+    """``ariadne-analyst-mcp``: the adapter with the Analyst toolset fixed."""
+    return _fixed_toolset_main("analyst", argv)
+
+
+def authoring_main(argv: list[str] | None = None) -> int:
+    """``ariadne-authoring-mcp``: the adapter with the Authoring toolset fixed."""
+    return _fixed_toolset_main("authoring", argv)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

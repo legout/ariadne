@@ -2,12 +2,20 @@
 
 Thin wrappers only (spec 2026-09-29-0006 session/role interface): compilation,
 grain checks, read-only execution, context attachment and proposal staging all
-live in ``ariadne-core``; nothing is reimplemented here. Each tool's payload is
-the runtime's verbatim JSON envelope — values, served metric page, full Policy
-bodies and citations, staging paths, and ``governed`` labels are never stripped
-or summarized. Runtime failures propagate with their verbatim message and are
-reported to the model as tool errors. No CLI, no shell, no server, no raw SQL,
-no source-approval or Promotion tool.
+live in ``ariadne-core``; nothing is reimplemented here. The tool set is
+DELIMITED to Ariadne's five query operations: the wider Query surface that
+ariadne-core's MCP registrations expose (query_metrics/query_detail, Answer
+Examples) does NOT silently expand this session's permissions (issue #38/G6 —
+registrations are tool-surface separation). Which runtime the session wraps —
+a managed Git project's pinned admission through
+``QueryRuntime.open_project``, or an explicit legacy artifact root — is
+resolved once at session open by :func:`ariadne_agent.session._open_runtime`.
+Each tool's payload is the runtime's verbatim JSON envelope — values, served
+metric page, full Policy bodies and citations, staging paths, and
+``governed`` labels are never stripped or summarized. Runtime failures
+propagate with their verbatim message and are reported to the model as tool
+errors. No CLI, no shell, no server, no raw SQL, no source-approval,
+admission or Promotion tool.
 """
 
 import json

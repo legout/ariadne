@@ -355,12 +355,15 @@ def test_tool_descriptions_carry_routing_language(served):
 
 def test_server_registers_five_query_and_five_authoring_tools(served):
     """Spec 2026-09-23-0001 §4 keeps exactly the five legacy query/ad-hoc tools;
-    spec 2026-09-24-0005 adds exactly five authoring tools (issue #16); issue #21
+    spec 2026-09-24-0005 adds the authoring registration (issue #16); issue #21
     adds exactly the two answer-example tools over the shared runtime; issue #30
     adds exactly the two admitted multi-fact query tools (query_metrics/
     query_detail, thin adapters over the same transport-neutral runtime the
-    local CLI calls) — and never a source-approval, Promotion or example-review
-    tool (ADR-0013/#20: review is human-only)."""
+    local CLI calls); issue #38/G6 REPLACES the legacy complete-bundle authoring
+    wrappers with the plan §2 Git authoring contract (exactly eight
+    ``authoring_``-prefixed tools over AuthoringProject) — and never a
+    source-approval, Promotion, admission or example-review tool (ADR-0013/#20:
+    review is human-only; the surfaces are tool-surface separation, spec §6)."""
     from ariadne.serve import build_app
 
     served_dir, db = served
@@ -376,11 +379,14 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
         "query_detail",
         "save_example",
         "search_examples",
+        "authoring_start_proposal",
+        "authoring_read_artifact",
+        "authoring_edit_proposal",
         "authoring_propose_sources",
         "authoring_inputs",
         "authoring_upload_document",
-        "authoring_submit_bundle",
-        "authoring_review_bundle",
+        "authoring_validate_proposal",
+        "authoring_review_proposal",
     }
     assert not [tool for tool in tools if "approve" in tool.name or "promot" in tool.name]
 
@@ -976,8 +982,11 @@ def test_startup_fails_fast_when_datus_absent(tmp_path, monkeypatch):
 
 def test_serve_cli_fails_fast_with_hint_when_datus_missing(tmp_path):
     """Spec §7 for real: in a fresh interpreter with the datus imports blocked,
-    the module must still import and the CLI must exit 1 with INSTALL_HINT —
-    not abort with a raw ImportError."""
+    the module must still import and the Analyst CLI must exit 1 with
+    INSTALL_HINT — not abort with a raw ImportError. (The Combined default
+    no longer fails fast here: a missing datus engine is a query-side
+    failure, so its authoring surface still boots and query tools surface
+    this same error per call — issue #38 criterion 2, the G6 review fix.)"""
     import os
     import subprocess
 
@@ -988,7 +997,8 @@ def test_serve_cli_fails_fast_with_hint_when_datus_missing(tmp_path):
             "sys.modules['datus_semantic_osi.adapter'] = None",
             "sys.modules['datus_semantic_osi.config'] = None",
             "import ariadne.serve  # must not raise",
-            "sys.exit(ariadne.serve.main(['--semantic', 'x', '--context', 'y', '--db', 'z']))",
+            "sys.exit(ariadne.serve.main(['--toolset', 'analyst',",
+            "                                  '--semantic', 'x', '--context', 'y', '--db', 'z']))",
         ]
     )
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
@@ -1208,7 +1218,7 @@ def test_serve_main_explicit_db_beats_ambient_registry(tmp_path, monkeypatch):
     built: list = []
 
     class FakeApp:
-        def __init__(self, facade):
+        def __init__(self, facade, **kwargs):
             built.append(facade)
 
         def run(self):

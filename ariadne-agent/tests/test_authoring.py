@@ -1,26 +1,31 @@
-"""A2 Authoring session over the native authoring service (issue #24, spec
-2026-09-29-0006).
+"""A2 Authoring session over the native Git authoring contract (issue #24,
+migrated to the Git proposals of issue #38/G6; spec 2026-09-29-0006 over
+spec 2026-10-02-0009 §§3–4, plan §2's Authoring call contract).
 
 Deterministic and offline: a scripted ``tau_ai.fake.FakeProvider`` drives the
 real ``tau_agent.AgentHarness`` loop, the real Authoring tool wrappers, and
-the real ``ariadne.authoring`` service over an empty-project fixture built
-from the root suite's own helpers (``tests/test_authoring.py`` — no second
+the real :class:`ariadne.authoring.AuthoringProject` over the root suite's
+complete-bundle Git fixture (``tests/test_git_authoring.py`` — no second
 service oracle here). The operator's source approval is simulated by the TEST
 HARNESS calling ``approve_sources`` directly: approval is human-only and
 outside the agent, so no test path may route it through a tool.
 
-Real regressions named by the ticket:
+Real regressions named by the tickets:
 
-(a) Authoring cannot start before Promotion, or exposes approval/Promotion
+(a) Authoring cannot start before admission, or exposes approval/admission
     somewhere — covered by opening Authoring on projects where Analyst raises
-    the missing-catalog error, and by asserting the registered tool surface
-    contains no approval/Promotion tool (and no runtime is constructed);
+    the missing-catalog/admission error, and by asserting the registered tool
+    surface contains no approval/admission/Promotion tool (and no runtime is
+    constructed);
 (b) reads a model-selected path outside a trusted skill root (``../`` escape)
     — covered by the bounded reference reader refusing traversal while a
     declared reference under a host-declared root stays readable;
-(c) duplicates a submission after cancellation — covered by cancelling the
-    turn AFTER a completed ``submit_bundle`` and proving the persisted
-    proposal state shows exactly one attempt, one revision, unchanged.
+(c) duplicates a proposal edit after cancellation — covered by cancelling the
+    turn AFTER a completed ``edit_proposal`` and proving the persisted
+    proposal record shows exactly that candidate revision once, unchanged;
+(d) G6: the native flow drives a Git page AND model edit plus revision review
+    through the native tools with verbatim envelopes, stopping at every human
+    gate (source approval, admission).
 """
 
 import asyncio
@@ -29,6 +34,7 @@ import json
 import sys
 from pathlib import Path
 
+import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest
 from tau_agent.messages import AssistantMessage, TextContent, ToolCall
 from tau_ai.events import AssistantDoneEvent
@@ -49,38 +55,44 @@ REPO_ROOT = AGENT_DIR.parent
 if str(REPO_ROOT) not in sys.path:  # reuse the root suite's fixtures and oracle
     sys.path.insert(0, str(REPO_ROOT))
 
+from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.skill import ASSETS  # noqa: E402
-
-from tests.test_authoring import (  # noqa: E402 — the shared service fixtures; no second oracle here
-    approved_project,
-    bundle_submission,
-    scaffold_project,
-    write_parquet,
+from tests.test_git_authoring import (  # noqa: E402 — the shared Git fixtures; no second oracle
+    MODEL_YML,
+    POLICY_PAGE,
+    approved,
+    complete_bundle_project,
+    record_of,
 )
 
+from tests.test_authoring import scaffold_project  # noqa: E402 — legacy-route fixture
+
 AUTHORING_TOOLS = {
+    "start_proposal",
+    "read_artifact",
+    "edit_proposal",
     "propose_sources",
-    "harness_inputs",
-    "store_upload",
-    "submit_bundle",
-    "review_bundle",
+    "inputs",
+    "upload_document",
+    "validate_proposal",
+    "review_proposal",
     "read_skill_reference",
 }
 
 SPEC_CONTENT = "# Spec\n\nAll events count; label is not a key.\n"
 
 ANSWER_WAITING = """\
-Source proposal staged inert under staging/authoring/source-proposal.yaml
-with the exact digest reported above. profile: null — nothing is measurable
-until approval. I am stopping here: the operator approves the exact proposed
-digest outside this session; I have no tool that approves, and none exists.
+Source proposal committed into the candidate registry with the exact resolved
+digest reported above. Nothing is measurable until approval. I am stopping
+here: the operator approves the exact resolved digest outside this session; I
+have no tool that approves, and none exists.
 """
 
 ANSWER_REVIEWED = """\
-The complete bundle is staged and validated — nothing is served. The exact
-reviewed-content digest is the one review_bundle returned above; I report it
-and stop. Promotion is human-only and happens outside this session; staging
-never serves.
+The proposal is validated at its exact final revision — nothing is admitted.
+The exact revision and review digest are the ones review_proposal returned
+above; I report them and stop. Admission is human-only (ariadne-admit) and
+happens outside this session; authoring never serves.
 """
 
 
@@ -105,12 +117,53 @@ async def drive(session, text: str) -> list:
     return [event async for event in session.send(text)]
 
 
-class SubmitThenIdleProvider(FakeProvider):
-    """First response replays the scripted submission (it executes and
+def result_of(events: list, tool: str) -> dict:
+    """The verbatim JSON payload of the first activity of one tool."""
+    return json.loads(
+        next(
+            event.result
+            for event in events
+            if isinstance(event, ToolActivity) and event.tool == tool
+        )
+    )
+
+
+class FlowProvider(FakeProvider):
+    """Scripted turns pulled from a queue: the test scripts each next turn
+    AFTER seeing the previous tool results (proposal IDs and revisions are
+    runtime data the tools return), still driving the real harness loop."""
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self._turns: list[list] = []
+
+    def script(self, stream: list) -> None:
+        self._turns.append(stream)
+
+    def stream_response(
+        self, *, model, system, messages, tools, signal=None, session_id=None
+    ):
+        if not self._turns:
+            raise AssertionError("the scripted flow ran out of turns")
+        stream = self._turns.pop(0)
+        self.calls.append((model, system, list(messages), list(tools)))
+        self.session_ids.append(session_id)
+
+        async def replay():
+            for event in stream:
+                if signal is not None and signal.is_cancelled():
+                    return
+                yield event
+
+        return replay()
+
+
+class EditThenIdleProvider(FakeProvider):
+    """First response replays the scripted edit turn (it executes and
     completes); the SECOND response is an async-generator stream that idles
     (bounded) until the run is cancelled — a deterministic in-flight turn
-    right after a completed submission. Later responses come from the queued
-    scripted streams."""
+    right after a completed proposal edit. Later responses come from the
+    queued scripted streams."""
 
     def __init__(self, first: list, later: list[list]) -> None:
         super().__init__(later)
@@ -156,6 +209,17 @@ class SubmitThenIdleProvider(FakeProvider):
         )
 
 
+def _extra_parquet(project: Path) -> Path:
+    """One additional real parquet source the proposal appends to the registry
+    (the root fixtures' writer)."""
+    path = project / "data" / "extra_notes.parquet"
+    duckdb.connect().execute(
+        f"COPY (SELECT * FROM (VALUES (1, 'n1')) t(id, note)) "
+        f"TO '{path}' (FORMAT PARQUET)"
+    ).close()
+    return path
+
+
 # --- the ticket's scripted flows ----------------------------------------------
 
 
@@ -186,109 +250,218 @@ def test_authoring_opens_where_analyst_cannot_before_any_promotion(tmp_path):
     assert isinstance(events[-1], RunCompleted)
 
 
-def test_authoring_flow_stops_at_every_human_gate(tmp_path):
-    """The ticket's flow end to end on an empty project: inert source
-    proposal -> `profile: null` BEFORE operator approval (the approval runs
-    in this test harness, outside the agent) -> bounded measured inputs after
-    approval -> staged submit of the exact content -> review reports the
-    exact staged digest -> stop WITHOUT Promotion."""
-    project = scaffold_project(tmp_path)
-    parquet = write_parquet(project / "data" / "events.parquet")
-    proposal = {"sources": [{"name": "events", "type": "parquet", "path": str(parquet)}]}
-    submission = dict(bundle_submission())
-    submission["documents"] = ["spec.md"]
-
+def test_authoring_git_flow_stops_at_every_human_gate(tmp_path):
+    """(d) The G6 migration's own regression: the fake-provider path drives a
+    Git PAGE and MODEL edit plus revision review through the native tools —
+    the complete-bundle submission is gone — retaining verbatim envelopes and
+    stopping at the source-approval and admission gates. The operator's
+    approval runs in this test harness between the runs, outside the agent."""
+    project = complete_bundle_project(tmp_path / "proj")
+    extra_parquet = _extra_parquet(project)
+    api = AuthoringProject(project)
+    provider = FlowProvider()
     session = open_session(
-        role="authoring",
-        project=project,
-        model="fake-authoring",
-        provider=FakeProvider(
-            [
-                turn(calls=[("propose_sources", dict(proposal))]),
-                turn(calls=[("harness_inputs", {})]),
-                turn(text=ANSWER_WAITING),
-                turn(calls=[("store_upload", {"name": "spec.md", "content": SPEC_CONTENT})]),
-                turn(calls=[("harness_inputs", {"documents": ["spec.md"]})]),
-                turn(calls=[("submit_bundle", {"submission": submission})]),
-                turn(calls=[("review_bundle", {})]),
-                turn(text=ANSWER_REVIEWED),
-            ]
-        ),
+        role="authoring", project=project, model="fake-authoring", provider=provider
     )
     try:
-        events = asyncio.run(drive(session, "set up the events source"))
-        # OPERATOR approval, outside the agent, between the two runs.
-        from ariadne import authoring as authoring_service
+        # Run 1: start the proposal and upload the evidence document.
+        provider.script(turn(calls=[("start_proposal", {})]))
+        provider.script(
+            turn(calls=[("upload_document", {"name": "spec.md", "content": SPEC_CONTENT})])
+        )
+        provider.script(turn(text="proposal started; ready to propose sources"))
+        events = asyncio.run(drive(session, "set up a proposal with the extra source"))
+        started = result_of(events, "start_proposal")
+        upload = result_of(events, "upload_document")
+        proposal = started["proposal"]
+        assert set(started) == {"proposal", "base_revision", "candidate_revision"}
 
-        propose = json.loads(
-            next(
-                event.result
-                for event in events
-                if isinstance(event, ToolActivity) and event.tool == "propose_sources"
+        # Propose the extra source — then STOP: the operator approves the
+        # exact resolved digest outside this session.
+        provider.script(
+            turn(
+                calls=[
+                    (
+                        "propose_sources",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": started["candidate_revision"],
+                            "sources": [
+                                {
+                                    "name": "extra_notes",
+                                    "type": "parquet",
+                                    "path": str(extra_parquet),
+                                }
+                            ],
+                        },
+                    )
+                ]
             )
         )
-        authoring_service.approve_sources(propose["digest"], project=project)
-        events += asyncio.run(drive(session, "approved; author and stage the bundle"))
+        provider.script(turn(text=ANSWER_WAITING))
+        events += asyncio.run(drive(session, "now propose the extra source"))
+        proposed = result_of(events, "propose_sources")
+
+        # OPERATOR approval, outside the agent, between the two runs — of the
+        # CURRENT candidate revision (the registry edit advanced it).
+        approved(api, project, {"proposal": proposal, "candidate_revision": proposed["revision"]})
+
+        # Run 2: measured inputs, the page and model edits, validation at the
+        # exact final revision, review — then stop WITHOUT admission.
+        provider.script(
+            turn(calls=[("inputs", {"proposal": proposal, "documents": ["spec.md"]})])
+        )
+        provider.script(
+            turn(
+                calls=[
+                    (
+                        "edit_proposal",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": proposed["revision"],
+                            "edit": {
+                                "kind": "page",
+                                "section": "policies",
+                                "name": "all-events-count",
+                                "content": POLICY_PAGE.replace(
+                                    "The rule body.", "The rule body, agent-revised."
+                                ),
+                            },
+                        },
+                    )
+                ]
+            )
+        )
+        provider.script(turn(text="page revised; model next"))
+        events += asyncio.run(drive(session, "measure the inputs and revise the policy page"))
+        inputs = result_of(events, "inputs")
+        page = result_of(events, "edit_proposal")
+
+        provider.script(
+            turn(
+                calls=[
+                    (
+                        "edit_proposal",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": page["revision"],
+                            "edit": {
+                                "kind": "model",
+                                "name": "events",
+                                "content": MODEL_YML.replace(
+                                    "Events model", "Events model, agent-revised"
+                                ),
+                            },
+                        },
+                    )
+                ]
+            )
+        )
+        provider.script(turn(text="model revised; validate next"))
+        events += asyncio.run(drive(session, "now revise the model"))
+        edits = [
+            event
+            for event in events
+            if isinstance(event, ToolActivity) and event.tool == "edit_proposal"
+        ]
+        model = json.loads(edits[-1].result)
+
+        provider.script(
+            turn(
+                calls=[
+                    (
+                        "validate_proposal",
+                        {"proposal": proposal, "expected_revision": model["revision"]},
+                    )
+                ]
+            )
+        )
+        provider.script(turn(calls=[("review_proposal", {"proposal": proposal})]))
+        provider.script(turn(text=ANSWER_REVIEWED))
+        events += asyncio.run(drive(session, "validate and review the candidate"))
     finally:
         session.close()
 
     activity = [event for event in events if isinstance(event, ToolActivity)]
     assert [event.tool for event in activity] == [
+        "start_proposal",
+        "upload_document",
         "propose_sources",
-        "harness_inputs",
-        "store_upload",
-        "harness_inputs",
-        "submit_bundle",
-        "review_bundle",
+        "inputs",
+        "edit_proposal",
+        "edit_proposal",
+        "validate_proposal",
+        "review_proposal",
     ]
     assert all(event.is_error is False for event in activity)
-    _propose, pre_inputs, upload, post_inputs, submit, review = (
+    _start, _upload, _propose, _inputs, _page, _model, validate, review = (
         json.loads(event.result) for event in activity
     )
 
-    # Inert before approval: nothing profileable, nothing opened.
-    assert pre_inputs["profile"] is None, "pre-approval inputs must report profile: null"
-    # Bounded measured inputs after approval: the profile is the approved
-    # registry's, and the document evidence binds the upload's exact digest.
-    assert post_inputs["profile"]["sources"][0]["name"] == "events"
-    upload_digest = hashlib.sha256(SPEC_CONTENT.encode("utf-8")).hexdigest()
-    assert upload["digest"] == upload_digest
-    assert post_inputs["documents"][0]["digest"] == upload_digest
-    assert post_inputs["documents"][0]["complete"] is True
-
-    # Staged submit of the exact content; review reports the exact staged
-    # digest (never a signoff), and the citation rides the staged identity.
-    assert submit["status"] == "validated"
-    assert len(submit["review_digest"]) == 64
-    assert submit["documents"][0]["digest"] == upload_digest
-    assert review["digest"] == submit["review_digest"]
-    assert review["status"] == "validated"
-
-    # Stop WITHOUT Promotion: nothing served, the proposal never 'promoted'.
-    assert not (project / "context_layer").exists()
-    assert not (project / "semantic_layer").exists()
-    state = json.loads(
-        (project / "staging" / "authoring" / "bundle-state.json").read_text(encoding="utf-8")
+    # verbatim service envelopes: the typed source proposal, the bounded
+    # measured inputs, revision-checked page and model edits
+    assert proposed["changed"] is True and proposed["revision"] != started["candidate_revision"]
+    assert len(proposed["source_digest"]) == 64
+    assert "extra_notes" in {entry["name"] for entry in proposed["sources"]}
+    assert inputs["profile"]["sources"][0]["name"] == "events"  # the approved registry
+    assert inputs["documents"][0]["digest"] == upload["digest"]
+    assert (
+        inputs["documents"][0]["digest"]
+        == hashlib.sha256(SPEC_CONTENT.encode("utf-8")).hexdigest()
     )
-    assert state["status"] == "validated"
+    assert inputs["seed_notes"]["complete"] is True
+    assert page["changed"] is True and model["changed"] is True
+    assert page["revision"] != started["candidate_revision"]
+    assert model["revision"] != page["revision"]  # two distinct candidate revisions
 
-    waiting = next(e.text for e in events if isinstance(e, AssistantText))
+    # validation at the exact final revision (the finalize commit may
+    # advance it — the EXACT final commit is what validates); review binds it
+    assert validate["ok"] is True and validate["errors"] == []
+    assert record_of(project, proposal)["candidate_revision"] == validate["revision"]
+    assert review == api.review_proposal(proposal)  # the verbatim review envelope
+    assert review["revision"] == validate["revision"]
+    assert review["report"]["ok"] is True
+
+    # stop WITHOUT admission: no admission descriptor, no served snapshot
+    assert not (project / ".ariadne" / "current.json").exists()
+    assert not (project / ".ariadne" / "snapshots").exists()
+
+    texts = [e.text for e in events if isinstance(e, AssistantText)]
+    waiting = texts[1]  # the stop-after-propose answer
     assert "outside this session" in waiting, "the agent must stop at the approval gate"
-    answer = [e.text for e in events if isinstance(e, AssistantText)][-1]
+    answer = texts[-1]
     lowered = answer.lower()
-    assert "digest" in lowered and "promotion" in lowered and "human" in lowered
+    assert "revision" in lowered and "admission" in lowered and "human" in lowered
 
 
-def test_cancel_after_submission_never_replays_the_submission(tmp_path):
-    """Regression (c): cancelling the turn AFTER a completed submission
-    neither duplicates nor replays it — exactly one submit executed, the
-    persisted proposal state still shows one attempt/one revision, and the
-    session stays usable for a follow-up run that submits nothing."""
-
-    project = approved_project(tmp_path)
-    provider = SubmitThenIdleProvider(
-        turn(calls=[("submit_bundle", {"submission": dict(bundle_submission())})]),
-        [turn(text="staged exactly once; stopped")],
+def test_cancel_after_edit_never_replays_it(tmp_path):
+    """Regression (c): cancelling the turn AFTER a completed proposal edit
+    neither duplicates nor replays it — exactly one edit executed, the
+    persisted proposal record still shows that candidate revision — and the
+    session stays usable for a follow-up run that edits nothing."""
+    project = complete_bundle_project(tmp_path / "proj")
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    edit = {
+        "kind": "page",
+        "section": "policies",
+        "name": "all-events-count",
+        "content": POLICY_PAGE.replace("The rule body.", "The rule body, once."),
+    }
+    provider = EditThenIdleProvider(
+        turn(
+            calls=[
+                (
+                    "edit_proposal",
+                    {
+                        "proposal": started["proposal"],
+                        "expected_revision": started["candidate_revision"],
+                        "edit": edit,
+                    },
+                )
+            ]
+        ),
+        [turn(text="edited exactly once; stopped")],
     )
     session = open_session(
         role="authoring", project=project, model="fake-authoring", provider=provider
@@ -296,50 +469,51 @@ def test_cancel_after_submission_never_replays_the_submission(tmp_path):
 
     async def scenario() -> list:
         events = []
-        async for event in session.send("submit the bundle, then summarize"):
+        async for event in session.send("edit the policy page, then summarize"):
             events.append(event)
-            if isinstance(event, ToolActivity) and event.tool == "submit_bundle":
-                session.cancel()  # after the completed submission, mid next turn
+            if isinstance(event, ToolActivity) and event.tool == "edit_proposal":
+                session.cancel()  # after the completed edit, mid next turn
         return events
 
     try:
         events = asyncio.run(asyncio.wait_for(scenario(), timeout=60))
 
-        submits = [
+        edits = [
             event
             for event in events
-            if isinstance(event, ToolActivity) and event.tool == "submit_bundle"
+            if isinstance(event, ToolActivity) and event.tool == "edit_proposal"
         ]
-        assert len(submits) == 1 and submits[0].is_error is False, (
-            "cancellation must not duplicate or replay the submission"
+        assert len(edits) == 1 and edits[0].is_error is False, (
+            "cancellation must not duplicate or replay the edit"
         )
-        state_path = project / "staging" / "authoring" / "bundle-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        assert (
-            state["attempts"] == 1 and state["revision"] == 1 and state["status"] == "validated"
+        edited = json.loads(edits[0].result)
+        assert edited["changed"] is True
+        record = record_of(project, started["proposal"])
+        assert record["candidate_revision"] == edited["revision"], (
+            "the persisted proposal shows exactly the one edit's revision"
         )
         assert any(isinstance(event, SessionError) for event in events), (
             "the cancelled turn ends with a typed error, not silence"
         )
         assert isinstance(events[-1], RunCompleted)
 
-        # The session stays usable and still submits nothing new.
+        # The session stays usable and still edits nothing new.
         follow = asyncio.run(drive(session, "status?"))
         assert any(isinstance(event, AssistantText) for event in follow)
         assert not any(isinstance(event, ToolActivity) for event in follow)
-        assert json.loads(state_path.read_text(encoding="utf-8")) == state
+        assert record_of(project, started["proposal"]) == record
         assert provider._first is None and provider._second is False
     finally:
         session.close()
 
 
-def test_authoring_surface_has_no_approval_or_promotion_and_no_runtime(
+def test_authoring_surface_has_no_approval_or_admission_and_no_runtime(
     tmp_path, monkeypatch
 ):
-    """Regression (a): the Authoring tool surface is exactly the five authoring
-    service operations plus the bounded reference reader — no approval, no
-    Promotion, anywhere in the registered tools — and opening the session
-    constructs NO AriadneRuntime (Authoring needs no query runtime)."""
+    """Regression (a): the Authoring tool surface is exactly the AuthoringProject
+    Git contract plus the bounded reference reader — no approval, no
+    admission, no Promotion anywhere in the registered tools — and opening the
+    session constructs NO AriadneRuntime (Authoring needs no query runtime)."""
 
     def no_runtime(*args, **kwargs):  # pragma: no cover - fails the test if called
         raise AssertionError("Authoring must not construct AriadneRuntime")
@@ -356,10 +530,10 @@ def test_authoring_surface_has_no_approval_or_promotion_and_no_runtime(
     model, system, _messages, tools = provider.calls[0]
     assert model == "fake-authoring"
     names = {tool.name for tool in tools}
-    assert names == AUTHORING_TOOLS, "the Authoring role gets the authoring service ops"
-    assert not any("approve" in name or "promote" in name for name in names), (
-        "no registered tool may approve sources or Promote"
-    )
+    assert names == AUTHORING_TOOLS, "the Authoring role gets the Git contract ops"
+    assert not any(
+        marker in name for name in names for marker in ("approve", "promot", "admit", "reconcil")
+    ), "no registered tool may approve sources, admit or Promote"
     skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
     assert skill.strip() in system, "the version-matched packaged skill must be the guidance"
     rubric = (ASSETS / "references" / "grain-rubric.md").read_text(encoding="utf-8")

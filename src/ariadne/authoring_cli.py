@@ -45,6 +45,18 @@ default is the working directory — locally the project root; remotely the
 server's single configured project, whose filesystem root no client argument
 ever selects.
 
+MCP surface mapping (issue #38/G6, spec §6): the MCP registrations expose the
+GIT contract above — ``authoring_start_proposal``/``authoring_read_artifact``/
+``authoring_edit_proposal``/``authoring_propose_sources`` (Git mode:
+``--proposal``/``--expected-revision`` + typed entries)/``authoring_inputs``
+(Git mode: ``--proposal``)/``authoring_upload_document``/
+``authoring_validate_proposal``/``authoring_review_proposal`` — with model
+arguments carrying only proposal IDs, revisions and typed artifact
+identities. The legacy complete-bundle ``submit``/``review`` payloads exist
+only on this local CLI until the G7 cleanup: an MCP caller composes them as
+``start`` + one ``edit`` per artifact + ``validate``/``review --proposal``
+instead, and no MCP entry ever guesses a proposal for an old bundle payload.
+
 ``start``/``read``/``edit`` (issue #34/G2, spec 2026-10-02-0009 §§3–4) drive
 isolated Git authoring proposals over the project's own Git repository:
 ``start`` derives the system-generated proposal ID, branch and worktree;

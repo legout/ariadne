@@ -24,6 +24,11 @@ decimal values as strings (no precision loss). Every failed invocation writes
 exactly one ``{"error": {"type", "message"}}`` object to stderr, exits nonzero,
 and writes no success value to stdout — runtime messages stay verbatim.
 
+The optional MCP transport (``ariadne-serve`` and its fixed-toolset aliases
+``ariadne-analyst-mcp``/``ariadne-authoring-mcp``, issue #38/G6) registers
+these same QueryRuntime operations as tools; this local CLI needs no MCP
+installation and its behavior is unchanged by the toolset split.
+
 Promoted-root discovery (spec §5): an explicit ``--served PATH`` wins and must
 contain both ``context_layer/`` and ``semantic_layer/models/``; otherwise
 exactly two candidates are examined — the working directory, then ``./served``

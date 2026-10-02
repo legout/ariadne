@@ -54,6 +54,8 @@ from tests.test_evals import (  # noqa: E402 — the shared oracle; no second on
     independent_expected,
     resolve_served,
 )
+from tests.test_git_admission import admit, admitted_ready  # noqa: E402 — the G5 human journey
+from tests.test_git_authoring import POLICY_PAGE, complete_bundle_project  # noqa: E402
 from tests.test_seed import run_seed  # noqa: E402
 from tests.test_serve import (  # noqa: E402 — the recorded golden OKF pages
     GOLDEN_POLICY_EMEA,
@@ -385,6 +387,93 @@ def test_missing_promoted_catalog_is_actionable_and_isolates_sessions(project, t
     )
     events = asyncio.run(drive(later, "still here?"))
     assert any(isinstance(event, AssistantText) for event in events)
+
+
+def test_analyst_managed_project_resolves_through_pinned_admission(tmp_path, monkeypatch):
+    """G6/issue #38 [4]: a MANAGED Git data project resolves through
+    QueryRuntime.open_project — the session queries the PINNED admitted
+    snapshot (hand-computed value; admission provenance in the envelope), and
+    the tool surface stays the five query operations (the wider MCP Query
+    registration never silently expands this session's permissions)."""
+    import os
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    from ariadne.authoring import AuthoringProject
+
+    project = complete_bundle_project(tmp_path / "proj")
+    api = AuthoringProject(project)
+    review, _journey = admitted_ready(
+        api,
+        project,
+        {
+            "kind": "page",
+            "section": "policies",
+            "name": "all-events-count",
+            "content": POLICY_PAGE.replace("The rule body.", "The rule body, admitted."),
+        },
+    )
+    assert admit(project, review) == 0
+
+    provider = FakeProvider(
+        [
+            turn(calls=[("get_metric", {"name": "event_count"})]),
+            turn(text="event_count is 3, governed from the pinned admission"),
+        ]
+    )
+    session = open_session(
+        role="analyst", project=project, model="fake-analyst", provider=provider
+    )
+    try:
+        events = asyncio.run(drive(session, "how many events are there?"))
+    finally:
+        session.close()
+
+    activity = [event for event in events if isinstance(event, ToolActivity)]
+    assert [event.tool for event in activity] == ["get_metric"]
+    assert activity[0].is_error is False
+    payload = json.loads(activity[0].result)
+    assert payload["governed"] is True
+    assert payload["rows"] == [{"event_count": 3}]  # the fixture's rows, hand-counted
+    assert payload["admission"]["route"] == "git-review-admission"
+    assert payload["admission"]["revision"] == review["revision"]
+
+    # the managed route never widened the native surface: still exactly five
+    _model, _system, _messages, tools = provider.calls[0]
+    assert {tool.name for tool in tools} == ANALYST_TOOLS
+
+
+def test_analyst_managed_project_without_admission_is_actionable(tmp_path, monkeypatch):
+    """A managed Git project with proposals but NO admission refuses the
+    session open with the human-only admission step — never a fallback to the
+    mutable project files — while the error stays session-local (an Authoring
+    session on the same project opens fine)."""
+    import os
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    from ariadne.authoring import AuthoringProject
+
+    project = complete_bundle_project(tmp_path / "proj")
+    AuthoringProject(project).start_proposal()  # managed state, no admission
+
+    with pytest.raises(RuntimeError) as excinfo:
+        open_session(
+            role="analyst", project=project, model="fake-analyst", provider=FakeProvider([])
+        )
+    message = str(excinfo.value)
+    assert "no valid admission" in message
+    assert "ariadne-admit" in message and "human" in message.lower(), (
+        f"the refusal must name the human admission step: {message!r}"
+    )
+
+    authoring = open_session(
+        role="authoring",
+        project=project,
+        model="fake-analyst",
+        provider=FakeProvider([turn(text="ready")]),
+    )
+    authoring.close()
 
 
 def test_role_and_project_are_fixed_per_session(project):

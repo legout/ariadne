@@ -483,7 +483,7 @@ def test_serve_main_hints_mcp_extra_when_mcp_absent(served, tmp_path):
 def test_serve_main_does_not_mask_unrelated_missing_modules(served, tmp_path, monkeypatch):
     from ariadne import serve
 
-    def boom(facade):
+    def boom(facade, **kwargs):  # G6: build_app now carries the toolset kwarg
         raise ModuleNotFoundError("No module named 'flask'", name="flask")
 
     monkeypatch.setattr(serve, "build_app", boom)

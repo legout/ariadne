@@ -1,44 +1,45 @@
-"""Authoring role tools: the harness-led authoring service as native tools.
+"""Authoring role tools: the Git authoring contract as native tools (issue
+#38/G6 migration; spec 2026-09-29-0006 session/role interface over the
+2026-10-02-0009 §3–4 lifecycle, ADR-0013/0016).
 
-Thin wrappers only (spec 2026-09-29-0006 session/role interface): proposal
-shape checks, digest/attempt contracts, staging discipline and the review
-snapshot all live in ``ariadne-core``'s ``ariadne.authoring``; nothing is
-reimplemented here. Each tool's payload is the service's verbatim JSON
-envelope, and service failures propagate with their verbatim message as tool
-errors — an unavailable source, a failed check, a stale digest, an
-interrupted transition or a ``review_needed`` state surfaces to the model
-exactly as the service reports it; nothing here clears or overrides one.
-``approve_sources`` and ``ariadne-promote`` are deliberately absent: source
-approval and Promotion are human-only operations outside the agent.
-
-Adapter-owned temporary intake documents bridge the service's file-based
-inputs (:func:`ariadne.authoring.propose_sources` and :func:`submit_bundle`
-read submission documents): the model supplies CONTENT — proposed source
-entries, bundle files as relative paths + bodies — never a write path. Every
-intake file is created and removed by this adapter inside a private temporary
-directory, and every project-relative write happens inside the service's own
-validated staging.
+Thin wrappers only: every proposal-shape check, revision check, digest
+contract, staging discipline, bounded read and review snapshot lives in
+``ariadne-core``'s :class:`ariadne.authoring.AuthoringProject` (plan §2's
+Authoring call contract); nothing is reimplemented here. The native tools
+mirror that interface one-to-one — ``start_proposal``, ``read_artifact``,
+``edit_proposal``, ``propose_sources``, ``inputs``, ``upload_document``,
+``validate_proposal``, ``review_proposal`` — replacing the legacy
+complete-bundle submission tools (the explicit G6 mapping: one proposal +
+per-artifact edits + validation/review, never a resubmitted whole bundle).
+Each tool's payload is the service's verbatim JSON envelope, and service
+failures propagate with their verbatim message as tool errors — an
+unavailable source, a failed check, a stale revision, an interrupted
+transition or an unreviewed state surfaces to the model exactly as the
+service reports it; nothing here clears or overrides one.
+``approve_sources``, ``ariadne-admit`` and ``ariadne-promote`` are
+deliberately absent: source approval, admission and Promotion are human-only
+operations outside the agent (spec §5).
 """
 
 import json
-import tempfile
 from collections.abc import Sequence
-from contextlib import contextmanager
 from pathlib import Path
 
-import yaml
-from ariadne import authoring as authoring_service
+from ariadne.authoring import AuthoringProject
 from tau_agent.messages import TextContent
 from tau_agent.tools import AgentTool, AgentToolResult, ToolExecutor
 
 from ariadne_agent.skills import read_skill_reference
 
 TOOL_NAMES = (
+    "start_proposal",
+    "read_artifact",
+    "edit_proposal",
     "propose_sources",
-    "harness_inputs",
-    "store_upload",
-    "submit_bundle",
-    "review_bundle",
+    "inputs",
+    "upload_document",
+    "validate_proposal",
+    "review_proposal",
     "read_skill_reference",
 )
 
@@ -48,67 +49,90 @@ def _payload(value: object) -> AgentToolResult:
     return AgentToolResult(content=[TextContent(text=json.dumps(value, default=str))])
 
 
-@contextmanager
-def _intake(document: str, suffix: str):
-    """One adapter-owned temporary intake document for the service's
-    file-based inputs: created and removed by this adapter under a private
-    temporary directory, so no model argument ever selects a write path."""
-    with tempfile.TemporaryDirectory(prefix="ariadne-agent-intake-") as tmp:
-        intake = Path(tmp) / f"intake{suffix}"
-        intake.write_text(document, encoding="utf-8")
-        yield intake
-
-
 def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[AgentTool]:
-    """The Authoring tool set: the five harness-led authoring service
-    operations plus the bounded skill-reference reader. The project root and
-    the trusted skill roots are host-selected at session open — never model
-    arguments."""
-    # Each wrapper mirrors the service's own signature; every bound, digest
-    # and staging rule stays the service's (spec: not reimplemented here).
+    """The Authoring tool set: the AuthoringProject Git contract plus the
+    bounded skill-reference reader. The project root and the trusted skill
+    roots are host-selected at session open — never model arguments; tool
+    arguments carry only proposal IDs, revisions, typed artifact identities
+    and content."""
+    api = AuthoringProject(project)
+
+    # Each wrapper mirrors the service's own signature; every revision,
+    # bound and staging rule stays the service's (spec: not reimplemented).
+    async def start_proposal(
+        tool_call_id: str, arguments: dict, signal=None, on_update=None
+    ) -> AgentToolResult:
+        return _payload(api.start_proposal(arguments.get("base_revision")))
+
+    async def read_artifact(
+        tool_call_id: str, arguments: dict, signal=None, on_update=None
+    ) -> AgentToolResult:
+        identity: dict = {"kind": arguments["kind"]}
+        if arguments.get("name") is not None:
+            identity["name"] = arguments["name"]
+        if arguments.get("section") is not None:
+            identity["section"] = arguments["section"]
+        return _payload(
+            api.read_artifact(arguments["proposal"], identity, part=arguments.get("part", 1))
+        )
+
+    async def edit_proposal(
+        tool_call_id: str, arguments: dict, signal=None, on_update=None
+    ) -> AgentToolResult:
+        return _payload(
+            api.edit_proposal(
+                arguments["proposal"],
+                arguments["expected_revision"],
+                arguments["edit"],
+            )
+        )
+
     async def propose_sources(
         tool_call_id: str, arguments: dict, signal=None, on_update=None
     ) -> AgentToolResult:
-        entries = arguments["sources"]
-        with _intake(yaml.safe_dump({"sources": entries}, sort_keys=False), ".yaml") as file:
-            return _payload(authoring_service.propose_sources(file, project=project))
+        return _payload(
+            api.propose_sources(
+                arguments["proposal"],
+                arguments["expected_revision"],
+                arguments["sources"],
+            )
+        )
 
-    async def harness_inputs(
+    async def inputs(
         tool_call_id: str, arguments: dict, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(
-            authoring_service.harness_inputs(
-                project=project,
+            api.inputs(
+                arguments["proposal"],
                 documents=arguments.get("documents") or (),
                 part=arguments.get("part", 1),
+                sample_rows=arguments.get("sample_rows"),
             )
         )
 
-    async def store_upload(
+    async def upload_document(
         tool_call_id: str, arguments: dict, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(
-            authoring_service.store_upload(
-                arguments["name"], arguments["content"].encode("utf-8"), project=project
+            api.upload_document(
+                arguments["name"], arguments["content"].encode("utf-8")
             )
         )
 
-    async def submit_bundle(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
-    ) -> AgentToolResult:
-        submission = arguments["submission"]
-        with _intake(json.dumps(submission), ".json") as file:
-            return _payload(
-                authoring_service.submit_bundle(
-                    file, project=project, base_digest=arguments.get("base_digest")
-                )
-            )
-
-    async def review_bundle(
+    async def validate_proposal(
         tool_call_id: str, arguments: dict, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(
-            authoring_service.review_bundle(project=project, part=arguments.get("part", 1))
+            api.validate_proposal(
+                arguments["proposal"], arguments["expected_revision"]
+            )
+        )
+
+    async def review_proposal(
+        tool_call_id: str, arguments: dict, signal=None, on_update=None
+    ) -> AgentToolResult:
+        return _payload(
+            api.review_proposal(arguments["proposal"], part=arguments.get("part", 1))
         )
 
     async def read_skill_reference_tool(
@@ -120,43 +144,66 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         )
 
     executor: dict[str, ToolExecutor] = {
+        "start_proposal": start_proposal,
+        "read_artifact": read_artifact,
+        "edit_proposal": edit_proposal,
         "propose_sources": propose_sources,
-        "harness_inputs": harness_inputs,
-        "store_upload": store_upload,
-        "submit_bundle": submit_bundle,
-        "review_bundle": review_bundle,
+        "inputs": inputs,
+        "upload_document": upload_document,
+        "validate_proposal": validate_proposal,
+        "review_proposal": review_proposal,
         "read_skill_reference": read_skill_reference_tool,
     }
     descriptions = {
+        "start_proposal": (
+            "Start one isolated Git authoring proposal in this session's "
+            "project: a system-generated proposal ID with its branch and "
+            "worktree. Returns {proposal, base_revision, candidate_revision}; "
+            "never approval, validation or admission."
+        ),
+        "read_artifact": (
+            "Read one artifact of the proposal's current candidate revision "
+            "(inherited from the base when never edited) in bounded parts: "
+            "the revision, path, content part and completeness."
+        ),
+        "edit_proposal": (
+            "Apply one COMPLETE artifact edit — {kind: model|graph|page|"
+            "seed_notes, name?, section?, content} — requiring the expected "
+            "candidate revision; a stale revision or competing writer is "
+            "refused, an identical edit is a no-op. Unchanged artifacts are "
+            "inherited: never resend the whole bundle."
+        ),
         "propose_sources": (
-            "Propose registry source entries as inert data — nothing is ever "
-            "opened. Returns the exact digest and the stored staging location. "
-            "STOP after proposing: the operator approves the exact digest "
-            "outside this session; you have no tool that approves, and none exists."
+            "Append typed source-registry entries to the proposal's candidate "
+            "registry — inert DATA, nothing is opened. Returns the resolved "
+            "identity digest. STOP after proposing: the operator approves the "
+            "exact digest outside this session; you have no tool that "
+            "approves, and none exists."
         ),
-        "harness_inputs": (
-            "The measured inputs, bounded: the deterministic per-source profile "
-            "(profile is null until the operator approves sources) and converted "
-            "document evidence for referenced documents, one bounded part each. "
-            "Documents must already be in the operator's input area "
-            "(store_upload or operator-staged); approval never comes from here."
+        "inputs": (
+            "The proposal's measured inputs, bounded: the profile of the "
+            "operator-APPROVED resolved registry identity (an unapproved "
+            "entry is an explicit error), converted document evidence for "
+            "referenced documents, and the candidate's Seed Notes — one "
+            "bounded part each."
         ),
-        "store_upload": (
+        "upload_document": (
             "Upload one bounded text document into the project input area; "
             "returns its stable {resource, digest}. Large or binary documents "
             "are operator-staged, never uploaded."
         ),
-        "submit_bundle": (
-            "Submit the complete bundle — Seed Notes, OSI models, OKF pages — as "
-            "relative paths + bodies through the SAME deterministic checks the "
-            "author loop uses; cite document references. Errors are actionable "
-            "and repair the SAME proposal only with its current digest, within "
-            "the attempt limit; nothing here ever serves or promotes."
+        "validate_proposal": (
+            "Validate the proposal's effective candidate at its EXACT final "
+            "revision: the deterministic checks finalize, the final commit is "
+            "validated against the approved source identity, and that "
+            "revision returns with its report/errors. Never a signoff."
         ),
-        "review_bundle": (
-            "The staged review — never a signoff: inventory, source identities, "
-            "verified document citations, errors, the exact reviewed-content "
-            "digest, and bounded bodies of the staged proposal."
+        "review_proposal": (
+            "The proposal's review — never a signoff: exact current/base "
+            "revisions, change inventory, bounded effective bodies, "
+            "citations, the validation report and the review digest. Report "
+            "the EXACT digest and stop: admission is human-only and happens "
+            "outside this session."
         ),
         "read_skill_reference": (
             "Read one bounded .md skill reference (e.g. references/grain-rubric.md) "
@@ -165,9 +212,38 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         ),
     }
     schemas = {
+        "start_proposal": {
+            "type": "object",
+            "properties": {"base_revision": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        "read_artifact": {
+            "type": "object",
+            "properties": {
+                "proposal": {"type": "string"},
+                "kind": {"type": "string", "enum": ["model", "graph", "page", "seed_notes"]},
+                "name": {"type": "string"},
+                "section": {"type": "string"},
+                "part": {"type": "integer", "minimum": 1},
+            },
+            "required": ["proposal", "kind"],
+            "additionalProperties": False,
+        },
+        "edit_proposal": {
+            "type": "object",
+            "properties": {
+                "proposal": {"type": "string"},
+                "expected_revision": {"type": "string"},
+                "edit": {"type": "object", "minProperties": 2},
+            },
+            "required": ["proposal", "expected_revision", "edit"],
+            "additionalProperties": False,
+        },
         "propose_sources": {
             "type": "object",
             "properties": {
+                "proposal": {"type": "string"},
+                "expected_revision": {"type": "string"},
                 "sources": {
                     "type": "array",
                     "minItems": 1,
@@ -181,20 +257,23 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
                         },
                         "required": ["name", "type"],
                     },
-                }
+                },
             },
-            "required": ["sources"],
+            "required": ["proposal", "expected_revision", "sources"],
             "additionalProperties": False,
         },
-        "harness_inputs": {
+        "inputs": {
             "type": "object",
             "properties": {
+                "proposal": {"type": "string"},
                 "documents": {"type": "array", "items": {"type": "string"}},
                 "part": {"type": "integer", "minimum": 1},
+                "sample_rows": {"type": "integer", "minimum": 1},
             },
+            "required": ["proposal"],
             "additionalProperties": False,
         },
-        "store_upload": {
+        "upload_document": {
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
@@ -203,30 +282,22 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
             "required": ["name", "content"],
             "additionalProperties": False,
         },
-        "submit_bundle": {
+        "validate_proposal": {
             "type": "object",
             "properties": {
-                "submission": {
-                    "type": "object",
-                    "properties": {
-                        "files": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {"type": "object"},
-                        },
-                        "documents": {"type": "array", "items": {"type": "string"}},
-                        "base_digest": {"type": "string"},
-                    },
-                    "required": ["files"],
-                },
-                "base_digest": {"type": "string"},
+                "proposal": {"type": "string"},
+                "expected_revision": {"type": "string"},
             },
-            "required": ["submission"],
+            "required": ["proposal", "expected_revision"],
             "additionalProperties": False,
         },
-        "review_bundle": {
+        "review_proposal": {
             "type": "object",
-            "properties": {"part": {"type": "integer", "minimum": 1}},
+            "properties": {
+                "proposal": {"type": "string"},
+                "part": {"type": "integer", "minimum": 1},
+            },
+            "required": ["proposal"],
             "additionalProperties": False,
         },
         "read_skill_reference": {

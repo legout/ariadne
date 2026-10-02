@@ -54,13 +54,18 @@ _AUTHORING_TOOL_MAP = """\
 ## Native tool mapping
 
 This session has no CLI and no shell. The packaged skill's authoring
-workflow is native tools here — call them directly, never through a command:
+workflow is native tools over the project's Git proposals here (issue #38;
+the G6 mapping of the complete-bundle submission to independent
+revision-checked edits) — call them directly, never through a command:
 
-- `ariadne-authoring propose-sources` -> `propose_sources(sources)`
-- upload a document                   -> `store_upload(name, content)`
-- `ariadne-authoring inputs`          -> `harness_inputs(documents?, part?)`
-- `ariadne-authoring submit`          -> `submit_bundle(submission, base_digest?)`
-- `ariadne-authoring review`          -> `review_bundle(part?)`
+- `ariadne-authoring start`          -> `start_proposal(base_revision?)`
+- `ariadne-authoring propose-sources` -> `propose_sources(proposal, expected_revision, sources)`
+- upload a document                   -> `upload_document(name, content)`
+- `ariadne-authoring inputs`          -> `inputs(proposal, documents?, part?, sample_rows?)`
+- `ariadne-authoring read`            -> `read_artifact(proposal, kind, name?, section?, part?)`
+- `ariadne-authoring edit`            -> `edit_proposal(proposal, expected_revision, edit)`
+- `ariadne-authoring validate`        -> `validate_proposal(proposal, expected_revision)`
+- `ariadne-authoring review`          -> `review_proposal(proposal, part?)`
 - skill reference                     -> `read_skill_reference(reference)`
 
 Every rule in the skill below applies unchanged; substitute the native tool

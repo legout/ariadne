@@ -304,6 +304,49 @@ def test_analyst_proxy_runs_only_the_approved_tool_and_hides_the_rest(mcp, proje
     )
 
 
+def test_analyst_native_surface_stays_five_despite_wider_allowlist(mcp, project):
+    """G6/issue #38 [4]: ariadne-core's MCP registrations grew beyond the
+    Analyst session's five native operations (query_metrics/query_detail,
+    Answer Examples), and the operator may allowlist external tools of any
+    name — neither silently expands the session's NATIVE surface: exactly the
+    five query operations plus the one proxy, regardless of the allowlist."""
+    wider = McpSettings(
+        servers=mcp.settings().servers,
+        cache_root=mcp.settings().cache_root,
+        role_tools={
+            "analyst": ("demo__query_orders", "demo__query_metrics", "demo__save_example"),
+            "authoring": (),
+        },
+    )
+    provider = FakeProvider(
+        [
+            turn(calls=[("mcp", {"tool": "demo__query_orders", "args": {"region": "EMEA"}})]),
+            turn(text="done"),
+        ]
+    )
+    session = open_session(
+        role="analyst",
+        project=project,
+        model="fake-analyst",
+        provider=provider,
+        mcp_settings=wider,
+    )
+    try:
+        events = asyncio.run(drive(session, "orders in EMEA over MCP"))
+    finally:
+        session.close()
+
+    activity = _tool_events(events)
+    assert [event.tool for event in activity] == ["mcp"]
+    assert activity[0].is_error is False
+    assert "orders for EMEA" in activity[0].result
+    _model, _system, _messages, tools = provider.calls[0]
+    assert {tool.name for tool in tools} == ANALYST_TOOLS | {"mcp"}, (
+        "the native Analyst surface is the five query operations plus the proxy, "
+        "never silently expanded by the MCP registrations or the allowlist"
+    )
+
+
 def test_authoring_allowlist_is_symmetric_and_denies_the_query_tool(mcp, tmp_path):
     """The Authoring role's allowlist denies the query tool through the same
     proxy: the forbidden name is denied, search advertises only the authoring

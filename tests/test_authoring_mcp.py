@@ -1,14 +1,19 @@
-"""Local stdio authoring MCP (issue #16, validation unit S4; spec
-2026-09-24-0005 "Authoring interface and lifecycle" — the LOCAL clauses;
-ADR-0013).
+"""Local stdio authoring MCP (issue #16's boundary, migrated to the Git
+authoring contract by issue #38/G6; spec 2026-10-02-0009 §6, plan §2's
+Authoring call contract; ADR-0013).
 
 Real stdio MCP sessions against ``python -m ariadne.serve --project DIR``
-launched in a temp project: the five authoring operations ride the SAME
-``ariadne.authoring`` service as ``ariadne-authoring`` (identical checks and
-response contracts), no tool offers source approval or Promotion, the project
-root is fixed at server launch (never a tool argument), and no bearer token is
-involved locally. Query tools keep their existing missing-served-model error
-before first Promotion and serve normally after the human promotes.
+launched in temporary projects: the ``authoring_``-prefixed tools are one-line
+delegations over the SAME :class:`ariadne.authoring.AuthoringProject` the
+``ariadne-authoring`` CLI calls (identical checks and response contracts), no
+tool offers source approval, admission or Promotion, the project root is fixed
+at server launch (never a tool argument), and no bearer token is involved
+locally. The legacy complete-bundle wrappers (``authoring_submit_bundle``/
+``authoring_review_bundle``) are gone from every surface; their explicit
+replacement is start_proposal + per-artifact edit_proposal +
+validate_proposal / review_proposal (see ariadne.serve's migration note). The
+legacy staged-bundle route itself keeps serving through the local CLI and
+through Promotion exactly as before.
 """
 
 import asyncio
@@ -32,6 +37,8 @@ from mcp.client.stdio import (  # noqa: E402  # pyright: ignore[reportMissingImp
 )
 
 from ariadne import authoring  # noqa: E402
+from ariadne.authoring import AuthoringProject  # noqa: E402
+from ariadne.authoring_inputs import MAX_UPLOAD_BYTES  # noqa: E402
 from ariadne.promote import promote_bundle  # noqa: E402
 from tests.test_authoring import (  # noqa: E402
     bundle_submission,
@@ -39,13 +46,22 @@ from tests.test_authoring import (  # noqa: E402
     write_parquet,
     write_proposal,
 )
+from tests.test_git_authoring import (  # noqa: E402 — the shared Git fixtures; no second oracle here
+    POLICY_PAGE,
+    approved,
+    complete_bundle_project,
+)
 
+# The G6 Authoring registration (spec §6): the plan §2 contract, prefixed.
 AUTHORING_TOOLS = {
+    "authoring_start_proposal",
+    "authoring_read_artifact",
+    "authoring_edit_proposal",
     "authoring_propose_sources",
     "authoring_inputs",
     "authoring_upload_document",
-    "authoring_submit_bundle",
-    "authoring_review_bundle",
+    "authoring_validate_proposal",
+    "authoring_review_proposal",
 }
 QUERY_TOOLS = {
     "list_metrics",
@@ -54,15 +70,16 @@ QUERY_TOOLS = {
     "list_datasets",
     "define_metric",
 }
+HUMAN_OPERATION_MARKERS = ("approve", "promot", "admit", "reconcil")
 
 
-def _launch(project: Path):
+def _launch(project: Path, toolset: str = "combined"):
     """A REAL stdio MCP server process for one fixed local project (issue #16:
     the launch, never a tool argument, selects the project; no token anywhere)."""
     return stdio_client(
         StdioServerParameters(
             command=sys.executable,
-            args=["-m", "ariadne.serve", "--project", str(project)],
+            args=["-m", "ariadne.serve", "--project", str(project), "--toolset", toolset],
             env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
         )
     )
@@ -129,10 +146,10 @@ def _approved_project(tmp_path: Path) -> Path:
 
 
 def test_stdio_tool_boundary_authoring_without_approval_or_promotion(tmp_path):
-    """S4 red anchor: in a fresh EMPTY project (no promotion ever) the stdio
-    server starts, offers the five authoring operations beside the unchanged
-    five query tools, never a source approval or Promotion tool, and no tool
-    takes a project root or credential argument."""
+    """S4 red anchor, G6 surface: in a fresh EMPTY project (no promotion ever)
+    the stdio server starts, offers the eight Git authoring operations beside
+    the unchanged query tools, never a source approval, admission or Promotion
+    tool, and no tool takes a project root or credential argument."""
     project = tmp_path / "empty"
     project.mkdir()
 
@@ -145,7 +162,7 @@ def test_stdio_tool_boundary_authoring_without_approval_or_promotion(tmp_path):
     tools = asyncio.run(run())
     assert AUTHORING_TOOLS <= set(tools)
     assert QUERY_TOOLS <= set(tools)
-    assert not [name for name in tools if "approve" in name or "promot" in name]
+    assert not [name for name in tools if any(marker in name for marker in HUMAN_OPERATION_MARKERS)]
     for name, tool in tools.items():  # the project root is server-selected only
         assert "project" not in tool.inputSchema.get("properties", {}), name
         assert not {"token", "credential", "credentials", "password"} & set(
@@ -153,138 +170,147 @@ def test_stdio_tool_boundary_authoring_without_approval_or_promotion(tmp_path):
         ), name
 
 
-def test_stdio_authoring_inputs_supports_bounded_profile(tmp_path):
-    """MCP harnesses can request the same sampled approved-source profile as
-    the local CLI without claiming keys from an incomplete table."""
-    project = _approved_project(tmp_path)
-
-    async def run() -> dict:
-        async with _launch(project) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                return _payload(await session.call_tool("authoring_inputs", {"sample_rows": 1}))
-
-    result = asyncio.run(run())
-    table = result["profile"]["sources"][0]["tables"]["events"]
-    assert table["row_count"] == 1
-    assert table["sampled"] is True and table["sample_limit"] == 1
-    assert table["primary_key_candidates"] == table["foreign_key_candidates"] == []
-
-
-def test_stdio_authoring_journey_matches_cli_contracts(tmp_path):
-    """The five authoring operations over real stdio return EXACTLY what the
-    shared service returns to the local CLI — propose/inputs/submit/review by
+def test_stdio_git_journey_matches_core_contracts(tmp_path):
+    """The prefixed Git authoring tools over real stdio return EXACTLY what
+    the shared AuthoringProject returns to the local CLI — inputs/review by
     full-dict equality, upload against its retained-identity contract —
-    including the upload bound and document-citation linkage; the reviewed
-    bundle stays staged (nothing served before Promotion) while query tools
-    keep their existing missing-served-model error."""
-    project = scaffold_project(tmp_path)
-    write_parquet(project / "data" / "events.parquet")
-    proposal_yaml = write_proposal(tmp_path, _events_proposal(project)).read_text(encoding="utf-8")
-    policy = "# Pricing policy\n\nUSD is the only billing currency.\n"
-    submission = bundle_submission()
+    including the bounded upload refusal; the proposal stays staged (no
+    admission) while the same session's query tools keep the managed route's
+    missing-admission error."""
+    project = complete_bundle_project(tmp_path / "proj")
+    api = AuthoringProject(project)
+    policy = "# Revision notes\n\nDrafted over stdio.\n"
 
     async def run() -> dict:
-        out = {}
+        out: dict = {}
         async with _launch(project) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                out["propose"] = _payload(
+                out["started"] = _payload(await session.call_tool("authoring_start_proposal", {}))
+                proposal = out["started"]["proposal"]
+                revision = out["started"]["candidate_revision"]
+                # the OPERATOR approves the candidate's resolved source identity
+                # (the human seam; no MCP tool can) — before the first edit, so
+                # the approval binds the revision it names
+                approved(api, project, out["started"])
+                out["edited"] = _payload(
                     await session.call_tool(
-                        "authoring_propose_sources", {"proposal_yaml": proposal_yaml}
+                        "authoring_edit_proposal",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": revision,
+                            "edit": {
+                                "kind": "page",
+                                "section": "policies",
+                                "name": "all-events-count",
+                                "content": POLICY_PAGE.replace(
+                                    "The rule body.", "The rule body, over stdio."
+                                ),
+                            },
+                        },
                     )
                 )
-                # the OPERATOR approves (human seam; no MCP tool can)
-                authoring.approve_sources(out["propose"]["digest"], project=project)
                 out["upload"] = _payload(
                     await session.call_tool(
                         "authoring_upload_document",
                         {
-                            "name": "policy.md",
+                            "name": "revision-notes.md",
                             "content_b64": base64.b64encode(policy.encode()).decode(),
                         },
                     )
                 )
                 out["inputs"] = _payload(
-                    await session.call_tool("authoring_inputs", {"documents": ["policy.md"]})
-                )
-                out["submit"] = _payload(
                     await session.call_tool(
-                        "authoring_submit_bundle",
-                        {"files": submission["files"], "documents": ["policy.md"]},
+                        "authoring_inputs",
+                        {
+                            "proposal": proposal,
+                            "documents": ["revision-notes.md"],
+                            "sample_rows": 1,
+                        },
                     )
                 )
-                out["review"] = _payload(await session.call_tool("authoring_review_bundle", {}))
-                out["queries"] = await session.call_tool("list_metrics", {})
+                # the CLI twin AT THE SAME candidate state (before validation
+                # advances the revision): full-contract parity
+                out["inputs_twin"] = api.inputs(
+                    proposal,
+                    documents=["revision-notes.md"],
+                    part=1,
+                    sample_rows=1,
+                )
+                out["validated"] = _payload(
+                    await session.call_tool(
+                        "authoring_validate_proposal",
+                        {"proposal": proposal, "expected_revision": out["edited"]["revision"]},
+                    )
+                )
+                out["review"] = _payload(
+                    await session.call_tool("authoring_review_proposal", {"proposal": proposal})
+                )
                 out["oversize"] = await session.call_tool(
                     "authoring_upload_document",
                     {
                         "name": "big.md",
                         "content_b64": base64.b64encode(
-                            b"x" * (authoring.MAX_UPLOAD_BYTES + 1)
+                            b"x" * (MAX_UPLOAD_BYTES + 1)
                         ).decode(),
                     },
                 )
+        # a session launched AFTER the project became Git-managed pins the
+        # managed route: no admission yet, so queries refuse while authoring
+        # keeps working (the launch-time route is pinned per process)
+        async with _launch(project) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                out["queries"] = await session.call_tool("list_metrics", {})
         return out
 
     out = asyncio.run(run())
+    started = out["started"]
+    assert set(started) == {"proposal", "base_revision", "candidate_revision"}
+    assert out["edited"]["changed"] is True
+    assert out["edited"]["revision"] != started["candidate_revision"]
 
-    # same contracts as the CLI: full-dict equality with the shared service
-    assert out["propose"] == authoring.propose_sources(
-        write_proposal(tmp_path, _events_proposal(project), name="twin.yaml"), project=project
-    )
+    # same contracts as the CLI: the upload's retained identity, the bounded
+    # sampled profile, and the full review envelope
     assert out["upload"] == {
-        "resource": str((project / "data" / "docs" / "policy.md").resolve()),
+        "resource": str((project / "data" / "docs" / "revision-notes.md").resolve()),
         "digest": hashlib.sha256(policy.encode()).hexdigest(),
     }
-    twin = authoring.harness_inputs(project=project, documents=["policy.md"])
-    assert out["inputs"]["project"] == twin["project"]
+    twin = out["inputs_twin"]
+    assert out["inputs"]["proposal"] == twin["proposal"]
+    assert out["inputs"]["revision"] == twin["revision"]
+    assert out["inputs"]["sources_digest"] == twin["sources_digest"]
     assert out["inputs"]["seed_notes"] == twin["seed_notes"]
     assert out["inputs"]["documents"] == twin["documents"]
     assert _stable_profile(out["inputs"]["profile"]) == _stable_profile(twin["profile"])
     assert out["inputs"]["profile"] is not None  # the approved source profile
+    table = out["inputs"]["profile"]["sources"][0]["tables"]["events"]
+    assert table["sampled"] is True and table["sample_limit"] == 1
     assert out["inputs"]["documents"][0]["resource"] == out["upload"]["resource"]
-    # document-citation linkage: submit records the server-verified identity
-    # inputs reported — never a client-supplied citation string
-    assert out["submit"]["status"] == "validated"
-    assert out["submit"]["documents"] == [
-        {
-            "resource": out["upload"]["resource"],
-            "title": "policy.md",
-            "digest": out["upload"]["digest"],
-        }
-    ]
-    assert out["submit"] == authoring.submit_bundle(  # idempotent twin: same contract
-        _write_json(
-            tmp_path,
-            {"files": submission["files"], "documents": ["policy.md"]},
-            "twin.json",
-        ),
-        project=project,
-    )
-    assert out["review"] == authoring.review_bundle(project=project)
-    assert out["review"]["digest"] == out["submit"]["review_digest"]
-    resources = {entry["resource"] for entry in out["review"]["files"]}
-    assert "data/seed_notes.md" in resources
-    assert "citations.json" not in resources  # citations surface as `documents`
+    validated = out["validated"]
+    assert validated["ok"] is True and validated["errors"] == []
+    assert out["review"] == api.review_proposal(started["proposal"])  # full-dict equality
+    assert out["review"]["revision"] == validated["revision"]
+    assert out["review"]["report"]["ok"] is True
 
-    # nothing served before Promotion; the bundle stays staged for review
-    assert not (project / "semantic_layer").exists()
-    assert not (project / "context_layer").exists()
-    assert (project / "staging" / "authoring" / "bundle").is_dir()
-
-    # query tools keep their existing missing-served-model behavior
-    assert out["queries"].isError and "promote staging" in _text(out["queries"])
+    # nothing admitted by authoring or review: the managed route still refuses
+    # queries, and no admission descriptor exists
+    assert out["queries"].isError and "no valid admission" in _text(out["queries"])
+    assert not (project / ".ariadne" / "current.json").exists()
 
     # the upload bound holds over stdio: refused before any write
     assert out["oversize"].isError and "over the" in _text(out["oversize"])
-    assert sorted(p.name for p in (project / "data" / "docs").iterdir()) == ["policy.md"]
+    assert sorted(p.name for p in (project / "data" / "docs").iterdir()) == [
+        "notes.md",
+        "revision-notes.md",
+    ]
 
 
-def test_stdio_query_tools_serve_after_human_promotion(tmp_path):
-    """Green clause: after the human promotes the reviewed bundle (the
-    operator seam — never an MCP tool), a relaunched stdio server serves the
-    original five query tools normally."""
+def test_stdio_legacy_promoted_project_keeps_serving_queries(tmp_path):
+    """Green clause (G6 keeps the legacy route): a LEGACY staged-bundle
+    project — promoted by the OPERATOR through the unchanged human seam, never
+    an MCP tool — still serves the combined facade's query tools normally
+    after relaunch; the Git toolset markers never touched this project."""
     project = _approved_project(tmp_path)
     submitted = authoring.submit_bundle(
         _write_json(tmp_path, bundle_submission(), "bundle.json"), project=project
