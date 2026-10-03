@@ -217,6 +217,33 @@ def test_define_metric_from_stdin_stages_proposal(served, tmp_path, capsys):
     assert Path(result["staged_context_as"]).is_file()  # OKF draft staged
 
 
+def test_omitted_staging_keeps_the_cwd_relative_legacy_default(
+    served, tmp_path, monkeypatch, capsys
+):
+    """Issue #40 finding 1 (legacy seam): without --project, an OMITTED
+    --staging keeps the historical CWD-relative ./staging default exactly."""
+    scratch = tmp_path / "scratch-cwd"
+    scratch.mkdir()
+    monkeypatch.chdir(scratch)
+    root, db = served
+    code = cli(
+        ["define-metric", "--served", str(root), "--db", str(db)],
+        stdin=io.StringIO(json.dumps(_definition("cli_default_staging_metric"))),
+    )
+    assert code == 0
+    result = json.loads(capsys.readouterr().out)
+    # staged_as echoes the CWD-relative default verbatim; it resolves under scratch
+    assert (
+        Path(result["staged_as"])
+        == Path("staging")
+        / "semantic_layer"
+        / "models"
+        / "adhoc"
+        / "cli_default_staging_metric.yml"
+    )
+    assert Path(result["staged_as"]).resolve().is_relative_to((scratch / "staging").resolve())
+
+
 def test_define_metric_from_file(served, tmp_path, capsys):
     staging = tmp_path / "staging"
     definition = _definition("cli_file_metric")

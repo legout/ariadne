@@ -12,11 +12,17 @@ provenance review, and the sha256 of the staged record bytes it reviews.
 
 - **approve** requires the staged record's own submitter business-meaning
   attestation and every currently cited served metric/Policy to match its
-  recorded digest; it moves exactly that record into
-  ``<selected served root>/answer_examples/`` as ``status: stable`` with the
+  recorded digest; it moves exactly that record into the selected root's
+  ``answer_examples/`` store as ``status: stable`` with the
   maintainer actor/time/outcome retained, and never promotes a metric or
   Policy. A fresh run never counts as verifying the historical numeric value,
-  so a decision claiming that is refused.
+  so a decision claiming that is refused. Issue #40 splits the two roots a
+  managed project needs: citations validate against the PINNED admitted
+  snapshot while the stable record publishes under the LOGICAL project root
+  (its example store, where managed search looks); a ``--served`` pointing
+  inside ``.ariadne/`` operator state is refused outright — never a review or
+  publication root. A legacy root (no admission) keeps its one shared root
+  exactly as before.
 - **reject / request-revision** write the outcome back to the staged record as
   audit history and never serve anything; the maintainer cannot substitute
   their own business-meaning claim for the submitter's missing one.
@@ -46,6 +52,7 @@ from typing import Any
 
 import yaml
 
+from ariadne import admission
 from ariadne.answer_examples import (
     _FRONTMATTER_RE,
     _OPERATION_ARGUMENTS,
@@ -61,6 +68,7 @@ from ariadne.answer_examples import (
 )
 from ariadne.authoring import _fsync_path
 from ariadne.cli import _resolve_served_root
+from ariadne.proposals import ARIADNE_STATE_DIR
 
 OUTCOMES = ("approve", "reject", "request-revision")
 # A staged/example ID is one safe path component — never a directory walk,
@@ -219,6 +227,41 @@ def _served_dir(served_root: Path) -> Path:
     return resolved
 
 
+def _refuse_operator_state_root(served_root: Path) -> None:
+    """Issue #40 finding 2: the review/publication root is never Ariadne's
+    operator state. ``.ariadne/`` holds the immutable admitted snapshots,
+    proposal worktrees and admission records — a ``--served`` pointing inside
+    it would validate citations against a frozen copy while publishing stable
+    examples into state managed search never reads (and mutating "immutable"
+    snapshot bytes). Fail closed with the actionable alternative: the logical
+    project root."""
+    resolved = served_root.resolve()
+    state = ARIADNE_STATE_DIR.name
+    if state not in resolved.parts:
+        return
+    project = Path(*resolved.parts[: resolved.parts.index(state)])
+    raise ValueError(
+        f"--served {served_root} points inside {state}/ operator state (pinned "
+        "admitted snapshots, proposal worktrees and admission records are never a "
+        f"review or publication root) — pass the logical project root instead: "
+        f"--served {project}"
+    )
+
+
+def _review_roots(served_root: Path) -> tuple[Path, Path | None]:
+    """Split the review's two roots (issue #40 finding 2): a MANAGED project
+    — one carrying a current admission — validates citations against its
+    pinned admitted snapshot while publishing under the LOGICAL project root's
+    example store (where managed search looks), mirroring save. A root without
+    an admission record is the legacy shared root and keeps its single-root
+    behavior exactly; an INVALID admission is never a legacy fallback — its
+    resolution refusal propagates for human resolution."""
+    if admission.load_current(served_root) is None:
+        return served_root, None
+    _record, snapshot = admission.resolve_admission(served_root)
+    return snapshot, served_root
+
+
 def _validate_staged_record(meta: dict, body: str, served_root: Path) -> None:
     """The stored record shape approval requires (spec §"Location, format and
     identity"): question, interpretation, a supported operation with its real
@@ -310,7 +353,8 @@ def _approve(
     body: str,
     page: Path,
     staged_dir: Path,
-    served_root: Path,
+    publish_root: Path,
+    citation_root: Path,
     at: str,
 ) -> dict:
     # Approval needs the submitter's own business-meaning attestation: the
@@ -321,13 +365,13 @@ def _approve(
             "approval requires the submitter's business-meaning attestation — the "
             "maintainer cannot substitute their own; submit an attested revision"
         )
-    _validate_staged_record(meta, body, served_root)
-    if _is_stale(meta, served_root):
+    _validate_staged_record(meta, body, citation_root)
+    if _is_stale(meta, citation_root):
         raise ValueError(
             "a cited served metric/Policy is missing, unreadable or changed since the "
             "record was captured — submit and review a fresh revision instead"
         )
-    directory = _served_dir(served_root)
+    directory = _served_dir(publish_root)
     served_page = directory / f"{decision['id']}.md"
     if served_page.exists() or served_page.is_symlink():
         raise ValueError(f"a served example with ID {decision['id']!r} already exists")
@@ -411,11 +455,17 @@ def review_example(
     # The exact staged record resolves first: an invalid, missing or escaped ID
     # fails closed as an ID problem, then the decision binds to that exact ID.
     served_root = Path(served_root)
+    # Issue #40 finding 2: never review or publish against .ariadne/ operator
+    # state, and split a managed project's citation root (the pinned admitted
+    # snapshot) from its publication root (the logical project root's example
+    # store) — a legacy root keeps one shared root exactly.
+    _refuse_operator_state_root(served_root)
+    citation_root, examples_root = _review_roots(served_root)
     # The same stage-vs-served boundary as save (ADR-0015, boundary review
     # finding 2) at the one operator-command choke point: a symlinked or
     # served-overlapping staging example root is refused before either review
     # outcome can access or mutate the staged page.
-    _guard_staging(Path(staging_dir) / EXAMPLES_DIR, served_root)
+    _guard_staging(Path(staging_dir) / EXAMPLES_DIR, citation_root, examples_root)
     staged_dir = (Path(staging_dir) / EXAMPLES_DIR).resolve()
     page = _staged_page(example_id, Path(staging_dir))
     validated = _validated_decision(example_id, decision)
@@ -434,7 +484,7 @@ def review_example(
         )
     now = at if at is not None else datetime.now(UTC).isoformat(timespec="seconds")
     if validated["outcome"] == "approve":
-        return _approve(validated, meta, body, page, staged_dir, served_root, now)
+        return _approve(validated, meta, body, page, staged_dir, served_root, citation_root, now)
     # reject / request-revision: audit history on the staged record, nothing served.
     meta["review"] = {
         "actor": validated["actor"],

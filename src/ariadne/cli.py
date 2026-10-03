@@ -153,8 +153,10 @@ def build_parser() -> _Parser:
     )
     common.add_argument(
         "--staging",
-        default="staging",
-        help="staging root for auto-staged ad-hoc proposals (default: staging)",
+        default=None,
+        help="staging root for auto-staged ad-hoc proposals (default: ./staging; an "
+        "omitted --staging on the managed --project route stages under "
+        "<project>/staging)",
     )
     parser = _Parser(
         prog="ariadne",
@@ -241,6 +243,10 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
             "submission" if args.command == "save-example" else "request",
         )
     if root is None:
+        # An omitted --staging (None) lets the managed factory apply its
+        # project-owned default <project>/staging — the CLI's CWD-relative
+        # legacy default must never pull staging outside the selected project
+        # (issue #40 finding 1); an explicit path still wins.
         runtime = QueryRuntime.open_project(args.project, staging_dir=args.staging)
     else:
         sources_path = default_registry_path(args.sources, args.db)
@@ -248,7 +254,7 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
             root / "semantic_layer",
             root / "context_layer",
             args.db or "examples/retail-demo/data/demo.db",
-            staging_dir=args.staging,
+            staging_dir="staging" if args.staging is None else args.staging,
             sources=sources_path,
         )
     if args.command == "list-metrics":

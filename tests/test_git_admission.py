@@ -24,6 +24,7 @@ from the fixture rows, never derived from runtime output.
 """
 
 import asyncio
+import io
 import json
 import os
 import sys
@@ -858,6 +859,249 @@ def test_cli_project_flag_serves_the_managed_route_and_refuses_without_admission
     # --project and --served are mutually exclusive explicit roots
     assert cli(["list-metrics", "--project", str(project), "--served", str(project)]) == 1
     assert "mutually exclusive" in json.loads(capsys.readouterr().err)["error"]["message"]
+
+
+def test_cli_managed_route_stages_under_the_selected_project_from_any_cwd(
+    tmp_path, monkeypatch, capsys
+):
+    """Issue #40 finding 1: an OMITTED --staging must not override the managed
+    factory's project-owned default — from a working directory OUTSIDE the
+    project, save-example/define-metric with --project stage under
+    <project>/staging (discoverable through the managed runtime), an explicit
+    --staging still wins, and nothing escapes into the operator's CWD."""
+    from ariadne.cli import main as cli
+
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    review, _journey = admitted_ready(api, project, _policy_edit("Revised admitted body."))
+    assert admit(project, review) == 0
+    capsys.readouterr()  # the admit envelope is not part of the CLI output below
+
+    operator_desk = tmp_path / "operator-desk"
+    operator_desk.mkdir()
+    monkeypatch.chdir(operator_desk)
+
+    submission = {
+        "question": "How many events are there in total",
+        "interpretation": "Count every event row once.",
+        "method": {"operation": "get_metric", "arguments": {"name": "event_count"}},
+        "result": {
+            "metric": "event_count",
+            "sql": "SELECT COUNT(*) AS event_count FROM events.events",
+            "columns": ["event_count"],
+            "rows": [{"event_count": 3}],
+            "governed": True,
+        },
+        "submitter": "analyst",
+        "attestation": "self-declared",
+        "sources": ["context_layer/metrics/event_count.md"],
+    }
+    assert (
+        cli(
+            ["save-example", "--project", str(project)],
+            stdin=io.StringIO(json.dumps(submission)),
+        )
+        == 0
+    )
+    saved = json.loads(capsys.readouterr().out)
+    staged = Path(saved["path"])
+    assert staged.is_relative_to((project / "staging" / "answer_examples").resolve())
+    assert not (operator_desk / "staging").exists()  # nothing escaped to the CWD
+
+    assert (
+        cli(
+            ["define-metric", "--project", str(project)],
+            stdin=io.StringIO(
+                json.dumps(
+                    {
+                        "name": "event_ids_cli",
+                        "description": "Ad-hoc count of event ids",
+                        "source": "events.events",
+                        "expression": "COUNT(id)",
+                    }
+                )
+            ),
+        )
+        == 0
+    )
+    adhoc = json.loads(capsys.readouterr().out)
+    assert Path(adhoc["staged_as"]).is_relative_to((project / "staging").resolve())
+    assert not (operator_desk / "staging").exists()  # still nothing in the CWD
+
+    # the project-owned draft is discoverable through the managed runtime
+    runtime = QueryRuntime.open_project(project)
+    hits = asyncio.run(runtime.search_examples("events total"))
+    assert any(hit["id"] == saved["id"] and hit["status"] == "draft" for hit in hits)
+
+    # an explicit --staging still overrides the project-owned default
+    explicit = tmp_path / "explicit-staging"
+    assert (
+        cli(
+            ["save-example", "--project", str(project), "--staging", str(explicit)],
+            stdin=io.StringIO(
+                json.dumps({**submission, "question": "How many event ids exist in total"})
+            ),
+        )
+        == 0
+    )
+    override = json.loads(capsys.readouterr().out)
+    assert Path(override["path"]).is_relative_to(explicit.resolve())
+
+
+def test_example_review_splits_citation_and_publication_roots(tmp_path, capsys):
+    """Issue #40 finding 2: human example review never conflates its citation
+    root with its publication root. Against a managed project, citations
+    validate against the pinned admitted snapshot (a Policy present ONLY
+    there), the stable example publishes under the LOGICAL project root's
+    answer_examples store where managed search looks — and a --served pointing
+    into .ariadne/ operator state is refused before anything changes, leaving
+    the pinned snapshot byte-identical."""
+    import hashlib
+
+    from ariadne.cli import main as cli
+    from ariadne.example_review import main as review_cli
+
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    new_policy = POLICY_PAGE.replace("All events count", "Late admitted counting rule").replace(
+        "The rule body.", "A newly admitted rule body."
+    )
+    review, _journey = admitted_ready(
+        api,
+        project,
+        {
+            "kind": "page",
+            "section": "policies",
+            "name": "late-admitted-counting-rule",
+            "content": new_policy,
+        },
+    )
+    assert admit(project, review) == 0
+    capsys.readouterr()
+    current = read_current(project)
+    snapshot = project / current["snapshot"]
+    cited = "context_layer/policies/late-admitted-counting-rule.md"
+    assert (snapshot / cited).is_file()
+    assert not (project / cited).exists()  # newly admitted page: snapshot-only
+
+    # a draft citing the SNAPSHOT-ONLY Policy stages under <project>/staging
+    submission = {
+        "question": "How many events are there under the late admitted counting rule",
+        "interpretation": "Count every event row once under the late rule.",
+        "method": {"operation": "get_metric", "arguments": {"name": "event_count"}},
+        "result": {
+            "metric": "event_count",
+            "sql": "SELECT COUNT(*) AS event_count FROM events.events",
+            "columns": ["event_count"],
+            "rows": [{"event_count": 3}],
+            "governed": True,
+        },
+        "submitter": "analyst",
+        "attestation": "self-declared",
+        "sources": [cited],
+    }
+    assert (
+        cli(
+            ["save-example", "--project", str(project)],
+            stdin=io.StringIO(json.dumps(submission)),
+        )
+        == 0
+    )
+    saved = json.loads(capsys.readouterr().out)
+    staged = Path(saved["path"])
+
+    decision_file = tmp_path / "decision.json"
+    decision_file.write_text(
+        json.dumps(
+            {
+                "id": saved["id"],
+                "actor": "maintainer:operator",
+                "outcome": "approve",
+                "technical_review": (
+                    "Method is the served event_count metric; the cited Policy matches "
+                    "the pinned admitted snapshot."
+                ),
+                "staged_digest": hashlib.sha256(staged.read_bytes()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        review_cli(
+            [
+                saved["id"],
+                "--file",
+                str(decision_file),
+                "--served",
+                str(project),
+                "--staging",
+                str(project / "staging"),
+            ]
+        )
+        == 0
+    )
+    approved = json.loads(capsys.readouterr().out)
+    served_page = project / "answer_examples" / f"{saved['id']}.md"
+    assert Path(approved["path"]) == served_page
+    assert served_page.is_file() and not staged.exists()  # the exact record moved
+    assert not (snapshot / "answer_examples").exists()  # the snapshot was never the store
+
+    runtime = QueryRuntime.open_project(project)
+    hits = asyncio.run(runtime.search_examples("events late rule"))
+    mine = next(hit for hit in hits if hit["id"] == saved["id"])
+    assert mine["status"] == "stable" and mine["stale"] is False
+
+    # a --served root INSIDE .ariadne/ operator state is refused before any
+    # write, naming the project root; the pinned snapshot stays byte-identical
+    assert (
+        cli(
+            ["save-example", "--project", str(project)],
+            stdin=io.StringIO(
+                json.dumps(
+                    {
+                        **submission,
+                        "question": "How many events exist under the late counting rule overall",
+                    }
+                )
+            ),
+        )
+        == 0
+    )
+    saved2 = json.loads(capsys.readouterr().out)
+    staged2 = Path(saved2["path"])
+    second_decision = tmp_path / "decision2.json"
+    second_decision.write_text(
+        json.dumps(
+            {
+                "id": saved2["id"],
+                "actor": "maintainer:operator",
+                "outcome": "approve",
+                "technical_review": "Method and cited pages match the pinned snapshot.",
+                "staged_digest": hashlib.sha256(staged2.read_bytes()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        review_cli(
+            [
+                saved2["id"],
+                "--file",
+                str(second_decision),
+                "--served",
+                str(snapshot),
+                "--staging",
+                str(project / "staging"),
+            ]
+        )
+        == 1
+    )
+    error = json.loads(capsys.readouterr().err)["error"]
+    assert "operator state" in error["message"]
+    assert f"--served {project.resolve()}" in error["message"]
+    assert staged2.is_file()  # the staged record was not consumed
+    assert candidate_scope_digest(snapshot) == current["artifact_digest"]
+    assert not (snapshot / "answer_examples").exists()
 
 
 # ------------- [7] review fix pass: bound baselines and pinned serving
