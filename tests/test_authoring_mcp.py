@@ -52,7 +52,8 @@ from tests.test_git_authoring import (  # noqa: E402 — the shared Git fixtures
     complete_bundle_project,
 )
 
-# The G6 Authoring registration (spec §6): the plan §2 contract, prefixed.
+# The G6 Authoring registration (spec §6): the plan §2 contract, prefixed —
+# plus the K1 explicit schema refresh (issue #41).
 AUTHORING_TOOLS = {
     "authoring_start_proposal",
     "authoring_read_artifact",
@@ -61,6 +62,7 @@ AUTHORING_TOOLS = {
     "authoring_inputs",
     "authoring_upload_document",
     "authoring_validate_proposal",
+    "authoring_refresh_schema",
     "authoring_review_proposal",
 }
 QUERY_TOOLS = {
@@ -342,3 +344,62 @@ def test_stdio_legacy_promoted_project_keeps_serving_queries(tmp_path):
     assert "event_count" in names
     assert out["metric"]["governed"] is True
     assert out["metric"]["rows"]
+
+
+def test_stdio_refresh_schema_matches_core_and_noops_on_identical_retry(tmp_path):
+    """K1 (issue #41): the explicit schema refresh is wired through the
+    Authoring/Combined MCP registrations with the same envelope the core
+    returns — generated page identities, schema-change flags, distinct
+    same-named assets — and the identical retry over stdio is a no-op whose
+    revision does not move. (The Analyst registration never carries it; the
+    toolset parity test pins that surface.)"""
+    project = complete_bundle_project(tmp_path / "proj")
+    api = AuthoringProject(project)
+    asset = {"source": "events", "catalog": None, "schema": "events", "table": "events"}
+
+    async def run() -> dict:
+        out: dict = {}
+        async with _launch(project) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                started = _payload(await session.call_tool("authoring_start_proposal", {}))
+                proposal = started["proposal"]
+                approved(api, project, started)
+                out["first"] = _payload(
+                    await session.call_tool(
+                        "authoring_refresh_schema",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": started["candidate_revision"],
+                            "assets": [asset],
+                        },
+                    )
+                )
+                out["second"] = _payload(
+                    await session.call_tool(
+                        "authoring_refresh_schema",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": out["first"]["revision"],
+                            "assets": [asset],
+                        },
+                    )
+                )
+        return out
+
+    out = asyncio.run(run())
+    first = out["first"]
+    assert first["changed"] is True
+    kinds = {page["kind"] for page in first["pages"]}
+    assert kinds == {"table", "dataset"}
+    table = next(page for page in first["pages"] if page["kind"] == "table")
+    assert table["resource"].startswith("ariadne://table/")
+    # a first refresh on a never-documented table reports every column added
+    assert table["changes"] == {"added": ["id", "label"], "removed": [], "type_changed": []}
+    # the identical retry over stdio is the deterministic no-op
+    assert out["second"]["changed"] is False
+    assert out["second"]["revision"] == first["revision"]
+    retried = next(
+        page for page in out["second"]["pages"] if page["resource"] == table["resource"]
+    )
+    assert retried["changes"] == {"added": [], "removed": [], "type_changed": []}

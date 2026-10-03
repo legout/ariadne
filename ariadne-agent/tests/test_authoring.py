@@ -75,6 +75,7 @@ AUTHORING_TOOLS = {
     "inputs",
     "upload_document",
     "validate_proposal",
+    "refresh_schema",
     "review_proposal",
     "read_skill_reference",
 }
@@ -607,3 +608,67 @@ def test_skill_reference_reads_stay_inside_trusted_roots(tmp_path):
     assert "refused" in script.result.lower()
 
     assert outside.read_text(encoding="utf-8") == "# outside every trusted root\n"
+
+
+def test_native_refresh_schema_reports_flags_and_noops_on_identical_retry(tmp_path):
+    """K1 (issue #41): the native ``refresh_schema`` tool drives the core
+    operation with its verbatim envelope — generated page identities and
+    schema-change flags over the operator-approved identity — and the model's
+    identical retry observes the deterministic no-op (the revision does not
+    move). No approval, admission or query tool is involved."""
+    project = complete_bundle_project(tmp_path / "proj")
+    api = AuthoringProject(project)
+    provider = FlowProvider()
+    session = open_session(
+        role="authoring", project=project, model="fake-authoring", provider=provider
+    )
+    asset = {"source": "events", "catalog": None, "schema": "events", "table": "events"}
+    try:
+        provider.script(turn(calls=[("start_proposal", {})]))
+        provider.script(turn(text="proposal started"))
+        events = asyncio.run(drive(session, "start a proposal"))
+        started = result_of(events, "start_proposal")
+        proposal = started["proposal"]
+        # the OPERATOR's approval runs in the harness, outside the agent
+        approved(api, project, started)
+
+        provider.script(
+            turn(
+                calls=[
+                    (
+                        "refresh_schema",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": started["candidate_revision"],
+                            "assets": [asset],
+                        },
+                    )
+                ]
+            )
+        )
+        provider.script(turn(text="schema pages generated; flags reported"))
+        events = asyncio.run(drive(session, "refresh the events schema"))
+        first = result_of(events, "refresh_schema")
+        assert first["changed"] is True
+        assert {page["kind"] for page in first["pages"]} == {"table", "dataset"}
+
+        provider.script(
+            turn(
+                calls=[
+                    (
+                        "refresh_schema",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": first["revision"],
+                            "assets": [asset],
+                        },
+                    )
+                ]
+            )
+        )
+        provider.script(turn(text="identical refresh was a no-op"))
+        events = asyncio.run(drive(session, "refresh the same schema again"))
+        second = result_of(events, "refresh_schema")
+        assert second["changed"] is False and second["revision"] == first["revision"]
+    finally:
+        session.close()

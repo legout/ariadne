@@ -1092,8 +1092,9 @@ def test_malformed_drafts_return_a_stored_failed_validation_never_a_crash(
 def test_onboarding_candidate_reviews_without_models_and_validates_recoverably(tmp_path):
     """AC5 onboarding parity: an empty-project candidate (registry template +
     Seed Notes, no models yet) is REVIEWABLE read-only, and validating it
-    reports recoverable errors (no models, missing OKF sections) instead of
-    crashing — the flow stays usable before the first admitted metric."""
+    reports recoverable errors (no models; no invented missing page
+    categories) instead of crashing — the flow stays usable before the first
+    admitted metric."""
     project = tmp_path / "onboarding"
     project.mkdir()
     (project / "ariadne.yaml").write_text("# registry template\n", encoding="utf-8")
@@ -1119,5 +1120,9 @@ def test_onboarding_candidate_reviews_without_models_and_validates_recoverably(t
     assert result["ok"] is False
     assert any("no semantic models" in error for error in result["errors"])
     outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
-    assert outcomes["structural"] == "failed" and outcomes["page_contract"] == "failed"
+    assert outcomes["structural"] == "failed"
+    # issue #41: the page-contract gate is APPLICABLE — a candidate with no
+    # pages carries nothing to check, so the no-models structural failure is
+    # the honest error (no invented missing categories)
+    assert outcomes["page_contract"] == "passed"
     assert result["repair_status"] == "open"  # recoverable, rounds remain

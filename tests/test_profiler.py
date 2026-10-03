@@ -320,7 +320,9 @@ def make_registry(tmp_path: Path, db_path: Path, support_dir: Path) -> Path:
 
 def test_registry_profiles_both_sources_legacy_per_table_shape(tmp_path, demo_db):
     """A registry run covers BOTH sources' tables, and every per-table dict
-    keeps the legacy contract's exact shape (the author's input)."""
+    keeps the legacy contract's fields (the author's input) plus the K1
+    identity tuple and resource (issue #41: explicit identity fields, never
+    parsed display names)."""
     registry_path = make_registry(tmp_path, demo_db, make_support_parquet(tmp_path))
     result = profile(sources_path=registry_path)
 
@@ -330,14 +332,24 @@ def test_registry_profiles_both_sources_legacy_per_table_shape(tmp_path, demo_db
     assert by_name["demo"]["type"] == "sqlite"
     assert by_name["support"]["type"] == "parquet"
 
-    # the glob view profiles exactly like a table: full legacy per-table contract
+    # the glob view profiles exactly like a table: full legacy per-table
+    # contract plus the identity tuple/resource of issue #41
     tickets = by_name["support"]["tables"]["tickets"]
     assert set(tickets) == {
         "row_count",
         "primary_key_candidates",
         "foreign_key_candidates",
         "columns",
+        "source",
+        "catalog",
+        "schema",
+        "table",
+        "resource",
     }
+    assert tickets["source"] == "support" and tickets["table"] == "tickets"
+    assert tickets["catalog"] is None  # file view: not the in-memory catalog
+    assert tickets["schema"] == "support"
+    assert tickets["resource"].startswith("ariadne://table/")
     assert tickets["row_count"] == 4  # both shards of the glob
     assert "ticket_id" in tickets["primary_key_candidates"]
     assert tickets["foreign_key_candidates"] == []  # heuristics unchanged: no targets here
@@ -365,3 +377,45 @@ def test_registry_profiles_both_sources_legacy_per_table_shape(tmp_path, demo_db
         "references_column": "id",
         "match_ratio": 1.0,
     } in orders["foreign_key_candidates"]
+
+
+def test_fk_candidates_resolve_targets_through_their_own_qualified_refs(tmp_path):
+    """Issue #41 fix finding: qualified profiling resolves an FK candidate
+    target through the TARGET's own explicit identity ref, never the
+    ORIGINATING table's — the a.customers/a.orders/b.orders lake (no
+    b.customers) profiles successfully: a.orders→a.customers is recorded,
+    b.orders' target (unverifiable there) is skipped instead of crashing."""
+    from ariadne import profiler, sources
+
+    db = tmp_path / "lake.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE SCHEMA a")
+    con.execute("CREATE SCHEMA b")
+    con.execute("CREATE TABLE a.customers (id INTEGER NOT NULL, name VARCHAR)")
+    con.execute("CREATE TABLE a.orders (order_id INTEGER, customer_id INTEGER, memo VARCHAR)")
+    con.execute("CREATE TABLE b.orders (order_id INTEGER, customer_id INTEGER, memo VARCHAR)")
+    con.execute("INSERT INTO a.customers VALUES (1, 'x'), (2, 'y'), (3, 'z')")
+    con.execute("INSERT INTO a.orders VALUES (1, 1, 'm'), (2, 2, 'm'), (3, 3, 'm'), (4, 1, 'm')")
+    # b's customer ids reference another domain: containment must refute, not crash
+    con.execute("INSERT INTO b.orders VALUES (1, 7, 'm'), (2, 7, 'm'), (3, 8, 'm')")
+    con.close()
+
+    attached = duckdb.connect()
+    attached.execute(f"ATTACH '{db}' AS lake")
+    try:
+        entry = sources._catalog_entry(
+            attached, sources.Source(name="lake", type="sqlite", path=str(db))
+        )
+        profiled = profiler._profile_source(attached, entry)  # must not crash
+    finally:
+        attached.close()
+
+    by_schema = {table["schema"]: table for table in profiled["tables"].values()}
+    assert set(by_schema) == {"a", "b"}  # both same-named orders profiled
+    assert {
+        "column": "customer_id",
+        "references_table": "customers",
+        "references_column": "id",
+        "match_ratio": 1.0,
+    } in by_schema["a"]["foreign_key_candidates"]
+    assert by_schema["b"]["foreign_key_candidates"] == []  # skipped, not crashed

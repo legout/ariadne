@@ -35,6 +35,8 @@ catalog (cheap enumeration only — no profiling here).
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -419,25 +421,106 @@ def _view_statements(src: Source, scan: str) -> list[str]:
     ]
 
 
+def _resource_payload(parts: list[str | None]) -> str:
+    """The canonical credential-free resource payload (spec 0010 §4, plan
+    §2): a JSON array serialized UTF-8 with compact separators and no ASCII
+    escaping, encoded as unpadded URL-safe base64. The payload carries ONLY
+    registry/catalog identifiers — never a resolved file path, DSN, credential
+    or worktree location."""
+    canonical = json.dumps(parts, separators=(",", ":"), ensure_ascii=False)
+    return base64.urlsafe_b64encode(canonical.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def table_resource(source: str, catalog: str | None, schema: str, table: str) -> str:
+    """``ariadne://table/<payload>`` for the complete catalog asset tuple
+    ``[source, catalog, schema, table]`` (exact case-sensitive identifiers;
+    ``catalog`` is ``None`` for file views, the stable attach name for
+    attached sources)."""
+    return f"ariadne://table/{_resource_payload([source, catalog, schema, table])}"
+
+
+def collection_resource(source: str, catalog: str | None, schema: str) -> str:
+    """``ariadne://collection/<payload>`` for one physical collection
+    ``[source, catalog, schema]``."""
+    return f"ariadne://collection/{_resource_payload([source, catalog, schema])}"
+
+
+def parse_resource(uri: str) -> tuple[str, list]:
+    """Decode one canonical resource URI back to ``(kind, parts)`` — the
+    identity consumers read instead of parsing display names. ``kind`` is
+    ``table`` or ``collection``; ``parts`` is the identifier array
+    (``[source, catalog, schema(, table)]``). Malformed URIs raise
+    ``ValueError``."""
+    if not isinstance(uri, str):
+        raise ValueError(f"resource must be a string, got {uri!r}")
+    prefix = "ariadne://"
+    if not uri.startswith(prefix):
+        raise ValueError(f"resource {uri!r} is not a canonical ariadne:// URI")
+    kind, _, payload = uri[len(prefix) :].partition("/")
+    if kind not in ("table", "collection") or not payload:
+        raise ValueError(
+            f"resource {uri!r} must be ariadne://table/<payload> or "
+            "ariadne://collection/<payload>"
+        )
+    padded = payload + "=" * (-len(payload) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        parts = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeError) as exc:
+        raise ValueError(
+            f"resource {uri!r} does not decode to a canonical payload: {exc}"
+        ) from None
+    expected = 4 if kind == "table" else 3
+    if (
+        not isinstance(parts, list)
+        or len(parts) != expected
+        or not all(part is None or isinstance(part, str) for part in parts)
+        or not isinstance(parts[0], str)
+        or not parts[0]
+        or parts[2] is None
+    ):
+        raise ValueError(
+            f"resource {uri!r} payload must be [{expected} identifiers: source, "
+            "catalog (or null), schema(, table)]"
+        )
+    return kind, parts
+
+
 def _catalog_entry(con: duckdb.DuckDBPyConnection, src: Source) -> dict:
     """Per-source catalog entry: tables with columns, from information_schema
     (attaches expose catalog ``<name>``; file views live in schema ``<name>``
     of the in-memory catalog). ``ref`` is the qualified prefix the profiler
     addresses the table with (``<catalog>.<schema>`` for attaches, the schema
-    for views)."""
+    for views). Tables are enumerated by the COMPLETE tuple
+    ``(table_catalog, table_schema, table_name)`` — never the table name alone
+    (spec 0010 §4/plan §2: same-named tables in distinct schemas stay distinct
+    assets): each table entry additionally carries the explicit identity
+    fields (``source``/``catalog``/``schema`` plus the canonical ``resource``;
+    a file view's ``catalog`` is ``None``, not DuckDB's temp in-memory catalog
+    name) so consumers need never parse display names."""
     rows = con.execute(
-        "SELECT table_name, column_name, data_type, table_schema "
+        "SELECT table_catalog, table_schema, table_name, column_name, data_type "
         "FROM information_schema.columns "
         "WHERE (table_catalog = ? AND table_schema NOT IN "
         "('information_schema', 'pg_catalog')) OR table_schema = ? "
         "ORDER BY table_catalog, table_schema, table_name, ordinal_position",
         [src.name, src.name],
     ).fetchall()
-    tables: dict[str, dict] = {}
-    for table, column, data_type, schema in rows:
+    attached = src.type in ATTACH_TYPES
+    tables: dict[tuple[str, str, str], dict] = {}
+    for catalog, schema, table, column, data_type in rows:
+        entry = tables.setdefault(
+            (catalog, schema, table),
+            {"name": table, "columns": [], "catalog": catalog if attached else None},
+        )
+        entry["columns"].append({"name": column, "type": data_type})
+    table_list: list[dict] = []
+    for (catalog, schema, table), entry in tables.items():
         # Attaches qualify as <catalog>.<schema>; file views live in schema
         # <name> of the in-memory catalog, so the schema alone qualifies them.
-        ref = f"{src.name}.{schema}" if src.type in ATTACH_TYPES else src.name
-        entry = tables.setdefault(table, {"name": table, "columns": [], "ref": ref})
-        entry["columns"].append({"name": column, "type": data_type})
-    return {"name": src.name, "type": src.type, "tables": list(tables.values())}
+        entry["ref"] = f"{src.name}.{schema}" if attached else src.name
+        entry["schema"] = schema
+        entry["source"] = src.name
+        entry["resource"] = table_resource(src.name, entry["catalog"], schema, table)
+        table_list.append(entry)
+    return {"name": src.name, "type": src.type, "tables": table_list}

@@ -8,7 +8,8 @@ contract, staging discipline, bounded read and review snapshot lives in
 Authoring call contract); nothing is reimplemented here. The native tools
 mirror that interface one-to-one — ``start_proposal``, ``read_artifact``,
 ``edit_proposal``, ``propose_sources``, ``inputs``, ``upload_document``,
-``validate_proposal``, ``review_proposal`` — replacing the legacy
+``validate_proposal``, ``refresh_schema`` (issue #41: the explicit physical
+schema refresh), ``review_proposal`` — replacing the legacy
 complete-bundle submission tools (the explicit G6 mapping: one proposal +
 per-artifact edits + validation/review, never a resubmitted whole bundle).
 Each tool's payload is the service's verbatim JSON envelope, and service
@@ -39,6 +40,7 @@ TOOL_NAMES = (
     "inputs",
     "upload_document",
     "validate_proposal",
+    "refresh_schema",
     "review_proposal",
     "read_skill_reference",
 )
@@ -128,6 +130,17 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
             )
         )
 
+    async def refresh_schema(
+        tool_call_id: str, arguments: dict, signal=None, on_update=None
+    ) -> AgentToolResult:
+        return _payload(
+            api.refresh_schema(
+                arguments["proposal"],
+                arguments["expected_revision"],
+                arguments["assets"],
+            )
+        )
+
     async def review_proposal(
         tool_call_id: str, arguments: dict, signal=None, on_update=None
     ) -> AgentToolResult:
@@ -151,6 +164,7 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         "inputs": inputs,
         "upload_document": upload_document,
         "validate_proposal": validate_proposal,
+        "refresh_schema": refresh_schema,
         "review_proposal": review_proposal,
         "read_skill_reference": read_skill_reference_tool,
     }
@@ -197,6 +211,18 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
             "revision: the deterministic checks finalize, the final commit is "
             "validated against the approved source identity, and that "
             "revision returns with its report/errors. Never a signoff."
+        ),
+        "refresh_schema": (
+            "Regenerate the core-owned physical schema facts and Dataset "
+            "Overviews of an EXPLICIT catalog asset list {source, catalog, "
+            "schema, table} inside the proposal. Reads only the operator-"
+            "APPROVED resolved source identity — if the sources were just "
+            "proposed, STOP for the operator's approval first. Authored meaning "
+            "survives only for identical column identity/type; removed or "
+            "type-changed columns keep their old meaning as reviewable "
+            "history; an identical refresh is a no-op. Returns the revision, "
+            "generated page identities and schema-change flags; never "
+            "admission."
         ),
         "review_proposal": (
             "The proposal's review — never a signoff: exact current/base "
@@ -289,6 +315,30 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
                 "expected_revision": {"type": "string"},
             },
             "required": ["proposal", "expected_revision"],
+            "additionalProperties": False,
+        },
+        "refresh_schema": {
+            "type": "object",
+            "properties": {
+                "proposal": {"type": "string"},
+                "expected_revision": {"type": "string"},
+                "assets": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string"},
+                            "catalog": {"type": ["string", "null"]},
+                            "schema": {"type": "string"},
+                            "table": {"type": "string"},
+                        },
+                        "required": ["source", "catalog", "schema", "table"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["proposal", "expected_revision", "assets"],
             "additionalProperties": False,
         },
         "review_proposal": {

@@ -27,8 +27,9 @@ The three registrations (spec §6, AC7):
   ``authoring_start_proposal``, ``authoring_read_artifact``,
   ``authoring_edit_proposal``, ``authoring_propose_sources``,
   ``authoring_inputs``, ``authoring_upload_document``,
-  ``authoring_validate_proposal``, ``authoring_review_proposal``. No query
-  operation; the registration starts without a governed catalog (AC5).
+  ``authoring_validate_proposal``, ``authoring_refresh_schema`` (issue #41:
+  the explicit physical schema refresh), ``authoring_review_proposal``. No
+  query operation; the registration starts without a governed catalog (AC5).
 - **combined** (the ``ariadne-serve`` default) — their union.
 
 Explicit migration of the legacy complete-bundle wrappers (spec §6 permits
@@ -461,6 +462,31 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     the finalize commit).
             """
             return authoring_api.validate_proposal(proposal, expected_revision)
+
+        @app.tool()
+        async def authoring_refresh_schema(
+            proposal: str, expected_revision: str, assets: list[dict]
+        ) -> dict:
+            """Regenerate the core-owned physical schema facts and Dataset
+            Overviews of an EXPLICIT catalog asset list inside the proposal
+            (reads only the operator-approved resolved source identity — stop
+            for approval first if propose_sources just ran). Authored
+            summary/column meaning survives only for identical column
+            identity/type; removed/type-changed columns keep their old meaning
+            as reviewable history; an identical refresh is a no-op that does
+            not move the revision. Returns the resulting revision, the generated
+            page identities and schema-change flags. Never admission. Same
+            contract as ``ariadne-authoring refresh-schema``.
+
+            Args:
+                proposal: the proposal ID.
+                expected_revision: the CURRENT candidate revision the refresh is
+                    based on.
+                assets: catalog identity tuples {source, catalog, schema,
+                    table} (catalog null for file views) — same-named tables in
+                    distinct schemas/collections stay distinct assets.
+            """
+            return authoring_api.refresh_schema(proposal, expected_revision, assets)
 
         @app.tool()
         async def authoring_review_proposal(proposal: str, part: int = 1) -> dict:

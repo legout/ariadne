@@ -162,10 +162,23 @@ def test_frontmatter_gate_violation_is_fed_back_and_repaired(tmp_path, monkeypat
 
 
 def test_gate_rejects_table_page_without_grain(tmp_path, monkeypatch):
+    """Spec 0010 §3 (issue #41): a physical table page may carry UNKNOWN
+    Grain — an absent grain block stages fine — while a DECLARED but
+    malformed grain block (missing cardinality_enforcement) is still a named
+    violation."""
     doc = make_doc(tmp_path)
-    bad = page_entry(folder="tables", name="renewals", type="table", tags=["table"])
-    _, staged, errors, _ = run_ingest(tmp_path, doc, [response(bad)], monkeypatch)
+    unknown = page_entry(folder="tables", name="renewals", type="table", tags=["table"])
+    _, staged, errors, _ = run_ingest(tmp_path, doc, [response(unknown)], monkeypatch)
+    assert staged != [] and errors == []  # unknown Grain stages honestly
 
+    malformed = page_entry(
+        folder="tables",
+        name="renewals2",
+        type="table",
+        tags=["table"],
+        grain={"primary_key": ["id"]},
+    )
+    _, staged, errors, _ = run_ingest(tmp_path, doc, [response(malformed)], monkeypatch)
     assert staged == []  # nothing staged...
     assert errors and any("grain" in error for error in errors)  # ...violation named
 

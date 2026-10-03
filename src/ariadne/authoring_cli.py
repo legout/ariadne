@@ -27,6 +27,8 @@ for failure, message verbatim.
                             [--project DIR]
     ariadne-authoring validate --proposal ID --expected-revision REV
                               [--project DIR]
+    ariadne-authoring refresh-schema --proposal ID --expected-revision REV
+                                    --file FILE [--project DIR]
     ariadne-authoring reconcile --proposal ID --expected-revision OLD
                                 --revision NEW [--project DIR]
     ariadne-authoring import-legacy --from-root ROOT [--project DIR]   (HUMAN-ONLY)
@@ -51,7 +53,8 @@ GIT contract above — ``authoring_start_proposal``/``authoring_read_artifact``/
 ``authoring_edit_proposal``/``authoring_propose_sources`` (Git mode:
 ``--proposal``/``--expected-revision`` + typed entries)/``authoring_inputs``
 (Git mode: ``--proposal``)/``authoring_upload_document``/
-``authoring_validate_proposal``/``authoring_review_proposal`` — with model
+``authoring_validate_proposal``/``authoring_refresh_schema`` (issue #41: the
+explicit physical schema refresh)/``authoring_review_proposal`` — with model
 arguments carrying only proposal IDs, revisions and typed artifact
 identities. A legacy complete-bundle ``submit``/``review`` payload composes as
 ``start`` + one ``edit`` per artifact + ``validate``/``review --proposal``
@@ -71,7 +74,12 @@ registry and returns the resolved identity digest (never opening anything);
 operator-bound documents. ``validate`` (issue #36/G4) finalizes the generated
 artifacts, commits any generated changes, validates the EXACT final commit
 against the approved source identity and returns that revision with its
-report/errors — never a signoff. ``review --proposal`` (issue #36/G4) is the
+report/errors — never a signoff. ``refresh-schema`` (issue #41/K1)
+regenerates the core-owned physical schema facts and Dataset Overviews of an
+explicit catalog asset list inside the candidate: reads only the
+operator-approved resolved source identity, revision-checked writes, authored
+meaning preserved for identical column identity/type and retained as
+reviewable history otherwise — never admission. ``review --proposal`` (issue #36/G4) is the
 read-only Git-candidate review; ``review`` without ``--proposal`` keeps its
 legacy staged-bundle meaning. ``reconcile`` (issue #37/G5) is HUMAN-ONLY like
 ``approve-sources`` and never an MCP/native Agent tool: after the human performs
@@ -345,6 +353,31 @@ def build_parser() -> _Parser:
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
 
+    refresh_cmd = sub.add_parser(
+        "refresh-schema",
+        help="regenerate the core-owned physical schema facts of an explicit catalog "
+        "asset list inside the proposal (issue #41): reads only the operator-approved "
+        "resolved source identity, preserves authored meaning for identical columns, "
+        "keeps changed columns' old meaning as reviewable history, an identical "
+        "refresh is a no-op — never admission",
+    )
+    refresh_cmd.add_argument("--proposal", required=True, help="the proposal ID")
+    refresh_cmd.add_argument(
+        "--expected-revision",
+        required=True,
+        help="the CURRENT candidate revision the refresh is based on",
+    )
+    refresh_cmd.add_argument(
+        "--file",
+        required=True,
+        help='the explicit catalog asset list as JSON: either a bare list '
+        '[{source, catalog, schema, table}, ...] or the object form '
+        '{"assets": [...]} ("-" reads stdin)',
+    )
+    refresh_cmd.add_argument(
+        "--project", default=".", help="project root holding ariadne.yaml (default: .)"
+    )
+
     reconcile_cmd = sub.add_parser(
         "reconcile",
         help="record the clean new HEAD a human created by a local rebase/merge after "
@@ -394,6 +427,27 @@ def _read_edit_document(file: str) -> dict:
         return json.loads(raw)
     except ValueError as exc:
         raise UsageError(f"{file}: edit is not valid JSON: {exc}") from None
+
+
+def _read_asset_list(file: str) -> list[dict]:
+    """The explicit catalog asset list of a refresh-schema request from
+    ``--file`` (or stdin with ``-``): a bare JSON list of identity tuples or
+    the object form ``{"assets": [...]}`` — adapter input only, never a
+    filesystem destination. Malformed JSON is a UsageError so the
+    one-JSON-error-object contract still holds."""
+    raw = sys.stdin.read() if file == "-" else Path(file).read_text(encoding="utf-8")
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise UsageError(f"{file}: asset list is not valid JSON: {exc}") from None
+    if isinstance(data, dict):
+        data = data.get("assets")
+    if not isinstance(data, list) or not data:
+        raise UsageError(
+            f"{file}: the asset list must be a non-empty JSON list of "
+            "{source, catalog, schema, table} objects (or {{\"assets\": [...]}})"
+        )
+    return data
 
 
 def _read_source_entries(file: str) -> list[dict]:
@@ -450,6 +504,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "validate":
             result = AuthoringProject(args.project).validate_proposal(
                 args.proposal, args.expected_revision
+            )
+        elif args.command == "refresh-schema":
+            result = AuthoringProject(args.project).refresh_schema(
+                args.proposal, args.expected_revision, _read_asset_list(args.file)
             )
         elif args.command == "reconcile":
             # HUMAN-ONLY (issue #37/G5): records a local rebase/merge; never an

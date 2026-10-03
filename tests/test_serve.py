@@ -360,8 +360,10 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
     adds exactly the two admitted multi-fact query tools (query_metrics/
     query_detail, thin adapters over the same transport-neutral runtime the
     local CLI calls); issue #38/G6 REPLACES the legacy complete-bundle authoring
-    wrappers with the plan §2 Git authoring contract (exactly eight
-    ``authoring_``-prefixed tools over AuthoringProject) — and never a
+    wrappers with the plan §2 Git authoring contract (eight
+    ``authoring_``-prefixed tools over AuthoringProject), and issue #41/K1 adds
+    exactly one more — ``authoring_refresh_schema`` (the explicit physical
+    schema refresh) — and never a
     source-approval, Promotion, admission or example-review tool (ADR-0013/#20:
     review is human-only; the surfaces are tool-surface separation, spec §6)."""
     from ariadne.serve import build_app
@@ -386,6 +388,7 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
         "authoring_inputs",
         "authoring_upload_document",
         "authoring_validate_proposal",
+        "authoring_refresh_schema",
         "authoring_review_proposal",
     }
     assert not [tool for tool in tools if "approve" in tool.name or "promot" in tool.name]

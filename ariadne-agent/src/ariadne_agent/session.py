@@ -77,6 +77,12 @@ have nothing admitted yet.
 - After the operator approves, read the measured inputs in bounded parts
   (`inputs`); where evidence does not establish a business rule, ask the
   owner or mark the uncertainty — never invent a rule.
+- Regenerate physical schema facts explicitly (`refresh_schema`) with the
+  current expected revision and an explicit catalog asset list: it reads only
+  the operator-approved resolved source identity, preserves authored meaning
+  only for identical column identity/type, and reports schema-change flags.
+  The generated Schema/Observations blocks are core-owned — author meaning
+  around them, never inside them; an identical refresh is a no-op.
 - Edit artifacts independently (`edit_proposal`) with the expected candidate
   revision each time: one complete model, graph, page or Seed Notes edit —
   unchanged artifacts are inherited from the base, never resubmitted. A

@@ -29,6 +29,7 @@ historical ones. This module guides interpretation and never computes metrics
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -334,9 +335,14 @@ def _load(text: str) -> tuple[dict | None, str]:
 
 # ------------------------------------------------------- the OKF page contract
 
-# ADR-0007 bundle contract: every content type must be present, keyed by its
-# context_layer section and the frontmatter ``type`` its pages must carry.
+# ADR-0007 bundle contract, as amended by spec 0010 §3/§9 (issue #41):
+# every content type is CHECKED by its context_layer section and frontmatter
+# ``type``; presence is APPLICABLE (a section with pages must satisfy its
+# contract; absent sections are not invented categories), not the mandatory
+# six-category presence — callers with their own complete-bundle scope (the
+# legacy author loop) pass ``required_sections``.
 _BUNDLE_TYPES = {
+    "datasets": "dataset",
     "tables": "table",
     "references/joins": "reference",
     "policies": "policy",
@@ -351,6 +357,7 @@ _BUNDLE_TYPES = {
 # governed_by/dimensions/grain, computation runtime/attester) carry their own
 # targeted errors below, not this shared list.
 _BUNDLE_REQUIRED_FIELDS = {
+    "dataset": ("title", "description", "tags", "sources"),
     "table": ("title", "description", "tags", "sources"),
     "reference": ("title", "description", "tags", "sources"),
     "policy": ("status", "title", "description", "tags", "sources"),
@@ -378,15 +385,19 @@ def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list
         if not meta.get(key):
             errors.append(f"{rel}: {expected_type} page requires '{key}' frontmatter")
     if expected_type == "table":
+        # Spec 0010 §3 (issue #41): a physical table may have UNKNOWN Grain —
+        # core-generated schema pages carry none, and a declared one must
+        # still be the well-formed ADR-0007 block (semantic Grain requirements
+        # on metric pages are unchanged below).
         grain = meta.get("grain")
-        if (
+        if grain is not None and (
             not isinstance(grain, dict)
             or not grain.get("primary_key")
             or not grain.get("cardinality_enforcement")
         ):
             errors.append(
-                f"{rel}: table page requires a grain block with primary_key and "
-                "cardinality_enforcement"
+                f"{rel}: a declared table grain block requires primary_key and "
+                "cardinality_enforcement (an undeclared physical Grain stays unknown)"
             )
     elif expected_type == "metric":
         for key in ("governed_by", "dimensions", "grain"):  # attached mechanically
@@ -427,13 +438,20 @@ def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list
 _BOOKKEEPING_NAMES = frozenset({"index.md", "log.md"})
 
 
-def _bundle_errors(staging: Path) -> list[str]:
-    """The hard ADR-0007 bundle contract gate (spec §5: no silent success): all six
-    content types present under context_layer/, per-type required frontmatter, and
-    every metric page citing at least one governing policy. System-generated
-    bookkeeping (index.md/log.md) is not an authored page and is skipped."""
+def _bundle_errors(
+    staging: Path, *, required_sections: tuple[str, ...] | set[str] | None = None
+) -> list[str]:
+    """The hard ADR-0007 page-contract gate as amended by spec 0010 §3/§9
+    (issue #41): applicable pages, not artificial presence of every category.
+    Every section that carries pages satisfies its per-type contract — the
+    inherited page→OSI/cited-Policy dependencies of the per-type checks stay
+    binding; nothing is invented for absent categories. ``required_sections``
+    restores a caller's own complete-bundle scope (the legacy author loop
+    drafts the whole demo bundle): an absent required section is the
+    historical "incomplete bundle" error."""
     context = staging / "context_layer"
     errors: list[str] = []
+    present: set[str] = set()
     for section, expected_type in _BUNDLE_TYPES.items():
         section_dir = context / section
         pages = (
@@ -442,14 +460,21 @@ def _bundle_errors(staging: Path) -> list[str]:
             else []
         )
         if not pages:
-            errors.append(
-                f"authored bundle is incomplete: no pages under context_layer/{section}/ "
-                "(ADR-0007 requires all six content types: tables, references/joins, "
-                "policies, metrics, computations, skills)"
-            )
             continue
+        present.add(section)
         for page in pages:
             errors.extend(_page_contract_errors(staging, page, expected_type))
+    if required_sections is not None:
+        for section in required_sections:
+            if section not in present:
+                # the historical message text (it rides into the staged pages'
+                # review_errors and the measured-retrieval corpus over the
+                # demo tree depends on those bytes)
+                errors.append(
+                    f"authored bundle is incomplete: no pages under context_layer/{section}/ "
+                    "(ADR-0007 requires all six content types: tables, references/joins, "
+                    "policies, metrics, computations, skills)"
+                )
     return errors
 
 
@@ -742,10 +767,494 @@ def finalize_candidate(staging: Path) -> None:
     _regenerate_indexes(staging / "context_layer")
 
 
+# -------------------------- K1 (issue #41): core-owned physical schema pages
+
+# The core-owned sections of a generated table page (spec 0010 §4): the
+# physical schema block, the separately labeled observations and the schema
+# change history. Authored content — the summary and the per-column meanings
+# — lives OUTSIDE these sections and is preserved by refresh for identical
+# column identity/type.
+SCHEMA_SECTION = "Schema"
+OBSERVATIONS_SECTION = "Observations"
+HISTORY_SECTION = "Schema history"
+MEANINGS_SECTION = "Column meanings"
+_CORE_SECTIONS = frozenset({SCHEMA_SECTION, OBSERVATIONS_SECTION, HISTORY_SECTION})
+
+# An authored column-meaning bullet: ``- `column` — meaning`` (any of the
+# three separators). A bullet opens ONE meaning block that also owns its
+# continuation lines (indented or lazy — a multiline Markdown explanation is
+# ONE block, issue #41: it moves into history complete, never leaving an
+# orphaned remainder in the active section); only parseable bullets name a
+# column, everything else stays verbatim wherever it sits.
+_MEANING_LINE_RE = re.compile(r"^[-*]\s+`([^`]+)`\s*[—:-]\s*(.+)$")
+_LIST_ITEM_RE = re.compile(r"^[-*]\s+")
+
+
+def _source_slug(source: str) -> str:
+    """The filename slug of one source name: underscores to hyphens, capped
+    at 48 characters (plan §2 — the digest preserves distinction)."""
+    return source.replace("_", "-")[:48]
+
+
+def generated_page_filename(resource: str, source: str) -> str:
+    """The source-qualified filename of one generated page:
+    ``<source-slug>-<sha256(resource)>.md`` — the full lowercase digest keeps
+    same-named assets in long-named sources distinct after slug capping."""
+    digest = hashlib.sha256(resource.encode("utf-8")).hexdigest()
+    return f"{_source_slug(source)}-{digest}.md"
+
+
+def _body_sections(body: str) -> list[tuple[str | None, list[str]]]:
+    """Split a page body into ``(heading text or None, lines)`` chunks at ATX
+    headings of any level; each heading line stays with its chunk and the
+    preamble (no heading) is the first chunk."""
+    chunks: list[tuple[str | None, list[str]]] = [(None, [])]
+    for line in body.split("\n"):
+        if match := _HEADING_RE.match(line):
+            chunks.append((match.group(1), [line]))
+        else:
+            chunks[-1][1].append(line)
+    return chunks
+
+
+def _assemble_body(chunks: list[tuple[str | None, list[str]]]) -> str:
+    return "\n".join(line for _heading, lines in chunks for line in lines).strip()
+
+
+def core_body_sections(text: str) -> dict[str, str]:
+    """The core-owned BODY sections of one page (``Schema``, ``Observations``,
+    ``Schema history``) keyed by section heading: the section chunk from its
+    heading line to the next heading, trailing blank lines aside. This is the
+    generated-facts map the proposal edit seam compares (issue #41): the
+    core-owned rendered facts an inherited generated page carries may be
+    carried unchanged, never changed, dropped or extended — frontmatter or
+    not. Unparseable frontmatter yields no sections (the claim seam owns that
+    refusal)."""
+    try:
+        _meta, body = _load(text)
+    except yaml.YAMLError:
+        return {}
+    return {
+        heading: "\n".join(lines).strip()
+        for heading, lines in _body_sections(body or "")
+        if heading in _CORE_SECTIONS
+    }
+
+
+def _schema_entry_text(value) -> str:
+    """One schema fact's honest text: unknown metadata stays the explicit
+    string ``unknown``; booleans render true/false."""
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if value is None:
+        return "unknown"
+    return str(value).replace("|", "\\|")
+
+
+def _schema_flags(old_schema: list[dict] | None, new_schema: list[dict]) -> dict:
+    """Column-level change flags of one refresh (plan §2): added/removed
+    columns and type changes — detected by exact column identity, never
+    paired into a rename guess."""
+    old = {entry["column"]: entry["type"] for entry in old_schema or []}
+    new = {entry["column"]: entry["type"] for entry in new_schema}
+    return {
+        "added": sorted(set(new) - set(old)),
+        "removed": sorted(set(old) - set(new)),
+        "type_changed": [
+            {"column": column, "from": old[column], "to": new[column]}
+            for column in sorted(set(old) & set(new))
+            if old[column] != new[column]
+        ],
+    }
+
+
+def _observation_facts(*, resource: str, profile: dict) -> dict:
+    """The core-generated observation facts WITHOUT the timestamp (the part
+    compared for timestamp reuse): scope, counts, measured candidate keys and
+    citation identity — measurements, never declared constraints."""
+    columns = {
+        name: {"null_count": stats["null_count"], "distinct_count": stats["distinct_count"]}
+        for name, stats in (profile.get("columns") or {}).items()
+    }
+    return {
+        "scope": "sampled" if profile.get("sampled") else "full",
+        "row_count": profile.get("row_count"),
+        "candidate_keys": sorted(profile.get("primary_key_candidates") or []),
+        "columns": columns,
+        "citation": resource,
+    }
+
+
+def _ensure_citation(existing_sources: list | None, citation: dict) -> list:
+    """The page's frontmatter sources with the core's catalog/profile citation
+    guaranteed (authored entries preserved verbatim, no duplicates by
+    resource)."""
+    sources = list(existing_sources or [])
+    resource = citation["resource"]
+    if not any(
+        (entry.get("resource") if isinstance(entry, dict) else entry) == resource
+        for entry in sources
+    ):
+        sources.append(citation)
+    return sources
+
+
+def _meaning_blocks(lines: list[str]) -> list[tuple[str | None, str, list[str]]]:
+    """The authored meanings section as ``(column or None, complete meaning
+    text, block lines)`` blocks: one block per list item — an authored meaning
+    bullet plus its continuation lines up to the next list item — with a
+    column of ``None`` for preamble lines and non-meaning bullets, which stay
+    verbatim wherever they sit. The complete text joins the bullet's meaning
+    with its continuation lines, so a removed/type-changed column's multiline
+    explanation moves into history as one block (issue #41)."""
+    blocks: list[tuple[str | None, str, list[str]]] = []
+    for line in lines:
+        if _LIST_ITEM_RE.match(line) or not blocks:
+            match = _MEANING_LINE_RE.match(line.strip())
+            blocks.append(
+                (
+                    match.group(1) if match else None,
+                    match.group(2).strip() if match else "",
+                    [line],
+                )
+            )
+        else:  # a continuation line belongs to the block above it
+            _column, text, block = blocks[-1]
+            parts = (text, line.strip())
+            blocks[-1] = (_column, " ".join(part for part in parts if part), [*block, line])
+    return blocks
+
+
+def _table_body(
+    *,
+    asset: dict,
+    columns: list[dict],
+    observations: dict,
+    flags: dict,
+    observed_at: str,
+    authored: str,
+) -> str:
+    """Assemble one table page's body from the authored content plus the
+    three core-owned sections."""
+    source, schema, table = asset["source"], asset["schema"], asset["table"]
+    chunks = _body_sections(authored)
+    # prior history ENTRIES survive verbatim (bullet lines only); the intro
+    # and the empty placeholder are regenerated — the section is core-owned
+    prior_history = [
+        line
+        for heading, lines in chunks
+        if heading == HISTORY_SECTION
+        for line in lines
+        if line.startswith("- ")
+    ]
+    authored_chunks = [
+        (heading, lines) for heading, lines in chunks if heading not in _CORE_SECTIONS
+    ]
+    has_authored = any(
+        line.strip() for _heading, lines in authored_chunks for line in lines
+    )
+    if not has_authored:  # a page refresh never saw: seed the authored scaffold
+        authored_chunks = [
+            (
+                None,
+                [
+                    f"# {source}.{schema}.{table}",
+                    "",
+                    f"Physical table `{table}` of source `{source}` (schema `{schema}`).",
+                    "Summary: unknown — not yet authored.",
+                    "",
+                ],
+            )
+        ]
+    # meanings surgery: preserve blocks of identical columns verbatim, move
+    # removed/type-changed columns' COMPLETE meaning blocks (continuation
+    # lines included) into history, seed new columns
+    changed_columns = set(flags["removed"]) | {c["column"] for c in flags["type_changed"]}
+    retained: dict[str, str] = {}
+    meanings_index = next(
+        (i for i, (h, _l) in enumerate(authored_chunks) if h == MEANINGS_SECTION), None
+    )
+    if meanings_index is None:
+        meanings_lines: list[str] = []
+        authored_chunks.append((MEANINGS_SECTION, []))
+        meanings_index = len(authored_chunks) - 1
+    else:
+        # the chunk's first line IS the heading — it is re-emitted exactly once
+        _heading, lines = authored_chunks[meanings_index]
+        meanings_lines = lines[1:]
+        authored_chunks[meanings_index] = (_heading, [])  # rebuilt below
+    kept: list[str] = []
+    seen: set[str] = set()
+    for column, text, block in _meaning_blocks(meanings_lines):
+        if column is not None and column in changed_columns:
+            retained[column] = text  # the complete block moves to history
+            continue
+        if column is not None and column in seen:
+            kept.extend(block)  # a duplicate meaning stays verbatim
+            continue
+        if column is not None:
+            seen.add(column)
+        kept.extend(block)
+    known = {entry["column"] for entry in columns}
+    for column in sorted(known - seen):
+        kept.append(f"- `{column}` — unknown (not yet authored)")
+    heading, _ = authored_chunks[meanings_index]
+    stripped = [line for line in kept if line.strip()]
+    authored_chunks[meanings_index] = (
+        heading,
+        [f"## {MEANINGS_SECTION}", *stripped, ""],
+    )
+    history = prior_history + _history_entries(flags, observed_at, retained)
+    schema_rows = [
+        "| Column | Type | Nullable | Default | Comment |",
+        "| --- | --- | --- | --- | --- |",
+        *[
+            "| `{}` | {} | {} | {} | {} |".format(
+                entry["column"],
+                _schema_entry_text(entry["type"]),
+                _schema_entry_text(entry["nullable"]),
+                _schema_entry_text(entry["default"]),
+                _schema_entry_text(entry["comment"]),
+            )
+            for entry in columns
+        ],
+    ]
+    observation_lines = [
+        f"- observed_at: {observations['observed_at']}",
+        f"- scope: {observations['scope']}",
+        f"- row_count: {observations['row_count']}",
+        "- candidate keys (measured, not business-key declarations): "
+        + (", ".join(observations["candidate_keys"]) or "none observed"),
+        f"- citation: {observations['citation']}",
+        *[
+            f"- `{name}`: nulls {stats['null_count']}, distinct {stats['distinct_count']}"
+            for name, stats in observations["columns"].items()
+        ],
+    ]
+    core = [
+        (
+            SCHEMA_SECTION,
+            [
+                f"# {SCHEMA_SECTION}",
+                "",
+                "Core-generated physical schema (regenerated by refresh_schema; "
+                "authored meaning lives above). Declared metadata appears only "
+                "where the source provides it; unavailable metadata is unknown.",
+                "",
+                *schema_rows,
+                "",
+            ],
+        ),
+        (
+            OBSERVATIONS_SECTION,
+            [
+                f"## {OBSERVATIONS_SECTION}",
+                "",
+                "Core-generated observations of the stated scope — measurements, "
+                "not declared constraints: observed uniqueness or zero nulls is "
+                "never a NOT NULL or business-key declaration.",
+                "",
+                *observation_lines,
+                "",
+            ],
+        ),
+        (
+            HISTORY_SECTION,
+            [
+                f"## {HISTORY_SECTION}",
+                "",
+                "Core-generated record of detected schema changes: removed or "
+                "changed columns keep their prior authored meaning here for "
+                "review — a rename is never guessed.",
+                "",
+                *(history or ["(none — no schema changes recorded)"]),
+                "",
+            ],
+        ),
+    ]
+    return _assemble_body(authored_chunks + core)
+
+
+def _history_entries(flags: dict, observed_at: str, retained: dict[str, str]) -> list[str]:
+    """Deterministic history entries for one refresh's detected changes,
+    sorted by column, quoting the retained authored meaning when one exists."""
+    entries: list[str] = []
+    for column in sorted(flags["removed"]):
+        was = next(
+            (c["type"] for c in flags.get("_old_schema", []) if c["column"] == column), None
+        )
+        note = f"`{column}` removed" + (f" (was {was})" if was else "")
+        if column in retained:
+            note += f"; retained meaning: {retained[column]}"
+        entries.append(f"- {observed_at} — {note}")
+    for change in flags["type_changed"]:
+        note = f"`{change['column']}` type changed {change['from']} -> {change['to']}"
+        if change["column"] in retained:
+            note += f"; retained meaning: {retained[change['column']]}"
+        entries.append(f"- {observed_at} — {note}")
+    return entries
+
+
+def build_table_page(
+    *,
+    asset: dict,
+    columns: list[dict],
+    profile: dict,
+    existing_text: str | None,
+    now: str,
+) -> tuple[str, dict]:
+    """Generate one physical table page's complete bytes from the approved
+    catalog/profile facts (spec 0010 §4, plan §2): frontmatter with the exact
+    resource and the core-owned ``ariadne.schema``/``ariadne.observations``
+    metadata, authored summary/meanings preserved outside the core-owned
+    sections, removed/type-changed columns' meanings retained as history, and
+    the observation timestamp REUSED when the schema and the measurements are
+    unchanged (identical inputs produce identical bytes — a no-op refresh).
+    Returns ``(page text, change flags)``.
+    """
+    resource = asset["resource"]
+    try:
+        existing_meta = _load_frontmatter_meta(existing_text) if existing_text else {}
+    except yaml.YAMLError:
+        existing_meta = {}
+    existing_ariadne = existing_meta.get("ariadne") if isinstance(existing_meta, dict) else None
+    old_schema = existing_ariadne.get("schema") if isinstance(existing_ariadne, dict) else None
+    old_schema = old_schema if isinstance(old_schema, list) else None
+    old_observations = (
+        existing_ariadne.get("observations") if isinstance(existing_ariadne, dict) else None
+    )
+    old_observations = old_observations if isinstance(old_observations, dict) else {}
+    old_observed_at = (
+        old_observations.get("observed_at")
+        if isinstance(old_observations.get("observed_at"), str)
+        else None
+    )
+    flags = _schema_flags(old_schema, columns)
+    facts = _observation_facts(resource=resource, profile=profile)
+    reuse_timestamp = (
+        old_observed_at is not None
+        and old_schema is not None
+        and old_schema == columns
+        and {k: v for k, v in old_observations.items() if k != "observed_at"} == facts
+    )
+    observed_at = old_observed_at if reuse_timestamp else now
+    observations = {"observed_at": observed_at, **facts}
+    citation = {
+        "id": f"catalog-{asset['source']}-{asset['schema']}-{asset['table']}",
+        "resource": resource,
+        "title": f"catalog and profile of {asset['source']}.{asset['schema']}.{asset['table']}",
+    }
+    meta: dict = {
+        "type": "table",
+        "title": f"{asset['source']}.{asset['schema']}.{asset['table']}",
+        "description": (
+            f"Physical table {asset['table']} of source {asset['source']} "
+            f"(schema {asset['schema']}). Row meaning: unknown — not yet authored."
+        ),
+        "tags": ["table", "schema"],
+    }
+    if isinstance(existing_meta, dict):
+        for key in ("title", "description", "tags"):
+            if existing_meta.get(key):
+                meta[key] = existing_meta[key]
+    meta["sources"] = _ensure_citation(
+        existing_meta.get("sources") if isinstance(existing_meta, dict) else None, citation
+    )
+    if isinstance(existing_meta, dict):
+        if existing_meta.get("grain") is not None:  # authored declared Grain preserved
+            meta["grain"] = existing_meta["grain"]
+        for key in sorted(set(existing_meta) - set(meta) - {"type", "ariadne", "resource"}):
+            meta[key] = existing_meta[key]  # authored extras preserved verbatim
+    meta["resource"] = resource
+    meta["ariadne"] = {"schema": columns, "observations": observations}
+    front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    authored = ""
+    if existing_text:
+        _fm, authored = _load(existing_text)
+        if authored is None:
+            authored = ""
+    flags_with_old = {**flags, "_old_schema": old_schema or []}
+    body = _table_body(
+        asset=asset,
+        columns=columns,
+        observations=observations,
+        flags=flags_with_old,
+        observed_at=observed_at,
+        authored=authored,
+    )
+    return f"---\n{front}---\n\n{body}\n", flags
+
+
+def build_dataset_page(
+    *, collection: dict, tables: list[dict], existing_text: str | None
+) -> tuple[str, dict]:
+    """Generate one Dataset Overview page (``type: dataset``): the physical
+    collection's canonical resource and the links to EXACTLY the tables this
+    refresh documents — never every approved source (spec 0010 §3/§4).
+    Deterministic derivation, no timestamps. Returns ``(page text, flags)``
+    with the linked-table additions/removals versus the existing overview."""
+    resource = collection["resource"]
+    try:
+        existing_meta = _load_frontmatter_meta(existing_text) if existing_text else {}
+    except yaml.YAMLError:
+        existing_meta = {}
+    existing_ariadne = existing_meta.get("ariadne") if isinstance(existing_meta, dict) else None
+    old_tables = (
+        existing_ariadne.get("tables") if isinstance(existing_ariadne, dict) else None
+    )
+    old_tables = old_tables if isinstance(old_tables, list) else []
+    linked = [table["resource"] for table in tables]
+    flags = {
+        "added": sorted(set(linked) - set(old_tables)),
+        "removed": sorted(set(old_tables) - set(linked)),
+    }
+    source, schema = collection["source"], collection["schema"]
+    citation = {
+        "id": f"catalog-{source}-{schema}",
+        "resource": resource,
+        "title": f"catalog of {source}.{schema}",
+    }
+    meta: dict = {
+        "type": "dataset",
+        "title": f"{source}.{schema}",
+        "description": (
+            f"Dataset Overview of the physical collection {source}.{schema} of "
+            f"source {source} — {len(tables)} documented table"
+            + ("s" if len(tables) != 1 else "")
+            + "."
+        ),
+        "tags": ["dataset"],
+        "sources": _ensure_citation(
+            existing_meta.get("sources") if isinstance(existing_meta, dict) else None,
+            citation,
+        ),
+        "resource": resource,
+        "ariadne": {"tables": linked},
+    }
+    front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    links = [
+        f"- [{table['table']}]({table['link']}) — `{table['table']}` "
+        f"({table['column_count']} columns)"
+        for table in tables
+    ]
+    body = (
+        f"# {source}.{schema}\n\n"
+        f"Dataset Overview of the physical collection `{source}.{schema}` (source "
+        f"`{source}`). The tables listed below are the ones this project "
+        "documents — an unrelated approved source is not silently asserted to "
+        "have been documented.\n\n"
+        f"## Tables\n\n" + "\n".join(links) + "\n"
+    )
+    return f"---\n{front}---\n\n{body}", flags
+
+
 # -------------------------------------------- deterministic promotion bookkeeping
 
 # Section heading for a folder's index.md (SPEC §8 example form: "# Metric").
 _SECTION_TITLES = {
+    "datasets": "Dataset",
     "tables": "Table",
     "references": "Reference",
     "joins": "Join",
@@ -757,6 +1266,7 @@ _SECTION_TITLES = {
 # One-line blurb used when an index links a subdirectory (directories carry no
 # frontmatter to take a description from).
 _FOLDER_BLURBS = {
+    "datasets": "Physical collections: Dataset Overviews linking their tables.",
     "tables": "Physical tables: row meaning, schema, join hints.",
     "references": "Cross-table reference notes.",
     "joins": "Join catalog: keys, cardinality evidence, grain safety.",

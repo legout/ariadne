@@ -337,7 +337,12 @@ class QueryRuntime:
         """Every queryable table across all registry sources with its columns
         (the agent's map, spec rev 9 §8.20). The legacy --db shorthand keeps
         plain table names; a registry qualifies each entry as
-        ``<source>.<table>`` so both sources stay distinguishable."""
+        ``<source>.<table>`` so both sources stay distinguishable. K1 (issue
+        #41): every entry additionally carries the EXPLICIT identity fields
+        (source/catalog/schema/table plus the canonical credential-free
+        ``resource``) — same-named tables in distinct schemas/collections stay
+        distinct assets, and consumers use these fields rather than parsing
+        display names."""
         datasets: list[dict] = []
         for source in self.catalog:
             for table in source["tables"]:
@@ -349,6 +354,11 @@ class QueryRuntime:
                             else table["name"]
                         ),
                         "columns": table["columns"],
+                        "source": source["name"],
+                        "catalog": table.get("catalog"),
+                        "schema": table.get("schema"),
+                        "table": table["name"],
+                        "resource": table.get("resource"),
                     }
                 )
         return datasets

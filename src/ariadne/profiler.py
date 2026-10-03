@@ -52,6 +52,13 @@ per source: ``{"sources_path": ..., "sources": [{"name", "type", "tables"}]}``.
 
 Field notes for consumers:
 
+- every table value additionally carries the explicit identity tuple
+  ``source``/``catalog``/``schema``/``table`` plus the canonical ``resource``
+  (spec 0010 §4/plan §2); dictionary keys keep the legacy unambiguous table
+  names, and a same-source name collision (same table name in distinct
+  schemas) keys those tables by their canonical resource instead — consumers
+  use the identity fields, never parse display names or keys.
+
 - ``min/max/avg/std/q25/q50/q75`` come from DuckDB ``SUMMARIZE``; some render
   as strings, and avg/std/quantiles are ``null`` for non-numeric columns.
 - ``top_values``/``top_value_share`` appear only when ``1 < distinct_count <=
@@ -86,6 +93,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from decimal import Decimal
 from pathlib import Path
 
@@ -148,8 +156,14 @@ def _numeric(type_name: str) -> bool:
 def _allowlisted(cols_by_table: dict[str, list[tuple[str, str]]]) -> set[str]:
     """Every table and column name the source actually contains (from the
     builder's catalog — DuckDB cannot parameterize identifiers, so membership
-    in this set is asserted before any name is used)."""
-    return set(cols_by_table) | {name for cols in cols_by_table.values() for name, _ in cols}
+    in this set is asserted before any name is used). The set carries the
+    real table names AND the profile display keys (a same-source name
+    collision keys those tables by their canonical resource, plan §2), so
+    both spellings pass the membership assertion."""
+    names = set(cols_by_table)
+    for cols in cols_by_table.values():
+        names.update(name for name, _ in cols)
+    return names
 
 
 def _table_rel(con: duckdb.DuckDBPyConnection, ref: str, table: str, allowed: set[str]):
@@ -209,10 +223,16 @@ def _profile_table(
     for name, type_name in cols:
         s = summarize[name]
         non_null, distinct = counts[name]
+        # SUMMARIZE reports null_percentage None over an EMPTY table (no rows
+        # to measure): the paired counts are both 0, so the ratio is 0.0 —
+        # never a crash on the missing aggregate (issue #41 fixture regression)
+        null_percentage = s["null_percentage"]
         entry = {
             "type": type_name,
             "null_count": row_count - non_null,
-            "null_ratio": float(s["null_percentage"]) / 100.0,
+            "null_ratio": (float(null_percentage) / 100.0)
+            if null_percentage is not None
+            else 0.0,
             "distinct_count": distinct,
             "unique_ratio": (distinct / row_count) if row_count else 0.0,
             "approx_unique": s["approx_unique"],
@@ -248,12 +268,16 @@ def _fk_candidates(
     cols: list[tuple[str, str]],
     non_null: dict[str, int],
     pk_candidates: list[str],
-    pk_by_table: dict[str, list[str]],
+    targets_by_name: dict[str, list[dict]],
     allowed: set[str],
-    cols_by_table: dict[str, list[tuple[str, str]]],
 ) -> list[dict]:
     """``*_id`` columns whose name resolves to another table's PK, type-checked
-    and verified by containment (``match_ratio``)."""
+    and verified by containment (``match_ratio``). A candidate target name
+    resolves through the catalog entry's EXPLICIT identities to the target's
+    OWN qualified ref — never the originating table's (``b.orders.customer_id``
+    must not look for ``customers`` under ``b``): a name matching no table or
+    SEVERAL tables (same name in distinct schemas) is skipped, never guessed
+    (issue #41)."""
     table_rel = _table_rel(con, ref, table, allowed)
     candidates: list[dict] = []
     for name, type_name in cols:
@@ -261,7 +285,11 @@ def _fk_candidates(
             continue
         base = name[:-3]
         for target_table in (base, base + "s", base + "es"):
-            target_pks = pk_by_table.get(target_table)
+            resolutions = targets_by_name.get(target_table) or []
+            if len(resolutions) != 1:
+                continue  # nonexistent or ambiguous target name: never guessed
+            target = resolutions[0]
+            target_pks = target["pks"]
             if not target_pks:
                 continue
             # Prefer the conventional "id", then a same-named column, then the first.
@@ -269,7 +297,7 @@ def _fk_candidates(
             if target_table == table and target_col == name:
                 continue  # a column referencing itself is its own PK, not an FK
             target_type = [
-                (c, t) for c, t in cols_by_table.get(target_table) or [] if c == target_col
+                (c, t) for c, t in target["cols"] or [] if c == target_col
             ]
             if not target_type:
                 continue
@@ -277,7 +305,7 @@ def _fk_candidates(
             if not target_is_numeric and type_name != target_type[0][1]:
                 continue
             src = _column_rel(table_rel, name, allowed).set_alias("s")
-            tgt_rel = _table_rel(con, ref, target_table, allowed)
+            tgt_rel = _table_rel(con, target["ref"], target_table, allowed)
             tgt = _column_rel(tgt_rel, target_col, allowed).set_alias("t")
             orphans = (
                 src.join(tgt, "s.__profile_value = t.__profile_value", "left")
@@ -310,45 +338,71 @@ def _profile_source(
 ) -> dict:
     """Profile every table of one builder-catalog source: attaches address
     tables as ``<catalog>.<schema>.<table>``, file views as
-    ``<schema>.<table>`` — both are the per-table ``ref`` the builder emits."""
-    cols_by_table = {
-        table["name"]: [(col["name"], col["type"]) for col in table["columns"]]
-        for table in entry["tables"]
-    }
-    refs = {table["name"]: table.get("ref") or entry["name"] for table in entry["tables"]}
-    allowed = _allowlisted(cols_by_table)
+    ``<schema>.<table>`` — both are the per-table ``ref`` the builder emits.
+    Profile dictionary keys keep the legacy unambiguous table names; a
+    same-source name collision (same table name in distinct schemas) keys
+    those tables by their canonical ``resource`` instead, and every table
+    value carries the explicit identity tuple plus resource (plan §2) so
+    consumers never parse display names."""
+    counts = Counter(table["name"] for table in entry["tables"])
+    cols_by_table: dict[str, list[tuple[str, str]]] = {}
+    refs: dict[str, str] = {}
+    identity: dict[str, dict] = {}
+    for table in entry["tables"]:
+        key = table["resource"] if counts[table["name"]] > 1 else table["name"]
+        cols_by_table[key] = [(col["name"], col["type"]) for col in table["columns"]]
+        refs[key] = table.get("ref") or entry["name"]
+        identity[key] = {
+            "source": table.get("source"),
+            "catalog": table.get("catalog"),
+            "schema": table.get("schema"),
+            "table": table["name"],
+            "resource": table.get("resource"),
+        }
+    allowed = _allowlisted(cols_by_table) | {
+        identity[key]["table"] for key in cols_by_table
+    }  # real table names too: a same-name collision keys the profile by resource
     tables: dict[str, dict] = {}
     pk_by_table: dict[str, list[str]] = {}
     profiles: dict[str, tuple] = {}
-    for name in cols_by_table:  # builder catalog order == information_schema order
-        cols = cols_by_table[name]
+    for key in cols_by_table:  # builder catalog order == information_schema order
+        cols = cols_by_table[key]
         row_count, pk_candidates, columns = _profile_table(
-            con, refs[name], name, cols, allowed, sampled=sample_rows is not None
+            con, refs[key], identity[key]["table"], cols, allowed, sampled=sample_rows is not None
         )
-        profiles[name] = (cols, row_count, pk_candidates, columns)
-        pk_by_table[name] = pk_candidates
-    for name, (cols, row_count, pk_candidates, columns) in profiles.items():
+        profiles[key] = (cols, row_count, pk_candidates, columns)
+        pk_by_table[key] = pk_candidates
+    # FK candidate targets resolve BY NAME through the entry's explicit
+    # identities — each resolution carries the target's OWN qualified ref
+    # (issue #41): a name held by no table or several tables (same name in
+    # distinct schemas) is never guessed
+    targets_by_name: dict[str, list[dict]] = {}
+    for key in cols_by_table:
+        targets_by_name.setdefault(identity[key]["table"], []).append(
+            {"ref": refs[key], "pks": pk_by_table[key] or [], "cols": cols_by_table[key]}
+        )
+    for key, (cols, row_count, pk_candidates, columns) in profiles.items():
         non_null = {n: row_count - col["null_count"] for n, col in columns.items()}
-        tables[name] = {
+        tables[key] = {
             "row_count": row_count,
             "primary_key_candidates": pk_candidates,
             "foreign_key_candidates": []
             if sample_rows is not None
             else _fk_candidates(
                 con,
-                refs[name],
-                name,
+                refs[key],
+                identity[key]["table"],
                 cols,
                 non_null,
                 pk_candidates,
-                pk_by_table,
+                targets_by_name,
                 allowed,
-                cols_by_table,
             ),
             "columns": columns,
+            **identity[key],
         }
         if sample_rows is not None:
-            tables[name].update(sampled=True, sample_limit=sample_rows)
+            tables[key].update(sampled=True, sample_limit=sample_rows)
     return {"name": entry["name"], "type": entry["type"], "tables": tables}
 
 
@@ -383,10 +437,14 @@ def profile(
     con, catalog = execution.con, execution.catalog
     try:
         if sample_rows is not None:
+            sample_index = 0
             for entry in catalog:
-                schema = f"__ariadne_sample_{entry['name']}"
-                con.execute(f"CREATE SCHEMA {schema}")
                 for table in entry["tables"]:
+                    # one sample schema PER TABLE: same-named tables in
+                    # distinct schemas would collide inside one schema
+                    schema = f"__ariadne_sample_{entry['name']}_{sample_index}"
+                    sample_index += 1
+                    con.execute(f"CREATE SCHEMA {schema}")
                     name = _q(table["name"])
                     con.execute(
                         f"CREATE TABLE {schema}.{name} AS SELECT * FROM "

@@ -146,6 +146,7 @@ from ariadne import (
     authoring_semantic,
     authoring_sources,
     context,
+    execution,
     profiler,
     proposals,
 )
@@ -174,12 +175,20 @@ from ariadne.authoring_inputs import (  # noqa: F401 — re-export: the historic
     document_evidence,
     store_upload,
 )
+from ariadne.context import (  # noqa: F401 — the K1 generated-page seam (issue #41)
+    build_dataset_page,
+    build_table_page,
+    generated_page_filename,
+)
 from ariadne.render import render
 from ariadne.semantic_graph import load_graph
 from ariadne.sources import (
     _URI_SCHEME_RE,
     _resolve_against,
+    collection_resource,
     load_registry,
+    parse_resource,
+    table_resource,
 )
 from ariadne.validate import (
     VALIDATOR_VERSION,
@@ -1334,6 +1343,24 @@ class AuthoringProject:
         a review digest binding the exact reviewed identity."""
         return review_proposal(self.project, proposal, part=part)
 
+    # ------------- K1 (issue #41): explicit physical schema refresh
+
+    def refresh_schema(
+        self, proposal: str, expected_revision: str, assets: list[dict] | tuple[dict, ...]
+    ) -> dict:
+        """Regenerate the core-owned physical schema facts of an EXPLICIT
+        catalog asset list inside the selected proposal (plan §2
+        ``refresh_schema``, spec 0010 §4): reads go through the
+        operator-APPROVED resolved source identity only, writes are
+        revision-checked complete page edits, authored summary/column meaning
+        is preserved for identical column identity/type (removed or
+        type-changed columns keep their old meaning as reviewable history,
+        never a rename guess), and an identical refresh against identical
+        inputs is a no-op (the candidate revision does not move). Returns the
+        resulting revision, the generated page identities and the schema-change
+        flags. Refresh is never admission (K4 owns that)."""
+        return refresh_schema(self.project, proposal, expected_revision, assets)
+
 
 
 # ------------------------------------- slice 5 (issue #36/G4): validation/review
@@ -1414,6 +1441,32 @@ def _verified_citations(
                     "resource": resource,
                     "kind": "bundle",
                     "path": bundle_rel,
+                }
+            elif resource.startswith("ariadne://"):
+                # K1 (issue #41): a canonical catalog asset resource — the
+                # identified catalog/profile citation for physical facts. The
+                # source it names must be one of the approved registry
+                # identities (the approval separately binds the resolved
+                # location; a navigation resource can never confer access).
+                try:
+                    _kind, parts = parse_resource(resource)
+                except ValueError as exc:
+                    errors.append(
+                        f"{rel}: cited catalog resource {resource!r} is not canonical: "
+                        f"{exc}"
+                    )
+                    continue
+                if parts[0] not in source_names:
+                    errors.append(
+                        f"{rel}: cited catalog resource {resource!r} names source "
+                        f"{parts[0]!r} which is not an approved registry identity "
+                        f"(approved: {', '.join(sorted(source_names)) or 'none'})"
+                    )
+                    continue
+                citations[("asset", resource)] = {
+                    "resource": resource,
+                    "kind": "catalog_asset",
+                    "source": parts[0],
                 }
             elif resource in source_names or resource.split(".", 1)[0] in source_names:
                 citations[("source", resource)] = {"resource": resource, "kind": "source"}
@@ -1906,3 +1959,367 @@ def _review_candidate(
             "stale_reasons": stale_reasons,
             "review_digest": review_digest,
         }
+
+
+# ------------------------ K1 (issue #41): the explicit schema refresh seam
+
+# One catalog asset of a refresh request: the COMPLETE identity tuple
+# {source, catalog, schema, table} with exact case-sensitive identifiers
+# (plan §2). ``catalog`` is null for file views.
+_ASSET_KEYS = frozenset({"source", "catalog", "schema", "table"})
+
+
+def _catalog_asset(asset: object) -> dict:
+    """Validate one explicit catalog asset request: exactly the identity-tuple
+    keys, plain non-empty identifiers (catalog may be null). Consumers use
+    these explicit fields, never display names."""
+    if not isinstance(asset, dict) or set(asset) != _ASSET_KEYS:
+        raise ValueError(
+            "a catalog asset is exactly {source, catalog, schema, table} with exact "
+            "case-sensitive identifiers (catalog null for file views), got "
+            f"{asset!r}"
+        )
+    for key in ("source", "schema", "table"):
+        if not isinstance(asset[key], str) or not asset[key]:
+            raise ValueError(f"catalog asset field {key!r} must be a non-empty string")
+    catalog = asset["catalog"]
+    if catalog is not None and (not isinstance(catalog, str) or not catalog):
+        raise ValueError(
+            "catalog asset field 'catalog' must be the stable attached catalog name "
+            "or null (file views carry no catalog)"
+        )
+    return dict(asset)
+
+
+def _declared_columns(con, catalog: list[dict]) -> dict[tuple[str, str, str], dict[str, dict]]:
+    """Declared column metadata (is_nullable/column_default) for ATTACHED
+    sources only, read from information_schema: file views carry no declared
+    constraints, so their metadata stays unknown (spec 0010 §4 — expose
+    declared metadata only where the source provides it)."""
+    declared: dict[tuple[str, str, str], dict[str, dict]] = {}
+    for entry in catalog:
+        if not any(table.get("catalog") for table in entry["tables"]):
+            continue  # file views: no declared metadata to read
+        rows = con.execute(
+            "SELECT table_catalog, table_schema, table_name, column_name, "
+            "is_nullable, column_default FROM information_schema.columns "
+            "WHERE table_catalog = ? ORDER BY table_schema, table_name, ordinal_position",
+            [entry["name"]],
+        ).fetchall()
+        for catalog_name, schema, table, column, is_nullable, default in rows:
+            declared.setdefault((catalog_name, schema, table), {})[column] = {
+                # the DECLARED nullability, verbatim: YES -> nullable, NO ->
+                # NOT NULL; anything else the source does not declare stays
+                # unknown (None), never a manufactured constraint (spec 0010 §4)
+                "nullable": (
+                    True if is_nullable == "YES" else False if is_nullable == "NO" else None
+                ),
+                "default": default,
+            }
+    return declared
+
+
+def _resource_pages(project: Path, revision: str) -> tuple[dict[str, dict], set[str]]:
+    """The candidate's resource-bound schema pages at ``revision`` (read from
+    the commit, never a worktree): ``(resource -> {path, meta, text}, tracked
+    schema-page paths)``. Two pages carrying the same resource is a collision
+    needing human resolution; pages without a canonical resource (legacy
+    authored names) are not touched by refresh."""
+    tracked = proposals._git(["ls-tree", "-r", "--name-only", revision], project).stdout
+    pages: dict[str, dict] = {}
+    paths: set[str] = set()
+    for rel in tracked.split("\n"):
+        if not (
+            rel.startswith("context_layer/tables/") or rel.startswith("context_layer/datasets/")
+        ) or PurePosixPath(rel).name in proposals._GENERATED_FILES:
+            continue
+        blob = proposals._read_blob(project, revision, rel)
+        if blob is None:  # pragma: no cover - ls-tree paths always resolve
+            continue
+        paths.add(rel)
+        text = blob.decode("utf-8", "replace")
+        try:
+            meta = _load_frontmatter_meta(text)
+        except yaml.YAMLError:
+            continue  # a malformed draft page: the validation gate owns the error
+        resource = meta.get("resource") if isinstance(meta, dict) else None
+        if isinstance(resource, str) and resource.startswith("ariadne://"):
+            if resource in pages:
+                raise ValueError(
+                    f"the candidate carries two schema pages for {resource!r} "
+                    f"({pages[resource]['path']} and {rel}) — a resource collision "
+                    "needs human resolution; refresh refuses rather than overwriting"
+                )
+            pages[resource] = {"path": rel, "meta": meta, "text": text}
+    return pages, paths
+
+
+def _schema_columns(catalog_table: dict, declared: dict) -> list[dict]:
+    """The core-owned schema facts of one table: exact column identity/type in
+    ordinal order plus only supported declared metadata (unknown stays
+    unknown; no manufactured NOT NULL, default or comment)."""
+    facts = declared.get(
+        (catalog_table.get("catalog"), catalog_table.get("schema"), catalog_table["name"]), {}
+    )
+    columns: list[dict] = []
+    for column in catalog_table["columns"]:
+        meta = facts.get(column["name"])
+        columns.append(
+            {
+                "column": column["name"],
+                "type": column["type"],
+                "nullable": meta["nullable"] if meta is not None else "unknown",
+                "default": meta["default"] if meta is not None else "unknown",
+                "comment": "unknown",  # no comment source is read in K1
+            }
+        )
+    return columns
+
+
+def refresh_schema(
+    project: str | Path,
+    proposal: str,
+    expected_revision: str,
+    assets: list[dict] | tuple[dict, ...],
+) -> dict:
+    """The explicit physical schema refresh (plan §2 ``refresh_schema``, spec
+    0010 §4; issue #41/K1): regenerate the core-owned schema facts and Dataset
+    Overviews of an EXPLICIT catalog asset list inside the selected proposal.
+
+    Reads run ONLY through the operator-approved resolved source identity (the
+    G3 seam — an unapproved or changed registry is an explicit error and the
+    connection builder is never called); every write is a revision-checked
+    complete page edit (an identical refresh is a no-op and the candidate
+    revision does not move); authored summary/column meaning is preserved for
+    identical column identity/type while removed/type-changed columns keep
+    their prior meaning as reviewable history; filename/resource collisions
+    refuse instead of overwriting. Returns the resulting revision, the
+    generated page identities (resource + path + kind) and per-page
+    schema-change flags. Refresh edits a candidate — it is never validation or
+    admission (K4 owns context-only admission)."""
+    project = Path(project).resolve()
+    if not isinstance(assets, (list, tuple)) or not assets:
+        raise ValueError(
+            "refresh_schema takes an explicit non-empty list of catalog assets "
+            "{source, catalog, schema, table}"
+        )
+    requested = [_catalog_asset(asset) for asset in assets]
+    seen: set[tuple] = set()
+    for asset in requested:
+        key = (asset["source"], asset["catalog"], asset["schema"], asset["table"])
+        if key in seen:
+            raise ValueError(f"duplicate catalog asset in the refresh request: {asset}")
+        seen.add(key)
+    record = proposals._load_record(project, proposal)
+    current = record["candidate_revision"]
+    if expected_revision != current:
+        raise ValueError(
+            f"stale revision: proposal {proposal} is at candidate {current}, the "
+            f"refresh expected {expected_revision} — re-read the candidate and retry "
+            "with the current revision; nothing was written"
+        )
+    resolved, digest = authoring_sources.candidate_sources(project, current)
+    if resolved is None:
+        raise ValueError(
+            f"proposal {proposal} declares no source entries in its candidate "
+            f"registry at {current[:12]} — there is nothing to refresh"
+        )
+    approval = authoring_sources._approved_identity(project, digest, proposal, current)
+    owned = execution.DuckDBExecution(authoring_sources.identity_registry(approval["sources"]))
+    try:
+        con, catalog = owned.con, owned.catalog
+        declared = _declared_columns(con, catalog)
+        # profile ONLY the requested tables (bounded, explicit refresh work)
+        profiles: dict[str, dict] = {}
+        matched: dict[tuple, dict] = {}
+        for entry in catalog:
+            matching = [
+                t
+                for t in entry["tables"]
+                if (t["source"], t.get("catalog"), t.get("schema"), t["name"]) in seen
+            ]
+            if not matching:
+                continue
+            for table in matching:
+                matched[
+                    (table["source"], table.get("catalog"), table.get("schema"), table["name"])
+                ] = table
+            source_profile = profiler._profile_source(con, {**entry, "tables": matching})
+            for table in source_profile["tables"].values():
+                profiles[table["resource"]] = table
+    finally:
+        owned.close()
+    missing = [
+        asset
+        for asset in requested
+        if (asset["source"], asset["catalog"], asset["schema"], asset["table"]) not in matched
+    ]
+    if missing:
+        available = sorted(
+            f"{t['source']}.{t.get('schema')}.{t['name']}"
+            for entry in catalog
+            for t in entry["tables"]
+        )
+        raise ValueError(
+            f"catalog asset(s) not present in the approved resolved source identity: "
+            f"{missing[0]} — available assets: {', '.join(available) or 'none'}; "
+            "nothing was written"
+        )
+    existing, tracked_paths = _resource_pages(project, current)
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    specs: list[dict] = []
+    claimed: dict[str, str] = {}
+    collections: dict[tuple, dict] = {}
+    for asset in requested:
+        key = (asset["source"], asset["catalog"], asset["schema"], asset["table"])
+        table = matched[key]
+        resource = table_resource(
+            asset["source"], asset["catalog"], asset["schema"], asset["table"]
+        )
+        columns = _schema_columns(table, declared)
+        page = existing.get(resource)
+        path = page["path"] if page else (
+            f"context_layer/tables/{generated_page_filename(resource, asset['source'])}"
+        )
+        text, flags = build_table_page(
+            asset={
+                **asset,
+                "resource": resource,
+            },
+            columns=columns,
+            profile=profiles[resource],
+            existing_text=page["text"] if page else None,
+            now=now,
+        )
+        specs.append(
+            {
+                "resource": resource,
+                "path": path,
+                "text": text,
+                "kind": "table",
+                "flags": flags,
+            }
+        )
+        collections.setdefault(
+            (asset["source"], asset["catalog"], asset["schema"]),
+            {"source": asset["source"], "catalog": asset["catalog"], "schema": asset["schema"]},
+        )
+    for collection_key, collection in collections.items():
+        resource = collection_resource(
+            collection["source"], collection["catalog"], collection["schema"]
+        )
+        page = existing.get(resource)
+        path = page["path"] if page else (
+            f"context_layer/datasets/{generated_page_filename(resource, collection['source'])}"
+        )
+        # Overview membership is the collection's EXISTING represented pages
+        # PLUS the requested updates (issue #41): a narrower refresh never
+        # drops a still-present table's link — and an approved asset nothing
+        # ever documented is never silently asserted (no unrelated additions)
+        members: list[dict] = []
+        requested_here: set[str] = set()
+        for spec in specs:
+            if spec["kind"] != "table":
+                continue
+            parts = parse_resource(spec["resource"])[1]
+            if parts[:3] != list(collection_key):
+                continue  # the tables of OTHER collections
+            members.append(
+                {
+                    "resource": spec["resource"],
+                    "table": parts[3],
+                    "link": f"../tables/{PurePosixPath(spec['path']).name}",
+                    "column_count": len(profiles[spec["resource"]]["columns"]),
+                }
+            )
+            requested_here.add(spec["resource"])
+        carried: list[tuple[str, dict]] = []
+        for res, carried_page in existing.items():
+            if res in requested_here or not carried_page["path"].startswith(
+                "context_layer/tables/"
+            ):
+                continue
+            try:
+                kind, parts = parse_resource(res)
+            except ValueError:
+                continue  # not a canonical resource: nothing it can represent
+            if kind != "table" or parts[:3] != list(collection_key):
+                continue
+            carried_meta = (
+                carried_page["meta"].get("ariadne")
+                if isinstance(carried_page["meta"], dict)
+                else None
+            )
+            carried_schema = (
+                carried_meta.get("schema") if isinstance(carried_meta, dict) else None
+            )
+            carried.append(
+                (
+                    parts[3],
+                    {
+                        "resource": res,
+                        "table": parts[3],
+                        "link": f"../tables/{PurePosixPath(carried_page['path']).name}",
+                        "column_count": (
+                            len(carried_schema) if isinstance(carried_schema, list) else 0
+                        ),
+                    },
+                )
+            )
+        members.extend(member for _table, member in sorted(carried, key=lambda c: c[0]))
+        text, flags = build_dataset_page(
+            collection={
+                **collection,
+                "resource": resource,
+            },
+            tables=members,
+            existing_text=page["text"] if page else None,
+        )
+        specs.append(
+            {"resource": resource, "path": path, "text": text, "kind": "dataset", "flags": flags}
+        )
+    # collision checks BEFORE any write (plan §2: a collision refuses, never
+    # overwrites; filename/resource consistency is checked against the
+    # candidate's tracked schema pages)
+    for spec in specs:
+        other = claimed.get(spec["path"])
+        if other is not None and other != spec["resource"]:
+            raise ValueError(
+                f"generated filename collision: {spec['path']} would serve both "
+                f"{other!r} and {spec['resource']!r} — refresh refuses rather than "
+                "overwriting another asset"
+            )
+        claimed[spec["path"]] = spec["resource"]
+        page = existing.get(spec["resource"])
+        if page is None and spec["path"] in tracked_paths:
+            raise ValueError(
+                f"{spec['path']}: the generated page for {spec['resource']!r} collides "
+                "with a different existing candidate page — a filename/resource "
+                "collision refuses rather than overwriting; resolve it by hand"
+            )
+    revision = current
+    pages: list[dict] = []
+    changed_any = False
+    for spec in specs:  # revision-checked complete page edits, core-generated
+        out = proposals.edit_proposal(
+            project, proposal, revision, spec["path"], spec["text"], core_generated=True
+        )
+        revision = out["revision"]
+        changed_any = changed_any or out["changed"]
+        pages.append(
+            {
+                "resource": spec["resource"],
+                "path": spec["path"],
+                "kind": spec["kind"],
+                "changed": out["changed"],
+                "changes": spec["flags"],
+            }
+        )
+    return {
+        "proposal": proposal,
+        "revision": revision,
+        "changed": changed_any,
+        "pages": pages,
+        "assets": requested,
+        "source_digest": digest,
+    }

@@ -38,11 +38,11 @@ def _check_section(section: object) -> str:
             "service-owned, ADR-0007/ADR-0013) — they are never user-editable in a "
             "proposal"
         )
-    if section not in ("tables", "references", "policies", "metrics", "skills"):
+    if section not in ("datasets", "tables", "references", "policies", "metrics", "skills"):
         raise ValueError(
             f"unknown page section {section!r}: OKF pages live under context_layer/"
-            "{tables,references,policies,metrics,skills}/ — computations, index.md and "
-            "log.md are system-owned"
+            "{datasets,tables,references,policies,metrics,skills}/ — computations, "
+            "index.md and log.md are system-owned"
         )
     return str(section)
 
