@@ -153,6 +153,39 @@ def _numeric(type_name: str) -> bool:
     return type_name.split("(")[0].upper() in _NUMERIC_TYPES
 
 
+# Integer and binary-float families (K3 issue #43): exact-name equality and
+# widening WITHIN a family compare without lossy coercion; anything across
+# families (VARCHAR vs numeric, numeric vs timestamp, ...) does not.
+_INTEGER_TYPES = frozenset(
+    {
+        "TINYINT",
+        "SMALLINT",
+        "INTEGER",
+        "BIGINT",
+        "HUGEINT",
+        "UTINYINT",
+        "USMALLINT",
+        "UINTEGER",
+        "UBIGINT",
+    }
+)
+_FLOAT_TYPES = frozenset({"FLOAT", "DOUBLE", "REAL"})
+
+
+def types_compatible(left: str, right: str) -> bool:
+    """Whether two column types may be compared as identifiers WITHOUT lossy
+    coercion (spec 0010 §7, plan §2): exact type names, or a widening within
+    the integer/binary-float family. A string column beside a numeric column
+    is NEVER compatible — string identifier equivalence is not inferred from
+    numeric casts."""
+    left, right = left.split("(")[0].upper(), right.split("(")[0].upper()
+    if left == right:
+        return True
+    if left in _INTEGER_TYPES and right in _INTEGER_TYPES:
+        return True
+    return left in _FLOAT_TYPES and right in _FLOAT_TYPES
+
+
 def _allowlisted(cols_by_table: dict[str, list[tuple[str, str]]]) -> set[str]:
     """Every table and column name the source actually contains (from the
     builder's catalog — DuckDB cannot parameterize identifiers, so membership

@@ -21,6 +21,9 @@ no workflow module (spec §2).
 
 from __future__ import annotations
 
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -30,6 +33,71 @@ from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-m
     Registry,
     build_connection,  # noqa: F401 — re-export: the historical patch seam stays importable
 )
+
+# The deadline seam's clock (K3 issue #43): a module attribute so a caller's
+# tests can control timeout behavior DETERMINISTICALLY (a patched clock, never
+# a wall-clock race or a hosted service).
+_deadline_clock = time.monotonic
+
+DEADLINE_MESSAGE = (
+    "the inspection deadline ({budget}s total across source setup, catalog reads "
+    "and inspection statements) was exhausted before the measurement could "
+    "complete — every statement was interrupted and nothing was claimed "
+    "complete; re-inspect with a narrower candidate or scope"
+)
+UNCANCELLABLE_MESSAGE = (
+    "the owned connection exposes no interruptible execution for this backend "
+    "— an inspection whose execution cannot be bounded and cancelled is an "
+    "explicit refusal, never a fake passing check (spec 0010 §7)"
+)
+
+
+class DeadlineBudget:
+    """One shared wall-clock budget across EVERY phase of a bounded operation
+    (K3 issue #43, plan §2): source setup, catalog reads and each inspection
+    statement draw down the same budget, and each guarded statement arms the
+    owned connection's interrupt so an over-budget backend read STOPS — the
+    deadline is never claimed to have stopped a query that is still running."""
+
+    def __init__(self, seconds: float, *, clock=None) -> None:
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds <= 0:
+            raise ValueError(f"the execution deadline must be a positive number, got {seconds!r}")
+        self.seconds = float(seconds)
+        self._clock = clock or _deadline_clock
+        self._start = self._clock()
+
+    def remaining(self) -> float:
+        return max(self.seconds - (self._clock() - self._start), 0.0)
+
+    def expired(self) -> bool:
+        return self.remaining() <= 0.0
+
+    @contextmanager
+    def guard(self, con):
+        """Run one guarded phase: refuse immediately when the budget is spent,
+        arm the connection's interrupt for the remaining budget, and convert an
+        interruption that fired at/after expiry into the explicit deadline
+        refusal (never a partial result)."""
+        if self.expired():
+            raise ValueError(DEADLINE_MESSAGE.format(budget=self.seconds))
+        if not hasattr(con, "interrupt"):
+            raise ValueError(UNCANCELLABLE_MESSAGE)
+        timer = threading.Timer(max(self.remaining(), 1e-6), con.interrupt)
+        timer.daemon = True
+        timer.start()
+        try:
+            yield
+        except duckdb.Error:
+            if self.expired():
+                raise ValueError(DEADLINE_MESSAGE.format(budget=self.seconds)) from None
+            raise
+        finally:
+            timer.cancel()  # the phase ended: no background read keeps running
+        # K3 fix pass (finding 9): a SUCCESSFUL phase that finished beyond the
+        # budget is exhaustion too — its result escaped the deadline and is
+        # never returned as a completed measurement.
+        if self.expired():
+            raise ValueError(DEADLINE_MESSAGE.format(budget=self.seconds))
 
 
 def assert_single_statement(sql: str) -> None:
@@ -56,14 +124,27 @@ class DuckDBExecution:
     collection and close — moved intact from the query runtime (issue #33);
     every guarded operation is the historical one, in the historical order."""
 
-    def __init__(self, registry: Registry) -> None:
+    def __init__(self, registry: Registry, *, budget=None) -> None:
         """The one DuckDB session over the registry sources (ADR-0010):
         :func:`ariadne.sources.build_connection` executes its deterministic
         statement plan verbatim and returns the connection plus the per-source
         catalog (cheap enumeration only — no profiling here). The call resolves
         through the :mod:`ariadne.sources` module, so the builder stays ONE
-        shared chokepoint every caller (and test canary) sees (issue #35/G3)."""
-        self.con, self.catalog = sources.build_connection(registry)
+        shared chokepoint every caller (and test canary) sees (issue #35/G3).
+        With a K3 :class:`DeadlineBudget`, the source SETUP (extension loads,
+        attaches, catalog reads) runs under the same interrupt watchdog as the
+        guarded statements — an over-budget setup stops and reports the
+        deadline, never a partial session."""
+        deadline = budget.remaining() if budget is not None else None
+        if deadline is not None:
+            self.con, self.catalog = sources.build_connection(registry, deadline=deadline)
+        else:
+            self.con, self.catalog = sources.build_connection(registry)
+        if budget is not None and budget.expired():
+            self.close()
+            raise ValueError(
+                DEADLINE_MESSAGE.format(budget=budget.seconds)
+            )
 
     @classmethod
     def legacy_sqlite(cls, db_path: str | Path) -> DuckDBExecution:

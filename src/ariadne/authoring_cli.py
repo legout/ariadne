@@ -29,6 +29,10 @@ for failure, message verbatim.
                               [--project DIR]
     ariadne-authoring refresh-schema --proposal ID --expected-revision REV
                                     --file FILE [--project DIR]
+    ariadne-authoring inspect-mapping --proposal ID --expected-revision REV
+                                      --file FILE [--project DIR]  (issue #43;
+                                      bounded mapping inspection, never a
+                                      page edit or approval)
     ariadne-authoring resolve-term --proposal ID [TERM] [--file FILE]
                                     [--part N] [--project DIR]  (issue #42;
                                     read-only candidate resolution)
@@ -57,8 +61,9 @@ GIT contract above — ``authoring_start_proposal``/``authoring_read_artifact``/
 ``--proposal``/``--expected-revision`` + typed entries)/``authoring_inputs``
 (Git mode: ``--proposal``)/``authoring_upload_document``/
 ``authoring_validate_proposal``/``authoring_refresh_schema`` (issue #41: the
-explicit physical schema refresh)/``authoring_resolve_term`` (issue #42: the
-read-only candidate term resolution)/``authoring_review_proposal`` — with model
+explicit physical schema refresh)/``authoring_inspect_mapping`` (issue #43:
+the bounded mapping inspection with authentic receipts)/``authoring_resolve_term``
+(issue #42: the read-only candidate term resolution)/``authoring_review_proposal`` — with model
 arguments carrying only proposal IDs, revisions and typed artifact
 identities. A legacy complete-bundle ``submit``/``review`` payload composes as
 ``start`` + one ``edit`` per artifact + ``validate``/``review --proposal``
@@ -382,6 +387,31 @@ def build_parser() -> _Parser:
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
 
+    inspect_cmd = sub.add_parser(
+        "inspect-mapping",
+        help="measure one structured mapping-inspection candidate (equality/prefix/"
+        "lookup families) under the operator's finite ceilings and retain the core "
+        "receipt in the project evidence area (issue #43): reads only the "
+        "operator-approved resolved source identity; never a page edit, approval "
+        "or admission",
+    )
+    inspect_cmd.add_argument("--proposal", required=True, help="the proposal ID")
+    inspect_cmd.add_argument(
+        "--expected-revision",
+        required=True,
+        help="the CURRENT candidate revision the inspection is based on",
+    )
+    inspect_cmd.add_argument(
+        "--file",
+        required=True,
+        help='the inspection request as JSON ("-" reads stdin): the discriminated '
+        'candidate object itself, or {"candidate": ..., "limits": {...}} with '
+        "request-lowered limits",
+    )
+    inspect_cmd.add_argument(
+        "--project", default=".", help="project root holding ariadne.yaml (default: .)"
+    )
+
     resolve_cmd = sub.add_parser(
         "resolve-term",
         help="resolve a shared business term or an exact field lookup against the "
@@ -478,6 +508,22 @@ def _read_asset_list(file: str) -> list[dict]:
     return data
 
 
+def _read_inspection_request(file: str) -> tuple[object, object]:
+    """The inspection request from ``--file`` (or stdin with ``-``): the
+    discriminated candidate object itself, or the object form
+    ``{"candidate": ..., "limits": {...}}`` — adapter input only, never a
+    filesystem destination. Malformed JSON is a UsageError so the
+    one-JSON-error-object contract still holds."""
+    raw = sys.stdin.read() if file == "-" else Path(file).read_text(encoding="utf-8")
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise UsageError(f"{file}: inspection request is not valid JSON: {exc}") from None
+    if isinstance(data, dict) and "candidate" in data and "family" not in data:
+        return data["candidate"], data.get("limits")
+    return data, None
+
+
 def _read_source_entries(file: str) -> list[dict]:
     """The typed source entries of a registry-shaped intake document (the
     same shape the legacy route validates): its ``sources:`` list."""
@@ -536,6 +582,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "refresh-schema":
             result = AuthoringProject(args.project).refresh_schema(
                 args.proposal, args.expected_revision, _read_asset_list(args.file)
+            )
+        elif args.command == "inspect-mapping":
+            candidate, limits = _read_inspection_request(args.file)
+            result = AuthoringProject(args.project).inspect_mapping(
+                args.proposal, args.expected_revision, candidate, limits=limits
             )
         elif args.command == "resolve-term":
             if args.file is not None:

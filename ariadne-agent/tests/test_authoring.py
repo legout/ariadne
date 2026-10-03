@@ -76,6 +76,7 @@ AUTHORING_TOOLS = {
     "upload_document",
     "validate_proposal",
     "refresh_schema",
+    "inspect_mapping",  # K3 (issue #43): bounded mapping inspection + receipts
     "resolve_term",  # K2 (issue #42): read-only candidate term resolution
     "review_proposal",
     "read_skill_reference",
@@ -782,3 +783,58 @@ def test_native_refresh_schema_reports_flags_and_noops_on_identical_retry(tmp_pa
         assert second["changed"] is False and second["revision"] == first["revision"]
     finally:
         session.close()
+
+
+def test_native_inspect_mapping_returns_the_core_receipt(tmp_path):
+    """K3 (issue #43): the native ``inspect_mapping`` tool drives the shared
+    core over the operator-approved sources and returns its verbatim receipt
+    envelope — honest counts under the lowered sample bound, no raw
+    identifier examples without the operator's sample permission — with no
+    page edit, approval or confirmation anywhere in the flow (hypothesis
+    capture stays K5)."""
+    from tests.test_mapping_inspection import approved_project, prefix_candidate
+
+    project, api, started = approved_project(tmp_path / "native")
+    provider = FlowProvider()
+    session = open_session(
+        role="authoring", project=project, model="fake-authoring", provider=provider
+    )
+    try:
+        provider.script(
+            turn(
+                calls=[
+                    (
+                        "inspect_mapping",
+                        {
+                            "proposal": started["proposal"],
+                            "expected_revision": started["candidate_revision"],
+                            "candidate": prefix_candidate(),
+                            "limits": {"sample_rows": 3},
+                        },
+                    )
+                ]
+            )
+        )
+        provider.script(turn(text="receipt retained; reporting the honest counts"))
+        events = asyncio.run(drive(session, "inspect the prefix mapping candidate"))
+    finally:
+        session.close()
+
+    result = result_of(events, "inspect_mapping")
+    twin = api.inspect_mapping(
+        started["proposal"],
+        started["candidate_revision"],
+        prefix_candidate(),
+        limits={"sample_rows": 3},
+    )
+    receipt = result["receipt"]
+    assert result["proposal"] == started["proposal"]
+    assert receipt["counts"] == twin["receipt"]["counts"]
+    assert receipt["coverage"] == twin["receipt"]["coverage"]
+    assert receipt["unknown_lookup_count"] == 1
+    assert receipt["comparison_basis"] == "containment-only"
+    assert receipt["designation"] == "sampled"
+    assert receipt["receipt_id"].startswith("mr-")
+    assert Path(result["evidence"]).is_file()
+    assert "examples" not in receipt  # no sample permission was granted
+    assert "123123" not in json.dumps(result)

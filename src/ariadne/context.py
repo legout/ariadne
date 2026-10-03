@@ -338,6 +338,21 @@ def _set_frontmatter(text: str, updates: dict) -> str:
     return f"---\n{front}\n---\n\n{body}"
 
 
+def _set_frontmatter_key(text: str, key: str, value) -> str:
+    """Set — or REMOVE, with ``value=None`` — ONE frontmatter key, preserving
+    every other key's order and the body (the K3 evidence-attachment seam:
+    deterministic round-trip of a core-attached system claim)."""
+    match = _FRONTMATTER_RE.match(text)
+    meta = (yaml.safe_load(match.group(1)) or {}) if match else {}
+    if value is None:
+        meta.pop(key, None)
+    else:
+        meta[key] = value
+    front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
+    body = match.group(2) if match else text
+    return f"---\n{front}\n---\n\n{body}"
+
+
 def _load(text: str) -> tuple[dict | None, str]:
     """Split a file into (frontmatter meta or None, body)."""
     match = _FRONTMATTER_RE.match(text)
@@ -1243,10 +1258,336 @@ _RESOLVE_ENVELOPE_RESERVE = 1024
 
 _EXTENSION_KEYS = frozenset({"version", "reference_role", "representations", "mappings"})
 _REPRESENTATION_KEYS = frozenset({"id", "aliases", "fields", "scope", "description"})
-# The K3 structured inspection candidate (issue #43) is not part of version 1:
-# accepting an unvalidated blob here would let a draft stash arbitrary claims
-# in a page that validates — the allowlist grows with K3's candidate schema.
-_MAPPING_KEYS = frozenset({"id", "family", "from", "to", "claim", "source_ids", "receipt_ids"})
+# K3 (issue #43, spec 0010 §7): the structured inspection candidate IS part of
+# a mapping declaration now — validated by the shared candidate schema below
+# (``validate_inspection_candidate``), still alongside the refusal of every
+# author-fabricated approval/measurement claim.
+_MAPPING_KEYS = frozenset(
+    {"id", "family", "from", "to", "claim", "source_ids", "receipt_ids", "candidate"}
+)
+
+
+# --------------------- K3 (issue #43): the inspection candidate schema
+
+# The candidate is a discriminated JSON object, never an executable string
+# (spec 0010 §7, plan §2 "Inspection candidate and finite limits"): the
+# allowlists below are exhaustive — there is no SQL, function, path or freely
+# interpreted expression field, and an unknown key is refused by name.
+CANDIDATE_FAMILIES = ("equality", "prefix", "lookup")
+CANDIDATE_SCOPE_OPS = ("eq", "in", "gte", "lt")
+# Operator-owned structural ceilings of one candidate (plan §2): four
+# participating assets, sixteen candidate field bindings, eight scope
+# predicates, one hundred values per in-list. Requests never raise these.
+MAX_PARTICIPATING_ASSETS = 4
+MAX_CANDIDATE_BINDINGS = 16
+MAX_SCOPE_PREDICATES = 8
+MAX_IN_LIST_VALUES = 100
+
+_COMMON_CANDIDATE_KEYS = frozenset({"family", "left", "right", "scope", "pairing"})
+_FAMILY_CANDIDATE_KEYS = {
+    "equality": frozenset(),
+    "prefix": frozenset({"separator", "prefix_lookup"}),
+    "lookup": frozenset({"lookup"}),
+}
+_SCOPE_PREDICATE_KEYS = frozenset({"resource", "column", "op", "value"})
+_PAIRING_KEYS = frozenset({"left", "right"})
+_PREFIX_LOOKUP_KEYS = frozenset({"asset", "key_fields", "prefix_field"})
+_LOOKUP_KEYS = frozenset({"asset", "key_fields", "value_fields"})
+# The bounded verified receipt summary the core attaches to a Reference page
+# at finalization (K3, plan §2): credential-free counts only, never raw
+# examples — and never authorable (the edit seam owns the claim key).
+_EVIDENCE_SUMMARY_KEYS = frozenset(
+    {
+        "id",
+        "digest",
+        "family",
+        "outcome",
+        "designation",
+        "comparison_basis",
+        "tested_left",
+        "tested_right",
+        "eligible_left",
+        "eligible_right",
+        "matched_left_in_right",
+        "matched_right_in_left",
+        "mismatch_count",
+        "observed_at",
+    }
+)
+
+
+def _canonical_digest(payload: object) -> str:
+    """sha256 over the canonical UTF-8 JSON form (sorted keys, compact)."""
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _one_resource(where: str, bindings: list[dict]) -> str:
+    """The single resource every binding of one side names (left/right sides
+    each address ONE catalog asset — a composite tuple or paired record of one
+    table, never a mixture of two assets' rows)."""
+    resources = {binding["resource"] for binding in bindings}
+    if len(resources) != 1:
+        raise ValueError(
+            f"{where} must name exactly ONE catalog asset (got {len(resources)} — a "
+            "composite tuple pairs columns of one asset)"
+        )
+    return resources.pop()
+
+
+def validate_inspection_candidate(candidate: object) -> dict:
+    """Validate the structured inspection candidate (spec 0010 §7, plan §2)
+    and return its normalized deep copy — the identity a receipt's
+    ``candidate_digest`` binds and a re-declared mapping must reproduce.
+    Raises ``ValueError`` naming the offending field for every malformed
+    shape: unknown keys (there is no SQL/function/path field anywhere),
+    non-canonical bindings, unsupported operators, untyped scope values,
+    arity violations and the structural ceilings."""
+    if not isinstance(candidate, dict):
+        raise ValueError(
+            f"the inspection candidate must be a discriminated JSON object, got "
+            f"{type(candidate).__name__}"
+        )
+    family = candidate.get("family")
+    if family not in CANDIDATE_FAMILIES:
+        raise ValueError(
+            f"the inspection candidate family must be one of "
+            f"{list(CANDIDATE_FAMILIES)}, got {family!r}"
+        )
+    allowed = _COMMON_CANDIDATE_KEYS | _FAMILY_CANDIDATE_KEYS[family]
+    unknown = sorted(set(candidate) - allowed)
+    if unknown:
+        raise ValueError(
+            f"the inspection candidate carries unsupported field(s) {unknown} — a "
+            "candidate is a discriminated object of {family!r} with at most "
+            f"{sorted(allowed)}; there is no SQL, function or path field"
+        )
+    for side in ("left", "right"):
+        bindings = candidate.get(side)
+        if not isinstance(bindings, list) or not bindings:
+            raise ValueError(
+                f"the inspection candidate requires an ordered non-empty '{side}' "
+                "field binding list"
+            )
+        errors = _binding_errors(f"candidate {side}", bindings)
+        if errors:
+            raise ValueError("; ".join(errors))
+    left, right = candidate["left"], candidate["right"]
+    left_resource = _one_resource("candidate left", left)
+    right_resource = _one_resource("candidate right", right)
+    assets = {left_resource, right_resource}
+    binding_count = len(left) + len(right)
+    scope = candidate.get("scope", [])
+    if scope is None:
+        scope = []
+    if not isinstance(scope, list):
+        raise ValueError("candidate scope must be an ordered list of predicates")
+    if len(scope) > MAX_SCOPE_PREDICATES:
+        raise ValueError(
+            f"the inspection candidate carries {len(scope)} scope predicates — at "
+            f"most {MAX_SCOPE_PREDICATES} are measurable per request"
+        )
+    for index, predicate in enumerate(scope):
+        where = f"candidate scope[{index}]"
+        if not isinstance(predicate, dict) or set(predicate) != _SCOPE_PREDICATE_KEYS:
+            raise ValueError(
+                f"{where} must be exactly {{resource, column, op, value}} — scope "
+                "operators are eq/in/gte/lt over typed scalar values"
+            )
+        binding = {"resource": predicate["resource"], "column": predicate["column"]}
+        errors = _binding_errors(where, [binding])
+        if errors:
+            raise ValueError("; ".join(errors))
+        # K3 fix pass (finding 1): a scope predicate narrows a PARTICIPATING
+        # measured asset — attachment is checked below, after the family
+        # branch resolved every participating (side/lookup) asset.
+        if predicate["op"] not in CANDIDATE_SCOPE_OPS:
+            raise ValueError(
+                f"{where} operator must be one of {list(CANDIDATE_SCOPE_OPS)}, got "
+                f"{predicate['op']!r}"
+            )
+        value = predicate["value"]
+        if predicate["op"] == "in":
+            if (
+                not isinstance(value, list)
+                or not value
+                or len(value) > MAX_IN_LIST_VALUES
+                or not all(_scope_scalar(item) for item in value)
+            ):
+                raise ValueError(
+                    f"{where} 'in' value must be a non-empty list of at most "
+                    f"{MAX_IN_LIST_VALUES} typed scalar values"
+                )
+        elif not _scope_scalar(value):
+            raise ValueError(
+                f"{where} value must be a typed scalar (string, number or boolean) "
+                "bound as a parameter"
+            )
+    binding_count += len(scope)
+    pairing = candidate.get("pairing", [])
+    if pairing is None:
+        pairing = []
+    if not isinstance(pairing, list):
+        raise ValueError("candidate pairing must be a list of field pairs")
+    for index, pair in enumerate(pairing):
+        where = f"candidate pairing[{index}]"
+        if not isinstance(pair, dict) or set(pair) != _PAIRING_KEYS:
+            raise ValueError(
+                f"{where} must be exactly {{left, right}} — pairing names "
+                "independently supplied record keys, not a guessed row order"
+            )
+        for side, side_resource in (("left", left_resource), ("right", right_resource)):
+            errors = _binding_errors(f"{where} {side}", [pair[side]])
+            if errors:
+                raise ValueError("; ".join(errors))
+            # K3 fix pass (finding 1): a pairing binding names a column of ITS
+            # side's measured asset — a pairing identity naming another asset
+            # while the measurement reads the side's columns is a refusal, so a
+            # receipt never carries a pairing identity for columns it did not
+            # read from that asset.
+            if pair[side]["resource"] != side_resource:
+                raise ValueError(
+                    f"{where} {side} binding must name the candidate's {side} asset "
+                    f"{side_resource!r} — a pairing key binds a column of ITS side's "
+                    f"measured asset, got {pair[side]['resource']!r}"
+                )
+        binding_count += 2
+    prefix_lookup = lookup = None
+    if family == "equality":
+        if len(left) != len(right):
+            raise ValueError(
+                f"an equality candidate compares equally sized tuples — left has "
+                f"{len(left)} field(s), right {len(right)}"
+            )
+    elif family == "prefix":
+        if len(right) != 1:
+            raise ValueError("a prefix candidate compares one target field binding")
+        separator = candidate.get("separator")
+        if not isinstance(separator, str):
+            raise ValueError(
+                "a prefix candidate carries an explicit literal 'separator' string "
+                "(the empty string is explicit)"
+            )
+        prefix_lookup = candidate.get("prefix_lookup")
+        if prefix_lookup is not None:
+            if not isinstance(prefix_lookup, dict) or set(prefix_lookup) != _PREFIX_LOOKUP_KEYS:
+                raise ValueError(
+                    "candidate prefix_lookup must be exactly "
+                    "{asset, key_fields, prefix_field}"
+                )
+            prefix_lookup, lookup_bindings = _lookup_asset(
+                prefix_lookup, "candidate prefix_lookup"
+            )
+            if len(lookup_bindings["key_fields"]) > len(left):
+                raise ValueError(
+                    "candidate prefix_lookup key_fields outnumber the left "
+                    "components they identify"
+                )
+            binding_count += lookup_bindings["count"]
+            assets.add(prefix_lookup["asset"])
+    else:  # lookup
+        lookup = candidate.get("lookup")
+        if not isinstance(lookup, dict) or set(lookup) != _LOOKUP_KEYS:
+            raise ValueError(
+                "candidate lookup must be exactly {asset, key_fields, value_fields}"
+            )
+        lookup, lookup_bindings = _lookup_asset(lookup, "candidate lookup")
+        if len(left) != len(lookup["key_fields"]):
+            raise ValueError(
+                f"a lookup candidate's left bindings match the lookup key_fields "
+                f"one-for-one — left has {len(left)}, key_fields "
+                f"{len(lookup['key_fields'])}"
+            )
+        if len(right) != len(lookup["value_fields"]):
+            raise ValueError(
+                f"a lookup candidate's right bindings match the lookup "
+                f"value_fields one-for-one — right has {len(right)}, value_fields "
+                f"{len(lookup['value_fields'])}"
+            )
+        if left_resource != right_resource:
+            raise ValueError(
+                "a lookup candidate's left and right bindings name the same "
+                "measured asset (its keys and mapped values)"
+            )
+        binding_count += lookup_bindings["count"]
+        assets.add(lookup["asset"])
+    # K3 fix pass (finding 1): scope predicates attach to PARTICIPATING
+    # measured assets only — scope on an otherwise unmeasured asset would be
+    # retained in the receipt's declaration while never narrowing any read.
+    unattached = sorted({predicate["resource"] for predicate in scope} - assets)
+    if unattached:
+        raise ValueError(
+            f"candidate scope names {unattached}, which is not a participating "
+            f"measured asset (measured participants: {sorted(assets)}) — scope "
+            "narrows a participating measured asset only"
+        )
+    if binding_count > MAX_CANDIDATE_BINDINGS:
+        raise ValueError(
+            f"the inspection candidate binds {binding_count} fields — at most "
+            f"{MAX_CANDIDATE_BINDINGS} candidate field bindings are measurable per "
+            "request"
+        )
+    if len(assets) > MAX_PARTICIPATING_ASSETS:
+        raise ValueError(
+            f"the inspection candidate names {len(assets)} participating assets "
+            f"({sorted(assets)}) — at most {MAX_PARTICIPATING_ASSETS} participate"
+        )
+    normalized = json.loads(json.dumps(candidate, ensure_ascii=False))  # deep copy
+    normalized["scope"] = scope
+    normalized["pairing"] = pairing
+    return normalized
+
+
+def _scope_scalar(value: object) -> bool:
+    """A typed scope scalar (bool is not a number here; null is untyped)."""
+    return isinstance(value, (str, int, float, bool)) and not isinstance(value, type(None))
+
+
+def _lookup_asset(lookup: dict, where: str) -> tuple[dict, dict]:
+    """Validate one lookup/prefix-lookup asset declaration: a canonical table
+    resource with its ordered key/value (or prefix) field bindings all naming
+    THAT asset. Returns (the declaration, {key_fields, value_fields, count})."""
+    asset = lookup.get("asset")
+    try:
+        kind, _parts = parse_resource(asset)
+    except ValueError as exc:
+        raise ValueError(f"{where} asset is not canonical: {exc}") from None
+    if kind != "table":
+        raise ValueError(f"{where} names a {kind} resource — a lookup asset is a table")
+    fields: dict[str, list[dict]] = {}
+    count = 0
+    for key in ("key_fields", "value_fields", "prefix_field"):
+        if key not in lookup:
+            continue
+        bindings = lookup[key]
+        bindings = [bindings] if key == "prefix_field" else bindings
+        if not isinstance(bindings, list) or not bindings:
+            raise ValueError(f"{where} {key} must be an ordered non-empty binding list")
+        errors = _binding_errors(f"{where} {key}", bindings)
+        if errors:
+            raise ValueError("; ".join(errors))
+        for binding in bindings:
+            if binding["resource"] != asset:
+                raise ValueError(
+                    f"{where} {key} must bind the lookup asset itself — a binding "
+                    f"names {binding['resource']!r}"
+                )
+        fields[key] = bindings
+        count += len(bindings)
+    if "key_fields" not in fields:
+        raise ValueError(f"{where} requires its ordered key_fields")
+    return lookup, {
+        "key_fields": fields["key_fields"],
+        "value_fields": fields.get("value_fields", []),
+        "count": count,
+    }
+
+
+def candidate_digest(candidate: object) -> str:
+    """The normalized candidate identity digest (plan §2): family, ordered
+    fields/components, scope and pairing/lookup parameters — never observed
+    results or measurement time."""
+    return _canonical_digest(validate_inspection_candidate(candidate))
 
 
 def _aliases_errors(where: str, aliases: object) -> list[str]:
@@ -1390,14 +1731,11 @@ def _reference_extension_errors(rel: str, meta: dict) -> list[str]:
             continue
         unknown = sorted(set(mapping) - _MAPPING_KEYS)
         if unknown:
-            reason = (
-                "the structured inspection candidate arrives with K3 (issue #43) — "
-                "until then a mapping declares only its documented fields"
-                if unknown == ["candidate"]
-                else "approval, confirmation and measured counts/digests are "
-                "system-owned and never authored in a mapping"
+            errors.append(
+                f"{where} carries unsupported field(s) {unknown} — approval, "
+                "confirmation and measured counts/digests are system-owned and "
+                "never authored in a mapping"
             )
-            errors.append(f"{where} carries unsupported field(s) {unknown} — {reason}")
         identifier = mapping.get("id")
         if not isinstance(identifier, str) or not _SLUG_RE.fullmatch(identifier):
             errors.append(f"{where} id must be a stable lowercase slug")
@@ -1462,6 +1800,43 @@ def _reference_extension_errors(rel: str, meta: dict) -> list[str]:
                 f"{where} receipt_ids must be a list of evidence ids (verification "
                 "is core-owned; allowlisting an id is not proof)"
             )
+        # K3 (issue #43): the structured candidate is part of the declaration —
+        # validated by the shared candidate schema; its family must agree with
+        # the mapping's declared family.
+        if "candidate" in mapping:
+            try:
+                normalized = validate_inspection_candidate(mapping["candidate"])
+            except ValueError as exc:
+                errors.append(f"{where} candidate: {exc}")
+            else:
+                if normalized["family"] != mapping.get("family"):
+                    errors.append(
+                        f"{where} declares family {mapping.get('family')!r} but its "
+                        f"candidate measures the {normalized['family']!r} family"
+                    )
+    # K3 (issue #43): the core-attached verified receipt summaries. The key
+    # is system-owned (the edit seam refuses an authored change); this shape
+    # check keeps a legacy/ingested page honest — authenticity is verified by
+    # the project-bound validation against the evidence records, never here.
+    evidence = meta.get("ariadne_evidence")
+    if evidence is not None:
+        if not isinstance(evidence, dict):
+            errors.append(f"{rel}: ariadne_evidence must be a mapping of mapping ids")
+        else:
+            for mapping_id, summaries in evidence.items():
+                if not isinstance(summaries, list) or not summaries:
+                    errors.append(
+                        f"{rel}: ariadne_evidence[{mapping_id!r}] must be a non-empty "
+                        "list of verified receipt summaries"
+                    )
+                    continue
+                for position, summary in enumerate(summaries):
+                    if not isinstance(summary, dict) or set(summary) != _EVIDENCE_SUMMARY_KEYS:
+                        errors.append(
+                            f"{rel}: ariadne_evidence[{mapping_id!r}][{position}] must "
+                            "be exactly a core-attached verified receipt summary — "
+                            "measured counts are never authored"
+                        )
     return errors
 
 

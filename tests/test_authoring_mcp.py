@@ -63,6 +63,7 @@ AUTHORING_TOOLS = {
     "authoring_upload_document",
     "authoring_validate_proposal",
     "authoring_refresh_schema",
+    "authoring_inspect_mapping",  # K3 (issue #43): bounded inspection + receipts
     "authoring_review_proposal",
 }
 QUERY_TOOLS = {
@@ -403,3 +404,49 @@ def test_stdio_refresh_schema_matches_core_and_noops_on_identical_retry(tmp_path
         page for page in out["second"]["pages"] if page["resource"] == table["resource"]
     )
     assert retried["changes"] == {"added": [], "removed": [], "type_changed": []}
+
+
+def test_stdio_inspect_mapping_returns_the_core_receipt_envelope(tmp_path):
+    """K3 (issue #43): the bounded mapping inspection is wired through the
+    Authoring/Combined MCP registration with the same receipt envelope the
+    core returns to the local CLI — honest counts under the lowered sample
+    bound, no raw identifier examples without the operator's sample
+    permission, and the retained receipt under the project's evidence area.
+    (The Analyst registration never carries it; the toolset parity test pins
+    that surface.)"""
+    from tests.test_mapping_inspection import approved_project, prefix_candidate
+
+    project, api, started = approved_project(tmp_path / "mcp")
+    limits = {"sample_rows": 3}
+
+    async def run() -> dict:
+        async with _launch(project) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return _payload(
+                    await session.call_tool(
+                        "authoring_inspect_mapping",
+                        {
+                            "proposal": started["proposal"],
+                            "expected_revision": started["candidate_revision"],
+                            "candidate": prefix_candidate(),
+                            "limits": limits,
+                        },
+                    )
+                )
+
+    out = asyncio.run(run())
+    twin = api.inspect_mapping(
+        started["proposal"], started["candidate_revision"], prefix_candidate(), limits=limits
+    )
+    receipt, twin_receipt = out["receipt"], twin["receipt"]
+    assert out["receipt_id"] == receipt["receipt_id"]
+    assert receipt["counts"] == twin_receipt["counts"]
+    assert receipt["coverage"] == twin_receipt["coverage"]
+    assert receipt["unknown_lookup_count"] == twin_receipt["unknown_lookup_count"] == 1
+    assert receipt["multiplicity"] == twin_receipt["multiplicity"]
+    assert receipt["comparison_basis"] == "containment-only"
+    assert receipt["designation"] == "sampled"
+    assert out["evidence"] == twin["evidence"] or Path(out["evidence"]).is_file()
+    assert "examples" not in receipt  # no sample permission granted
+    assert "123123" not in json.dumps(out)

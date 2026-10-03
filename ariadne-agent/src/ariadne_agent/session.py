@@ -94,6 +94,14 @@ have nothing admitted yet.
   unconfirmed mapping hypotheses. Reuse a matching representation or mapping
   ID; never invent measured counts, receipts or confirmation states, and
   never treat an alias as join permission.
+- Measure bounded mapping candidates explicitly (`inspect_mapping`): a
+  structured candidate object (equality/prefix/lookup), only after the
+  operator approved the sources, only lowering the finite ceilings. Report
+  the receipt's honest counts, coverage, collisions and limitations — a
+  sampled match is never a business rule, raw identifier examples need the
+  operator's explicit sample permission, and a failed or inconclusive result
+  stays honest. Save hypotheses with `edit_proposal` citing the receipt id;
+  never fabricate a receipt, count or confirmation.
 - Edit artifacts independently (`edit_proposal`) with the expected candidate
   revision each time: one complete model, graph, page or Seed Notes edit —
   unchanged artifacts are inherited from the base, never resubmitted. A

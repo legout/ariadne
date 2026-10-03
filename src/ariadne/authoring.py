@@ -128,14 +128,18 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import tempfile
+import uuid
+from collections import Counter
 from collections.abc import Sequence
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 
+import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages; the guarded statement seam's error type
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 from sqlglot import exp  # pyright: ignore[reportMissingImports] — same
@@ -161,6 +165,7 @@ from ariadne.author import (
 from ariadne.authoring_inputs import (  # noqa: F401 — re-export: the historical seam
     EVIDENCE_PART_CHARS,
     MAX_DOCUMENTS_PER_CALL,
+    MAX_RAW_EXAMPLES,
     MAX_UPLOAD_BYTES,
     SEED_NOTES_REL,
     _convert_snapshot,
@@ -173,13 +178,19 @@ from ariadne.authoring_inputs import (  # noqa: F401 — re-export: the historic
     _sha256_hex,
     bytes_evidence,
     document_evidence,
+    effective_inspection_limits,
+    project_inspection_limits,
     store_upload,
 )
 from ariadne.context import (  # noqa: F401 — the K1 generated-page seam (issue #41)
+    _EVIDENCE_SUMMARY_KEYS,
+    _canonical_digest,
     build_dataset_page,
     build_table_page,
+    candidate_digest,
     generated_page_filename,
     resolve_term,  # K2 (issue #42): the shared read-only term resolver
+    validate_inspection_candidate,
 )
 from ariadne.render import render
 from ariadne.semantic_graph import load_graph
@@ -1392,6 +1403,30 @@ class AuthoringProject:
         )
         return result
 
+    # --------------- K3 (issue #43): bounded mapping inspection + receipts
+
+    def inspect_mapping(
+        self, proposal: str, expected_revision: str, candidate: dict, limits: dict | None = None
+    ) -> dict:
+        """Measure one structured mapping-inspection candidate (plan §2
+        ``inspect_mapping``, spec 0010 §7): a discriminated JSON object of
+        exactly the approved families — equality/composite, string prefix
+        with an optional scoped prefix lookup, explicit scoped lookup — over
+        the operator-APPROVED resolved source identity, through guarded
+        core-generated read-only statements with parameterized scope, under
+        the operator-owned finite ceilings (a request may only LOWER them).
+        Returns the core receipt (eligible/tested denominators, actual scope,
+        null/missing/unknown-lookup counts, coverage, mismatches, collisions,
+        multiplicity, containment-versus-pairing basis, sampled/full
+        designation, ``complete|inconclusive`` outcome with limitations)
+        retained atomically in the ``.ariadne/`` evidence area — never a page
+        edit, approval or admission. Aggregate counts are the default; raw
+        identifier examples need the operator's explicit sample permission.
+        """
+        return inspect_mapping(
+            self.project, proposal, expected_revision, candidate, limits=limits
+        )
+
 
 
 # ------------------------------------- slice 5 (issue #36/G4): validation/review
@@ -1679,6 +1714,20 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
         # Finalize BEFORE validation (spec §4): deterministic generated content
         # (no wall-clock restamp), committed as the exact final candidate.
         proposals.refuse_untracked_scope(project, record)
+        # K3 (issue #43): verify every structured mapping's cited receipts
+        # against the project's evidence records and the current dependency
+        # identities, and attach the bounded verified summaries to the
+        # Reference pages (deterministic core-authored page edits, committed
+        # BEFORE the finalize pass so the regenerated index trees include
+        # them; the validated bytes carry the verified evidence).
+        current, receipt_errors = _finalize_mapping_evidence(
+            project,
+            proposal,
+            record,
+            current,
+            source_digest=source_digest,
+            approval=approval,
+        )
         context.finalize_candidate(worktree_root)
         final = (
             proposals.commit_generated(project, record, message=FINALIZE_COMMIT_MESSAGE)
@@ -1717,6 +1766,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             citations, citation_errors = _verified_citations(tree, project, names)
             errors.extend(page_errors)
             errors.extend(citation_errors)
+            errors.extend(receipt_errors)
             # validate() carries no report at all when the tree has no semantic
             # models directory (the empty-project onboarding case): the
             # structural outcome owns that failure explicitly
@@ -1739,6 +1789,11 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                     "citations",
                     "failed" if citation_errors else "passed",
                     "; ".join(citation_errors),
+                ),
+                CheckOutcome(
+                    "mapping_evidence",
+                    "failed" if receipt_errors else "passed",
+                    "; ".join(receipt_errors),
                 ),
             )
             performed = [check.name for check in checks if check.outcome != "not-run"]
@@ -2367,3 +2422,1367 @@ def refresh_schema(
         "assets": requested,
         "source_digest": digest,
     }
+
+
+# ------------------- K3 (issue #43): bounded mapping inspection + receipts
+
+# The core-controlled measured-evidence area (plan §2: receipts are retained
+# in the project's evidence area with atomic persistence — operator-owned
+# ignored state beside the validation evidence, never a Git artifact).
+EVIDENCE_REL = proposals.ARIADNE_STATE_DIR / "evidence"
+_RECEIPT_ID_RE = re.compile(r"mr-[0-9a-f]{16}")
+
+
+def _receipt_path(project: Path, proposal: str, receipt_id: str) -> Path:
+    """Where one mapping-evidence receipt lives (``.ariadne/evidence/<id>/``)."""
+    if not isinstance(receipt_id, str) or not _RECEIPT_ID_RE.fullmatch(receipt_id):
+        raise ValueError(f"{receipt_id!r} is not a mapping-evidence receipt id (mr-<16 hex>)")
+    return project / EVIDENCE_REL / proposal / f"{receipt_id}.json"
+
+
+def store_receipt(project: Path, proposal: str, receipt: dict) -> Path:
+    """Persist one receipt ATOMICALLY and durably (the proposal-record
+    discipline: data synced, tmp+os.replace, directory entry synced) under the
+    operator-owned ``.ariadne/evidence/<proposal>/`` — separate from committed
+    artifacts, so evidence never changes the revision it measures."""
+    path = _receipt_path(project, proposal, receipt["receipt_id"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(receipt, fh, sort_keys=True)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    proposals._fsync_path(path.parent)
+    return path
+
+
+def load_receipt(project: Path, proposal: str, receipt_id: str) -> dict:
+    """Load and INTEGRITY-CHECK one retained receipt: a missing, unreadable,
+    tampered or malformed record is an explicit error — never a silent pass
+    (an allowlisted id or count proves nothing, spec 0010 §7)."""
+    path = _receipt_path(project, proposal, receipt_id)
+    entry = proposals._lstat(path)
+    if entry is None:
+        raise ValueError(
+            f"receipt {receipt_id!r} does not resolve in the project's evidence "
+            f"records ({path} is absent) — allowlisting an id is not proof"
+        )
+    if not stat.S_ISREG(entry.st_mode):
+        raise ValueError(f"{path}: refusing a non-regular receipt — inspect it by hand")
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ValueError(f"{path}: unreadable receipt ({exc})") from None
+    if not isinstance(receipt, dict) or receipt.get("receipt_id") != receipt_id:
+        raise ValueError(f"{path}: malformed receipt — it does not carry its own identity")
+    recorded = receipt.pop("integrity_digest", None)
+    if not isinstance(recorded, str) or _canonical_digest(receipt) != recorded:
+        raise ValueError(
+            f"{path}: receipt integrity check failed — the recorded measurements do "
+            "not match their integrity digest (tampered or truncated evidence)"
+        )
+    receipt["integrity_digest"] = recorded
+    return receipt
+
+
+def _quote(identifier: str) -> str:
+    """Quote one SQL identifier (the profiler discipline: catalog-validated
+    names, doubled inner quotes — no identifier is ever interpolated raw)."""
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _scope_for(resource: str, scope: list[dict]) -> list[dict]:
+    return [predicate for predicate in scope if predicate["resource"] == resource]
+
+
+def _scope_clause(scope: list[dict]) -> tuple[str, list]:
+    """The parameterized WHERE conjunct of one asset's scope predicates
+    (plan §2: scope values are bound as parameters, never interpolated)."""
+    clauses: list[str] = []
+    params: list = []
+    for predicate in scope:
+        column = _quote(predicate["column"])
+        if predicate["op"] == "in":
+            marks = ", ".join("?" for _ in predicate["value"])
+            clauses.append(f"{column} IN ({marks})")
+            params.extend(predicate["value"])
+        else:
+            operator = {"eq": "=", "gte": ">=", "lt": "<"}[predicate["op"]]
+            clauses.append(f"{column} {operator} ?")
+            params.append(predicate["value"])
+    return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+
+def inspection_sample_statement(
+    table: dict, columns: list[str], scope: list[dict], limit: int
+) -> tuple[str, list]:
+    """The bounded, deterministic materialized-sample statement of one
+    participating asset (plan §2): exactly the candidate's bound columns are
+    projected (no all-column scan), identifiers are quoted catalog-validated
+    names, scope values ride as parameters, and the sample is ordered by the
+    bound columns so repeated inspections of unchanged inputs measure the
+    same rows. The LIMIT bound is itself a parameter."""
+    projection = ", ".join(_quote(column) for column in columns)
+    ordering = ", ".join(_quote(column) for column in columns)
+    where, params = _scope_clause(scope)
+    sql = (
+        f"SELECT {projection} FROM {table['ref']}.{_quote(table['name'])}{where} "
+        f"ORDER BY {ordering} LIMIT ?"
+    )
+    return sql, [*params, int(limit)]
+
+
+def inspection_count_statement(
+    table: dict, columns: list[str], scope: list[dict]
+) -> tuple[str, list]:
+    """The full-data eligible/null aggregate of one side's measured columns:
+    ``eligible`` counts scoped rows whose measured tuple is complete,
+    ``nulls`` scoped rows with any null component — the honest denominators a
+    sampled coverage ratio reports against (the scan itself stays bounded by
+    the shared deadline, never by a cheap LIMIT)."""
+    non_null = " AND ".join(f"{_quote(column)} IS NOT NULL" for column in columns)
+    any_null = " OR ".join(f"{_quote(column)} IS NULL" for column in columns)
+    where, params = _scope_clause(scope)
+    sql = (
+        f"SELECT COUNT(*) FILTER (WHERE {non_null}) AS eligible, "
+        f"COUNT(*) FILTER (WHERE {any_null}) AS nulls "
+        f"FROM {table['ref']}.{_quote(table['name'])}{where}"
+    )
+    return sql, params
+
+
+def _guarded(con, budget, sql: str, params: list):
+    """Execute one core-generated guarded statement: single-statement guard,
+    read-only by construction, parameters bound, and the shared deadline's
+    interrupt armed — an over-budget read STOPS here."""
+    execution.assert_single_statement(sql)
+    with budget.guard(con):
+        return con.execute(sql, params).fetchall()
+
+
+def _participant(resource: str, catalog: list[dict]) -> dict:
+    """The approved catalog table of one canonical resource, with the
+    cross-source participation refusal (an unapproved source never
+    participates) and the unknown-asset refusal distinct."""
+    for entry in catalog:
+        for table in entry["tables"]:
+            if table.get("resource") == resource:
+                return table
+    _kind, parts = parse_resource(resource)
+    names = {entry["name"] for entry in catalog}
+    if parts[0] not in names:
+        raise ValueError(
+            f"the candidate names source {parts[0]!r} which is not an approved "
+            f"registry identity (approved: {', '.join(sorted(names)) or 'none'}) — a "
+            "cross-source candidate participates only when EVERY participating "
+            "source is approved; nothing was measured"
+        )
+    raise ValueError(
+        f"catalog asset {resource!r} is not present in the approved resolved source "
+        "identity — nothing was measured"
+    )
+
+
+def _column_type(table: dict, column: str) -> str:
+    for entry in table["columns"]:
+        if entry["name"] == column:
+            return entry["type"]
+    raise ValueError(
+        f"column {column!r} is not present in the catalog asset "
+        f"{table.get('resource')!r} — the candidate binds exact approved columns only"
+    )
+
+
+def _check_family_types(candidate: dict, tables: dict) -> None:
+    """The lossy-coercion refusal (plan §2): equality compares compatible
+    types position-by-position; prefix components and the target are
+    string-typed; lookup keys/values compare compatibly with the fact side.
+    A string beside a numeric column is NEVER silently coerced."""
+    family = candidate["family"]
+    if family == "equality":
+        for left, right in zip(candidate["left"], candidate["right"], strict=True):
+            left_type = _column_type(tables[candidate["left"][0]["resource"]], left["column"])
+            right_type = _column_type(tables[candidate["right"][0]["resource"]], right["column"])
+            if not profiler.types_compatible(left_type, right_type):
+                raise ValueError(
+                    f"incompatible types for an equality candidate: "
+                    f"{left['column']} is {left_type} and {right['column']} is "
+                    f"{right_type} — no lossy coercion is applied (string identifier "
+                    "equivalence is never inferred from a numeric cast); nothing was "
+                    "measured"
+                )
+    elif family == "prefix":
+        components = [*candidate["left"], *candidate["right"]]
+        if candidate.get("prefix_lookup"):
+            components.append(candidate["prefix_lookup"]["prefix_field"])
+        for binding in components:
+            the_type = _column_type(tables[binding["resource"]], binding["column"])
+            if the_type.split("(")[0].upper() != "VARCHAR":
+                raise ValueError(
+                    f"a prefix candidate's string components must be VARCHAR: "
+                    f"{binding['column']} is {the_type} — no trim/pad/case-fold or "
+                    "cast participates; nothing was measured"
+                )
+    else:  # lookup
+        lookup = candidate["lookup"]
+        for fact, remote in (
+            *zip(candidate["left"], lookup["key_fields"], strict=True),
+            *zip(candidate["right"], lookup["value_fields"], strict=True),
+        ):
+            fact_type = _column_type(tables[candidate["left"][0]["resource"]], fact["column"])
+            remote_type = _column_type(tables[lookup["asset"]], remote["column"])
+            if not profiler.types_compatible(fact_type, remote_type):
+                raise ValueError(
+                    f"incompatible types for a lookup candidate: {fact['column']} is "
+                    f"{fact_type} and {remote['column']} is {remote_type} — no lossy "
+                    "coercion is applied; nothing was measured"
+                )
+
+
+def _collision_view(values: list[tuple]) -> dict:
+    """Duplicate tuple values among the tested rows: how many values repeat
+    and the highest multiplicity — the fan-out evidence that a bare join on
+    the compared value would multiply rows (AC5)."""
+    counts = Counter(values)
+    repeated = [count for count in counts.values() if count > 1]
+    return {
+        "values": len(repeated),
+        "max_multiplicity": max(repeated, default=1),
+    }
+
+
+def _jsonable(value):
+    return profiler._jsonable(value)
+
+
+def _example_rows(rows: list[dict], columns: list[str], limit: int) -> list[dict]:
+    return [{column: _jsonable(row[column]) for column in columns} for row in rows[:limit]]
+
+
+def _shape_summary(rows: list[dict], column: str) -> dict:
+    """The bounded AGGREGATE identifier-shape summary of one requested binding
+    (K3 fix pass, finding 7, spec 0010 §7 "identifier-shape summaries"): nulls,
+    distinct-within-sample, string length min/max/avg and disjoint charset
+    classes over the asset's EXISTING permitted sample — aggregates only,
+    never a raw value (raw examples stay behind the operator's explicit sample
+    permission)."""
+    values = [row[column] for row in rows]
+    present = [value for value in values if value is not None]
+    summary: dict = {
+        "sampled": len(values),
+        "nulls": len(values) - len(present),
+        "distinct": len({str(value) for value in present}),
+    }
+    strings = [value for value in present if isinstance(value, str)]
+    if strings:
+        lengths = [len(value) for value in strings]
+        summary["length"] = {
+            "min": min(lengths),
+            "max": max(lengths),
+            "avg": round(sum(lengths) / len(lengths), 2),
+        }
+        summary["charset"] = {
+            "digits_only": sum(1 for value in strings if value.isdigit()),
+            "letters_only": sum(1 for value in strings if value.isalpha()),
+            "mixed_alphanumeric": sum(
+                1
+                for value in strings
+                if value.isalnum() and not value.isalpha() and not value.isdigit()
+            ),
+            "other_characters": sum(1 for value in strings if not value.isalnum()),
+        }
+    return summary
+
+
+def _measure(
+    con,
+    budget,
+    candidate: dict,
+    tables: dict,
+    limits: dict,
+) -> dict:
+    """Run the guarded statements of one normalized candidate and assemble the
+    measured evidence (counts only by default — raw examples ride separately
+    under the operator's sample permission). Every statement draws the SAME
+    deadline; each participating asset materializes at most ``sample_rows``
+    rows (K3 fix pass, finding 2: ONE bounded union-column sample PER ASSET,
+    reused by every side/lookup that reads that asset), ordered by the bound
+    columns so repeated inspections of unchanged inputs measure the same
+    rows."""
+    family = candidate["family"]
+    left_table = tables[candidate["left"][0]["resource"]]
+    right_table = tables[candidate["right"][0]["resource"]]
+    left_columns = [binding["column"] for binding in candidate["left"]]
+    right_columns = [binding["column"] for binding in candidate["right"]]
+    pairing = candidate.get("pairing") or []
+    pairing_left = [pair["left"]["column"] for pair in pairing]
+    pairing_right = [pair["right"]["column"] for pair in pairing]
+    scope = candidate.get("scope") or []
+    sample_rows = int(limits["sample_rows"])
+    example_budget = int(limits["examples"])
+
+    unavailable: list[str] = []
+
+    # K3 fix pass (finding 2): the union of measured columns per participating
+    # asset — exactly one bounded sample is taken per asset, in this
+    # deterministic binding order, and every side/lookup reads that sample.
+    asset_columns: dict[str, list[str]] = {}
+
+    def _union(resource: str, columns: list[str]) -> None:
+        merged = asset_columns.setdefault(resource, [])
+        for column in columns:
+            if column not in merged:
+                merged.append(column)
+
+    lookup = candidate.get("lookup")
+    prefix_lookup = candidate.get("prefix_lookup")
+    _union(left_table["resource"], left_columns)
+    _union(right_table["resource"], right_columns)
+    _union(left_table["resource"], pairing_left)
+    _union(right_table["resource"], pairing_right)
+    if prefix_lookup:
+        _union(
+            prefix_lookup["asset"],
+            [binding["column"] for binding in prefix_lookup["key_fields"]]
+            + [prefix_lookup["prefix_field"]["column"]],
+        )
+    if lookup:
+        _union(
+            lookup["asset"],
+            [binding["column"] for binding in lookup["key_fields"]]
+            + [binding["column"] for binding in lookup["value_fields"]],
+        )
+
+    def sample(table: dict) -> list[dict]:
+        """One asset's bounded materialized sample; a source read that fails
+        (an absent location, an unreadable backend) is DISCLOSED as an
+        unavailable measurement — an honest empty sample, never a passing
+        check and never an invented count."""
+        columns = asset_columns[table["resource"]]
+        sql, params = inspection_sample_statement(
+            table, columns, _scope_for(table["resource"], scope), sample_rows
+        )
+        try:
+            rows = _guarded(con, budget, sql, params)
+        except ValueError:
+            raise  # the deadline refusal propagates: nothing partial persists
+        except duckdb.Error as exc:
+            unavailable.append(
+                f"the materialized sample of {table['resource']} could not be read "
+                f"({type(exc).__name__}) — no rows of this asset were tested"
+            )
+            return []
+        return [dict(zip(columns, row)) for row in rows]
+
+    samples: dict[str, list[dict]] = {
+        resource: sample(tables[resource]) for resource in asset_columns
+    }
+    left_sample = samples[left_table["resource"]]
+    right_sample = samples[right_table["resource"]]
+
+    # full-data denominators per side: the deadline bounds the scan itself,
+    # and any unavailable count is disclosed, never guessed. For the lookup
+    # family the fact side's keys AND values are one complete measured tuple
+    # on the SAME asset (K3 fix pass, finding 4: the right side never inherits
+    # a keys-only denominator).
+    eligible: dict[str, object] = {}
+    nulls: dict[str, object] = {}
+    fact_tuple = [*left_columns, *right_columns]
+    measured_columns = {
+        "left": left_columns if family != "lookup" else fact_tuple,
+        "right": right_columns if family != "lookup" else fact_tuple,
+    }
+    for side, table in (("left", left_table), ("right", right_table)):
+        if family == "lookup" and table is left_table and "left" in eligible:
+            eligible["right"], nulls["right"] = eligible["left"], nulls["left"]
+            continue  # keys and values live on the same measured asset/tuple
+        sql, params = inspection_count_statement(
+            table, measured_columns[side], _scope_for(table["resource"], scope)
+        )
+        try:
+            row = _guarded(con, budget, sql, params)[0]
+        except ValueError:
+            raise  # the deadline refusal propagates: nothing partial persists
+        except duckdb.Error as exc:
+            eligible[side], nulls[side] = None, None
+            unavailable.append(
+                f"counts.{side}: the eligible/null denominator could not be read "
+                f"({type(exc).__name__}) — coverage ratios over this side are "
+                "not asserted"
+            )
+            continue
+        eligible[side], nulls[side] = int(row[0]), int(row[1])
+
+    # a tested row carries a complete measured tuple: the left components (and,
+    # for the lookup family, the mapped fact values too — a null value is not a
+    # comparable measurement)
+    left_complete = left_columns if family != "lookup" else fact_tuple
+    tested_left = [row for row in left_sample if all(row[c] is not None for c in left_complete)]
+    tested_right = [row for row in right_sample if all(row[c] is not None for c in right_columns)]
+    left_tuples = [tuple(row[c] for c in left_columns) for row in tested_left]
+    right_tuples = [tuple(row[c] for c in right_columns) for row in tested_right]
+
+    def lookup_side_measurement(table: dict, columns: list[str]) -> dict:
+        """The lookup asset's own honest denominators (K3 fix pass, finding 4):
+        complete-tuple eligible/null counts, the sampled tested count and the
+        sampled null rows — a truncated lookup sample can never masquerade as
+        a fully measured lookup."""
+        sql, params = inspection_count_statement(
+            table, columns, _scope_for(table["resource"], scope)
+        )
+        try:
+            row = _guarded(con, budget, sql, params)[0]
+            count_eligible, count_nulls = int(row[0]), int(row[1])
+        except ValueError:
+            raise
+        except duckdb.Error as exc:
+            count_eligible = count_nulls = None
+            unavailable.append(
+                f"counts of the lookup asset {table['resource']} could not be read "
+                f"({type(exc).__name__}) — its sampled/full designation is not "
+                "asserted"
+            )
+        rows = samples[table["resource"]]
+        complete = [r for r in rows if all(r[c] is not None for c in columns)]
+        return {
+            "asset": table["resource"],
+            "eligible": count_eligible,
+            "nulls": count_nulls,
+            "tested": len(complete),
+            "null_rows_sampled": len(rows) - len(complete),
+            "rows_sampled": len(rows),
+        }
+
+    measurement: dict = {
+        "counts": {
+            "eligible_left": eligible["left"],
+            "eligible_right": eligible["right"],
+            "tested_left": len(tested_left),
+            "tested_right": len(tested_right) if family != "lookup" else len(tested_left),
+            "unavailable": unavailable,
+        },
+        "null_counts": {"left": nulls["left"], "right": nulls["right"]},
+        "unknown_lookup_count": 0,
+        "missing_key_count": 0,
+        "ambiguous_key_count": 0,
+        "multiplicity": {"lookup_duplicate_keys": 0, "lookup_max_rows_per_key": 1},
+        "collisions": {
+            "left": {"values": 0, "max_multiplicity": 1},
+            "right": {"values": 0, "max_multiplicity": 1},
+        },
+        # K3 fix pass (finding 7): every REQUESTED binding's bounded aggregate
+        # shape summary, from the existing per-asset samples
+        "shapes": [
+            {"resource": resource, "column": column, **_shape_summary(samples[resource], column)}
+            for resource, columns in asset_columns.items()
+            for column in columns
+        ],
+    }
+    limitations: list[str] = []
+    examples: list[dict] = []
+
+    if family == "lookup":
+        # the explicit approved lookup: missing keys, duplicates, ambiguity and
+        # multiplicity are REPORTED — a many-valued lookup never collapses
+        key_columns = [b["column"] for b in lookup["key_fields"]]
+        value_columns = [b["column"] for b in lookup["value_fields"]]
+        lookup_counts = lookup_side_measurement(
+            tables[lookup["asset"]], key_columns + value_columns
+        )
+        measurement["lookup_counts"] = lookup_counts
+        fully_measured = (
+            lookup_counts["eligible"] is not None
+            and lookup_counts["tested"] >= lookup_counts["eligible"]
+        )
+        lookup_index: dict[tuple, list[tuple]] = {}
+        for row in samples[lookup["asset"]]:
+            if any(row[c] is None for c in key_columns + value_columns):
+                continue  # the null row is counted above, never silently dropped
+            lookup_index.setdefault(tuple(row[c] for c in key_columns), []).append(
+                tuple(row[c] for c in value_columns)
+            )
+        repeated = [len(values) for values in lookup_index.values() if len(values) > 1]
+        measurement["multiplicity"] = {
+            "lookup_duplicate_keys": len(repeated),
+            "lookup_max_rows_per_key": max(repeated, default=1),
+        }
+        matched = mismatched = 0
+        for row, keys in zip(tested_left, left_tuples, strict=True):
+            values = lookup_index.get(keys)
+            fact_values = tuple(row[c] for c in right_columns)
+            if values is None:
+                # a fact key beyond the SAMPLED lookup rows is an unknown
+                # lookup, not a missing key — unless the lookup was fully
+                # measured (finding 4)
+                if fully_measured:
+                    measurement["missing_key_count"] += 1
+                    outcome = "missing"
+                else:
+                    measurement["unknown_lookup_count"] += 1
+                    outcome = "unknown-lookup"
+            elif len(set(values)) > 1:
+                measurement["ambiguous_key_count"] += 1
+                outcome = "ambiguous"
+            elif values[0] == fact_values:
+                matched += 1
+                outcome = "matched"
+            else:
+                mismatched += 1
+                outcome = "mismatch"
+            if example_budget and len(examples) < example_budget:
+                examples.append(
+                    {
+                        "keys": {column: _jsonable(row[column]) for column in left_columns},
+                        "fact_values": {
+                            column: _jsonable(row[column]) for column in right_columns
+                        },
+                        "lookup_values": [
+                            list(map(_jsonable, value)) for value in (values or [])
+                        ],
+                        "outcome": outcome,
+                    }
+                )
+        measurement["coverage"] = {
+            "left_in_right": {"matched": matched, "tested": len(tested_left)},
+            "right_in_left": {"matched": matched, "tested": len(tested_left)},
+        }
+        measurement["distinct_matched"] = matched
+        measurement["mismatch_count"] = mismatched
+        measurement["collisions"] = {
+            "left": _collision_view(left_tuples),
+            "right": _collision_view(right_tuples),
+        }
+        measurement["pairing"] = {
+            "keys": [],
+            "status": "absent",
+            "paired": 0,
+            "ambiguous_keys": 0,
+            "max_rows_per_key": 1,
+        }
+        measurement["comparison_basis"] = "key-paired"
+        limitations.append(
+            "the lookup's scoped keys pair the sampled fact rows with the lookup "
+            "asset's sampled rows"
+        )
+    else:
+        # the compared value of each tested row: the tuple itself (equality)
+        # or the constructed prefix value (prefix family)
+        lookup_counts = None
+        if family == "prefix":
+            separator = candidate["separator"]
+            key_arity = 0
+            lookup_index: dict[tuple, list] = {}
+            if prefix_lookup:
+                key_arity = len(prefix_lookup["key_fields"])
+                key_columns = [b["column"] for b in prefix_lookup["key_fields"]]
+                prefix_column = prefix_lookup["prefix_field"]["column"]
+                lookup_counts = lookup_side_measurement(
+                    tables[prefix_lookup["asset"]], key_columns + [prefix_column]
+                )
+                measurement["lookup_counts"] = lookup_counts
+                for row in samples[prefix_lookup["asset"]]:
+                    if any(row[c] is None for c in key_columns) or row[prefix_column] is None:
+                        continue
+                    lookup_index.setdefault(
+                        tuple(row[c] for c in key_columns), []
+                    ).append(row[prefix_column])
+                repeated = [len(v) for v in lookup_index.values() if len(v) > 1]
+                measurement["multiplicity"] = {
+                    "lookup_duplicate_keys": len(repeated),
+                    "lookup_max_rows_per_key": max(repeated, default=1),
+                }
+            left_pairs: list[tuple[dict, tuple]] = []
+            for row, components in zip(tested_left, left_tuples, strict=True):
+                if prefix_lookup:
+                    values = lookup_index.get(tuple(components[:key_arity]))
+                    if not values:
+                        measurement["unknown_lookup_count"] += 1
+                        continue
+                    if len(set(values)) > 1:
+                        measurement["ambiguous_key_count"] += 1
+                        continue  # an ambiguous prefix lookup is disclosed, not collapsed
+                    prefix_value = values[0]
+                    value = separator.join(
+                        str(part) for part in (prefix_value, *components[key_arity:])
+                    )
+                else:
+                    value = separator.join(str(part) for part in components)
+                row["__constructed"] = value
+                left_pairs.append((row, (value,)))
+        else:
+            left_pairs = list(zip(tested_left, left_tuples, strict=True))
+        right_pairs = list(zip(tested_right, right_tuples, strict=True))
+        left_compare = [value for _row, value in left_pairs]
+        right_compare = [value for _row, value in right_pairs]
+        right_values, left_values = set(right_compare), set(left_compare)
+        matched_left = [value for value in left_compare if value in right_values]
+        matched_right = [value for value in right_compare if value in left_values]
+        measurement["coverage"] = {
+            # the denominator is every sampled eligible row — an unresolvable
+            # row (unknown/ambiguous lookup key) stays in it, unmatched
+            "left_in_right": {"matched": len(matched_left), "tested": len(tested_left)},
+            "right_in_left": {"matched": len(matched_right), "tested": len(tested_right)},
+        }
+        measurement["distinct_matched"] = len(set(matched_left))
+        measurement["collisions"] = {
+            "left": _collision_view(left_compare),
+            "right": _collision_view(right_compare),
+        }
+        measurement["mismatch_count"] = len(left_compare) - len(matched_left)
+        # independently paired comparison when pairing keys are supplied and
+        # actually pair sampled records. K3 fix pass (finding 3): EVERY right
+        # row is retained per pairing key — a key carrying multiple right rows
+        # is disclosed as an ambiguous pairing and never silently collapsed to
+        # the last row's value, so the basis never claims unique independent
+        # pairing.
+        paired = mismatches = ambiguous_keys = 0
+        by_key: dict[tuple, list[tuple]] = {}
+        if pairing:
+            for row, value in right_pairs:
+                if all(row[c] is not None for c in pairing_right):
+                    by_key.setdefault(tuple(row[c] for c in pairing_right), []).append(value)
+            ambiguous_keys = sum(1 for values in by_key.values() if len(values) > 1)
+        max_rows_per_key = max((len(values) for values in by_key.values()), default=1)
+        for row, value in left_pairs:
+            if not pairing or not all(row[c] is not None for c in pairing_left):
+                continue
+            values = by_key.get(tuple(row[c] for c in pairing_left))
+            if not values or len(values) > 1:
+                continue  # unpaired or ambiguous: disclosed, never collapsed
+            paired += 1
+            if values[0] != value:
+                mismatches += 1
+        status = "absent"
+        if pairing:
+            if ambiguous_keys:
+                status = "ambiguous"
+            elif paired:
+                status = "usable"
+            else:
+                status = "unusable"
+        measurement["pairing"] = {
+            "keys": [{"left": pair["left"], "right": pair["right"]} for pair in pairing],
+            "status": status,
+            "paired": paired,
+            "ambiguous_keys": ambiguous_keys,
+            "max_rows_per_key": max_rows_per_key,
+        }
+        if pairing and (paired or ambiguous_keys):
+            if ambiguous_keys:
+                measurement["comparison_basis"] = "ambiguous-pairing"
+                measurement["mismatch_count"] = mismatches
+                limitations.append(
+                    f"{ambiguous_keys} sampled pairing key(s) carry multiple right "
+                    f"rows (up to {max_rows_per_key} per key) — the paired comparison "
+                    "cannot claim unique independent pairing"
+                )
+                if paired:
+                    limitations.append(
+                        f"paired comparison over {paired} unambiguously keyed sampled "
+                        "record(s)"
+                    )
+                else:
+                    limitations.append(
+                        "no sampled record pair could be compared unambiguously"
+                    )
+            else:
+                measurement["comparison_basis"] = "independently-paired"
+                measurement["mismatch_count"] = mismatches
+                limitations.append(
+                    f"paired comparison over {paired} independently keyed sampled record(s)"
+                )
+        else:
+            measurement["comparison_basis"] = "containment-only"
+            if pairing:
+                limitations.append(
+                    "the supplied pairing keys matched no sampled record pair — only "
+                    "value containment was measured"
+                )
+        if example_budget:
+            for row, value in left_pairs:
+                if len(examples) >= example_budget:
+                    break
+                entry = {"matched": value in right_values}
+                if family == "prefix":
+                    entry["components"] = {
+                        column: _jsonable(row[column]) for column in left_columns
+                    }
+                    entry["constructed"] = value[0]
+                    targets = [
+                        r[right_columns[0]]
+                        for r in tested_right
+                        if (r[right_columns[0]],) == value
+                    ]
+                    entry["target"] = _jsonable(targets[0]) if targets else None
+                else:
+                    entry["left"] = {column: _jsonable(row[column]) for column in left_columns}
+                examples.append(entry)
+
+    complete_counts = (
+        measurement["counts"]["eligible_left"] is not None
+        and measurement["counts"]["eligible_right"] is not None
+    )
+    fact_full = complete_counts and (
+        measurement["counts"]["tested_left"] >= measurement["counts"]["eligible_left"]
+        and measurement["counts"]["tested_right"] >= measurement["counts"]["eligible_right"]
+    )
+    # K3 fix pass (finding 4): a truncated lookup sample forbids the 'full'
+    # designation even when every fact row was tested — and the truncation is
+    # disclosed, because keys beyond the sample are unknown lookups.
+    lookup_full = (
+        lookup_counts is None
+        or (
+            lookup_counts["eligible"] is not None
+            and lookup_counts["tested"] >= lookup_counts["eligible"]
+        )
+    )
+    measurement["designation"] = designation = "full" if (fact_full and lookup_full) else "sampled"
+    if designation == "sampled":
+        limitations.append(
+            f"sampled completion: {measurement['counts']['tested_left']} of "
+            f"{measurement['counts']['eligible_left']} eligible left rows and "
+            f"{measurement['counts']['tested_right']} of "
+            f"{measurement['counts']['eligible_right']} eligible right rows were "
+            "tested — completion of the stated sample, never full-data proof"
+        )
+    if lookup_counts is not None and not lookup_full:
+        limitations.append(
+            f"the lookup asset {lookup_counts['asset']} was sampled at "
+            f"{lookup_counts['tested']} of {lookup_counts['eligible']} eligible rows — "
+            "a fact key beyond the sampled lookup rows is an unknown lookup, not a "
+            "missing key"
+        )
+    if lookup_counts is not None and lookup_counts["null_rows_sampled"]:
+        limitations.append(
+            f"{lookup_counts['null_rows_sampled']} sampled lookup row(s) carried a "
+            "null key or value and were not indexed"
+        )
+    limitations.append(
+        "containment and pairing were measured over the materialized samples of "
+        f"each participating asset (at most {sample_rows} rows per asset)"
+    )
+    limitations.extend(unavailable)
+    measurement["outcome"] = "inconclusive" if unavailable else "complete"
+    measurement["limitations"] = limitations
+    if example_budget:
+        measurement["examples"] = examples
+    return measurement
+
+def _asset_schema_digest(table: dict | None) -> str | None:
+    """The digest of one dependency asset's FULL schema identity (K3 fix
+    pass, finding 6): every catalog column's (name, type) at measurement
+    time — beside the per-column identity ``dependencies.assets`` already
+    carries, this binds the lookup asset's complete schema so ANY schema
+    change on it invalidates the receipt immediately."""
+    if not table:
+        return None
+    return _canonical_digest(
+        [(column["name"], column["type"]) for column in table["columns"]]
+    )
+
+
+def _cited_policy_digest(worktree: Path, resource: str) -> str | None:
+    """The sha256 of one cited dependency page inside the proposal's
+    worktree — None (an honestly UNKNOWN dependency identity) when the
+    resource is unreadable or escapes the worktree."""
+    try:
+        resolved = (worktree / resource).resolve()
+        if not resolved.is_relative_to(worktree.resolve()):
+            return None
+        return _sha256_hex(resolved.read_bytes())
+    except OSError:
+        return None
+
+
+def _cited_policy_dependencies(
+    project: Path, proposal: str, revision: str, measured_digest: str
+) -> list[dict]:
+    """The cited Policy/OSI dependency identities of every Reference page in
+    the proposal's CURRENT candidate that declares THIS exact candidate (K3
+    fix pass, finding 6, spec 0010 §8): each such mapping's cited
+    ``source_ids`` resolve to the page's ``sources[]`` resources, whose
+    current content digests the receipt binds — a changed cited Policy page
+    then invalidates the dependent evidence at verification. Resources are
+    read from the proposal worktree (the candidate's own tracked pages and
+    documents); an unreadable dependency is recorded with a null digest and
+    can never verify as unchanged."""
+    worktree = project / proposals.WORKTREES_REL / proposal
+    entries: dict[str, dict] = {}
+    for page in _reference_pages_at(project, revision).values():
+        for mapping in page["meta"]["ariadne"].get("mappings") or []:
+            if not isinstance(mapping, dict):
+                continue
+            try:
+                if candidate_digest(mapping.get("candidate")) != measured_digest:
+                    continue
+            except ValueError:
+                continue
+            sources = {
+                source.get("id"): source.get("resource")
+                for source in page["meta"].get("sources") or []
+                if isinstance(source, dict)
+            }
+            for source_id in mapping.get("source_ids") or []:
+                resource = sources.get(source_id)
+                if not isinstance(resource, str) or not resource or resource in entries:
+                    continue
+                entries[resource] = {
+                    "resource": resource,
+                    "digest": _cited_policy_digest(worktree, resource),
+                }
+    return [entries[resource] for resource in sorted(entries)]
+
+
+def inspect_mapping(
+    project: str | Path,
+    proposal: str,
+    expected_revision: str,
+    candidate: object,
+    limits: object = None,
+) -> dict:
+    """The ONE typed mapping-inspection operation (plan §2 ``inspect_mapping``,
+    spec 0010 §7; issue #43/K3): measure a structured candidate from exactly
+    the approved families — equality/composite, string prefix with an optional
+    scoped prefix lookup, explicit scoped lookup — against the
+    operator-APPROVED resolved source identity, through guarded core-generated
+    read-only statements with parameterized scope, under the operator-owned
+    finite ceilings (a request may only LOWER them), and retain the receipt
+    atomically in the core-controlled ``.ariadne/`` evidence area. Never a
+    page edit, never approval, never admission; aggregate counts are the
+    default output and raw identifier examples need the operator's explicit
+    sample permission."""
+    project = Path(project).resolve()
+    normalized = validate_inspection_candidate(candidate)
+    record = proposals._load_record(project, proposal)
+    current = record["candidate_revision"]
+    if expected_revision != current:
+        raise ValueError(
+            f"stale revision: proposal {proposal} is at candidate {current}, the "
+            f"inspection expected {expected_revision} — re-read the candidate and "
+            "retry with the current revision; nothing was measured"
+        )
+    resolved, digest = authoring_sources.candidate_sources(project, current)
+    if resolved is None:
+        raise ValueError(
+            f"proposal {proposal} declares no source entries in its candidate "
+            f"registry at {current[:12]} — there is nothing to inspect"
+        )
+    approval = authoring_sources._approved_identity(project, digest, proposal, current)
+    effective = effective_inspection_limits(
+        project_inspection_limits(project), limits
+    )
+    budget = execution.DeadlineBudget(effective["execution_seconds"])
+    owned = execution.DuckDBExecution(
+        authoring_sources.identity_registry(approval["sources"]), budget=budget
+    )
+    try:
+        con, catalog = owned.con, owned.catalog
+        tables: dict[str, dict] = {}
+        for binding in [
+            *normalized["left"],
+            *normalized["right"],
+            *(normalized.get("scope") or []),
+            *(
+                pair[pairing_side]
+                for pair in (normalized.get("pairing") or [])
+                for pairing_side in ("left", "right")
+            ),
+            *(
+                [
+                    *normalized["prefix_lookup"]["key_fields"],
+                    normalized["prefix_lookup"]["prefix_field"],
+                ]
+                if normalized.get("prefix_lookup")
+                else []
+            ),
+            *(
+                [
+                    *normalized["lookup"]["key_fields"],
+                    *normalized["lookup"]["value_fields"],
+                ]
+                if normalized.get("lookup")
+                else []
+            ),
+        ]:
+            if binding["resource"] not in tables:
+                tables[binding["resource"]] = _participant(binding["resource"], catalog)
+            # K3 fix pass (finding 1): EVERY bound column (sides, scope,
+            # pairing, lookup fields) exists on its catalog asset BEFORE any
+            # statement runs — a missing column is an up-front refusal, never
+            # a mid-measurement "unavailable" disclosure.
+            _column_type(tables[binding["resource"]], binding["column"])
+        _check_family_types(normalized, tables)
+        measurement = _measure(con, budget, normalized, tables, effective)
+    finally:
+        owned.close()
+    observed_at = datetime.now(UTC).isoformat(timespec="seconds")
+    assets = []
+    for resource, table in tables.items():
+        bound = {
+            binding["column"]
+            for binding in [
+                *normalized["left"],
+                *normalized["right"],
+                *(normalized.get("scope") or []),
+                *(
+                    pair[pairing_side]
+                    for pair in (normalized.get("pairing") or [])
+                    for pairing_side in ("left", "right")
+                ),
+                *(
+                    [
+                        *normalized["prefix_lookup"]["key_fields"],
+                        normalized["prefix_lookup"]["prefix_field"],
+                    ]
+                    if normalized.get("prefix_lookup")
+                    else []
+                ),
+                *(
+                    [
+                        *normalized["lookup"]["key_fields"],
+                        *normalized["lookup"]["value_fields"],
+                    ]
+                    if normalized.get("lookup")
+                    else []
+                ),
+            ]
+            if binding["resource"] == resource
+        }
+        ordered = [column for column in table["columns"] if column["name"] in bound]
+        assets.append(
+            {
+                "resource": resource,
+                "source": table.get("source"),
+                "catalog": table.get("catalog"),
+                "schema": table.get("schema"),
+                "table": table["name"],
+                "columns": [{"name": c["name"], "type": c["type"]} for c in ordered],
+            }
+        )
+    receipt = {
+        "receipt_id": f"mr-{uuid.uuid4().hex[:16]}",
+        "family": normalized["family"],
+        "candidate": normalized,
+        "candidate_digest": _canonical_digest(normalized),
+        "proposal": proposal,
+        "inspection_revision": current,
+        "source_digest": digest,
+        "source_identity": resolved,
+        "dependencies": {
+            "assets": sorted(assets, key=lambda asset: asset["resource"]),
+            "lookup": normalized.get("prefix_lookup") or normalized.get("lookup"),
+            # K3 fix pass (finding 6, spec 0010 §8): the cited Policy/OSI
+            # dependencies of the Reference pages that declare THIS candidate
+            # in the current proposal candidate — the receipt binds their
+            # content digests so a changed cited Policy page invalidates it.
+            "policy_osi": _cited_policy_dependencies(
+                project, proposal, current, _canonical_digest(normalized)
+            ),
+            # the lookup asset's FULL schema identity (its measured columns
+            # ride dependencies.assets; any schema change on the lookup asset
+            # invalidates immediately)
+            "lookup_schema_digest": _asset_schema_digest(
+                tables.get(
+                    (normalized.get("prefix_lookup") or normalized.get("lookup") or {}).get(
+                        "asset"
+                    )
+                )
+            ),
+        },
+        "observed_at": observed_at,
+        "version_signal": {"state": "as_of", "observed_at": observed_at},
+        "scope": normalized.get("scope") or [],
+        "pairing": measurement.pop("pairing"),
+        "comparison_basis": measurement.pop("comparison_basis"),
+        "sample_rows": effective["sample_rows"],
+        **measurement,
+    }
+    receipt["integrity_digest"] = _canonical_digest(receipt)
+    envelope = {
+        "proposal": proposal,
+        "revision": current,
+        "receipt_id": receipt["receipt_id"],
+        "receipt": receipt,
+        # K3 fix pass (finding 8): the COMPLETE final envelope (evidence path
+        # included) is what the response ceiling measures — and the receipt is
+        # retained only after the complete envelope fits.
+        "evidence": str(_receipt_path(project, proposal, receipt["receipt_id"])),
+    }
+    size = len(json.dumps(envelope, ensure_ascii=False).encode("utf-8"))
+    if size > effective["response_bytes"]:
+        raise ValueError(
+            f"the serialized inspection response is {size} bytes, over the "
+            f"{effective['response_bytes']}-byte ceiling — lower the raw-example "
+            "count or narrow the candidate; no receipt was retained"
+        )
+    store_receipt(project, proposal, receipt)
+    return envelope
+
+
+def _receipt_summary(receipt: dict) -> dict:
+    """The bounded, credential-free verified summary of one retained receipt —
+    exactly the fields a finalized Reference page may cite (plan §2: bounded
+    summaries only, never raw examples, never model-authored counts)."""
+    counts = receipt["counts"]
+    return {
+        "id": receipt["receipt_id"],
+        "digest": receipt["integrity_digest"],
+        "family": receipt["family"],
+        "outcome": receipt["outcome"],
+        "designation": receipt["designation"],
+        "comparison_basis": receipt["comparison_basis"],
+        "tested_left": counts["tested_left"],
+        "tested_right": counts["tested_right"],
+        "eligible_left": counts["eligible_left"],
+        "eligible_right": counts["eligible_right"],
+        "matched_left_in_right": receipt["coverage"]["left_in_right"]["matched"],
+        "matched_right_in_left": receipt["coverage"]["right_in_left"]["matched"],
+        "mismatch_count": receipt["mismatch_count"],
+        "observed_at": receipt["observed_at"],
+    }
+
+
+def _current_asset_columns(catalog: list[dict]) -> dict[str, list[dict]]:
+    """resource -> [{name, type}] of every asset the approved identity holds."""
+    columns: dict[str, list[dict]] = {}
+    for entry in catalog:
+        for table in entry["tables"]:
+            columns[table["resource"]] = [
+                {"name": column["name"], "type": column["type"]}
+                for column in table["columns"]
+            ]
+    return columns
+
+
+def _verify_receipt(
+    receipt_id: str,
+    project: Path,
+    proposal: str,
+    *,
+    declaration_digest: str,
+    source_digest: str | None,
+    asset_columns: dict[str, list[dict]],
+    endpoints: dict | None = None,
+    worktree: Path | None = None,
+    max_age_hours: float | None = None,
+) -> tuple[dict | None, str | None]:
+    """Verify ONE cited receipt against the project's evidence records and the
+    current dependency identities (spec 0010 §§7–8): existence, integrity, the
+    normalized DECLARATION the receipt measured, the ENDPOINT correspondence
+    of the mapping's representations (K3 fix pass, finding 5: the measured
+    left/right bindings and scope must correspond to the declared endpoints —
+    a retargeted representation never keeps a verified summary), the resolved
+    SOURCE identity it read, the measured ASSET/LOOKUP columns, the lookup
+    asset's full schema digest, the bound cited Policy/OSI dependency digests
+    (finding 6) and the operator's evidence age budget (finding 6: age bounds
+    the RECEIPT's validity for attachment; unversioned data stays as_of).
+    Returns (summary, None) or (None, error) — an allowlisted id or an
+    author-authored count is never proof. Receipt validity is
+    dependency-matched, not candidate-revision matched: an unrelated save
+    commit keeps a receipt valid, a changed declaration/input does not
+    (plan §2)."""
+    try:
+        receipt = load_receipt(project, proposal, receipt_id)
+    except ValueError as exc:
+        return None, str(exc)
+    if receipt.get("candidate_digest") != declaration_digest:
+        return None, (
+            f"receipt {receipt_id!r} measures a different declaration (its normalized "
+            f"candidate digest is {str(receipt.get('candidate_digest'))[:12]}, the "
+            f"declared candidate's is {declaration_digest[:12]}) — changed mapping "
+            "parameters invalidate dependent evidence; re-inspect the changed candidate"
+        )
+    if endpoints is not None:
+        measured = receipt.get("candidate") or {}
+        for key, side in (("from", "left"), ("to", "right")):
+            declared = [
+                (binding.get("resource"), binding.get("column"))
+                for binding in endpoints[key]["fields"]
+                if isinstance(binding, dict)
+            ]
+            measured_side = [
+                (binding.get("resource"), binding.get("column"))
+                for binding in measured.get(side) or []
+                if isinstance(binding, dict)
+            ]
+            if declared != measured_side:
+                return None, (
+                    f"receipt {receipt_id!r} measured {side} bindings {measured_side} "
+                    f"but the mapping's {key!r} representation declares {declared} — "
+                    "retargeted endpoint representations invalidate dependent "
+                    "evidence; re-inspect against the declared representation"
+                )
+        scope_columns = {
+            (predicate.get("resource"), predicate.get("column"))
+            for predicate in measured.get("scope") or []
+            if isinstance(predicate, dict)
+        }
+        for key in ("from", "to"):
+            for binding in endpoints[key]["scope"]:
+                required = (binding.get("resource"), binding.get("column"))
+                if required not in scope_columns:
+                    return None, (
+                        f"receipt {receipt_id!r} was not measured under the required "
+                        f"scope {required} of the mapping's {key!r} representation — "
+                        "evidence must correspond to the declared scope"
+                    )
+    if receipt.get("source_digest") != source_digest:
+        return None, (
+            f"receipt {receipt_id!r} was measured against a different resolved source "
+            f"identity ({str(receipt.get('source_digest'))[:12]}, the candidate now "
+            f"resolves to {str(source_digest)[:12]}) — changed inputs invalidate "
+            "dependent evidence"
+        )
+    dependencies = receipt.get("dependencies") or {}
+    lookup_asset = (dependencies.get("lookup") or {}).get("asset")
+    schema_digest = dependencies.get("lookup_schema_digest")
+    if schema_digest is not None and isinstance(lookup_asset, str):
+        current = asset_columns.get(lookup_asset)
+        if (
+            current is None
+            or _canonical_digest([(c["name"], c["type"]) for c in current]) != schema_digest
+        ):
+            return None, (
+                f"receipt {receipt_id!r} depends on the lookup asset {lookup_asset!r} "
+                "whose schema changed since the measurement — schema changes "
+                "invalidate dependent evidence immediately"
+            )
+    for asset in dependencies.get("assets") or []:
+        current = asset_columns.get(asset["resource"])
+        if current is None:
+            return None, (
+                f"receipt {receipt_id!r} depends on asset {asset['resource']!r} which "
+                "is no longer present in the approved resolved source identity"
+            )
+        recorded = [(column["name"], column["type"]) for column in asset["columns"]]
+        wanted = {name for name, _type in recorded}
+        now = [
+            (column["name"], column["type"])
+            for column in current
+            if column["name"] in wanted
+        ]
+        if recorded != now:
+            return None, (
+                f"receipt {receipt_id!r} depends on asset {asset['resource']!r} whose "
+                "measured columns changed since the measurement — schema changes "
+                "invalidate dependent evidence immediately"
+            )
+    for dependency in dependencies.get("policy_osi") or []:
+        resource = dependency.get("resource")
+        current_digest = (
+            _cited_policy_digest(worktree, resource)
+            if isinstance(resource, str) and worktree is not None
+            else None
+        )
+        if dependency.get("digest") is None or current_digest != dependency.get("digest"):
+            return None, (
+                f"receipt {receipt_id!r} depends on the cited Policy/OSI page "
+                f"{resource!r} whose content changed since the measurement (or can "
+                "no longer be read) — referenced Policy/OSI content changes "
+                "invalidate dependent evidence immediately"
+            )
+    if max_age_hours is not None:
+        observed = receipt.get("observed_at")
+        try:
+            observed_at = (
+                datetime.fromisoformat(observed)
+                if isinstance(observed, str)
+                else None
+            )
+            if observed_at is None:
+                raise ValueError(observed)
+            age = datetime.now(UTC) - observed_at
+        except (ValueError, TypeError, OverflowError):
+            return None, (
+                f"receipt {receipt_id!r} carries no parseable measurement time — "
+                "its freshness is unknown and can never be verified as current"
+            )
+        if age > timedelta(hours=max_age_hours):
+            return None, (
+                f"receipt {receipt_id!r} was measured at {observed} ({age} ago), "
+                f"beyond the operator's {max_age_hours}h evidence age budget — age "
+                "bounds the receipt's validity for attachment (unversioned data "
+                "stays as-of); re-inspect to attach fresh evidence"
+            )
+    return _receipt_summary(receipt), None
+
+
+def _reference_pages_at(project: Path, revision: str) -> dict[str, dict]:
+    """The tracked structured Reference pages at one revision: path ->
+    {meta, text}. Pages without the ``ariadne`` extension stay out (legacy
+    References never carry mapping evidence)."""
+    tracked = proposals._git(["ls-tree", "-r", "--name-only", revision], project).stdout
+    pages: dict[str, dict] = {}
+    for rel in tracked.split("\n"):
+        if not rel.startswith("context_layer/references/") or not rel.endswith(".md"):
+            continue
+        if PurePosixPath(rel).name in proposals._GENERATED_FILES:
+            continue
+        blob = proposals._read_blob(project, revision, rel)
+        if blob is None:  # pragma: no cover - ls-tree paths always resolve
+            continue
+        text = blob.decode("utf-8", "replace")
+        try:
+            meta = _load_frontmatter_meta(text)
+        except yaml.YAMLError:
+            continue  # a malformed draft page: the page gate owns the error
+        extension = meta.get("ariadne") if isinstance(meta, dict) else None
+        if isinstance(extension, dict) and extension.get("mappings"):
+            pages[rel] = {"meta": meta, "text": text}
+    return pages
+
+
+EVIDENCE_COMMIT_MESSAGE = "ariadne: attach verified mapping evidence"
+
+
+def _commit_core_pages(project: Path, record: dict, rels: list[str], message: str) -> str | None:
+    """Commit EXACTLY the named core-authored page changes in the proposal
+    worktree (the caller holds the proposal lock): any other change is the
+    interrupted-transition refusal, exactly like the finalize commit's
+    discipline. Returns the new candidate revision or None when nothing
+    changed."""
+    proposal = record["id"]
+    worktree = project / proposals.WORKTREES_REL / proposal
+    changed: list[str] = []
+    for line in proposals._git(
+        ["status", "--porcelain", "--untracked-files=all"], worktree
+    ).stdout.splitlines():
+        if not line.strip():
+            continue
+        rel = line[3:].rsplit(" -> ", 1)[-1]
+        if rel in rels:
+            changed.append(rel)
+        else:
+            raise ValueError(
+                f"the worktree of proposal {proposal} carries the change {rel!r} "
+                "outside the core-authored evidence pages" + proposals._HUMAN_RESOLUTION
+            )
+    if not changed:
+        return None
+    proposals._require_git_identity(project)
+    literal = [proposals._literal(rel) for rel in changed]
+    proposals._git(["add", "-f", "--", *literal], worktree)
+    proposals._git(["commit", "-m", message, "--", *literal], worktree)
+    record["candidate_revision"] = proposals._git(["rev-parse", "HEAD"], worktree).stdout.strip()
+    proposals._store_record(project, record)
+    return record["candidate_revision"]
+
+
+def _finalize_mapping_evidence(
+    project: Path,
+    proposal: str,
+    record: dict,
+    revision: str,
+    *,
+    source_digest: str | None,
+    approval: dict | None,
+) -> tuple[str, list[str]]:
+    """The K3 finalization step (plan §2): verify every structured mapping's
+    cited receipts against the project's evidence records and the current
+    dependency identities, attach the bounded verified summaries to the
+    Reference pages as the core-owned ``ariadne_evidence`` frontmatter block,
+    and REMOVE a block whose receipts no longer verify. Returns (the final
+    revision, errors) — an unverifiable receipt is a validation error naming
+    the mapping, never a silently inherited summary."""
+    pages = _reference_pages_at(project, revision)
+    cited = any(
+        mapping.get("receipt_ids")
+        for page in pages.values()
+        for mapping in (page["meta"]["ariadne"].get("mappings") or [])
+        if isinstance(mapping, dict)
+    )
+    carried = any("ariadne_evidence" in page["meta"] for page in pages.values())
+    if not pages or not (cited or carried):
+        return revision, []
+    asset_columns: dict[str, list[dict]] = {}
+    if approval is not None:
+        owned = execution.DuckDBExecution(
+            authoring_sources.identity_registry(approval["sources"])
+        )
+        try:
+            asset_columns = _current_asset_columns(owned.catalog)
+        finally:
+            owned.close()
+    errors: list[str] = []
+    rewrites: dict[str, str] = {}
+    # K3 fix pass (finding 6): the operator's evidence age budget (host
+    # config only) bounds how old a receipt may be and still attach; the
+    # cited Policy/OSI digests re-verify against the proposal worktree.
+    max_age_hours = project_inspection_limits(project)["receipt_max_age_hours"]
+    worktree = project / proposals.WORKTREES_REL / proposal
+    for rel, page in pages.items():
+        representations = {
+            representation.get("id"): representation
+            for representation in (page["meta"]["ariadne"].get("representations") or [])
+            if isinstance(representation, dict) and isinstance(representation.get("id"), str)
+        }
+        desired: dict[str, list[dict]] = {}
+        for mapping in page["meta"]["ariadne"].get("mappings") or []:
+            if not isinstance(mapping, dict):
+                continue
+            receipt_ids = mapping.get("receipt_ids") or []
+            if not receipt_ids:
+                continue
+            declaration = mapping.get("candidate")
+            try:
+                declaration_digest = candidate_digest(declaration)
+            except ValueError as exc:
+                errors.append(
+                    f"{rel}: mapping {mapping.get('id')!r} cites receipts but its "
+                    f"candidate declaration is not measurable: {exc}"
+                )
+                continue
+            # K3 fix pass (finding 5): the measured candidate must correspond
+            # to the mapping's ENDPOINT representations (fields and required
+            # scope) BEFORE any evidence attaches — an endpoint that fails to
+            # resolve is the page contract's own error, not a correspondence
+            # check (verification then runs without endpoints).
+            endpoints: dict | None = {}
+            for key in ("from", "to"):
+                representation = representations.get(mapping.get(key))
+                if (
+                    not isinstance(representation, dict)
+                    or not isinstance(representation.get("fields"), list)
+                ):
+                    endpoints = None
+                    break
+                endpoints[key] = {
+                    "fields": representation.get("fields") or [],
+                    "scope": representation.get("scope") or [],
+                }
+            summaries = []
+            for receipt_id in receipt_ids:
+                summary, error = _verify_receipt(
+                    receipt_id,
+                    project,
+                    proposal,
+                    declaration_digest=declaration_digest,
+                    source_digest=source_digest,
+                    asset_columns=asset_columns,
+                    endpoints=endpoints,
+                    worktree=worktree,
+                    max_age_hours=max_age_hours,
+                )
+                if error is not None:
+                    errors.append(
+                        f"{rel}: mapping {mapping.get('id')!r} — {error}"
+                    )
+                    continue
+                summaries.append(summary)
+            if summaries:
+                desired[str(mapping.get("id"))] = summaries
+        current = page["meta"].get("ariadne_evidence")
+        if current != (desired or None):
+            rewrites[rel] = context._set_frontmatter_key(
+                page["text"], "ariadne_evidence", desired or None
+            )
+    final = revision
+    if rewrites:
+        for rel, text in rewrites.items():
+            proposals._safe_write(worktree, rel, text)
+        final = _commit_core_pages(
+            project, record, sorted(rewrites), EVIDENCE_COMMIT_MESSAGE
+        ) or revision
+    return final, errors

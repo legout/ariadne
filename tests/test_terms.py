@@ -523,7 +523,8 @@ def test_reference_extension_requires_resolvable_structure():
         "---\n\n# x\n"
     )
     assert any("not canonical" in error for error in errors)
-    # the K3 structured candidate is not part of version 1 yet
+    # the structured inspection candidate is validated by the K3 schema: a
+    # bare family key with no bindings stays a malformed-declaration error
     early = _reference_errors(
         _reference_with(mapping_overrides={"candidate": {"family": "prefix"}})
     )

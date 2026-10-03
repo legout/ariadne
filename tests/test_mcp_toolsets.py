@@ -64,7 +64,8 @@ QUERY_TOOLS = {
 # The Authoring registration: the plan §2 Authoring call contract, exposed
 # with one stable prefix over the same core (spec §6 "tool-surface
 # separation"): proposal lifecycle, measured inputs, validation, the K1
-# explicit schema refresh (issue #41), review.
+# explicit schema refresh (issue #41), the K3 bounded mapping inspection
+# (issue #43), review.
 AUTHORING_TOOLS = {
     "authoring_start_proposal",
     "authoring_read_artifact",
@@ -74,6 +75,7 @@ AUTHORING_TOOLS = {
     "authoring_upload_document",
     "authoring_validate_proposal",
     "authoring_refresh_schema",
+    "authoring_inspect_mapping",  # K3 (issue #43): bounded inspection + receipts
     "authoring_resolve_term",  # K2 (issue #42): read-only candidate resolution
     "authoring_review_proposal",
 }

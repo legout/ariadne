@@ -39,6 +39,7 @@ import base64
 import json
 import os
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -307,36 +308,86 @@ def plan(registry: Registry, read_only: bool = True) -> tuple[list[str], list[st
     return loads, statements
 
 
+def _setup_error(exc: BaseException, timer, deadline, secrets: list[str]) -> BaseException:
+    """Classify one setup failure: an interruption that fired after the setup
+    budget elapsed becomes the explicit deadline refusal (never a partial
+    session); every other error keeps its message with any DSN redacted."""
+    if (
+        timer is not None
+        and deadline is not None
+        and not timer.is_alive()
+        and isinstance(exc, duckdb.Error)
+    ):
+        return ValueError(
+            f"the inspection deadline was exhausted during source setup "
+            f"(budget {deadline:.3f}s) — the setup was interrupted and nothing "
+            "was opened further (spec 0010 §7); no result is claimed"
+        )
+    if secrets and isinstance(exc, Exception):
+        exc.args = (_redact_all(str(exc), secrets),)
+    return exc
+
+
 def build_connection(
-    registry: Registry, read_only: bool = True
+    registry: Registry, read_only: bool = True, *, deadline: float | None = None
 ) -> tuple[duckdb.DuckDBPyConnection, list[dict]]:
     """The one DuckDB session for all commands (ADR-0010): executes
     :func:`plan` verbatim and returns ``(connection, catalog)``. The catalog
     lists, per source, its tables with columns where cheaply enumerable —
     ``information_schema`` for attaches, the same catalog for file views.
     Execution errors are re-raised with any postgres DSN redacted (DuckDB
-    echoes the SQL text, so a failed ATTACH would leak credentials)."""
+    echoes the SQL text, so a failed ATTACH would leak credentials).
+
+    With ``deadline`` (K3 issue #43: a remaining-seconds budget covering the
+    whole setup), the extension loads, per-source DDL and catalog reads run
+    under the connection's interrupt watchdog: an over-budget setup is
+    interrupted and reported as the explicit deadline refusal — never a
+    "stopped" claim with a read still running, never an unbounded setup."""
     loads, statements = plan(registry, read_only=read_only)
     secrets = [_resolve_dsn(src) for src in registry.sources if src.type == "postgres"]
     cert = os.getenv("SSL_CERT_FILE")
     con = duckdb.connect(config={"ca_cert_file": cert} if cert else {})
-    for extension in loads:
-        # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
-        con.execute(f"LOAD {extension}")
-    for statement in statements:
+    timer = None
+    if deadline is not None:
+        if not hasattr(con, "interrupt"):
+            con.close()
+            raise ValueError(
+                "this DuckDB build exposes no interruptible connection — a source "
+                "setup/execution that cannot be bounded and cancelled is an "
+                "explicit refusal, never a fake passing check (spec 0010 §7)"
+            )
+        timer = threading.Timer(max(float(deadline), 1e-6), con.interrupt)
+        timer.daemon = True
+        timer.start()
+    try:
+        for extension in loads:
+            # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
+            con.execute(f"LOAD {extension}")
+        for statement in statements:
+            try:
+                con.execute(statement)  # nosemgrep — plan() output, validated-registry inputs only
+            except Exception as exc:
+                raise _setup_error(exc, timer, deadline, secrets)
+        catalog = [_catalog_entry(con, src) for src in registry.sources]
+    except Exception as exc:
+        # K3 fix pass (finding 9): a failing setup CLOSES the connection it
+        # opened — no leaked session/read survives the refused setup (the
+        # connection owner is never constructed when setup raises).
         try:
-            con.execute(statement)  # nosemgrep — plan() output, validated-registry inputs only
-        except Exception as exc:
-            exc.args = (_redact_all(str(exc), secrets),)
-            raise
-    return con, [_catalog_entry(con, src) for src in registry.sources]
+            con.close()
+        except Exception:  # pragma: no cover - a failing close must not mask the cause
+            pass
+        raise _setup_error(exc, timer, deadline, secrets)
+    finally:
+        if timer is not None:
+            timer.cancel()  # setup ended: no background interrupt keeps running
+    return con, catalog
 
 
 def _redact(dsn: str) -> str:
     """``scheme://user:password@host/...`` -> ``scheme://user:***@host/...``
     (user and host may surface; the password never does)."""
     return _DSN_PASSWORD_RE.sub(r"\1***\3", dsn)
-
 
 def _redact_all(message: str, secrets: list[str]) -> str:
     """Every known DSN redacted, plus a generic pass so no credentialed URL in

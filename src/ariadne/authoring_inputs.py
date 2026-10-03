@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import math
 import os
 import stat
 import tempfile
@@ -41,9 +42,168 @@ MAX_DOCUMENTS_PER_CALL = 16  # explicit aggregate bound: 16 parts ≤ 320k chars
 # server KEEPS the original bytes and digest in its project-controlled area).
 OBJECT_STORE_REL = Path("data") / "object-store"
 
+# K3 (issue #43, spec 0010 §7, plan §2 "finite limits"): the operator-owned
+# inspection ceilings. These are the BUILT-IN defaults; the human-managed
+# project config may only TIGHTEN them (lower a numeric ceiling), and a
+# request may only lower them further — never raise. ``raw_examples`` is the
+# operator's explicit sample permission for raw identifier examples (default
+# off; aggregate/shape output is the default response).
+DEFAULT_INSPECTION_LIMITS = {
+    "sample_rows": 1000,  # materialized sampled rows per participating asset
+    "execution_seconds": 20.0,  # total inspection execution across all sources
+    "response_bytes": 64 * 1024,  # serialized response ceiling
+    "raw_examples": False,
+    # K3 fix pass (finding 6, spec 0010 §8): the operator's evidence AGE
+    # budget — how old a retained receipt may be and still attach its
+    # verified summary. Age bounds the RECEIPT's validity for attachment;
+    # unversioned data stays as_of and dependency changes invalidate
+    # immediately. Host-config only (tightenable), never a candidate or
+    # request field.
+    "receipt_max_age_hours": 24.0,
+}
+MAX_RAW_EXAMPLES = 10  # the optional raw-example cap (with permission)
+_INSPECTION_LIMIT_KEYS = frozenset(
+    {
+        "sample_rows",
+        "execution_seconds",
+        "response_bytes",
+        "raw_examples",
+        "receipt_max_age_hours",
+    }
+)
+_REQUEST_LIMIT_KEYS = frozenset({"sample_rows", "execution_seconds", "response_bytes", "examples"})
+
+
+def _finite_positive(value: object, where: str) -> None:
+    """One numeric limit must be a FINITE positive number (K3 fix pass,
+    finding 8): NaN/inf compare false against every ceiling, so a non-finite
+    limit is an explicit refusal — it can never silently disable a bound."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(
+            f"{where} must be a finite positive number, got {value!r} — a non-finite "
+            "limit disables no ceiling comparison; nothing was measured"
+        )
+
+
+def project_inspection_limits(project: str | Path) -> dict:
+    """The effective operator-owned inspection ceilings of one project: the
+    built-in defaults tightened by the HUMAN-MANAGED project config's optional
+    ``inspection:`` section (spec 0010 §7; read from the HOST project root's
+    working tree exactly like the documents boundary — a candidate's committed
+    ``inspection:`` section is inert data and can never widen a ceiling or
+    grant sample permission). An invalid or RAISING section is an explicit
+    error naming the field."""
+    root = Path(project)
+    registry_path = root / "ariadne.yaml"
+    limits = dict(DEFAULT_INSPECTION_LIMITS)
+    if not registry_path.is_file():
+        return limits
+    try:
+        doc = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{registry_path}: not valid YAML: {exc}") from None
+    if not isinstance(doc, dict):
+        raise ValueError(f"{registry_path}: top level is not a mapping")
+    section = doc.get("inspection")
+    if section is None:
+        return limits
+    if not isinstance(section, dict):
+        raise ValueError(
+            f"{registry_path}: 'inspection' must be a mapping with the optional keys "
+            f"{sorted(_INSPECTION_LIMIT_KEYS)}"
+        )
+    unknown = sorted(set(section) - _INSPECTION_LIMIT_KEYS)
+    if unknown:
+        raise ValueError(
+            f"{registry_path}: 'inspection' carries unsupported key(s) {unknown}; "
+            f"allowed: {sorted(_INSPECTION_LIMIT_KEYS)}"
+        )
+    for key in ("sample_rows", "execution_seconds", "response_bytes", "receipt_max_age_hours"):
+        if key not in section:
+            continue
+        value = section[key]
+        _finite_positive(value, f"{registry_path}: inspection.{key}")
+        if value > DEFAULT_INSPECTION_LIMITS[key]:
+            raise ValueError(
+                f"{registry_path}: inspection.{key}={value} would RAISE the built-in "
+                f"ceiling {DEFAULT_INSPECTION_LIMITS[key]} — the operator config may "
+                "only tighten the finite limits (spec 0010 §7)"
+            )
+        limits[key] = value
+    if "raw_examples" in section:
+        permission = section["raw_examples"]
+        if not isinstance(permission, bool):
+            raise ValueError(
+                f"{registry_path}: inspection.raw_examples must be a boolean sample "
+                f"permission, got {permission!r}"
+            )
+        limits["raw_examples"] = permission
+    return limits
+
 
 def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def effective_inspection_limits(
+    ceilings: dict, request_limits: object
+) -> dict:
+    """The effective limits of one inspection request: the operator ceilings
+    possibly lowered by the request (plan §2: requests can lower limits,
+    never raise them). ``examples`` additionally requires the operator's
+    explicit raw-example sample permission and is capped at ten. A raising or
+    invalid request limit is an explicit refusal naming the ceiling."""
+    effective = dict(ceilings)
+    effective["examples"] = 0
+    if request_limits is None:
+        return effective
+    if not isinstance(request_limits, dict):
+        raise ValueError(
+            "inspection limits must be a mapping with the optional keys "
+            f"{sorted(_REQUEST_LIMIT_KEYS)}"
+        )
+    unknown = sorted(set(request_limits) - _REQUEST_LIMIT_KEYS)
+    if unknown:
+        raise ValueError(
+            f"inspection limits carry unsupported key(s) {unknown}; allowed: "
+            f"{sorted(_REQUEST_LIMIT_KEYS)}"
+        )
+    for key in ("sample_rows", "execution_seconds", "response_bytes"):
+        if key not in request_limits:
+            continue
+        value = request_limits[key]
+        _finite_positive(value, f"inspection limits.{key}")
+        if value > ceilings[key]:
+            raise ValueError(
+                f"inspection limits.{key}={value} would RAISE the operator ceiling "
+                f"{ceilings[key]} — a request may only LOWER the finite limits "
+                "(spec 0010 §7); nothing was measured"
+            )
+        effective[key] = value
+    if "examples" in request_limits:
+        wanted = request_limits["examples"]
+        if isinstance(wanted, bool) or not isinstance(wanted, int) or wanted < 0:
+            raise ValueError(
+                f"inspection limits.examples must be a non-negative integer, got {wanted!r}"
+            )
+        if wanted > MAX_RAW_EXAMPLES:
+            raise ValueError(
+                f"inspection limits.examples={wanted} exceeds the raw-example cap of "
+                f"{MAX_RAW_EXAMPLES} (spec 0010 §7)"
+            )
+        if wanted and not ceilings["raw_examples"]:
+            raise ValueError(
+                "raw identifier examples need the operator's EXPLICIT sample "
+                "permission (inspection.raw_examples in the host ariadne.yaml) — "
+                "the default response is aggregate evidence and shape summaries"
+            )
+        effective["examples"] = wanted
+    return effective
 
 
 def _input_root(project: str | Path) -> Path:

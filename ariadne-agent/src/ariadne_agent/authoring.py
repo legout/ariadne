@@ -9,7 +9,9 @@ Authoring call contract); nothing is reimplemented here. The native tools
 mirror that interface one-to-one — ``start_proposal``, ``read_artifact``,
 ``edit_proposal``, ``propose_sources``, ``inputs``, ``upload_document``,
 ``validate_proposal``, ``refresh_schema`` (issue #41: the explicit physical
-schema refresh), ``resolve_term`` (issue #42/K2: read-only resolution against
+schema refresh), ``inspect_mapping`` (issue #43/K3: the bounded
+mapping-inspection operation with authentic retained receipts),
+``resolve_term`` (issue #42/K2: read-only resolution against
 the explicitly selected proposal's candidate, with the candidate identity
 visible), ``review_proposal`` — replacing the legacy
 complete-bundle submission tools (the explicit G6 mapping: one proposal +
@@ -43,6 +45,7 @@ TOOL_NAMES = (
     "upload_document",
     "validate_proposal",
     "refresh_schema",
+    "inspect_mapping",  # K3 (issue #43): bounded mapping inspection + receipts
     "resolve_term",  # K2 (issue #42): read-only candidate term resolution
     "review_proposal",
     "read_skill_reference",
@@ -144,6 +147,18 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
             )
         )
 
+    async def inspect_mapping(
+        tool_call_id: str, arguments: dict, signal=None, on_update=None
+    ) -> AgentToolResult:
+        return _payload(
+            api.inspect_mapping(
+                arguments["proposal"],
+                arguments["expected_revision"],
+                arguments["candidate"],
+                limits=arguments.get("limits"),
+            )
+        )
+
     async def resolve_term(
         tool_call_id: str, arguments: dict, signal=None, on_update=None
     ) -> AgentToolResult:
@@ -177,6 +192,7 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         "upload_document": upload_document,
         "validate_proposal": validate_proposal,
         "refresh_schema": refresh_schema,
+        "inspect_mapping": inspect_mapping,
         "resolve_term": resolve_term,
         "review_proposal": review_proposal,
         "read_skill_reference": read_skill_reference_tool,
@@ -236,6 +252,21 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
             "history; an identical refresh is a no-op. Returns the revision, "
             "generated page identities and schema-change flags; never "
             "admission."
+        ),
+        "inspect_mapping": (
+            "Measure one structured mapping-inspection candidate "
+            "(equality/composite, string prefix with an optional scoped prefix "
+            "lookup, or explicit scoped lookup) over the operator-APPROVED "
+            "resolved source identity. The candidate is a discriminated JSON "
+            "object — never SQL or a path; requests may only LOWER the "
+            "operator's finite ceilings. The retained receipt reports honest "
+            "counts, coverage, collisions, multiplicity, containment-versus-"
+            "pairing basis and sampled/full limitations; raw identifier "
+            "examples need the operator's explicit sample permission. A failed "
+            "or inconclusive result stays honest — never present a sampled "
+            "match as a business rule, and never edit a page from this tool "
+            "(hypotheses are saved through edit_proposal; confirmation is "
+            "human-only)."
         ),
         "resolve_term": (
             "Resolve a shared business term or an exact {resource, column} "
@@ -361,6 +392,34 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
                 },
             },
             "required": ["proposal", "expected_revision", "assets"],
+            "additionalProperties": False,
+        },
+        "inspect_mapping": {
+            "type": "object",
+            "properties": {
+                "proposal": {"type": "string"},
+                "expected_revision": {"type": "string"},
+                "candidate": {
+                    "type": "object",
+                    "properties": {
+                        "family": {"type": "string", "enum": ["equality", "prefix", "lookup"]},
+                        "left": {"type": "array", "minItems": 1},
+                        "right": {"type": "array", "minItems": 1},
+                    },
+                    "required": ["family", "left", "right"],
+                },
+                "limits": {
+                    "type": "object",
+                    "properties": {
+                        "sample_rows": {"type": "number", "minimum": 1},
+                        "execution_seconds": {"type": "number", "minimum": 0},
+                        "response_bytes": {"type": "number", "minimum": 1},
+                        "examples": {"type": "integer", "minimum": 0, "maximum": 10},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["proposal", "expected_revision", "candidate"],
             "additionalProperties": False,
         },
         "resolve_term": {

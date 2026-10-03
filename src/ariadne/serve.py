@@ -527,6 +527,39 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return authoring_api.review_proposal(proposal, part=part)
 
         @app.tool()
+        async def authoring_inspect_mapping(
+            proposal: str, expected_revision: str, candidate: dict, limits: dict | None = None
+        ) -> dict:
+            """Measure one structured mapping-inspection candidate —
+            equality/composite, string prefix (optional scoped prefix lookup)
+            or explicit scoped lookup — over the operator-APPROVED resolved
+            source identity and retain the core receipt in the project evidence
+            area. Guarded core-generated read-only statements, parameterized
+            scope, operator-owned finite ceilings (requests may only LOWER
+            them); aggregate counts by default — raw identifier examples need
+            the operator's explicit sample permission. The receipt reports
+            eligible/tested denominators, coverage, mismatches, collisions,
+            multiplicity, containment-versus-pairing basis, sampled/full
+            designation and complete|inconclusive outcome with limitations.
+            Never a page edit, approval or admission. Same contract as
+            ``ariadne-authoring inspect-mapping``.
+
+            Args:
+                proposal: the proposal ID.
+                expected_revision: the CURRENT candidate revision the inspection
+                    is based on.
+                candidate: the discriminated candidate object (family, ordered
+                    left/right {resource, column} bindings, scope predicates,
+                    optional pairing/family fields — never SQL or paths).
+                limits: optional REQUEST-LOWERED bounds {sample_rows,
+                    execution_seconds, response_bytes, examples}; raising a
+                    ceiling is refused.
+            """
+            return authoring_api.inspect_mapping(
+                proposal, expected_revision, candidate, limits=limits
+            )
+
+        @app.tool()
         async def authoring_resolve_term(
             proposal: str, request: str | dict, part: int = 1
         ) -> dict:

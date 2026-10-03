@@ -429,6 +429,7 @@ _SYSTEM_CLAIM_KEYS = frozenset(
         "attested",
         "validated",
         "ariadne",
+        "ariadne_evidence",  # K3 (issue #43): core-attached verified receipt summaries
         "resource",
     }
 )
