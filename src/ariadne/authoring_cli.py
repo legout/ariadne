@@ -29,6 +29,9 @@ for failure, message verbatim.
                               [--project DIR]
     ariadne-authoring refresh-schema --proposal ID --expected-revision REV
                                     --file FILE [--project DIR]
+    ariadne-authoring resolve-term --proposal ID [TERM] [--file FILE]
+                                    [--part N] [--project DIR]  (issue #42;
+                                    read-only candidate resolution)
     ariadne-authoring reconcile --proposal ID --expected-revision OLD
                                 --revision NEW [--project DIR]
     ariadne-authoring import-legacy --from-root ROOT [--project DIR]   (HUMAN-ONLY)
@@ -54,7 +57,8 @@ GIT contract above — ``authoring_start_proposal``/``authoring_read_artifact``/
 ``--proposal``/``--expected-revision`` + typed entries)/``authoring_inputs``
 (Git mode: ``--proposal``)/``authoring_upload_document``/
 ``authoring_validate_proposal``/``authoring_refresh_schema`` (issue #41: the
-explicit physical schema refresh)/``authoring_review_proposal`` — with model
+explicit physical schema refresh)/``authoring_resolve_term`` (issue #42: the
+read-only candidate term resolution)/``authoring_review_proposal`` — with model
 arguments carrying only proposal IDs, revisions and typed artifact
 identities. A legacy complete-bundle ``submit``/``review`` payload composes as
 ``start`` + one ``edit`` per artifact + ``validate``/``review --proposal``
@@ -378,6 +382,30 @@ def build_parser() -> _Parser:
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
 
+    resolve_cmd = sub.add_parser(
+        "resolve-term",
+        help="resolve a shared business term or an exact field lookup against the "
+        "EXPLICITLY selected proposal's current candidate revision (issue #42; "
+        "read-only, candidate identity visible; never admission)",
+    )
+    resolve_cmd.add_argument("--proposal", required=True, help="the proposal ID")
+    resolve_cmd.add_argument(
+        "term",
+        nargs="?",
+        help="the term to resolve (whole aliases/phrases, case-insensitive)",
+    )
+    resolve_cmd.add_argument(
+        "--file",
+        help='resolve request JSON ("-" reads stdin): {"term": ...} or the exact '
+        'field form {"resource": ..., "column": ...}',
+    )
+    resolve_cmd.add_argument(
+        "--part", type=int, default=1, help="which bounded part of the matches (default 1)"
+    )
+    resolve_cmd.add_argument(
+        "--project", default=".", help="project root holding ariadne.yaml (default: .)"
+    )
+
     reconcile_cmd = sub.add_parser(
         "reconcile",
         help="record the clean new HEAD a human created by a local rebase/merge after "
@@ -508,6 +536,27 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "refresh-schema":
             result = AuthoringProject(args.project).refresh_schema(
                 args.proposal, args.expected_revision, _read_asset_list(args.file)
+            )
+        elif args.command == "resolve-term":
+            if args.file is not None:
+                raw = (
+                    sys.stdin.read()
+                    if args.file == "-"
+                    else Path(args.file).read_text(encoding="utf-8")
+                )
+                data = json.loads(raw)
+                if isinstance(data, dict) and "term" in data:
+                    request = data["term"]
+                else:
+                    request = data
+            elif args.term is not None:
+                request = args.term
+            else:
+                raise UsageError(
+                    "resolve-term needs a TERM argument or --file with the request JSON"
+                )
+            result = AuthoringProject(args.project).resolve_term(
+                args.proposal, request, part=args.part
             )
         elif args.command == "reconcile":
             # HUMAN-ONLY (issue #37/G5): records a local rebase/merge; never an

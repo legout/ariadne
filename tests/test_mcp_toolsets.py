@@ -58,6 +58,7 @@ QUERY_TOOLS = {
     "query_detail",
     "save_example",
     "search_examples",
+    "resolve_term",  # K2 (issue #42): shared terminology resolution
 }
 
 # The Authoring registration: the plan §2 Authoring call contract, exposed
@@ -73,6 +74,7 @@ AUTHORING_TOOLS = {
     "authoring_upload_document",
     "authoring_validate_proposal",
     "authoring_refresh_schema",
+    "authoring_resolve_term",  # K2 (issue #42): read-only candidate resolution
     "authoring_review_proposal",
 }
 

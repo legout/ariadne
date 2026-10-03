@@ -494,20 +494,28 @@ def _refuse_forged_claims(rel: str, content: str, base_content: bytes | None) ->
     same boundary to the RENDERED facts of an inherited generated page: its
     core-owned body sections (the generated Schema/Observations/Schema
     history blocks) may be carried unchanged, never changed, dropped or
-    added; authored sections outside them stay editable."""
+    added; authored sections outside them stay editable. K2 (issue #42): the
+    ``ariadne`` block of a REFERENCE page is the AUTHORED structured
+    extension (aliases, exact bindings, mappings — spec 0010 §5), not a
+    core-generated claim, so reference edits may author it; its shape and its
+    refusal of approval/measurement claims belong to the shared per-type
+    gate."""
     base_text = base_content.decode("utf-8", "replace") if base_content is not None else ""
     base = _claim_map(rel, base_text) or {}
     claims = _claim_map(rel, content) or {}
+    system_keys = _SYSTEM_CLAIM_KEYS
+    if PurePosixPath(rel).parts[:2] == ("context_layer", "references"):
+        system_keys = _SYSTEM_CLAIM_KEYS - {"ariadne"}  # the authored extension (K2)
     forged = sorted(
         key
-        for key in _SYSTEM_CLAIM_KEYS & claims.keys()
+        for key in system_keys & claims.keys()
         if key not in base or base[key] != claims[key]
     )
     # REMOVING a system-owned claim the base carried is the same forgery:
     # silently dropping the generated facts (issue #41 — a page whose
     # ``ariadne`` block or ``resource`` binding is stripped would fall out of
     # the refresh's resource identity)
-    forged = sorted(set(forged) | (_SYSTEM_CLAIM_KEYS & base.keys() - claims.keys()))
+    forged = sorted(set(forged) | (system_keys & base.keys() - claims.keys()))
     if forged:
         raise ValueError(
             f"the edit of {rel!r} introduces, changes or removes system-owned trust "
@@ -552,7 +560,8 @@ def _assert_scope(rel: str) -> None:
         raise ValueError(
             f"artifact path {rel!r} is outside the proposal artifact scope (ariadne.yaml, "
             "data/seed_notes.md, semantic_layer/models/*.yml, semantic_layer/graph.yml, "
-            "context_layer/{datasets,tables,references/joins,policies,metrics,skills}/*.md)"
+            "context_layer/{datasets,tables,references,references/joins,policies,"
+            "metrics,skills}/*.md)"
         )
     refuse_generated(rel)  # generated artifacts are never USER-editable
 
@@ -587,7 +596,9 @@ def _in_user_scope(rel: str) -> bool:
         and pure.suffix == ".md"
     ):
         if parts[1] == "references":
-            return len(parts) == 4 and parts[2] == "joins"
+            # K2 (issue #42, spec 0010 §3): general References live directly
+            # under references/; the join References keep references/joins/.
+            return len(parts) == 3 or (len(parts) == 4 and parts[2] == "joins")
         return True
     return False
 

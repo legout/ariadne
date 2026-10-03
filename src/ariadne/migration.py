@@ -113,7 +113,12 @@ def _typed_edit(rel: str, content: str) -> dict:
         return {"kind": "graph", "content": content}
     if parts[:2] == ("semantic_layer", "models"):
         return {"kind": "model", "name": PurePosixPath(rel).stem, "content": content}
-    section = "references" if parts[1] == "references" else parts[1]
+    if parts[1] == "references":
+        # K2 (issue #42): general References are the ``references`` section;
+        # the legacy join References under references/joins/ are ``joins``.
+        section = "joins" if len(parts) > 3 else "references"
+    else:
+        section = parts[1]
     return {
         "kind": "page",
         "section": section,

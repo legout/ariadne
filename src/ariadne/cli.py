@@ -17,6 +17,10 @@ in the runtime:
     ariadne save-example [--file PATH]          (stdin when absent; issue #19 —
                                                explicit answer-example submission)
     ariadne search-examples QUERY [--limit N] [--include-history]
+    ariadne resolve-term [TERM] [--file PATH] [--part N]   (issue #42: shared
+                                               terminology resolution; the exact
+                                               {resource, column} field form
+                                               arrives through --file)
 
 Every successful invocation writes exactly one JSON value plus a newline to
 stdout and nothing else; temporal values serialize as ISO-8601 strings and
@@ -209,6 +213,26 @@ def build_parser() -> _Parser:
         action="store_true",
         help="include stale/superseded/rejected records as labeled history",
     )
+    resolve = sub.add_parser(
+        "resolve-term",
+        parents=[common],
+        help="resolve a shared business term or an exact field lookup against the "
+        "served context (issue #42: bounded matches with exact bindings, scope, "
+        "ambiguity and unconfirmed claim status; read-only)",
+    )
+    resolve.add_argument(
+        "term",
+        nargs="?",
+        help="the term to resolve (whole aliases/phrases, case-insensitive)",
+    )
+    resolve.add_argument(
+        "--file",
+        help="resolve request JSON from a file or stdin ('-'): the exact field "
+        "form of the request; a positional TERM is the plain term form",
+    )
+    resolve.add_argument(
+        "--part", type=int, default=1, help="which bounded part of the matches (default 1)"
+    )
     return parser
 
 
@@ -242,6 +266,24 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
             stdin,
             "submission" if args.command == "save-example" else "request",
         )
+    resolve_request = None
+    if args.command == "resolve-term":  # adapter input, parsed pre-runtime
+        if args.file is not None:
+            data = _read_definition(
+                args.file if args.file != "-" else None,
+                stdin,
+                "resolve-term request",
+            )
+            if isinstance(data, dict) and "term" in data:
+                resolve_request = data["term"]
+            else:
+                resolve_request = data
+        elif args.term is not None:
+            resolve_request = args.term
+        else:
+            raise ValueError(
+                "resolve-term needs a TERM argument or --file with the request JSON"
+            )
     if root is None:
         # An omitted --staging (None) lets the managed factory apply its
         # project-owned default <project>/staging — the CLI's CWD-relative
@@ -263,6 +305,9 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         result = asyncio.run(runtime.list_datasets())
     elif args.command == "search-context":
         result = asyncio.run(runtime.search_context(args.query, limit=args.limit))
+    elif args.command == "resolve-term":
+        assert resolve_request is not None  # parsed pre-runtime above
+        result = asyncio.run(runtime.resolve_term(resolve_request, part=args.part))
     elif args.command == "get-metric":
         time_range = {
             key: value

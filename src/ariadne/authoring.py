@@ -179,6 +179,7 @@ from ariadne.context import (  # noqa: F401 — the K1 generated-page seam (issu
     build_dataset_page,
     build_table_page,
     generated_page_filename,
+    resolve_term,  # K2 (issue #42): the shared read-only term resolver
 )
 from ariadne.render import render
 from ariadne.semantic_graph import load_graph
@@ -1361,6 +1362,36 @@ class AuthoringProject:
         flags. Refresh is never admission (K4 owns that)."""
         return refresh_schema(self.project, proposal, expected_revision, assets)
 
+    def resolve_term(
+        self, proposal: str, request: str | dict, *, part: int = 1
+    ) -> dict:
+        """Resolve one shared business term or exact ``{resource, column}``
+        field lookup against an EXPLICITLY selected proposal's current
+        candidate revision (plan §2 ``resolve_term`` row, spec 0010 §6):
+        read-only — the candidate is materialized from the exact commit, never
+        a mutable worktree, and the response keeps the candidate identity
+        (proposal + revision + ``candidate: true``) visible beside the shared
+        resolver envelope (:func:`ariadne.context.resolve_term`). Authoring
+        gains no query, approval or admission authority here."""
+        project = self.project.resolve()
+        proposals._load_record(project, proposal)  # identity errors early
+        with proposals._file_lock(project / proposals.LOCKS_REL / f"{proposal}.lock"):
+            record = proposals._load_record(project, proposal)  # authoritative
+            proposals._check_coherent(project, record)
+            with tempfile.TemporaryDirectory(prefix="ariadne-resolve-") as tmp:
+                tree = Path(tmp) / "bundle"
+                tree.mkdir()
+                _materialize(project, proposal, record["candidate_revision"], tree)
+                result = resolve_term([(tree / "context_layer", False)], request, part=part)
+        result.update(
+            {
+                "proposal": proposal,
+                "revision": record["candidate_revision"],
+                "candidate": True,
+            }
+        )
+        return result
+
 
 
 # ------------------------------------- slice 5 (issue #36/G4): validation/review
@@ -1373,7 +1404,10 @@ FINALIZE_COMMIT_MESSAGE = "ariadne: finalize generated artifacts"
 def _cited_resources(meta: dict) -> list[str]:
     """The distinct citation resources of one page's frontmatter ``sources``
     (a mapping's ``resource`` — the rev 10 context field — or the plain
-    string itself)."""
+    string itself), plus — K2 (issue #42) — the canonical catalog identities a
+    structured Reference's field/scope bindings name: bindings ride the SAME
+    verified-citation walk, so a declared binding must parse and name an
+    approved source like any other catalog citation."""
     resources: list[str] = []
     for source in meta.get("sources") or []:
         resource = (
@@ -1383,6 +1417,16 @@ def _cited_resources(meta: dict) -> list[str]:
         )
         if isinstance(resource, str) and resource and resource not in resources:
             resources.append(resource)
+    extension = meta.get("ariadne") if isinstance(meta.get("ariadne"), dict) else None
+    for representation in (extension or {}).get("representations") or []:
+        if not isinstance(representation, dict):
+            continue
+        bindings = [*(representation.get("fields") or []), *(representation.get("scope") or [])]
+        for binding in bindings:
+            if isinstance(binding, dict) and isinstance(binding.get("resource"), str):
+                resource = binding["resource"]
+                if resource not in resources:
+                    resources.append(resource)
     return resources
 
 

@@ -9,7 +9,9 @@ Authoring call contract); nothing is reimplemented here. The native tools
 mirror that interface one-to-one — ``start_proposal``, ``read_artifact``,
 ``edit_proposal``, ``propose_sources``, ``inputs``, ``upload_document``,
 ``validate_proposal``, ``refresh_schema`` (issue #41: the explicit physical
-schema refresh), ``review_proposal`` — replacing the legacy
+schema refresh), ``resolve_term`` (issue #42/K2: read-only resolution against
+the explicitly selected proposal's candidate, with the candidate identity
+visible), ``review_proposal`` — replacing the legacy
 complete-bundle submission tools (the explicit G6 mapping: one proposal +
 per-artifact edits + validation/review, never a resubmitted whole bundle).
 Each tool's payload is the service's verbatim JSON envelope, and service
@@ -41,6 +43,7 @@ TOOL_NAMES = (
     "upload_document",
     "validate_proposal",
     "refresh_schema",
+    "resolve_term",  # K2 (issue #42): read-only candidate term resolution
     "review_proposal",
     "read_skill_reference",
 )
@@ -141,6 +144,15 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
             )
         )
 
+    async def resolve_term(
+        tool_call_id: str, arguments: dict, signal=None, on_update=None
+    ) -> AgentToolResult:
+        return _payload(
+            api.resolve_term(
+                arguments["proposal"], arguments["request"], part=arguments.get("part", 1)
+            )
+        )
+
     async def review_proposal(
         tool_call_id: str, arguments: dict, signal=None, on_update=None
     ) -> AgentToolResult:
@@ -165,6 +177,7 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         "upload_document": upload_document,
         "validate_proposal": validate_proposal,
         "refresh_schema": refresh_schema,
+        "resolve_term": resolve_term,
         "review_proposal": review_proposal,
         "read_skill_reference": read_skill_reference_tool,
     }
@@ -223,6 +236,15 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
             "history; an identical refresh is a no-op. Returns the revision, "
             "generated page identities and schema-change flags; never "
             "admission."
+        ),
+        "resolve_term": (
+            "Resolve a shared business term or an exact {resource, column} "
+            "field lookup against this EXPLICITLY selected proposal's current "
+            "candidate revision — read-only, with the candidate revision "
+            "visible in the response: representations, exact bindings, scope, "
+            "ambiguity and UNCONFIRMED claim status with page/source "
+            "citations. Read existing terminology before drafting a new "
+            "Reference; never approval, admission or a query."
         ),
         "review_proposal": (
             "The proposal's review — never a signoff: exact current/base "
@@ -339,6 +361,29 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
                 },
             },
             "required": ["proposal", "expected_revision", "assets"],
+            "additionalProperties": False,
+        },
+        "resolve_term": {
+            "type": "object",
+            "properties": {
+                "proposal": {"type": "string"},
+                "request": {
+                    "anyOf": [
+                        {"type": "string", "minLength": 1},
+                        {
+                            "type": "object",
+                            "properties": {
+                                "resource": {"type": "string", "minLength": 1},
+                                "column": {"type": "string", "minLength": 1},
+                            },
+                            "required": ["resource", "column"],
+                            "additionalProperties": False,
+                        },
+                    ]
+                },
+                "part": {"type": "integer", "minimum": 1},
+            },
+            "required": ["proposal", "request"],
             "additionalProperties": False,
         },
         "review_proposal": {

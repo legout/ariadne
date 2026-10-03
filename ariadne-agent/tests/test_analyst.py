@@ -68,6 +68,7 @@ ANALYST_TOOLS = {
     "get_metric",
     "list_datasets",
     "define_metric",
+    "resolve_term",  # K2 (issue #42): alongside the five baseline tools
 }
 
 ANSWER_GOVERNED = """\
@@ -308,8 +309,9 @@ def test_unmodeled_route_stages_ungoverned_proposal(project):
 
 def test_analyst_tool_surface_is_the_five_native_operations(project):
     """Tools are constructed for the role (not just described): exactly the
-    five Ariadne query operations, packaged-skill guidance in the system, and
-    no tau_coding module ever loaded by the in-process run."""
+    five Ariadne baseline query operations plus the K2 read-only term resolver
+    (issue #42), packaged-skill guidance in the system, and no tau_coding
+    module ever loaded by the in-process run."""
     provider = FakeProvider([turn(text="ok")])
     session = open_session(
         role="analyst", project=project, model="fake-analyst", provider=provider
@@ -318,7 +320,8 @@ def test_analyst_tool_surface_is_the_five_native_operations(project):
     model, system, _messages, tools = provider.calls[0]
     assert model == "fake-analyst"
     assert {tool.name for tool in tools} == ANALYST_TOOLS, (
-        "the Analyst role gets exactly Ariadne's five query operations"
+        "the Analyst role gets exactly Ariadne's five baseline query "
+        "operations plus resolve_term (issue #42) — nothing else"
     )
     skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
     assert skill.strip() in system, "the version-matched packaged skill must be the guidance"
@@ -328,6 +331,103 @@ def test_analyst_tool_surface_is_the_five_native_operations(project):
     assert not any(
         name == "tau_coding" or name.startswith("tau_coding.") for name in sys.modules
     ), "no tau_coding runtime module may be loaded"
+
+
+ORDER_TERM_REFERENCE = (
+    "---\n"
+    "type: reference\n"
+    "title: Order number\n"
+    "description: The shared order-number concept.\n"
+    "tags: [reference, term]\n"
+    "sources:\n"
+    "  - id: seed-notes\n"
+    "    resource: data/seed_notes.md\n"
+    "ariadne:\n"
+    "  version: 1\n"
+    "  reference_role: term\n"
+    "  representations:\n"
+    "    - id: local-order-number\n"
+    "      aliases: [order number, local order number]\n"
+    "      fields:\n"
+    "        - resource: ariadne://table/WyJvcmRlcnMiLG51bGwsIm9yZGVycyIsIm9yZGVycyJd\n"
+    "          column: local_order_number\n"
+    "      scope: []\n"
+    "    - id: global-order-number\n"
+    "      aliases: [order number, global order number]\n"
+    "      fields:\n"
+    "        - resource: ariadne://table/WyJvcmRlcnMiLG51bGwsIm9yZGVycyIsIm9yZGVycyJd\n"
+    "          column: global_order_number\n"
+    "      scope: []\n"
+    "  mappings:\n"
+    "    - id: local-to-global-prefix\n"
+    "      family: prefix\n"
+    "      from: local-order-number\n"
+    "      to: global-order-number\n"
+    "      claim: hypothesis\n"
+    "      source_ids: [seed-notes]\n"
+    "      receipt_ids: []\n"
+    "---\n\n"
+    "# Order number\n"
+)
+
+
+def test_analyst_resolve_term_reports_alternatives_and_unconfirmed_claims(
+    project, tmp_path
+):
+    """K2 (issue #42): the native ``resolve_term`` tool drives the shared core
+    resolver over the admitted context — the umbrella alias returns the
+    local/global alternatives with their exact bindings and the mapping
+    hypothesis stays UNCONFIRMED — and the answer reports the page citation,
+    never a join or transform authority."""
+    own = tmp_path / "served"
+    shutil.copytree(project, own)
+    references = own / "context_layer" / "references"
+    references.mkdir(parents=True)
+    (references / "order-number.md").write_text(ORDER_TERM_REFERENCE, encoding="utf-8")
+    provider = FakeProvider(
+        [
+            turn(calls=[("resolve_term", {"request": "order number"})]),
+            turn(
+                text=(
+                    "\"order number\" is ambiguous on purpose (two documented "
+                    "representations, references/order-number.md): the local "
+                    "store-scoped number and the concatenated global identity. "
+                    "Their mapping is an UNCONFIRMED hypothesis — not a rule to "
+                    "join on."
+                )
+            ),
+        ]
+    )
+    session = open_session(
+        role="analyst", project=own, model="fake-analyst", provider=provider
+    )
+    try:
+        events = asyncio.run(drive(session, "what is an order number?"))
+    finally:
+        session.close()
+
+    activity = next(
+        event
+        for event in events
+        if isinstance(event, ToolActivity) and event.tool == "resolve_term"
+    )
+    assert activity.is_error is False
+    payload = json.loads(activity.result)
+    assert [match["representation"] for match in payload["matches"]] == [
+        "local-order-number",
+        "global-order-number",
+    ]
+    assert payload["ambiguous"] is True and payload["total_matches"] == 2
+    local = payload["matches"][0]
+    assert local["fields"][0]["column"] == "local_order_number"
+    assert local["page"] == "references/order-number.md"
+    assert not ({"sql", "transform", "join"} & set(local))
+    [mapping] = local["mappings"]
+    assert mapping["claim"] == "hypothesis"
+    assert mapping["confirmation"] == "unconfirmed"
+    answer = next(event.text for event in events if isinstance(event, AssistantText))
+    assert "references/order-number.md" in answer
+    assert "unconfirmed" in answer.lower()
 
 
 def test_one_active_run_per_session_and_lifecycle(project):

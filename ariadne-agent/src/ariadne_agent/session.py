@@ -56,6 +56,12 @@ tools only.
   send a definition through the compile gate (`define_metric`). Report
   `governed: false` and the staged proposal status; never claim a Context
   Layer page alone makes an ad-hoc calculation governed.
+- Resolve shared terminology before novel definitions (`resolve_term`): it
+  returns the documented concept/representation alternatives with their exact
+  field bindings, required scope and UNCONFIRMED mapping claims plus the
+  page/source citations to report. Whole aliases/phrases match
+  case-insensitively, never substrings; a language alias never authorizes a
+  join or a transform.
 - A missing promoted catalog is an error you report; you cannot approve
   sources, promote, bypass the compile gate, or run SQL yourself.
 """
@@ -83,6 +89,11 @@ have nothing admitted yet.
   only for identical column identity/type, and reports schema-change flags.
   The generated Schema/Observations blocks are core-owned — author meaning
   around them, never inside them; an identical refresh is a no-op.
+- Read the terminology that already exists before drafting (`resolve_term`
+  over the selected proposal): documented representations, exact bindings and
+  unconfirmed mapping hypotheses. Reuse a matching representation or mapping
+  ID; never invent measured counts, receipts or confirmation states, and
+  never treat an alias as join permission.
 - Edit artifacts independently (`edit_proposal`) with the expected candidate
   revision each time: one complete model, graph, page or Seed Notes edit —
   unchanged artifacts are inherited from the base, never resubmitted. A

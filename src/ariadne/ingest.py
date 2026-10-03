@@ -211,6 +211,18 @@ grain -> folder "tables", type "table". Add "grain": {"primary_key": [...], \
 document proves the key unique, otherwise name the real cardinality.
 - A relationship between tables (join keys, cardinality) -> folder \
 "references/joins", type "reference".
+- A shared business term or identifier meaning with its documented aliases \
+and field bindings -> folder "references", type "reference". You may \
+include "aliases": [...] and the structured declaration \
+"ariadne": {"version": 1, "reference_role": "term"|"identifier"|"enum", \
+"representations": [{"id": ..., "aliases": [...], \
+"fields": [{"resource": ..., "column": ...}], "scope": []}], \
+"mappings": [...]} — transcribe ONLY what the document states. Bindings name \
+canonical table resources (ariadne://table/...); NEVER add measured counts, \
+receipts, approval or confirmation states. A mapping citing the document \
+itself uses "source_ids": ["@document"] — ingestion binds that token to the \
+document's staged footnote id mechanically. The ariadne declaration belongs \
+to references ONLY: never attach it to a table or policy page.
 - Any other knowledge worth keeping (glossary, background, meeting notes) -> \
 folder "references", type "reference", and include the tag "ingest".
 - Distill only what the document supports: never invent columns, keys, \
@@ -229,12 +241,40 @@ lifecycle fields are attached mechanically; never write YAML yourself.
 """
 
 
-def _user_prompt(text: str, filename: str) -> str:
+def _user_prompt(text: str, filename: str, citation_id: str) -> str:
     return (
-        f"Source document: {filename} (already converted to markdown)\n\n"
+        f"Source document: {filename} (already converted to markdown)\n"
+        f"Document citation id: {citation_id} — this document stages as that "
+        'footnote id; a mapping citing the document itself uses the token '
+        '"@document" in source_ids and ingestion binds it to this id.\n\n'
         f"<document>\n{text.strip()}\n</document>\n\n"
         "Distill it into typed OKF pages now. Return only the JSON object."
     )
+
+
+# The explicit input-document citation token (K2, spec 0010 §4: domain
+# claims cite the ACTUAL input document): the digest footnote id is
+# core-owned, never guessed by the model — a mapping cites the document
+# itself with this token and _assemble binds the real staged id
+# mechanically, like every other mechanical provenance field.
+_DOCUMENT_CITATION_TOKEN = "@document"
+
+
+def _bind_document_citations(extension: dict, citation_id: str) -> dict:
+    """Bind every ``@document`` mapping-citation token to the input document's
+    ACTUAL staged footnote id: validation then resolves it like any authored
+    source_id, so a mapping citing the actual input document survives
+    ingestion instead of failing the footnote-resolution gate."""
+    for mapping in extension.get("mappings") or []:
+        if not isinstance(mapping, dict):
+            continue
+        source_ids = mapping.get("source_ids")
+        if isinstance(source_ids, list):
+            mapping["source_ids"] = [
+                citation_id if source_id == _DOCUMENT_CITATION_TOKEN else source_id
+                for source_id in source_ids
+            ]
+    return extension
 
 
 def _parse_pages(raw: str) -> list[dict]:
@@ -311,6 +351,42 @@ def _assemble(
         }
         if expected == "table" and isinstance(entry.get("grain"), dict):
             front["grain"] = entry["grain"]  # per-type gate validates the block
+        # K2 (issue #42, spec 0010 §3/§5): the ALLOWLISTED structured Reference
+        # declarations survive ordinary staging — page aliases and the
+        # versioned ``ariadne`` extension — with the document's own provenance
+        # (sources above); everything else the entry carries stays ignored.
+        # The extension belongs to References ONLY (spec 0010 §3): a table or
+        # policy entry carrying one — fabricated authority/measurements
+        # included, since table/dataset ariadne facts are core-owned, never
+        # distilled — is refused outright, never laundered by silently
+        # preserving or dropping the block. The shared per-type gate below
+        # then validates the preserved declaration (it rejects fabricated
+        # approval/measurement claims wherever they hide).
+        aliases = entry.get("aliases")
+        if aliases is not None:
+            if not isinstance(aliases, list) or not all(
+                isinstance(alias, str) and alias.strip() for alias in aliases
+            ):
+                errors.append(
+                    f"{rel}: aliases must be a list of non-empty strings naming the concept"
+                )
+            else:
+                front["aliases"] = aliases
+        extension = entry.get("ariadne")
+        if extension is not None and expected != "reference":
+            errors.append(
+                f"{rel}: the ariadne extension belongs to References (spec 0010 §3) "
+                f"— a {expected} page carries no structured declaration, and "
+                "authority/measurement claims are never staged; remove it"
+            )
+        elif extension is not None:
+            if not isinstance(extension, dict):
+                errors.append(
+                    f"{rel}: ariadne must be the structured Reference declaration "
+                    "(a mapping with version/reference_role/representations/mappings)"
+                )
+            else:
+                front["ariadne"] = _bind_document_citations(extension, source["id"])
         front_yaml = yaml.safe_dump(front, default_flow_style=False, sort_keys=False).strip()
         pages.append((folder, name, f"---\n{front_yaml}\n---\n\n{body}\n"))
     return pages, errors
@@ -404,7 +480,10 @@ def _distill(doc: Path, *, complete, now: str) -> tuple[list[tuple], list[str], 
     }
     messages: list[dict] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content": _user_prompt(text, doc.name)},
+        # The document's ACTUAL staged footnote id rides in the prompt material
+        # (K2): the model never guesses the core-owned digest, it cites the
+        # "@document" token and _assemble binds this id mechanically.
+        {"role": "user", "content": _user_prompt(text, doc.name, source["id"])},
     ]
     violations: list[str] = []
     for attempt in range(1 + MAX_RETRIES):

@@ -20,7 +20,14 @@ never reimplemented:
   enrichment/computations/indexes before the candidate commit is validated;
 - deterministic promotion bookkeeping: the promoted page form (verified append,
   status flip), the regenerated ``index.md`` trees and the ``log.md`` append
-  (:func:`_promoted_text`, :func:`_regenerate_indexes`, :func:`_append_log`).
+  (:func:`_promoted_text`, :func:`_regenerate_indexes`, :func:`_append_log`);
+- K2 structured References and terminology resolution (spec 0010 §§5–6, issue
+  #42): the versioned ``ariadne`` extension of a Reference page is validated by
+  the shared per-type gate (:func:`_reference_extension_errors` — malformed
+  supported declarations and author-fabricated approval/measurement claims are
+  rejected; legacy References stay readable), and the shared read-only
+  :func:`resolve_term` resolves terms and exact field bindings with bounded
+  alternatives, unconfirmed claims and actual citations.
 
 Ranking, full Policy bodies, draft labels and attestation semantics are the
 historical ones. This module guides interpretation and never computes metrics
@@ -30,12 +37,18 @@ historical ones. This module guides interpretation and never computes metrics
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections import Counter
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+
+# K2 (issue #42): the canonical catalog-resource parser behind exact field
+# bindings (the shared source registry owns resource identity; this module
+# imports no workflow module — sources is the shared registry layer).
+from ariadne.sources import parse_resource
 
 # OKF page frontmatter (same shape across author/ingest/promote/query):
 # sources[] resolution (rev 10 context field) and lifecycle bookkeeping read it.
@@ -344,6 +357,7 @@ def _load(text: str) -> tuple[dict | None, str]:
 _BUNDLE_TYPES = {
     "datasets": "dataset",
     "tables": "table",
+    "references": "reference",
     "references/joins": "reference",
     "policies": "policy",
     "metrics": "metric",
@@ -427,6 +441,13 @@ def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list
                 f"{rel}: computation page requires 'attester' frontmatter or the honest "
                 "'attestation: pending' state (ADR-0007 scoped extension)"
             )
+    elif expected_type == "reference":
+        # K2 (issue #42, spec 0010 §5): a Reference page MAY carry the versioned
+        # ``ariadne`` extension; when present it is validated — malformed
+        # supported declarations and author-fabricated approval/measurement
+        # claims never pass the gate. A Reference WITHOUT the extension is the
+        # legacy form and stays readable unchanged.
+        errors.extend(_reference_extension_errors(rel, meta))
     return errors
 
 
@@ -1185,6 +1206,622 @@ def build_table_page(
         authored=authored,
     )
     return f"---\n{front}---\n\n{body}\n", flags
+
+
+# ------------- K2 (issue #42): structured References and term resolution
+
+# The supported ``ariadne`` extension version of a Reference page (plan §2:
+# integer 1; an unsupported or malformed version is a contract violation,
+# never a guess).
+ARIADNE_EXTENSION_VERSION = 1
+# The reference-role discriminator of the extension (spec 0010 §5): Term
+# References and Identifier Mappings are roles within References, not new
+# standalone page types; ``join``/``enum`` pages carry the same structures
+# without gaining an interpreter.
+REFERENCE_ROLES = ("term", "identifier", "enum", "join")
+MAPPING_FAMILIES = ("equality", "prefix", "lookup")
+MAPPING_CLAIMS = ("hypothesis", "asserted")
+# Concept/representation/mapping slugs follow the safe page-name discipline:
+# a plain lowercase slug — never a path, hidden, option-shaped or wildcard.
+_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
+# The bounded resolution contract (plan §2): at most 20 matches per part in
+# stable page/representation order, explicit truncation, part continuation.
+RESOLVE_TERM_LIMIT = 20
+# …and the SAME 64 KiB serialized-response ceiling the operator's bounded
+# inspection defaults set (plan §2): every response PART stays under this
+# many serialized UTF-8 bytes on top of the count limit.
+RESOLVE_TERM_MAX_BYTES = 64 * 1024
+# Disclosure caps of one oversized match entry (the never-silent-drop path):
+# an entry whose serialized form alone cannot fit a whole response part is
+# still disclosed — identity fields intact, every over-cap string/list cut
+# with an explicit marker naming what was elided.
+_RESOLVE_TEXT_CAP = 512  # characters one disclosed string field may carry
+_RESOLVE_LIST_CAP = 8  # items one disclosed list may carry
+# Serialized bytes reserved for the envelope's own fields (request, counters,
+# truncation/continuation flags) when budgeting a part's matches.
+_RESOLVE_ENVELOPE_RESERVE = 1024
+
+_EXTENSION_KEYS = frozenset({"version", "reference_role", "representations", "mappings"})
+_REPRESENTATION_KEYS = frozenset({"id", "aliases", "fields", "scope", "description"})
+# The K3 structured inspection candidate (issue #43) is not part of version 1:
+# accepting an unvalidated blob here would let a draft stash arbitrary claims
+# in a page that validates — the allowlist grows with K3's candidate schema.
+_MAPPING_KEYS = frozenset({"id", "family", "from", "to", "claim", "source_ids", "receipt_ids"})
+
+
+def _aliases_errors(where: str, aliases: object) -> list[str]:
+    """Aliases are a list of non-empty strings (natural-language names)."""
+    if not isinstance(aliases, list) or not all(
+        isinstance(alias, str) and alias.strip() for alias in aliases
+    ):
+        return [f"{where} aliases must be a list of non-empty strings"]
+    return []
+
+
+def _binding_errors(where: str, bindings: object) -> list[str]:
+    """Field/scope bindings are ordered ``{resource, column}`` entries with a
+    CANONICAL table resource and an exact column identity (spec 0010 §4/§5:
+    bindings use the actual catalog identity, never an ambiguous name)."""
+    if not isinstance(bindings, list):
+        return [f"{where} must be an ordered list of {{resource, column}} bindings"]
+    errors: list[str] = []
+    for index, binding in enumerate(bindings):
+        spot = f"{where}[{index}]"
+        if not isinstance(binding, dict) or set(binding) != {"resource", "column"}:
+            errors.append(f"{spot} must be exactly {{resource, column}}")
+            continue
+        try:
+            kind, _parts = parse_resource(binding["resource"])
+        except ValueError as exc:
+            errors.append(f"{spot} resource is not canonical: {exc}")
+            continue
+        if kind != "table":
+            errors.append(f"{spot} names a {kind} resource — a field binding names a table")
+        if not isinstance(binding["column"], str) or not binding["column"]:
+            errors.append(f"{spot} column must be a non-empty exact identifier")
+    return errors
+
+
+def _reference_extension_errors(rel: str, meta: dict) -> list[str]:
+    """The version-1 ``ariadne`` extension contract of one Reference page
+    (spec 0010 §5, plan §2 "Structured References, authority and freshness"):
+    integer version 1, a valid reference role, ordered representations with
+    stable slug IDs/aliases/exact bindings/required scope, and mappings whose
+    endpoints resolve within the Reference, whose claim is classified and
+    whose evidence dependencies resolve to ACTUAL page footnotes. The strict
+    field allowlist rejects author-fabricated system authority and measured
+    claims (``approved``/``confirmed``/counts/digests) wherever they appear; a
+    page WITHOUT the extension is the legacy form and reports no errors."""
+    if "ariadne" not in meta:
+        return []  # legacy Reference: the extension is ABSENT, never required
+    extension = meta["ariadne"]
+    if extension is None:
+        # A PRESENT-but-null extension is the MALFORMED form of a supported
+        # extension, not the legacy absent one — the resolver must refuse the
+        # page explicitly instead of crashing on ``None``.
+        return [
+            f"{rel}: the ariadne extension is null — null is not the legacy "
+            "(absent) form; declare the structured extension or remove the key"
+        ]
+    if not isinstance(extension, dict):
+        return [f"{rel}: the ariadne extension must be a mapping, got {type(extension).__name__}"]
+    errors: list[str] = []
+    version = extension.get("version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        return [
+            f"{rel}: ariadne extension version must be the integer "
+            f"{ARIADNE_EXTENSION_VERSION}, got {version!r}"
+        ]
+    if version != ARIADNE_EXTENSION_VERSION:
+        return [
+            f"{rel}: unsupported ariadne extension version {version} "
+            f"(supported: {ARIADNE_EXTENSION_VERSION})"
+        ]
+    unknown = sorted(set(extension) - _EXTENSION_KEYS)
+    if unknown:
+        errors.append(f"{rel}: the ariadne extension carries unsupported field(s) {unknown}")
+    role = extension.get("reference_role")
+    if role not in REFERENCE_ROLES:
+        errors.append(
+            f"{rel}: reference_role must be one of {list(REFERENCE_ROLES)}, got {role!r}"
+        )
+    if meta.get("aliases") is not None:  # page aliases are optional (the
+        # concept may have none — only their FORM is validated)
+        errors.extend(_aliases_errors(f"{rel}: page", meta.get("aliases")))
+    representations = extension.get("representations")
+    if not isinstance(representations, list):
+        representations = []
+        errors.append(
+            f"{rel}: representations must be an ordered list "
+            "(a role with no representations declares an empty list)"
+        )
+    representation_ids: set[str] = set()
+    for position, representation in enumerate(representations):
+        where = f"{rel}: representations[{position}]"
+        if not isinstance(representation, dict):
+            errors.append(f"{where} must be a mapping")
+            continue
+        unknown = sorted(set(representation) - _REPRESENTATION_KEYS)
+        if unknown:
+            errors.append(f"{where} carries unsupported field(s) {unknown}")
+        identifier = representation.get("id")
+        if not isinstance(identifier, str) or not _SLUG_RE.fullmatch(identifier):
+            errors.append(f"{where} id must be a stable lowercase slug")
+        elif identifier in representation_ids:
+            errors.append(
+                f"{where} duplicates representation id {identifier!r} — representation "
+                "IDs are stable: reuse the existing declaration instead"
+            )
+        else:
+            representation_ids.add(identifier)
+        errors.extend(_aliases_errors(where, representation.get("aliases")))
+        fields = representation.get("fields")
+        if not isinstance(fields, list) or not fields:
+            errors.append(
+                f"{where} requires a non-empty ordered fields list of "
+                "{{resource, column}} bindings"
+            )
+        else:
+            errors.extend(_binding_errors(f"{where} fields", fields))
+        if "scope" not in representation:
+            errors.append(
+                f"{where} requires its scope list (possibly empty — the required "
+                "store/tenant/time scope of the representation)"
+            )
+        else:
+            errors.extend(_binding_errors(f"{where} scope", representation["scope"]))
+        description = representation.get("description")
+        if description is not None and not isinstance(description, str):
+            errors.append(f"{where} description must be a cited string")
+    footnote_ids = {
+        source.get("id")
+        for source in meta.get("sources") or []
+        if isinstance(source, dict) and source.get("id")
+    }
+    mappings = extension.get("mappings")
+    if not isinstance(mappings, list):
+        mappings = []
+        errors.append(f"{rel}: mappings must be a list (possibly empty)")
+    mapping_ids: set[str] = set()
+    for position, mapping in enumerate(mappings):
+        where = f"{rel}: mappings[{position}]"
+        if not isinstance(mapping, dict):
+            errors.append(f"{where} must be a mapping")
+            continue
+        unknown = sorted(set(mapping) - _MAPPING_KEYS)
+        if unknown:
+            reason = (
+                "the structured inspection candidate arrives with K3 (issue #43) — "
+                "until then a mapping declares only its documented fields"
+                if unknown == ["candidate"]
+                else "approval, confirmation and measured counts/digests are "
+                "system-owned and never authored in a mapping"
+            )
+            errors.append(f"{where} carries unsupported field(s) {unknown} — {reason}")
+        identifier = mapping.get("id")
+        if not isinstance(identifier, str) or not _SLUG_RE.fullmatch(identifier):
+            errors.append(f"{where} id must be a stable lowercase slug")
+        elif identifier in mapping_ids:
+            errors.append(
+                f"{where} duplicates mapping id {identifier!r} — mapping IDs are "
+                "stable: repeated findings update the same declaration"
+            )
+        else:
+            mapping_ids.add(identifier)
+        if mapping.get("family") not in MAPPING_FAMILIES:
+            errors.append(
+                f"{where} family must be one of {list(MAPPING_FAMILIES)}, "
+                f"got {mapping.get('family')!r}"
+            )
+        for key in ("from", "to"):
+            endpoint = mapping.get(key)
+            # Endpoint TYPE is validated before any membership operation: an
+            # unhashable endpoint (list/dict) must be a page-contract
+            # diagnostic, never a TypeError inside the gate.
+            if not isinstance(endpoint, str) or not endpoint:
+                errors.append(
+                    f"{where} {key} endpoint must be a representation id "
+                    f"(a non-empty string), got {type(endpoint).__name__}"
+                )
+                continue
+            if endpoint not in representation_ids:
+                errors.append(
+                    f"{where} {key} endpoint {endpoint!r} does not resolve to a "
+                    "representation of this reference — endpoint representation IDs "
+                    "resolve within the Reference; related concepts use ordinary "
+                    "page links"
+                )
+        claim = mapping.get("claim")
+        if claim not in MAPPING_CLAIMS:
+            errors.append(
+                f"{where} claim must be one of {list(MAPPING_CLAIMS)}, got {claim!r}"
+            )
+        source_ids = mapping.get("source_ids")
+        if not isinstance(source_ids, list) or not all(
+            isinstance(source_id, str) and source_id for source_id in source_ids
+        ):
+            errors.append(f"{where} source_ids must be a list of footnote ids")
+        else:
+            unresolved = [s for s in source_ids if s not in footnote_ids]
+            if unresolved:
+                errors.append(
+                    f"{where} source_ids {unresolved} resolves to no page footnote "
+                    "— evidence dependencies cite the page's actual sources[]"
+                )
+            if claim == "asserted" and not source_ids:
+                errors.append(
+                    f"{where} is an asserted mapping without evidence: an asserted "
+                    "mapping cites at least one source_id"
+                )
+        receipt_ids = mapping.get("receipt_ids")
+        if receipt_ids is not None and (
+            not isinstance(receipt_ids, list)
+            or not all(isinstance(receipt, str) and receipt for receipt in receipt_ids)
+        ):
+            errors.append(
+                f"{where} receipt_ids must be a list of evidence ids (verification "
+                "is core-owned; allowlisting an id is not proof)"
+            )
+    return errors
+
+
+def _mapping_views(extension: dict, representation_id: str | None) -> list[dict]:
+    """The mapping view(s) of one match: every mapping of the Reference for a
+    concept-level match, the mappings touching ``representation_id`` for a
+    representation match. Every mapping reports its claim classification with
+    ``confirmation: unconfirmed`` — until K4's exact-assertion human
+    confirmation exists, no mapping (hypothesis or asserted) is confirmed, and
+    an admitted page confirms nothing by itself (spec 0010 §5)."""
+    views: list[dict] = []
+    for mapping in extension.get("mappings") or []:
+        if not isinstance(mapping, dict):
+            continue
+        if representation_id is not None and representation_id not in (
+            mapping.get("from"),
+            mapping.get("to"),
+        ):
+            continue
+        views.append(
+            {
+                "id": mapping.get("id"),
+                "family": mapping.get("family"),
+                "from": mapping.get("from"),
+                "to": mapping.get("to"),
+                "claim": mapping.get("claim"),
+                "confirmation": "unconfirmed",
+                "source_ids": list(mapping.get("source_ids") or []),
+                # allowlisted evidence IDs ride along verbatim — they are NOT
+                # proof (receipt verification is K3; nothing is fabricated here)
+                "receipt_ids": list(mapping.get("receipt_ids") or []),
+            }
+        )
+    return views
+
+
+def _freshness_view(meta: dict) -> dict:
+    """The honest evidence-freshness view of one page: its declared
+    ``stale_after`` date (the ADR-0007 lifecycle field) compared to today, or
+    ``unknown`` when the page declares nothing — an absent freshness fact is
+    never proof of currency (spec 0010 §4)."""
+    value = meta.get("stale_after")
+    if not isinstance(value, str):
+        return {"stale_after": None, "state": "unknown"}
+    try:
+        stale_after = date.fromisoformat(value)
+    except ValueError:
+        return {"stale_after": value, "state": "unknown"}
+    state = "stale" if datetime.now(UTC).date() > stale_after else "current"
+    return {"stale_after": value, "state": state}
+
+
+def _match_entry(
+    rel: str,
+    meta: dict,
+    draft: bool,
+    *,
+    level: str,
+    representation: str | None,
+    aliases: list,
+    fields: list,
+    scope: list,
+    mappings: list[dict],
+    representations: list[dict] | None = None,
+) -> dict:
+    """One bounded match entry: the concept/representation identity, its exact
+    bindings and required scope, the claim/confirmation status and the ACTUAL
+    page/source citations (spec 0010 §6). No transform, SQL or join authority
+    exists anywhere in the entry."""
+    entry = {
+        "page": rel,
+        "draft": draft,
+        "title": meta.get("title"),
+        "description": meta.get("description"),
+        "reference_role": (meta.get("ariadne") or {}).get("reference_role"),
+        "level": level,
+        "representation": representation,
+        "aliases": list(aliases),
+        "fields": [dict(binding) for binding in fields],
+        "scope": [dict(binding) for binding in scope],
+        "mappings": mappings,
+        "sources": [dict(source) for source in meta.get("sources") or []],
+        "freshness": _freshness_view(meta),
+    }
+    if representations is not None:
+        entry["representations"] = representations
+    return entry
+
+
+def _representation_entries(
+    rel: str,
+    meta: dict,
+    draft: bool,
+    representations: list[dict],
+    query: dict,
+    needle: str | None,
+) -> list[dict]:
+    """The eligible representation-level matches of one page (term form:
+    casefolded whole-alias equality; field form: exact binding identity)."""
+    entries: list[dict] = []
+    for representation in representations:
+        aliases = list(representation.get("aliases") or [])
+        if query["kind"] == "term":
+            if needle not in [alias.casefold() for alias in aliases]:
+                continue
+        elif not any(
+            binding == {"resource": query["resource"], "column": query["column"]}
+            for binding in representation.get("fields") or []
+        ):
+            continue
+        entries.append(
+            _match_entry(
+                rel,
+                meta,
+                draft,
+                level="representation",
+                representation=representation.get("id"),
+                aliases=aliases,
+                fields=list(representation.get("fields") or []),
+                scope=list(representation.get("scope") or []),
+                mappings=_mapping_views(meta["ariadne"], representation.get("id")),
+            )
+        )
+    return entries
+
+
+def _page_matches(rel: str, meta: dict, draft: bool, query: dict, needle: str | None) -> list[dict]:
+    """The eligible matches of ONE structured Reference page, in stable order
+    (concept before representations, representations in declared order).
+    Natural-language matching is deterministic casefolded whole-alias/phrase
+    equality — a substring is never a match; a field lookup compares the EXACT
+    ``{resource, column}`` identity, never a case-folded one (spec 0010 §6)."""
+    extension = meta["ariadne"]
+    representations = [
+        representation
+        for representation in extension.get("representations") or []
+        if isinstance(representation, dict)
+    ]
+    if query["kind"] == "field":
+        return _representation_entries(rel, meta, draft, representations, query, needle)
+    entries: list[dict] = []
+    page_aliases = list(meta.get("aliases") or [])
+    if needle in [alias.casefold() for alias in page_aliases]:
+        entries.append(
+            _match_entry(
+                rel,
+                meta,
+                draft,
+                level="concept",
+                representation=None,
+                aliases=page_aliases,
+                fields=[],
+                scope=[],
+                mappings=_mapping_views(extension, None),
+                representations=[
+                    {
+                        "id": representation.get("id"),
+                        "aliases": list(representation.get("aliases") or []),
+                        "fields": [
+                            dict(binding) for binding in representation.get("fields") or []
+                        ],
+                        "scope": [
+                            dict(binding) for binding in representation.get("scope") or []
+                        ],
+                    }
+                    for representation in representations
+                ],
+            )
+        )
+    entries.extend(_representation_entries(rel, meta, draft, representations, query, needle))
+    return entries
+
+
+def _entry_bytes(entry: dict) -> int:
+    """Serialized size of one match entry in UTF-8 bytes (the response's own
+    wire measure — a part's budget is counted in these bytes, plan §2)."""
+    return len(json.dumps(entry, ensure_ascii=False).encode("utf-8"))
+
+
+def _disclosed_entry(entry: dict, budget: int) -> dict:
+    """One bounded disclosure of a match whose serialized form alone exceeds a
+    whole part's byte budget: every over-cap string/list is cut with an inline
+    marker and named in the entry's explicit ``elided`` list (identity fields
+    — page/level/representation/role — are short slugs and survive intact).
+    Should the capped form STILL not fit (pathological nesting), only the
+    identity fields remain with a marker naming the elision — an oversized
+    entry is disclosed, never silently dropped nor overflowed."""
+    elided: list[str] = []
+
+    def cap(node: object, path: str) -> object:
+        if isinstance(node, str):
+            if len(node) > _RESOLVE_TEXT_CAP:
+                omitted = len(node) - _RESOLVE_TEXT_CAP
+                elided.append(f"{path} ({omitted} characters elided)")
+                return f"{node[:_RESOLVE_TEXT_CAP]}… [elided {omitted} characters]"
+            return node
+        if isinstance(node, list):
+            if len(node) > _RESOLVE_LIST_CAP:
+                omitted = len(node) - _RESOLVE_LIST_CAP
+                elided.append(f"{path} ({omitted} of {len(node)} items elided)")
+                node = node[:_RESOLVE_LIST_CAP]
+            return [cap(item, f"{path}[{index}]") for index, item in enumerate(node)]
+        if isinstance(node, dict):
+            return {
+                key: cap(value, f"{path}.{key}" if path else key)
+                for key, value in node.items()
+            }
+        return node
+
+    bounded = {key: cap(value, key) for key, value in entry.items()}
+    markers = elided[:_RESOLVE_LIST_CAP]
+    if len(elided) > _RESOLVE_LIST_CAP:
+        markers.append(f"elided ({len(elided) - _RESOLVE_LIST_CAP} more elisions)")
+    bounded["elided"] = markers
+    if _entry_bytes(bounded) > budget:  # pathological nesting: identity only
+        return {
+            key: bounded[key]  # already capped: this form is bounded by construction
+            for key in ("page", "draft", "level", "representation", "reference_role")
+            if key in bounded
+        } | {
+            "elided": [
+                "entry: too large for one response part — everything but the "
+                "identity was elided; read the cited page for the full match"
+            ]
+        }
+    return bounded
+
+
+def _resolve_response_parts(
+    matches: list[dict], *, limit: int, max_bytes: int
+) -> list[list[dict]]:
+    """Deterministic response parts honoring BOTH bounds: at most ``limit``
+    matches per part AND at most ``max_bytes`` serialized bytes per part (plan
+    §2's 64 KiB ceiling). A part stops before exceeding the byte budget; an
+    entry too large for a whole part enters as its bounded disclosure."""
+    budget = max_bytes - _RESOLVE_ENVELOPE_RESERVE
+    parts: list[list[dict]] = []
+    current: list[dict] = []
+    used = 0
+    for entry in matches:
+        size = _entry_bytes(entry)
+        if size > budget:  # cannot fit a whole part alone: disclose it bounded
+            entry = _disclosed_entry(entry, budget)
+            size = _entry_bytes(entry)
+        if current and used + size + 1 > budget:  # +1: the list comma
+            parts.append(current)
+            current, used = [], 0
+        current.append(entry)
+        used += size + 1
+        if len(current) >= limit:
+            parts.append(current)
+            current, used = [], 0
+    if current or not parts:
+        parts.append(current)
+    return parts
+
+
+def resolve_term(
+    roots: list[tuple[Path, bool]],
+    request: str | dict,
+    *,
+    part: int = 1,
+    limit: int = RESOLVE_TERM_LIMIT,
+) -> dict:
+    """The shared read-only terminology resolver (spec 0010 §6, plan §2):
+    bounded matching concept/representation identities, exact field bindings,
+    required scope, ambiguity, claim/confirmation/freshness status and actual
+    page/source citations over the given context roots — Query passes its
+    pinned admitted context dir, Authoring its explicitly selected candidate
+    revision.
+
+    Matching is deterministic: casefolded whole-alias/phrase equality for
+    natural language (never substring fuzzy inference) and exact qualified
+    field identity for bindings (never case-folded). All eligible matches are
+    counted before the bound, so ambiguity is never declared from a truncated
+    result; at most ``limit`` matches return per part in stable
+    page/representation order with explicit truncation and part continuation
+    (the existing bounded-read convention), every part staying under the
+    shared 64 KiB serialized-response ceiling (plan §2): a part stops before
+    exceeding it, and an entry too large for a whole part is disclosed with
+    bounded fields and an explicit elision marker — never silently dropped
+    nor overflowed. No match yields an empty match list; a malformed supported
+    Reference or request fails explicitly. The resolver applies no transform,
+    rewrites no SQL and authorizes no join."""
+    if isinstance(request, str):
+        term = request.strip()
+        if not term:
+            raise ValueError(
+                "a resolve_term request must be a non-empty term string or a "
+                "{resource, column} object"
+            )
+        query: dict = {"kind": "term", "term": term}
+        needle = term.casefold()
+    elif isinstance(request, dict):
+        if set(request) != {"resource", "column"}:
+            raise ValueError(
+                "a field resolve_term request is exactly {resource, column} (a term "
+                "request is a plain string)"
+            )
+        column = request["column"]
+        if not isinstance(column, str) or not column:
+            raise ValueError("a field resolve_term request needs a non-empty exact column")
+        try:
+            kind, _parts = parse_resource(request["resource"])
+        except ValueError as exc:
+            raise ValueError(
+                f"a field resolve_term request names a canonical resource: {exc}"
+            ) from None
+        if kind != "table":
+            raise ValueError("a field resolve_term request names a table resource")
+        query = {"kind": "field", "resource": request["resource"], "column": column}
+        needle = None
+    else:
+        raise ValueError(
+            "a resolve_term request is a term string or a {resource, column} object, "
+            f"got {type(request).__name__}"
+        )
+    if isinstance(part, bool) or not isinstance(part, int) or part < 1:
+        raise ValueError("the resolve_term part must be a positive integer (part 1 of N)")
+    matches: list[dict] = []
+    for root, draft in roots:
+        references = Path(root) / "references"
+        if not references.is_dir():
+            continue
+        for path in sorted(references.rglob("*.md")):
+            if path.name in ("index.md", "log.md"):
+                continue  # system bookkeeping, never a Reference
+            rel = path.relative_to(Path(root)).as_posix()
+            try:
+                meta = _load_frontmatter_meta(path.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError) as exc:
+                raise ValueError(f"malformed reference page {rel}: {exc}") from None
+            if meta.get("type") != "reference" or "ariadne" not in meta:
+                continue  # legacy/non-reference pages stay readable, unstructured
+            errors = _reference_extension_errors(rel, meta)
+            if errors:
+                raise ValueError(
+                    f"malformed reference page — {'; '.join(errors)} — the resolver "
+                    "resolves only well-formed supported declarations"
+                )
+            matches.extend(_page_matches(rel, meta, draft, query, needle))
+    total = len(matches)
+    response_parts = _resolve_response_parts(
+        matches, limit=limit, max_bytes=RESOLVE_TERM_MAX_BYTES
+    )
+    parts = len(response_parts)
+    exhausted = part > parts
+    returned = [] if exhausted else response_parts[part - 1]
+    return {
+        "request": query,
+        "matches": returned,
+        "total_matches": total,
+        "ambiguous": total > 1,
+        "truncated": total > len(returned),
+        "part": part,
+        "parts": parts,
+        "complete": part >= parts and not exhausted,
+        "exhausted": exhausted,
+        "limit": limit,
+    }
 
 
 def build_dataset_page(

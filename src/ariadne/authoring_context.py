@@ -38,13 +38,28 @@ def _check_section(section: object) -> str:
             "service-owned, ADR-0007/ADR-0013) — they are never user-editable in a "
             "proposal"
         )
-    if section not in ("datasets", "tables", "references", "policies", "metrics", "skills"):
+    if section not in (
+        "datasets",
+        "tables",
+        "references",
+        "joins",
+        "policies",
+        "metrics",
+        "skills",
+    ):
         raise ValueError(
             f"unknown page section {section!r}: OKF pages live under context_layer/"
-            "{datasets,tables,references,policies,metrics,skills}/ — computations, "
-            "index.md and log.md are system-owned"
+            "{datasets,tables,references,references/joins,policies,metrics,skills}/ — "
+            "computations, index.md and log.md are system-owned"
         )
     return str(section)
+
+
+# K2 (issue #42, spec 0010 §3): general References (Term References,
+# Identifier Mappings, enums) live directly under ``references/``; the
+# historical join References keep their own ``references/joins/`` folder and
+# gain their own ``joins`` section spelling.
+_SECTION_FOLDERS = {"references": "references", "joins": "references/joins"}
 
 
 def _relpath(identity: dict) -> str:
@@ -53,7 +68,7 @@ def _relpath(identity: dict) -> str:
     if kind == "page":
         section = _check_section(identity.get("section"))
         name = check_artifact_name(identity.get("name"), what="page name")
-        folder = "references/joins" if section == "references" else section
+        folder = _SECTION_FOLDERS.get(section, section)
         return f"context_layer/{folder}/{name}.md"
     if kind == "seed_notes":
         return "data/seed_notes.md"

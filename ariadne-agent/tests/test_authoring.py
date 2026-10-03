@@ -76,6 +76,7 @@ AUTHORING_TOOLS = {
     "upload_document",
     "validate_proposal",
     "refresh_schema",
+    "resolve_term",  # K2 (issue #42): read-only candidate term resolution
     "review_proposal",
     "read_skill_reference",
 }
@@ -608,6 +609,115 @@ def test_skill_reference_reads_stay_inside_trusted_roots(tmp_path):
     assert "refused" in script.result.lower()
 
     assert outside.read_text(encoding="utf-8") == "# outside every trusted root\n"
+
+
+def test_native_resolve_term_reads_the_selected_candidate(tmp_path):
+    """K2 (issue #42): the native ``resolve_term`` tool resolves the EXPLICITLY
+    selected proposal's candidate revision (read-only, candidate identity
+    visible) over the same core envelope as every other surface — the
+    structured Reference the model authored through ``edit_proposal`` resolves
+    with its exact bindings and an unconfirmed hypothesis."""
+    events_resource = (
+        "ariadne://table/WyJldmVudHMiLG51bGwsImV2ZW50cyIsImV2ZW50cyJd"  # events.events
+    )
+    reference = (
+        "---\n"
+        "type: reference\n"
+        "title: Order number\n"
+        "description: The shared order-number concept.\n"
+        "tags: [reference, term]\n"
+        "sources:\n"
+        "  - id: seed-notes\n"
+        "    resource: data/seed_notes.md\n"
+        "ariadne:\n"
+        "  version: 1\n"
+        "  reference_role: term\n"
+        "  representations:\n"
+        "    - id: local-order-number\n"
+        "      aliases: [order number, local order number]\n"
+        "      fields:\n"
+        f"        - resource: {events_resource}\n"
+        "          column: id\n"
+        "      scope: []\n"
+        "    - id: global-order-number\n"
+        "      aliases: [order number, global order number]\n"
+        "      fields:\n"
+        f"        - resource: {events_resource}\n"
+        "          column: label\n"
+        "      scope: []\n"
+        "  mappings:\n"
+        "    - id: local-to-global-prefix\n"
+        "      family: prefix\n"
+        "      from: local-order-number\n"
+        "      to: global-order-number\n"
+        "      claim: hypothesis\n"
+        "      source_ids: [seed-notes]\n"
+        "      receipt_ids: []\n"
+        "---\n\n"
+        "# Order number\n"
+    )
+    project = complete_bundle_project(tmp_path / "proj")
+    provider = FlowProvider()
+    session = open_session(
+        role="authoring", project=project, model="fake-authoring", provider=provider
+    )
+    try:
+        provider.script(turn(calls=[("start_proposal", {})]))
+        provider.script(turn(text="proposal started"))
+        events = asyncio.run(drive(session, "start a proposal"))
+        started = result_of(events, "start_proposal")
+        proposal = started["proposal"]
+
+        provider.script(
+            turn(
+                calls=[
+                    (
+                        "edit_proposal",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": started["candidate_revision"],
+                            "edit": {
+                                "kind": "page",
+                                "section": "references",
+                                "name": "order-number",
+                                "content": reference,
+                            },
+                        },
+                    )
+                ]
+            )
+        )
+        provider.script(turn(text="reference page authored"))
+        events = asyncio.run(drive(session, "author the order-number term reference"))
+        edited = result_of(events, "edit_proposal")
+        assert edited["changed"] is True
+
+        provider.script(
+            turn(
+                calls=[
+                    (
+                        "resolve_term",
+                        {"proposal": proposal, "request": "order number"},
+                    )
+                ]
+            )
+        )
+        provider.script(turn(text="representations resolved; hypothesis unconfirmed"))
+        events = asyncio.run(drive(session, "resolve the order number term"))
+        resolved = result_of(events, "resolve_term")
+        assert resolved["candidate"] is True
+        assert resolved["revision"] == edited["revision"]
+        assert [match["representation"] for match in resolved["matches"]] == [
+            "local-order-number",
+            "global-order-number",
+        ]
+        local = resolved["matches"][0]
+        assert local["fields"][0]["column"] == "id"
+        [mapping] = local["mappings"]
+        assert mapping["claim"] == "hypothesis"
+        assert mapping["confirmation"] == "unconfirmed"
+    finally:
+        session.close()
 
 
 def test_native_refresh_schema_reports_flags_and_noops_on_identical_retry(tmp_path):

@@ -10,6 +10,10 @@ compilation, execution, context, grain, or proposal-staging logic:
     list_metrics()                     -> served governed metrics with descriptions
     list_datasets()                    -> [{name, columns: [{name, type}]}] from the attach
     search_context(query)              -> ranked matches over context_layer/**/*.md
+    resolve_term(request)              -> shared terminology resolution (spec
+                                          0010 §6): bounded concept/representation
+                                          matches with exact bindings, scope,
+                                          ambiguity and unconfirmed claims
     get_metric(name, dimensions, range)-> rows PLUS the compiled SQL (provenance),
                                           governed: true + context (rev 10): the full
                                           served OKF metric page plus the full bodies
@@ -83,6 +87,7 @@ from ariadne import (  # pyright: ignore[reportMissingImports] — new-module re
 # deterministic OKF generation live in ariadne.context.
 from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
     metric_context,
+    resolve_term,
     search_pages,
 )
 
@@ -791,6 +796,27 @@ class QueryRuntime:
         return search_pages(
             query, limit, [(self.context_dir, False), (self.staging_dir / "context_layer", True)]
         )
+
+    async def resolve_term(self, request: str | dict, *, part: int = 1) -> dict:
+        """Resolve one shared business term or exact ``{resource, column}``
+        field lookup against the served context (spec 0010 §6, plan §2; the
+        shared read-only resolver lives in
+        :func:`ariadne.context.resolve_term`): bounded matching
+        concept/representation identities with their exact bindings, required
+        scope, ambiguity, unconfirmed claim status, freshness and actual
+        page/source citations. Resolves the PINNED admitted context only
+        (never staging drafts); the managed route re-checks the pinned bytes
+        first and carries the admission provenance alongside the matches. The
+        resolver applies no transform, rewrites no SQL and authorizes no join;
+        ``search_context`` keeps its lexical ranking and passage pointers
+        unchanged."""
+        if self._managed is not None:
+            self._recheck_pinned()
+        result = resolve_term([(self.context_dir, False)], request, part=part)
+        if self._managed is not None:
+            # the resolved terms identify the admitted revision they came from
+            result["admission"] = self._admission_view(self._managed)
+        return result
 
 
 def _normalize_definition(definition: dict) -> dict:

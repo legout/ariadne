@@ -22,14 +22,18 @@ The three registrations (spec §6, AC7):
 - **analyst** — the Query operations under their established names:
   ``list_metrics``, ``search_context``, ``get_metric``, ``list_datasets``,
   ``define_metric`` (ad-hoc), ``query_metrics``/``query_detail`` (issue #30),
-  ``save_example``/``search_examples`` (issue #21). No authoring operation.
+  ``save_example``/``search_examples`` (issue #21), ``resolve_term``
+  (issue #42: shared terminology resolution over the pinned admitted context).
+  No authoring operation.
 - **authoring** — the Git authoring contract with one stable prefix:
   ``authoring_start_proposal``, ``authoring_read_artifact``,
   ``authoring_edit_proposal``, ``authoring_propose_sources``,
   ``authoring_inputs``, ``authoring_upload_document``,
   ``authoring_validate_proposal``, ``authoring_refresh_schema`` (issue #41:
-  the explicit physical schema refresh), ``authoring_review_proposal``. No
-  query operation; the registration starts without a governed catalog (AC5).
+  the explicit physical schema refresh), ``authoring_resolve_term`` (issue
+  #42: read-only candidate term resolution), ``authoring_review_proposal``.
+  No query operation; the registration starts without a governed catalog
+  (AC5).
 - **combined** (the ``ariadne-serve`` default) — their union.
 
 Explicit migration of the legacy complete-bundle wrappers (spec §6 permits
@@ -302,6 +306,25 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 query, limit=limit, include_history=include_history
             )
 
+        @app.tool()
+        async def resolve_term(request: str | dict, part: int = 1) -> dict:
+            """Resolve one shared business term or an exact {resource, column}
+            field lookup against the served (pinned admitted) context: bounded
+            concept/representation matches with their EXACT field bindings,
+            required scope, ambiguity, unconfirmed claim status and actual
+            page/source citations. Whole aliases/phrases match case-insensitively
+            (never substrings); field identity is exact. Read-only: no transform,
+            no SQL rewrite, no join authority — a language alias never authorizes
+            a join. Same contract as ``ariadne resolve-term``.
+
+            Args:
+                request: the term string, or the exact field lookup
+                    {resource, column} with a canonical ariadne://table/ resource.
+                part: which bounded part of the matches (default 1; the response
+                    carries total_matches/parts/truncated for continuation).
+            """
+            return await _runtime().resolve_term(request, part=part)
+
     # ------------------ the Authoring registration (authoring, combined) ----
 
     if toolset in ("authoring", "combined"):
@@ -502,6 +525,26 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 part: which bounded part of each body.
             """
             return authoring_api.review_proposal(proposal, part=part)
+
+        @app.tool()
+        async def authoring_resolve_term(
+            proposal: str, request: str | dict, part: int = 1
+        ) -> dict:
+            """Resolve one shared business term or an exact {resource, column}
+            field lookup against the EXPLICITLY selected proposal's current
+            candidate revision — read-only, with the candidate identity
+            (proposal/revision) visible in the response: representations, exact
+            bindings, scope, ambiguity and UNCONFIRMED claim status. Same
+            contract as ``ariadne-authoring resolve-term``; never approval,
+            admission or a query.
+
+            Args:
+                proposal: the proposal ID (authoring_start_proposal returned it).
+                request: the term string, or the exact field lookup
+                    {resource, column} with a canonical ariadne://table/ resource.
+                part: which bounded part of the matches (default 1).
+            """
+            return authoring_api.resolve_term(proposal, request, part=part)
 
     return app
 

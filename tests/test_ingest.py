@@ -7,6 +7,7 @@ gated by pytest.importorskip so the suite passes with or without the
 [documents] extra installed.
 """
 
+import base64
 import hashlib
 import json
 import sys
@@ -210,6 +211,223 @@ def test_unclassifiable_lands_in_references_with_ingest_tag(tmp_path, monkeypatc
     assert staged == [page]
     front = front_of(page)
     assert front["type"] == "reference" and "ingest" in front["tags"]
+
+
+# --- (c2) K2: structured References survive ingestion (issue #42) ------------
+
+
+def _reference_entry(**overrides) -> dict:
+    """One gate-clean structured Reference entry: the order-number term with
+    its allowlisted aliases/bindings/declaration (the allowlist shape the K2
+    system prompt describes)."""
+    payload = base64.urlsafe_b64encode(
+        json.dumps(["orders", None, "orders", "orders"], separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    entry = page_entry(
+        folder="references",
+        name="order-number",
+        type="reference",
+        title="Order number",
+        description="The shared order-number concept of the orders store.",
+        tags=["reference", "term"],
+        body=(
+            "# Order number\n\nThe store-scoped local number and the concatenated "
+            "global identity."
+        ),
+    )
+    entry["aliases"] = ["order number concept"]
+    entry["ariadne"] = {
+        "version": 1,
+        "reference_role": "term",
+        "representations": [
+            {
+                "id": "global-order-number",
+                "aliases": ["global order number"],
+                "fields": [
+                    {
+                        "resource": f"ariadne://table/{payload}",
+                        "column": "global_order_number",
+                    }
+                ],
+                "scope": [],
+            }
+        ],
+        "mappings": [],
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_ingest_preserves_reference_bindings_without_fabricating_measurements(
+    tmp_path, monkeypatch
+):
+    """K2 (issue #42, spec 0010 §3/AC10): ordinary ingestion PRESERVES the
+    allowlisted aliases/bindings/structured declaration with the ACTUAL input
+    document's provenance — the previous _assemble silently dropped them — and
+    the shared per-type gate refuses a fabricated confirmation/measurement
+    claim, feeding it back instead of staging anything."""
+    doc = make_doc(
+        tmp_path,
+        text="# Order numbers\n\nA global order number concatenates the store prefix "
+        "and the local number; both representations are documented here.\n",
+    )
+    staging, staged, errors, calls = run_ingest(
+        tmp_path, doc, [response(_reference_entry())], monkeypatch
+    )
+
+    assert errors == []
+    page = staging / "context_layer" / "references" / "order-number.md"
+    assert staged == [page]
+    front = front_of(page)
+    # the structured declaration survived staging verbatim (the metadata-loss
+    # path: _assemble used to drop everything but its fixed frontmatter keys)
+    assert front["aliases"] == ["order number concept"]
+    extension = front["ariadne"]
+    assert extension["version"] == 1 and extension["reference_role"] == "term"
+    (representation,) = extension["representations"]
+    assert representation["id"] == "global-order-number"
+    assert representation["fields"][0]["column"] == "global_order_number"
+    assert representation["fields"][0]["resource"].startswith("ariadne://table/")
+    # provenance is the ACTUAL input document — mechanically attached, never
+    # authored — and no measurement/approval state was fabricated
+    assert front["sources"] == [
+        {
+            "id": hashlib.sha256(doc.read_bytes()).hexdigest()[:12],
+            "resource": str(doc.resolve()),
+            "title": doc.name,
+        }
+    ]
+    assert "status" in front and front["status"] == "draft"
+    assert set(front) == {
+        "type",
+        "status",
+        "title",
+        "description",
+        "tags",
+        "sources",
+        "generated",
+        "aliases",
+        "ariadne",
+    }
+    # the resolver reads the staged page: the preserved declaration resolves
+    from ariadne.context import resolve_term
+    resolved = resolve_term([(staging / "context_layer", True)], "global order number")
+    assert [match["representation"] for match in resolved["matches"]] == [
+        "global-order-number"
+    ]
+    assert resolved["matches"][0]["draft"] is True
+
+    # a fabricated confirmation claim is REFUSED: the gate feeds it back and
+    # nothing is staged (the strict mapping allowlist, shared with Git
+    # validation — a document never confirms itself)
+    forged = _reference_entry()
+    forged["ariadne"] = {
+        **forged["ariadne"],
+        "mappings": [
+            {
+                "id": "local-to-global",
+                "family": "prefix",
+                "from": "global-order-number",
+                "to": "global-order-number",
+                "claim": "asserted",
+                "source_ids": [],
+                "confirmed": True,
+                "tested": 999,
+            }
+        ],
+    }
+    second = tmp_path / "second"
+    second.mkdir()
+    staging2, staged2, errors2, _calls = run_ingest(
+        second, make_doc(second, text="second document\n"), [response(forged)], monkeypatch
+    )
+    assert staged2 == [] and errors2, "a fabricated claim must never stage"
+    assert any("unsupported field(s)" in error for error in errors2)
+    assert any("'confirmed'" in error for error in errors2)
+
+
+def test_non_reference_ariadne_blocks_are_refused_not_preserved(tmp_path, monkeypatch):
+    """Spec 0010 §3: the ``ariadne`` extension belongs to References. A table
+    or policy entry carrying one — fabricated authority/measurements included
+    — is REFUSED at staging (nothing stages while it stands), never laundered
+    by silently preserving or dropping the block; the repaired entry without
+    it stages clean."""
+    doc = make_doc(tmp_path)
+    smuggled = page_entry(
+        folder="tables",
+        name="renewals",
+        type="table",
+        tags=["table", "renewals"],
+        body="# renewals\n\nOne row per renewal event.",
+    )
+    smuggled["ariadne"] = {"confirmed": True, "observations": {"tested": 999}}
+    clean = {key: value for key, value in smuggled.items() if key != "ariadne"}
+
+    # the block standing on a non-Reference: refused every round, nothing staged
+    staging, staged, errors, calls = run_ingest(tmp_path, doc, [response(smuggled)], monkeypatch)
+    assert staged == []
+    assert len(calls) == 1 + MAX_RETRIES  # fed back each round, never staged
+    assert any("belongs to References" in error for error in errors)
+    assert not (staging / "context_layer").exists()
+
+    # the fed-back violation is repairable: the entry without the block stages
+    repair = tmp_path / "repair"
+    repair.mkdir()
+    _, staged2, errors2, _ = run_ingest(
+        repair, make_doc(repair), [response(smuggled), response(clean)], monkeypatch
+    )
+    assert errors2 == [] and len(staged2) == 1
+    assert "ariadne" not in front_of(staged2[0])  # never preserved on a table
+
+
+def test_mapping_citing_the_input_document_stages_and_validates(tmp_path, monkeypatch):
+    """The document's staged footnote id is core-owned: the prompt material
+    carries the ACTUAL staged citation id, the model cites the input document
+    with the explicit ``@document`` token, and _assemble binds the token
+    mechanically to the real digest id — a documented asserted mapping
+    survives ingestion and validates (not only empty-mappings documents)."""
+    doc = make_doc(
+        tmp_path,
+        text="# Order numbers\n\nA global order number concatenates the store "
+        "prefix and the local number; the document states the correspondence.\n",
+    )
+    entry = _reference_entry()
+    table_resource_uri = entry["ariadne"]["representations"][0]["fields"][0]["resource"]
+    entry["ariadne"]["representations"].append(
+        {
+            "id": "local-order-number",
+            "aliases": ["local order number"],
+            "fields": [{"resource": table_resource_uri, "column": "local_order_number"}],
+            "scope": [],
+        }
+    )
+    entry["ariadne"]["mappings"] = [
+        {
+            "id": "documented-correspondence",
+            "family": "prefix",
+            "from": "local-order-number",
+            "to": "global-order-number",
+            "claim": "asserted",
+            "source_ids": ["@document"],
+        }
+    ]
+    digest = hashlib.sha256(doc.read_bytes()).hexdigest()[:12]
+    staging, staged, errors, calls = run_ingest(tmp_path, doc, [response(entry)], monkeypatch)
+
+    assert errors == []
+    assert staged == [staging / "context_layer" / "references" / "order-number.md"]
+    # the prompt material named the ACTUAL staged citation id (core-owned)
+    assert digest in calls[0][1]["content"]
+    # the token was bound mechanically — the staged mapping cites the digest
+    front = front_of(staged[0])
+    assert front["ariadne"]["mappings"][0]["source_ids"] == [digest]
+    assert "@document" not in staged[0].read_text(encoding="utf-8")
+    # and the staged page validates end to end: the resolver serves the mapping
+    from ariadne.context import resolve_term
+
+    resolved = resolve_term([(staging / "context_layer", True)], "global order number")
+    [mapping] = resolved["matches"][0]["mappings"]
+    assert mapping["claim"] == "asserted" and mapping["source_ids"] == [digest]
 
 
 # --- (d) name collisions suffix atomically -----------------------------------
