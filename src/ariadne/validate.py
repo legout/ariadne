@@ -92,7 +92,10 @@ _ADR_TOLERANCE = 1e-9
 
 # The validator's own identity in the digest-bound report: bump when the checks
 # performed change (spec rev 1, "Validation, admission, and labels").
-VALIDATOR_VERSION = "ariadne-validate/3"  # 3: live relationship-target audits (issue #27)
+# 4: the K4 applicability contract (issue #44, spec 0010 §9) — semantic
+# checks carry explicit not_applicable outcomes with reasons on a
+# context-only candidate.
+VALIDATOR_VERSION = "ariadne-validate/4"
 
 
 def validator_identity(performed_checks: list[str] | tuple[str, ...]) -> dict:
@@ -744,8 +747,51 @@ def validate(
     SELECT compilation."""
     staging = Path(staging_dir)
     models_dir = _models_dir(staging)
-    if not models_dir.is_dir():
-        return ValidationResult(False, [f"no semantic models under {models_dir}"])
+    # K4 (issue #44, spec 0010 §9): a candidate with NO semantic declarations
+    # at all (no semantic_layer — the onboarding/schema/Reference-only form) is
+    # CONTEXT-ONLY. The semantic checks are explicitly not_applicable WITH
+    # reasons (never a silent skip, never a bare "not-run"): an inherited
+    # OSI/metric/Policy/relationship declaration still routes through the
+    # full checks below, a PRESENT-but-empty models tree keeps the historical
+    # structural refusal (mf F8: declared intent, no inventory), and a lone
+    # graph.yml without models stays the failure it always was.
+    context_only = (
+        not models_dir.is_dir()
+        and not (staging / "semantic_layer" / "graph.yml").is_file()
+    )
+    if context_only:
+        reason = (
+            "no semantic declarations — a context-only candidate (no semantic_layer "
+            "models, no graph); inherited OSI/metrics/Policies/relationships would "
+            "still receive their checks"
+        )
+        files = _consumed_files(staging)
+        return ValidationResult(
+            True,
+            [],
+            report=ValidationReport(
+                digest=_digest_files(files),
+                scope="context-only (no semantic declarations)",
+                validator_version=VALIDATOR_VERSION,
+                registry_digest=None,
+                registry_label=None,
+                files=tuple(relative for relative, _path, _data in files),
+                checks=(
+                    CheckOutcome("structural", "not_applicable", reason),
+                    CheckOutcome("compile", "not_applicable", reason),
+                    CheckOutcome("conformance", "not_applicable", reason),
+                    CheckOutcome("bind", "not_applicable", reason),
+                    CheckOutcome(
+                        "grain",
+                        "not_applicable",
+                        reason
+                        + "; an unknown physical table Grain never relaxes "
+                        "semantic Grain",
+                    ),
+                    CheckOutcome("relationship_audit", "not_applicable", reason),
+                ),
+            ),
+        )
     files = _consumed_files(staging)
     registry_digest, registry_label = _registry_identity(db_path, sources_path)
     live = db_path is not None or sources_path is not None

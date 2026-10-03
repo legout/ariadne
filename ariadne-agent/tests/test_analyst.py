@@ -543,6 +543,78 @@ def test_analyst_managed_project_resolves_through_pinned_admission(tmp_path, mon
     assert {tool.name for tool in tools} == ANALYST_TOOLS
 
 
+def test_analyst_serves_a_context_only_admitted_project(tmp_path, monkeypatch):
+    """K4 (issue #44, spec 0010 §6/§9): a CONTEXT-ONLY admitted project
+    (schemas/References, no metrics yet) still opens the Analyst session over
+    its pinned admission — resolve_term serves the admitted terminology with
+    every mapping unconfirmed, and the metric tool surfaces the SPECIFIC
+    missing-catalog error. The native surface never widens: no confirmation or
+    admission tool exists on it (human-only, ariadne-admit --confirm-mapping)."""
+    import os
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    from tests.test_context_admission import (
+        MISSING_CATALOG_MARK,
+        context_only_candidate,
+    )
+    from tests.test_context_admission import admit as admit_context_only
+
+    project, api, candidate = context_only_candidate(tmp_path / "proj")
+    validated = api.validate_proposal(candidate["proposal"], candidate["revision"])
+    assert validated["ok"] is True
+    review = api.review_proposal(candidate["proposal"])
+    assert admit_context_only(project, review) == 0
+
+    provider = FakeProvider(
+        [
+            turn(
+                calls=[
+                    ("resolve_term", {"request": "order number"}),
+                    ("get_metric", {"name": "order_number_count"}),
+                ]
+            ),
+            turn(
+                text="No governed metric catalog exists yet (context-only "
+                "admission); the order-number hypothesis and assertion are "
+                "unconfirmed leads pending human confirmation."
+            ),
+        ]
+    )
+    session = open_session(
+        role="analyst", project=project, model="fake-analyst", provider=provider
+    )
+    try:
+        events = asyncio.run(drive(session, "what do we know about order numbers?"))
+    finally:
+        session.close()
+
+    activity = [event for event in events if isinstance(event, ToolActivity)]
+    assert [event.tool for event in activity] == ["resolve_term", "get_metric"]
+    resolved = json.loads(activity[0].result)
+    assert activity[0].is_error is False
+    assert [match["representation"] for match in resolved["matches"]] == [
+        "local-order-number",
+        "global-order-number",
+    ]
+    assert all(
+        mapping["confirmation"] == "unconfirmed"
+        for match in resolved["matches"]
+        for mapping in match["mappings"]
+    )
+    assert activity[1].is_error is True
+    assert MISSING_CATALOG_MARK in activity[1].result
+
+    # the managed context-only route never widened the native surface
+    _model, _system, _messages, tools = provider.calls[0]
+    assert {tool.name for tool in tools} == ANALYST_TOOLS
+    assert not [
+        name
+        for name in (tool.name for tool in tools)
+        if any(marker in name for marker in ("confirm", "admit", "approve"))
+    ]
+
+
 def test_analyst_managed_project_without_admission_is_actionable(tmp_path, monkeypatch):
     """A managed Git project with proposals but NO admission refuses the
     session open with the human-only admission step — never a fallback to the

@@ -218,7 +218,9 @@ def build_parser() -> _Parser:
         parents=[common],
         help="resolve a shared business term or an exact field lookup against the "
         "served context (issue #42: bounded matches with exact bindings, scope, "
-        "ambiguity and unconfirmed claim status; read-only)",
+        "ambiguity and claim status; issue #44: confirmed only with recorded "
+        "human admission evidence — a context-only admitted project serves this "
+        "without a metric catalog; read-only)",
     )
     resolve.add_argument(
         "term",

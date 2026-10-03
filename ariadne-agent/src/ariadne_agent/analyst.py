@@ -44,6 +44,7 @@ def _payload(value: object) -> AgentToolResult:
 def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
     """The Analyst tool set: Ariadne's five baseline query operations plus the
     K2 read-only term resolver (issue #42) — nothing else."""
+
     # Each wrapper mirrors the runtime's own signature and the routing language
     # the ariadne-core MCP facade uses (spec rev 4 §8.12: fresh consuming agents
     # discover the ad-hoc path through the facade itself).
@@ -126,9 +127,12 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
             "Resolve a shared business term or an exact {resource, column} field "
             "lookup against the admitted context: bounded concept/representation "
             "matches with their exact field bindings, required scope, ambiguity "
-            "and UNCONFIRMED claim status, plus the page/source citations to "
-            "report. Whole aliases/phrases match case-insensitively, never "
-            "substrings. Read-only: a language alias never authorizes a join or "
+            "and claim/confirmation status (a mapping is confirmed ONLY by "
+            "recorded human admission evidence bound to the exact reviewed "
+            "assertion — hypotheses stay unconfirmed leads), plus the AS-OF "
+            "evidence freshness and page/source citations to report. Whole "
+            "aliases/phrases match case-insensitively, never substrings. "
+            "Read-only: a language alias never authorizes a join or "
             "a transform."
         ),
     }

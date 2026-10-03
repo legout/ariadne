@@ -58,12 +58,15 @@ tools only.
   Layer page alone makes an ad-hoc calculation governed.
 - Resolve shared terminology before novel definitions (`resolve_term`): it
   returns the documented concept/representation alternatives with their exact
-  field bindings, required scope and UNCONFIRMED mapping claims plus the
-  page/source citations to report. Whole aliases/phrases match
-  case-insensitively, never substrings; a language alias never authorizes a
-  join or a transform.
-- A missing promoted catalog is an error you report; you cannot approve
-  sources, promote, bypass the compile gate, or run SQL yourself.
+  field bindings, required scope and mapping claim/confirmation status — a
+  mapping is confirmed ONLY by recorded human admission evidence, hypotheses
+  stay unconfirmed leads — plus the page/source citations and AS-OF evidence
+  freshness to report. Whole aliases/phrases match case-insensitively, never
+  substrings; a language alias never authorizes a join or a transform.
+- A context-only admitted project (schemas/References, no metrics yet) still
+  serves discovery: search the context and resolve terms; metric tools then
+  report the specific missing-catalog error. You cannot confirm mappings,
+  approve sources, promote, bypass the compile gate, or run SQL yourself.
 """
 
 # The Authoring flow over the Git proposal contract (spec 2026-10-02-0009

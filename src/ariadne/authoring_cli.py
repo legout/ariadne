@@ -273,7 +273,10 @@ def build_parser() -> _Parser:
         default=None,
         help="Git mode: review this proposal's effective candidate — exact "
         "revisions, change inventory, bounded bodies, citations, the validation "
-        "report and a review digest (issue #36/G4; read-only, never a signoff)",
+        "report, the structured mapping assertions with their assertion digests "
+        "and confirmation eligibility (K4/issue #44: what a human may select "
+        "with ariadne-admit --confirm-mapping), and a review digest (issue "
+        "#36/G4; read-only, never a signoff)",
     )
     review_cmd.add_argument(
         "--part",

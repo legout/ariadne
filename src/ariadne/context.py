@@ -1840,14 +1840,211 @@ def _reference_extension_errors(rel: str, meta: dict) -> list[str]:
     return errors
 
 
-def _mapping_views(extension: dict, representation_id: str | None) -> list[dict]:
+def mapping_assertion_digest(mapping: dict) -> str:
+    """The stable identity digest of ONE authored mapping declaration (K4,
+    plan §2): the complete structured assertion — id, family, endpoints,
+    claim, cited source_ids/receipt_ids and the structured candidate — in the
+    canonical JSON form. Human confirmation binds THIS digest (a changed
+    declaration is a different assertion and can never inherit a prior
+    confirmation); observed results and measurement times live in the core's
+    receipts, never in the declaration."""
+    return _canonical_digest(mapping)
+
+
+def _endpoint_correspondence(representation: object) -> dict | None:
+    """One mapping endpoint representation's normalized correspondence — the
+    K3 receipt-verification form: the ORDERED (resource, column) field list
+    and the required scope bindings as a canonical set (K4 fix pass, finding
+    2). None when the endpoint resolves to no representation (the page
+    contract owns that error; the binding digest stays honest about the
+    absence)."""
+    if not isinstance(representation, dict):
+        return None
+    fields = [
+        {"resource": binding.get("resource"), "column": binding.get("column")}
+        for binding in representation.get("fields") or []
+        if isinstance(binding, dict)
+    ]
+    scope = sorted(
+        {
+            (str(binding.get("resource")), str(binding.get("column")))
+            for binding in representation.get("scope") or []
+            if isinstance(binding, dict)
+        }
+    )
+    return {
+        "fields": fields,
+        "scope": [
+            {"resource": resource, "column": column} for resource, column in scope
+        ],
+    }
+
+
+def confirmation_binding_digest(meta: dict, mapping: dict) -> str:
+    """The EFFECTIVE identity a human confirmation binds (K4 fix pass,
+    finding 2, plan §2): the complete mapping declaration PLUS the normalized
+    endpoint correspondence of both endpoint representations (ordered
+    resource+column fields and required scope bindings — the same normalized
+    correspondence K3 receipt verification enforces). Retargeting an endpoint
+    representation changes THIS digest even when the mapping bytes stay
+    identical, so a changed representation meaning can never inherit a prior
+    confirmation."""
+    extension = meta.get("ariadne") or {}
+    representations = {
+        representation.get("id"): representation
+        for representation in extension.get("representations") or []
+        if isinstance(representation, dict)
+    }
+    return _canonical_digest(
+        {
+            "mapping": mapping,
+            "endpoints": {
+                key: _endpoint_correspondence(representations.get(mapping.get(key)))
+                for key in ("from", "to")
+            },
+        }
+    )
+
+
+def evidence_counterevidence(summary: dict) -> str | None:
+    """The named counterevidence ONE verified receipt summary carries against
+    its mapping's claim (K4 fix pass, finding 1, spec 0010 §§8–9): honest
+    mismatches, an ambiguous pairing basis or an inconclusive outcome — None
+    when the summary supports the claim. A hypothesis may carry it openly; an
+    ASSERTED claim contradicted by its own cited evidence is unsupported."""
+    if not isinstance(summary, dict):
+        return None
+    if isinstance(summary.get("mismatch_count"), int) and summary["mismatch_count"] > 0:
+        return f"{summary['mismatch_count']} mismatching sampled value(s)"
+    if summary.get("comparison_basis") == "ambiguous-pairing":
+        return "an ambiguous pairing basis that cannot claim unique independent pairing"
+    if summary.get("outcome") == "inconclusive":
+        return "an inconclusive measurement (a budget or unavailable evidence prevented the check)"
+    return None
+
+
+def evidence_freshness(observed_at: object, max_age_hours: float | None) -> dict:
+    """The explicit freshness state of ONE measured evidence view (K4 fix
+    pass, finding 3, spec 0010 §§6/§8): ``as_of`` while the observation sits
+    within the operator's evidence age budget, ``stale`` once ``observed_at``
+    is past it — ``unknown`` without a budget or a parseable observation
+    time. An unversioned measurement is an observation at a time (never
+    permanent proof) and an absent freshness fact is never proof of currency.
+    Read-only: freshness is computed, never written back."""
+    if max_age_hours is None:
+        return {"state": "unknown", "observed_at": observed_at, "max_age_hours": None}
+    try:
+        observed = (
+            datetime.fromisoformat(observed_at) if isinstance(observed_at, str) else None
+        )
+        if observed is None:
+            raise ValueError(observed_at)
+        age = datetime.now(UTC) - observed
+    except (ValueError, TypeError, OverflowError):
+        return {
+            "state": "unknown",
+            "observed_at": observed_at,
+            "max_age_hours": max_age_hours,
+        }
+    state = "stale" if age > timedelta(hours=max_age_hours) else "as_of"
+    return {"state": state, "observed_at": observed_at, "max_age_hours": max_age_hours}
+
+
+def _evidence_views(
+    meta: dict, mapping_id: object, max_age_hours: float | None = None
+) -> list[dict]:
+    """The bounded AS-OF evidence view of one mapping's core-attached verified
+    summaries (spec 0010 §6 "evidence freshness"): measurement time,
+    sampled/full designation, outcome and mismatch count — an unversioned
+    measurement is explicitly an observation AT a time, never permanent
+    proof — plus each view's explicit freshness state against the operator's
+    evidence age budget (K4 fix pass, finding 3: ``as_of`` within the budget,
+    ``stale`` past it, ``unknown`` without a budget). Empty for a mapping with
+    no verified receipts attached."""
+    evidence = meta.get("ariadne_evidence")
+    summaries = evidence.get(mapping_id) if isinstance(evidence, dict) else None
+    views: list[dict] = []
+    for summary in summaries or []:
+        if not isinstance(summary, dict):
+            continue
+        views.append(
+            {
+                "id": summary.get("id"),
+                "digest": summary.get("digest"),
+                "observed_at": summary.get("observed_at"),
+                "designation": summary.get("designation"),
+                "outcome": summary.get("outcome"),
+                "mismatch_count": summary.get("mismatch_count"),
+                "freshness": evidence_freshness(
+                    summary.get("observed_at"), max_age_hours
+                ),
+            }
+        )
+    return views
+
+
+def confirmation_lookup(confirmations: list[dict] | None) -> dict[tuple[str, object], dict]:
+    """The admitted confirmation records indexed for the resolver: page path
+    (context-layer relative, the resolver's own citation form) + mapping id →
+    the recorded human confirmation entry."""
+    return {
+        (entry.get("page"), entry.get("mapping")): entry
+        for entry in confirmations or []
+        if isinstance(entry, dict)
+    }
+
+
+def _confirmation_matches(
+    entry: dict | None, meta: dict, mapping: dict, evidence: list[dict]
+) -> bool:
+    """True when ONE recorded human confirmation still binds the mapping it
+    confirmed (plan §2 "Admission and automatic capture"): the EXACT effective
+    identity digest — the mapping declaration PLUS its endpoint
+    representations' normalized field/scope correspondence (K4 fix pass,
+    finding 2: a retargeted representation is a changed meaning and can never
+    inherit confirmation) — AND the unchanged verified evidence dependencies
+    (the receipts' integrity digests). A changed, stale or conflicting
+    assertion cannot inherit confirmation — it reports unconfirmed."""
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("assertion_digest") != confirmation_binding_digest(meta, mapping):
+        return False
+    recorded = sorted(
+        str(receipt.get("digest"))
+        for receipt in entry.get("receipts") or []
+        if isinstance(receipt, dict) and receipt.get("digest") is not None
+    )
+    current = sorted(
+        str(view["digest"]) for view in evidence if view.get("digest") is not None
+    )
+    return recorded == current
+
+
+def _mapping_views(
+    meta: dict,
+    representation_id: str | None,
+    page: str,
+    confirmations: dict[tuple[str, object], dict] | None = None,
+    max_age_hours: float | None = None,
+) -> list[dict]:
     """The mapping view(s) of one match: every mapping of the Reference for a
     concept-level match, the mappings touching ``representation_id`` for a
-    representation match. Every mapping reports its claim classification with
-    ``confirmation: unconfirmed`` — until K4's exact-assertion human
-    confirmation exists, no mapping (hypothesis or asserted) is confirmed, and
-    an admitted page confirms nothing by itself (spec 0010 §5)."""
+    representation match. Every mapping reports its claim classification and
+    its confirmation status: ``confirmed`` ONLY when a recorded human
+    confirmation of the exact reviewed assertion (unchanged effective
+    identity digest — declaration plus endpoint correspondence — and
+    unchanged verified evidence dependencies) exists — admission of the page
+    alone confirms nothing, a hypothesis is never confirmable, and a page
+    flag is never authority (spec 0010 §5, K4/issue #44). Expired evidence
+    withholds stale confirmed GUIDANCE (K4 fix pass, finding 3, spec §§6/§8):
+    a matching confirmation whose verified evidence aged past the operator
+    budget surfaces as ``needs-revalidation`` with the human confirmation
+    disclosed as history — never silently as current confirmed guidance. The
+    bounded AS-OF evidence view (each with its explicit freshness state) and
+    a mapping-level evidence-freshness summary ride along: unversioned
+    measurements are observations at a time, never permanent proof."""
     views: list[dict] = []
+    extension = meta.get("ariadne") or {}
     for mapping in extension.get("mappings") or []:
         if not isinstance(mapping, dict):
             continue
@@ -1856,20 +2053,48 @@ def _mapping_views(extension: dict, representation_id: str | None) -> list[dict]
             mapping.get("to"),
         ):
             continue
-        views.append(
-            {
-                "id": mapping.get("id"),
-                "family": mapping.get("family"),
-                "from": mapping.get("from"),
-                "to": mapping.get("to"),
-                "claim": mapping.get("claim"),
-                "confirmation": "unconfirmed",
-                "source_ids": list(mapping.get("source_ids") or []),
-                # allowlisted evidence IDs ride along verbatim — they are NOT
-                # proof (receipt verification is K3; nothing is fabricated here)
-                "receipt_ids": list(mapping.get("receipt_ids") or []),
-            }
-        )
+        evidence = _evidence_views(meta, mapping.get("id"), max_age_hours)
+        confirmation = "unconfirmed"
+        history: list[dict] | None = None
+        entry = confirmations.get((page, mapping.get("id"))) if confirmations else None
+        if _confirmation_matches(entry, meta, mapping, evidence):
+            if any(view["freshness"]["state"] == "stale" for view in evidence):
+                # a stale mapping cannot supply confirmed guidance without
+                # revalidation: the human confirmation is disclosed as history
+                confirmation = "needs-revalidation"
+                history = [{"by": entry.get("by"), "at": entry.get("at")}]
+            else:
+                confirmation = "confirmed"
+        view = {
+            "id": mapping.get("id"),
+            "family": mapping.get("family"),
+            "from": mapping.get("from"),
+            "to": mapping.get("to"),
+            "claim": mapping.get("claim"),
+            "confirmation": confirmation,
+            "source_ids": list(mapping.get("source_ids") or []),
+            # allowlisted evidence IDs ride along verbatim — they are NOT
+            # proof (receipt verification is core-owned; nothing is
+            # fabricated here)
+            "receipt_ids": list(mapping.get("receipt_ids") or []),
+            # the bounded AS-OF verified evidence summaries the core
+            # attached at finalization (K3), honestly reporting observation
+            # time, scope designation, counterevidence and freshness state
+            "evidence": evidence,
+            "evidence_freshness": {
+                "state": (
+                    "stale"
+                    if any(item["freshness"]["state"] == "stale" for item in evidence)
+                    else "as_of"
+                    if evidence
+                    and all(item["freshness"]["state"] == "as_of" for item in evidence)
+                    else "unknown"
+                )
+            },
+        }
+        if history is not None:
+            view["confirmation_history"] = history
+        views.append(view)
     return views
 
 
@@ -1933,6 +2158,8 @@ def _representation_entries(
     representations: list[dict],
     query: dict,
     needle: str | None,
+    confirmations: dict[tuple[str, object], dict] | None = None,
+    max_age_hours: float | None = None,
 ) -> list[dict]:
     """The eligible representation-level matches of one page (term form:
     casefolded whole-alias equality; field form: exact binding identity)."""
@@ -1957,13 +2184,23 @@ def _representation_entries(
                 aliases=aliases,
                 fields=list(representation.get("fields") or []),
                 scope=list(representation.get("scope") or []),
-                mappings=_mapping_views(meta["ariadne"], representation.get("id")),
+                mappings=_mapping_views(
+                    meta, representation.get("id"), rel, confirmations, max_age_hours
+                ),
             )
         )
     return entries
 
 
-def _page_matches(rel: str, meta: dict, draft: bool, query: dict, needle: str | None) -> list[dict]:
+def _page_matches(
+    rel: str,
+    meta: dict,
+    draft: bool,
+    query: dict,
+    needle: str | None,
+    confirmations: dict[tuple[str, object], dict] | None = None,
+    max_age_hours: float | None = None,
+) -> list[dict]:
     """The eligible matches of ONE structured Reference page, in stable order
     (concept before representations, representations in declared order).
     Natural-language matching is deterministic casefolded whole-alias/phrase
@@ -1976,7 +2213,9 @@ def _page_matches(rel: str, meta: dict, draft: bool, query: dict, needle: str | 
         if isinstance(representation, dict)
     ]
     if query["kind"] == "field":
-        return _representation_entries(rel, meta, draft, representations, query, needle)
+        return _representation_entries(
+            rel, meta, draft, representations, query, needle, confirmations, max_age_hours
+        )
     entries: list[dict] = []
     page_aliases = list(meta.get("aliases") or [])
     if needle in [alias.casefold() for alias in page_aliases]:
@@ -1990,7 +2229,7 @@ def _page_matches(rel: str, meta: dict, draft: bool, query: dict, needle: str | 
                 aliases=page_aliases,
                 fields=[],
                 scope=[],
-                mappings=_mapping_views(extension, None),
+                mappings=_mapping_views(meta, None, rel, confirmations, max_age_hours),
                 representations=[
                     {
                         "id": representation.get("id"),
@@ -2006,7 +2245,11 @@ def _page_matches(rel: str, meta: dict, draft: bool, query: dict, needle: str | 
                 ],
             )
         )
-    entries.extend(_representation_entries(rel, meta, draft, representations, query, needle))
+    entries.extend(
+        _representation_entries(
+            rel, meta, draft, representations, query, needle, confirmations, max_age_hours
+        )
+    )
     return entries
 
 
@@ -2100,6 +2343,8 @@ def resolve_term(
     *,
     part: int = 1,
     limit: int = RESOLVE_TERM_LIMIT,
+    confirmations: list[dict] | None = None,
+    evidence_max_age_hours: float | None = None,
 ) -> dict:
     """The shared read-only terminology resolver (spec 0010 §6, plan §2):
     bounded matching concept/representation identities, exact field bindings,
@@ -2120,7 +2365,21 @@ def resolve_term(
     bounded fields and an explicit elision marker — never silently dropped
     nor overflowed. No match yields an empty match list; a malformed supported
     Reference or request fails explicitly. The resolver applies no transform,
-    rewrites no SQL and authorizes no join."""
+    rewrites no SQL and authorizes no join.
+
+    ``confirmations`` (K4, issue #44) are the ADMITTED human confirmation
+    records of the served revision's admission evidence — a mapping reports
+    ``confirmed`` only while the recorded selection still binds its exact
+    effective identity (declaration plus endpoint correspondence) and
+    unchanged verified evidence. ``evidence_max_age_hours`` (K4 fix pass,
+    finding 3) is the operator's evidence age budget (the same
+    ``inspection.receipt_max_age_hours`` config): each evidence view reports
+    its explicit ``as_of``/``stale`` freshness state against it, and a
+    matching confirmation over EXPIRED evidence is withheld as current
+    guidance (``needs-revalidation``, the human confirmation disclosed as
+    history). Without a budget the freshness state stays honestly
+    ``unknown``. The candidate side passes no confirmations, so every mapping
+    stays unconfirmed there."""
     if isinstance(request, str):
         term = request.strip()
         if not term:
@@ -2157,6 +2416,7 @@ def resolve_term(
     if isinstance(part, bool) or not isinstance(part, int) or part < 1:
         raise ValueError("the resolve_term part must be a positive integer (part 1 of N)")
     matches: list[dict] = []
+    admitted = confirmation_lookup(confirmations)
     for root, draft in roots:
         references = Path(root) / "references"
         if not references.is_dir():
@@ -2177,7 +2437,11 @@ def resolve_term(
                     f"malformed reference page — {'; '.join(errors)} — the resolver "
                     "resolves only well-formed supported declarations"
                 )
-            matches.extend(_page_matches(rel, meta, draft, query, needle))
+            matches.extend(
+                _page_matches(
+                    rel, meta, draft, query, needle, admitted or None, evidence_max_age_hours
+                )
+            )
     total = len(matches)
     response_parts = _resolve_response_parts(
         matches, limit=limit, max_bytes=RESOLVE_TERM_MAX_BYTES

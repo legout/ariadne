@@ -168,10 +168,24 @@ def test_broken_model_fails_with_captured_error(tmp_path):
     assert result.errors, "broken model must produce a captured error message"
 
 
-def test_missing_models_dir_is_an_error(tmp_path):
+def test_context_only_tree_and_graph_without_models(tmp_path):
+    """K4 (issue #44, spec 0010 §9): a tree with NO semantic declarations at
+    all is context-only — the semantic checks are explicitly not_applicable
+    WITH reasons (a visibly partial scope, never a silent pass); a declared
+    graph without models stays the structural failure it always was."""
     result = validate(tmp_path / "staging")
-    assert not result.ok
-    assert result.errors
+    assert result.ok and not result.errors
+    assert result.report.scope == "context-only (no semantic declarations)"
+    outcomes = {check.name: check for check in result.report.checks}
+    for name in ("structural", "compile", "conformance", "bind", "grain", "relationship_audit"):
+        assert outcomes[name].outcome == "not_applicable", name
+        assert outcomes[name].detail, f"{name} needs its not_applicable reason"
+    graph_root = tmp_path / "with-graph" / "semantic_layer"
+    graph_root.mkdir(parents=True)
+    (graph_root / "graph.yml").write_text("datasets: {}\n", encoding="utf-8")
+    broken = validate(graph_root.parent)
+    assert not broken.ok
+    assert any("no semantic models" in error for error in broken.errors)
 
 
 def test_cli_exit_codes(tmp_path, capsys, monkeypatch):

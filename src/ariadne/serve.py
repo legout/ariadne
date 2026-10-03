@@ -23,7 +23,10 @@ The three registrations (spec §6, AC7):
   ``list_metrics``, ``search_context``, ``get_metric``, ``list_datasets``,
   ``define_metric`` (ad-hoc), ``query_metrics``/``query_detail`` (issue #30),
   ``save_example``/``search_examples`` (issue #21), ``resolve_term``
-  (issue #42: shared terminology resolution over the pinned admitted context).
+  (issue #42: shared terminology resolution over the pinned admitted
+  context; issue #44/K4 reports claim/confirmation status and AS-OF evidence
+  freshness, and serves a context-only admitted snapshot — no metrics yet —
+  while metric tools surface the specific missing-catalog error).
   No authoring operation.
 - **authoring** — the Git authoring contract with one stable prefix:
   ``authoring_start_proposal``, ``authoring_read_artifact``,
@@ -57,7 +60,8 @@ pending work keeps its review path; see docs/how-to/git-authoring.md):
   proposal ID + documents/part/sample bound.
 
 No registration ever exposes source approval (``ariadne-authoring
-approve-sources``), artifact admission (``ariadne-admit``), reconciliation
+approve-sources``), artifact admission (``ariadne-admit``, including its
+K4/issue #44 ``--confirm-mapping`` assertion confirmation), reconciliation
 (``ariadne-authoring reconcile``) or Promotion (``ariadne-promote``): those
 are human-only server-host commands (ADR-0013, spec §5), and no tool argument
 ever selects a project root, worktree path or credential.
@@ -311,11 +315,15 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             """Resolve one shared business term or an exact {resource, column}
             field lookup against the served (pinned admitted) context: bounded
             concept/representation matches with their EXACT field bindings,
-            required scope, ambiguity, unconfirmed claim status and actual
-            page/source citations. Whole aliases/phrases match case-insensitively
+            required scope, ambiguity, claim/confirmation status, AS-OF
+            evidence freshness and actual page/source citations. A mapping is
+            confirmed ONLY by recorded human admission evidence bound to the
+            exact reviewed assertion; hypotheses stay unconfirmed leads.
+            Whole aliases/phrases match case-insensitively
             (never substrings); field identity is exact. Read-only: no transform,
             no SQL rewrite, no join authority — a language alias never authorizes
-            a join. Same contract as ``ariadne resolve-term``.
+            a join. Serves a context-only admitted snapshot too (no metrics yet).
+            Same contract as ``ariadne resolve-term``.
 
             Args:
                 request: the term string, or the exact field lookup

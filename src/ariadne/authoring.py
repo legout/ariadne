@@ -188,7 +188,10 @@ from ariadne.context import (  # noqa: F401 — the K1 generated-page seam (issu
     build_dataset_page,
     build_table_page,
     candidate_digest,
+    confirmation_binding_digest,  # K4 fix pass: the effective identity a confirmation binds
+    evidence_counterevidence,  # K4 fix pass: counterevidence named at validation/review
     generated_page_filename,
+    mapping_assertion_digest,  # K4 (issue #44): the declaration identity of a mapping
     resolve_term,  # K2 (issue #42): the shared read-only term resolver
     validate_inspection_candidate,
 )
@@ -1393,7 +1396,17 @@ class AuthoringProject:
                 tree = Path(tmp) / "bundle"
                 tree.mkdir()
                 _materialize(project, proposal, record["candidate_revision"], tree)
-                result = resolve_term([(tree / "context_layer", False)], request, part=part)
+                result = resolve_term(
+                    [(tree / "context_layer", False)],
+                    request,
+                    part=part,
+                    # the operator's evidence age budget drives the candidate
+                    # side's explicit as_of/stale freshness states too (K4 fix
+                    # pass, finding 3); no confirmations exist on a candidate
+                    evidence_max_age_hours=project_inspection_limits(project)[
+                        "receipt_max_age_hours"
+                    ],
+                )
         result.update(
             {
                 "proposal": proposal,
@@ -1763,13 +1776,19 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 result = validate(tree)  # compile-only: the boundary error blocks
                 errors = [auth_error, *result.errors]
             page_errors = _bundle_errors(tree) + _graph_citation_errors(tree)
+            # K4 (issue #44): conflicting asserted claims refuse validation
+            # alongside the receipt-verification gate
+            claim_errors = _asserted_claim_errors(tree)
             citations, citation_errors = _verified_citations(tree, project, names)
             errors.extend(page_errors)
             errors.extend(citation_errors)
             errors.extend(receipt_errors)
-            # validate() carries no report at all when the tree has no semantic
-            # models directory (the empty-project onboarding case): the
-            # structural outcome owns that failure explicitly
+            errors.extend(claim_errors)
+            # validate() carries no report at all only when a graph is declared
+            # without models (the load owns that failure): the structural
+            # outcome owns it explicitly. A context-only candidate (K4, issue
+            # #44) arrives WITH a report — its semantic checks are explicitly
+            # not_applicable with reasons.
             base_checks = (
                 result.report.checks
                 if result.report is not None
@@ -1792,11 +1811,19 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 ),
                 CheckOutcome(
                     "mapping_evidence",
-                    "failed" if receipt_errors else "passed",
-                    "; ".join(receipt_errors),
+                    "failed" if (receipt_errors or claim_errors) else "passed",
+                    "; ".join([*receipt_errors, *claim_errors]),
                 ),
             )
-            performed = [check.name for check in checks if check.outcome != "not-run"]
+            # K4 (issue #44): an explicitly not_applicable check was NOT
+            # performed — the applicability decision rides the report (each
+            # not_applicable outcome carries its reason), never the performed
+            # set a current validator identity binds.
+            performed = [
+                check.name
+                for check in checks
+                if check.outcome not in ("not-run", "not_applicable")
+            ]
             artifact_digest = candidate_scope_digest(tree)
             report_view = (
                 _report_view(result.report)
@@ -1961,6 +1988,152 @@ def review_proposal(project: str | Path, proposal: str, *, part: int = 1) -> dic
         return _review_candidate(project, proposal, part=part, record=record)
 
 
+# ------------------------------------ K4 (issue #44): asserted mappings surface
+
+
+def _reference_mapping_pages(tree: Path) -> list[tuple[str, dict, dict]]:
+    """Every structured Reference page of one materialized candidate tree:
+    (context-relative page path, frontmatter meta, the ariadne extension).
+    Legacy References without the extension stay out; malformed draft pages
+    stay out too — the page gate owns their structural errors."""
+    context_dir = tree / "context_layer"
+    pages: list[tuple[str, dict, dict]] = []
+    for page in sorted(context_dir.rglob("*.md")) if context_dir.is_dir() else []:
+        if page.name in _GENERATED_FILES:
+            continue
+        rel = page.relative_to(context_dir).as_posix()
+        if not rel.startswith("references/"):
+            continue
+        try:
+            meta = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
+        except yaml.YAMLError:
+            continue  # the page gate owns the malformed-draft error
+        extension = meta.get("ariadne") if isinstance(meta, dict) else None
+        if isinstance(extension, dict) and isinstance(extension.get("mappings"), list):
+            pages.append((rel, meta, extension))
+    return pages
+
+
+def _asserted_claim_errors(tree: Path) -> list[str]:
+    """Conflicting asserted claims refuse validation (spec 0010 §5/§9, K4):
+    two ASSERTED mappings of one Reference over the same relationship — the
+    same endpoints and family — with different assertion digests are two
+    disagreeing confirmed-usage candidates, not alternatives a human confirms
+    one by one. Different or conflicting declarations stay separate labeled
+    HYPOTHESES (plan §2); only an unambiguous asserted claim reaches human
+    confirmation."""
+    errors: list[str] = []
+    for rel, _meta, extension in _reference_mapping_pages(tree):
+        claimed: dict[tuple, dict] = {}
+        for mapping in extension["mappings"]:
+            if not isinstance(mapping, dict) or mapping.get("claim") != "asserted":
+                continue
+            key = (mapping.get("from"), mapping.get("to"), mapping.get("family"))
+            digest = mapping_assertion_digest(mapping)
+            if key in claimed and claimed[key]["digest"] != digest:
+                errors.append(
+                    f"context_layer/{rel}: asserted mappings "
+                    f"{claimed[key]['id']!r} and {mapping.get('id')!r} claim the same "
+                    f"relationship ({mapping.get('from')!r} -> {mapping.get('to')!r}, "
+                    f"family {mapping.get('family')!r}) with different declarations — "
+                    "conflicting asserted claims refuse validation; keep the "
+                    "alternatives as separate labeled hypotheses"
+                )
+            elif key not in claimed:
+                claimed[key] = {"id": mapping.get("id"), "digest": digest}
+    return errors
+
+
+def _mapping_assertions(tree: Path) -> list[dict]:
+    """The reviewed candidate's structured mapping assertions (K4, plan §2
+    "Admission and automatic capture"): each mapping's page resource,
+    reference slug, mapping ID, family, endpoints, claim, verbatim
+    declaration, assertion digest, dependencies/evidence and confirmation
+    eligibility — the exact surface a human selects from with
+    ``--confirm-mapping <reference-slug>:<mapping-id>``. Reading this list is
+    NEVER confirmation (spec 0010 §5): a hypothesis is listed for the review
+    but never selectable, and only an asserted mapping is confirmable — never
+    one whose verified receipts show counterevidence (K4 fix pass, finding 1:
+    an asserted claim contradicted by its own cited evidence is
+    unsupported)."""
+    assertions: list[dict] = []
+    for rel, meta, extension in _reference_mapping_pages(tree):
+        evidence = meta.get("ariadne_evidence")
+        summaries = evidence if isinstance(evidence, dict) else {}
+        for mapping in extension["mappings"]:
+            if not isinstance(mapping, dict):
+                continue
+            claim = mapping.get("claim")
+            receipts = [
+                {
+                    "id": summary.get("id"),
+                    "digest": summary.get("digest"),
+                    "observed_at": summary.get("observed_at"),
+                    "designation": summary.get("designation"),
+                    "outcome": summary.get("outcome"),
+                    "mismatch_count": summary.get("mismatch_count"),
+                    "comparison_basis": summary.get("comparison_basis"),
+                }
+                for summary in summaries.get(mapping.get("id")) or []
+                if isinstance(summary, dict)
+            ]
+            # K4 fix pass (finding 1, spec 0010 §§8–9): an asserted mapping
+            # contradicted by its own verified receipts (honest mismatches, an
+            # ambiguous pairing basis or an inconclusive outcome) is
+            # UNSUPPORTED — it is never selectable for confirmation. A
+            # hypothesis carrying the same receipt stays listed (openly
+            # labeled, never confirmable).
+            counterevidence = [
+                named
+                for named in (evidence_counterevidence(summary) for summary in receipts)
+                if named
+            ]
+            confirmable = claim == "asserted" and not counterevidence
+            if claim == "asserted" and counterevidence:
+                note = (
+                    "the asserted mapping's verified receipts show counterevidence "
+                    f"({'; '.join(counterevidence)}) — an asserted claim contradicted by "
+                    "its own cited evidence is unsupported; carry it as a labeled "
+                    "hypothesis instead"
+                )
+            elif confirmable:
+                note = (
+                    "an asserted mapping is eligible for explicit human confirmation "
+                    "(--confirm-mapping)"
+                )
+            else:
+                note = (
+                    "a hypothesis is investigative knowledge only — it is never "
+                    "selectable as a confirmed assertion"
+                )
+            assertions.append(
+                {
+                    "page": rel,
+                    "reference": PurePosixPath(rel).stem,
+                    "mapping": mapping.get("id"),
+                    "family": mapping.get("family"),
+                    "from": mapping.get("from"),
+                    "to": mapping.get("to"),
+                    "claim": claim,
+                    "declaration": mapping,
+                    # the EFFECTIVE identity a confirmation binds (K4 fix pass,
+                    # finding 2): the declaration plus its endpoint
+                    # representations' normalized correspondence — review,
+                    # admission and retention all compare THIS digest
+                    "assertion_digest": (
+                        confirmation_binding_digest(meta, mapping)
+                        if isinstance(mapping.get("id"), str)
+                        else None
+                    ),
+                    "source_ids": list(mapping.get("source_ids") or []),
+                    "receipts": receipts,
+                    "confirmable": confirmable,
+                    "confirmation_note": note,
+                }
+            )
+    return assertions
+
+
 def _review_candidate(
     project: Path, proposal: str, *, part: int = 1, record: dict | None = None
 ) -> dict:
@@ -1968,7 +2141,11 @@ def _review_candidate(
     :func:`review_proposal` returns, computed for one loaded record — the
     caller holds the proposal lock (the public review takes it; admission
     already holds the project+proposal locks when it re-derives the review
-    digest, and a nested lock acquisition would self-deadlock)."""
+    digest, and a nested lock acquisition would self-deadlock). K4 (issue
+    #44): the envelope carries the candidate's structured mapping assertions
+    — each mapping's page/ID/digest/dependencies and confirmation eligibility
+    — bound into the review digest, so an admission's mapping selections are
+    bound to the exact reviewed identity."""
     if record is None:
         record = proposals._load_record(project, proposal)
     proposals._check_coherent(project, record)
@@ -2012,6 +2189,10 @@ def _review_candidate(
                     "the candidate's artifact bytes differ from the validated digest"
                 )
         inventory = _change_inventory(project, record)
+        # K4 (issue #44): the candidate's structured mapping assertions — the
+        # exact identity/digest/dependencies/eligibility surface a human
+        # selects from at admission. Reading it is never confirmation.
+        mapping_assertions = _mapping_assertions(tree)
         review_digest = hashlib.sha256(
             json.dumps(
                 {
@@ -2022,6 +2203,15 @@ def _review_candidate(
                     "changes": inventory,
                     "artifact_digest": artifact_digest,
                     "citations": citations,
+                    "mapping_assertions": [
+                        {
+                            "page": entry["page"],
+                            "mapping": entry["mapping"],
+                            "assertion_digest": entry["assertion_digest"],
+                            "receipts": [receipt["digest"] for receipt in entry["receipts"]],
+                        }
+                        for entry in mapping_assertions
+                    ],
                     "validation": None
                     if report is None
                     else {
@@ -2056,6 +2246,7 @@ def _review_candidate(
             ),
             "validation_stale": bool(stale_reasons),
             "stale_reasons": stale_reasons,
+            "mapping_assertions": mapping_assertions,
             "review_digest": review_digest,
         }
 
@@ -3771,6 +3962,22 @@ def _finalize_mapping_evidence(
                     )
                     continue
                 summaries.append(summary)
+                # K4 fix pass (finding 1, spec 0010 §§8–9): an ASSERTED claim
+                # contradicted by its own verified receipts (honest mismatches,
+                # an ambiguous pairing basis or an inconclusive outcome) is
+                # unsupported and fails the mapping-evidence gate — the same
+                # receipt under a hypothesis claim stays admissible as openly
+                # labeled investigative knowledge.
+                if mapping.get("claim") == "asserted":
+                    named = evidence_counterevidence(summary)
+                    if named:
+                        errors.append(
+                            f"{rel}: mapping {mapping.get('id')!r} is asserted but its "
+                            f"verified receipt {summary.get('id')!r} shows "
+                            f"counterevidence ({named}) — an asserted claim "
+                            "contradicted by its own cited evidence is unsupported; "
+                            "carry it as a labeled hypothesis instead"
+                        )
             if summaries:
                 desired[str(mapping.get("id"))] = summaries
         current = page["meta"].get("ariadne_evidence")

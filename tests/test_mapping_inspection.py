@@ -809,9 +809,11 @@ def test_validation_attaches_verified_summaries_and_receipts_survive_saves(tmp_p
     }
     assert outcomes["mapping_evidence"] == "passed"
     assert outcomes["page_contract"] == "passed"
-    # no semantic models exist yet: that structural failure is K4's concern,
-    # not a mapping-evidence one
-    assert any("no semantic models" in error for error in validated["errors"])
+    # K4 (issue #44): no semantic models exist — the candidate is context-only,
+    # its semantic checks are explicitly not_applicable, and the mapping
+    # evidence is the applicable gate that passed
+    assert validated["ok"] is True and validated["errors"] == []
+    assert outcomes["structural"] == "not_applicable"
 
     page = api.read_artifact(started["proposal"], REFERENCE_EDIT)
     block = _evidence_block(page["content"])

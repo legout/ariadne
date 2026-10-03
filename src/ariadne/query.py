@@ -80,6 +80,7 @@ import yaml
 from ariadne import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     admission,  # issue #37/G5: pinned-snapshot resolution for open_project
     answer_examples,
+    authoring_inputs,  # K4 fix pass: the operator evidence age budget (host config)
     proposals,  # pyright: ignore[reportMissingImports] — drift
 )
 
@@ -157,6 +158,19 @@ ROUTING_HINT = (
     "to compute the answer (compiled, executed read-only, auto-staged for human promotion)."
 )
 
+# K4 (issue #44, spec 0010 §6/§9): the SPECIFIC missing-catalog error every
+# metric operation keeps on a human-admitted CONTEXT-ONLY snapshot (schemas/
+# References, no metrics): discovery and terminology resolution serve the
+# admitted context, the metric surface refuses explicitly, and no absent
+# model ever triggers a fallback raw-SQL route. The legacy explicit-root
+# constructors keep their historical fail-fast startup errors instead.
+MISSING_CATALOG = (
+    "no governed metric catalog: the pinned admitted snapshot carries no semantic "
+    "models — metric operations are refused; discovery (search_context) and term "
+    "resolution (resolve_term) still serve the admitted context, and no absent "
+    "model ever triggers a raw-SQL fallback"
+)
+
 # MetricFlow's metric-name schema, enforced again at lowering time — reject up
 # front with an actionable message (lowercase snake_case, no double underscore).
 _SLUG_RE = re.compile(r"[a-z][a-z0-9_]*[a-z0-9]")
@@ -196,15 +210,23 @@ class QueryRuntime:
 
         self.context_dir = Path(context_dir)
         models = Path(semantic_dir) / "models"
+        # K4 (issue #44, spec 0010 §6): a MANAGED context-only admitted snapshot
+        # (no semantic models — schemas/References only) constructs for
+        # discovery and term resolution; every metric operation then refuses
+        # with the SPECIFIC missing-catalog error. The legacy explicit-root
+        # constructors keep the historical fail-fast startup errors exactly.
+        self._context_only = False
         if not models.is_dir():
-            raise RuntimeError(
-                f"no semantic models under {models} — promote staging/semantic_layer/ first"
-            )
+            if admission_record is None:
+                raise RuntimeError(
+                    f"no semantic models under {models} — promote staging/semantic_layer/ first"
+                )
+            self._context_only = True
         # Envelope metadata read directly (no datus): per metric, its description,
         # available dimensions (fields carrying a dimension flag — spec rev 4 §8.12)
         # and the single-entry envelope render() compiles.
         self._metrics: dict[str, Any] = {}
-        for path in sorted(models.glob("*.yml")):
+        for path in sorted(models.glob("*.yml")) if models.is_dir() else []:
             doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             for model in doc.get("semantic_model") or []:
                 dimension_names = {
@@ -223,7 +245,9 @@ class QueryRuntime:
                         "model": {"version": doc.get("version"), "semantic_model": [model]},
                     }
         if not self._metrics:  # spec §7: nothing servable -> fail fast, not at query time
-            raise RuntimeError(f"no governed metrics found under {models}")
+            if admission_record is None:
+                raise RuntimeError(f"no governed metrics found under {models}")
+            self._context_only = True  # a managed catalog-less admission serves discovery
         seen: list[dict] = []
         for entry in self._metrics.values():
             if not any(entry["model"] is candidate for candidate in seen):
@@ -287,6 +311,10 @@ class QueryRuntime:
         self._examples_root = self._project
         if admission_record is not None:
             self._load_managed_graph(self._semantic_dir)
+            if self._context_only and self._graph is None:
+                # the managed multi-fact refusal names the missing CATALOG on a
+                # context-only snapshot, not a broken admission
+                self._admission_reason = MISSING_CATALOG
         else:
             self._load_admission(Path(semantic_dir), db_path, sources)
 
@@ -324,9 +352,13 @@ class QueryRuntime:
         ends with the explicit routing hint to the ad-hoc path (spec rev 4 §8.12).
         Serves pinned snapshot bytes (the envelope metadata), so the managed
         route re-checks them first — mid-session tampering refuses here too
-        (issue #37 fix pass)."""
+        (issue #37 fix pass). A context-only admitted snapshot keeps the
+        SPECIFIC missing-catalog error (K4): an empty list would pose as a
+        served catalog over an admitted revision that carries none."""
         if self._managed is not None:
             self._recheck_pinned()
+        if self._context_only:
+            raise ValueError(MISSING_CATALOG)
         entries: list[dict | str] = [
             {
                 "name": name,
@@ -374,6 +406,10 @@ class QueryRuntime:
         dimensions: list[str] | None = None,
         range: dict | None = None,  # noqa: A002 — spec §4 names the parameter
     ) -> dict:
+        if self._context_only:  # K4: the specific missing-catalog refusal
+            if self._managed is not None:
+                self._recheck_pinned()
+            raise ValueError(MISSING_CATALOG)
         if name not in self._metrics:  # spec §7/rev 4: discovery before failure
             available = ", ".join(sorted(self._metrics))
             raise ValueError(
@@ -537,7 +573,11 @@ class QueryRuntime:
         if self._managed is not None:
             if self._graph is None:
                 raise PlannerError(
-                    "not_admitted",
+                    # K4 (issue #44): a context-only admitted snapshot names the
+                    # missing CATALOG (a specific refusal), never a broken
+                    # admission — the snapshot is validly admitted, it carries
+                    # no semantic models.
+                    "missing_catalog" if self._context_only else "not_admitted",
                     self._admission_reason
                     or "the pinned snapshot carries no admitted multi-fact graph",
                 )
@@ -812,7 +852,28 @@ class QueryRuntime:
         unchanged."""
         if self._managed is not None:
             self._recheck_pinned()
-        result = resolve_term([(self.context_dir, False)], request, part=part)
+        result = resolve_term(
+            [(self.context_dir, False)],
+            request,
+            part=part,
+            # K4 (issue #44): the admitted human mapping confirmations of the
+            # pinned revision ride the resolver — a mapping reports confirmed
+            # only while the recorded selection binds its exact effective
+            # assertion identity and unchanged verified evidence. K4 fix pass
+            # (finding 3): the operator's evidence age budget (the same
+            # inspection.receipt_max_age_hours host config the receipt gate
+            # uses) drives the explicit as_of/stale freshness states, and a
+            # matching confirmation over EXPIRED evidence is withheld as
+            # current guidance (needs-revalidation, history disclosed).
+            confirmations=(self._managed or {}).get("confirmed_mappings"),
+            evidence_max_age_hours=(
+                authoring_inputs.project_inspection_limits(self._project)[
+                    "receipt_max_age_hours"
+                ]
+                if self._project is not None
+                else None
+            ),
+        )
         if self._managed is not None:
             # the resolved terms identify the admitted revision they came from
             result["admission"] = self._admission_view(self._managed)

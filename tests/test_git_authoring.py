@@ -1092,9 +1092,10 @@ def test_malformed_drafts_return_a_stored_failed_validation_never_a_crash(
 def test_onboarding_candidate_reviews_without_models_and_validates_recoverably(tmp_path):
     """AC5 onboarding parity: an empty-project candidate (registry template +
     Seed Notes, no models yet) is REVIEWABLE read-only, and validating it
-    reports recoverable errors (no models; no invented missing page
-    categories) instead of crashing — the flow stays usable before the first
-    admitted metric."""
+    reports the K4 applicability decision — every semantic check explicitly
+    not_applicable WITH reasons (a context-only candidate; no invented
+    missing page categories) — so the flow stays honest before the first
+    metric exists."""
     project = tmp_path / "onboarding"
     project.mkdir()
     (project / "ariadne.yaml").write_text("# registry template\n", encoding="utf-8")
@@ -1117,12 +1118,12 @@ def test_onboarding_candidate_reviews_without_models_and_validates_recoverably(t
     assert review["report"] is None and review["changes"] == []
 
     result = api.validate_proposal(started["proposal"], started["candidate_revision"])
-    assert result["ok"] is False
-    assert any("no semantic models" in error for error in result["errors"])
-    outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
-    assert outcomes["structural"] == "failed"
+    assert result["ok"] is True and result["errors"] == []
+    checks = {check["name"]: check for check in result["report"]["checks"]}
+    for name in ("structural", "compile", "bind", "grain"):
+        assert checks[name]["outcome"] == "not_applicable", name
+        assert checks[name]["detail"], f"{name} carries no not_applicable reason"
     # issue #41: the page-contract gate is APPLICABLE — a candidate with no
-    # pages carries nothing to check, so the no-models structural failure is
-    # the honest error (no invented missing categories)
-    assert outcomes["page_contract"] == "passed"
+    # pages carries nothing to check (no invented missing categories)
+    assert checks["page_contract"]["outcome"] == "passed"
     assert result["repair_status"] == "open"  # recoverable, rounds remain

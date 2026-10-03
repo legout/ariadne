@@ -565,9 +565,11 @@ def test_cli_refresh_schema_roundtrip(tmp_path, capsys):
 def test_schema_only_candidate_invents_no_categories_and_validates_pages(tmp_path):
     """Issue #41 [4]: a schema-only candidate (tables + Dataset Overviews, no
     models/metrics/policies/skills) passes the APPLICABLE page contracts with
-    NOTHING invented for absent categories — while the no-models structural
-    failure stays a failure (context-only admission is K4, not a premature
-    success path here). Review stays read-only with bounded bodies/diff."""
+    NOTHING invented for absent categories — and the K4 (issue #44)
+    applicability decision carries: the semantic checks are explicitly
+    not_applicable WITH reasons, so the exact schema-only revision is
+    admissible before the first metric. Review stays read-only with bounded
+    bodies/diff."""
     from ariadne import admission
 
     project = git_project(tmp_path)
@@ -578,11 +580,13 @@ def test_schema_only_candidate_invents_no_categories_and_validates_pages(tmp_pat
 
     refreshed = api.refresh_schema(proposal, revision, [SALES_ASSET, SUPPORT_ASSET])
     result = api.validate_proposal(proposal, refreshed["revision"])
-    assert result["ok"] is False  # no premature success: no semantic models yet
-    assert any("no semantic models" in error for error in result["errors"])
-    outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
-    assert outcomes["page_contract"] == "passed"  # applicable pages all valid
-    assert outcomes["citations"] == "passed"  # the catalog resources verify
+    assert result["ok"] is True and result["errors"] == []  # K4: context-only validates
+    checks = {check["name"]: check for check in result["report"]["checks"]}
+    for name in ("structural", "compile", "bind", "grain"):
+        assert checks[name]["outcome"] == "not_applicable", name
+        assert checks[name]["detail"], f"{name} carries no not_applicable reason"
+    assert checks["page_contract"]["outcome"] == "passed"  # applicable pages all valid
+    assert checks["citations"]["outcome"] == "passed"  # the catalog resources verify
     invented = [
         rel
         for rel in result["artifact_files"]

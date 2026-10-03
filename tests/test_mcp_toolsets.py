@@ -82,8 +82,9 @@ AUTHORING_TOOLS = {
 
 # Never a tool on ANY surface (spec §5: admission, source approval,
 # reconciliation and Promotion are human-only; the operator runs the local
-# commands, ADR-0013).
-HUMAN_OPERATION_MARKERS = ("approve", "promot", "admit", "reconcil")
+# commands, ADR-0013). K4 (issue #44) adds the mapping-confirmation marker:
+# exact-assertion confirmation rides the human-only ariadne-admit path.
+HUMAN_OPERATION_MARKERS = ("approve", "promot", "admit", "reconcil", "confirm")
 
 
 def _launch(project: Path, toolset: str):

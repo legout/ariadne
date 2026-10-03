@@ -22,6 +22,18 @@ candidate revision (spec §5):
   complete. A failed snapshot/record activation leaves the previous descriptor
   and answers intact, and admission never mutates the reviewed bytes (no
   frontmatter decoration, no index/log regeneration).
+- K4 (issue #44, plan §2 "Admission and automatic capture"): repeated
+  ``--confirm-mapping <reference-slug>:<mapping-id>`` selections confirm
+  EXACTLY the named asserted mappings of the exact reviewed revision — the
+  display resolves each selection and shows its exact assertion content, a
+  hypothesis selection refuses, and the recorded operational evidence (the
+  selections' assertion/evidence digests) lives inside the descriptor that
+  already binds the reviewed revision, source identity and validator identity.
+  No selection means no new confirmation; an unchanged assertion with
+  unchanged verified dependencies retains its prior human evidence, a
+  changed/stale/conflicting one lapses. Context-only candidates (no semantic
+  declarations) carry explicit ``not_applicable`` check outcomes with reasons —
+  a check is admission evidence only when passed or explained not_applicable.
 - :func:`reconcile` is the human-only record of a local rebase/merge
   (``ariadne-authoring reconcile``): it requires the clean new HEAD in the
   proposal worktree and the CURRENT admitted revision in the candidate's
@@ -54,7 +66,7 @@ from getpass import getuser
 from pathlib import Path, PurePosixPath
 from typing import NoReturn
 
-from ariadne import authoring, authoring_sources, proposals
+from ariadne import authoring, authoring_inputs, authoring_sources, context, proposals
 from ariadne.sources import Registry
 from ariadne.validate import candidate_scope_digest, validator_identity
 
@@ -301,13 +313,33 @@ def _verified_evidence(project: Path, proposal: str, revision: str, review: dict
             "revision before admission; nothing was activated"
         )
     checks = (evidence.get("report") or {}).get("checks") or []
-    outcomes = {check.get("name"): check.get("outcome") for check in checks}
-    partial = [name for name in REQUIRED_CHECKS if outcomes.get(name) != "passed"]
+    by_name = {check.get("name"): check for check in checks}
+    outcomes = {name: check.get("outcome") for name, check in by_name.items()}
+    # K4 (issue #44, spec 0010 §9): a check is sufficient admission evidence
+    # when it PASSED or is explicitly not_applicable — and only with its
+    # reason: a bare not_applicable outcome is an unexplained partial report,
+    # never a complete one.
+    partial = [
+        name
+        for name in REQUIRED_CHECKS
+        if outcomes.get(name) not in ("passed", "not_applicable")
+    ]
+    unexplained = [
+        name
+        for name in REQUIRED_CHECKS
+        if outcomes.get(name) == "not_applicable"
+        and not (by_name.get(name) or {}).get("detail")
+    ]
     failed = sorted(name for name, outcome in outcomes.items() if outcome == "failed")
-    if partial or failed:
+    if partial or failed or unexplained:
         detail = f"checks not passed: {', '.join(partial)}" if partial else ""
         detail += (", " if detail and failed else "") + (
             f"failed checks: {', '.join(failed)}" if failed else ""
+        )
+        detail += (", " if detail and unexplained else "") + (
+            "not_applicable without a reason: " + ", ".join(unexplained)
+            if unexplained
+            else ""
         )
         raise ValueError(
             f"the validation report of {revision[:12]} is partial ({detail}) — a "
@@ -410,16 +442,210 @@ def _require_digest(reviewed_digest: str) -> str:
     return reviewed_digest
 
 
+# ----------------------------------------- K4: exact-assertion human confirmation
+
+
+def _parse_selection(selection: str) -> tuple[str, str]:
+    """One ``--confirm-mapping <reference-slug>:<mapping-id>`` selection."""
+    reference, sep, mapping = selection.partition(":")
+    if not sep or not reference.strip() or not mapping.strip():
+        raise ValueError(
+            f"a --confirm-mapping selection is '<reference-slug>:<mapping-id>', got "
+            f"{selection!r}"
+        )
+    return reference.strip(), mapping.strip()
+
+
+def _resolve_selections(assertions: list[dict], selections: list[str]) -> list[dict]:
+    """Resolve every operator mapping selection against the EXACT reviewed
+    revision's structured mapping assertions (plan §2): the selection names a
+    reference (its page slug, or the full context-relative page path) and a
+    mapping ID; only an ASSERTED mapping of the reviewed revision is
+    selectable — a hypothesis is investigative knowledge and never a
+    confirmed assertion, an unknown reference/mapping refuses, and a repeated
+    selection confirms the same assertion once."""
+    resolved: list[dict] = []
+    seen: set[tuple[str, object]] = set()
+    for selection in selections or []:
+        reference, mapping_id = _parse_selection(selection)
+        if "/" in reference:  # the page-path spelling of the same selection
+            candidates = [
+                entry
+                for entry in assertions
+                if entry["page"] == reference or entry["page"] == f"{reference}.md"
+            ]
+        else:
+            candidates = [entry for entry in assertions if entry["reference"] == reference]
+        if not candidates:
+            raise ValueError(
+                f"--confirm-mapping {selection!r}: no structured Reference "
+                f"{reference!r} among the reviewed revision's mapping assertions"
+            )
+        matches = [entry for entry in candidates if entry["mapping"] == mapping_id]
+        if not matches:
+            available = ", ".join(
+                f"{entry['reference']}:{entry['mapping']}" for entry in candidates
+            )
+            raise ValueError(
+                f"--confirm-mapping {selection!r}: mapping {mapping_id!r} is not among "
+                f"the reviewed revision's assertions (available: {available})"
+            )
+        [entry] = matches
+        if entry["claim"] != "asserted":
+            raise ValueError(
+                f"--confirm-mapping {selection!r}: mapping {mapping_id!r} is classified "
+                f"{entry['claim']!r} — a hypothesis stays unconfirmed investigative "
+                "knowledge even when admitted; only an asserted mapping receives human "
+                "confirmation"
+            )
+        if not entry["confirmable"]:
+            raise ValueError(
+                f"--confirm-mapping {selection!r}: the asserted mapping is not eligible "
+                f"for confirmation ({entry['confirmation_note']})"
+            )
+        key = (entry["page"], entry["mapping"])
+        if key not in seen:
+            seen.add(key)
+            resolved.append(entry)
+    return resolved
+
+
+def _confirmation_entry(entry: dict, *, by: str, at: str) -> dict:
+    """One operational confirmation record: the exact asserted identity the
+    human confirmed — page, mapping, endpoints, assertion digest and the
+    verified evidence dependency digests — living inside the admission
+    descriptor that already binds the exact reviewed revision, review digest,
+    source identity, validator identity and admitted baseline."""
+    return {
+        "page": entry["page"],
+        "reference": entry["reference"],
+        "mapping": entry["mapping"],
+        "family": entry["family"],
+        "from": entry["from"],
+        "to": entry["to"],
+        "claim": "asserted",
+        "assertion_digest": entry["assertion_digest"],
+        "source_ids": list(entry["source_ids"] or []),
+        "receipts": [
+            {"id": receipt["id"], "digest": receipt["digest"]}
+            for receipt in entry["receipts"]
+            if receipt.get("digest") is not None
+        ],
+        "by": by,
+        "at": at,
+    }
+
+
+def _retained_confirmations(
+    assertions: list[dict],
+    prior: dict | None,
+    *,
+    by: str,
+    at: str,
+    max_age_hours: float,
+) -> tuple[list[dict], list[dict]]:
+    """The prior admission's confirmations that survive into this admission
+    WITHOUT a new selection (plan §2: unchanged assertions retain matching
+    prior human evidence only with unchanged verified dependencies): an entry
+    retains when the SAME page+mapping is still an asserted, confirmable
+    assertion of this exact revision with the SAME effective identity digest
+    (declaration plus endpoint correspondence, K4 fix pass finding 2), the
+    SAME verified receipt digests AND evidence still inside the operator's
+    age budget (K4 fix pass finding 3: a stored validation never keeps a
+    confirmation alive past the expiry of the evidence it confirmed).
+    Changed, stale, expired, conflicting or removed assertions cannot inherit
+    confirmation — they lapse, and the lapse is reported for the operator."""
+    retained: list[dict] = []
+    lapsed: list[dict] = []
+    for record in (prior or {}).get("confirmed_mappings") or []:
+        if not isinstance(record, dict):
+            continue
+        current = next(
+            (
+                entry
+                for entry in assertions
+                if entry["page"] == record.get("page")
+                and entry["mapping"] == record.get("mapping")
+            ),
+            None,
+        )
+        receipt_digests = sorted(
+            receipt.get("digest")
+            for receipt in record.get("receipts") or []
+            if isinstance(receipt, dict)
+        )
+        current_digests = sorted(
+            receipt.get("digest")
+            for receipt in (current or {}).get("receipts") or []
+            if isinstance(receipt, dict)
+        )
+        expired = [
+            receipt
+            for receipt in (current or {}).get("receipts") or []
+            if isinstance(receipt, dict)
+            and context.evidence_freshness(
+                receipt.get("observed_at"), max_age_hours
+            )["state"]
+            == "stale"
+        ]
+        if (
+            current is not None
+            and current["claim"] == "asserted"
+            and current["confirmable"]
+            and current["assertion_digest"] == record.get("assertion_digest")
+            and current_digests == receipt_digests
+            and not expired
+        ):
+            entry = _confirmation_entry(current, by=by, at=at)
+            entry["retained_from"] = prior.get("commit")
+            entry["by"] = record.get("by")
+            entry["at"] = record.get("at")
+            retained.append(entry)
+        else:
+            if current is None:
+                reason = (
+                    "the assertion is no longer among the reviewed revision's mappings"
+                )
+            elif expired:
+                reason = (
+                    "the prior verified evidence aged past the operator's "
+                    f"{max_age_hours}h age budget — an expired confirmation cannot "
+                    "be retained; re-inspect to attach fresh evidence and select again"
+                )
+            else:
+                reason = (
+                    "the assertion or its verified evidence dependencies changed — "
+                    "a changed assertion cannot inherit prior confirmation"
+                )
+            lapsed.append(
+                {
+                    "page": record.get("page"),
+                    "mapping": record.get("mapping"),
+                    "reason": reason,
+                }
+            )
+    return retained, lapsed
+
+
 # ------------------------------------------------------------ the human commands
 
 
 def admission_review(
-    project: str | Path, proposal: str, revision: str, reviewed_digest: str
+    project: str | Path,
+    proposal: str,
+    revision: str,
+    reviewed_digest: str,
+    *,
+    confirm_mappings: list[str] | tuple[str, ...] | None = None,
 ) -> dict:
     """HUMAN-ONLY display step of ``ariadne-admit``: the matching review/report
     of the exact CURRENT candidate revision, refusing a revision or digest that
     does not match. Displaying is NEVER sign-off — the response names the
-    explicit ``--confirm`` step that alone activates."""
+    explicit ``--confirm`` step that alone activates. K4 (issue #44): with
+    ``--confirm-mapping`` selections the display resolves each selection
+    against the EXACT reviewed revision's mapping assertions and shows the
+    selected assertions' exact content (declaration, digest, dependencies,
+    eligibility) — the operator confirms what they see, never a slug alone."""
     project = Path(project).resolve()
     _require_digest(reviewed_digest)
     _check_reviewed_revision(project, proposal, revision)
@@ -430,7 +656,7 @@ def admission_review(
             f"{review['review_digest']}, not {reviewed_digest} — admission binds the "
             "exact reviewed identity; review the current candidate and pass its digest"
         )
-    return {
+    response = {
         "route": ADMISSION_ROUTE,
         "project": str(project),
         "proposal": proposal,
@@ -443,6 +669,17 @@ def admission_review(
         ),
         "review": review,
     }
+    if confirm_mappings:
+        resolved = _resolve_selections(review["mapping_assertions"], list(confirm_mappings))
+        response["mapping_selections"] = [
+            {"selection": f"{entry['reference']}:{entry['mapping']}", "assertion": entry}
+            for entry in resolved
+        ]
+        response["confirmation_required"] += (
+            " — the mapping selections above are confirmed ONLY together with "
+            "--confirm; nothing is confirmed by this display"
+        )
+    return response
 
 
 def admit_revision(
@@ -452,6 +689,7 @@ def admit_revision(
     reviewed_digest: str,
     *,
     confirmed_by: str | None,
+    confirm_mappings: list[str] | tuple[str, ...] | None = None,
 ) -> dict:
     """HUMAN-ONLY activation (the ``--confirm`` half of ``ariadne-admit``):
     record the operator's explicit confirmation for the exact reviewed revision
@@ -469,7 +707,18 @@ def admit_revision(
     the currently served revision in its ancestry must be reconciled and
     revalidated, never silently replace served state). Materializes the
     snapshot, publishes ``current.json`` atomically, then marks this admission
-    as the proposal's expected baseline."""
+    as the proposal's expected baseline.
+
+    K4 (issue #44, plan §2 "Admission and automatic capture"):
+    ``--confirm-mapping`` selections confirm EXACTLY the named asserted
+    mappings of the exact reviewed revision — a hypothesis selection refuses,
+    and the operational evidence (selections + assertion/evidence digests) is
+    recorded inside the descriptor that already binds the reviewed revision,
+    review digest, source identity and validator identity. No selection means
+    no new mapping confirmation; an UNCHANGED prior assertion (same digest,
+    same verified evidence dependencies) retains its prior human evidence
+    without a new selection, while changed, stale or conflicting assertions
+    lapse."""
     project = Path(project).resolve()
     if not isinstance(confirmed_by, str) or not confirmed_by.strip():
         raise ValueError(
@@ -526,6 +775,38 @@ def admit_revision(
                     "re-review before admission; the confirmation binds the currently "
                     "expected served baseline, nothing was activated"
                 )
+            # K4 (issue #44): resolve the operator's mapping selections against
+            # the EXACT reviewed revision under the locks — a hypothesis or an
+            # unknown reference/mapping refuses BEFORE anything activates, and
+            # unchanged prior confirmations retain only with unchanged verified
+            # dependencies (changed/stale/conflicting assertions lapse).
+            selected = _resolve_selections(
+                review["mapping_assertions"], list(confirm_mappings or [])
+            )
+            now = datetime.now(UTC).isoformat(timespec="seconds")
+            confirmed_mappings = [
+                _confirmation_entry(entry, by=confirmed_by, at=now) for entry in selected
+            ]
+            retained, lapsed = _retained_confirmations(
+                review["mapping_assertions"],
+                baseline,
+                by=confirmed_by,
+                at=now,
+                # K4 fix pass (finding 3): retention re-checks the operator's
+                # evidence age budget at THIS admission — the receipt-attachment
+                # gate runs at validation, so a stored validation of an unchanged
+                # candidate never keeps a confirmation alive past its evidence's
+                # expiry
+                max_age_hours=authoring_inputs.project_inspection_limits(project)[
+                    "receipt_max_age_hours"
+                ],
+            )
+            selected_keys = {(entry["page"], entry["mapping"]) for entry in selected}
+            confirmed_mappings += [
+                entry
+                for entry in retained
+                if (entry["page"], entry["mapping"]) not in selected_keys
+            ]
             snapshot = _materialize_snapshot(
                 project, revision, proposals.scope_blobs(project, revision)
             )
@@ -534,7 +815,6 @@ def admit_revision(
                     f"the materialized snapshot of {revision[:12]} does not match the "
                     "validated artifact digest — nothing was activated"
                 )
-            now = datetime.now(UTC).isoformat(timespec="seconds")
             descriptor = {
                 "route": ADMISSION_ROUTE,
                 "project": str(project),
@@ -566,6 +846,11 @@ def admit_revision(
                     "commit": revision,
                     "review_digest": reviewed_digest,
                 },
+                # K4 (issue #44): the operational mapping-confirmation evidence
+                # of this exact admission — fresh operator selections plus the
+                # prior human evidence unchanged assertions retained. Empty
+                # means no mapping is confirmed by this admission.
+                "confirmed_mappings": confirmed_mappings,
                 "admitted_at": now,
             }
             _publish_current(project, descriptor)  # AFTER the snapshot is complete
@@ -591,6 +876,23 @@ def admit_revision(
         "snapshot": descriptor["snapshot"],
         "current": str(project / CURRENT_REL),
         "confirmed_by": confirmed_by,
+        "confirmed_mappings": [
+            {
+                "selection": f"{entry['reference']}:{entry['mapping']}",
+                "assertion_digest": entry["assertion_digest"],
+            }
+            for entry in selected
+        ],
+        "retained_confirmations": [
+            {
+                "selection": f"{entry['reference']}:{entry['mapping']}",
+                "assertion_digest": entry["assertion_digest"],
+                "retained_from": entry.get("retained_from"),
+            }
+            for entry in retained
+            if (entry["page"], entry["mapping"]) not in selected_keys
+        ],
+        "lapsed_confirmations": lapsed,
         "admitted_at": now,
     }
 
@@ -794,7 +1096,11 @@ def main(argv: list[str] | None = None) -> int:
     one-JSON-value/one-JSON-error-object contract of the other CLIs). Without
     ``--confirm`` it displays the matching review/report and exits; ONLY
     ``--confirm`` records the operator's explicit confirmation and activates.
-    No MCP/native Agent surface exposes this command or its callables."""
+    K4 (issue #44): repeated ``--confirm-mapping <reference-slug>:<mapping-id>``
+    selections name the ASSERTED mappings of the exact reviewed revision whose
+    human confirmation the operator records with ``--confirm`` — the display
+    shows each selection's exact assertion content first. No MCP/native Agent
+    surface exposes this command or its callables."""
     parser = _Parser(
         prog="ariadne-admit",
         description="Human-only Git Review Admission of a reviewed, validated candidate "
@@ -808,6 +1114,17 @@ def main(argv: list[str] | None = None) -> int:
         "--reviewed-digest",
         required=True,
         help="the review digest ariadne-authoring review --proposal returned",
+    )
+    parser.add_argument(
+        "--confirm-mapping",
+        action="append",
+        default=[],
+        dest="confirm_mappings",
+        metavar="REFERENCE:MAPPING",
+        help="select one ASSERTED mapping of the reviewed revision for explicit "
+        "human confirmation (repeatable): <reference-slug>:<mapping-id>; the "
+        "display shows the exact assertion content, and the confirmation is "
+        "recorded only together with --confirm",
     )
     parser.add_argument(
         "--confirm",
@@ -827,10 +1144,15 @@ def main(argv: list[str] | None = None) -> int:
                 args.revision,
                 args.reviewed_digest,
                 confirmed_by=args.by or f"human:{getuser()}",
+                confirm_mappings=args.confirm_mappings,
             )
         else:
             result = admission_review(
-                args.project, args.proposal, args.revision, args.reviewed_digest
+                args.project,
+                args.proposal,
+                args.revision,
+                args.reviewed_digest,
+                confirm_mappings=args.confirm_mappings,
             )
     except Exception as exc:  # one JSON error object, message verbatim
         print(
