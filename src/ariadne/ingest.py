@@ -207,8 +207,11 @@ the owner's words: transcribe VERBATIM, never reinterpret. One page per \
 independent rule.
 - A fact about what one row of a table means, its columns, or its declared \
 grain -> folder "tables", type "table". Add "grain": {"primary_key": [...], \
-"cardinality_enforcement": "STRICT_1_TO_1"} — STRICT_1_TO_1 only when the \
-document proves the key unique, otherwise name the real cardinality.
+"cardinality_enforcement": "STRICT_1_TO_1"} only when the document STATES \
+the row identity (that cited statement is the declared authority); otherwise \
+name the real cardinality or omit the grain block — a physical table's \
+Grain may stay unknown. Observed or plausible uniqueness alone is never a \
+declared business key.
 - A relationship between tables (join keys, cardinality) -> folder \
 "references/joins", type "reference".
 - A shared business term or identifier meaning with its documented aliases \

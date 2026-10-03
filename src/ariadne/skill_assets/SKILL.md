@@ -1,6 +1,6 @@
 ---
 name: ariadne
-description: Work in an ariadne data project — query governed metrics with the local ariadne CLI (caveats attached), author context/semantic layers through Git proposals with ariadne-authoring (operator-approved sources, human-only admission) or the retained staging-to-promotion gate, hand off legacy migration to the human import command, find labeled answer examples as method references (never cached answers), and draft ad-hoc metrics without ever bypassing the compile gate.
+description: Work in an ariadne data project — query governed metrics with the local ariadne CLI (caveats attached), resolve shared terminology and identifier knowledge without ever gaining join authority from it, author context/semantic layers through Git proposals with ariadne-authoring (operator-approved sources, schema refresh, bounded mapping inspection, human-only admission) or the retained staging-to-promotion gate, hand off legacy migration to the human import/enrich commands, find labeled answer examples as method references (never cached answers), and draft ad-hoc metrics without ever bypassing the compile gate.
 ---
 
 # Ariadne data projects
@@ -40,11 +40,20 @@ pass `--project .` instead. Never start a server just to answer a question.
    "cancelled orders" --sources ariadne.yaml`. The rule you are about to
    rediscover is probably already a policy page; restate its caveats with any
    number it affects.
-3. **Query a governed metric** — `ariadne get-metric gross_margin --dimension
+3. **Resolve shared terms before you assume one** — `ariadne resolve-term
+   "global order number" --project .` (legacy roots: `--sources
+   ariadne.yaml`) returns the documented representations, their exact field
+   bindings and required scope, ambiguity between alternatives (an umbrella
+   term like "order number" returns local AND global choices), and the
+   claim/confirmation status of identifier mappings — hypotheses stay
+   unconfirmed leads even when admitted. Matching a term NEVER authorizes a
+   join, transform or SQL rewrite: that authority lives only in reviewed OSI
+   and live audits.
+4. **Query a governed metric** — `ariadne get-metric gross_margin --dimension
    region --start 2024-01-01 --sources ariadne.yaml`. The result carries
    `governed: true`, the compiled SQL, and a `context` block: the served
    metric page plus the full body of every policy it cites.
-4. **Multi-metric questions over an admitted graph** — when the served tree
+5. **Multi-metric questions over an admitted graph** — when the served tree
    carries a multi-fact graph (one dataset per model plus
    `semantic_layer/graph.yml`), `ariadne query-metrics --file req.json`
    answers SEVERAL governed metrics together: `{"metrics": ["orders_total",
@@ -67,13 +76,13 @@ pass `--project .` instead. Never start a server just to answer a question.
    or hand-edited graph refuses with that reason; never call them governed
    by another route, and never present a validated-but-unadmitted graph as
    governed.
-5. **Unmodeled question?** `ariadne list-datasets --sources ariadne.yaml`,
+6. **Unmodeled question?** `ariadne list-datasets --sources ariadne.yaml`,
    then `ariadne define-metric --file def.json --sources ariadne.yaml` (or
    pipe the JSON definition via stdin when `--file` is absent). The definition
    runs read-only through the same compile gate, returns `governed: false`,
    and stages an OSI proposal plus an OKF draft under `staging/` for human
    promotion.
-6. **Label answers accurately.** Governed numbers ship with their caveats and
+7. **Label answers accurately.** Governed numbers ship with their caveats and
    `governed: true`; ad-hoc numbers are `governed: false` proposals — label
    them as such, never as canonical. `query-metrics` responses are governed
    through human admission — legacy Promotion or Git Review Admission: name
@@ -179,7 +188,19 @@ proposal worktrees or `.ariadne/` state).
    `data/docs/`); PDF/Office/HTML conversion needs the optional `[documents]`
    extra. Bound every batch: ≤16 documents per call, big documents part by
    part.
-5. **edit complete artifacts** — `ariadne-authoring read --proposal ID
+5. **refresh the physical schema (context-only is fine)** — after approval,
+   `ariadne-authoring refresh-schema --project . --proposal ID
+   --expected-revision REV --file assets.json` (a JSON list of explicit
+   `{source, catalog, schema, table}` tuples) regenerates the core-owned
+   schema facts of those tables and their Dataset Overview pages inside the
+   proposal: exact column identity/types, declared metadata only where the
+   source provides it, observations labeled as measurements (observed
+   uniqueness is a candidate key, NEVER a declared business key), and authored
+   summary/column meaning preserved for identical columns. An identical
+   refresh is a no-op. A proposal may be schemas and References ONLY — no
+   metric has to exist for validation, admission, discovery or term
+   resolution; metric requests keep their explicit no-catalog error.
+6. **edit complete artifacts** — `ariadne-authoring read --proposal ID
    --kind page --section policies --name my-policy` (bounded parts) and
    `ariadne-authoring edit --proposal ID --expected-revision REV --file
    edit.json` with one discriminated object per edit — `{kind: model, name,
@@ -193,7 +214,7 @@ proposal worktrees or `.ariadne/` state).
    identities — never raw file paths or table functions. Draft from measured
    evidence; ask the owner where documents and distributions do not
    establish a rule.
-6. **mapping hypotheses: read first, measure, then save automatically** —
+7. **mapping hypotheses: read first, measure, then save automatically** —
    before rediscovering an identifier relationship, read what the proposal
    already holds: `ariadne-authoring resolve-term --project . --proposal ID
    "local order number"` returns existing representations, mapping
@@ -215,19 +236,27 @@ proposal worktrees or `.ariadne/` state).
    fact-to-fact join from an alias or sample). Hypotheses and receipts live in
    the Git proposal and the evidence area, not chat memory: a restarted
    session re-reads them through these same commands.
-7. **validate, review, then STOP for the human.** Validate finalizes the
+8. **validate, review, then STOP for the human.** Validate finalizes the
    generated artifacts, commits any generated changes and validates the
    EXACT final commit against the approved source identity (bounded repair
    rounds, never reset by another commit):
    `ariadne-authoring validate --proposal ID --expected-revision REV`.
+   Validation reports APPLICABLE checks with explicit `not_applicable`
+   reasons — semantic compile/bind/grain are omitted only when the candidate
+   declares nothing that needs them (a schemas+References-only candidate is
+   legitimately admissible; inherited unsafe declarations still refuse).
    `ariadne-authoring review --proposal ID` returns the revisions, change
-   inventory, bounded bodies, citations, the validation report and a review
+   inventory, bounded bodies, citations, the validation report, every
+   asserted mapping with its confirmation eligibility, and a review
    digest. Report that digest to the human and stop: `ariadne-admit
    --confirm` is the human-only admission of that exact reviewed revision —
    a commit, a validation report or your own reading of a review is never
-   sign-off. If the admitted baseline advanced, the human records their
-   rebase/merge with `ariadne-authoring reconcile`; never merge or reset
-   anything yourself.
+   sign-off. An asserted mapping becomes confirmed ONLY by the human
+   `--confirm-mapping <reference-slug>:<mapping-id>` selection at admission;
+   you never mark anything confirmed, and a hypothesis stays unconfirmed
+   even when admitted. If the admitted baseline advanced, the human records
+   their rebase/merge with `ariadne-authoring reconcile`; never merge or
+   reset anything yourself.
 
 Legacy routes that stay: a staged (non-Git) project keeps
 `ariadne-authoring submit --file submission.json` (one complete bundle,
@@ -237,7 +266,16 @@ human `ariadne-promote` on the reviewed digest. Migrating a legacy
 project's served artifacts into a Git proposal is the HUMAN
 `ariadne-authoring import-legacy --project DIR --from-root ROOT` — an
 import is never admission, and the legacy `staging/` tree keeps its own
-pending work untouched.
+pending work untouched. An imported legacy table page carries no canonical
+resource binding: binding it to its EXPLICITLY identified approved asset is
+the HUMAN `ariadne-authoring enrich-legacy --proposal ID --revision REV
+--page context_layer/tables/NAME.md [--file asset.json]` — an ambiguous
+legacy spelling (same-named tables of distinct sources) refuses rather than
+guesses, the old filename/links/history stay, and refresh-schema then
+generates the schema facts in the bound page. The full context-knowledge
+workflow (schema refresh, term resolution, bounded inspection, hypothesis
+capture, assertion confirmation) is documented in
+`docs/how-to/context-knowledge.md`.
 
 New metrics without an independent expected-value oracle are staged with
 `attestation: pending`: compile and grain checks passed, but no one verified
@@ -278,16 +316,27 @@ value-attested`.
 - **`search_context` before novel questions.** The rule you are about to rediscover
   is probably already a policy page. Search first; if the question stays unmodeled,
   route it through `define_metric` so the definition lands in staging as a proposal.
+- **Aliases, observations and measurements never authorize joins.** Term
+  resolution, schema observations (candidate keys, distinct counts) and
+  mapping receipts are guidance and evidence, never authority: no alias match,
+  observed uniqueness or high-coverage sample ever authorizes a join, a
+  transform, an SQL rewrite or an Ad-hoc metric becoming governed, and none
+  replaces the OSI compile gate or the required live grain/relationship
+  audits (a resolved term never authorizes a join). A sampled match is not a
+  business rule; sampled success is explicitly limited, and a `hypothesis`
+  stays unconfirmed until the human confirms the exact assertion at
+  admission.
 - **Both authoring gates stay human.** Never run
   `ariadne-authoring approve-sources`, `ariadne-admit`, `ariadne-promote`,
-  `ariadne-authoring reconcile` or `ariadne-authoring import-legacy` — operator
-  source approval, admission, Promotion, rebase recording and legacy migration
-  are human-only, and none can be inferred from an agent assertion, a successful
-  validation, a commit you created, or a review you performed yourself. Profile
-  and document evidence is measured by Ariadne: propose from it, ask the owner
-  where it does not establish a rule, and stop at `review` with the exact
-  digest. A `review_needed` proposal or an interrupted transition needs human
-  resolution, never an agent reset or replacement.
+  `ariadne-authoring reconcile`, `ariadne-authoring import-legacy` or
+  `ariadne-authoring enrich-legacy` — operator source approval, admission,
+  Promotion, rebase recording and legacy migration (import and legacy-page
+  binding) are human-only, and none can be inferred from an agent assertion,
+  a successful validation, a commit you created, or a review you performed
+  yourself. Profile and document evidence is measured by Ariadne: propose
+  from it, ask the owner where it does not establish a rule, and stop at
+  `review` with the exact digest. A `review_needed` proposal or an interrupted
+  transition needs human resolution, never an agent reset or replacement.
 - **No direct Git, shell or file mutation.** Artifact changes go only through
   the typed `ariadne-authoring` seams — never run `git commit`, `git branch`,
   `git checkout`, `git merge`, `git rebase`, `git push` or arbitrary shell
@@ -297,7 +346,7 @@ value-attested`.
 
 ## Optional: MCP integration
 
-MCP registers the same five operations as tools over a server — useful for
+MCP registers the same core operations as tools over a server — useful for
 remote or host-integrated tool registration. It is optional; the local CLI
 above is the default workflow and works without any of this. Install
 `ariadne-core[mcp]` into the same Python environment that provides the `ariadne`
@@ -323,12 +372,14 @@ toolsets over one core — pick the registration at launch:
 artifact-root project keeps `ariadne-serve --sources ariadne.yaml`),
 `--toolset analyst` (Query only: `list_metrics`, `search_context`,
 `get_metric`, `list_datasets`, `define_metric`, `query_metrics`,
-`query_detail`, `save_example`, `search_examples`), or `--toolset
-authoring` (the Git proposal contract: `authoring_start_proposal`,
-`authoring_read_artifact`, `authoring_edit_proposal`,
-`authoring_propose_sources`, `authoring_inputs`,
-`authoring_upload_document` — one bounded document, ≤5 MiB decoded bytes —
-`authoring_validate_proposal`, `authoring_review_proposal`) — with the SAME
+`query_detail`, `resolve_term`, `save_example`, `search_examples`), or
+`--toolset authoring` (the Git proposal contract:
+`authoring_start_proposal`, `authoring_read_artifact`,
+`authoring_edit_proposal`, `authoring_propose_sources`,
+`authoring_inputs`, `authoring_upload_document` — one bounded document,
+≤5 MiB decoded bytes — `authoring_refresh_schema`,
+`authoring_validate_proposal`, `authoring_inspect_mapping`,
+`authoring_resolve_term`, `authoring_review_proposal`) — with the SAME
 checks and response contracts as the `ariadne-authoring` commands above. The
 answer-example tools ride the Analyst/Combined registrations with identical
 contracts to `ariadne save-example`/`search-examples` (same confirmation

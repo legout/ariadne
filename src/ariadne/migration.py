@@ -45,6 +45,20 @@ snapshot is established only through the normal steps — operator source
 approval (``approve-sources``), ``validate`` (finalize + the full check stack
 bound to the exact final commit), ``review`` and the human
 ``ariadne-admit --confirm`` (spec §5).
+
+K6 (issue #46, spec 0010 §4/§9): :func:`enrich_legacy` is the SECOND
+human-only seam of this module — the explicit binding of ONE imported legacy
+physical-table page (its unqualified spelling, e.g. a ``source.table``
+citation) to the canonical resource of an EXPLICITLY identified approved
+catalog asset, as one complete page edit through the core-owned regeneration
+seam. It never guesses: an ambiguous spelling (same-named tables of distinct
+sources/schemas) and an asset outside the approved identity are explicit
+refusals. The old filename, links, citations and promotion-stamped history are
+preserved; authored legacy explanations under the refresh-owned
+Schema/Observations headings are re-homed into the authored sections (Column
+meanings / Authored notes), never silently discarded; nothing is renamed,
+deleted, reclassified, refreshed or admitted — the explicit
+``refresh-schema`` and the normal admission steps stay separate.
 """
 
 from __future__ import annotations
@@ -53,8 +67,21 @@ from pathlib import Path, PurePosixPath
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne import proposals, sources
+from ariadne import authoring, authoring_sources, execution, proposals, sources
 from ariadne.authoring import AuthoringProject
+from ariadne.authoring_sources import candidate_sources
+from ariadne.context import (
+    _FRONTMATTER_RE,
+    MEANINGS_SECTION,
+    OBSERVATIONS_SECTION,
+    SCHEMA_SECTION,
+    _assemble_body,
+    _body_sections,
+    _load_frontmatter_meta,
+    _meaning_blocks,
+    _set_frontmatter_key,
+)
+from ariadne.sources import parse_resource
 
 # The human steps every import needs before anything is served (spec §5/§7):
 # rendered into the import envelope with the concrete proposal identity.
@@ -278,5 +305,334 @@ def import_legacy(*, project: str | Path, from_root: str | Path) -> dict:
             "import is not admission: a Git commit of existing files is never human "
             "review (spec §7/AC9) — the imported proposal is unadmitted until the "
             "named human steps establish the first admitted snapshot"
+        ),
+    }
+
+
+# ------------------------- K6 (issue #46): the explicit legacy enrichment
+
+
+def _asset_of(table: dict) -> dict:
+    """One approved catalog table's explicit identity tuple."""
+    return {
+        "source": table["source"],
+        "catalog": table.get("catalog"),
+        "schema": table.get("schema"),
+        "table": table["name"],
+    }
+
+
+def _spelling_matches(spelling: str, catalog: list[dict]) -> list[dict]:
+    """The approved catalog tables ONE legacy spelling names: ``<table>``
+    (any source), ``<source>.<table>`` (any schema of that source) or
+    ``<source>.<schema>.<table>`` — exact case-sensitive identifiers, never a
+    fuzzy or suffix match. An identifier cannot contain a dot, so the split is
+    unambiguous."""
+    pieces = spelling.split(".")
+    if not 1 <= len(pieces) <= 3 or not all(pieces):
+        return []  # a non-identifier citation (a document path, a URI): not a binding spelling
+    tables = [table for entry in catalog for table in entry["tables"]]
+    if len(pieces) == 1:
+        return [table for table in tables if table["name"] == pieces[0]]
+    if len(pieces) == 2:
+        return [
+            table
+            for table in tables
+            if table["source"] == pieces[0] and table["name"] == pieces[1]
+        ]
+    return [
+        table
+        for table in tables
+        if (
+            table["source"],
+            table.get("schema"),
+            table["name"],
+        )
+        == (pieces[0], pieces[1], pieces[2])
+    ]
+
+
+# The clearly labeled authored-notes section of an enriched legacy page
+# (issue #46/K6): the enrichment re-homes the remaining authored prose/links
+# found under the refresh-owned Schema/Observations headings (everything that
+# is not a column-explanation bullet) here — outside the core-owned sections,
+# so the explicit refresh carries it forward verbatim, honestly labeled as
+# authored, never measured (spec 0010 §4/§9).
+AUTHORED_NOTES_SECTION = "Authored notes"
+
+
+def _rehome_legacy_authored(text: str) -> str:
+    """Re-home the authored content a legacy page carries under the headings
+    the bound page's refresh will OWN and regenerate (``Schema`` /
+    ``Observations``, spec 0010 §4) BEFORE the binding edit: every
+    column-explanation bullet — with its continuation lines — moves into the
+    authored ``Column meanings`` section, where the K1 meaning-preservation
+    path keeps it for identical column identity/type (so refresh never
+    re-seeds ``unknown`` for a documented column), and every remaining
+    authored line moves into the clearly labeled ``Authored notes`` section
+    that regeneration carries forward verbatim. The core-owned headings
+    themselves belong to refresh (regenerated, never carried); a page with
+    no authored content under them returns unchanged."""
+    match = _FRONTMATTER_RE.match(text)
+    body = match.group(2) if match else text
+    meanings: list[str] = []
+    notes: list[str] = []
+    kept: list[tuple[str | None, list[str]]] = []
+    for heading, lines in _body_sections(body):
+        if heading not in (SCHEMA_SECTION, OBSERVATIONS_SECTION):
+            kept.append((heading, lines))  # authored sections stay where they sit
+            continue
+        for column, _meaning, block in _meaning_blocks(lines[1:]):
+            target = meanings if column is not None else notes
+            target.extend(line for line in block if line.strip())
+    if not meanings and not notes:
+        return text  # nothing authored under refresh-owned headings
+    for section, lines in ((MEANINGS_SECTION, meanings), (AUTHORED_NOTES_SECTION, notes)):
+        if not lines:
+            continue
+        index = next((i for i, (h, _l) in enumerate(kept) if h == section), None)
+        if index is None:  # a new authored section, adjacent to the future facts
+            kept.append((section, [f"## {section}", "", *lines, ""]))
+        else:  # the page already authored this section: extend it in place
+            heading, existing = kept[index]
+            kept[index] = (heading, [*existing, *lines])
+    front = f"---\n{match.group(1)}\n---\n\n" if match else ""
+    return f"{front}{_assemble_body(kept)}\n"
+
+
+def enrich_legacy(
+    *,
+    project: str | Path,
+    proposal: str,
+    revision: str,
+    page: str,
+    asset: dict | None = None,
+) -> dict:
+    """HUMAN-ONLY (the ``ariadne-authoring enrich-legacy`` adapter, issue #46
+    / K6; spec 0010 §4/§9 + §10 AC2/AC10): bind ONE imported legacy
+    physical-table page to its EXPLICITLY identified canonical resource
+    through a complete page edit, so the explicit :func:`refresh_schema` can
+    regenerate the core-owned schema facts in it (plan §2: "explicit
+    enrichment can bind an existing page to an unambiguous asset while
+    retaining its filename and links").
+
+    The binding resolves ONLY against the operator-approved resolved source
+    identity (the G3 seam): with ``asset`` the request names the exact tuple;
+    without it the page's own legacy spelling (its non-canonical top-level
+    ``resource`` or its ``sources`` citation resources) must resolve to
+    EXACTLY ONE approved asset — zero matches and, above all, SEVERAL matches
+    (same-named tables of distinct sources/schemas) are explicit refusals,
+    never guesses. The old filename, links, citations, authored meaning and
+    promotion-stamped history are preserved byte-for-byte in their parsed
+    meaning; nothing is renamed, deleted or reclassified; the page keeps its
+    legacy date-only freshness fields. Authored text the page carries under the
+    headings its bound refresh will own (``Schema``/``Observations``) is
+    re-homed, never discarded: column-explanation bullets into ``Column
+    meanings`` (the K1 preservation path) and the remaining prose into the
+    clearly labeled ``Authored notes`` block. The enrichment never refreshes,
+    validates, reviews or admits anything — those stay their own explicit
+    steps."""
+    project = Path(project).resolve()
+    parts = PurePosixPath(page).parts if isinstance(page, str) else ()
+    if (
+        len(parts) != 3
+        or parts[:2] != ("context_layer", "tables")
+        or PurePosixPath(page).suffix != ".md"
+    ):
+        raise ValueError(
+            f"{page!r}: only a legacy physical-table page under context_layer/tables/ "
+            "can be enriched — enriching any other page would silently reclassify it; "
+            "bind a Dataset Overview or a Reference through its own page edit instead"
+        )
+    proposals.refuse_generated(page)
+    proposals.check_artifact_name(PurePosixPath(page).stem, what="the legacy table page")
+    record = proposals._load_record(project, proposal)
+    current = record["candidate_revision"]
+    if revision != current:
+        raise ValueError(
+            f"stale revision: proposal {proposal} is at candidate {current}, the "
+            f"enrichment expected {revision} — re-read the candidate and retry with "
+            "the current revision; nothing was written"
+        )
+    blob = proposals._read_blob(project, current, page)
+    if blob is None:
+        raise ValueError(
+            f"{page} is not part of the candidate revision {current[:12]} of proposal "
+            f"{proposal} — name a page the imported candidate actually carries"
+        )
+    text = blob.decode("utf-8")
+    try:
+        meta = _load_frontmatter_meta(text)
+    except yaml.YAMLError as exc:
+        raise ValueError(
+            f"{page}: the frontmatter is not valid YAML ({exc}) — this needs human "
+            "resolution before any enrichment"
+        ) from None
+    meta = meta if isinstance(meta, dict) else {}
+    existing_resource = meta.get("resource")
+    if isinstance(existing_resource, str) and existing_resource.startswith("ariadne://"):
+        try:
+            _kind, _payload = parse_resource(existing_resource)
+        except ValueError:
+            pass  # a malformed claim: still bound-shaped, still not this seam's to rewrite
+        else:
+            raise ValueError(
+                f"{page} is already bound to the canonical resource "
+                f"{existing_resource!r} — the enrichment binds legacy pages once; "
+                "a rebind is a reviewed human page edit, never this seam, and "
+                "refresh_schema owns the generated facts of a bound page"
+            )
+
+    resolved, digest = candidate_sources(project, current)
+    if resolved is None:
+        raise ValueError(
+            f"proposal {proposal} declares no source entries in its candidate "
+            f"registry at {current[:12]} — there is no approved identity to bind to"
+        )
+    approval = authoring_sources._approved_identity(project, digest, proposal, current)
+    owned = execution.DuckDBExecution(
+        authoring_sources.identity_registry(approval["sources"])
+    )
+    try:
+        catalog = owned.catalog
+    finally:
+        owned.close()
+    tables = [table for entry in catalog for table in entry["tables"]]
+    available = ", ".join(
+        sorted(f"{t['source']}.{t.get('schema')}.{t['name']}" for t in tables)
+    )
+
+    if asset is not None:
+        requested = authoring._catalog_asset(asset)
+        matching = [
+            table
+            for table in tables
+            if _asset_of(table)
+            == {
+                "source": requested["source"],
+                "catalog": requested["catalog"],
+                "schema": requested["schema"],
+                "table": requested["table"],
+            }
+        ]
+        if not matching:
+            raise ValueError(
+                f"catalog asset {requested} is not present in the approved resolved "
+                f"source identity — available assets: {available or 'none'}; nothing "
+                "was written"
+            )
+        target = matching[0]
+        bound_from = None
+    else:
+        spellings: list[str] = []
+        if isinstance(existing_resource, str) and existing_resource:
+            spellings.append(existing_resource)
+        for citation in meta.get("sources") or []:
+            if isinstance(citation, dict) and isinstance(citation.get("resource"), str):
+                spellings.append(citation["resource"])
+        matched: dict[tuple, dict] = {}
+        for spelling in spellings:
+            hits = _spelling_matches(spelling, catalog)
+            if len(hits) > 1:
+                names = ", ".join(
+                    f"{hit['source']}.{hit.get('schema')}.{hit['name']}" for hit in hits
+                )
+                raise ValueError(
+                    f"the legacy resource spelling {spelling!r} of {page} is ambiguous: "
+                    f"it matches {len(hits)} approved catalog assets ({names}) — the "
+                    "enrichment never guesses a source/table binding; name the exact "
+                    'asset with --file {"source": ..., "catalog": ..., "schema": ..., '
+                    '"table": ...} and retry'
+                )
+            if hits:
+                hit = hits[0]
+                matched[(hit["source"], hit.get("catalog"), hit.get("schema"), hit["name"])] = hit
+        if not matched:
+            raise ValueError(
+                f"no approved catalog asset matches the legacy spelling(s) of {page} "
+                f"({', '.join(repr(s) for s in spellings) or 'none'}) — available "
+                f"assets: {available or 'none'}; name the exact asset with --file "
+                '{"source": ..., "catalog": ..., "schema": ..., "table": ...}'
+                "and retry; nothing was written"
+            )
+        if len(matched) > 1:
+            names = ", ".join(
+                f"{t['source']}.{t.get('schema')}.{t['name']}" for t in matched.values()
+            )
+            raise ValueError(
+                f"{page} names {len(matched)} distinct approved catalog assets ({names}) "
+                "— the enrichment never guesses a source/table binding; name the exact "
+                'asset with --file {"source": ..., "catalog": ..., "schema": ..., '
+                '"table": ...} and retry'
+            )
+        target = next(iter(matched.values()))
+        bound_from = next(
+            spelling
+            for spelling in spellings
+            if any(
+                (hit["source"], hit.get("catalog"), hit.get("schema"), hit["name"])
+                == (
+                    target["source"],
+                    target.get("catalog"),
+                    target.get("schema"),
+                    target["name"],
+                )
+                for hit in _spelling_matches(spelling, catalog)
+            )
+        )
+
+    resource = target["resource"]
+    existing_pages, _tracked = authoring._resource_pages(project, current)
+    other = existing_pages.get(resource)
+    if other is not None:
+        raise ValueError(
+            f"the candidate already carries {other['path']} bound to {resource!r} — "
+            "two pages for one asset need human resolution; the enrichment never "
+            "overwrites another page's binding"
+        )
+    new_text = _set_frontmatter_key(_rehome_legacy_authored(text), "resource", resource)
+    try:
+        new_meta = _load_frontmatter_meta(new_text)
+    except yaml.YAMLError as exc:  # pragma: no cover - a parseable page round-trips
+        raise ValueError(
+            f"{page}: the enriched frontmatter is not valid YAML ({exc}) — refusing "
+            "to write anything"
+        ) from None
+    new_meta = new_meta if isinstance(new_meta, dict) else {}
+    if {k: v for k, v in meta.items() if k != "resource"} != {
+        k: v for k, v in new_meta.items() if k != "resource"
+    }:
+        raise ValueError(  # pragma: no cover - the seam changes exactly one key
+            f"{page}: the enrichment may only bind the canonical resource — any "
+            "other change is refused; nothing was written"
+        )
+    out = proposals.edit_proposal(
+        project, proposal, current, page, new_text, core_generated=True
+    )
+    return {
+        "project": str(project),
+        "proposal": proposal,
+        "page": page,
+        "revision": out["revision"],
+        "changed": out["changed"],
+        "resource": resource,
+        "asset": _asset_of(target),
+        "bound_from": bound_from,
+        "staging_untouched": True,
+        "admitted": False,
+        "next_steps": [
+            "ariadne-authoring refresh-schema --project "
+            f"{project} --proposal {proposal} --expected-revision {out['revision']} "
+            '--file <asset list json> to generate the schema facts of the bound asset',
+            "ariadne-authoring validate, review and ariadne-admit --confirm remain the "
+            "normal human admission steps",
+        ],
+        "note": (
+            "the enrichment binds one legacy page to its canonical resource — it is "
+            "never refresh, validation, review or admission (spec 0010 §9): the old "
+            "filename, links and history are preserved, authored explanations under "
+            "the refresh-owned Schema/Observations headings are re-homed into Column "
+            "meanings and Authored notes (never discarded), and the page stays "
+            "unadmitted"
         ),
     }

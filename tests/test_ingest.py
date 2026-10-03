@@ -430,6 +430,74 @@ def test_mapping_citing_the_input_document_stages_and_validates(tmp_path, monkey
     assert mapping["claim"] == "asserted" and mapping["source_ids"] == [digest]
 
 
+def test_ingestion_never_registers_mentioned_sources_and_keeps_its_own_store(
+    tmp_path, monkeypatch
+):
+    """K6 (issue #46 [3], spec 0010 §3/§9 + §10 AC10 existing-check): a
+    document that MENTIONS other data locations stages its typed pages with
+    the ACTUAL input document's provenance — ingestion never registers,
+    opens or fabricates receipts for a mentioned source, the project's source
+    registry is untouched, and the staged proposal stays in ingestion's own
+    store: nothing lands in Git proposals, ad-hoc drafts or Answer Examples,
+    and Policy reconciliation stays OPT-IN behind --reconcile."""
+    registry = tmp_path / "ariadne.yaml"
+    registry.write_text(
+        "sources:\n  - name: local\n    type: parquet\n    path: data/local.parquet\n",
+        encoding="utf-8",
+    )
+    doc = make_doc(
+        tmp_path,
+        text="# Warehouse notes\n\nThe nightly warehouse snapshot lives at "
+        "s3://corp/warehouse/sales as an iceberg table; returns land in the "
+        "finance Postgres.\n",
+    )
+    entry = page_entry(
+        folder="tables",
+        name="warehouse-sales",
+        type="table",
+        tags=["table", "warehouse"],
+        body=(
+            "# Warehouse sales\n\nThe nightly snapshot mentioned by the document "
+            "(s3://corp/warehouse/sales); no schema was measured.\n"
+        ),
+    )
+    staging, staged, errors, _calls = run_ingest(
+        tmp_path, doc, [response(entry)], monkeypatch
+    )
+
+    assert errors == [] and staged
+    # the staged page cites the ACTUAL input document — mechanically attached
+    front = front_of(staged[0])
+    (source,) = front["sources"]
+    assert source["id"] == hashlib.sha256(doc.read_bytes()).hexdigest()[:12]
+    assert source["resource"] == str(doc.resolve())
+    # no measured facts were fabricated for the mentioned location
+    assert "ariadne" not in front and "grain" not in front
+    assert front["status"] == "draft"
+
+    # the mentioned source was never registered: the project registry and the
+    # local source set are byte-identical, and nothing was connected
+    assert registry.read_text(encoding="utf-8") == (
+        "sources:\n  - name: local\n    type: parquet\n    path: data/local.parquet\n"
+    )
+    staged_tree = sorted(
+        path.relative_to(staging).as_posix()
+        for path in staging.rglob("*")
+        if path.is_file()
+    )
+    assert staged_tree == ["context_layer/tables/warehouse-sales.md"]
+
+    # ingestion's own store only: no Git proposal state, no ad-hoc drafts, no
+    # Answer Examples, and no reconciliation output without the opt-in flag
+    project = tmp_path
+    assert not (project / ".ariadne").exists()
+    assert not (project / "staging" / "semantic_layer").exists()
+    assert not (project / "staging" / "answer_examples").exists()
+    assert not any(
+        path.name.startswith("reconcil") for path in staging.rglob("*") if path.is_file()
+    )
+
+
 # --- (d) name collisions suffix atomically -----------------------------------
 
 

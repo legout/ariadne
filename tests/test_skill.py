@@ -287,3 +287,33 @@ def test_skill_teaches_automatic_mapping_hypothesis_capture():
     assert "unresolved business meaning, format or scope" in normalized
     assert "never a local-number-only or raw fact-to-fact join" in normalized
     assert "not chat memory" in normalized  # restart reads Git/evidence state
+
+
+def test_skill_teaches_context_knowledge_and_explicit_enrichment():
+    """K6 (issue #46, spec 2026-10-02-0010 §4–§9): the packaged skill teaches
+    the context-knowledge workflow — admitted term resolution on the QUERY
+    side (aliases/ambiguity/claim status, never join authority), the explicit
+    schema refresh with context-only proposals, `--confirm-mapping` as the
+    only confirmation route, and the HUMAN-ONLY explicit legacy-page
+    enrichment with its ambiguity refusal — plus the standing warning that
+    aliases, observations and measurements never authorize joins or replace
+    OSI/live audits, and points at the how-to."""
+    normalized = " ".join((ASSETS / "SKILL.md").read_text(encoding="utf-8").split())
+    # the query-side resolution command and its limits
+    assert "ariadne resolve-term" in normalized
+    assert "NEVER authorizes a" in normalized and "unconfirmed leads" in normalized
+    # the explicit schema refresh inside the authoring loop, context-only allowed
+    assert "ariadne-authoring refresh-schema" in normalized
+    assert "context-only" in normalized
+    assert "candidate key" in normalized and "NEVER a declared business key" in normalized
+    # confirmation is the human admission selection only
+    assert "--confirm-mapping" in normalized
+    assert "never mark anything confirmed" in normalized
+    # the HUMAN-ONLY legacy-page enrichment and its refusal contract
+    assert "ariadne-authoring enrich-legacy" in normalized
+    assert "ambiguous" in normalized and "refuses rather than guesses" in normalized
+    assert "--page context_layer/tables/NAME.md" in normalized
+    # the standing warning + the how-to pointer
+    assert "Aliases, observations and measurements never authorize joins" in normalized
+    assert "never authorizes a join" in normalized
+    assert "docs/how-to/context-knowledge.md" in normalized

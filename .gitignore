@@ -19,3 +19,4 @@ data/support_tickets/
 /examples/trace-data/
 .pi/
 .codegraph/
+build/

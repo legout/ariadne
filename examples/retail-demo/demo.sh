@@ -116,11 +116,36 @@ proposal=$(json_field "$imported" proposal)
 revision=$(json_field "$imported" revision)
 echo "   unadmitted proposal $proposal at $revision (import is never admission)"
 
-echo "== 6/6 source approval, validate, review — then the HUMAN ariadne-admit gate"
-review1=$("$PY" ariadne-authoring review --project "$GIT_DEMO" --proposal "$proposal")
-source_digest=$(json_field "$review1" sources_digest)
+# ---------------------------------------------------------------------------
+# 5b: context knowledge (issue #46/K6). The imported legacy table pages carry
+# no canonical resource binding (their citations name files), so the HUMAN
+# enrich-legacy binds the orders page to its EXPLICITLY identified approved
+# asset — a spelling matching several same-named assets would refuse rather
+# than guess — and the agent's refresh-schema then generates the physical
+# schema facts + Dataset Overview in place, preserving the old filename.
+echo "== 5b context knowledge: HUMAN enrich-legacy binding + agent refresh-schema"
+review0=$("$PY" ariadne-authoring review --project "$GIT_DEMO" --proposal "$proposal")
+source_digest=$(json_field "$review0" sources_digest)
 "$PY" ariadne-authoring approve-sources --project "$GIT_DEMO" --proposal "$proposal" \
   --revision "$revision" --source-digest "$source_digest"
+asset_file=$(mktemp)
+printf '%s' '{"source": "demo", "catalog": "demo", "schema": "main", "table": "orders"}' \
+  > "$asset_file"
+enriched=$("$PY" ariadne-authoring enrich-legacy --project "$GIT_DEMO" --proposal "$proposal" \
+  --revision "$revision" --page context_layer/tables/orders.md --file "$asset_file")
+rm -f "$asset_file"
+revision=$(json_field "$enriched" revision)
+echo "   legacy orders page bound to $(json_field "$enriched" resource) (HUMAN step)"
+assets_file=$(mktemp)
+printf '%s' '[{"source": "demo", "catalog": "demo", "schema": "main", "table": "orders"}]' \
+  > "$assets_file"
+refreshed=$("$PY" ariadne-authoring refresh-schema --project "$GIT_DEMO" --proposal "$proposal" \
+  --expected-revision "$revision" --file "$assets_file")
+rm -f "$assets_file"
+revision=$(json_field "$refreshed" revision)
+echo "   refresh-schema regenerated the schema facts inside the bound page (agent step)"
+
+echo "== 6/6 validate, review — then the HUMAN ariadne-admit gate"
 validated=$("$PY" ariadne-authoring validate --project "$GIT_DEMO" --proposal "$proposal" \
   --expected-revision "$revision")
 final=$(json_field "$validated" revision)
@@ -156,6 +181,10 @@ fi
 "$ARIADNE" list-metrics --project "$GIT_DEMO"
 "$ARIADNE" get-metric gross_margin --dimension region --project "$GIT_DEMO"
 echo "   governed metric answered from the pinned admitted snapshot (governed: true)"
+"$ARIADNE" resolve-term "gross margin" --project "$GIT_DEMO"
+echo "   term resolution over the admitted context (this legacy bundle carries no"
+echo "   structured References yet: an empty match list is the honest result —"
+echo "   docs/how-to/context-knowledge.md documents authoring them)"
 
 echo "== optional: the MCP example (needs the mcp extra — never a success requirement)"
 echo "   uv pip install --python .venv/bin/python -e '.[mcp]'"

@@ -100,11 +100,21 @@ root, never the ambient working directory. The legacy → new mapping lives in
   transcript or tool-access transfer.
 - **In memory only**: a process restart loses the messages; there is no resume
   operation, deliberately.
-- **Analyst tools** are exactly `ariadne.runtime.AriadneRuntime`'s five public
+- **Analyst tools** are exactly `ariadne.runtime.AriadneRuntime`'s six public
   operations (`list_metrics`, `search_context`, `get_metric`, `list_datasets`,
-  `define_metric`) as thin native tools: values, Policy text and citations,
-  paths, and `governed` labels pass through verbatim. No source approval, no
-  promotion, no filesystem writes beyond the runtime's own staging.
+  `define_metric`, `resolve_term`) as thin native tools: values, Policy text
+  and citations, paths, and `governed` labels pass through verbatim. Term
+  resolution is read-only admitted-context guidance — an alias never
+  authorizes a join. No source approval, no promotion, no filesystem writes
+  beyond the runtime's own staging.
+- **Authoring tools** mirror `AuthoringProject`'s Git contract one-to-one —
+  `start_proposal`, `read_artifact`, `edit_proposal`, `propose_sources`,
+  `inputs`, `upload_document`, `validate_proposal`, `refresh_schema`,
+  `inspect_mapping`, `resolve_term`, `review_proposal` — with automatic
+  labeled-hypothesis saves through `edit_proposal` (no per-save prompt) and
+  restart-readable Git/evidence state. Source approval, admission,
+  reconciliation, legacy import/enrichment and Promotion are deliberately
+  absent: human-only, outside the agent.
 - **Guidance**: the version-matched packaged `ariadne/skill_assets/SKILL.md`
   from the installed `ariadne-core`, plus a short native-tool mapping. No
   global skill scans, no model-invocable skill scripts.

@@ -29,6 +29,7 @@ never an MCP or native Agent tool.
 """
 
 import asyncio
+import datetime
 import json
 import os
 import subprocess
@@ -50,8 +51,10 @@ from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.authoring_cli import build_parser  # noqa: E402
 from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
 from ariadne.authoring_sources import candidate_sources  # noqa: E402
+from ariadne.context import _load_frontmatter_meta  # noqa: E402
 from ariadne.init import main as init_cli  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
+from ariadne.sources import table_resource  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
     METRIC_PAGE,
     POLICY_PAGE,
@@ -137,6 +140,10 @@ SERVED_TABLES_PAGE = (
     "verified:\n"
     f"  - by: {_BY}\n"
     f"    at: {_AT}\n"
+    # the promotion-era lifecycle stamp: DATE-ONLY freshness (context.py's
+    # _stale_after state), the historical convention newly generated fields
+    # replaced with explicit-offset datetimes (spec 0010 §4/§9)
+    "stale_after: 2026-10-01\n"
     "sources:\n"
     "  - id: events\n"
     "    resource: events.events\n"
@@ -612,10 +619,364 @@ def test_import_is_exposed_only_through_the_human_command_adapter(tmp_path, caps
     contract) never grows an import entry point."""
     commands = build_parser()._subparsers._group_actions[0].choices  # noqa: SLF001
     assert "import-legacy" in commands
+    assert "enrich-legacy" in commands  # K6 (issue #46): the same human-only seam
     api = AuthoringProject(tmp_path)
     assert not hasattr(api, "import_legacy")
     for name in dir(api):
         assert "import" not in name, name  # no agent-reachable import seam
+        assert "enrich" not in name, name  # no agent-reachable enrichment seam
+
+
+# ------------------------------------------- K6 (issue #46): explicit enrichment
+
+
+def enrich_via_cli(
+    project: Path, proposal: str, revision: str, page: str, capsys, *, asset_file: str | None = None
+) -> dict:
+    """The HUMAN command adapter surface of the explicit enrichment: one JSON
+    envelope on stdout (an optional ``--file`` names the asset explicitly)."""
+    argv = [
+        "enrich-legacy",
+        "--project",
+        str(project),
+        "--proposal",
+        proposal,
+        "--revision",
+        revision,
+        "--page",
+        page,
+    ]
+    if asset_file is not None:
+        argv += ["--file", asset_file]
+    rc = authoring_cli(argv)
+    assert rc == 0
+    return json.loads(capsys.readouterr().out)
+
+
+EVENTS_ASSET = {"source": "events", "catalog": None, "schema": "events", "table": "events"}
+
+
+def test_explicit_enrichment_preserves_legacy_meaning_links_and_pending_evidence(
+    tmp_path, capsys
+):
+    """Issue #46 [1]/[2], AC10, spec 0010 §4/§9 + §10 AC2: after the human
+    legacy import, the HUMAN-ONLY explicit enrichment binds ONE legacy
+    unqualified table page to its EXPLICITLY identified canonical resource
+    through a complete page edit, and the subsequent explicit refresh
+    regenerates the core-owned schema facts IN PLACE — while the old filename,
+    the authored meaning, the promotion-stamped history, the date-only
+    freshness convention, every link/citation and ALL outstanding legacy
+    pending work survive byte-for-byte. No rename, no delete, no silent
+    reclassification, no inferred Git review, no automatic admission."""
+    project = legacy_project(tmp_path)
+    before_staging = staging_tree(project)
+    imported = import_via_cli(project, project, capsys)
+    proposal, revision = imported["proposal"], imported["revision"]
+    api = AuthoringProject(project)
+
+    # the enrichment resolves the binding against the operator-APPROVED
+    # resolved identity — the same G3 human step refresh needs
+    resolved, digest = candidate_sources(project, revision)
+    assert resolved is not None
+    api.approve_sources(proposal, revision, digest)
+    tracked_before = set(run_git(project, "ls-files").split())
+
+    enriched = enrich_via_cli(
+        project, proposal, revision, "context_layer/tables/events.md", capsys
+    )
+
+    # the envelope: the canonical binding, never admission or refresh
+    assert enriched["admitted"] is False
+    assert enriched["page"] == "context_layer/tables/events.md"  # old filename
+    assert enriched["bound_from"] == "events.events"  # the legacy citation spelling
+    assert enriched["asset"] == EVENTS_ASSET
+    assert enriched["resource"] == table_resource("events", None, "events", "events")
+    assert "refresh-schema" in " ".join(enriched["next_steps"])
+
+    # nothing was renamed or deleted: the tracked set only ever grows here
+    assert tracked_before <= set(run_git(project, "ls-files").split())
+
+    # the complete page edit bound exactly the resource: authored meaning,
+    # promotion-stamped history, DATE-ONLY freshness, grain and every
+    # link/citation survive verbatim (parsed, not re-serialized guesswork)
+    blobs = dict(proposals.scope_blobs(project, enriched["revision"]))
+    assert "context_layer/tables/events.md" in blobs  # still the old filename
+    meta = _load_frontmatter_meta(blobs["context_layer/tables/events.md"].decode("utf-8"))
+    assert meta["resource"] == enriched["resource"]
+    assert meta["type"] == "table"  # no silent reclassification
+    assert meta["title"] == "Events"
+    # history unrestamped: the promotion-stamped verified entry rides along
+    assert meta["verified"] == [
+        {"by": _BY, "at": datetime.datetime(2026, 10, 1, 9, 0, tzinfo=datetime.UTC)}
+    ]
+    assert meta["stale_after"] == datetime.date(2026, 10, 1)  # date-only, readable
+    assert meta["grain"] == {
+        "primary_key": ["id"],
+        "cardinality_enforcement": "STRICT_1_TO_1",
+    }
+    assert meta["sources"] == [
+        {"id": "events", "resource": "events.events", "title": "events"}
+    ]  # the legacy citation rides along unchanged
+    assert "\n# Events\n" in blobs["context_layer/tables/events.md"].decode("utf-8")
+
+    # no inferred Git review and no automatic admission from the enrichment
+    assert admission.load_current(project) is None
+    assert proposals.load_validation(project, proposal, enriched["revision"]) is None
+
+    # the explicit refresh then regenerates the core-owned facts IN the bound
+    # page — same filename, authored meaning/history retained, observations
+    # generated under the NEW datetime convention
+    refreshed = api.refresh_schema(proposal, enriched["revision"], [EVENTS_ASSET])
+    pages = {page["kind"]: page for page in refreshed["pages"]}
+    assert pages["table"]["path"] == "context_layer/tables/events.md"  # no rename
+    blobs = dict(proposals.scope_blobs(project, refreshed["revision"]))
+    meta = _load_frontmatter_meta(blobs["context_layer/tables/events.md"].decode("utf-8"))
+    assert meta["resource"] == enriched["resource"]
+    assert meta["verified"] == [
+        {"by": _BY, "at": datetime.datetime(2026, 10, 1, 9, 0, tzinfo=datetime.UTC)}
+    ]  # history still unrestamped
+    assert meta["stale_after"] == datetime.date(2026, 10, 1)  # still readable
+    assert {column["column"] for column in meta["ariadne"]["schema"]} == {"id", "label"}
+    assert meta["ariadne"]["observations"]["observed_at"].count("+") == 1  # new convention
+    assert "\n# Events\n" in blobs["context_layer/tables/events.md"].decode("utf-8")
+    assert any(
+        path.startswith("context_layer/datasets/") for path in blobs
+    )  # the Dataset Overview of the represented collection
+
+    # ALL outstanding legacy pending work survived byte-for-byte, in its own
+    # stores — the whole journey touched neither staging nor admission
+    assert staging_tree(project) == before_staging
+    assert admission.load_current(project) is None
+
+    # the enriched+refreshed proposal validates through the normal seam
+    validated = api.validate_proposal(proposal, refreshed["revision"])
+    assert validated["ok"] is True, validated["errors"]
+
+
+def test_enrichment_keeps_legacy_schema_explanations_through_refresh(tmp_path, capsys):
+    """Issue #46/K6, AC10, spec 0010 §§4/§9: authored legacy explanations
+    living under the headings the bound page's refresh OWNS (# Schema /
+    ## Observations) survive the enrichment AND the refresh — the
+    column-explanation bullet feeds the K1 meaning-preservation path (a
+    documented column is never reset to ``unknown``), the remaining authored
+    prose/links ride as the clearly labeled Authored notes block, and
+    regeneration still owns the core facts; a second identical refresh is a
+    no-op."""
+    project = legacy_project(tmp_path)
+    # the legacy owner's authored explanations, under refresh-owned headings
+    tables_page = project / "context_layer" / "tables" / "events.md"
+    tables_page.write_text(
+        tables_page.read_text(encoding="utf-8")
+        + "# Schema\n\n"
+        "- `label` — customer-visible label; preserve leading zeros.\n\n"
+        "## Observations\n\n"
+        "Owner explanation with [rule](../policies/all-events-count.md).\n",
+        encoding="utf-8",
+    )
+    imported = import_via_cli(project, project, capsys)
+    proposal, revision = imported["proposal"], imported["revision"]
+    api = AuthoringProject(project)
+    resolved, digest = candidate_sources(project, revision)
+    api.approve_sources(proposal, revision, digest)
+
+    enriched = enrich_via_cli(
+        project, proposal, revision, "context_layer/tables/events.md", capsys
+    )
+    refreshed = api.refresh_schema(proposal, enriched["revision"], [EVENTS_ASSET])
+    blobs = dict(proposals.scope_blobs(project, refreshed["revision"]))
+    page = blobs["context_layer/tables/events.md"].decode("utf-8")
+
+    # BOTH authored strings survive the refreshed candidate, verbatim
+    assert "- `label` — customer-visible label; preserve leading zeros." in page
+    assert "Owner explanation with [rule](../policies/all-events-count.md)." in page
+
+    # the label column's authored meaning stands: never reset to unknown
+    assert "`label` — unknown (not yet authored)" not in page
+
+    # regeneration still owns the facts: the core-owned # Schema table and
+    # the measured ## Observations, with the re-homed prose clearly labeled
+    assert "# Schema\n" in page and "| Column | Type | Nullable | Default | Comment |" in page
+    assert "| `id` |" in page and "| `label` |" in page
+    assert "## Observations\n" in page and "- observed_at: " in page
+    assert "## Authored notes" in page
+
+    # determinism: a second identical refresh is a byte-for-byte no-op
+    again = api.refresh_schema(proposal, refreshed["revision"], [EVENTS_ASSET])
+    assert again["changed"] is False
+    assert again["revision"] == refreshed["revision"]
+    assert (
+        dict(proposals.scope_blobs(project, again["revision"]))[
+            "context_layer/tables/events.md"
+        ]
+        == blobs["context_layer/tables/events.md"]
+    )
+
+
+def test_enrichment_refuses_ambiguous_bindings_and_binds_only_explicitly(tmp_path, capsys):
+    """Issue #46 [2]: a legacy spelling that matches SEVERAL approved catalog
+    assets (the AC1 same-names-distinct-assets topology: two sources each
+    exposing ``orders``) is REFUSED with both candidates named — the enrichment
+    never guesses a source/table binding — while the explicit asset request
+    binds unambiguously, keeps the old filename and never rebinds silently."""
+    project = tmp_path / "twins"
+    project.mkdir()
+    write_parquet(
+        project / "data" / "sales" / "orders.parquet", [(1, 10)], ["order_id", "amount"]
+    )
+    write_parquet(
+        project / "data" / "support" / "orders.parquet", [(1, 1)], ["ticket_id", "order_ref"]
+    )
+    (project / "ariadne.yaml").write_text(
+        "sources:\n"
+        "  - name: sales\n"
+        "    type: parquet\n"
+        "    path: data/sales/orders.parquet\n"
+        "  - name: support\n"
+        "    type: parquet\n"
+        "    path: data/support/orders.parquet\n",
+        encoding="utf-8",
+    )
+    (project / "data").mkdir(exist_ok=True)
+    (project / "data" / "seed_notes.md").write_text(SEED_NOTES, encoding="utf-8")
+    # one legacy table page whose citation names ONLY the bare table: ambiguous
+    page = (
+        "---\n"
+        "type: table\n"
+        "title: orders\n"
+        "description: One legacy page.\n"
+        "tags: [table]\n"
+        "sources:\n"
+        "  - id: orders\n"
+        "    resource: orders\n"
+        "    title: orders\n"
+        "---\n\n"
+        "# orders\n"
+    )
+    (project / "context_layer" / "tables").mkdir(parents=True)
+    (project / "context_layer" / "tables" / "orders.md").write_text(page, encoding="utf-8")
+    run_git(project, "init", "-q")
+    run_git(project, "config", "user.name", "Ariadne Tests")
+    run_git(project, "config", "user.email", "tests@ariadne.local")
+    imported = import_via_cli(project, project, capsys)
+    proposal, revision = imported["proposal"], imported["revision"]
+    api = AuthoringProject(project)
+    resolved, digest = candidate_sources(project, revision)
+    api.approve_sources(proposal, revision, digest)
+
+    # the bare legacy spelling matches BOTH approved assets: refusal, not a guess
+    capsys.readouterr()
+    rc = authoring_cli(
+        [
+            "enrich-legacy",
+            "--project",
+            str(project),
+            "--proposal",
+            proposal,
+            "--revision",
+            revision,
+            "--page",
+            "context_layer/tables/orders.md",
+        ]
+    )
+    assert rc == 1
+    err = json.loads(capsys.readouterr().err)["error"]["message"]
+    assert "ambiguous" in err
+    assert "sales" in err and "support" in err  # both candidates named
+    assert "--file" in err  # the explicit way out is named
+
+    # the explicit asset request binds unambiguously (sales, not a guess)
+    asset_file = tmp_path / "asset.json"
+    asset_file.write_text(
+        json.dumps({"source": "sales", "catalog": None, "schema": "sales", "table": "orders"}),
+        encoding="utf-8",
+    )
+    enriched = enrich_via_cli(
+        project,
+        proposal,
+        revision,
+        "context_layer/tables/orders.md",
+        capsys,
+        asset_file=str(asset_file),
+    )
+    assert enriched["resource"] == table_resource("sales", None, "sales", "orders")
+    blobs = dict(proposals.scope_blobs(project, enriched["revision"]))
+    assert "context_layer/tables/orders.md" in blobs  # the old filename kept
+    meta = _load_frontmatter_meta(blobs["context_layer/tables/orders.md"].decode("utf-8"))
+    assert meta["resource"] == enriched["resource"]
+
+    # an already-bound page never rebinds through this seam: a second call is
+    # an explicit refusal, and the support twin was never touched
+    capsys.readouterr()
+    rc = authoring_cli(
+        [
+            "enrich-legacy",
+            "--project",
+            str(project),
+            "--proposal",
+            proposal,
+            "--revision",
+            enriched["revision"],
+            "--page",
+            "context_layer/tables/orders.md",
+        ]
+    )
+    assert rc == 1
+    assert "already bound" in json.loads(capsys.readouterr().err)["error"]["message"]
+
+
+def test_enrichment_refuses_unknown_assets_non_table_pages_and_unapproved_identity(
+    tmp_path, capsys
+):
+    """Issue #46 [2] refusals: an explicit asset that resolves to nothing in
+    the APPROVED identity, a page that is not a physical-table page (no silent
+    reclassification) and a proposal whose sources the operator has not
+    approved yet — each refused by name, nothing written."""
+    project = legacy_project(tmp_path)
+    imported = import_via_cli(project, project, capsys)
+    proposal, revision = imported["proposal"], imported["revision"]
+
+    def attempt(page: str, asset: dict | None, expected: str) -> None:
+        argv = [
+            "enrich-legacy",
+            "--project",
+            str(project),
+            "--proposal",
+            proposal,
+            "--revision",
+            revision,
+            "--page",
+            page,
+        ]
+        capsys.readouterr()
+        if asset is not None:
+            asset_file = tmp_path / "asset.json"
+            asset_file.write_text(json.dumps(asset), encoding="utf-8")
+            argv += ["--file", str(asset_file)]
+        assert authoring_cli(argv) == 1
+        assert expected in json.loads(capsys.readouterr().err)["error"]["message"]
+
+    # the sources are not approved yet: the binding resolves against the
+    # APPROVED identity only (the G3 seam, same as refresh)
+    attempt(
+        "context_layer/tables/events.md",
+        None,
+        "NO operator approval",
+    )
+    api = AuthoringProject(project)
+    resolved, digest = candidate_sources(project, revision)
+    api.approve_sources(proposal, revision, digest)
+
+    # an explicit asset outside the approved identity: refused with the
+    # available assets named
+    attempt(
+        "context_layer/tables/events.md",
+        {"source": "events", "catalog": None, "schema": "events", "table": "nope"},
+        "not present in the approved resolved source identity",
+    )
+    # a page that is not a physical-table page: no silent reclassification
+    attempt("context_layer/policies/all-events-count.md", None, "physical-table page")
+    # a page the candidate does not carry
+    attempt("context_layer/tables/missing.md", None, "is not part of the candidate")
 
 
 def fake_complete(responses: list[str]):

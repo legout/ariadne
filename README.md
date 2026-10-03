@@ -147,6 +147,16 @@ ariadne-init --git . && git init
 ariadne-authoring import-legacy --project . --from-root .   # HUMAN
 ```
 
+Imported legacy table pages bind to their approved catalog assets with the
+human `ariadne-authoring enrich-legacy` (ambiguous same-named tables refuse
+rather than guess), and the explicit `refresh-schema` generates their physical
+schema facts. Context knowledge — physical schemas, shared terminology,
+identifier mappings and bounded mapping evidence with automatic hypothesis
+capture — has its own guide:
+[docs/how-to/context-knowledge.md](docs/how-to/context-knowledge.md).
+Aliases, observations and measurements never authorize joins or replace the
+compile gate and live audits.
+
 Installing the packaged skill (`ariadne-skill install --scope user`) teaches your agent
 the whole workflow — query governed metrics first, respect the staging boundary, report
 caveats with every number.
@@ -189,15 +199,18 @@ the same local stdio server exposes the role toolsets over one core — pick the
 registration at launch: `python -m ariadne.serve --project DIR` (combined,
 the default), `--toolset analyst` (the query tools `list_metrics`,
 `search_context`, `get_metric`, `list_datasets`, `define_metric`,
-`query_metrics`, `query_detail`, `save_example`, `search_examples`), or
-`--toolset authoring` (the Git proposal contract:
+`query_metrics`, `query_detail`, `resolve_term`, `save_example`,
+`search_examples`), or `--toolset authoring` (the Git proposal contract:
 `authoring_start_proposal`, `authoring_read_artifact`,
 `authoring_edit_proposal`, `authoring_propose_sources`, `authoring_inputs`,
 `authoring_upload_document` for bounded ≤5 MiB uploads,
-`authoring_validate_proposal`, `authoring_review_proposal`) with identical
+`authoring_refresh_schema`, `authoring_validate_proposal`,
+`authoring_inspect_mapping`, `authoring_resolve_term`,
+`authoring_review_proposal`) with identical
 contracts to the `ariadne-authoring` commands. Stdio is local and needs no
 token; the server runs for one project root. Source approval, admission,
-reconciliation, the legacy import and Promotion are never exposed as tools.
+reconciliation, the legacy import/enrichment and Promotion are never exposed
+as tools.
 
 **Optional: MCP.** The base package is local-first and needs no server; MCP registers the
 same operations as tools when you want them. Install the extra into the same Python
@@ -230,6 +243,7 @@ MCP registers the same operations as tools when the `mcp` extra is installed.
 | `ariadne list-metrics` | Browse the governed catalog: metrics, descriptions, available dimensions |
 | `ariadne get-metric NAME` | Get a governed number — compiled SQL, executed read-only, caveats included |
 | `ariadne search-context QUERY` | Look up business rules, policies, and table caveats before answering |
+| `ariadne resolve-term TERM` | Resolve shared business terms and identifier knowledge (representations, exact field bindings, scope, ambiguity, claim/confirmation status) against the admitted context — read-only guidance, never join authority |
 | `ariadne list-datasets` | See every table across all registered sources |
 | `ariadne define-metric` | Answer an unmodeled question: draft a metric (JSON via `--file` or stdin), pass the safety checks, run it read-only, label it `governed: false`, and auto-stage it as a proposal |
 | `ariadne search-examples QUERY` | Find explicitly saved answer examples — labeled references (draft/stable, staleness, provenance) for checking a method, never cached answers; never executes a query |

@@ -104,11 +104,14 @@ bundle: every folder below PLUS the semantic models.
 - `context_layer/tables/<table>.md` — one page per table in the profile.
   Frontmatter: `type: table`, `title`, a one-sentence `description`, `tags`
   (list), `sources` (list of {id, resource, title} maps citing the database),
-  and a `grain` block: `{primary_key: [...], cardinality_enforcement:
-  STRICT_1_TO_1}` — STRICT_1_TO_1 when the profiler proves the key unique
-  (distinct_count == row_count). Body: what one row means, column-by-column
-  schema notes, and join hints (keys, cardinality, and the profiler evidence:
-  match_ratio, distinct counts, row counts).
+  and a `grain` block ONLY when the seed notes state the row identity (the
+  owner's authority): `{primary_key: [...], cardinality_enforcement:
+  STRICT_1_TO_1}`. Otherwise omit the grain block — a physical table's Grain
+  may stay unknown. Profiler-measured uniqueness is a candidate key, never a
+  declared business key: do NOT write STRICT_1_TO_1 from distinct_count ==
+  row_count alone. Body: what one row means, column-by-column schema notes,
+  and join hints (keys, cardinality, and the profiler evidence: match_ratio,
+  distinct counts, row counts).
 - `context_layer/references/joins/<a>--<b>.md` — one page per join pair the
   models use (orders--customers, orders--currency_conversion_rate).
   Frontmatter: `type: reference`, `title`, one-sentence `description`, `tags`,
@@ -142,8 +145,9 @@ bundle: every folder below PLUS the semantic models.
   rules are why the numbers come out right; omitting one makes it wrong. Do
   NOT write `governed_by`, `dimensions`, or `grain` on metric pages: they are
   attached mechanically from the OSI models after validation.
-- `context_layer/skills/<slug>.md` — exactly four guides: `run-the-demo`,
-  `promote-artifacts`, `import-to-git`, `query-artifacts`. Frontmatter:
+- `context_layer/skills/<slug>.md` — exactly five guides: `run-the-demo`,
+  `promote-artifacts`, `import-to-git`, `query-artifacts`, `context-knowledge`.
+  Frontmatter:
   `type: skill`, `title`, `description`, `tags`, `sources` (cite the
   script/module). Body: the exact commands from the operational facts below
   and what each step does, naming WHO runs each human gate (source approval,
@@ -151,6 +155,12 @@ bundle: every folder below PLUS the semantic models.
   gate itself or mutating Git branches, shell commands or files directly.
   The query guide is local-first: it cites the `ariadne` executable (spec
   2026-09-23-0001 §8) and must never claim a server or MCP is required.
+  The context-knowledge guide teaches the exact context-knowledge commands
+  from the operational facts below (resolve-term on the query side;
+  refresh-schema/inspect-mapping on the Git authoring side), states that
+  aliases, observed uniqueness and measured matches NEVER authorize a join
+  or replace the compile gate and live audits, and names the HUMAN-only
+  enrich-legacy binding of a legacy table page.
 - NEVER write `index.md` or `log.md` — the promotion gate owns them.
 - Never invent `generated`, `verified`, or `stale_after` frontmatter — stamped
   mechanically after validation.
@@ -432,6 +442,18 @@ def _user_prompt(profile: dict, notes: str, catalog_lines: str) -> str:
         "  ariadne-authoring validate --proposal ID --expected-revision REV\n"
         "  ariadne-authoring review --proposal ID\n"
         "  ariadne-admit --proposal ID --revision REV --reviewed-digest DIGEST --confirm  (HUMAN)\n"
+        "- Context knowledge (issues #41-#46; guidance and evidence only — an alias,\n"
+        "  an observed candidate key or a measured match NEVER authorizes a join):\n"
+        "  ariadne resolve-term 'gross margin' --project .\n"
+        "  ariadne-authoring refresh-schema --proposal ID --expected-revision REV \
+"
+        "--file assets.json\n"
+        "  ariadne-authoring enrich-legacy --proposal ID --revision REV \
+"
+        "--page context_layer/tables/orders.md  (HUMAN binding of a legacy page)\n"
+        "  ariadne-authoring inspect-mapping --proposal ID --expected-revision REV \
+"
+        "--file candidate.json\n"
         "- Optional MCP transport (needs the extra installed: pip install 'ariadne-core[mcp]'):\n"
         "  python -m ariadne.serve --sources examples/retail-demo/ariadne.yaml "
         "--semantic examples/retail-demo/semantic_layer "

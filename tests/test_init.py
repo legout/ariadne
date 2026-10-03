@@ -130,6 +130,28 @@ def test_agents_md_names_the_real_skill_command(tmp_path):
     assert "ariadne skill install" not in agents
 
 
+def test_layout_names_the_full_okf_bundle_sections(tmp_path):
+    """K6 (issue #46, spec 0010 §3): the scaffolded layout table describes the
+    context layer by its APPLICABLE sections (datasets, tables, references
+    alongside policies/metrics/computations) — never the obsolete
+    mandatory-category story."""
+    target = tmp_path / "proj"
+    assert main([str(target)]) == 0
+    agents = (target / "AGENTS.md").read_text(encoding="utf-8")
+    assert "tables, references, policies, metrics, computations" in agents
+
+
+def test_git_pointer_page_names_the_legacy_migration_human_seams(tmp_path):
+    """K6 (issue #46, spec 0010 §9): the Git scaffold's gate rule names legacy
+    migration (`import-legacy`, `enrich-legacy`) among the human-only
+    operations — an agent never binds or imports legacy pages itself."""
+    target = tmp_path / "proj"
+    assert main([str(target), "--git"]) == 0
+    agents = (target / "AGENTS.md").read_text(encoding="utf-8")
+    assert "import-legacy" in agents and "enrich-legacy" in agents
+    assert "`approve-sources`" in agents and "`ariadne-admit`" in agents
+
+
 def test_second_run_is_idempotent(tmp_path, capsys):
     target = tmp_path / "proj"
     main([str(target)])

@@ -132,7 +132,7 @@ workflow and the grain rules. This file holds only project facts.
 | :--- | :--- |
 | `data/` | Inputs: the database(s), `data/seed_notes.md`, `data/docs/` source documents. |
 | `staging/` | Authoring output awaiting human review — the only place agents write. |
-| `context_layer/` | Served OKF bundle: policies, metrics, computations (promotion output). |
+| `context_layer/` | OKF pages: tables, references, policies, metrics, computations (promoted). |
 | `semantic_layer/` | Served OSI models: the governed metric definitions (promotion output). |
 
 ## Promotion gate
@@ -166,7 +166,7 @@ workflow and the grain rules. This file holds only project facts.
 | :--- | :--- |
 | `data/` | Inputs: the database(s), `data/seed_notes.md`, `data/docs/` source documents. |
 | `semantic_layer/` | OSI models — tracked Git artifacts edited through proposals. |
-| `context_layer/` | OKF bundle (policies, metrics, computations) — tracked Git artifacts. |
+| `context_layer/` | OKF pages: datasets, tables, references, policies, metrics, computations. |
 | `staging/` | Pending ad-hoc/standalone-ingest/example proposals in their own stores. |
 | `.ariadne/` | Operator-owned state: proposals, approvals, snapshots (never committed). |
 
@@ -174,8 +174,9 @@ workflow and the grain rules. This file holds only project facts.
 
 Served state arrives ONLY by human Git Review Admission (`ariadne-admit`) of an
 exact reviewed, validated candidate revision. Agents draft through
-`ariadne-authoring` proposals; source approval (`approve-sources`), admission
-and any direct Git/shell/file mutation are human operations, never agent ones.
+`ariadne-authoring` proposals; source approval (`approve-sources`), admission,
+legacy migration (`import-legacy`, `enrich-legacy`) and any direct Git/shell/file
+mutation are human operations, never agent ones.
 """
 
 SEED_NOTES = """\

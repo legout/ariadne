@@ -7,7 +7,9 @@ workflow to Git-backed authoring proposals with human Git Review Admission
 #39). The new workflow is not a second model loop and not a second gate: the
 same deterministic checks run, the same stores stay separate, and the human
 decisions stay human. Nothing here is automatic admission — **a Git commit of
-existing files is never human review**.
+existing files is never human review**. The context-knowledge capabilities
+(schema refresh, term resolution, bounded inspection, legacy-page enrichment)
+live in [context-knowledge.md](context-knowledge.md).
 
 ## The new workflow in one pass
 
@@ -73,6 +75,18 @@ they were, byte-for-byte, each keeping its own review path. After the import,
 the normal steps above (approve → validate → review → `ariadne-admit`)
 establish the first admitted snapshot.
 
+An imported legacy **table page carries no canonical resource binding** — its
+spelling is unqualified (e.g. a `source.table` citation). Binding it is the
+separate HUMAN step `ariadne-authoring enrich-legacy --project . --proposal
+ID --revision REV --page context_layer/tables/events.md [--file asset.json]`:
+the page's own spelling must resolve to exactly ONE approved asset (several
+matches — same-named tables of distinct sources — refuse with the candidates
+named, never a guess), the old filename, links, citations and promotion-
+stamped history are preserved, and the explicit `refresh-schema` of the bound
+asset then generates its schema facts in place. The enrichment is never
+refresh, review or admission, and stays human-only exactly like
+`import-legacy`.
+
 ## Exact legacy → new mappings
 
 | Legacy route | New route (Git-managed project) |
@@ -119,14 +133,15 @@ ariadne-authoring-mcp --project DIR
 The legacy facade launch (`python -m ariadne.serve --sources ariadne.yaml
 --semantic ... --context ... --staging ...`) keeps working for explicit
 legacy artifact roots. No registration ever exposes source approval,
-admission, `reconcile`, `import-legacy`, Promotion or example review: those
-are human-only local commands (ADR-0013, spec §5).
+admission, `reconcile`, `import-legacy`, `enrich-legacy`, Promotion or example
+review: those are human-only local commands (ADR-0013, spec §5).
 
 ## What an agent may never do
 
 - run `ariadne-authoring approve-sources`, `ariadne-admit`,
   `ariadne-authoring reconcile`, `ariadne-authoring import-legacy`,
-  `ariadne-promote` or `ariadne-example-review`;
+  `ariadne-authoring enrich-legacy`, `ariadne-promote` or
+  `ariadne-example-review`;
 - mutate Git itself (`git commit`, branch, checkout, merge, rebase, push) or
   the served/project files directly — every artifact change goes through the
   typed `ariadne-authoring` proposal seam;

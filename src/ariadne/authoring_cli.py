@@ -39,6 +39,9 @@ for failure, message verbatim.
     ariadne-authoring reconcile --proposal ID --expected-revision OLD
                                 --revision NEW [--project DIR]
     ariadne-authoring import-legacy --from-root ROOT [--project DIR]   (HUMAN-ONLY)
+    ariadne-authoring enrich-legacy --proposal ID --revision REV --page PAGE
+                                   [--file ASSET] [--project DIR]   (HUMAN-ONLY,
+                                   issue #46/K6: explicit legacy-page binding)
 
 ``approve-sources`` is HUMAN-ONLY and runs on the server host (ADR-0013): the
 packaged skill must never invoke it, and it is excluded from every MCP tool
@@ -110,6 +113,17 @@ consumers (tests/test_authoring.py, tests/test_promote.py,
 tests/test_multifact.py, tests/test_authoring_mcp.py and every legacy staged
 project); see docs/how-to/git-authoring.md for the complete legacy → new
 mapping.
+
+``enrich-legacy`` (issue #46/K6) is HUMAN-ONLY the same way: the explicit
+binding of ONE imported legacy physical-table page to its canonical catalog
+resource (spec 0010 §4/§9) — a complete page edit through the core-owned
+regeneration seam. With ``--file`` the exact asset tuple
+``{source, catalog, schema, table}`` is named; without it the page's own
+legacy spelling must resolve to exactly ONE approved asset — several matches
+(same-named tables of distinct sources/schemas) refuse rather than guess. The
+old filename, links and history are preserved; refresh, validation, review and
+admission stay their own separate steps, and the pending legacy staging is
+never touched.
 """
 
 from __future__ import annotations
@@ -131,7 +145,7 @@ from ariadne.authoring import (
     review_bundle,
     submit_bundle,
 )
-from ariadne.migration import import_legacy
+from ariadne.migration import enrich_legacy, import_legacy
 
 
 class UsageError(ValueError):
@@ -477,6 +491,35 @@ def build_parser() -> _Parser:
     import_cmd.add_argument(
         "--project", default=".", help="the managed Git data project (default: .)"
     )
+
+    enrich_cmd = sub.add_parser(
+        "enrich-legacy",
+        help="HUMAN-ONLY: bind ONE imported legacy table page to its explicitly "
+        "identified canonical catalog resource (a complete page edit; the old "
+        "filename, links and history are preserved — ambiguous spellings refuse, "
+        "refresh/admission stay separate steps)",
+    )
+    enrich_cmd.add_argument("--proposal", required=True, help="the proposal ID")
+    enrich_cmd.add_argument(
+        "--revision",
+        required=True,
+        help="the proposal's CURRENT candidate revision (a stale one is refused)",
+    )
+    enrich_cmd.add_argument(
+        "--page",
+        required=True,
+        help="the legacy page to bind, under context_layer/tables/ (its unqualified "
+        "legacy spelling is resolved against the operator-approved identity)",
+    )
+    enrich_cmd.add_argument(
+        "--file",
+        default=None,
+        help="optional explicit catalog asset JSON {source, catalog, schema, table} "
+        '(or {"asset": {...}}); without it an ambiguous spelling refuses',
+    )
+    enrich_cmd.add_argument(
+        "--project", default=".", help="the managed Git data project (default: .)"
+    )
     return parser
 
 
@@ -488,6 +531,27 @@ def _read_edit_document(file: str) -> dict:
         return json.loads(raw)
     except ValueError as exc:
         raise UsageError(f"{file}: edit is not valid JSON: {exc}") from None
+
+
+def _read_enrichment_asset(file: str) -> dict:
+    """The ONE explicit catalog asset of an enrich-legacy request from
+    ``--file`` (or stdin with ``-``): the asset object itself, or the object
+    form ``{"asset": {...}}`` — adapter input only, never a filesystem
+    destination. Malformed JSON is a UsageError so the one-JSON-error-object
+    contract still holds."""
+    raw = sys.stdin.read() if file == "-" else Path(file).read_text(encoding="utf-8")
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise UsageError(f"{file}: the asset is not valid JSON: {exc}") from None
+    if isinstance(data, dict) and set(data) == {"asset"}:
+        data = data["asset"]
+    if not isinstance(data, dict):
+        raise UsageError(
+            f"{file}: the explicit asset must be a JSON object "
+            '{"source": ..., "catalog": ..., "schema": ..., "table": ...}'
+        )
+    return data
 
 
 def _read_asset_list(file: str) -> list[dict]:
@@ -622,6 +686,17 @@ def main(argv: list[str] | None = None) -> int:
             # HUMAN-ONLY (issue #39/G7): the explicit legacy-artifact migration —
             # never an MCP/Agent tool, never admission.
             result = import_legacy(project=args.project, from_root=args.from_root)
+        elif args.command == "enrich-legacy":
+            # HUMAN-ONLY (issue #46/K6): the explicit legacy-page binding —
+            # never an MCP/Agent tool, never refresh or admission.
+            asset = _read_enrichment_asset(args.file) if args.file is not None else None
+            result = enrich_legacy(
+                project=args.project,
+                proposal=args.proposal,
+                revision=args.revision,
+                page=args.page,
+                asset=asset,
+            )
         elif args.command == "start":
             result = AuthoringProject(args.project).start_proposal(args.base_revision)
         elif args.command == "read":
