@@ -261,3 +261,29 @@ def test_skill_teaches_git_proposal_workflow_and_stops_at_human_gates():
     assert "--base-digest" in skill
     assert "ariadne-promote" in skill
     assert "--toolset" in skill  # split vs combined registrations taught
+
+
+def test_skill_teaches_automatic_mapping_hypothesis_capture():
+    """K5 (issue #45; spec 2026-10-02-0010 §8, §10 AC7): the packaged skill
+    teaches the automatic-capture loop — read the existing References,
+    hypotheses and receipts FIRST (`resolve-term`/`read`), measure bounded
+    candidates (`inspect-mapping`), then SAVE the labeled hypothesis through
+    the typed page edit automatically: no per-save prompt, the SAME stable
+    representation/mapping IDs (an identical retry is a no-op), honest
+    retention of failed/inconclusive/conflicting results (never relabeled
+    asserted/confirmed), owner questions only about unresolved meaning, no
+    local-number-only joins — and restart durability lives in the Git proposal
+    and the evidence area, never in chat memory."""
+    normalized = " ".join((ASSETS / "SKILL.md").read_text(encoding="utf-8").split())
+    assert "ariadne-authoring resolve-term" in normalized  # read existing first
+    assert "ariadne-authoring inspect-mapping" in normalized  # bounded measurement
+    assert "read what the proposal already holds" in normalized
+    assert "SAVE the labeled hypothesis" in normalized  # automatic capture
+    assert "no per-save prompt" in normalized
+    assert "reuse the SAME stable representation/mapping IDs" in normalized
+    assert "an identical retry is a no-op" in normalized
+    assert "failed, inconclusive or conflicting results honestly" in normalized
+    assert "never relabel them asserted or confirmed" in normalized
+    assert "unresolved business meaning, format or scope" in normalized
+    assert "never a local-number-only or raw fact-to-fact join" in normalized
+    assert "not chat memory" in normalized  # restart reads Git/evidence state

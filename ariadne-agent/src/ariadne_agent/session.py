@@ -93,18 +93,39 @@ have nothing admitted yet.
   The generated Schema/Observations blocks are core-owned — author meaning
   around them, never inside them; an identical refresh is a no-op.
 - Read the terminology that already exists before drafting (`resolve_term`
-  over the selected proposal): documented representations, exact bindings and
-  unconfirmed mapping hypotheses. Reuse a matching representation or mapping
-  ID; never invent measured counts, receipts or confirmation states, and
-  never treat an alias as join permission.
+  over the selected proposal) and read the candidate's pages
+  (`read_artifact`) FIRST: documented representations, schemas, mapping
+  hypotheses with their claim status, cited receipts and freshness, and the
+  cited domain evidence. Reuse a matching representation or mapping ID —
+  never invent measured counts, receipts or confirmation states, and never
+  treat an alias as join permission. Do not rediscover a rule a saved
+  hypothesis already records.
 - Measure bounded mapping candidates explicitly (`inspect_mapping`): a
   structured candidate object (equality/prefix/lookup), only after the
   operator approved the sources, only lowering the finite ceilings. Report
   the receipt's honest counts, coverage, collisions and limitations — a
   sampled match is never a business rule, raw identifier examples need the
   operator's explicit sample permission, and a failed or inconclusive result
-  stays honest. Save hypotheses with `edit_proposal` citing the receipt id;
-  never fabricate a receipt, count or confirmation.
+  stays honest. Save the labeled hypothesis immediately and automatically
+  through `edit_proposal` citing the receipt id — there is no per-save
+  prompt; never fabricate a receipt, count or confirmation.
+- Capture automatically and honestly (spec 0010 §8): a labeled finding saves
+  itself through the revision-checked `edit_proposal` at the current expected
+  revision; the owner answers unresolved meaning — business meaning, format,
+  scope — never permission for a hypothesis save. Reuse the stable
+  concept/representation/mapping IDs a repeated finding reproduces (an
+  identical retry is a no-op; never mint suffixed duplicates); preserve
+  failed, inconclusive and conflicting results as their own labeled
+  hypotheses with their receipts — never relabel inconclusive or negative
+  evidence asserted or confirmed. On a stale revision, stop and re-read the
+  candidate: never replay a write blindly. Policy/OSI edits wait until the
+  meaning and scope are established, and the existing compile/Grain/live
+  gates still apply — never a local-number-only or raw fact-to-fact join from
+  an alias or sample.
+- A restart reads Git/evidence state, not chat memory: this transcript is
+  in-memory only and never durable — a new session re-reads the proposal's
+  pages, hypotheses and retained receipts (`resolve_term`, `read_artifact`)
+  instead of relying on remembering anything.
 - Edit artifacts independently (`edit_proposal`) with the expected candidate
   revision each time: one complete model, graph, page or Seed Notes edit —
   unchanged artifacts are inherited from the base, never resubmitted. A

@@ -64,6 +64,10 @@ revision-checked edits) — call them directly, never through a command:
 - `ariadne-authoring inputs`          -> `inputs(proposal, documents?, part?, sample_rows?)`
 - `ariadne-authoring read`            -> `read_artifact(proposal, kind, name?, section?, part?)`
 - `ariadne-authoring edit`            -> `edit_proposal(proposal, expected_revision, edit)`
+- `ariadne-authoring refresh-schema`  -> `refresh_schema(proposal, expected_revision, assets)`
+- `ariadne-authoring inspect-mapping` -> `inspect_mapping(proposal, expected_revision,
+                                           candidate, limits?)`
+- `ariadne-authoring resolve-term`    -> `resolve_term(proposal, request, part?)`
 - `ariadne-authoring validate`        -> `validate_proposal(proposal, expected_revision)`
 - `ariadne-authoring review`          -> `review_proposal(proposal, part?)`
 - skill reference                     -> `read_skill_reference(reference)`

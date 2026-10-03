@@ -118,6 +118,13 @@ bundle: every folder below PLUS the semantic models.
   per ADR-0006 (project/adr/0006-grain-governance-multi-cardinality-joins.md):
   the join is grain-preserving only because the joined side is unique — a 1:N
   join would fan out the parent grain and must never be registered.
+  Identifier equivalence is never drafted: two columns whose values merely
+  look alike (a store-prefixed global order number versus a bare local one)
+  are NOT the same business identity, and no join page may equate them —
+  store-scoped identifier mappings are measured, labeled hypotheses of the
+  Git authoring route (bounded `ariadne-authoring inspect-mapping` receipts,
+  saved automatically as `claim: hypothesis`, human confirmation), never
+  drafted joins; the seed notes' identifier rules stay quoted prose.
 - `context_layer/policies/<slug>.md` — the human-owned business rules extracted
   VERBATIM from the seed notes, one page per rule: `order-status-billing`
   (CANCELLED/RETURNED orders are not revenue) and `emea-currency-cutover`

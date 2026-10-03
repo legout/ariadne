@@ -16,6 +16,11 @@ the explicitly selected proposal's candidate, with the candidate identity
 visible), ``review_proposal`` — replacing the legacy
 complete-bundle submission tools (the explicit G6 mapping: one proposal +
 per-artifact edits + validation/review, never a resubmitted whole bundle).
+Issue #45/K5 adds no tool: automatic hypothesis capture is the SAME loop —
+the guidance shipped with this surface reads existing References/hypotheses
+FIRST and saves labeled hypotheses through ``edit_proposal`` automatically
+(no per-save prompt), reusing stable identities and citing retained
+receipts, and a restart reads Git/evidence state rather than chat memory.
 Each tool's payload is the service's verbatim JSON envelope, and service
 failures propagate with their verbatim message as tool errors — an
 unavailable source, a failed check, a stale revision, an interrupted
@@ -213,8 +218,11 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
             "Apply one COMPLETE artifact edit — {kind: model|graph|page|"
             "seed_notes, name?, section?, content} — requiring the expected "
             "candidate revision; a stale revision or competing writer is "
-            "refused, an identical edit is a no-op. Unchanged artifacts are "
-            "inherited: never resend the whole bundle."
+            "refused, an identical edit is a no-op. Labeled mapping "
+            "hypotheses/evidence save AUTOMATICALLY through this seam — no "
+            "per-save prompt: cite the receipt id and reuse the stable "
+            "artifact/mapping IDs, never suffixed duplicates. Unchanged "
+            "artifacts are inherited: never resend the whole bundle."
         ),
         "propose_sources": (
             "Append typed source-registry entries to the proposal's candidate "
@@ -259,14 +267,17 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
             "lookup, or explicit scoped lookup) over the operator-APPROVED "
             "resolved source identity. The candidate is a discriminated JSON "
             "object — never SQL or a path; requests may only LOWER the "
-            "operator's finite ceilings. The retained receipt reports honest "
+            "operator's finite ceilings. Read the existing References, "
+            "hypotheses and schemas FIRST (resolve_term, read_artifact) and "
+            "reuse their stable IDs. The retained receipt reports honest "
             "counts, coverage, collisions, multiplicity, containment-versus-"
             "pairing basis and sampled/full limitations; raw identifier "
             "examples need the operator's explicit sample permission. A failed "
             "or inconclusive result stays honest — never present a sampled "
-            "match as a business rule, and never edit a page from this tool "
-            "(hypotheses are saved through edit_proposal; confirmation is "
-            "human-only)."
+            "match as a business rule — and save the labeled hypothesis "
+            "immediately through edit_proposal at the current revision citing "
+            "the receipt id, automatically with no per-save prompt (you never "
+            "edit a page from this tool; confirmation is human-only)."
         ),
         "resolve_term": (
             "Resolve a shared business term or an exact {resource, column} "
@@ -274,8 +285,10 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
             "candidate revision — read-only, with the candidate revision "
             "visible in the response: representations, exact bindings, scope, "
             "ambiguity and UNCONFIRMED claim status with page/source "
-            "citations. Read existing terminology before drafting a new "
-            "Reference; never approval, admission or a query."
+            "citations. Read existing terminology, schemas and mapping "
+            "hypotheses with their cited receipts FIRST — before drafting a "
+            "new Reference or rediscovering a rule a saved hypothesis already "
+            "records; never approval, admission or a query."
         ),
         "review_proposal": (
             "The proposal's review — never a signoff: exact current/base "

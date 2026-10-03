@@ -193,7 +193,29 @@ proposal worktrees or `.ariadne/` state).
    identities — never raw file paths or table functions. Draft from measured
    evidence; ask the owner where documents and distributions do not
    establish a rule.
-6. **validate, review, then STOP for the human.** Validate finalizes the
+6. **mapping hypotheses: read first, measure, then save automatically** —
+   before rediscovering an identifier relationship, read what the proposal
+   already holds: `ariadne-authoring resolve-term --project . --proposal ID
+   "local order number"` returns existing representations, mapping
+   hypotheses with their claim/confirmation status and cited receipts, and
+   `ariadne-authoring read --proposal ID --kind page --section references
+   --name NAME` returns the saved Reference page. When a bounded candidate is
+   worth measuring, `ariadne-authoring inspect-mapping --proposal ID
+   --expected-revision REV --file candidate.json` measures it
+   (equality/prefix/lookup; requests may only LOWER the operator's ceilings)
+   and retains the core receipt. Then SAVE the labeled hypothesis immediately
+   through the typed page edit — automatically, no per-save prompt: cite the
+   receipt id, keep `claim: hypothesis`, reuse the SAME stable
+   representation/mapping IDs (an identical retry is a no-op; never suffixed
+   duplicates), and keep failed, inconclusive or conflicting results honestly
+   as labeled hypotheses with their receipts — never relabel them asserted or
+   confirmed. Ask the owner only about unresolved business meaning, format or
+   scope; propose Policy/OSI edits only once that meaning is established (all
+   compile/grain/live gates still apply — never a local-number-only or raw
+   fact-to-fact join from an alias or sample). Hypotheses and receipts live in
+   the Git proposal and the evidence area, not chat memory: a restarted
+   session re-reads them through these same commands.
+7. **validate, review, then STOP for the human.** Validate finalizes the
    generated artifacts, commits any generated changes and validates the
    EXACT final commit against the approved source identity (bounded repair
    rounds, never reset by another commit):

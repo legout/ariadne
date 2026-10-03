@@ -32,11 +32,17 @@ import asyncio
 import hashlib
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest
-from tau_agent.messages import AssistantMessage, TextContent, ToolCall
+from tau_agent.messages import (
+    AssistantMessage,
+    TextContent,
+    ToolCall,
+    ToolResultMessage,
+)
 from tau_ai.events import AssistantDoneEvent
 from tau_ai.fake import FakeProvider
 
@@ -98,6 +104,16 @@ above; I report them and stop. Admission is human-only (ariadne-admit) and
 happens outside this session; authoring never serves.
 """
 
+ANSWER_SAVED = """\
+The bounded prefix inspection returned its receipt, and I saved the labeled
+hypothesis `local-to-global-prefix` (claim: hypothesis, receipt cited) through
+the revision-checked page edit automatically — a labeled finding needs no
+per-save prompt; only unresolved meaning goes to the owner. The candidate
+validated at the exact final revision above and the review digest is exact: I
+report both and stop. Admission is human-only (ariadne-admit) and happens
+outside this session; nothing here confirms the mapping.
+"""
+
 
 # --- scripted fake model (the A1 pattern) -------------------------------------
 
@@ -134,13 +150,17 @@ def result_of(events: list, tool: str) -> dict:
 class FlowProvider(FakeProvider):
     """Scripted turns pulled from a queue: the test scripts each next turn
     AFTER seeing the previous tool results (proposal IDs and revisions are
-    runtime data the tools return), still driving the real harness loop."""
+    runtime data the tools return), still driving the real harness loop. A
+    scripted entry may also be a CALLABLE of the harness transcript: the turn
+    is then built from the tool results the provider actually received — how
+    a real model cites runtime data (a receipt id, the current expected
+    revision) it just read."""
 
     def __init__(self) -> None:
         super().__init__([])
-        self._turns: list[list] = []
+        self._turns: list[list | Callable[[list], list]] = []
 
-    def script(self, stream: list) -> None:
+    def script(self, stream: list | Callable[[list], list]) -> None:
         self._turns.append(stream)
 
     def stream_response(
@@ -149,6 +169,8 @@ class FlowProvider(FakeProvider):
         if not self._turns:
             raise AssertionError("the scripted flow ran out of turns")
         stream = self._turns.pop(0)
+        if callable(stream):
+            stream = stream(list(messages))
         self.calls.append((model, system, list(messages), list(tools)))
         self.session_ids.append(session_id)
 
@@ -159,6 +181,15 @@ class FlowProvider(FakeProvider):
                 yield event
 
         return replay()
+
+
+def last_result(messages: list, tool: str) -> dict:
+    """The verbatim JSON payload of the NEWEST result of one tool in the
+    transcript the harness hands the provider."""
+    for message in reversed(messages):
+        if isinstance(message, ToolResultMessage) and message.tool_name == tool:
+            return json.loads(message.text)
+    raise AssertionError(f"no {tool} result reached the provider yet")
 
 
 class EditThenIdleProvider(FakeProvider):
@@ -838,3 +869,278 @@ def test_native_inspect_mapping_returns_the_core_receipt(tmp_path):
     assert Path(result["evidence"]).is_file()
     assert "examples" not in receipt  # no sample permission was granted
     assert "123123" not in json.dumps(result)
+
+
+def test_mapping_hypothesis_is_saved_without_prompt_and_reused_after_session_restart(
+    tmp_path,
+):
+    """K5 (issue #45), the red seam: ONE scripted run over a real temporary
+    Git proposal requests the bounded inspection, then AUTOMATICALLY saves
+    the labeled hypothesis through the existing complete-page edit at the
+    current expected revision — no per-save prompt anywhere in the run —
+    validates and stops at review; a SECOND session (a restart: a new harness
+    with NO chat memory) reads the saved mapping AND its retained receipt
+    through ``resolve_term`` without rediscovery, the identical re-save of the
+    same stable mapping identity is a no-op, and a stale expected revision is
+    refused without a blind write replay or any evidence/repair reset (spec
+    0010 §8, §10 AC7; the predecessor stale/concurrent/interrupted-transition
+    checks stay in their own suites — reused, not duplicated here)."""
+    from tests.test_mapping_inspection import (
+        REFERENCE_EDIT,
+        approved_project,
+        prefix_candidate,
+        reference_page,
+    )
+
+    project, api, started = approved_project(tmp_path / "restart")
+    proposal = started["proposal"]
+    provider = FlowProvider()
+    session = open_session(
+        role="authoring", project=project, model="fake-authoring", provider=provider
+    )
+    try:
+        # ONE user run: inspect -> automatic save -> validate -> review -> stop.
+        # The save/validate turns are built FROM the transcript (callable
+        # turns): the receipt id and the current expected revision are runtime
+        # data the earlier tools returned — the capture needs no permission
+        # turn between the inspection and the save.
+        provider.script(
+            turn(
+                calls=[
+                    (
+                        "inspect_mapping",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": started["candidate_revision"],
+                            "candidate": prefix_candidate(),
+                            "limits": {"sample_rows": 3},
+                        },
+                    )
+                ]
+            )
+        )
+        provider.script(
+            lambda messages: turn(
+                calls=[
+                    (
+                        "edit_proposal",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": last_result(
+                                messages, "inspect_mapping"
+                            )["revision"],
+                            "edit": {
+                                **REFERENCE_EDIT,
+                                "content": reference_page(
+                                    last_result(messages, "inspect_mapping")["receipt"][
+                                        "candidate"
+                                    ],
+                                    [last_result(messages, "inspect_mapping")["receipt_id"]],
+                                ),
+                            },
+                        },
+                    )
+                ]
+            )
+        )
+        provider.script(
+            lambda messages: turn(
+                calls=[
+                    (
+                        "validate_proposal",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": last_result(messages, "edit_proposal")[
+                                "revision"
+                            ],
+                        },
+                    )
+                ]
+            )
+        )
+        provider.script(turn(calls=[("review_proposal", {"proposal": proposal})]))
+        provider.script(turn(text=ANSWER_SAVED))
+        events = asyncio.run(
+            drive(
+                session,
+                "does the local order number construct the global order number? "
+                "investigate, record the finding, then validate and review",
+            )
+        )
+    finally:
+        session.close()
+
+    activity = [event for event in events if isinstance(event, ToolActivity)]
+    assert [event.tool for event in activity] == [
+        "inspect_mapping",
+        "edit_proposal",
+        "validate_proposal",
+        "review_proposal",
+    ]
+    assert all(event.is_error is False for event in activity)
+    inspected, edited, validate, review = (json.loads(e.result) for e in activity)
+
+    # verbatim envelopes: the retained receipt of the bounded inspection, the
+    # revision-checked automatic save, validation at the exact final revision
+    receipt = inspected["receipt"]
+    assert receipt["receipt_id"].startswith("mr-")
+    assert receipt["designation"] == "sampled" and receipt["sample_rows"] == 3
+    assert edited["changed"] is True
+    assert edited["revision"] != started["candidate_revision"]
+    assert validate["ok"] is True and validate["errors"] == []
+    assert record_of(project, proposal)["candidate_revision"] == validate["revision"]
+    assert review["revision"] == validate["revision"]
+    assert review["report"]["ok"] is True
+    evidence_path = Path(inspected["evidence"])  # the retained receipt
+    assert evidence_path.is_file()  # ...outlives the session that measured it
+    assert not (project / ".ariadne" / "current.json").exists()  # no admission
+    answer = " ".join(
+        [e.text for e in events if isinstance(e, AssistantText)][-1].split()
+    )
+    assert "no per-save prompt" in answer and "automatically" in answer
+
+    # ---------------- the restart: a SECOND session, NO chat memory ---------
+    provider2 = FlowProvider()
+    session2 = open_session(
+        role="authoring", project=project, model="fake-authoring", provider=provider2
+    )
+    assert session2.messages == ()  # chat memory is never durable
+    try:
+        # reads the saved mapping/receipt — resolve_term only, no re-inspection
+        provider2.script(
+            turn(
+                calls=[
+                    (
+                        "resolve_term",
+                        {"proposal": proposal, "request": "local order number"},
+                    )
+                ]
+            )
+        )
+        provider2.script(
+            turn(text="the saved hypothesis and its cited receipt are already there")
+        )
+        events2 = asyncio.run(
+            drive(session2, "what do we already know about the order numbers?")
+        )
+
+        # identical rediscovery: read the saved page, re-save it unchanged
+        provider2.script(
+            turn(calls=[("read_artifact", {"proposal": proposal, **REFERENCE_EDIT})])
+        )
+        provider2.script(
+            lambda messages: turn(
+                calls=[
+                    (
+                        "edit_proposal",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": last_result(messages, "read_artifact")[
+                                "revision"
+                            ],
+                            "edit": {
+                                **REFERENCE_EDIT,
+                                "content": last_result(messages, "read_artifact")[
+                                    "content"
+                                ],
+                            },
+                        },
+                    )
+                ]
+            )
+        )
+        provider2.script(
+            turn(text="identical re-save: a no-op on the same mapping identity")
+        )
+        events2 += asyncio.run(
+            drive(session2, "re-record the same finding to be sure it sticks")
+        )
+
+        # stale-revision refusal: the pre-save revision is long stale by now
+        read_result = next(
+            json.loads(event.result)
+            for event in events2
+            if isinstance(event, ToolActivity) and event.tool == "read_artifact"
+        )
+        provider2.script(
+            turn(
+                calls=[
+                    (
+                        "edit_proposal",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": started["candidate_revision"],
+                            "edit": {
+                                **REFERENCE_EDIT,
+                                "content": read_result["content"],
+                            },
+                        },
+                    )
+                ]
+            )
+        )
+        provider2.script(
+            turn(text="refused: stale revision — I re-read instead of replaying the write")
+        )
+        events2 += asyncio.run(
+            drive(session2, "and save it once more at the original revision")
+        )
+    finally:
+        session2.close()
+
+    tools2 = [e.tool for e in events2 if isinstance(e, ToolActivity)]
+    assert "inspect_mapping" not in tools2, "the restart must not rediscover"
+    assert tools2 == ["resolve_term", "read_artifact", "edit_proposal", "edit_proposal"]
+    by_tool: dict[str, list[ToolActivity]] = {}
+    for event in events2:
+        if isinstance(event, ToolActivity):
+            by_tool.setdefault(event.tool, []).append(event)
+
+    # the saved mapping AND its receipt, read back from Git/evidence state
+    resolved = json.loads(by_tool["resolve_term"][0].result)
+    assert resolved["candidate"] is True
+    assert resolved["revision"] == validate["revision"]
+    [match] = resolved["matches"]
+    assert match["representation"] == "local-order-number"
+    [mapping] = match["mappings"]
+    assert mapping["id"] == "local-to-global-prefix"  # the SAME stable identity
+    assert mapping["claim"] == "hypothesis"
+    assert mapping["confirmation"] == "unconfirmed"  # never relabeled
+    assert mapping["receipt_ids"] == [receipt["receipt_id"]]
+    [view] = mapping["evidence"]  # the verified summary of the retained receipt
+    assert view["id"] == receipt["receipt_id"]
+    assert view["designation"] == "sampled" and view["outcome"] == "complete"
+    assert view["freshness"]["state"] == "as_of"
+
+    assert read_result["path"] == "context_layer/references/order-number.md"
+    assert read_result["complete"] is True
+    assert "ariadne_evidence" in read_result["content"]  # the attached summary
+    resave = json.loads(by_tool["edit_proposal"][0].result)
+    assert resave["changed"] is False and resave["revision"] == validate["revision"]
+
+    stale = by_tool["edit_proposal"][1]
+    assert stale.is_error is True
+    assert "stale revision" in stale.result and "nothing was written" in stale.result
+
+    record = record_of(project, proposal)
+    assert record["candidate_revision"] == validate["revision"]  # no blind replay
+    assert record["repair"] == {"attempts": 1, "status": "open"}  # never reset
+    assert evidence_path.is_file()  # the evidence survives the refused replay
+
+    # the loop TEACHES the capture behavior (the guidance IS the agent loop):
+    # read-first, automatic save without a per-save prompt, stable IDs with a
+    # no-op retry, honest retention, stale-revision stop, restart honesty.
+    _model, system2, _messages, _tools = provider2.calls[0]
+    flat = " ".join(system2.split())
+    for phrase in (
+        "before drafting",  # read existing knowledge FIRST
+        "Do not rediscover a rule a saved hypothesis already records",
+        "no per-save prompt",
+        "identical retry is a no-op",
+        "never relabel",
+        "stale revision",
+        "raw fact-to-fact join",
+        "unresolved meaning",
+        "chat memory",  # restart reads Git/evidence state, never chat memory
+    ):
+        assert phrase in flat, f"the Authoring guidance must teach: {phrase!r}"
