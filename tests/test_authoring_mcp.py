@@ -1,8 +1,9 @@
 """Local stdio authoring MCP (issue #16's boundary, migrated to the Git
 authoring contract by issue #38/G6; spec 2026-10-02-0009 §6, plan §2's
-Authoring call contract; ADR-0013).
+Authoring call contract; ADR-0013), plus issue #18's opt-in LOCAL-ONLY
+Streamable HTTP transport (bearer-token gate, loopback binding only).
 
-Real stdio MCP sessions against ``python -m ariadne.serve --project DIR``
+Real MCP sessions against ``python -m ariadne.serve --project DIR``
 launched in temporary projects: the ``authoring_``-prefixed tools are one-line
 delegations over the SAME :class:`ariadne.authoring.AuthoringProject` the
 ``ariadne-authoring`` CLI calls (identical checks and response contracts), no
@@ -14,17 +15,28 @@ replacement is start_proposal + per-artifact edit_proposal +
 validate_proposal / review_proposal (see ariadne.serve's migration note). The
 legacy staged-bundle route itself keeps serving through the local CLI and
 through Promotion exactly as before.
+
+The HTTP tests (issue #18, LOCAL-ONLY mode per the owner decision 2026-10-03)
+launch the REAL ``--http`` server process on a loopback port and talk to it
+with the SDK's real ``streamable_http_client`` — the same contract surface as
+stdio, behind a bearer token read from the server environment only.
 """
 
 import asyncio
 import base64
+import contextlib
 import copy
 import hashlib
 import json
 import os
+import socket
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
+
+import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
@@ -34,6 +46,9 @@ from mcp import ClientSession  # noqa: E402  # pyright: ignore[reportMissingImpo
 from mcp.client.stdio import (  # noqa: E402  # pyright: ignore[reportMissingImports] — [mcp] extra
     StdioServerParameters,
     stdio_client,
+)
+from mcp.client.streamable_http import (  # noqa: E402  # pyright: ignore[reportMissingImports] — [mcp] extra
+    streamable_http_client,
 )
 
 from ariadne import authoring  # noqa: E402
@@ -450,3 +465,393 @@ def test_stdio_inspect_mapping_returns_the_core_receipt_envelope(tmp_path):
     assert out["evidence"] == twin["evidence"] or Path(out["evidence"]).is_file()
     assert "examples" not in receipt  # no sample permission granted
     assert "123123" not in json.dumps(out)
+
+
+# ------------------- the opt-in LOCAL-ONLY HTTP transport (issue #18) ------
+# Owner decision 2026-10-03: implement and test the bearer-token-enforced
+# Streamable HTTP transport locally; NEVER expose it. These tests launch the
+# REAL ``--http`` server process (loopback only) and speak the SDK's real
+# streamable-http client — deployment/exposure and the remote HTTPS smoke
+# remain separately owner-approved and are reported UNVERIFIED.
+
+HTTP_TOKEN = "test-bearer-token-0123456789abcdef"
+HTTP_TOKEN_ENV = "ARIADNE_HTTP_TOKEN"
+
+
+def _free_port() -> int:
+    """A free loopback TCP port for one test server."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+@contextlib.contextmanager
+def _launch_http(project: Path, *, token: str | None, extra_args: list[str] | None = None):
+    """The REAL opt-in HTTP MCP server process (issue #18): one fixed project,
+    loopback-bound, token from the SERVER environment only."""
+    port = _free_port()
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
+    if token is not None:
+        env[HTTP_TOKEN_ENV] = token
+    else:
+        env.pop(HTTP_TOKEN_ENV, None)
+    proc = subprocess.Popen(  # noqa: S603 — the repo's own server, fixed argv
+        [
+            sys.executable,
+            "-m",
+            "ariadne.serve",
+            "--project",
+            str(project),
+            "--http",
+            "--http-port",
+            str(port),
+            *(extra_args or []),
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    url = f"http://127.0.0.1:{port}/mcp"
+    try:
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                out, err = proc.communicate()
+                raise AssertionError(
+                    f"HTTP server exited rc={proc.returncode}\nstdout: {out}\nstderr: {err}"
+                )
+            with socket.socket() as sock:
+                if sock.connect_ex(("127.0.0.1", port)) == 0:
+                    break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("HTTP server never opened its loopback port")
+        yield url
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        proc.stdout.close()
+        proc.stderr.close()
+
+
+@contextlib.asynccontextmanager
+async def _http_exit(url: str, token: str | None):
+    """An SDK streamable-http client with one fixed bearer token (or none)."""
+    import httpx
+
+    headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
+    async with httpx.AsyncClient(
+        headers=headers, timeout=httpx.Timeout(60.0, read=120.0)
+    ) as client:
+        async with streamable_http_client(url, http_client=client) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                yield session
+
+
+def _describe(exc: BaseException) -> str:
+    """Every message in an exception tree (anyio may wrap one in a group)."""
+    parts = [f"{type(exc).__name__}: {exc}"]
+    if isinstance(exc, BaseExceptionGroup):
+        parts.extend(_describe(sub) for sub in exc.exceptions)
+    return " | ".join(parts)
+
+
+def test_http_opt_in_requires_token_and_loopback(tmp_path):
+    """S6 red anchor: the HTTP entry point is strictly opt-in — no token in
+    the server environment means NO listener (exit 1 with guidance), and the
+    local-only mode refuses every non-loopback bind before opening a port."""
+    project = tmp_path / "empty"
+    project.mkdir()
+
+    # no token: fail fast, no port ever opens
+    port = _free_port()
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
+    env.pop(HTTP_TOKEN_ENV, None)
+    proc = subprocess.Popen(  # noqa: S603 — the repo's own server, fixed argv
+        [sys.executable, "-m", "ariadne.serve", "--project", str(project),
+         "--http", "--http-port", str(port)],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    out, err = proc.communicate(timeout=60)
+    assert proc.returncode == 1
+    assert HTTP_TOKEN_ENV in err
+    with socket.socket() as sock:
+        assert sock.connect_ex(("127.0.0.1", port)) != 0  # nothing is listening
+
+    # a non-loopback bind is refused: local-only mode, never a public interface
+    proc = subprocess.Popen(  # noqa: S603 — the repo's own server, fixed argv
+        [sys.executable, "-m", "ariadne.serve", "--project", str(project),
+         "--http", "--http-port", str(_free_port()), "--http-host", "0.0.0.0"],
+        env={**os.environ, HTTP_TOKEN_ENV: HTTP_TOKEN,
+             "PYTHONPATH": str(REPO_ROOT / "src")},
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    out, err = proc.communicate(timeout=60)
+    assert proc.returncode == 1
+    assert "local-only" in err or "loopback" in err
+
+
+def test_http_bearer_gate_refuses_every_request_before_dispatch(tmp_path):
+    """S6 red anchor: at the actual HTTP seam an absent or wrong bearer token
+    cannot list tools, read, upload, submit or dispatch — including in an
+    empty project before any Promotion — and the failures disclose no
+    project data (fixed 401 body, no path or tool names)."""
+    import httpx
+
+    project = tmp_path / "empty"
+    project.mkdir()
+
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "probe", "version": "0"},
+        },
+    }
+    upload = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "authoring_upload_document",
+            "arguments": {"name": "notes.md", "content_b64": base64.b64encode(b"x").decode()},
+        },
+    }
+
+    async def probe(url: str) -> list[tuple[str, httpx.Response]]:
+        results: list[tuple[str, httpx.Response]] = []
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            cases = [
+                ("initialize without token", {"headers": {}}),
+                ("initialize wrong token", {"headers": {"Authorization": "Bearer wrong"}}),
+                ("upload dispatch without token", {"headers": {}}),
+                ("upload dispatch wrong token", {"headers": {"Authorization": "Bearer nope"}}),
+            ]
+            for label, kw in cases:
+                body = upload if "dispatch" in label else initialize
+                headers = {"Content-Type": "application/json",
+                           "Accept": "application/json, text/event-stream", **kw["headers"]}
+                response = await client.post(url, json=body, headers=headers)
+                results.append((label, response))
+            response = await client.get(
+                url, headers={"Accept": "text/event-stream"}
+            )
+            results.append(("GET stream without token", response))
+        return results
+
+    async def sdk_without_token(url: str) -> None:
+        with pytest.raises(BaseException) as caught:
+            async with _http_exit(url, None) as session:
+                await session.initialize()
+                await session.list_tools()
+        assert "401" in _describe(caught.value)
+
+    async def sdk_wrong_token(url: str) -> None:
+        with pytest.raises(BaseException) as caught:
+            async with _http_exit(url, "wrong-token") as session:
+                await session.initialize()
+        assert "401" in _describe(caught.value)
+
+    with _launch_http(project, token=HTTP_TOKEN) as url:
+        responses = asyncio.run(probe(url))
+        asyncio.run(sdk_without_token(url))
+        asyncio.run(sdk_wrong_token(url))
+
+    for label, response in responses:
+        assert response.status_code == 401, label
+        assert response.json() == {"error": "unauthorized"}, label
+        assert str(project) not in response.text, label
+    # the refused upload dispatch wrote nothing to the project's input area
+    assert not (project / "data" / "docs").exists()
+
+
+def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
+    """S6 green: authenticated HTTP serves the SAME build_app toolsets and
+    contracts as stdio — the full Git authoring journey in a project with no
+    admission yet (operator approval stays outside the tools), the bounded
+    upload refusal, and the managed route's missing-admission query error."""
+    project = complete_bundle_project(tmp_path / "proj")
+    api = AuthoringProject(project)
+    policy = "# Revision notes\n\nDrafted over HTTP.\n"
+
+    async def run(url: str) -> dict:
+        out: dict = {}
+        async with _http_exit(url, HTTP_TOKEN) as session:
+            await session.initialize()
+            out["tools"] = {tool.name for tool in (await session.list_tools()).tools}
+            out["started"] = _payload(await session.call_tool("authoring_start_proposal", {}))
+            proposal = out["started"]["proposal"]
+            revision = out["started"]["candidate_revision"]
+            # the OPERATOR approves the resolved source identity (the human
+            # seam; no MCP tool can) — before the first edit, exactly as stdio
+            approved(api, project, out["started"])
+            out["edited"] = _payload(
+                await session.call_tool(
+                    "authoring_edit_proposal",
+                    {
+                        "proposal": proposal,
+                        "expected_revision": revision,
+                        "edit": {
+                            "kind": "page",
+                            "section": "policies",
+                            "name": "all-events-count",
+                            "content": POLICY_PAGE.replace(
+                                "The rule body.", "The rule body, over HTTP."
+                            ),
+                        },
+                    },
+                )
+            )
+            out["upload"] = _payload(
+                await session.call_tool(
+                    "authoring_upload_document",
+                    {
+                        "name": "revision-notes.md",
+                        "content_b64": base64.b64encode(policy.encode()).decode(),
+                    },
+                )
+            )
+            out["inputs"] = _payload(
+                await session.call_tool(
+                    "authoring_inputs",
+                    {"proposal": proposal, "documents": ["revision-notes.md"],
+                     "sample_rows": 1},
+                )
+            )
+            out["inputs_twin"] = api.inputs(
+                proposal, documents=["revision-notes.md"], part=1, sample_rows=1
+            )
+            out["validated"] = _payload(
+                await session.call_tool(
+                    "authoring_validate_proposal",
+                    {"proposal": proposal, "expected_revision": out["edited"]["revision"]},
+                )
+            )
+            out["review"] = _payload(
+                await session.call_tool("authoring_review_proposal", {"proposal": proposal})
+            )
+            out["oversize"] = await session.call_tool(
+                "authoring_upload_document",
+                {
+                    "name": "big.md",
+                    "content_b64": base64.b64encode(b"x" * (MAX_UPLOAD_BYTES + 1)).decode(),
+                },
+            )
+        return out
+
+    with _launch_http(project, token=HTTP_TOKEN) as url:
+        out = asyncio.run(run(url))
+
+    # a server relaunched AFTER the project became Git-managed pins the managed
+    # route: no admission yet, so queries refuse while authoring keeps working
+    # — the launch-time route is pinned per process, exactly as the stdio twin
+    async def relaunched() -> Any:
+        async with _http_exit(url, HTTP_TOKEN) as session:
+            await session.initialize()
+            return await session.call_tool("list_metrics", {})
+
+    with _launch_http(project, token=HTTP_TOKEN) as url:
+        out["queries"] = asyncio.run(relaunched())
+
+    # the SAME combined surface as stdio — and still no human-only operation
+    assert AUTHORING_TOOLS <= out["tools"]
+    assert QUERY_TOOLS <= out["tools"]
+    assert not [
+        name for name in out["tools"] if any(marker in name for marker in HUMAN_OPERATION_MARKERS)
+    ]
+    assert set(out["started"]) == {"proposal", "base_revision", "candidate_revision"}
+    assert out["edited"]["changed"] is True
+    # identical contracts to the local CLI over the same core
+    assert out["upload"] == {
+        "resource": str((project / "data" / "docs" / "revision-notes.md").resolve()),
+        "digest": hashlib.sha256(policy.encode()).hexdigest(),
+    }
+    twin = out["inputs_twin"]
+    assert out["inputs"]["revision"] == twin["revision"]
+    assert out["inputs"]["seed_notes"] == twin["seed_notes"]
+    assert out["inputs"]["documents"] == twin["documents"]
+    assert _stable_profile(out["inputs"]["profile"]) == _stable_profile(twin["profile"])
+    assert out["validated"]["ok"] is True and out["validated"]["errors"] == []
+    assert out["review"] == api.review_proposal(out["started"]["proposal"])
+    # the upload bound holds over HTTP: refused before any write
+    assert out["oversize"].isError and "over the" in _text(out["oversize"])
+    assert sorted(p.name for p in (project / "data" / "docs").iterdir()) == [
+        "notes.md",
+        "revision-notes.md",
+    ]
+    # nothing admitted: the managed route still refuses queries
+    assert out["queries"].isError and "no valid admission" in _text(out["queries"])
+    assert not (project / ".ariadne" / "current.json").exists()
+
+
+def test_http_legacy_promoted_project_keeps_serving_queries(tmp_path):
+    """S6 green: after the OPERATOR's Promotion (the unchanged human seam) the
+    authenticated HTTP surface serves the same query tools as stdio."""
+    project = _approved_project(tmp_path)
+    submitted = authoring.submit_bundle(
+        _write_json(tmp_path, bundle_submission(), "bundle.json"), project=project
+    )
+    assert submitted["status"] == "validated"
+    digest = authoring.review_bundle(project=project)["digest"]
+    promote_bundle(
+        digest,
+        staging_root=project / "staging",
+        served_root=project,
+        by="human:tester",
+        assume_yes=True,
+    )
+
+    async def run(url: str) -> dict:
+        async with _http_exit(url, HTTP_TOKEN) as session:
+            await session.initialize()
+            listed = _payload(await session.call_tool("list_metrics", {}))
+            metric = _payload(
+                await session.call_tool(
+                    "get_metric", {"name": "event_count", "dimensions": ["label"]}
+                )
+            )
+            return {"listed": listed, "metric": metric}
+
+    with _launch_http(project, token=HTTP_TOKEN) as url:
+        out = asyncio.run(run(url))
+
+    names = [entry.get("name") for entry in out["listed"] if isinstance(entry, dict)]
+    assert "event_count" in names
+    assert out["metric"]["governed"] is True
+    assert out["metric"]["rows"]
+
+
+def test_stdio_needs_no_token_even_when_http_env_is_set(tmp_path):
+    """#18 unchanged-local clause: the token env var is inert without the
+    explicit --http flag — stdio initializes and serves with no Authorization
+    anywhere (its transport has none)."""
+    project = tmp_path / "empty"
+    project.mkdir()
+    port = _free_port()  # prove the HTTP entry point was NOT taken
+    env = {**os.environ, HTTP_TOKEN_ENV: HTTP_TOKEN, "PYTHONPATH": str(REPO_ROOT / "src")}
+    server = stdio_client(
+        StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "ariadne.serve", "--project", str(project)],
+            env=env,
+        )
+    )
+
+    async def run() -> list[str]:
+        async with server as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return [tool.name for tool in (await session.list_tools()).tools]
+
+    tools = asyncio.run(run())
+    assert "authoring_start_proposal" in tools
+    with socket.socket() as sock:
+        assert sock.connect_ex(("127.0.0.1", port)) != 0  # no listener materialized

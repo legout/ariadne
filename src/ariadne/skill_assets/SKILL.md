@@ -390,5 +390,28 @@ project root (`--project`, fixed at launch). The authoring tools work in an
 empty project before the first admission; query tools then surface the
 managed route's missing-admission error until a human admits.
 
+**Opt-in local-only HTTP (issue #18).** The same server can instead expose
+the toolsets over the Streamable HTTP transport — strictly opt-in and
+local-only (owner decision 2026-10-03): `--http` (`--http-port`, default
+8000) binds a loopback interface (`127.0.0.1`) at `/mcp`, and every request
+— tool listing, reads, uploads, dispatch — must carry the bearer token from
+the server environment (`ARIADNE_HTTP_TOKEN`, never in `ariadne.yaml`, a
+tool response or a log):
+
+```bash
+ARIADNE_HTTP_TOKEN="$(cat ~/.ariadne-http-token)" ariadne-serve --project DIR --http
+```
+
+A harness client connects with the SDK's streamable-http client against
+`http://127.0.0.1:8000/mcp`, sending `Authorization: Bearer <token>`; an
+absent or wrong token is refused before any project data, MCP dispatch or
+staging write, and the token never authorizes source approval, admission or
+Promotion (still human-only server commands). Without `--http` nothing
+listens, and local stdio needs no token. This mode is deliberately
+local-only: exposing the transport on a private network behind HTTPS
+termination requires the owner's separate approval — the local-only bind
+refuses every non-loopback interface, and no deployment instructions are
+provided here.
+
 Reference: [references/grain-rubric.md](references/grain-rubric.md) — the five
 ADR-0006 resolution patterns for multi-cardinality joins.

@@ -77,6 +77,16 @@ authoring (AC5). A legacy (non-Git) project keeps the empty-project behavior:
 the authoring tools work before the first Promotion, and query tool calls
 surface the runtime's existing missing-served-model error.
 
+The opt-in LOCAL-ONLY Streamable HTTP transport (issue #18, owner decision
+2026-10-03): ``--http`` serves the SAME build_app registration over the SDK's
+``streamable_http_app()`` on a LOOPBACK interface only, with a bearer token
+read from the ``ARIADNE_HTTP_TOKEN`` server environment variable enforced on
+every HTTP request before any MCP dispatch, read or staging write — never in
+``ariadne.yaml``, a tool response or a log. Without ``--http`` nothing ever
+listens. Deployment/exposure (private HTTPS termination) stays behind the
+owner's separate approval (ADR-0013: a bearer token over OAuth; no identity
+system), which is why the HTTP bind is restricted to loopback here.
+
 Routing contract (spec rev 4 §8.12): fresh consuming agents discover the ad-hoc
 path through the facade itself — the tool descriptions carry the same routing
 language ``list_metrics`` and the unknown-metric error use (the MCP registry is
@@ -93,6 +103,7 @@ Usage::
 
 import argparse
 import base64
+import hmac
 import os
 import sys
 from collections.abc import Callable
@@ -124,6 +135,16 @@ FacadeSource = QueryRuntime | Callable[[], QueryRuntime]
 # The three registrations (spec §6): Query under its established names, the
 # authoring contract under one stable prefix, and their union.
 TOOLSETS = ("analyst", "authoring", "combined")
+
+# The opt-in local-only HTTP transport (issue #18): the operator's bearer
+# token lives in the SERVER environment only — never in ariadne.yaml, a tool
+# response or a log. Stdio never reads it.
+HTTP_TOKEN_ENV = "ARIADNE_HTTP_TOKEN"
+
+# Local-only mode (owner decision 2026-10-03): the HTTP listener binds a
+# loopback interface ONLY — a private-network HTTPS deployment needs the
+# owner's separate approval and is deliberately not reachable from here.
+HTTP_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str = "combined"):
@@ -590,6 +611,115 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
     return app
 
 
+# ------------- the opt-in LOCAL-ONLY HTTP transport (issue #18) -----------
+
+
+class BearerTokenGate:
+    """A minimal pure-ASGI bearer gate over the FastMCP streamable-http app.
+
+    The installed MCP SDK's own request-auth seam on ``streamable_http_app()``
+    (``TokenVerifier`` + ``RequireAuthMiddleware`` + scope/RFC 9728 metadata
+    routes) is OAuth resource-server machinery; ADR-0013 selected a plain
+    server-held bearer token over OAuth, so this wrapper enforces it at the
+    outermost ASGI seam instead: EVERY request — session bootstrap, tool
+    listing, reads, uploads, dispatch — must carry ``Authorization: Bearer
+    <token>`` matching the exact server-held token or it fails 401 BEFORE the
+    MCP session manager, any tool dispatch, any read or any staging write.
+    The constant-time comparison never logs the token; the fixed rejection
+    body discloses no project data. Non-HTTP scopes (uvicorn's lifespan, which
+    runs the SDK session manager) pass through untouched."""
+
+    _REJECT_BODY = b'{"error": "unauthorized"}'
+
+    def __init__(self, wrapped, token: str) -> None:
+        self._wrapped = wrapped
+        self._token = token.encode()
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self._wrapped(scope, receive, send)
+            return
+        authorization = None
+        for key, value in scope.get("headers", []):
+            if key.lower() == b"authorization":
+                authorization = value
+                break
+        if (
+            authorization is None
+            or not authorization[:7].lower() == b"bearer "
+            or not hmac.compare_digest(authorization[7:], self._token)
+        ):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"www-authenticate", b"Bearer"),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": self._REJECT_BODY})
+            return
+        await self._wrapped(scope, receive, send)
+
+
+def build_http_app(app, token: str):
+    """The opt-in HTTP adapter (issue #18): the SAME FastMCP app ``build_app``
+    returned, served through the SDK's ``streamable_http_app()`` and wrapped in
+    :class:`BearerTokenGate` — identical toolsets and contracts to stdio, one
+    server-configured project, no second business logic."""
+    # The HTTP body limit must not undercut the documented upload bound: the
+    # tool-level 5 MiB refusal (identical to stdio, enforced before any
+    # write) stays the effective bound only if a valid 5 MiB upload's base64
+    # body can arrive — so the limit is the tool bound's base64 size plus
+    # JSON-argument slack, nothing more.
+    from ariadne.authoring_inputs import MAX_UPLOAD_BYTES
+
+    app.settings.max_request_body_size = MAX_UPLOAD_BYTES * 4 // 3 + 65_536
+    return BearerTokenGate(app.streamable_http_app(), token)
+
+
+def _serve_http(app, *, host: str, port: int) -> int:
+    """Serve the opt-in LOCAL-ONLY Streamable HTTP transport (issue #18): a
+    loopback bind, the server-environment bearer token, uvicorn (the MCP
+    SDK's own dependency — never a new one). Both gates run before any
+    listener is opened."""
+    if host not in HTTP_LOOPBACK_HOSTS:
+        print(
+            f"error: --http-host {host}: local-only mode binds a loopback "
+            "interface only (localhost/127.0.0.1/::1); a private-network HTTPS "
+            "deployment needs the owner's separate approval (issue #18)",
+            file=sys.stderr,
+        )
+        return 1
+    token = os.environ.get(HTTP_TOKEN_ENV, "")
+    if not token:
+        print(
+            f"error: --http requires the {HTTP_TOKEN_ENV} server-environment "
+            "bearer token (never ariadne.yaml, a tool response or a log); no "
+            "listener was opened",
+            file=sys.stderr,
+        )
+        return 1
+    import asyncio
+
+    import uvicorn  # pyright: ignore[reportMissingImports] — [mcp] extra ships it
+
+    server = uvicorn.Server(
+        uvicorn.Config(
+            build_http_app(app, token),
+            host=host,
+            port=port,
+            # no access log: request lines never carry project data, and the
+            # token never appears in any log either way
+            log_level="warning",
+        )
+    )
+    asyncio.run(server.serve())
+    return 0
+
+
 def _mcp_missing(exc: BaseException) -> bool:
     """True only when the MCP SDK itself is absent (spec §7): the failing
     import names the mcp package and ``import mcp`` genuinely fails. An
@@ -666,6 +796,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--context", default="context_layer", help="served OKF layer directory")
     parser.add_argument(
         "--staging", default="staging", help="staging root for auto-staged ad-hoc proposals"
+    )
+    parser.add_argument(
+        "--http",
+        action="store_true",
+        help="OPT-IN local-only Streamable HTTP transport (issue #18): serve the "
+        "same toolsets on a loopback interface at /mcp with a bearer token from "
+        f"the {HTTP_TOKEN_ENV} server environment enforced on every request; "
+        "without this flag nothing listens (stdio remains the transport)",
+    )
+    parser.add_argument(
+        "--http-host",
+        default="127.0.0.1",
+        help="loopback interface for --http (local-only mode: localhost, "
+        "127.0.0.1 or ::1 only — a private-network bind needs the owner's "
+        "separate approval)",
+    )
+    parser.add_argument(
+        "--http-port", type=int, default=8000, help="loopback TCP port for --http"
     )
     args = parser.parse_args(argv)
 
@@ -771,6 +919,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         raise
+    if args.http:  # the OPT-IN local-only route (issue #18); stdio needs no token
+        return _serve_http(app, host=args.http_host, port=args.http_port)
     app.run()  # stdio transport
     return 0
 

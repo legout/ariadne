@@ -1249,3 +1249,29 @@ def test_serve_main_explicit_db_beats_ambient_registry(tmp_path, monkeypatch):
     )
     assert code == 0
     assert built and built[0]._qualified is False  # legacy --db shorthand won
+
+
+def test_serve_main_without_http_flag_stays_stdio_only(tmp_path, monkeypatch):
+    """Issue #18 LOCAL-ONLY: without the explicit --http flag nothing listens —
+    the same build_app is served over stdio only, and the uvicorn import path
+    is never even taken (token env absent or present, it is inert)."""
+    import sys
+
+    import ariadne.serve as serve_module
+
+    monkeypatch.chdir(tmp_path)
+    served: list = []
+
+    class FakeApp:
+        def __init__(self, facade, **kwargs):
+            served.append(facade)
+
+        def run(self):
+            served.append("stdio-run")
+
+    monkeypatch.setattr(serve_module, "build_app", FakeApp)
+    # any attempt to import uvicorn (the HTTP listener path) fails loudly
+    monkeypatch.setitem(sys.modules, "uvicorn", None)
+    code = serve_module.main([])
+    assert code == 0
+    assert served[-1] == "stdio-run" and len(served) == 2  # built, then stdio-run

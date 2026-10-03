@@ -212,6 +212,18 @@ token; the server runs for one project root. Source approval, admission,
 reconciliation, the legacy import/enrichment and Promotion are never exposed
 as tools.
 
+**Opt-in local-only HTTP (issue #18).** The same toolsets can be served over
+the Streamable HTTP transport instead — strictly opt-in and local-only
+(owner decision 2026-10-03): `ariadne-serve --project DIR --http` binds a
+loopback interface (`127.0.0.1`) at `/mcp` and requires a bearer token from
+the server environment (`ARIADNE_HTTP_TOKEN`) on every request; missing or
+wrong tokens are refused before any project data, MCP dispatch or staging
+write. The token is server-held only — never in `ariadne.yaml`, a tool
+response or a log — and stdio never needs one. This mode deliberately does
+not deploy or expose anything: a private-network HTTPS deployment requires
+the owner's separate approval, and the local-only bind refuses every
+non-loopback interface.
+
 **Optional: MCP.** The base package is local-first and needs no server; MCP registers the
 same operations as tools when you want them. Install the extra into the same Python
 environment as `ariadne`, from the Ariadne package checkout (the directory containing
