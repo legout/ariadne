@@ -116,9 +116,12 @@ def test_explicit_save_creates_labeled_draft_found_by_search_without_context_cha
     examined = json.loads(capsys.readouterr().out)
     context_before = examined["context"]
 
-    assert run_cli(
-        served, staging, "save-example", stdin=io.StringIO(json.dumps(_submission(examined)))
-    ) == 0
+    assert (
+        run_cli(
+            served, staging, "save-example", stdin=io.StringIO(json.dumps(_submission(examined)))
+        )
+        == 0
+    )
     saved = json.loads(capsys.readouterr().out)
     assert saved["status"] == "draft"
     draft = Path(saved["path"])
@@ -138,9 +141,12 @@ def test_explicit_save_creates_labeled_draft_found_by_search_without_context_cha
     assert "rows" not in hits[0] and "sql" not in hits[0]
 
     # A repeated deliberate save is a distinct draft — never an overwrite.
-    assert run_cli(
-        served, staging, "save-example", stdin=io.StringIO(json.dumps(_submission(examined)))
-    ) == 0
+    assert (
+        run_cli(
+            served, staging, "save-example", stdin=io.StringIO(json.dumps(_submission(examined)))
+        )
+        == 0
+    )
     again = json.loads(capsys.readouterr().out)
     assert again["id"] != saved["id"] and again["path"] != saved["path"]
     assert draft.read_bytes() == first_bytes  # the first record is untouched
@@ -185,15 +191,18 @@ def test_explicit_save_creates_labeled_draft_found_by_search_without_context_cha
     assert {hit["id"] for hit in hits} == {"stable-margin", saved["id"], again["id"]}
     assert run_cli(served, staging, "search-examples", "stale gross margin", "--limit", "5") == 0
     assert all(hit["id"] != "stale-margin" for hit in json.loads(capsys.readouterr().out))
-    assert run_cli(
-        served,
-        staging,
-        "search-examples",
-        "stale gross margin",
-        "--limit",
-        "5",
-        "--include-history",
-    ) == 0
+    assert (
+        run_cli(
+            served,
+            staging,
+            "search-examples",
+            "stale gross margin",
+            "--limit",
+            "5",
+            "--include-history",
+        )
+        == 0
+    )
     history = json.loads(capsys.readouterr().out)
     stale_hits = [hit for hit in history if hit["id"] == "stale-margin"]
     assert stale_hits and stale_hits[0]["stale"] is True  # labeled history
@@ -424,22 +433,25 @@ def test_maintainer_review_admits_exact_draft_then_policy_change_suspends_reuse(
     policy = root / "context_layer" / "policies" / "order-status-billing.md"
     policy_bytes = policy.read_bytes()
 
-    assert run_cli(
-        served,
-        staging,
-        "save-example",
-        stdin=io.StringIO(
-            json.dumps(
-                _submission(
-                    examined,
-                    sources=[
-                        "context_layer/metrics/gross_margin.md",
-                        "context_layer/policies/order-status-billing.md",
-                    ],
+    assert (
+        run_cli(
+            served,
+            staging,
+            "save-example",
+            stdin=io.StringIO(
+                json.dumps(
+                    _submission(
+                        examined,
+                        sources=[
+                            "context_layer/metrics/gross_margin.md",
+                            "context_layer/policies/order-status-billing.md",
+                        ],
+                    )
                 )
-            )
-        ),
-    ) == 0
+            ),
+        )
+        == 0
+    )
     saved = json.loads(capsys.readouterr().out)
     staged = Path(saved["path"])
     decision = {
@@ -486,9 +498,9 @@ def test_maintainer_review_admits_exact_draft_then_policy_change_suspends_reuse(
     approved_bytes = served_page.read_bytes()
     assert run_cli(served, staging, "search-examples", "gross margin region") == 0
     assert all(hit["id"] != saved["id"] for hit in json.loads(capsys.readouterr().out))
-    assert run_cli(
-        served, staging, "search-examples", "gross margin region", "--include-history"
-    ) == 0
+    assert (
+        run_cli(served, staging, "search-examples", "gross margin region", "--include-history") == 0
+    )
     history = [hit for hit in json.loads(capsys.readouterr().out) if hit["id"] == saved["id"]]
     assert history and history[0]["stale"] is True and history[0]["status"] == "stable"
     assert served_page.read_bytes() == approved_bytes  # historical file untouched
@@ -497,9 +509,7 @@ def test_maintainer_review_admits_exact_draft_then_policy_change_suspends_reuse(
 def _save_draft(served, staging, capsys, **overrides) -> dict:
     """One staged draft through the public save-example seam."""
     submission = _submission(_SMALL_RESULT, **overrides)
-    assert run_cli(
-        served, staging, "save-example", stdin=io.StringIO(json.dumps(submission))
-    ) == 0
+    assert run_cli(served, staging, "save-example", stdin=io.StringIO(json.dumps(submission))) == 0
     return json.loads(capsys.readouterr().out)
 
 
@@ -522,9 +532,7 @@ def _served_examples(root: Path) -> list[str]:
     return sorted(p.name for p in directory.glob("*.md")) if directory.is_dir() else []
 
 
-def test_review_refuses_an_oversize_reviewed_record_before_any_write(
-    served, tmp_path, capsys
-):
+def test_review_refuses_an_oversize_reviewed_record_before_any_write(served, tmp_path, capsys):
     """The whole encoded record is bounded in BOTH roots (spec "Location,
     format and identity"): review evidence that would push the record over the
     64 KiB bound is refused before any write — the staged draft stays
@@ -692,12 +700,10 @@ def test_reject_and_request_revision_keep_labeled_audit_history(served, tmp_path
 
     assert run_cli(served, staging, "search-examples", "gross margin region") == 0
     assert all(hit["id"] != saved["id"] for hit in json.loads(capsys.readouterr().out))
-    assert run_cli(
-        served, staging, "search-examples", "gross margin region", "--include-history"
-    ) == 0
-    history = next(
-        hit for hit in json.loads(capsys.readouterr().out) if hit["id"] == saved["id"]
+    assert (
+        run_cli(served, staging, "search-examples", "gross margin region", "--include-history") == 0
     )
+    history = next(hit for hit in json.loads(capsys.readouterr().out) if hit["id"] == saved["id"])
     assert history["status"] == "reject" and history["stale"] is False  # labeled, not stale
     staged_index = (staging / "answer_examples" / "index.md").read_text(encoding="utf-8")
     assert f"({saved['id']}.md) — reject (history)" in staged_index
@@ -715,12 +721,10 @@ def test_reject_and_request_revision_keep_labeled_audit_history(served, tmp_path
     revision = _decision(other, other_staged, outcome="request-revision")
     assert run_review(served, staging, other["id"], revision, tmp_path) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "revision_requested"
-    assert run_cli(
-        served, staging, "search-examples", "gross margin region", "--include-history"
-    ) == 0
-    labeled = next(
-        hit for hit in json.loads(capsys.readouterr().out) if hit["id"] == other["id"]
+    assert (
+        run_cli(served, staging, "search-examples", "gross margin region", "--include-history") == 0
     )
+    labeled = next(hit for hit in json.loads(capsys.readouterr().out) if hit["id"] == other["id"])
     assert labeled["status"] == "request-revision"
 
 
@@ -779,12 +783,10 @@ def test_fresh_revision_restores_reuse_and_preserves_the_old_record(served, tmp_
     assert superseded_meta["superseded_by"] == second["id"]
     assert superseded_meta["question"] == old_meta["question"]
     assert superseded_meta["sources"][1]["sha256"] == old_digest
-    assert run_cli(
-        served, staging, "search-examples", "gross margin region", "--include-history"
-    ) == 0
-    old_hit = next(
-        hit for hit in json.loads(capsys.readouterr().out) if hit["id"] == first["id"]
+    assert (
+        run_cli(served, staging, "search-examples", "gross margin region", "--include-history") == 0
     )
+    old_hit = next(hit for hit in json.loads(capsys.readouterr().out) if hit["id"] == first["id"])
     assert old_hit["status"] == "superseded" and old_hit["stale"] is True
 
     # A supersedes reference to nothing fails closed.
@@ -825,9 +827,9 @@ def test_review_invalid_supersedes_predecessor_fails_before_any_served_write(
     assert run_review(served, staging, second["id"], decision, tmp_path) == 1
     assert "frontmatter" in review_error(capsys)["message"]
     assert staged.read_bytes() == staged_before  # the staged record is untouched
-    assert (
-        {p.name: p.read_bytes() for p in (root / "answer_examples").iterdir()} == served_before
-    )  # no new stable record despite the refused approval
+    assert {
+        p.name: p.read_bytes() for p in (root / "answer_examples").iterdir()
+    } == served_before  # no new stable record despite the refused approval
 
 
 def test_review_reject_through_staging_symlink_into_served_fails_closed(tmp_path, capsys):
@@ -943,9 +945,7 @@ def test_review_approve_of_citation_resolving_to_served_example_fails_closed(
     old = _save_draft(
         served, staging, capsys, question="Gross margin by region predating the edited source?"
     )
-    assert (
-        run_review(served, staging, old["id"], _decision(old, Path(old["path"])), tmp_path) == 0
-    )
+    assert run_review(served, staging, old["id"], _decision(old, Path(old["path"])), tmp_path) == 0
     capsys.readouterr()
     served_page = root / "answer_examples" / f"{old['id']}.md"
     served_before = {p.name: p.read_bytes() for p in (root / "answer_examples").iterdir()}
@@ -975,9 +975,9 @@ def test_review_approve_of_citation_resolving_to_served_example_fails_closed(
     assert run_review(served, staging, saved["id"], decision, tmp_path) == 1
     assert "metric or Policy" in review_error(capsys)["message"]
     assert staged.read_bytes() == tampered  # the staged bytes are kept as edited
-    assert (
-        {p.name: p.read_bytes() for p in (root / "answer_examples").iterdir()} == served_before
-    )  # no new stable record: an example page was never cited as metric evidence
+    assert {
+        p.name: p.read_bytes() for p in (root / "answer_examples").iterdir()
+    } == served_before  # no new stable record: an example page was never cited as metric evidence
 
 
 def test_review_second_supersede_of_superseded_predecessor_fails_unchanged(
@@ -1024,9 +1024,7 @@ def test_review_second_supersede_of_superseded_predecessor_fails_unchanged(
     )  # the anchor is already superseded
     assert run_review(served, staging, second_revision["id"], decision, tmp_path) == 1
     assert "stable" in review_error(capsys)["message"]
-    assert (
-        {p.name: p.read_bytes() for p in (root / "answer_examples").iterdir()} == served_before
-    )
+    assert {p.name: p.read_bytes() for p in (root / "answer_examples").iterdir()} == served_before
     assert {p.name: p.read_bytes() for p in staged_dir.iterdir()} == staged_before
     # First lineage retained: the anchor still points at its first successor.
     anchor_page = root / "answer_examples" / f"{anchor['id']}.md"

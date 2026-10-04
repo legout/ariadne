@@ -491,15 +491,11 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             try:
                 data = base64.b64decode(content_b64, validate=True)
             except ValueError as exc:  # binascii.Error included
-                raise ValueError(
-                    f"{name}: upload content is not valid base64: {exc}"
-                ) from None
+                raise ValueError(f"{name}: upload content is not valid base64: {exc}") from None
             return authoring_api.upload_document(name, data)
 
         @app.tool()
-        async def authoring_validate_proposal(
-            proposal: str, expected_revision: str
-        ) -> dict:
+        async def authoring_validate_proposal(proposal: str, expected_revision: str) -> dict:
             """Validate the proposal's effective candidate at its EXACT final
             revision: finalize the deterministic generated artifacts, commit any
             generated changes, run the complete check stack against the
@@ -589,9 +585,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             )
 
         @app.tool()
-        async def authoring_resolve_term(
-            proposal: str, request: str | dict, part: int = 1
-        ) -> dict:
+        async def authoring_resolve_term(proposal: str, request: str | dict, part: int = 1) -> dict:
             """Resolve one shared business term or an exact {resource, column}
             field lookup against the EXPLICITLY selected proposal's current
             candidate revision — read-only, with the candidate identity
@@ -812,9 +806,7 @@ def main(argv: list[str] | None = None) -> int:
         "127.0.0.1 or ::1 only — a private-network bind needs the owner's "
         "separate approval)",
     )
-    parser.add_argument(
-        "--http-port", type=int, default=8000, help="loopback TCP port for --http"
-    )
+    parser.add_argument("--http-port", type=int, default=8000, help="loopback TCP port for --http")
     args = parser.parse_args(argv)
 
     # One project root anchors everything (issue #16: the server is launched
@@ -863,8 +855,7 @@ def main(argv: list[str] | None = None) -> int:
         # §6: the Authoring registration starts without a governed catalog).
         def _no_runtime() -> QueryRuntime:
             raise RuntimeError(
-                "the authoring toolset registers no query tool — this factory "
-                "is never called"
+                "the authoring toolset registers no query tool — this factory is never called"
             )
 
         facade = _no_runtime
