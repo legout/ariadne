@@ -2,7 +2,7 @@
 
 Skills are instructions, not permissions: the agent loads the version-matched
 packaged Ariadne skill (``ariadne/skill_assets/SKILL.md``, shipped inside the
-installed ``ariadne-core`` and version-locked to it per ADR-0011) plus a short
+installed ``ariadneai`` and version-locked to it per ADR-0011) plus a short
 mapping onto this session's native tools. There is no scan of the user's
 global agent directories and no model-invocable skill script execution — and
 no CLI or shell tool is granted to read the skill's commands literally.
@@ -41,7 +41,7 @@ for each CLI command it names.
 
 def packaged_skill() -> str:
     """The version-matched packaged ``SKILL.md`` body, from the installed
-    ``ariadne-core`` (never a user-installed or global copy)."""
+    ``ariadneai`` (never a user-installed or global copy)."""
     return (ASSETS / "SKILL.md").read_text(encoding="utf-8")
 
 
@@ -94,7 +94,7 @@ def authoring_guidance() -> str:
 
 def packaged_reference(reference: str) -> str:
     """One bounded reference under the packaged skill assets — version-matched
-    with the installed ``ariadne-core``, exactly like :func:`packaged_skill`."""
+    with the installed ``ariadneai``, exactly like :func:`packaged_skill`."""
     return read_skill_reference(reference)
 
 

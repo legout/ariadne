@@ -4,7 +4,7 @@
 
 Thin wrappers only: every proposal-shape check, revision check, digest
 contract, staging discipline, bounded read and review snapshot lives in
-``ariadne-core``'s :class:`ariadne.authoring.AuthoringProject` (plan §2's
+``ariadneai``'s :class:`ariadne.authoring.AuthoringProject` (plan §2's
 Authoring call contract); nothing is reimplemented here. The native tools
 mirror that interface one-to-one — ``start_proposal``, ``read_artifact``,
 ``edit_proposal``, ``propose_sources``, ``inputs``, ``upload_document``,

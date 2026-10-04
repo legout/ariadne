@@ -41,7 +41,7 @@ def test_skill_teaches_local_cli_as_default_mcp_optional():
     """Spec 2026-09-23-0001 §8: the packaged skill defaults to the five local
     `ariadne` commands (root selection, caveats, labels, file/stdin ad-hoc
     definitions); MCP appears only in the optional integration section with
-    accurate ariadne-core[mcp] install guidance — never as a requirement."""
+    accurate ariadneai[mcp] install guidance — never as a requirement."""
     skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
     for cmd in ("list-metrics", "search-context", "get-metric", "list-datasets", "define-metric"):
         assert f"ariadne {cmd}" in skill, cmd
@@ -52,7 +52,7 @@ def test_skill_teaches_local_cli_as_default_mcp_optional():
     optional_at = skill.index("Optional: MCP integration")
     mcp_mentions = [m.start() for m in re.finditer("MCP", skill)]
     assert mcp_mentions and all(pos > optional_at for pos in mcp_mentions)
-    assert "ariadne-core[mcp]" in skill
+    assert "ariadneai[mcp]" in skill
     normalized = " ".join(skill.split())
     assert "Ariadne package checkout" in normalized
     assert "not from the data project root" in normalized

@@ -2,11 +2,11 @@
 
 Thin wrappers only (spec 2026-09-29-0006 session/role interface): compilation,
 grain checks, read-only execution, context attachment, proposal staging and
-terminology resolution all live in ``ariadne-core``; nothing is reimplemented
+terminology resolution all live in ``ariadneai``; nothing is reimplemented
 here. The tool set is DELIMITED to Ariadne's baseline query operations plus
 ``resolve_term`` (issue #42/K2: shared terminology resolution over the pinned
 admitted context — read-only, no inspection/edit authority): the wider Query
-surface that ariadne-core's MCP registrations expose (query_metrics/
+surface that ariadneai's MCP registrations expose (query_metrics/
 query_detail, Answer Examples) does NOT silently expand this session's
 permissions (issue #38/G6 — registrations are tool-surface separation).
 Which runtime the session wraps — a managed Git project's pinned admission through
@@ -46,7 +46,7 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
     K2 read-only term resolver (issue #42) — nothing else."""
 
     # Each wrapper mirrors the runtime's own signature and the routing language
-    # the ariadne-core MCP facade uses (spec rev 4 §8.12: fresh consuming agents
+    # the ariadneai MCP facade uses (spec rev 4 §8.12: fresh consuming agents
     # discover the ad-hoc path through the facade itself).
     async def list_metrics(
         tool_call_id: str, arguments: dict, signal=None, on_update=None

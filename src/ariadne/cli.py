@@ -287,6 +287,10 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
                 "resolve-term needs a TERM argument or --file with the request JSON"
             )
     if root is None:
+        if args.project is None:  # unreachable via the legacy-root detection, kept type-honest
+            raise ValueError(
+                "no project selected: pass --project DIR (managed) or --served PATH (legacy)"
+            )
         # An omitted --staging (None) lets the managed factory apply its
         # project-owned default <project>/staging — the CLI's CWD-relative
         # legacy default must never pull staging outside the selected project

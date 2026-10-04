@@ -106,7 +106,7 @@ def validator_identity(performed_checks: list[str] | tuple[str, ...]) -> dict:
     try:
         import importlib.metadata
 
-        core = importlib.metadata.version("ariadne-core")
+        core = importlib.metadata.version("ariadneai")
     except Exception:  # PackageNotFoundError and metadata errors: unknown, never fatal
         core = "unknown"
     config = {

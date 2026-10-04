@@ -1,0 +1,67 @@
+name: publish
+
+# Publish on every version change: pushing a v* tag builds both distributions
+# and uploads them to PyPI. The tag must equal the version in BOTH pyproject
+# files (checked below), so a version bump + tag is the one publishing path.
+# PyPI side: trusted publishing (OIDC) — no tokens in secrets. Requires the
+# one-time owner setup of two trusted publishers on PyPI pointing at this
+# repository + this workflow (see ADR-0018).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  id-token: write # PyPI OIDC trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 pi-lens-ignore line-length
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5 pi-lens-ignore line-length
+
+      - name: Verify tag matches both project versions
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CORE=$(python3 -c "import tomllib; \
+            print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          AGENT=$(python3 -c "import tomllib; \
+            print(tomllib.load( \
+              open('ariadne-agent/pyproject.toml','rb'))['project']['version'])")
+          echo "tag=$TAG core=$CORE agent=$AGENT"
+          test "$TAG" = "$CORE" || { echo "core $CORE != tag $TAG"; exit 1; }
+          test "$TAG" = "$AGENT" || { echo "agent $AGENT != tag $TAG"; exit 1; }
+
+      - name: Build ariadneai (core)
+        run: uv build
+
+      - name: Build ariadneai-agent
+        working-directory: ariadne-agent
+        run: uv build
+
+      - name: Run the core test suite on the built candidate
+        run: |
+          uv venv .ci-venv
+          WHEEL=$(ls dist | grep whl)
+          uv pip install --python .ci-venv/bin/python \
+            "./dist/$WHEEL[mcp,dev]"
+          .ci-venv/bin/python -m pytest -q \
+            || { echo "test failures block publishing"; exit 1; }
+
+      - name: Publish ariadneai (core)
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14 pi-lens-ignore line-length
+        with:
+          packages-dir: dist
+          verify-metadata: true
+          attestations: true
+
+      - name: Publish ariadneai-agent
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14 pi-lens-ignore line-length
+        with:
+          packages-dir: ariadne-agent/dist
+          verify-metadata: true
+          attestations: true

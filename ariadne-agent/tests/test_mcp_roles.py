@@ -305,7 +305,7 @@ def test_analyst_proxy_runs_only_the_approved_tool_and_hides_the_rest(mcp, proje
 
 
 def test_analyst_native_surface_stays_five_despite_wider_allowlist(mcp, project):
-    """G6/issue #38 [4]: ariadne-core's MCP registrations grew beyond the
+    """G6/issue #38 [4]: ariadneai's MCP registrations grew beyond the
     Analyst session's five native operations (query_metrics/query_detail,
     Answer Examples), and the operator may allowlist external tools of any
     name — neither silently expands the session's NATIVE surface: exactly the
