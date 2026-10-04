@@ -283,9 +283,7 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         elif args.term is not None:
             resolve_request = args.term
         else:
-            raise ValueError(
-                "resolve-term needs a TERM argument or --file with the request JSON"
-            )
+            raise ValueError("resolve-term needs a TERM argument or --file with the request JSON")
     if root is None:
         if args.project is None:  # unreachable via the legacy-root detection, kept type-honest
             raise ValueError(
