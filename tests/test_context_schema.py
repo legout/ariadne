@@ -609,6 +609,13 @@ def test_schema_only_candidate_invents_no_categories_and_validates_pages(tmp_pat
     sales_page = bodies[page_paths(refreshed)[table_resource(SALES_ASSET)]]
     assert sales_page["part"] == 1 and sales_page["complete"] is True
     assert "# Schema" in sales_page["text"]
+    # fix4 (issue #53, owner-approved design; spec 0010 §4): the regenerated
+    # index is the reader's resource->page resolution source — every
+    # refreshed table's index line carries its canonical resource marker
+    tables_index = bodies["context_layer/tables/index.md"]["text"]
+    for asset in (SALES_ASSET, SUPPORT_ASSET):
+        assert f"resource: `{table_resource(asset)}`" in tables_index
+    assert tables_index.count("resource: `") == 2  # one marker per table page, nothing else
 
 
 # ------------------------------------- fix pass (review findings 1-5, no new scope)
@@ -795,3 +802,125 @@ def test_multiline_column_meaning_moves_to_history_completely():
     # … and nothing of it stays orphaned in the active meanings section
     assert v2.count("Includes returns") == 1
     assert "- `amount` — unknown (not yet authored)" in v2  # reseeded, no rename guess
+
+
+def test_refresh_preserves_supplied_quality_profile_without_touching_core_facts():
+    """Issue #53 (spec 0013 §2): ordinary refresh preserves an authored
+    ``ariadne_quality`` profile verbatim while the core-owned
+    resource/schema/observations keep their ownership — an identical refresh
+    is a byte-level no-op even with the authored profile present, and a schema
+    change regenerates only the core-owned facts. No new quality-producing
+    refresh exists: this pins build_table_page's existing preservation."""
+    from ariadne.context import _load_frontmatter_meta, _page_contract_errors, build_table_page
+    from ariadne.sources import parse_resource
+
+    resource = table_resource(SALES_ASSET)
+    asset = {**SALES_ASSET, "resource": resource}
+    unknown = {"nullable": "unknown", "default": "unknown", "comment": "unknown"}
+    profile = {
+        "row_count": 3,
+        "primary_key_candidates": ["order_id"],
+        "columns": {
+            "order_id": {"null_count": 0, "distinct_count": 3},
+            "amount": {"null_count": 0, "distinct_count": 2},
+        },
+    }
+    columns = [
+        {"column": "order_id", "type": "BIGINT", **unknown},
+        {"column": "amount", "type": "DOUBLE", **unknown},
+    ]
+    v1, _flags = build_table_page(
+        asset=asset,
+        columns=columns,
+        profile=profile,
+        existing_text=None,
+        now="2026-02-01T00:00:00+00:00",
+    )
+    # ordinary page editing adds the supplied metadata (issue #53: authored
+    # extras ride the existing preservation seam, not a new refresh product)
+    quality = {
+        "version": 1,
+        "reports": [
+            {
+                "id": "owner-completeness",
+                "asset": resource,
+                "source_ids": [f"catalog-{asset['source']}-{asset['schema']}-{asset['table']}"],
+                "scope": {
+                    "kind": "asset",
+                    "description": "All rows of the sales orders table.",
+                    "population": "every row of the physical table",
+                    "period": None,
+                },
+                "reported_at": "2026-01-15T00:00:00+00:00",
+                "checks": [
+                    {
+                        "id": "completeness",
+                        "kind": "completeness",
+                        "outcome": "unknown",
+                        "criterion": "every order placed is present",
+                        "tested_population": "all orders",
+                        "tested_period": None,
+                    }
+                ],
+            }
+        ],
+    }
+    meta = _load_frontmatter_meta(v1)
+    meta["ariadne_quality"] = quality
+    front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    _fm, body = v1.split("---\n\n", 1)
+    authored = f"---\n{front}---\n\n{body}"
+
+    # an identical refresh preserves the supplied profile and every authored
+    # fact (parsed equality; the refresh also canonicalizes frontmatter key
+    # order on its first pass over a hand-edited page) and reports no change
+    v2, flags = build_table_page(
+        asset=asset,
+        columns=columns,
+        profile=profile,
+        existing_text=authored,
+        now="2026-02-02T00:00:00+00:00",
+    )
+    assert flags == {"added": [], "removed": [], "type_changed": []}
+    assert _load_frontmatter_meta(v2) == meta
+    # the canonical form is now a byte-level no-op: identical refresh, identical
+    # bytes, profile present (the existing no-op contract, profile included)
+    v2b, flags2b = build_table_page(
+        asset=asset,
+        columns=columns,
+        profile=profile,
+        existing_text=v2,
+        now="2026-02-02T00:00:00+00:00",
+    )
+    assert v2b == v2 and flags2b == flags
+
+    # a schema change regenerates ONLY the core-owned facts; the supplied
+    # profile survives verbatim and the page still passes the shared gate
+    v3, flags3 = build_table_page(
+        asset=asset,
+        columns=[
+            {"column": "order_id", "type": "BIGINT", **unknown},
+            {
+                "column": "qty",
+                "type": "BIGINT",
+                **unknown,
+            },
+        ],
+        profile=profile,
+        existing_text=v2,
+        now="2026-02-03T00:00:00+00:00",
+    )
+    assert flags3["removed"] == ["amount"] and "`amount` removed" in v3
+    meta3 = _load_frontmatter_meta(v3)
+    assert meta3["ariadne_quality"] == quality  # preserved verbatim
+    assert meta3["resource"] == resource  # the core binding is untouched
+    assert [entry["column"] for entry in meta3["ariadne"]["schema"]] == ["order_id", "qty"]
+    assert parse_resource(meta3["resource"])[0] == "table"
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        page = root / "context_layer" / "tables" / "orders.md"
+        page.parent.mkdir(parents=True)
+        page.write_text(v3, encoding="utf-8")
+        assert _page_contract_errors(root, page, "table") == []
