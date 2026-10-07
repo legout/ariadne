@@ -1,0 +1,889 @@
+{
+  "version": 1,
+  "candidate": {
+    "model": "pi/zai/glm-5.3",
+    "code_revision": "809b6891b9007bb839bf6e2905ce43df5dfeecd2",
+    "artifact_revision": "e2-synthetic-v1",
+    "skill_digest": "c6d5e49370edb4e27afe8d2e04d72403802b77d4e92189ea436fc6cdfc9c2078"
+  },
+  "observations": [
+    {
+      "case_id": "gross-margin-billable-population",
+      "evidence_kind": "current",
+      "outcome": "answer",
+      "model": "pi/zai/glm-5.3",
+      "provider": "zai",
+      "code_revision": "809b6891b9007bb839bf6e2905ce43df5dfeecd2",
+      "artifact_revision": "e2-synthetic-v1",
+      "skill_digest": "c6d5e49370edb4e27afe8d2e04d72403802b77d4e92189ea436fc6cdfc9c2078",
+      "snapshot_id": "e2-synthetic-v1",
+      "session_id": "01a11835-80fb-75c6-be0a-1f6d2f93deb2",
+      "run_id": "pi-subagent:096bec26-7c3c-45c0-ad5d-60234658d8a6",
+      "source_hash": "47444c1e99fefebe74444f088b8a0a6038eb3208903a1e9d2fbdb61d96721bb6",
+      "tokens": 185236,
+      "latency_ms": null,
+      "calls": [
+        {
+          "operation": "list-metrics",
+          "command": "./bin/ariadne list-metrics --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {},
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "search-context",
+          "command": "./bin/ariadne search-context billable orders --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "query": "billable orders"
+          },
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "search-context",
+          "command": "./bin/ariadne search-context gross margin --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "query": "gross margin"
+          },
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "search-context",
+          "command": "./bin/ariadne search-context EMEA currency cutover rate_to_usd --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "query": "EMEA currency cutover rate_to_usd"
+          },
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "get-metric",
+          "command": "./bin/ariadne get-metric gross_margin --dimension region --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "metric": "gross_margin",
+            "dimensions": [
+              "region"
+            ],
+            "period": "all_available_data",
+            "grain": "region",
+            "timezone": null,
+            "population": "billable_orders",
+            "excluded_statuses": [
+              "CANCELLED",
+              "RETURNED"
+            ],
+            "units": "ratio",
+            "denominator": "gross_revenue",
+            "entity": "order"
+          },
+          "exit": 0,
+          "result": {
+            "governed": true,
+            "rows": [
+              {
+                "region": "NA",
+                "gross_margin": 0.3640985278027471
+              },
+              {
+                "region": "APAC",
+                "gross_margin": 0.3667576965122099
+              },
+              {
+                "region": "EMEA",
+                "gross_margin": 0.3844192711869463
+              }
+            ],
+            "supported_citations": [
+              "metrics/gross_margin.md",
+              "policies/emea-currency-cutover.md",
+              "policies/order-status-billing.md"
+            ]
+          }
+        },
+        {
+          "operation": "search-examples",
+          "command": "./bin/ariadne search-examples gross margin by region billable orders --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "query": "gross margin by region billable orders"
+          },
+          "exit": 0,
+          "result": null
+        }
+      ],
+      "final_answer": "# Gross margin by region for billable orders\n\n**governed: true** — answered with the served, governed `gross_margin` metric (no time filter requested, so this covers all order history in the demo data).\n\n| Region | Gross margin |\n|--------|-------------|\n| NA | 0.3641 (36.41%) |\n| APAC | 0.3668 (36.68%) |\n| EMEA | 0.3844 (38.44%) |\n\nEMEA has the highest billable gross margin at 38.44%, followed by APAC at 36.68% and NA at 36.41%.\n\n**How it's computed:** the margin is a ratio of sums, not an average of per-row margins — (total revenue − total cost of goods) ÷ total revenue, aggregated per region.\n\n**Caveats that apply to these numbers:**\n- \"Billable\" excludes CANCELLED and RETURNED orders — rows with status CANCELLED or RETURNED are dropped from the revenue, cost, and denominator of every figure above.\n- Pre-2024 EMEA orders carry unconverted local currency (EUR/GBP): both `amount` and `product_cost` are multiplied by `rate_to_usd` (joined via currency) before aggregating, so EMEA's margin reflects USD-converted pre-2024 figures.\n\n**Provenance:** governed `get-metric gross_margin --dimension region` compiled to SQL over `orders` joined to `currency_conversion_rate`; context cited from the served metric page `metrics/gross_margin.md` and its Policies `policies/order-status-billing.md` and `policies/emea-currency-cutover.md` (full compiled SQL available on request). No context lifecycle warnings were raised.\n",
+      "final_answer_values": [
+        {
+          "region": "NA",
+          "gross_margin": 0.3641
+        },
+        {
+          "region": "APAC",
+          "gross_margin": 0.3668
+        },
+        {
+          "region": "EMEA",
+          "gross_margin": 0.3844
+        }
+      ]
+    },
+    {
+      "case_id": "order-count-population-clarification",
+      "evidence_kind": "current",
+      "outcome": "answer",
+      "model": "pi/zai/glm-5.3",
+      "provider": "zai",
+      "code_revision": "809b6891b9007bb839bf6e2905ce43df5dfeecd2",
+      "artifact_revision": "e2-synthetic-v1",
+      "skill_digest": "c6d5e49370edb4e27afe8d2e04d72403802b77d4e92189ea436fc6cdfc9c2078",
+      "snapshot_id": "e2-synthetic-v1",
+      "session_id": "01a11836-d022-75c6-be0a-1f6ec1129153",
+      "run_id": "pi-subagent:0f8bcac5-4de6-4acf-a5a9-6bb6335e72f7",
+      "source_hash": "b68fd922f7cbf2588dfa62add813b883307bddc42003cfe9f3d756db9dae67a3",
+      "tokens": 106061,
+      "latency_ms": null,
+      "calls": [
+        {
+          "operation": "list-metrics",
+          "command": "./bin/ariadne list-metrics --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {},
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "search-context",
+          "command": "./bin/ariadne search-context order count billable statuses --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "query": "order count billable statuses"
+          },
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "get-metric",
+          "command": "./bin/ariadne get-metric order_count --dimension region --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "metric": "order_count",
+            "dimensions": [
+              "region"
+            ],
+            "period": "all_available_data",
+            "grain": "region",
+            "timezone": null,
+            "population": "billable_orders",
+            "excluded_statuses": [
+              "CANCELLED",
+              "RETURNED"
+            ],
+            "units": "count",
+            "denominator": null,
+            "entity": "order"
+          },
+          "exit": 0,
+          "result": {
+            "governed": true,
+            "rows": [
+              {
+                "region": "NA",
+                "order_count": 154
+              },
+              {
+                "region": "APAC",
+                "order_count": 86
+              },
+              {
+                "region": "EMEA",
+                "order_count": 152
+              }
+            ],
+            "supported_citations": [
+              "metrics/order_count.md",
+              "policies/order-status-billing.md"
+            ]
+          }
+        },
+        {
+          "operation": "search-examples",
+          "command": "./bin/ariadne search-examples orders by region --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "query": "orders by region"
+          },
+          "exit": 0,
+          "result": null
+        }
+      ],
+      "final_answer": "# Orders by region\n\n**Governed answer (`governed: true`)** — from the served metric `order_count`, broken down by region:\n\n| Region | Order count |\n|--------|------------:|\n| NA | 154 |\n| APAC | 86 |\n| EMEA | 152 |\n| **Total** | **392** |\n\n**Caveat:** this counts billable orders only — it **excludes CANCELLED and RETURNED orders** (rows with status CANCELLED or RETURNED are dropped from every order-count number, per the order status billing rule).\n\n**Scope:** no date filter was applied, so the counts cover all orders in the data.\n\n**Provenance:** served metric page `metrics/order_count.md`, which cites policy `policies/order-status-billing.md`.\n",
+      "final_answer_values": [
+        {
+          "region": "NA",
+          "order_count": 154
+        },
+        {
+          "region": "APAC",
+          "order_count": 86
+        },
+        {
+          "region": "EMEA",
+          "order_count": 152
+        }
+      ]
+    },
+    {
+      "case_id": "gross-revenue-january-2024-calendar",
+      "evidence_kind": "current",
+      "outcome": "answer",
+      "model": "pi/zai/glm-5.3",
+      "provider": "zai",
+      "code_revision": "809b6891b9007bb839bf6e2905ce43df5dfeecd2",
+      "artifact_revision": "e2-synthetic-v1",
+      "skill_digest": "c6d5e49370edb4e27afe8d2e04d72403802b77d4e92189ea436fc6cdfc9c2078",
+      "snapshot_id": "e2-synthetic-v1",
+      "session_id": "01a11837-e131-75c6-be0a-1f700e558fb1",
+      "run_id": "pi-subagent:83e30b79-89c3-4578-8b3b-431a089dfac1",
+      "source_hash": "c82ac5c252bbe8c62765628a9bed79cd380746fcf5d1888a578c464f06cdbf68",
+      "tokens": 165379,
+      "latency_ms": null,
+      "calls": [
+        {
+          "operation": "list-metrics",
+          "command": "ls -la /tmp/e2-sess-c && echo --- && ./bin/ariadne list-metrics --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {},
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "search-context",
+          "command": "./bin/ariadne search-context gross revenue by region --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "query": "gross revenue by region"
+          },
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "search-context",
+          "command": "./bin/ariadne search-context revenue USD conversion --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "query": "revenue USD conversion"
+          },
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "get-metric",
+          "command": "./bin/ariadne get-metric --help 2>&1; echo ===; ./bin/ariadne --help 2>&1 | head -40",
+          "arguments": {
+            "help": true
+          },
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "get-metric",
+          "command": "./bin/ariadne get-metric gross_revenue --dimension region --start 2024-01-01 --end 2024-01-31 --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "start": "2024-01-01",
+            "end": "2024-01-31",
+            "metric": "gross_revenue",
+            "dimensions": [
+              "region"
+            ],
+            "period": "2024-01-01..2024-01-31",
+            "grain": "region",
+            "timezone": null,
+            "population": "billable_orders",
+            "excluded_statuses": [
+              "CANCELLED",
+              "RETURNED"
+            ],
+            "units": "usd",
+            "denominator": null,
+            "entity": "order"
+          },
+          "exit": 0,
+          "result": {
+            "governed": true,
+            "rows": [
+              {
+                "region": "EMEA",
+                "gross_revenue": 3249.95
+              },
+              {
+                "region": "NA",
+                "gross_revenue": 1443.03
+              },
+              {
+                "region": "APAC",
+                "gross_revenue": 2939.09
+              }
+            ],
+            "supported_citations": [
+              "metrics/gross_revenue.md",
+              "policies/emea-currency-cutover.md",
+              "policies/order-status-billing.md"
+            ]
+          }
+        },
+        {
+          "operation": "search-examples",
+          "command": "./bin/ariadne search-examples gross revenue by region January 2024 --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "query": "gross revenue by region January 2024"
+          },
+          "exit": 0,
+          "result": null
+        }
+      ],
+      "final_answer": "# Gross revenue in USD by region — January 2024\n\n**Governed: true** — served metric `gross_revenue`, queried on its primary date dimension for the calendar month (2024-01-01 through 2024-01-31, inclusive).\n\n| Region | Gross revenue (USD) |\n|---|---|\n| EMEA | 3,249.95 |\n| NA | 1,443.03 |\n| APAC | 2,939.09 |\n| Total | 7,632.07 |\n\n(Total is the sum of the three region rows.)\n\n**Caveats** (restated from the served context):\n\n- Excludes orders with status CANCELLED and RETURNED — these are not billable and are not counted as revenue.\n- Per the EMEA currency cutover, pre-2024 EMEA orders are converted to USD (multiplied by `rate_to_usd`) before aggregating. All rows in this January 2024 window are on or after 2024-01-01, so no FX conversion was applied to these figures.\n\n**Provenance:** served metric page `metrics/gross_revenue.md`, which cites policies `policies/order-status-billing.md` and `policies/emea-currency-cutover.md`. The number comes from the governed metric compiled by the Ariadne gate (compiled SQL and trace available on request).\n",
+      "final_answer_values": [
+        {
+          "region": "EMEA",
+          "gross_revenue": 3249.95
+        },
+        {
+          "region": "NA",
+          "gross_revenue": 1443.03
+        },
+        {
+          "region": "APAC",
+          "gross_revenue": 2939.09
+        }
+      ]
+    },
+    {
+      "case_id": "cross-fact-orders-lines-totals-by-region",
+      "evidence_kind": "current",
+      "outcome": "answer",
+      "model": "pi/zai/glm-5.3",
+      "provider": "zai",
+      "code_revision": "809b6891b9007bb839bf6e2905ce43df5dfeecd2",
+      "artifact_revision": "e2-synthetic-v1",
+      "skill_digest": "c6d5e49370edb4e27afe8d2e04d72403802b77d4e92189ea436fc6cdfc9c2078",
+      "snapshot_id": "e2-synthetic-v1",
+      "session_id": "01a11839-1a3d-75c6-be0a-1f7390ad75c1",
+      "run_id": "pi-subagent:e9b6c632-77ee-4283-b562-b9ac7b0cff50",
+      "source_hash": "751ba45f2ee3097063e40f805281ff47350948a6aa208bbd1a3e69c25e24d28a",
+      "tokens": 258397,
+      "latency_ms": null,
+      "calls": [
+        {
+          "operation": "list-metrics",
+          "command": "cd /tmp/e2-sess-d && ./bin/ariadne list-metrics --sources ./ariadne.yaml --served ./served --staging ./staging",
+          "arguments": {},
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "search-context",
+          "command": "cd /tmp/e2-sess-d && ./bin/ariadne search-context order amount by region --sources ./ariadne.yaml --served ./served --staging ./staging",
+          "arguments": {
+            "query": "order amount by region"
+          },
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "query-metrics",
+          "command": "cd /tmp/e2-sess-d && ./bin/ariadne query-metrics --help 2>&1 | head -40",
+          "arguments": {
+            "help": true
+          },
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "query-metrics",
+          "command": "cd /tmp/e2-sess-d && echo {\"metrics\": [\"orders_total\", \"lines_total\"], \"dimensions\": [\"region\"]} | ./bin/ariadne query-metrics --sources ./ariadne.yaml --served ./served --staging ./staging",
+          "arguments": {
+            "metrics": [
+              "orders_total",
+              "lines_total"
+            ],
+            "dimensions": [
+              "region"
+            ],
+            "filters": null,
+            "period": "all_available_data",
+            "grain": "region",
+            "timezone": null,
+            "entity": null,
+            "population": null,
+            "denominator": null,
+            "units": "usd"
+          },
+          "exit": 0,
+          "result": {
+            "governed": true,
+            "rows": [
+              {
+                "region": "NA",
+                "orders_total": 300.0,
+                "lines_total": 300.0
+              },
+              {
+                "region": "EMEA",
+                "orders_total": 400.0,
+                "lines_total": 400.0
+              }
+            ],
+            "supported_citations": [
+              "computations/lines_total.md",
+              "computations/orders_total.md",
+              "metrics/lines_total.md",
+              "metrics/orders_total.md",
+              "policies/region-rollup.md"
+            ]
+          }
+        }
+      ],
+      "final_answer": "# Total order amount and total order-line amount by region\n\n**Governed answer** (`governed: true`, served by `ariadne query-metrics` over the admitted multi-fact graph, admission route `local-promotion`).\n\n| Region | orders_total (USD) | lines_total (USD) |\n|--------|-------------------:|-------------------:|\n| NA     |             300.00 |             300.00 |\n| EMEA   |             400.00 |             400.00 |\n\nComplete result set — 2 rows, nothing truncated. Each fact aggregated at its own grain (order totals from `demo.main.orders`, line totals from `demo.main.order_lines`) and aligned on the conformed `region` dimension; no fact-to-fact join ran.\n\nCaveats:\n\n- Amounts are in USD (per the Region rollup policy).\n- Each total is computed at its own fact grain: `orders_total` sums one row per order (`order_id` grain) and `lines_total` sums one row per order line (`line_id` grain); a fact total is never computed over a joined fact-to-fact row set, so neither total double-counts the other.\n- No time window, status, or other filters were applied — these totals cover every row in each fact.\n- `governed: true` here means Promoted (admitted via legacy Promotion), not independently value-attested: `attestation: pending` — compile and grain checks passed, but no expected-value oracle is cited.\n\nProvenance: metric pages `context_layer/metrics/orders_total.md` and `context_layer/metrics/lines_total.md`, each citing Policy `policies/region-rollup.md`. Admission: route `local-promotion`, reviewed digest `38732d78eecf610f8bc44ca87a4a88f00e26e14cbf18bb1b073294c897534cc5`, revision 1, validation scope structural+bind+grain; the per-request grain audits for both facts passed.\n",
+      "final_answer_values": [
+        {
+          "region": "NA",
+          "orders_total": 300.0,
+          "lines_total": 300.0
+        },
+        {
+          "region": "EMEA",
+          "orders_total": 400.0,
+          "lines_total": 400.0
+        }
+      ]
+    },
+    {
+      "case_id": "cross-fact-latam-empty",
+      "evidence_kind": "current",
+      "outcome": "answer",
+      "model": "pi/zai/glm-5.3",
+      "provider": "zai",
+      "code_revision": "809b6891b9007bb839bf6e2905ce43df5dfeecd2",
+      "artifact_revision": "e2-synthetic-v1",
+      "skill_digest": "c6d5e49370edb4e27afe8d2e04d72403802b77d4e92189ea436fc6cdfc9c2078",
+      "snapshot_id": "e2-synthetic-v1",
+      "session_id": "01a11839-1a3d-75c6-be0a-1f7390ad75c1",
+      "run_id": "pi-subagent:e9b6c632-77ee-4283-b562-b9ac7b0cff50",
+      "source_hash": "751ba45f2ee3097063e40f805281ff47350948a6aa208bbd1a3e69c25e24d28a",
+      "tokens": 258397,
+      "latency_ms": null,
+      "calls": [
+        {
+          "operation": "query-metrics",
+          "command": "cd /tmp/e2-sess-d && echo {\"metrics\": [\"orders_total\", \"lines_total\"], \"dimensions\": [\"region\"], \"filters\": [{\"dimension\": \"region\", \"op\": \"eq\", \"value\": \"LATAM\"}]} | ./bin/ariadne query-metrics --sources ./ariadne.yaml --served ./served --staging ./staging > /tmp/q2.json; echo exit=$?; head -c 2500 /tmp/q2.json",
+          "arguments": {
+            "metrics": [
+              "orders_total",
+              "lines_total"
+            ],
+            "dimensions": [
+              "region"
+            ],
+            "filters": [
+              {
+                "dimension": "region",
+                "op": "eq",
+                "value": "LATAM"
+              }
+            ],
+            "period": "all_available_data",
+            "grain": "region",
+            "timezone": null,
+            "entity": null,
+            "population": null,
+            "denominator": null,
+            "units": null
+          },
+          "exit": 1,
+          "result": null
+        },
+        {
+          "operation": "query-metrics",
+          "command": "cd /tmp/e2-sess-d && echo {\"metrics\": [\"orders_total\", \"lines_total\"], \"dimensions\": [\"region\"], \"filters\": [{\"field\": \"region\", \"op\": \"eq\", \"value\": \"LATAM\"}]} | ./bin/ariadne query-metrics --sources ./ariadne.yaml --served ./served --staging ./staging > /tmp/q2.json; echo exit=$?; python3 -c \nimport json\nd=json.load(open('/tmp/q2.json'))\nprint(json.dumps({k:d[k] for k in ('metrics','dimensions','columns','rows','sql') if k in d}, indent=2))\nprint('governed:', d.get('governed'))\nprint('admission route:', d.get('admission',{}).get('route'))\nprint('attestation orders_total:', d['context']['orders_total'].get('attestation'))\nprint('governed_note:', d['context']['orders_total'].get('governed_note'))\nprint('warnings:', d['context']['orders_total']['context_signals']['warnings'], d['context']['lines_total']['context_signals']['warnings'])\nprint('plan audits:', json.dumps(d['plan']['audits']))\nprint('plan branches:', json.dumps(d['plan']['branches']))\nprint('rows raw:', json.dumps(d.get('rows')))\n",
+          "arguments": {
+            "metrics": [
+              "orders_total",
+              "lines_total"
+            ],
+            "dimensions": [
+              "region"
+            ],
+            "filters": [
+              {
+                "field": "region",
+                "op": "eq",
+                "value": "LATAM"
+              }
+            ],
+            "period": "all_available_data",
+            "grain": "region",
+            "timezone": null,
+            "entity": null,
+            "population": null,
+            "denominator": null,
+            "units": null
+          },
+          "exit": 1,
+          "result": null
+        },
+        {
+          "operation": "query-metrics",
+          "command": "cd /tmp/e2-sess-d && echo {\"metrics\": [\"orders_total\", \"lines_total\"], \"dimensions\": [\"region\"], \"filters\": [{\"field\": \"region\", \"op\": \"=\", \"value\": \"LATAM\"}]} | ./bin/ariadne query-metrics --sources ./ariadne.yaml --served ./served --staging ./staging > /tmp/q2.json; echo exit=$?; python3 -c \nimport json\nd=json.load(open('/tmp/q2.json'))\nprint(json.dumps({k:d[k] for k in ('metrics','dimensions','columns','rows','sql') if k in d}, indent=2))\nprint('governed:', d.get('governed'))\nprint('admission route:', d.get('admission',{}).get('route'))\nprint('attestation orders_total:', d['context']['orders_total'].get('attestation'))\nprint('governed_note:', d['context']['orders_total'].get('governed_note'))\nprint('warnings:', d['context']['orders_total']['context_signals']['warnings'], d['context']['lines_total']['context_signals']['warnings'])\nprint('plan audits:', json.dumps(d['plan']['audits']))\nprint('plan branches:', json.dumps(d['plan']['branches']))\n",
+          "arguments": {
+            "metrics": [
+              "orders_total",
+              "lines_total"
+            ],
+            "dimensions": [
+              "region"
+            ],
+            "filters": [
+              {
+                "field": "region",
+                "op": "=",
+                "value": "LATAM"
+              }
+            ],
+            "period": "all_available_data",
+            "grain": "region",
+            "timezone": null,
+            "entity": null,
+            "population": null,
+            "denominator": null,
+            "units": "usd"
+          },
+          "exit": 0,
+          "result": {
+            "governed": true,
+            "rows": [],
+            "supported_citations": [
+              "computations/lines_total.md",
+              "computations/orders_total.md",
+              "metrics/lines_total.md",
+              "metrics/orders_total.md",
+              "policies/region-rollup.md"
+            ]
+          },
+          "output_file": "/tmp/q2.json",
+          "output_file_sha256": "733678118b3716a0249490e763013442b3a289dcf6c06f06d25bb3faa2357a3b"
+        }
+      ],
+      "final_answer": "# Total order amount and total order-line amount for the LATAM region\n\n**Governed answer** (`governed: true`, served by `ariadne query-metrics` over the admitted multi-fact graph, admission route `local-promotion`).\n\nThe multi-fact query filtered to `region = 'LATAM'` returns **no rows**:\n\n| Region | orders_total (USD) | lines_total (USD) |\n|--------|-------------------:|-------------------:|\n| *(empty result — no rows)* | | |\n\nThere is no LATAM data in this dataset. The unfiltered governed by-region query returns only the regions NA and EMEA, so no LATAM rows exist in either fact under any spelling; with the exact-match filter `region = 'LATAM'` applied to both facts, the totals are:\n\n- Total order amount for LATAM: **0.00 USD** (no orders)\n- Total order-line amount for LATAM: **0.00 USD** (no order lines)\n\nThis is an absence of data (no LATAM rows at all), not a region with zero-amount rows.\n\nCaveats:\n\n- Amounts are in USD (per the Region rollup policy).\n- Each total is computed at its own fact grain: `orders_total` sums one row per order (`order_id` grain) and `lines_total` sums one row per order line (`line_id` grain); a fact total is never computed over a joined fact-to-fact row set.\n- The only filter applied is the exact-equality `region = 'LATAM'`; no time window or status filters were involved.\n- `governed: true` here means Promoted (admitted via legacy Promotion), not independently value-attested: `attestation: pending` — compile and grain checks passed, but no expected-value oracle is cited.\n\nProvenance: metric pages `context_layer/metrics/orders_total.md` and `context_layer/metrics/lines_total.md`, each citing Policy `policies/region-rollup.md`. Admission: route `local-promotion`, reviewed digest `38732d78eecf610f8bc44ca87a4a88f00e26e14cbf18bb1b073294c897534cc5`, revision 1, validation scope structural+bind+grain; the per-request grain audits for both facts passed.\n",
+      "final_answer_values": []
+    },
+    {
+      "case_id": "gross-margin-by-product-category-unsupported",
+      "evidence_kind": "current",
+      "outcome": "unsupported",
+      "model": "pi/zai/glm-5.3",
+      "provider": "zai",
+      "code_revision": "809b6891b9007bb839bf6e2905ce43df5dfeecd2",
+      "artifact_revision": "e2-synthetic-v1",
+      "skill_digest": "c6d5e49370edb4e27afe8d2e04d72403802b77d4e92189ea436fc6cdfc9c2078",
+      "snapshot_id": "e2-synthetic-v1",
+      "session_id": "01a1183a-e4f9-75c6-be0a-1f755eb6a6a4",
+      "run_id": "pi-subagent:ca8e234b-a0bb-441c-87c4-1b633d36c857",
+      "source_hash": "650d9feab798895b97a1a4c63910c013e318cf808603e820f3b3ea05c2c156cb",
+      "tokens": 154370,
+      "latency_ms": null,
+      "calls": [
+        {
+          "operation": "list-metrics",
+          "command": "./bin/ariadne list-metrics --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {},
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "search-context",
+          "command": "./bin/ariadne search-context gross margin by product category --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "query": "gross margin by product category"
+          },
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "list-datasets",
+          "command": "./bin/ariadne list-datasets --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {},
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "search-examples",
+          "command": "./bin/ariadne search-examples gross margin by product category --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "query": "gross margin by product category"
+          },
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "get-metric",
+          "command": "./bin/ariadne get-metric gross_margin --dimension product_category --db ./demo.db --served ./served --staging ./staging; echo exit=$?",
+          "arguments": {
+            "metric": "gross_margin",
+            "dimensions": [
+              "product_category"
+            ],
+            "period": "all_available_data",
+            "grain": "product_category",
+            "timezone": null,
+            "population": null,
+            "excluded_statuses": null,
+            "units": "ratio",
+            "denominator": null,
+            "entity": "order"
+          },
+          "exit": 1,
+          "result": null
+        },
+        {
+          "operation": "get-metric",
+          "command": "./bin/ariadne get-metric gross_margin --dimension region --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "metric": "gross_margin",
+            "dimensions": [
+              "region"
+            ],
+            "period": "all_available_data",
+            "grain": "region",
+            "timezone": null,
+            "population": "billable_orders",
+            "excluded_statuses": [
+              "CANCELLED",
+              "RETURNED"
+            ],
+            "units": "ratio",
+            "denominator": "gross_revenue",
+            "entity": "order"
+          },
+          "exit": 0,
+          "result": {
+            "governed": true,
+            "rows": [
+              {
+                "region": "NA",
+                "gross_margin": 0.3640985278027471
+              },
+              {
+                "region": "APAC",
+                "gross_margin": 0.3667576965122099
+              },
+              {
+                "region": "EMEA",
+                "gross_margin": 0.3844192711869463
+              }
+            ],
+            "supported_citations": [
+              "metrics/gross_margin.md",
+              "policies/emea-currency-cutover.md",
+              "policies/order-status-billing.md"
+            ]
+          }
+        }
+      ],
+      "final_answer": "# Gross margin by product category\n\n**Not computable as asked: this project has no product-category data.**\n\nThe only tables available in this project are:\n\n- `orders` — order_id, customer_id, order_timestamp, status, region_code, currency, amount, product_cost\n- `customers` — id, name, country\n- `currency_conversion_rate` — currency, rate_to_usd\n\nThe `orders` table records one order-level `amount` and `product_cost` but no product, SKU, or category column, and there is no product table to join to. Requesting the dimension from the governed metric is refused by the compile gate with: `unknown dimension 'product_category'; available dimensions: amount, fx_rate, order_date, order_id, product_cost, region, status`. An ad-hoc `define_metric` cannot create the cut either — a product-category field simply does not exist in any queryable dataset, so no governed or ad-hoc definition can aggregate by it.\n\n## Closest available governed breakdown: gross margin by region\n\nThis is an alternative cut, not the requested one. Governed metric `gross_margin` (governed: true — the served, promoted definition; compile and grain checks passed), queried with `ariadne get-metric gross_margin --dimension region`:\n\n| Region | Gross margin (ratio) | Gross margin (%) |\n|---|---|---|\n| NA   | 0.3640985278027471 | 36.41% |\n| APAC | 0.3667576965122099 | 36.68% |\n| EMEA | 0.3844192711869463 | 38.44% |\n\nCaveats that apply to these numbers (from the served metric page `context_layer/metrics/gross_margin.md` and its cited Policies `policies/order-status-billing.md` and `policies/emea-currency-cutover.md`):\n\n1. **Ratio of sums, not an average of per-row margins** — gross margin = (gross revenue − COGS) / gross revenue computed over the whole group.\n2. **Excludes CANCELLED and RETURNED orders** — rows with status CANCELLED or RETURNED are excluded from both the revenue and the cost figures.\n3. **Pre-2024 EMEA orders are converted to USD** — those rows carry unconverted local currency (EUR/GBP) and both `amount` and `product_cost` are multiplied by `rate_to_usd` before aggregating.\n\nIf product-category data is added to this project (a category column on `orders` or a product table), the by-category cut can be authored through the normal authoring loop and served as a governed metric. On today's data, gross margin by product category is not covered.\n"
+    },
+    {
+      "case_id": "gross-revenue-partial-period-january-2024",
+      "evidence_kind": "current",
+      "outcome": "answer",
+      "model": "pi/zai/glm-5.3",
+      "provider": "zai",
+      "code_revision": "809b6891b9007bb839bf6e2905ce43df5dfeecd2",
+      "artifact_revision": "e2-synthetic-v1",
+      "skill_digest": "c6d5e49370edb4e27afe8d2e04d72403802b77d4e92189ea436fc6cdfc9c2078",
+      "snapshot_id": "e2-synthetic-v1",
+      "session_id": "01a11860-8f57-75c6-be0a-1f760ced64f0",
+      "run_id": "pi-subagent:6f0ba464-1636-4645-9a26-298e648514ef",
+      "source_hash": "27bc3fbd5bce2fa891fcfaa1aa7249f2282c7edae130815312cd1211fe4632ac",
+      "tokens": 105134,
+      "latency_ms": null,
+      "calls": [
+        {
+          "operation": "list-metrics",
+          "command": "./bin/ariadne list-metrics --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {},
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "get-metric",
+          "command": "./bin/ariadne get-metric gross_revenue --dimension region --start 2024-01-01 --end 2024-01-10 --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "start": "2024-01-01",
+            "end": "2024-01-10",
+            "metric": "gross_revenue",
+            "dimensions": [
+              "region"
+            ],
+            "period": "2024-01-01..2024-01-10",
+            "grain": "region",
+            "timezone": null,
+            "population": "billable_orders",
+            "excluded_statuses": [
+              "CANCELLED",
+              "RETURNED"
+            ],
+            "units": "usd",
+            "denominator": null,
+            "entity": "order"
+          },
+          "exit": 0,
+          "result": {
+            "governed": true,
+            "rows": [
+              {
+                "region": "APAC",
+                "gross_revenue": 2351.4300000000003
+              },
+              {
+                "region": "NA",
+                "gross_revenue": 864.29
+              },
+              {
+                "region": "EMEA",
+                "gross_revenue": 625.57
+              }
+            ],
+            "supported_citations": [
+              "metrics/gross_revenue.md",
+              "policies/emea-currency-cutover.md",
+              "policies/order-status-billing.md"
+            ]
+          }
+        },
+        {
+          "operation": "search-context",
+          "command": "./bin/ariadne search-context gross revenue USD region exclusions --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "query": "gross revenue USD region exclusions"
+          },
+          "exit": 0,
+          "result": null
+        },
+        {
+          "operation": "search-examples",
+          "command": "./bin/ariadne search-examples gross revenue by region January 2024 --db ./demo.db --served ./served --staging ./staging",
+          "arguments": {
+            "query": "gross revenue by region January 2024"
+          },
+          "exit": 0,
+          "result": null
+        }
+      ],
+      "final_answer": "# Gross revenue in USD by region, January 1–10, 2024\n\n**Governed answer** — served by the governed `gross_revenue` metric (governed: true), dimension `region`, with the order date window 2024-01-01 through 2024-01-10 inclusive.\n\n| Region | Gross revenue (USD) |\n|---|---|\n| APAC | $2,351.43 |\n| NA | $864.29 |\n| EMEA | $625.57 |\n| **Total** | **$3,841.29** |\n\n(Total is the sum of the regional rows returned by the metric.)\n\n## Caveats (business rules applied by this metric)\n\n- **Excludes CANCELLED and RETURNED orders.** Orders with status `CANCELLED` or `RETURNED` are excluded from the revenue sum — only billable statuses count as revenue.\n- **Pre-2024 EMEA currency conversion.** Pre-2024 EMEA orders are stored in unconverted local currency (EUR/GBP) and are converted to USD by multiplying by `rate_to_usd` before aggregating. This window (Jan 1–10, 2024) contains only 2024 dates, so no row in this result required conversion.\n\n## Provenance\n\n- Governed metric page: `metrics/gross_revenue.md` (billed revenue in USD, the sum of order amounts over billable orders)\n- Cited policies: `policies/order-status-billing.md` and `policies/emea-currency-cutover.md`\n\nDerivation: `ariadne get-metric gross_revenue --dimension region --start 2024-01-01 --end 2024-01-10` — one governed aggregation over `demo.main.orders` (with a many-to-one `currency_conversion_rate` lookup), grouping by region and summing USD amounts over the billable-status window above. The full compiled SQL is available on request.\n",
+      "final_answer_values": [
+        {
+          "region": "APAC",
+          "gross_revenue": 2351.43
+        },
+        {
+          "region": "NA",
+          "gross_revenue": 864.29
+        },
+        {
+          "region": "EMEA",
+          "gross_revenue": 625.57
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "description": "Issue #51 (E2): fresh current-Agent observations for the synthetic business cases, one fresh Pi child session per independent case (session d carries the two cross-fact questions; session b serves only the clarification-failure case; the paired post-follow-up case has no observation and stays pending). All commands, results and answers are extracted from the recorded session JSONL files; answers are the sessions' own write payloads, byte-compared against the files written on disk (identical). Nothing was rewritten to fit checks: the failed observations stay failed. Fix1 (parent-dispositioned): added the bounded partial-period session; removed the unobserved post-follow-up paired observation (that case stays pending); timezone is explicitly declared pending/unverified (no timezone semantics in the synthetic slice).",
+    "recording": {
+      "host": "pi",
+      "sessions": {
+        "session-a": {
+          "purpose": "gross-margin-billable-population",
+          "run_id": "pi-subagent:096bec26-7c3c-45c0-ad5d-60234658d8a6",
+          "jsonl_path": "/home/volker/.pi/agent/sessions/--home-volker-.paseo-worktrees-079pxy11-orchestrator-issues-47-50-20261007-worker-e2--/2026-10-07T20-55-30-875Z_01a11826-613a-77ea-a3cf-b646328ff44e/096bec26-7c3c-45c0-ad5d-60234658d8a6/run-0/session.jsonl",
+          "jsonl_sha256": "47444c1e99fefebe74444f088b8a0a6038eb3208903a1e9d2fbdb61d96721bb6",
+          "cwd": "/tmp/e2-sess-a"
+        },
+        "session-b": {
+          "purpose": "order-count population (no clarification exchange)",
+          "run_id": "pi-subagent:0f8bcac5-4de6-4acf-a5a9-6bb6335e72f7",
+          "jsonl_path": "/home/volker/.pi/agent/sessions/--home-volker-.paseo-worktrees-079pxy11-orchestrator-issues-47-50-20261007-worker-e2--/2026-10-07T20-55-30-875Z_01a11826-613a-77ea-a3cf-b646328ff44e/0f8bcac5-4de6-4acf-a5a9-6bb6335e72f7/run-0/session.jsonl",
+          "jsonl_sha256": "b68fd922f7cbf2588dfa62add813b883307bddc42003cfe9f3d756db9dae67a3",
+          "cwd": "/tmp/e2-sess-b"
+        },
+        "session-c": {
+          "purpose": "gross-revenue-january-2024-calendar",
+          "run_id": "pi-subagent:83e30b79-89c3-4578-8b3b-431a089dfac1",
+          "jsonl_path": "/home/volker/.pi/agent/sessions/--home-volker-.paseo-worktrees-079pxy11-orchestrator-issues-47-50-20261007-worker-e2--/2026-10-07T20-55-30-875Z_01a11826-613a-77ea-a3cf-b646328ff44e/83e30b79-89c3-4578-8b3b-431a089dfac1/run-0/session.jsonl",
+          "jsonl_sha256": "c82ac5c252bbe8c62765628a9bed79cd380746fcf5d1888a578c464f06cdbf68",
+          "cwd": "/tmp/e2-sess-c"
+        },
+        "session-d": {
+          "purpose": "cross-fact totals + LATAM empty (two questions, one session)",
+          "run_id": "pi-subagent:e9b6c632-77ee-4283-b562-b9ac7b0cff50",
+          "jsonl_path": "/home/volker/.pi/agent/sessions/--home-volker-.paseo-worktrees-079pxy11-orchestrator-issues-47-50-20261007-worker-e2--/2026-10-07T20-55-30-875Z_01a11826-613a-77ea-a3cf-b646328ff44e/e9b6c632-77ee-4283-b562-b9ac7b0cff50/run-0/session.jsonl",
+          "jsonl_sha256": "751ba45f2ee3097063e40f805281ff47350948a6aa208bbd1a3e69c25e24d28a",
+          "cwd": "/tmp/e2-sess-d"
+        },
+        "session-e": {
+          "purpose": "gross-margin-by-product-category-unsupported",
+          "run_id": "pi-subagent:ca8e234b-a0bb-441c-87c4-1b633d36c857",
+          "jsonl_path": "/home/volker/.pi/agent/sessions/--home-volker-.paseo-worktrees-079pxy11-orchestrator-issues-47-50-20261007-worker-e2--/2026-10-07T20-55-30-875Z_01a11826-613a-77ea-a3cf-b646328ff44e/ca8e234b-a0bb-441c-87c4-1b633d36c857/run-0/session.jsonl",
+          "jsonl_sha256": "650d9feab798895b97a1a4c63910c013e318cf808603e820f3b3ea05c2c156cb",
+          "cwd": "/tmp/e2-sess-e"
+        },
+        "session-f": {
+          "purpose": "gross-revenue-partial-period-january-2024 (fix1 finding 1a)",
+          "run_id": "pi-subagent:6f0ba464-1636-4645-9a26-298e648514ef",
+          "jsonl_path": "/home/volker/.pi/agent/sessions/--home-volker-.paseo-worktrees-079pxy11-orchestrator-issues-47-50-20261007-worker-e2--/2026-10-07T20-55-30-875Z_01a11826-613a-77ea-a3cf-b646328ff44e/6f0ba464-1636-4645-9a26-298e648514ef/run-0/session.jsonl",
+          "jsonl_sha256": "27bc3fbd5bce2fa891fcfaa1aa7249f2282c7edae130815312cd1211fe4632ac",
+          "cwd": "/tmp/e2-sess-f"
+        }
+      },
+      "skill_install": "ariadne-skill install --scope project --agent pi in each isolated /tmp session cwd; packaged==installed SKILL.md digest c6d5e49370edb4e27afe8d2e04d72403802b77d4e92189ea436fc6cdfc9c2078 (the integrated candidate, equal to the refreshed tests/evals/agent_trace.json _meta digest) verified in every session dir BEFORE the first call.",
+      "cli_wrapper": "bin/ariadne in each session cwd executes the lane tree's src (candidate code_revision 809b6891b9007bb839bf6e2905ce43df5dfeecd2) through the project venv.",
+      "slice": {
+        "retail": "seed demo.db (byte-deterministic retail seed) + served context: golden policies order-status-billing.md and emea-currency-cutover.md, golden metrics/gross_margin.md, this slice's metrics/gross_revenue.md and metrics/order_count.md citing the valid policies, golden semantic model orders.yml; served-tree digest 7655593b2fc4fbc07609fd1d27fe3e67604810d17c7f9849402658311aac21c4",
+        "mf": "tests/test_multifact.py source fixture data (orders 1:N order_lines with repeated facts) behind an admitted (human-Promoted, route local-promotion, reviewed digest 38732d78eecf610f8bc44ca87a4a88f00e26e14cbf18bb1b073294c897534cc5) two-fact graph with a region conformed dimension and a Region rollup policy stating each fact aggregates at its own grain and amounts are in USD; served-tree digest 30ade963cdfb8d389a54316af139fc44c1a96f70e641640a3744c273ffa33a13"
+      },
+      "operator_manifest": {
+        "version": 1,
+        "id": "e2-synthetic-v1",
+        "inputs": [
+          {
+            "source": "synthetic_demo",
+            "kind": "sqlite",
+            "path": "/home/volker/coding/ariadne/.orchestrator/issues-47-50-20261007/evidence/e2-synthetic/retail/demo.db",
+            "sha256": "16502d5be3c58462880227c40aa4bf5eedc44fb3fd6253281635d7affcdc7404"
+          },
+          {
+            "source": "synthetic_multifact",
+            "kind": "sqlite",
+            "path": "/home/volker/coding/ariadne/.orchestrator/issues-47-50-20261007/evidence/e2-synthetic/mf/mf.db",
+            "sha256": "121c73551a3498ff2f772dba44cda659c78bf0978a94d46d7a182af8b34a7644"
+          }
+        ]
+      },
+      "oracle_sql_sha256": {
+        "cross_fact_totals_by_region.sql": "d1ff37fe27e5cebd43accd919c64c9d044d248021b0bd31020f4811774268789",
+        "cross_fact_totals_latam_empty.sql": "fa06a3130d13b06239cc02c38bff28ed5178dc57dab928650b9522f7fe04c4c5",
+        "gross_revenue_january_1_10_2024_by_region.sql": "0681cf174a4eefbf7f92c63486111766d5595f76bae622bc973f276e34d10692",
+        "gross_revenue_january_2024_by_region.sql": "0ee628ef7ee947f72c7c559cdc73f09aafb07a12dbdfd4296abe86d8b3b986de",
+        "order_count_billable_by_region.sql": "eedd2736c3b0e00bc3d2836a9bc4b65a823b3705a0e5e7214df206825cdf16c9"
+      },
+      "operator_manifest_note": "The operator snapshot manifest used by the checker run is retained at evidence/e2-synthetic/snapshot-manifest.json; the checker was invoked with the operator-resolved path tests/evals/business_answer_snapshot_manifest.json (transient copy, removed from the checkout after the run)."
+    },
+    "extraction": {
+      "tool": "/home/volker/coding/ariadne/.orchestrator/issues-47-50-20261007/evidence/e2-synthetic/extract_trace.py",
+      "reextraction": "A second independent run of the extractor over the same session JSONL files produced byte-identical observations (cmp-verified). An independent toolCall-level count of executed ariadne invocations per session (6/4/6/7/6 for a/b/c/d/e) matches the extracted call lists.",
+      "rules": "Per-call arguments canonicalize the observed command plus the definitions the call actually returned: metric/metrics/dimensions/start/end/filters parsed from the command line (query-metrics requests come from the JSON the session piped); period derived from --start/--end; grain is the single observed grouping dimension; entity/population/units/denominator/excluded_statuses derive from the returned metric page, cited Policy bodies and context_signals paths (billing policy cited -> population billable_orders + excluded statuses; metric description -> units; gross_margin compiled SQL denominator -> gross_revenue; Region rollup 'Amounts are in USD' -> usd); timezone stays null (this slice serves no timezone semantics). Exit codes follow the CLI contract (single {error} JSON object <=> nonzero), cross-checked against the bash toolResult isError flag. Calls with non-object JSON output (list-metrics arrays, --help text) record result null; their full output remains in the retained session JSONL. final_answer_values parse the sessions' answer-file markdown tables (first float per value cell; 'Total' rows and empty-result placeholders excluded).",
+      "honest_notes": [
+        "Session b did NOT ask the declared clarification: it judged 'How many orders did we get by region?' unambiguous and answered directly with the served billable order_count. The order-count-population-clarification observation therefore records outcome=answer against expected_outcome=clarification and stays failed; the paired order-count-billable-by-region case has no observation (removed in fix1: the follow-up was never observed) and stays pending; session b's direct answer is evidence only for the clarification-failure case.",
+        "Session a presented gross margin rounded to 4 decimals (e.g. 0.3641) in its final answer; the accepted case comparison tolerance is 1e-6 against the oracle values, so the final_answer_values comparison fails honestly even though the tool rows were exact.",
+        "Session d made two rejected filter-schema probes (dimension/eq dialects) before the accepted {field, op, value} form; all three calls are recorded in the LATAM observation, including the failures.",
+        "Session d redirected its final query-metrics JSON to the scratch file /tmp/q2.json and printed its own subset view; the recorded verbatim result for that call is the session's own redirect file (rows cross-checked against the printed view, file sha256 recorded per call). Two rejected filter-schema probes precede the accepted request and are recorded as failed calls.",
+        "Fix1 finding 2: session b's direct answer is recorded ONLY under the clarification-failure case; the order-count-billable-by-region case keeps its post-follow-up requirement and has NO observation (its disposition is unverified/pending: follow-up never observed - the agent answered directly).",
+        "Fix1 finding 1a: session f (fresh, same discipline: isolated cwd, candidate digest verified before the first call, pi/zai/glm-5.3) answered the bounded partial-period question with the exact bounds --start 2024-01-01 --end 2024-01-10; values match the independent SQL oracle within tolerance.",
+        "Fix1 finding 1b: timezone coverage is declared pending/unverified in the case contracts (pending_axes.timezone) - the synthetic slice serves no timezone semantics; no TZ observation was fabricated.",
+        "Fix1 finding 3 (parent-authorized checker delta): citation acceptance now also admits the known context_layer/ root prefix followed by a path that EXACTLY matches a returned page; basename matching remains impossible and prefixed paths matching no returned page still fail (failing-first repro in tests/test_business_answers.py::test_truthful_context_layer_prefixed_citation_counts_as_returned)."
+      ]
+    }
+  }
+}

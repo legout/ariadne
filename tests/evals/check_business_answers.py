@@ -421,6 +421,24 @@ def compare_rows(actual: Any, expected: list[dict[str, Any]], comparison: dict[s
     return True, ""
 
 
+# Known served-root prefixes an answer may qualify a returned context path
+# with (the CLI returns context-relative page paths like metrics/x.md; answers
+# truthfully cite the served file as context_layer/metrics/x.md). Equivalence
+# requires the remainder to EXACTLY match a returned path — never a basename.
+CITATION_ROOT_PREFIXES = ("context_layer/",)
+
+
+def citation_returned(citation: str, supported: set[str]) -> bool:
+    """True iff the citation is a returned path or a known served-root prefix
+    of one (parent-authorized fix1 delta; invented citations still fail)."""
+    if citation in supported:
+        return True
+    return any(
+        citation.startswith(prefix) and citation[len(prefix) :] in supported
+        for prefix in CITATION_ROOT_PREFIXES
+    )
+
+
 def explain(case: dict[str, Any], observation: dict[str, Any], calls: list[dict[str, Any]]):
     if case["expected_outcome"] == "answer" and observation["outcome"] == "unsupported":
         return axis("not_applicable")
@@ -455,7 +473,7 @@ def explain(case: dict[str, Any], observation: dict[str, Any], calls: list[dict[
     reasons = []
     if missing:
         reasons.append("required_caveat_or_label_missing")
-    if cited - supported:
+    if any(not citation_returned(citation, supported) for citation in cited):
         reasons.append("citation_not_returned")
     if contract.get("permitted_citations") and cited - set(contract["permitted_citations"]):
         reasons.append("citation_not_permitted")
