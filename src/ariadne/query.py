@@ -65,6 +65,7 @@ install hint.
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -81,13 +82,13 @@ from ariadne import (  # pyright: ignore[reportMissingImports] — new-module re
     admission,  # issue #37/G5: pinned-snapshot resolution for open_project
     answer_examples,
     authoring_inputs,  # K4 fix pass: the operator evidence age budget (host config)
+    context,  # issue #48 fix: the assessment clock/assembly seams stay internal
     proposals,  # pyright: ignore[reportMissingImports] — drift
 )
 
 # Shared Context Layer (issue #33, ADR-0016): retrieval, citation attachment and
 # deterministic OKF generation live in ariadne.context.
 from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
-    metric_context,
     resolve_term,
     search_pages,
 )
@@ -650,6 +651,7 @@ class QueryRuntime:
         assert_single_statement(plan.sql)
         self._execution.bind(plan.sql)
         columns, rows = self._execution.fetch(plan.sql)
+        now = context._assessment_now()  # one clock value for every metric's context (spec 0011 §2)
         return {
             "metrics": list(plan.metrics),
             "dimensions": list(plan.dimensions),
@@ -679,7 +681,7 @@ class QueryRuntime:
                 "relationship_audit": plan.relationship_audit,
             },
             "governed": True,
-            "context": {name: self._metric_context(name) for name in plan.metrics},
+            "context": {name: self._metric_context(name, _now=now) for name in plan.metrics},
             "admission": self._admission_view(admission),
         }
 
@@ -755,11 +757,14 @@ class QueryRuntime:
             examples_root=self._examples_root,
         )
 
-    def _metric_context(self, name: str) -> dict:
+    def _metric_context(self, name: str, *, _now: datetime | None = None) -> dict:
         """The shared context implementation over this runtime's served context
         dir (spec rev 10 §8.21; contract and containment in
-        :func:`ariadne.context.metric_context`)."""
-        return metric_context(self.context_dir, name)
+        :func:`ariadne.context.metric_context`). ``_now`` propagates one
+        operation-wide assessment instant (spec 0011 §2) through the internal
+        seam only — the public ``metric_context`` signature stays unchanged
+        (issue #48 fix)."""
+        return context._metric_context(self.context_dir, name, now=_now)
 
     async def define_metric(self, definition: dict) -> dict:
         """Ad-hoc path (spec rev 3 §4/§5): draft -> compile gate -> execute -> stage.

@@ -690,6 +690,16 @@ def test_resolver_response_parts_stay_under_the_64kib_ceiling(tmp_path):
     still works."""
     huge = yaml.safe_load(order_reference_page().split("---")[1])
     huge["description"] = "A documented order-number concept. " + "detail " * 10_000
+    # oversized OPTIONAL metadata rides the same entry: its elision must be
+    # named explicitly (spec 0011 §4) — a bounded disclosure never poses as a
+    # complete warning-free assessment
+    huge["sources"] = [
+        {"id": "seed-notes", "resource": "data/seed_notes.md", "title": "note " * 40},
+        *[
+            {"id": f"seed-{i}", "resource": f"data/seed_notes_{i}.md", "title": "note " * 40}
+            for i in range(11)
+        ],
+    ]
     root = _context_root(
         tmp_path,
         {
@@ -709,6 +719,13 @@ def test_resolver_response_parts_stay_under_the_64kib_ceiling(tmp_path):
     for match in first["matches"]:  # disclosed bounded, never silently dropped
         assert match["elided"] and any("description" in marker for marker in match["elided"])
         assert len(match["description"]) < 2_000  # the field itself is bounded
+        # the advisory envelope rides the match, and its cut metadata is named
+        # in the elided list — an omitted warning list is never readable as a
+        # complete warning-free assessment (spec 0011 §4)
+        assert match["context_signals"]["pages"][0]["path"] == "references/huge.md"
+        assert any(
+            marker.startswith("context_signals.pages[0].sources") for marker in match["elided"]
+        ) or any("more elisions" in marker for marker in match["elided"])
     assert first["truncated"] is False and first["complete"] is True
 
     # byte-bounded continuation: matches that fit alone but not together split

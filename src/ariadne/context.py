@@ -172,6 +172,7 @@ def search_pages(query: str, limit: int, roots: list[tuple[Path, bool]]) -> list
     limits and queries with no matching token return ``[]``."""
     if limit <= 0:
         return []
+    now = _assessment_now()  # one observational instant for the whole search (spec 0011 §2)
     terms = _QUERY_TOKEN_RE.findall(query.lower())
     hits: list[dict] = []
     for root, draft in roots:
@@ -191,9 +192,10 @@ def search_pages(query: str, limit: int, roots: list[tuple[Path, bool]]) -> list
             excerpt, line_start, line_end, section = _locate_passage(
                 lines, mask, body_start, set(terms)
             )
+            rel = path.relative_to(root).as_posix()
             hits.append(
                 {
-                    "path": path.relative_to(root).as_posix(),
+                    "path": rel,
                     "score": score,  # relative ranking value, not a frequency contract
                     "draft": draft,  # staged proposals stay distinguishable
                     "content": text,  # full OKF page: the rules are the payload
@@ -201,6 +203,10 @@ def search_pages(query: str, limit: int, roots: list[tuple[Path, bool]]) -> list
                     "line_start": line_start,
                     "line_end": line_end,
                     "section": section,
+                    # spec 0011 §4: every hit carries the advisory envelope of ITS
+                    # returned page, built from the already-read text — no second
+                    # read, no ranking or eligibility authority
+                    "context_signals": _context_signals([_page_view(rel, _page_meta(text), now)]),
                 }
             )
     hits.sort(key=lambda hit: (-hit["score"], hit["path"]))
@@ -208,6 +214,31 @@ def search_pages(query: str, limit: int, roots: list[tuple[Path, bool]]) -> list
 
 
 # --------------------------------------------------------- citation attachment
+
+
+class _RequiredContextUnavailable(Exception):
+    """Internal marker: the existing metric-context assembly path failed at
+    this bundle-relative path (spec 0011 §5: missing/unreadable required
+    metric/Policy context — advisory disclosure, never a query failure)."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__(path)
+        self.path = path
+
+
+def _collapsed_context(path: str) -> dict:
+    """The one required-context fallback shape (spec rev 10 §8.21 + spec 0011
+    §5): the exact null/empty payload plus the path-specific
+    ``context_unavailable`` warning — nothing was successfully assembled, so
+    no page (and no undiscoverable dependency) is claimed assessed."""
+    return {
+        "metric_page": None,
+        "policies": [],
+        "context_signals": {
+            "pages": [],
+            "warnings": [{"code": "context_unavailable", "path": path}],
+        },
+    }
 
 
 def metric_context(context_dir: Path, name: str) -> dict:
@@ -224,30 +255,67 @@ def metric_context(context_dir: Path, name: str) -> dict:
     the metric page must resolve inside the context root and every cited policy
     under ``policies/``; a ``../..``-style traversal is just another
     unresolvable reference — the context collapses to the null form and
-    nothing outside the context dir is ever read."""
+    nothing outside the context dir is ever read.
+
+    Spec 0011 §§4–5: the context additionally carries the additive
+    ``context_signals`` advisory envelope over exactly the consumed set — the
+    metric page, its directly cited Policy pages, and the computation page when
+    the existing computation-caveat path reads one. The required-context
+    fallback keeps its exact null/empty payload and adds the path-specific
+    ``context_unavailable`` warning. The assessment instant is the shared
+    internal clock seam (spec 0011 §2) — never a public argument (issue #48
+    fix: public signatures stay at their base contract)."""
+    return _metric_context(context_dir, name)
+
+
+def _metric_context(context_dir: Path, name: str, *, now: datetime | None = None) -> dict:
+    """``metric_context``'s implementation seam: identical contract, plus the
+    internal-only ``now`` that pins the single assessment instant of one
+    multi-metric operation (spec 0011 §2) — ``None`` means the shared internal
+    clock seam supplies it. Never part of the public API."""
+    assess = _assessment_now() if now is None else now
     try:
         root = context_dir.resolve()
         page = root / "metrics" / f"{name}.md"
         if not page.resolve().is_relative_to(root):
-            raise ValueError("metric page path escapes the context root")
+            raise _RequiredContextUnavailable(f"metrics/{name}.md")
         text = page.read_text(encoding="utf-8")
         match = _FRONTMATTER_RE.match(text)
-        meta = (yaml.safe_load(match.group(1)) or {}) if match else {}
+        try:
+            meta = (yaml.safe_load(match.group(1)) or {}) if match else {}
+        except yaml.YAMLError:
+            raise _RequiredContextUnavailable(f"metrics/{name}.md") from None
+        if not isinstance(meta, dict):
+            raise _RequiredContextUnavailable(f"metrics/{name}.md")
         refs = (
             source.get("resource") if isinstance(source, dict) else source
             for source in meta.get("sources") or []
         )
         policies_root = root / "policies"
         policies = []
+        policy_views: dict[str, dict] = {}
         for ref in refs:
             if not (isinstance(ref, str) and ref.startswith("policies/")):
                 continue
             body = (root / ref).resolve()
             if not body.is_relative_to(policies_root):
-                raise ValueError(f"policy reference escapes policies/: {ref}")
-            policies.append(body.read_text(encoding="utf-8"))
-        context = {"metric_page": text, "policies": policies}
-        if _computation_attestation(root, name) == "pending":
+                raise _RequiredContextUnavailable(ref)
+            try:
+                policy_text = body.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                raise _RequiredContextUnavailable(ref) from None
+            policies.append(policy_text)
+            policy_views.setdefault(ref, _page_view(ref, _page_meta(policy_text), assess))
+        computation = _computation_meta(root, name)
+        pages = [_page_view(f"metrics/{name}.md", meta, assess), *policy_views.values()]
+        if computation is not None:  # consumed by the existing caveat path
+            pages.append(_page_view(f"computations/{name}.md", computation, assess))
+        context = {
+            "metric_page": text,
+            "policies": policies,
+            "context_signals": _context_signals(pages),
+        }
+        if computation is not None and computation.get("attestation") == "pending":
             # ADR-0013/spec acceptance 5, and ONLY the pending case (the new
             # harness-led bundles): governed:true means Promoted, never an
             # independent numeric attestation — say so on every such answer.
@@ -257,26 +325,27 @@ def metric_context(context_dir: Path, name: str) -> dict:
                 "governed: true means Promoted, not independently value-attested"
             )
         return context
+    except _RequiredContextUnavailable as miss:
+        return _collapsed_context(miss.path)
     except Exception:  # missing page, unresolvable ref, traversal, unparsable frontmatter
-        return {"metric_page": None, "policies": []}
+        return _collapsed_context(f"metrics/{name}.md")
 
 
-def _computation_attestation(root: Path, name: str) -> str | None:
-    """The computation page's attestation caveat for ``name``: ``"pending"``
-    when the served computation declares it (ADR-0007 scoped extension),
-    the cited attester when one is present, None when there is no such
-    page. Read problems are just another missing caveat — never a failure."""
+def _computation_meta(root: Path, name: str) -> dict | None:
+    """The computation page's frontmatter meta, or None when no such page is
+    readable (read problems are just another missing caveat — never a
+    failure). The page enters spec 0011 §5's consumed set exactly when this
+    existing caveat path reads it; its attestation semantics live in
+    ``metric_context`` (``attestation: pending``, ADR-0007 scoped extension)."""
     try:
         page = root / "computations" / f"{name}.md"
         if not page.resolve().is_relative_to(root) or not page.is_file():
             return None
         match = _FRONTMATTER_RE.match(page.read_text(encoding="utf-8"))
         meta = (yaml.safe_load(match.group(1)) or {}) if match else {}
-        if meta.get("attestation") == "pending":
-            return "pending"
-        return str(meta["attester"]) if meta.get("attester") else None
     except Exception:
         return None
+    return meta if isinstance(meta, dict) else {}
 
 
 # ------------------------------------------------- deterministic OKF generation
@@ -2136,6 +2205,124 @@ def _freshness_view(meta: dict, now: datetime) -> dict:
     return {"stale_after": disclosed, "state": state}
 
 
+def _page_meta(text: str) -> dict:
+    """Best-effort frontmatter of an arbitrary readable page for advisory
+    assessment (spec 0011 §4): unparseable frontmatter yields no metadata —
+    never a raise, never an invented claim."""
+    try:
+        meta = _load_frontmatter_meta(text)
+    except yaml.YAMLError:
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _jsonable(value: object) -> object:
+    """Keep disclosed evidence JSON-shaped: YAML-native date/datetime values
+    become ISO strings (spec 0011 §3), other values pass through untouched —
+    no response adapter has to learn a new type."""
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, date):  # datetime is a date subclass: both -> ISO
+        return value.isoformat()
+    return value
+
+
+def _json_shaped(value: object) -> bool:
+    """Whether an optional-evidence tree is fully representable in the existing
+    JSON contract (bools/ints/floats/strings/nulls, string-keyed dicts, lists,
+    dates). YAML-native objects outside it — sets, binaries, anchors to custom
+    tags — make the evidence unsupported (issue #48 fix: the whole optional
+    field then degrades to its absent form instead of reaching an adapter as a
+    non-serializable object; pages carrying them serialized fine before the
+    signals view existed)."""
+    if value is None or isinstance(value, (str, int, float, date)):
+        return True  # bool is an int subclass; datetime is a date subclass
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _json_shaped(item) for key, item in value.items())
+    if isinstance(value, list):
+        return all(_json_shaped(item) for item in value)
+    return False
+
+
+def _optional_evidence(value: object, kind: type, absent: object) -> object:
+    """One optional-evidence field of the page view (issue #48 fix): disclosed
+    only when the declared shape holds AND every value inside stays
+    JSON-contract representable; otherwise the field degrades to its absent
+    form (``None`` for generated/verified, ``[]`` for sources) — never a
+    fabricated claim, never a non-serializable object."""
+    if isinstance(value, kind) and _json_shaped(value):
+        return _jsonable(value)
+    return absent
+
+
+def _lifecycle_status(meta: dict) -> str:
+    """Conservative lifecycle disclosure (spec 0011 §4): a declared status is
+    preserved verbatim (Ariadne draft/review states included); an absent
+    status on a readable concept page uses OKF's ``stable`` default;
+    malformed lifecycle metadata and pages without concept frontmatter
+    (reserved navigation/history files) stay ``unknown``, never implicitly
+    stable."""
+    if "status" not in meta:
+        return "stable" if meta else "unknown"
+    declared = meta["status"]
+    return declared if isinstance(declared, str) and declared else "unknown"
+
+
+def _verification_tier(meta: dict) -> str:
+    """Advisory document-verification tier (spec 0011 §4) — a claim declared
+    in the page, never admission: no usable confirmation (including an empty
+    list) is ``unverified``; non-human confirmations only are
+    ``machine-confirmed``; a declared ``human:`` actor yields
+    ``human-reviewed``."""
+    verified = meta.get("verified")
+    if not isinstance(verified, list):
+        return "unverified"
+    tier = "unverified"
+    for entry in verified:
+        by = entry.get("by") if isinstance(entry, dict) else None
+        if not (isinstance(by, str) and by):
+            continue
+        if by.startswith("human:"):
+            return "human-reviewed"
+        tier = "machine-confirmed"
+    return tier
+
+
+def _page_view(rel: str, meta: dict, now: datetime) -> dict:
+    """One assessed page's advisory view (spec 0011 §4): bundle-relative
+    identity, lifecycle, freshness, document-verification tier and the
+    AVAILABLE evidence. Optional evidence stays nullable/empty and is never
+    fabricated; evidence the JSON contract cannot represent degrades to its
+    field's absent form (issue #48 fix) rather than reaching an adapter as a
+    non-serializable object; no field here establishes admission."""
+    return {
+        "path": rel,
+        "status": _lifecycle_status(meta),
+        "freshness": _freshness_view(meta, now),
+        "verification_tier": _verification_tier(meta),
+        "generated": _optional_evidence(meta.get("generated"), dict, None),
+        "verified": _optional_evidence(meta.get("verified"), list, None),
+        "sources": _optional_evidence(meta.get("sources"), list, []),
+    }
+
+
+def _context_signals(pages: list[dict]) -> dict:
+    """The additive advisory envelope (spec 0011 §§4–5): the assessed pages
+    plus one warning per concrete §5 problem — a supported expiry reached,
+    an explicitly deprecated page. Absent/unknown optional expiry, generation
+    or verification metadata never warns; a draft stays labeled through the
+    existing draft/claim rules and does not warn either."""
+    warnings: list[dict] = []
+    for page in pages:
+        if page["freshness"]["state"] == "stale":
+            warnings.append({"code": "context_stale", "path": page["path"]})
+        if page["status"] == "deprecated":
+            warnings.append({"code": "context_deprecated", "path": page["path"]})
+    return {"pages": pages, "warnings": warnings}
+
+
 def _match_entry(
     rel: str,
     meta: dict,
@@ -2168,6 +2355,7 @@ def _match_entry(
         "mappings": mappings,
         "sources": [dict(source) for source in meta.get("sources") or []],
         "freshness": _freshness_view(meta, now),
+        "context_signals": _context_signals([_page_view(rel, meta, now)]),
     }
     if representations is not None:
         entry["representations"] = representations

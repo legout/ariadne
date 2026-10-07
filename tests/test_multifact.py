@@ -2966,12 +2966,26 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
     assert admission["validation"]["digest"]
     assert admission["promoted"]["by"] == "human:test"
     # per-metric cited context: the served metric page plus the cited Policy
-    # body, and the honest pending attestation state (ADR-0013)
+    # body, the honest pending attestation state (ADR-0013), and the advisory
+    # signals envelope over exactly the consumed pages (spec 0011 §§4–5)
     for name in ("orders_total", "lines_total"):
         context = result["context"][name]
         assert f"# {name}" in context["metric_page"]
         assert context["policies"] and "Region rollup" in context["policies"][0]
         assert context["attestation"] == "pending"
+        signals = context["context_signals"]
+        assert [page["path"] for page in signals["pages"]] == [
+            f"metrics/{name}.md",
+            "policies/region-rollup.md",
+            f"computations/{name}.md",
+        ]
+        assert signals["warnings"] == []  # stable Policy, future stamp: nothing concrete
+        policy_view = signals["pages"][1]
+        assert policy_view["status"] == "stable"  # the promoted document state
+        # §4: human-reviewed is the DOCUMENT verification claim declared at
+        # Promotion — advisory metadata, never admission evidence
+        assert policy_view["verification_tier"] == "human-reviewed"
+        assert policy_view["freshness"]["state"] == "current"  # the Promotion-time stamp
 
     # the local JSON CLI returns the SAME value over its own runtime instance
     request_file = tmp_path / "request.json"
@@ -3012,6 +3026,44 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
 
     mcp_result = _payload(asyncio.run(app.call_tool("query_metrics", {"request": request})))
     assert _normalized(mcp_result) == _normalized(result)
+
+
+def test_t5_query_metrics_captures_one_assessment_instant_across_metrics(tmp_path, monkeypatch):
+    # Spec 0011 §2: one operation captures ONE aware clock value for all its
+    # assessments. The shared Policy carries the Promotion-time date-only
+    # expiry stamp; §3 keeps it current throughout its named UTC date and
+    # stale at the next midnight. Ticks land either side of that boundary: a
+    # single shared instant keeps BOTH metrics' assessments current, while
+    # per-metric captures would flip whichever context is assessed second to
+    # stale.
+    from datetime import UTC, date, datetime, timedelta
+
+    from ariadne import context as context_module
+
+    project, _view = _t5_admitted(tmp_path)
+    served_policy = project / "served" / "context_layer" / "policies" / "region-rollup.md"
+    stamped = date.fromisoformat(
+        yaml.safe_load(served_policy.read_text(encoding="utf-8").split("---")[1])["stale_after"]
+    )
+    midnight = datetime(stamped.year, stamped.month, stamped.day, tzinfo=UTC)
+    runtime = _t5_runtime(project)
+    ticks = iter([midnight + timedelta(hours=10), midnight + timedelta(days=1)])
+    monkeypatch.setattr(context_module, "_assessment_now", lambda: next(ticks))
+    result = asyncio.run(
+        runtime.query_metrics(
+            {"metrics": ["orders_total", "lines_total"], "dimensions": ["region"]}
+        )
+    )
+    for name in ("orders_total", "lines_total"):
+        signals = result["context"][name]["context_signals"]
+        policy_view = next(
+            page for page in signals["pages"] if page["path"] == "policies/region-rollup.md"
+        )
+        assert policy_view["freshness"] == {
+            "stale_after": stamped.isoformat(),
+            "state": "current",
+        }
+        assert signals["warnings"] == []
 
 
 def test_t5_query_detail_projects_through_the_admitted_graph(tmp_path):

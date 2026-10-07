@@ -13,6 +13,8 @@ from seed/SQL logic. No network anywhere.
 import asyncio
 import importlib.util
 import json
+import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -539,13 +541,21 @@ def test_adhoc_define_metric_carries_context_null(facade):
 
 def test_missing_metric_page_collapses_context_without_failing(served, tmp_path):
     """A served tree whose context dir lacks the metric page still answers:
-    the fallback is the null form, never a query error."""
+    the fallback is the null form, never a query error — now also disclosing
+    the §5 context_unavailable warning for exactly that metric page path
+    (spec 0011 §5: its undiscoverable Policy dependencies are not claimed to
+    have been assessed)."""
     served_dir, db = served
     naked = Facade(served_dir / "semantic_layer", tmp_path, db, staging_dir=tmp_path / "staging")
     result = asyncio.run(naked.get_metric("gross_margin", ["region"]))
     assert result["governed"] is True
     assert result["rows"]
-    assert result["context"] == {"metric_page": None, "policies": []}
+    assert result["context"]["metric_page"] is None  # the old payload semantics
+    assert result["context"]["policies"] == []
+    assert result["context"]["context_signals"] == {
+        "pages": [],
+        "warnings": [{"code": "context_unavailable", "path": "metrics/gross_margin.md"}],
+    }
 
 
 def test_unresolvable_policy_reference_collapses_context_without_failing(served, tmp_path):
@@ -565,7 +575,12 @@ def test_unresolvable_policy_reference_collapses_context_without_failing(served,
     )
     result = asyncio.run(facade.get_metric("gross_margin", ["region"]))
     assert result["governed"] is True
-    assert result["context"] == {"metric_page": None, "policies": []}
+    assert result["context"]["metric_page"] is None
+    assert result["context"]["policies"] == []
+    assert result["context"]["context_signals"] == {
+        "pages": [],
+        "warnings": [{"code": "context_unavailable", "path": "policies/missing-policy.md"}],
+    }
 
 
 def test_metric_page_name_traversal_collapses_context_without_reading_outside(served, tmp_path):
@@ -582,7 +597,10 @@ def test_metric_page_name_traversal_collapses_context_without_reading_outside(se
         staging_dir=tmp_path / "staging",
     )
     context = facade._metric_context("../../secret")
-    assert context == {"metric_page": None, "policies": []}
+    assert context["metric_page"] is None and context["policies"] == []
+    assert context["context_signals"]["warnings"] == [
+        {"code": "context_unavailable", "path": "metrics/../../secret.md"}
+    ]
     assert "TOP_SECRET_TRAVERSAL_PAYLOAD" not in json.dumps(context)
 
 
@@ -606,8 +624,91 @@ def test_policy_ref_traversal_collapses_context_without_reading_dotenv(served, t
     result = asyncio.run(facade.get_metric("gross_margin", ["region"]))
     assert result["governed"] is True and result["rows"]  # the query never fails
     context = result["context"]
-    assert context == {"metric_page": None, "policies": []}
+    assert context["metric_page"] is None and context["policies"] == []
+    assert context["context_signals"]["warnings"] == [
+        {"code": "context_unavailable", "path": "policies/../../.env"}
+    ]
     assert "sk-traversal-secret" not in json.dumps(result)
+
+
+def test_get_metric_discloses_expired_and_deprecated_policy_signals(served, tmp_path):
+    """Spec 0011 §5/§8 AC3 — the focused core regression: a metric consuming an
+    expired and a deprecated Policy returns the SAME rows/SQL/governed label
+    (pinned here against the hand-computed fixture AND the unmodified tree),
+    keeps the full authored rule bodies, and the advisory envelope names both
+    Policy paths with the §5 codes. Expectations derive from §5: a reached
+    supported expiry is context_stale, an explicitly declared deprecated
+    status is context_deprecated — nothing else changes."""
+    served_dir, db = served
+    context_dir = tmp_path / "context_layer"
+    shutil.copytree(served_dir / "context_layer", context_dir)
+    expired = context_dir / "policies" / "order-status-billing.md"
+    expired.write_text(
+        re.sub(r"^stale_after: .*$", "stale_after: 2020-01-01", expired.read_text(), flags=re.M),
+        encoding="utf-8",
+    )
+    deprecated = context_dir / "policies" / "emea-currency-cutover.md"
+    deprecated.write_text(
+        deprecated.read_text().replace("status: review_needed", "status: deprecated", 1),
+        encoding="utf-8",
+    )
+    before = {page: page.read_bytes() for page in (expired, deprecated)}
+    warned = Facade(served_dir / "semantic_layer", context_dir, db, staging_dir=tmp_path / "warned")
+    baseline = asyncio.run(
+        Facade(
+            served_dir / "semantic_layer",
+            served_dir / "context_layer",
+            db,
+            staging_dir=tmp_path / "baseline",
+        ).get_metric("gross_margin", ["region"])
+    )
+    result = asyncio.run(warned.get_metric("gross_margin", ["region"]))
+
+    # numeric invariance: identical to the unmodified tree AND the independent
+    # hand-computed oracle (tests/fixtures/expected_metrics.json); row order is
+    # not part of the contract (no ORDER BY in the compiled SQL)
+    assert sorted(result["rows"], key=lambda row: row["region"]) == sorted(
+        baseline["rows"], key=lambda row: row["region"]
+    )
+    assert result["sql"] == baseline["sql"]
+    assert result["governed"] == baseline["governed"] is True
+    assert_matches_fixture(rows_by_region(result, "gross_margin"), "gross_margin")
+
+    # full authored rule bodies stay the payload (ADR-0011)
+    assert GOTCHA_1 in result["context"]["metric_page"]
+    assert GOTCHA_2 in result["context"]["metric_page"]
+    assert GOTCHA_1 in result["context"]["policies"][0]
+    assert GOTCHA_2 in result["context"]["policies"][1]
+
+    signals = result["context"]["context_signals"]
+    assert [page["path"] for page in signals["pages"]] == [
+        "metrics/gross_margin.md",
+        "policies/order-status-billing.md",
+        "policies/emea-currency-cutover.md",
+        "computations/gross_margin.md",
+    ]
+    assert signals["warnings"] == [
+        {"code": "context_stale", "path": "policies/order-status-billing.md"},
+        {"code": "context_deprecated", "path": "policies/emea-currency-cutover.md"},
+    ]
+    # the metric page itself: its declared review_needed state is preserved
+    # (§4: page status is not staged/admitted identity and never warns), the
+    # stamped empty verification list stays unverified, and its own future
+    # stamp stays current without a warning
+    metric_view = signals["pages"][0]
+    assert metric_view["status"] == "review_needed"
+    assert metric_view["verification_tier"] == "unverified" and metric_view["verified"] == []
+    assert metric_view["generated"]["by"] == "ariadne-author"
+    assert metric_view["freshness"]["state"] == "current"
+    assert signals["pages"][3]["status"] == "review_needed"  # the computation page too
+    # the expired Policy's YAML-native date discloses as an ISO string (§3)
+    assert signals["pages"][1]["freshness"] == {
+        "stale_after": "2020-01-01",
+        "state": "stale",
+    }
+    assert signals["pages"][2]["status"] == "deprecated"
+    # §8 AC9: the assessment is read-only — the warned pages are byte-identical
+    assert {page: page.read_bytes() for page in (expired, deprecated)} == before
 
 
 _JOIN_SOURCE = (
