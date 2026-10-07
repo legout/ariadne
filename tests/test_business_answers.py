@@ -19,6 +19,7 @@ from tests.test_evals import (  # noqa: E402
     attached_demo,
     independent_expected,
 )
+from tests.test_multifact import build_source_fixture  # noqa: E402
 from tests.test_seed import run_seed  # noqa: E402
 
 CASES_PATH = ROOT / "tests" / "evals" / "business_answer_cases.json"
@@ -32,6 +33,11 @@ spec.loader.exec_module(checker)
 def _fixture(tmp_path, *, cases_path=CASES_PATH):
     db_path = tmp_path / "demo.db"
     run_seed(db_path)
+    # The cross-fact synthetic cases read the multifact fixture database
+    # (same builder the eval suite uses); its manifest input is required even
+    # when no observation targets those cases in this test.
+    mf_dir = tmp_path / "mf"
+    build_source_fixture(mf_dir)
     manifest = {
         "version": 1,
         "id": "synthetic-demo-v1",
@@ -41,7 +47,13 @@ def _fixture(tmp_path, *, cases_path=CASES_PATH):
                 "kind": "sqlite",
                 "path": str(db_path),
                 "sha256": hashlib.sha256(db_path.read_bytes()).hexdigest(),
-            }
+            },
+            {
+                "source": "synthetic_multifact",
+                "kind": "sqlite",
+                "path": str(mf_dir / "mf.db"),
+                "sha256": hashlib.sha256((mf_dir / "mf.db").read_bytes()).hexdigest(),
+            },
         ],
     }
     manifest_path = tmp_path / "snapshot-manifest.json"
@@ -76,8 +88,10 @@ def _observed_rows(db_path, population):
             for region, value in independent_expected(db_path, "gross_margin", ["region"]).items()
         ]
     with attached_demo(db_path) as con:
-        # nosemgrep — module-level constant SQL, no interpolation or tool input.
-        rows = con.execute(_WRONG_POPULATION_SQL).fetchall()
+        # module-level constant SQL, no interpolation or tool input
+        rows = con.execute(  # pi-lens-ignore: python-sql-injection
+            _WRONG_POPULATION_SQL
+        ).fetchall()
     return [{"region": region, "gross_margin": value} for region, value in rows]
 
 
@@ -509,3 +523,41 @@ def test_successful_promotion_fails_any_observation_globally(tmp_path):
     route = report["controls"]["observations"][0]["axes"]["route_parameters"]
     assert route["status"] == "fail"
     assert "admission_or_promotion_succeeded:promote" in route["reasons"]
+
+
+# --- fix1: parent-authorized citation path-equivalence delta (issue #51 flow).
+# Observed cross-fact answers cite returned pages with the truthful
+# `context_layer/` root prefix (the served tree's actual layout) while the CLI
+# returns context-relative page paths; exact string equality flagged those as
+# citation_not_returned. Equivalence accepts ONLY the known root prefix plus a
+# path that EXACTLY matches a returned one — never a basename match — so an
+# invented citation still fails.
+
+
+def test_truthful_context_layer_prefixed_citation_counts_as_returned(tmp_path):
+    db_path, manifest, manifest_path, cases, cases_path = _fixture(tmp_path)
+    case = cases["cases"][0]
+    rows = _observed_rows(db_path, "billable_orders")
+    observation = _observation(case, rows=rows)
+    observation["final_answer"] = (
+        "Governed: true. CANCELLED and RETURNED orders are excluded. Cited "
+        "pages: `context_layer/metrics/gross_margin.md` and "
+        "`context_layer/policies/order-status-billing.md`."
+    )
+    observation["calls"][0]["result"]["supported_citations"] = [
+        "metrics/gross_margin.md",
+        "policies/order-status-billing.md",
+    ]
+    report = _control_result(cases, manifest, manifest_path, cases_path, observation)
+    explanation = report["controls"]["observations"][0]["axes"]["explanation"]
+    assert explanation["status"] == "pass", explanation["reasons"]
+
+    # Protection: a prefixed path matching NO returned path is still invented.
+    invented = dict(observation)
+    invented["final_answer"] = (
+        observation["final_answer"] + " Also `context_layer/policies/invented.md`."
+    )
+    report = _control_result(cases, manifest, manifest_path, cases_path, invented)
+    explanation = report["controls"]["observations"][0]["axes"]["explanation"]
+    assert explanation["status"] == "fail"
+    assert "citation_not_returned" in explanation["reasons"]

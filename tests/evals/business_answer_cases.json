@@ -19,21 +19,32 @@
         "denominator": "gross_revenue"
       },
       "expected_outcome": "answer",
-      "required_evidence": ["recorded"],
+      "required_evidence": [
+        "recorded"
+      ],
       "route": {
-        "allowed_operations": ["get-metric"],
-        "forbidden_operations": ["define-metric"],
+        "allowed_operations": [
+          "get-metric"
+        ],
+        "forbidden_operations": [
+          "define-metric"
+        ],
         "governed": true,
         "parameters": {
           "entity": "order",
           "metric": "gross_margin",
-          "dimensions": ["region"],
+          "dimensions": [
+            "region"
+          ],
           "population": "billable_orders",
           "period": "all_available_data",
           "units": "ratio",
           "grain": "region",
           "denominator": "gross_revenue",
-          "excluded_statuses": ["CANCELLED", "RETURNED"]
+          "excluded_statuses": [
+            "CANCELLED",
+            "RETURNED"
+          ]
         }
       },
       "oracle": {
@@ -41,16 +52,513 @@
         "name": "gross_margin_by_region",
         "source": "synthetic_demo",
         "comparison": {
-          "row_keys": ["region"],
-          "value_columns": ["gross_margin"],
+          "row_keys": [
+            "region"
+          ],
+          "value_columns": [
+            "gross_margin"
+          ],
           "ordered": false,
-          "absolute_tolerance": 0.000001,
+          "absolute_tolerance": 1e-06,
           "relative_tolerance": 0
         }
       },
       "explanation": {
-        "required_caveats": ["CANCELLED and RETURNED orders are excluded"],
-        "required_labels": ["governed: true"],
+        "required_caveats": [
+          "CANCELLED and RETURNED orders are excluded"
+        ],
+        "required_labels": [
+          "governed: true"
+        ],
+        "required_citations": [],
+        "permitted_citations": []
+      }
+    },
+    {
+      "id": "order-count-population-clarification",
+      "domain": "synthetic-retail",
+      "question": "How many orders did we get by region?",
+      "source_refs": [
+        "project/specs/2026-10-06-0012-business-answer-evaluation.md#4-synthetic-cases (ambiguous population)",
+        "tests/test_business_answers.py"
+      ],
+      "meaning": {
+        "entity": "order",
+        "population": null,
+        "period": null,
+        "timezone": null,
+        "units": "count",
+        "grain": "region",
+        "denominator": null
+      },
+      "expected_outcome": "clarification",
+      "required_evidence": [
+        "current"
+      ],
+      "route": {
+        "allowed_operations": [
+          "list-metrics",
+          "search-context",
+          "list-datasets",
+          "get-metric"
+        ],
+        "forbidden_operations": [],
+        "governed": true,
+        "parameters": {}
+      },
+      "clarification": {
+        "issue": "Order population is materially ambiguous: all orders, or billable orders only (the served order_count metric excludes CANCELLED and RETURNED).",
+        "required_terms": [
+          "billable",
+          "cancelled"
+        ],
+        "follow_up": "Billable orders only - exclude CANCELLED and RETURNED orders."
+      },
+      "explanation": {
+        "required_caveats": [],
+        "required_labels": [],
+        "required_citations": [],
+        "permitted_citations": []
+      }
+    },
+    {
+      "id": "order-count-billable-by-region",
+      "domain": "synthetic-retail",
+      "question": "How many orders did we get by region? (answered for the declared population after the clarification follow-up)",
+      "source_refs": [
+        "project/specs/2026-10-06-0012-business-answer-evaluation.md#4-synthetic-cases (canonical exclusions)",
+        "tests/test_business_answers.py"
+      ],
+      "meaning": {
+        "entity": "order",
+        "population": "billable_orders",
+        "period": "all_available_data",
+        "timezone": null,
+        "units": "count",
+        "grain": "region",
+        "denominator": null
+      },
+      "expected_outcome": "answer",
+      "required_evidence": [
+        "current"
+      ],
+      "route": {
+        "allowed_operations": [
+          "get-metric"
+        ],
+        "forbidden_operations": [
+          "define-metric"
+        ],
+        "governed": true,
+        "parameters": {
+          "metric": "order_count",
+          "dimensions": [
+            "region"
+          ],
+          "entity": "order",
+          "population": "billable_orders",
+          "period": "all_available_data",
+          "timezone": null,
+          "units": "count",
+          "grain": "region",
+          "denominator": null,
+          "excluded_statuses": [
+            "CANCELLED",
+            "RETURNED"
+          ]
+        }
+      },
+      "oracle": {
+        "kind": "sql",
+        "source": "synthetic_demo",
+        "path": "/home/volker/coding/ariadne/.orchestrator/issues-47-50-20261007/evidence/e2-synthetic/oracle/order_count_billable_by_region.sql",
+        "sha256": "eedd2736c3b0e00bc3d2836a9bc4b65a823b3705a0e5e7214df206825cdf16c9",
+        "review_ref": "issue #51 E2: independently hand-written SQL (status-exclusion rule), worker-authored, parent-reviewed via lane review",
+        "comparison": {
+          "row_keys": [
+            "region"
+          ],
+          "value_columns": [
+            "order_count"
+          ],
+          "ordered": false,
+          "absolute_tolerance": 0,
+          "relative_tolerance": 0
+        }
+      },
+      "explanation": {
+        "required_caveats": [
+          "CANCELLED",
+          "RETURNED",
+          "exclud"
+        ],
+        "required_labels": [
+          "governed: true"
+        ],
+        "required_citations": [],
+        "permitted_citations": []
+      },
+      "pending_note": "post-follow-up observation pending: the fresh agent answered directly without clarifying (follow-up never observed); no paired observation exists yet"
+    },
+    {
+      "id": "gross-revenue-january-2024-calendar",
+      "domain": "synthetic-retail",
+      "question": "What was gross revenue in USD by region for the calendar month of January 2024?",
+      "source_refs": [
+        "project/specs/2026-10-06-0012-business-answer-evaluation.md#4-synthetic-cases (calendar period, units)",
+        "tests/test_business_answers.py"
+      ],
+      "meaning": {
+        "entity": "order",
+        "population": "billable_orders",
+        "period": "2024-01-01..2024-01-31",
+        "timezone": null,
+        "units": "usd",
+        "grain": "region",
+        "denominator": null
+      },
+      "expected_outcome": "answer",
+      "required_evidence": [
+        "current"
+      ],
+      "route": {
+        "allowed_operations": [
+          "get-metric"
+        ],
+        "forbidden_operations": [
+          "define-metric"
+        ],
+        "governed": true,
+        "parameters": {
+          "metric": "gross_revenue",
+          "dimensions": [
+            "region"
+          ],
+          "start": "2024-01-01",
+          "end": "2024-01-31",
+          "entity": "order",
+          "population": "billable_orders",
+          "period": "2024-01-01..2024-01-31",
+          "timezone": null,
+          "units": "usd",
+          "grain": "region",
+          "denominator": null,
+          "excluded_statuses": [
+            "CANCELLED",
+            "RETURNED"
+          ]
+        }
+      },
+      "oracle": {
+        "kind": "sql",
+        "source": "synthetic_demo",
+        "path": "/home/volker/coding/ariadne/.orchestrator/issues-47-50-20261007/evidence/e2-synthetic/oracle/gross_revenue_january_2024_by_region.sql",
+        "sha256": "0ee628ef7ee947f72c7c559cdc73f09aafb07a12dbdfd4296abe86d8b3b986de",
+        "review_ref": "issue #51 E2: independently hand-written SQL (status exclusion, pre-2024 EMEA USD conversion, calendar window), worker-authored, parent-reviewed via lane review",
+        "comparison": {
+          "row_keys": [
+            "region"
+          ],
+          "value_columns": [
+            "gross_revenue"
+          ],
+          "ordered": false,
+          "absolute_tolerance": 0.01,
+          "relative_tolerance": 0
+        }
+      },
+      "explanation": {
+        "required_caveats": [
+          "CANCELLED",
+          "RETURNED",
+          "exclud",
+          "calendar month"
+        ],
+        "required_labels": [
+          "governed: true"
+        ],
+        "required_citations": [],
+        "permitted_citations": []
+      },
+      "pending_axes": {
+        "timezone": "pending/unverified (no timezone semantics in the synthetic slice)"
+      }
+    },
+    {
+      "id": "cross-fact-orders-lines-totals-by-region",
+      "domain": "synthetic-multifact",
+      "question": "What is the total order amount and the total order-line amount by region?",
+      "source_refs": [
+        "project/specs/2026-10-06-0012-business-answer-evaluation.md#4-synthetic-cases (cross-fact grain/fan-out)",
+        "tests/test_multifact.py (fixture data and admitted-graph recipe)"
+      ],
+      "meaning": {
+        "entity": null,
+        "population": null,
+        "period": "all_available_data",
+        "timezone": null,
+        "units": "usd",
+        "grain": "region",
+        "denominator": null
+      },
+      "expected_outcome": "answer",
+      "required_evidence": [
+        "current"
+      ],
+      "route": {
+        "allowed_operations": [
+          "query-metrics"
+        ],
+        "forbidden_operations": [
+          "define-metric"
+        ],
+        "governed": true,
+        "parameters": {
+          "metrics": [
+            "orders_total",
+            "lines_total"
+          ],
+          "dimensions": [
+            "region"
+          ],
+          "entity": null,
+          "population": null,
+          "period": "all_available_data",
+          "timezone": null,
+          "units": "usd",
+          "grain": "region",
+          "denominator": null
+        }
+      },
+      "oracle": {
+        "kind": "sql",
+        "source": "synthetic_multifact",
+        "path": "/home/volker/coding/ariadne/.orchestrator/issues-47-50-20261007/evidence/e2-synthetic/oracle/cross_fact_totals_by_region.sql",
+        "sha256": "d1ff37fe27e5cebd43accd919c64c9d044d248021b0bd31020f4811774268789",
+        "review_ref": "issue #51 E2: independently hand-written SQL (per-fact sums, no fact-to-fact join), worker-authored, parent-reviewed via lane review",
+        "comparison": {
+          "row_keys": [
+            "region"
+          ],
+          "value_columns": [
+            "orders_total",
+            "lines_total"
+          ],
+          "ordered": false,
+          "absolute_tolerance": 1e-06,
+          "relative_tolerance": 0
+        }
+      },
+      "explanation": {
+        "required_caveats": [
+          "own grain"
+        ],
+        "required_labels": [
+          "governed: true"
+        ],
+        "required_citations": [],
+        "permitted_citations": []
+      }
+    },
+    {
+      "id": "cross-fact-latam-empty",
+      "domain": "synthetic-multifact",
+      "question": "What is the total order amount and the total order-line amount for the LATAM region?",
+      "source_refs": [
+        "project/specs/2026-10-06-0012-business-answer-evaluation.md#4-synthetic-cases (cross-fact empty-result control)",
+        "tests/test_multifact.py (fixture data and admitted-graph recipe)"
+      ],
+      "meaning": {
+        "entity": null,
+        "population": null,
+        "period": "all_available_data",
+        "timezone": null,
+        "units": "usd",
+        "grain": "region",
+        "denominator": null
+      },
+      "expected_outcome": "answer",
+      "required_evidence": [
+        "current"
+      ],
+      "route": {
+        "allowed_operations": [
+          "query-metrics"
+        ],
+        "forbidden_operations": [
+          "define-metric"
+        ],
+        "governed": true,
+        "parameters": {
+          "metrics": [
+            "orders_total",
+            "lines_total"
+          ],
+          "dimensions": [
+            "region"
+          ],
+          "filters": [
+            {
+              "field": "region",
+              "op": "=",
+              "value": "LATAM"
+            }
+          ],
+          "entity": null,
+          "population": null,
+          "period": "all_available_data",
+          "timezone": null,
+          "units": "usd",
+          "grain": "region",
+          "denominator": null
+        }
+      },
+      "oracle": {
+        "kind": "sql",
+        "source": "synthetic_multifact",
+        "path": "/home/volker/coding/ariadne/.orchestrator/issues-47-50-20261007/evidence/e2-synthetic/oracle/cross_fact_totals_latam_empty.sql",
+        "sha256": "fa06a3130d13b06239cc02c38bff28ed5178dc57dab928650b9522f7fe04c4c5",
+        "review_ref": "issue #51 E2: independently hand-written SQL (per-fact sums, region filter, zero expected rows), worker-authored, parent-reviewed via lane review",
+        "comparison": {
+          "row_keys": [
+            "region"
+          ],
+          "value_columns": [
+            "orders_total",
+            "lines_total"
+          ],
+          "ordered": false,
+          "absolute_tolerance": 1e-06,
+          "relative_tolerance": 0
+        }
+      },
+      "explanation": {
+        "required_caveats": [],
+        "required_labels": [
+          "governed: true"
+        ],
+        "required_citations": [],
+        "permitted_citations": []
+      }
+    },
+    {
+      "id": "gross-margin-by-product-category-unsupported",
+      "domain": "synthetic-retail",
+      "question": "What is gross margin by product category?",
+      "source_refs": [
+        "project/specs/2026-10-06-0012-business-answer-evaluation.md#4-synthetic-cases (genuinely unsupported question)",
+        "tests/test_business_answers.py"
+      ],
+      "meaning": {
+        "entity": "order",
+        "population": null,
+        "period": null,
+        "timezone": null,
+        "units": null,
+        "grain": "product_category",
+        "denominator": null
+      },
+      "expected_outcome": "unsupported",
+      "required_evidence": [
+        "current"
+      ],
+      "route": {
+        "allowed_operations": [
+          "list-metrics",
+          "list-datasets",
+          "search-context"
+        ],
+        "forbidden_operations": [],
+        "parameters": {}
+      },
+      "explanation": {
+        "required_caveats": [
+          "category"
+        ],
+        "required_labels": [],
+        "required_citations": [],
+        "permitted_citations": []
+      }
+    },
+    {
+      "id": "gross-revenue-partial-period-january-2024",
+      "domain": "synthetic-retail",
+      "question": "What was gross revenue in USD by region for the first 10 days of January 2024 (January 1-10)?",
+      "source_refs": [
+        "project/specs/2026-10-06-0012-business-answer-evaluation.md#4-synthetic-cases (partial-period meaning)",
+        "tests/test_business_answers.py"
+      ],
+      "meaning": {
+        "entity": "order",
+        "population": "billable_orders",
+        "period": "2024-01-01..2024-01-10",
+        "timezone": null,
+        "units": "usd",
+        "grain": "region",
+        "denominator": null
+      },
+      "expected_outcome": "answer",
+      "required_evidence": [
+        "current"
+      ],
+      "pending_axes": {
+        "timezone": "pending/unverified (no timezone semantics in the synthetic slice)"
+      },
+      "route": {
+        "allowed_operations": [
+          "get-metric"
+        ],
+        "forbidden_operations": [
+          "define-metric"
+        ],
+        "governed": true,
+        "parameters": {
+          "metric": "gross_revenue",
+          "dimensions": [
+            "region"
+          ],
+          "start": "2024-01-01",
+          "end": "2024-01-10",
+          "entity": "order",
+          "population": "billable_orders",
+          "period": "2024-01-01..2024-01-10",
+          "timezone": null,
+          "units": "usd",
+          "grain": "region",
+          "denominator": null,
+          "excluded_statuses": [
+            "CANCELLED",
+            "RETURNED"
+          ]
+        }
+      },
+      "oracle": {
+        "kind": "sql",
+        "source": "synthetic_demo",
+        "path": "/home/volker/coding/ariadne/.orchestrator/issues-47-50-20261007/evidence/e2-synthetic/oracle/gross_revenue_january_1_10_2024_by_region.sql",
+        "sha256": "0681cf174a4eefbf7f92c63486111766d5595f76bae622bc973f276e34d10692",
+        "review_ref": "issue #51 E2 fix1 (parent-dispositioned): independently hand-written SQL (status exclusion, pre-2024 EMEA USD conversion, partial-period window Jan 1-10), worker-authored, parent-reviewed via lane review",
+        "comparison": {
+          "row_keys": [
+            "region"
+          ],
+          "value_columns": [
+            "gross_revenue"
+          ],
+          "ordered": false,
+          "absolute_tolerance": 0.01,
+          "relative_tolerance": 0
+        }
+      },
+      "explanation": {
+        "required_caveats": [
+          "CANCELLED",
+          "RETURNED",
+          "exclud"
+        ],
+        "required_labels": [
+          "governed: true"
+        ],
         "required_citations": [],
         "permitted_citations": []
       }
