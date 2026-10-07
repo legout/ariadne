@@ -193,6 +193,13 @@ class QueryPlan:
     time_dimension: str | None = None  # the conformed primary business time
     time_grain: str | None = None  # its requested grouping grain
     windows: tuple[str, ...] = ()  # requested metrics with a declared window
+    # the mechanically CONSUMED half-open native fetch range of the request
+    # (issue #54 W1 fix3): window lookback precedes the display trim, so this
+    # is ``None`` without a time request and otherwise ``(fetch_start,
+    # fetch_end)`` — either side may be ``None`` (unbounded). ``query_metrics``
+    # derives its advisory period fact from THIS, never from the display
+    # range: a report consumed through the lookback extension is material.
+    fetch_bounds: tuple[date | None, date | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -1972,6 +1979,7 @@ def plan_query(
         time_dimension=time_request.dimension if time_request is not None else None,
         time_grain=time_request.grain if time_request is not None else None,
         windows=tuple(name for name in metric_names if graph.metrics[name].window is not None),
+        fetch_bounds=(fetch_start, fetch_end) if time_request is not None else None,
     )
 
 

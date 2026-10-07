@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -287,6 +288,34 @@ def test_governed_route_returns_values_with_full_context(project):
     assert set(observed) == set(expected)
     for region, value in observed.items():
         assert abs(value - expected[region]) <= TOLERANCE, f"governed {region}: {value}"
+
+    # Issue #54 (spec 0013 §4, plan 0013 §2) — the native get-metric
+    # passthrough: the additive advisory ``data_signals`` view crosses the
+    # tool boundary with its CLOSED key set and honest unknowns. Expectations
+    # derive from the contract, never from the tool: the golden served set
+    # declares no ``ariadne_quality`` profile, so every identified dependency
+    # keeps unknown coverage with NO report and NO warning invented for the
+    # optional profile's absence, and nothing was elided.
+    signals = payload["data_signals"]
+    assert set(signals) == {
+        "version",
+        "assessed_at",
+        "metrics",
+        "assets",
+        "warnings",
+        "truncated",
+        "omitted",
+    }
+    assert signals["version"] == 1 and datetime.fromisoformat(signals["assessed_at"])
+    assert [entry["name"] for entry in signals["metrics"]] == ["gross_margin"]
+    assert signals["metrics"][0]["coverage"] == "unknown"
+    assert signals["assets"], "the executed query's direct dependencies are identified"
+    for asset in signals["assets"]:
+        assert asset["coverage"] == "unknown" and asset["reports"] == []
+        assert asset["page"] is None  # no profile, no citation: pageless unknown
+    assert signals["warnings"] == []
+    assert signals["truncated"] is False
+    assert signals["omitted"] == {"metrics": 0, "assets": 0, "pages": 0, "reports": 0}
 
     # The answer states the caveats and cites only Policy paths the tool
     # actually returned (never invented ones).

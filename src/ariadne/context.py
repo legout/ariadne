@@ -3448,22 +3448,65 @@ def _direct_table_citations(
     return cited_pages, cited_resources
 
 
-def _report_view(report: dict, now: datetime) -> dict:
+def _period_disjoint(period: dict, requested: tuple[datetime | None, datetime | None]) -> bool:
+    """True when the report's ``[start, end)`` evidence period and the
+    requested query period PROVABLY do not overlap (spec 0013 §3/§4, issue
+    #54): each comparison needs the pair of bounds that establishes it — an
+    unbounded side establishes nothing and leaves correspondence unknown.
+    Overlap proves nothing either: applicability stays a per-axis question
+    and only a mechanical contradiction makes a report inapplicable."""
+    evidence_start = _coerce_validated_instant(period["start"])
+    evidence_end = _coerce_validated_instant(period["end"])
+    requested_start, requested_end = requested
+    if requested_start is not None and evidence_end <= requested_start:
+        return True
+    if requested_end is not None and requested_end <= evidence_start:
+        return True
+    return False
+
+
+def _report_view(
+    report: dict,
+    now: datetime,
+    requested_period: tuple[datetime | None, datetime | None] | None,
+    period_fields: set[str] | frozenset[str] | None,
+) -> dict:
     """The normalized advisory view of one VALIDATED report: every supplied
     field (instants as ISO-8601 strings) plus ``evidence_kind: supplied`` and
     the honest ``age``/``applicability`` axes with closed ``limitations``
     codes. Age is expiry of the SUPPLIED validity only — an unexpired report
-    never establishes live health. Applicability is mechanical
-    correspondence, never a guess: a subset scope without established
-    correspondence and a source version the runtime cannot cross-check
-    (absent, or supplied with no runtime dataset-version fact to match
-    against — an admission digest is not a dataset version) are explicit
-    unknowns; ``as_of`` means available unexpired as-of evidence, nothing
-    more."""
+    never establishes live health, and a report OR observation time later
+    than the assessment instant leaves age unknown (plan §2). Applicability
+    is mechanical correspondence, never a guess: a KNOWN period contradiction
+    — the report's own evidence period provably disjoint from the requested
+    query period, and only when the report's declared period FIELD is one the
+    request's range actually predicates (issue #54 W1 fix3) — makes the
+    report inapplicable to the requested use; a subset scope without
+    established correspondence and a source version the runtime cannot
+    cross-check (absent, or supplied with no runtime dataset-version fact to
+    match against — an admission digest is not a dataset version) are
+    explicit unknowns; ``as_of`` means available unexpired as-of evidence,
+    nothing more."""
     limitations: list[str] = []
     applicability = "unknown"
-    if (report.get("scope") or {}).get("kind") == "subset":
+    scope = report.get("scope") or {}
+    if scope.get("kind") == "subset":
         limitations.append("scope_unknown")  # subset text alone proves no correspondence
+    if (
+        requested_period is not None
+        and period_fields  # the range's own field(s): correspondence is provable
+        and isinstance(scope.get("period"), dict)
+        and scope["period"].get("field") in period_fields
+        and _period_disjoint(scope["period"], requested_period)
+    ):
+        # mechanically established contradiction (spec §3/§4, issue #54 W1
+        # fix3): the report's own declared evidence period — on the very
+        # field the request's range predicates — provably does not overlap
+        # the requested query period, so the report cannot apply to this
+        # request: never a matching pass and never a failed/passing check of
+        # the data
+        limitations.append("scope_mismatch")
+        applicability = "inapplicable"
     # Version correspondence needs mechanically established matching from
     # existing source/query facts (spec §3): this runtime holds no
     # dataset-version fact, so a supplied source_version is an upstream CLAIM
@@ -3471,8 +3514,14 @@ def _report_view(report: dict, now: datetime) -> dict:
     # matching assessment.
     limitations.append("source_version_unknown")
     reported_at = _coerce_validated_instant(report["reported_at"])
+    observed_at = report.get("observed_at")
     age = "unknown"
-    if reported_at > now:
+    if reported_at > now or (
+        observed_at is not None and _coerce_validated_instant(observed_at) > now
+    ):
+        # plan §2 (W1 fix4): a report/observation later than the assessment
+        # instant has unknown age — the supplied timestamps stay visible,
+        # never an as-of disclosure
         limitations.append("report_time_in_future")
     elif "valid_until" not in report:
         limitations.append("validity_not_supplied")  # as-of timestamps stay visible
@@ -3486,7 +3535,13 @@ def _report_view(report: dict, now: datetime) -> dict:
     return view
 
 
-def data_signals(context_dir: str | Path, dependencies: dict[str, list[str | None]]) -> dict:
+def data_signals(
+    context_dir: str | Path,
+    dependencies: dict[str, list[str | None]],
+    *,
+    requested_period: tuple[datetime | None, datetime | None] | None = None,
+    period_fields: set[str] | frozenset[str] | None = None,
+) -> dict:
     """The shared read-only advisory quality-evidence view of spec 0013 §4
     (plan 0013 §2): for every metric's DIRECT table dependencies — already
     resolved to canonical table resources by the caller against the built
@@ -3532,6 +3587,18 @@ def data_signals(context_dir: str | Path, dependencies: dict[str, list[str | Non
     last additionally warns ``data_evidence_unavailable``; a wholly absent
     optional profile never warns merely for its absence. No pass outcome,
     watermark recency or admission is ever presented as live health.
+
+    The optional ``requested_period`` (issue #54) is the runtime's own
+    requested query period as aware instants (either side may be ``None`` —
+    unbounded): it NEVER widens evidence, it only lets a mechanically
+    established period CONTRADICTION — the report's own declared evidence
+    period provably disjoint from the requested period — disclose that report
+    as ``inapplicable`` with the ``scope_mismatch`` limitation. The
+    contradiction additionally requires ``period_fields`` (W1 fix3): the
+    runtime-supplied set of fields the request's range actually predicates,
+    so a period declared on any other field stays unknown correspondence.
+    Overlap establishes nothing: applicability stays unknown on every
+    unproven axis.
 
     The read is PURE (no restamp, no write, no fetch, no probe — retries
     return another assessment of the same pinned bytes) and never fails a
@@ -3619,7 +3686,6 @@ def data_signals(context_dir: str | Path, dependencies: dict[str, list[str | Non
         page = resolved.get(resource)
         if page is None or page in read_pages:
             unresolved.append(resource)
-    assets: list[dict] = []
     state: dict[str, dict] = {}
     omitted_reports = 0
     reports_emitted = 0
@@ -3640,7 +3706,7 @@ def data_signals(context_dir: str | Path, dependencies: dict[str, list[str | Non
                             info["elided"] = True
                             continue
                         reports_emitted += 1
-                        view = _report_view(report, now)
+                        view = _report_view(report, now, requested_period, period_fields)
                         entry["reports"].append(view)
                         if view["applicability"] == "applicable":
                             applicable = True
@@ -3658,9 +3724,7 @@ def data_signals(context_dir: str | Path, dependencies: dict[str, list[str | Non
                 info["elided"] = False
             if invalid:
                 info["invalid"] = True  # later-unreadable declared evidence
-        assets.append(entry)
-    view: dict = {}
-    while True:  # elide trailing reports (deterministic reverse order) while over budget
+    while True:  # deterministic convergence to the 64 KiB ceiling (W1 fix2)
         metrics: list[dict] = []
         warnings: list[dict] = []
         for name in metric_names:
@@ -3695,6 +3759,8 @@ def data_signals(context_dir: str | Path, dependencies: dict[str, list[str | Non
                 )
         truncated = bool(omitted_metrics or omitted_assets or omitted_pages or omitted_reports)
         for resource in asset_order:
+            if resource not in state:  # elided by the byte ceiling (W1 fix2)
+                continue
             info = state[resource]
             entry = info["entry"]
             if info["invalid"]:
@@ -3756,7 +3822,7 @@ def data_signals(context_dir: str | Path, dependencies: dict[str, list[str | Non
             "version": DATA_SIGNALS_VERSION,
             "assessed_at": now.isoformat(),
             "metrics": metrics,
-            "assets": assets,
+            "assets": [state[resource]["entry"] for resource in asset_order if resource in state],
             "warnings": warnings,
             "truncated": truncated,
             "omitted": {
@@ -3769,7 +3835,15 @@ def data_signals(context_dir: str | Path, dependencies: dict[str, list[str | Non
         size = len(json.dumps(view, ensure_ascii=False).encode("utf-8"))
         if size <= DATA_SIGNALS_MAX_BYTES:
             return view
-        for info in reversed(state.values()):  # over budget: elide the last report
+        # deterministic convergence to the ceiling (W1 fix2): elide ONE
+        # trailing disclosure unit per pass — the last remaining report first,
+        # then trailing metric entries, then trailing asset entries — and
+        # re-measure. Every elision increments an ``omitted`` counter, so
+        # ``truncated`` can never be false while a bound prevented disclosure,
+        # and the loop provably terminates (each pass removes one unit; the
+        # final empty view is the terminal return — report-less over-budget
+        # views can no longer escape the ceiling unflagged).
+        for info in reversed(list(state.values())):
             if info["entry"]["reports"]:
                 info["entry"]["reports"].pop()
                 omitted_reports += 1
@@ -3777,7 +3851,11 @@ def data_signals(context_dir: str | Path, dependencies: dict[str, list[str | Non
                 info["entry"]["coverage"] = "partial"
                 break
         else:
-            # ponytail: even report-less entries overflowed (pathological
-            # asset/metric counts) — the truncation flag and omitted counts
-            # disclose it; per-entry elision is Q2's shared-association work
-            return view
+            if metric_names:
+                metric_names.pop()  # the trailing metric entry, elided
+                omitted_metrics += 1
+            elif state:
+                del state[next(reversed(state))]  # the trailing asset entry, elided
+                omitted_assets += 1
+            else:
+                return view  # nothing left to elide: the terminal valid view
