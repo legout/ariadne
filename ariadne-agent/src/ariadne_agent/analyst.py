@@ -13,8 +13,9 @@ Which runtime the session wraps — a managed Git project's pinned admission thr
 ``QueryRuntime.open_project``, or an explicit legacy artifact root — is
 resolved once at session open by :func:`ariadne_agent.session._open_runtime`.
 Each tool's payload is the runtime's verbatim JSON envelope — values, served
-metric page, full Policy bodies and citations, staging paths, and
-``governed`` labels are never stripped or summarized. Runtime failures
+metric page, full Policy bodies and citations, staging paths, lifecycle
+``context_signals`` envelopes, and ``governed`` labels are never stripped or
+summarized. Runtime failures
 propagate with their verbatim message and are reported to the model as tool
 errors. No CLI, no shell, no server, no raw SQL, no source-approval,
 admission or Promotion tool.
@@ -103,13 +104,24 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
             "Search the Context Layer (OKF pages) for business rules; ranked "
             "matches, each with its full page body. Search before any novel "
             "question — the rule you are about to rediscover is probably already "
-            "a policy page. Includes auto-staged ad-hoc drafts, marked draft: true."
+            "a policy page. Includes auto-staged ad-hoc drafts, marked draft: true. "
+            "Each hit carries its page's context_signals advisory view (lifecycle "
+            "status, freshness, verification tier; a context_stale/context_deprecated "
+            "warning names that page)."
         ),
         "get_metric": (
             "Rows plus compiled SQL for a named governed metric — never raw SQL. "
             "The response carries a context field: the full served OKF metric "
             "page plus the full bodies of every policy it cites. Report those "
-            "caveats and paths with every number."
+            "caveats and paths with every number. The context also carries a "
+            "context_signals advisory envelope whose warnings — context_stale "
+            "(reached expiry), context_deprecated (deprecated page), "
+            "context_unavailable (required metric/Policy context missing or "
+            "unreadable) — name consumed pages with lifecycle problems: when "
+            "the answer relies on warned context, add one brief caveat naming "
+            "the affected Policy/page. Absent optional expiry/verification "
+            "metadata is not a warning and needs no caveat; warnings never "
+            "change values, labels or permissions."
         ),
         "list_datasets": (
             "List every queryable table in the attached sources with its columns "
