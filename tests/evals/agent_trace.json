@@ -1,26 +1,27 @@
 {
   "_meta": {
-    "description": "Recorded fresh Pi answer trace after #21 packaged-skill update: both demo questions in one model session. Commands, responses and answer sections extracted from the observed session, not rewritten to fit checks.",
+    "description": "Recorded fresh Pi answer trace after the #49 packaged/native lifecycle-caveat guidance update: the established two demo questions plus the consumed-expired-Policy question, all asked in ONE model session. Commands, responses and answer files extracted from the observed session, never rewritten to fit checks.",
     "host": "pi",
+    "model": "pi/zai/glm-5.3",
     "session": {
-      "run_id": "pi-subagent:74630c58-e073-49c7-b8cc-b1af17b65617",
-      "session_id": "01a0ed88-04dc-741e-87ea-b3109a9e9676",
-      "started_at": "2026-09-29T14:18:29.468Z",
-      "cwd": "/tmp/ariadne-t21-eval-final-B6CtA04V",
-      "jsonl_path": "/Users/volker/.pi/agent/sessions/--Users-volker-coding-projects-03__Misc-ariadne--/2026-09-29T08-52-54-032Z_01a0ec5d-ee90-7366-92a9-c9f62c8a20db/495ae087-adc0-4e24-a654-40e858baaafa/run-0/session.jsonl",
-      "jsonl_sha256": "f863aa84e8b847ceb4dcdff49eba874a351e0b423002bde72b6bf4824397f2ac",
-      "both_questions_in_one_session": true
+      "run_id": "pi-subagent:b3c9c19d-db9d-4d96-9c8a-6ca96710ddd9",
+      "session_id": "01a117e4-df0f-76bd-9efd-198657132b76",
+      "started_at": "2026-10-07T19:43:57.712Z",
+      "cwd": "/tmp/ariadne-t49-eval-7H7cUYHC",
+      "jsonl_path": "/home/volker/.pi/agent/sessions/--home-volker-.paseo-worktrees-079pxy11-orchestrator-issues-47-50-20261007-worker-t3--/2026-10-07T19-35-06-303Z_01a117dc-c33e-7766-8084-083a23d3feb7/b3c9c19d-db9d-4d96-9c8a-6ca96710ddd9/run-0/session.jsonl",
+      "jsonl_sha256": "c60d110efc98dd2345d9d078a67559a4e74a7b1af488ee6869e7b756f386812e",
+      "all_three_questions_in_one_session": true
     },
     "skill": {
       "name": "ariadne",
-      "install": "ariadne-skill install --scope project --agent pi (fixed candidate source via PYTHONPATH)",
-      "skill_md_sha256": "d713bf76b299a6487e1d6359911db9371179b8dee1db90df540e873acc340394",
-      "read_before_first_call": "/tmp/ariadne-t21-eval-final-B6CtA04V/.pi/skills/ariadne/SKILL.md",
-      "provenance": "Installed from fixed #21 candidate tree 2f7c92588b805e175ffa8c9fe6ee3671c50c55d1 into this isolated synthetic demo before the fresh Pi child session; first tool read was the installed skill. CLI wrapper invoked the fixed candidate source with its pre-existing uv environment for dependencies."
+      "install": "ariadne-skill install --scope project --agent pi (candidate source via PYTHONPATH)",
+      "skill_md_sha256": "c6d5e49370edb4e27afe8d2e04d72403802b77d4e92189ea436fc6cdfc9c2078",
+      "read_before_first_call": "/tmp/ariadne-t49-eval-7H7cUYHC/.pi/skills/ariadne/SKILL.md",
+      "provenance": "Installed from the #49 lane tree (9a26d2a base plus this lane's SKILL.md guidance edit) into this isolated synthetic demo before the fresh Pi child session; packaged==installed digest verified BEFORE any call; the session's first tool action was reading the installed skill, before its first ariadne call. The CLI wrapper invoked the same lane candidate source through the project venv for dependencies."
     },
     "skill_read_before_first_call": true,
-    "db": "/tmp/ariadne-t21-eval-final-B6CtA04V/demo.db",
-    "selection": "All 12 observed Ariadne CLI calls in order, including --help and failed definition probes, from a single fresh Pi session; JSON results parsed from its actual tool output; two final answer sections copied verbatim from its write payload before its separate acceptance-report metadata. The ad-hoc authoring also staged its actual proposal. The synthetic served context includes an unchanged observed mean-per-customer page from the earlier recorded trace; no command, result, or answer was manufactured to satisfy tests."
+    "db": "/tmp/ariadne-t49-eval-7H7cUYHC/demo.db",
+    "selection": "All 16 observed ariadne CLI invocations in order (a three-question batched search-examples compound counts as its three invocations), including the failed probes: the first order_count get-metric (missing --staging argument), the unknown-metric probe for the unlisted mean-per-customer metric, and the define-metric --help schema probe. JSON results parsed from the session's actual tool output; exit codes derived from the CLI contract (exactly one {error} object to stderr <=> nonzero). The final define-metric re-run redirected its JSON to a scratch file and printed the session's own verification id list; that observed output is recorded verbatim and never used as the value source (the fully observed seq-15 result is). The three final answers are copied verbatim from the session's write payloads and byte-compared against the files it wrote on disk (identical). Scenario slicing: the single shared list-metrics discovery call (seq 1) belongs to all three questions' observed paths and appears in each scenario. The synthetic served context keeps the unchanged observed gross-margin/mean-per-customer pages and policies of the earlier recording (byte-identical, golden sources) and adds, for the consumed-expired-Policy question only, an order_count metric page citing a billing-status-snapshot Policy whose supported expiry (2026-07-01) the recording date is past. Nothing was manufactured to satisfy tests: the expired-policy caveat, routes, values and labels are the session's own answers."
   },
   "scenarios": {
     "governed": {
@@ -28,7 +29,7 @@
       "calls": [
         {
           "seq": 1,
-          "command": "/tmp/ariadne-t21-eval-final-B6CtA04V/bin/ariadne list-metrics --db /tmp/ariadne-t21-eval-final-B6CtA04V/demo.db --served /tmp/ariadne-t21-eval-final-B6CtA04V/served --staging /tmp/ariadne-t21-eval-final-B6CtA04V/staging",
+          "command": "./bin/ariadne list-metrics --db ./demo.db --served ./served --staging ./staging",
           "exit": 0,
           "result": [
             {
@@ -72,7 +73,103 @@
         },
         {
           "seq": 2,
-          "command": "/tmp/ariadne-t21-eval-final-B6CtA04V/bin/ariadne get-metric gross_margin --dimension region --db /tmp/ariadne-t21-eval-final-B6CtA04V/demo.db --served /tmp/ariadne-t21-eval-final-B6CtA04V/served --staging /tmp/ariadne-t21-eval-final-B6CtA04V/staging",
+          "command": "./bin/ariadne search-context \"gross margin\" --db ./demo.db --served ./served --staging ./staging",
+          "exit": 0,
+          "result": [
+            {
+              "path": "metrics/mean_order_amount_per_customer.md",
+              "score": 6,
+              "draft": false,
+              "content": "---\ntype: metric\nstatus: stable\ntitle: mean_order_amount_per_customer\ndescription: Average billed amount per billable order, grouped by customer.\ntags:\n- metric\n- average\n- customer\ngoverned_by: adhoc_mean_order_amount_per_customer.mean_order_amount_per_customer\ndimensions:\n- customer_id\ngrain: per customer_id\nsources:\n- id: orders\n  resource: tables/orders.md\n  title: Orders table\n- id: order-status-billing\n  resource: policies/order-status-billing.md\n  title: 'Policy: order status billing'\n- id: emea-currency-cutover\n  resource: policies/emea-currency-cutover.md\n  title: 'Policy: EMEA currency cutover'\ngenerated:\n  by: ariadne-author\n  at: '2026-09-16T16:59:23+00:00'\nverified:\n- by: human:volker\n  at: '2026-09-16T16:59:24+00:00'\nstale_after: '2026-12-15'\n---\n## Business rules that govern this metric\n\nTwo policies apply:\n\n1. **Status exclusion** (`policies/order-status-billing.md`). Rows with `status` in `('CANCELLED', 'RETURNED')` must be excluded from every revenue, margin, and billed-order-count number. Only rows with `status = 'COMPLETED'` contribute.\n\n2. **EMEA currency cutover** (`policies/emea-currency-cutover.md`). For rows where `region_code = 'EMEA'` and `order_timestamp < '2024-01-01'`, `amount` is in local currency given by `currency` (`EUR` or `GBP`) and must be multiplied by `rate_to_usd` from `currency_conversion_rate` joined on `currency`. All other rows are already USD and use a multiplier of `1.0`:\n   - `region_code = 'EMEA'` with `order_timestamp >= '2024-01-01'` — migrated to USD at cutover, multiply by `1.0`.\n   - `region_code = 'NA'` — always USD, multiply by `1.0`.\n   - `region_code = 'APAC'` — always USD, multiply by `1.0`.\n\nConverting rows outside the EMEA pre-2024 boundary will silently deflate the figures.\n\n## Definition\n\n`mean_order_amount_per_customer` is defined in the `adhoc_mean_order_amount_per_customer` semantic model. It is the average billed amount per billable order, sliced by `customer_id`. Computed as `gross_revenue / NULLIF(order_count, 0)` per customer, so it inherits both rules above: the status exclusion trims the numerator and denominator, and the currency conversion is applied to `amount` inside `gross_revenue`.\n",
+              "excerpt": "NCELLED', 'RETURNED')` must be excluded from every revenue, margin, and billed-order-count number. Only rows with `status = 'C",
+              "line_start": 36,
+              "line_end": 36,
+              "section": "Business rules that govern this metric",
+              "context_signals": {
+                "pages": [
+                  {
+                    "path": "metrics/mean_order_amount_per_customer.md",
+                    "status": "stable",
+                    "freshness": {
+                      "stale_after": "2026-12-15",
+                      "state": "current"
+                    },
+                    "verification_tier": "human-reviewed",
+                    "generated": {
+                      "by": "ariadne-author",
+                      "at": "2026-09-16T16:59:23+00:00"
+                    },
+                    "verified": [
+                      {
+                        "by": "human:volker",
+                        "at": "2026-09-16T16:59:24+00:00"
+                      }
+                    ],
+                    "sources": [
+                      {
+                        "id": "orders",
+                        "resource": "tables/orders.md",
+                        "title": "Orders table"
+                      },
+                      {
+                        "id": "order-status-billing",
+                        "resource": "policies/order-status-billing.md",
+                        "title": "Policy: order status billing"
+                      },
+                      {
+                        "id": "emea-currency-cutover",
+                        "resource": "policies/emea-currency-cutover.md",
+                        "title": "Policy: EMEA currency cutover"
+                      }
+                    ]
+                  }
+                ],
+                "warnings": []
+              }
+            },
+            {
+              "path": "metrics/gross_margin.md",
+              "score": 4,
+              "draft": false,
+              "content": "---\ntype: metric\nstatus: draft\nsources:\n  - orders\n  - currency_conversion_rate\n  - {id: order-status-billing, resource: policies/order-status-billing.md}\n  - {id: emea-currency-cutover, resource: policies/emea-currency-cutover.md}\n---\n\n# Gross margin\n\nGoverned definition: ratio of sums, not an average of per-row margins.\n\nBusiness rules from the seed notes (the author MUST restate every one):\n1. CANCELLED and RETURNED orders are not revenue: exclude status CANCELLED and RETURNED from revenue, cost, and order count.\n2. Pre-2024 EMEA rows are unconverted local currency (EUR/GBP): multiply both figures by rate_to_usd\n   for both amount and product_cost before aggregating.\n",
+              "excerpt": "# Gross margin",
+              "line_start": 11,
+              "line_end": 11,
+              "section": "Gross margin",
+              "context_signals": {
+                "pages": [
+                  {
+                    "path": "metrics/gross_margin.md",
+                    "status": "draft",
+                    "freshness": {
+                      "stale_after": null,
+                      "state": "unknown"
+                    },
+                    "verification_tier": "unverified",
+                    "generated": null,
+                    "verified": null,
+                    "sources": [
+                      "orders",
+                      "currency_conversion_rate",
+                      {
+                        "id": "order-status-billing",
+                        "resource": "policies/order-status-billing.md"
+                      },
+                      {
+                        "id": "emea-currency-cutover",
+                        "resource": "policies/emea-currency-cutover.md"
+                      }
+                    ]
+                  }
+                ],
+                "warnings": []
+              }
+            }
+          ]
+        },
+        {
+          "seq": 5,
+          "command": "./bin/ariadne get-metric gross_margin --dimension region --db ./demo.db --served ./served --staging ./staging",
           "exit": 0,
           "result": {
             "metric": "gross_margin",
@@ -85,16 +182,16 @@
             ],
             "rows": [
               {
+                "region": "EMEA",
+                "gross_margin": 0.3844192711869463
+              },
+              {
                 "region": "NA",
                 "gross_margin": 0.3640985278027471
               },
               {
                 "region": "APAC",
                 "gross_margin": 0.3667576965122099
-              },
-              {
-                "region": "EMEA",
-                "gross_margin": 0.3844192711869463
               }
             ],
             "sql": "SELECT region, (gross_revenue - cogs) / NULLIF(gross_revenue, 0) AS gross_margin FROM (SELECT region_code AS region, SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN product_cost * fx_rate ELSE 0 END) AS cogs, SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount * fx_rate ELSE 0 END) AS gross_revenue FROM (SELECT o.order_id, o.customer_id, o.order_timestamp, o.status, o.region_code, o.currency, o.amount, o.product_cost, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate FROM demo.main.orders AS o LEFT JOIN demo.main.currency_conversion_rate AS r ON r.currency = o.currency) GROUP BY region)",
@@ -104,19 +201,125 @@
               "policies": [
                 "---\ntype: policy\nstatus: draft\ntitle: Order status billing\ndescription: Cancelled and returned orders are not revenue.\ntags: [policy, billing]\nsources:\n  - id: seed-notes\n    resource: data/seed_notes.md\n    title: Seed notes\n---\n\n# Order status billing\n\nCANCELLED and RETURNED orders are not revenue: rows with status IN ('CANCELLED', 'RETURNED') are excluded from\nevery revenue, cost, and order-count number.\n",
                 "---\ntype: policy\nstatus: draft\ntitle: EMEA currency cutover\ndescription: Pre-2024 EMEA rows are unconverted local currency.\ntags: [policy, currency]\nsources:\n  - id: seed-notes\n    resource: data/seed_notes.md\n    title: Seed notes\n---\n\n# EMEA currency cutover\n\nmultiply both figures by rate_to_usd: pre-2024 EMEA rows carry unconverted local currency (EUR/GBP) and\nmust be converted with the fx_rate join before aggregating.\n"
-              ]
+              ],
+              "context_signals": {
+                "pages": [
+                  {
+                    "path": "metrics/gross_margin.md",
+                    "status": "draft",
+                    "freshness": {
+                      "stale_after": null,
+                      "state": "unknown"
+                    },
+                    "verification_tier": "unverified",
+                    "generated": null,
+                    "verified": null,
+                    "sources": [
+                      "orders",
+                      "currency_conversion_rate",
+                      {
+                        "id": "order-status-billing",
+                        "resource": "policies/order-status-billing.md"
+                      },
+                      {
+                        "id": "emea-currency-cutover",
+                        "resource": "policies/emea-currency-cutover.md"
+                      }
+                    ]
+                  },
+                  {
+                    "path": "policies/order-status-billing.md",
+                    "status": "draft",
+                    "freshness": {
+                      "stale_after": null,
+                      "state": "unknown"
+                    },
+                    "verification_tier": "unverified",
+                    "generated": null,
+                    "verified": null,
+                    "sources": [
+                      {
+                        "id": "seed-notes",
+                        "resource": "data/seed_notes.md",
+                        "title": "Seed notes"
+                      }
+                    ]
+                  },
+                  {
+                    "path": "policies/emea-currency-cutover.md",
+                    "status": "draft",
+                    "freshness": {
+                      "stale_after": null,
+                      "state": "unknown"
+                    },
+                    "verification_tier": "unverified",
+                    "generated": null,
+                    "verified": null,
+                    "sources": [
+                      {
+                        "id": "seed-notes",
+                        "resource": "data/seed_notes.md",
+                        "title": "Seed notes"
+                      }
+                    ]
+                  }
+                ],
+                "warnings": []
+              }
+            },
+            "data_signals": {
+              "version": 1,
+              "assessed_at": "2026-10-07T19:44:26.710013+00:00",
+              "metrics": [
+                {
+                  "name": "gross_margin",
+                  "assets": [
+                    "ariadne://table/WyJkZW1vIiwiZGVtbyIsIm1haW4iLCJvcmRlcnMiXQ",
+                    "ariadne://table/WyJkZW1vIiwiZGVtbyIsIm1haW4iLCJjdXJyZW5jeV9jb252ZXJzaW9uX3JhdGUiXQ"
+                  ],
+                  "coverage": "unknown"
+                }
+              ],
+              "assets": [
+                {
+                  "resource": "ariadne://table/WyJkZW1vIiwiZGVtbyIsIm1haW4iLCJvcmRlcnMiXQ",
+                  "page": null,
+                  "coverage": "unknown",
+                  "reports": []
+                },
+                {
+                  "resource": "ariadne://table/WyJkZW1vIiwiZGVtbyIsIm1haW4iLCJjdXJyZW5jeV9jb252ZXJzaW9uX3JhdGUiXQ",
+                  "page": null,
+                  "coverage": "unknown",
+                  "reports": []
+                }
+              ],
+              "warnings": [],
+              "truncated": false,
+              "omitted": {
+                "metrics": 0,
+                "assets": 0,
+                "pages": 0,
+                "reports": 0
+              }
             }
           }
+        },
+        {
+          "seq": 7,
+          "command": "./bin/ariadne search-examples \"gross margin by region\" --db ./demo.db --served ./served --staging ./staging",
+          "exit": 0,
+          "result": []
         }
       ],
-      "final_answer": "## 1. Gross margin by region\n\n| Region | Gross margin |\n|---|---:|\n| APAC | 36.68% |\n| EMEA | 38.44% |\n| NA | 36.41% |\n\nFresh `get-metric gross_margin --dimension region` result; **governed: true**. This is `(sum of billed revenue − sum of direct costs) / sum of billed revenue`, not an average of order margins, across the available data (no date filter). **Caveats:** CANCELLED and RETURNED orders are excluded from both revenue and costs; pre-2024 EMEA amounts and product costs in EUR/GBP are converted to USD before aggregation. Provenance: served `context_layer/metrics/gross_margin.md`, citing `policies/order-status-billing.md` and `policies/emea-currency-cutover.md`, with their policy bodies returned by Ariadne."
+      "final_answer": "# Gross margin by region\n\n**Answer — governed: true** (served metric `gross_margin`, queried by region)\n\n| Region | Gross margin |\n|--------|--------------|\n| EMEA | 0.3844192711869463 (≈ 38.44%) |\n| NA | 0.3640985278027471 (≈ 36.41%) |\n| APAC | 0.3667576965122099 (≈ 36.68%) |\n\nDefinition: gross margin = (gross revenue − COGS) / gross revenue per region, computed as a **ratio of sums, not an average of per-row margins**.\n\nCaveats that govern these numbers:\n\n- Orders with status `CANCELLED` or `RETURNED` are excluded from both revenue and cost; in this dataset the remaining billable rows are exactly the `COMPLETED` orders.\n- Pre-2024 EMEA rows carry unconverted local currency (EUR/GBP): both `amount` and `product_cost` are multiplied by `rate_to_usd` (from `currency_conversion_rate`, joined on `currency`) before aggregating. EMEA rows from 2024-01-01 onward and all NA/APAC rows are already USD and use a multiplier of 1.0.\n\nProvenance: `ariadne get-metric gross_margin --dimension region` (governed: true). Served metric page `context_layer/metrics/gross_margin.md`, citing policies `policies/order-status-billing.md` and `policies/emea-currency-cutover.md`.\n"
     },
     "adhoc": {
       "question": "What is the mean order amount per customer?",
       "calls": [
         {
-          "seq": 3,
-          "command": "/tmp/ariadne-t21-eval-final-B6CtA04V/bin/ariadne list-metrics --db /tmp/ariadne-t21-eval-final-B6CtA04V/demo.db --served /tmp/ariadne-t21-eval-final-B6CtA04V/served --staging /tmp/ariadne-t21-eval-final-B6CtA04V/staging",
+          "seq": 1,
+          "command": "./bin/ariadne list-metrics --db ./demo.db --served ./served --staging ./staging",
           "exit": 0,
           "result": [
             {
@@ -160,28 +363,134 @@
         },
         {
           "seq": 4,
-          "command": "/tmp/ariadne-t21-eval-final-B6CtA04V/bin/ariadne search-context 'mean order amount per customer' --db /tmp/ariadne-t21-eval-final-B6CtA04V/demo.db --served /tmp/ariadne-t21-eval-final-B6CtA04V/served --staging /tmp/ariadne-t21-eval-final-B6CtA04V/staging",
+          "command": "./bin/ariadne search-context \"average order amount per customer\" --db ./demo.db --served ./served --staging ./staging",
           "exit": 0,
           "result": [
             {
               "path": "metrics/mean_order_amount_per_customer.md",
-              "score": 98,
+              "score": 94,
               "draft": false,
               "content": "---\ntype: metric\nstatus: stable\ntitle: mean_order_amount_per_customer\ndescription: Average billed amount per billable order, grouped by customer.\ntags:\n- metric\n- average\n- customer\ngoverned_by: adhoc_mean_order_amount_per_customer.mean_order_amount_per_customer\ndimensions:\n- customer_id\ngrain: per customer_id\nsources:\n- id: orders\n  resource: tables/orders.md\n  title: Orders table\n- id: order-status-billing\n  resource: policies/order-status-billing.md\n  title: 'Policy: order status billing'\n- id: emea-currency-cutover\n  resource: policies/emea-currency-cutover.md\n  title: 'Policy: EMEA currency cutover'\ngenerated:\n  by: ariadne-author\n  at: '2026-09-16T16:59:23+00:00'\nverified:\n- by: human:volker\n  at: '2026-09-16T16:59:24+00:00'\nstale_after: '2026-12-15'\n---\n## Business rules that govern this metric\n\nTwo policies apply:\n\n1. **Status exclusion** (`policies/order-status-billing.md`). Rows with `status` in `('CANCELLED', 'RETURNED')` must be excluded from every revenue, margin, and billed-order-count number. Only rows with `status = 'COMPLETED'` contribute.\n\n2. **EMEA currency cutover** (`policies/emea-currency-cutover.md`). For rows where `region_code = 'EMEA'` and `order_timestamp < '2024-01-01'`, `amount` is in local currency given by `currency` (`EUR` or `GBP`) and must be multiplied by `rate_to_usd` from `currency_conversion_rate` joined on `currency`. All other rows are already USD and use a multiplier of `1.0`:\n   - `region_code = 'EMEA'` with `order_timestamp >= '2024-01-01'` — migrated to USD at cutover, multiply by `1.0`.\n   - `region_code = 'NA'` — always USD, multiply by `1.0`.\n   - `region_code = 'APAC'` — always USD, multiply by `1.0`.\n\nConverting rows outside the EMEA pre-2024 boundary will silently deflate the figures.\n\n## Definition\n\n`mean_order_amount_per_customer` is defined in the `adhoc_mean_order_amount_per_customer` semantic model. It is the average billed amount per billable order, sliced by `customer_id`. Computed as `gross_revenue / NULLIF(order_count, 0)` per customer, so it inherits both rules above: the status exclusion trims the numerator and denominator, and the currency conversion is applied to `amount` inside `gross_revenue`.\n",
               "excerpt": "1. **Status exclusion** (`policies/order-status-billing.md`). Rows with `status` in `('CANCELLED', '",
               "line_start": 36,
               "line_end": 36,
-              "section": "Business rules that govern this metric"
+              "section": "Business rules that govern this metric",
+              "context_signals": {
+                "pages": [
+                  {
+                    "path": "metrics/mean_order_amount_per_customer.md",
+                    "status": "stable",
+                    "freshness": {
+                      "stale_after": "2026-12-15",
+                      "state": "current"
+                    },
+                    "verification_tier": "human-reviewed",
+                    "generated": {
+                      "by": "ariadne-author",
+                      "at": "2026-09-16T16:59:23+00:00"
+                    },
+                    "verified": [
+                      {
+                        "by": "human:volker",
+                        "at": "2026-09-16T16:59:24+00:00"
+                      }
+                    ],
+                    "sources": [
+                      {
+                        "id": "orders",
+                        "resource": "tables/orders.md",
+                        "title": "Orders table"
+                      },
+                      {
+                        "id": "order-status-billing",
+                        "resource": "policies/order-status-billing.md",
+                        "title": "Policy: order status billing"
+                      },
+                      {
+                        "id": "emea-currency-cutover",
+                        "resource": "policies/emea-currency-cutover.md",
+                        "title": "Policy: EMEA currency cutover"
+                      }
+                    ]
+                  }
+                ],
+                "warnings": []
+              }
             },
             {
               "path": "metrics/gross_margin.md",
-              "score": 10,
+              "score": 12,
               "draft": false,
               "content": "---\ntype: metric\nstatus: draft\nsources:\n  - orders\n  - currency_conversion_rate\n  - {id: order-status-billing, resource: policies/order-status-billing.md}\n  - {id: emea-currency-cutover, resource: policies/emea-currency-cutover.md}\n---\n\n# Gross margin\n\nGoverned definition: ratio of sums, not an average of per-row margins.\n\nBusiness rules from the seed notes (the author MUST restate every one):\n1. CANCELLED and RETURNED orders are not revenue: exclude status CANCELLED and RETURNED from revenue, cost, and order count.\n2. Pre-2024 EMEA rows are unconverted local currency (EUR/GBP): multiply both figures by rate_to_usd\n   for both amount and product_cost before aggregating.\n",
               "excerpt": "Governed definition: ratio of sums, not an average of per-row margins.",
               "line_start": 13,
               "line_end": 13,
-              "section": "Gross margin"
+              "section": "Gross margin",
+              "context_signals": {
+                "pages": [
+                  {
+                    "path": "metrics/gross_margin.md",
+                    "status": "draft",
+                    "freshness": {
+                      "stale_after": null,
+                      "state": "unknown"
+                    },
+                    "verification_tier": "unverified",
+                    "generated": null,
+                    "verified": null,
+                    "sources": [
+                      "orders",
+                      "currency_conversion_rate",
+                      {
+                        "id": "order-status-billing",
+                        "resource": "policies/order-status-billing.md"
+                      },
+                      {
+                        "id": "emea-currency-cutover",
+                        "resource": "policies/emea-currency-cutover.md"
+                      }
+                    ]
+                  }
+                ],
+                "warnings": []
+              }
+            },
+            {
+              "path": "metrics/order_count.md",
+              "score": 8,
+              "draft": false,
+              "content": "---\ntype: metric\nstatus: draft\nsources:\n  - orders\n  - {id: order-status-billing, resource: policies/order-status-billing.md}\n  - {id: billing-status-snapshot, resource: policies/billing-status-snapshot-2026h1.md}\n---\n\n# Order count\n\nGoverned definition: count of billable orders.\n\nBusiness rules from the seed notes (the author MUST restate every one):\n1. CANCELLED and RETURNED orders are not revenue: exclude status CANCELLED and RETURNED from\n   every revenue, cost, and order-count number.\n2. The billable-status list is fixed by the H1 2026 billing status snapshot; re-check that\n   snapshot once it expires before reusing the count for billing.\n",
+              "excerpt": "# Order count",
+              "line_start": 10,
+              "line_end": 10,
+              "section": "Order count",
+              "context_signals": {
+                "pages": [
+                  {
+                    "path": "metrics/order_count.md",
+                    "status": "draft",
+                    "freshness": {
+                      "stale_after": null,
+                      "state": "unknown"
+                    },
+                    "verification_tier": "unverified",
+                    "generated": null,
+                    "verified": null,
+                    "sources": [
+                      "orders",
+                      {
+                        "id": "order-status-billing",
+                        "resource": "policies/order-status-billing.md"
+                      },
+                      {
+                        "id": "billing-status-snapshot",
+                        "resource": "policies/billing-status-snapshot-2026h1.md"
+                      }
+                    ]
+                  }
+                ],
+                "warnings": []
+              }
             },
             {
               "path": "policies/order-status-billing.md",
@@ -191,50 +500,53 @@
               "excerpt": "# Order status billing",
               "line_start": 13,
               "line_end": 13,
-              "section": "Order status billing"
+              "section": "Order status billing",
+              "context_signals": {
+                "pages": [
+                  {
+                    "path": "policies/order-status-billing.md",
+                    "status": "draft",
+                    "freshness": {
+                      "stale_after": null,
+                      "state": "unknown"
+                    },
+                    "verification_tier": "unverified",
+                    "generated": null,
+                    "verified": null,
+                    "sources": [
+                      {
+                        "id": "seed-notes",
+                        "resource": "data/seed_notes.md",
+                        "title": "Seed notes"
+                      }
+                    ]
+                  }
+                ],
+                "warnings": []
+              }
             }
           ]
         },
         {
-          "seq": 5,
-          "command": "/tmp/ariadne-t21-eval-final-B6CtA04V/bin/ariadne search-context 'EMEA currency cutover' --db /tmp/ariadne-t21-eval-final-B6CtA04V/demo.db --served /tmp/ariadne-t21-eval-final-B6CtA04V/served --staging /tmp/ariadne-t21-eval-final-B6CtA04V/staging",
+          "seq": 8,
+          "command": "./bin/ariadne search-examples \"mean order amount per customer\" --db ./demo.db --served ./served --staging ./staging",
           "exit": 0,
-          "result": [
-            {
-              "path": "metrics/mean_order_amount_per_customer.md",
-              "score": 48,
-              "draft": false,
-              "content": "---\ntype: metric\nstatus: stable\ntitle: mean_order_amount_per_customer\ndescription: Average billed amount per billable order, grouped by customer.\ntags:\n- metric\n- average\n- customer\ngoverned_by: adhoc_mean_order_amount_per_customer.mean_order_amount_per_customer\ndimensions:\n- customer_id\ngrain: per customer_id\nsources:\n- id: orders\n  resource: tables/orders.md\n  title: Orders table\n- id: order-status-billing\n  resource: policies/order-status-billing.md\n  title: 'Policy: order status billing'\n- id: emea-currency-cutover\n  resource: policies/emea-currency-cutover.md\n  title: 'Policy: EMEA currency cutover'\ngenerated:\n  by: ariadne-author\n  at: '2026-09-16T16:59:23+00:00'\nverified:\n- by: human:volker\n  at: '2026-09-16T16:59:24+00:00'\nstale_after: '2026-12-15'\n---\n## Business rules that govern this metric\n\nTwo policies apply:\n\n1. **Status exclusion** (`policies/order-status-billing.md`). Rows with `status` in `('CANCELLED', 'RETURNED')` must be excluded from every revenue, margin, and billed-order-count number. Only rows with `status = 'COMPLETED'` contribute.\n\n2. **EMEA currency cutover** (`policies/emea-currency-cutover.md`). For rows where `region_code = 'EMEA'` and `order_timestamp < '2024-01-01'`, `amount` is in local currency given by `currency` (`EUR` or `GBP`) and must be multiplied by `rate_to_usd` from `currency_conversion_rate` joined on `currency`. All other rows are already USD and use a multiplier of `1.0`:\n   - `region_code = 'EMEA'` with `order_timestamp >= '2024-01-01'` — migrated to USD at cutover, multiply by `1.0`.\n   - `region_code = 'NA'` — always USD, multiply by `1.0`.\n   - `region_code = 'APAC'` — always USD, multiply by `1.0`.\n\nConverting rows outside the EMEA pre-2024 boundary will silently deflate the figures.\n\n## Definition\n\n`mean_order_amount_per_customer` is defined in the `adhoc_mean_order_amount_per_customer` semantic model. It is the average billed amount per billable order, sliced by `customer_id`. Computed as `gross_revenue / NULLIF(order_count, 0)` per customer, so it inherits both rules above: the status exclusion trims the numerator and denominator, and the currency conversion is applied to `amount` inside `gross_revenue`.\n",
-              "excerpt": "2. **EMEA currency cutover** (`policies/emea-currency-cutover.md`). F",
-              "line_start": 38,
-              "line_end": 38,
-              "section": "Business rules that govern this metric"
-            },
-            {
-              "path": "policies/emea-currency-cutover.md",
-              "score": 22,
-              "draft": false,
-              "content": "---\ntype: policy\nstatus: draft\ntitle: EMEA currency cutover\ndescription: Pre-2024 EMEA rows are unconverted local currency.\ntags: [policy, currency]\nsources:\n  - id: seed-notes\n    resource: data/seed_notes.md\n    title: Seed notes\n---\n\n# EMEA currency cutover\n\nmultiply both figures by rate_to_usd: pre-2024 EMEA rows carry unconverted local currency (EUR/GBP) and\nmust be converted with the fx_rate join before aggregating.\n",
-              "excerpt": "# EMEA currency cutover",
-              "line_start": 13,
-              "line_end": 13,
-              "section": "EMEA currency cutover"
-            },
-            {
-              "path": "metrics/gross_margin.md",
-              "score": 18,
-              "draft": false,
-              "content": "---\ntype: metric\nstatus: draft\nsources:\n  - orders\n  - currency_conversion_rate\n  - {id: order-status-billing, resource: policies/order-status-billing.md}\n  - {id: emea-currency-cutover, resource: policies/emea-currency-cutover.md}\n---\n\n# Gross margin\n\nGoverned definition: ratio of sums, not an average of per-row margins.\n\nBusiness rules from the seed notes (the author MUST restate every one):\n1. CANCELLED and RETURNED orders are not revenue: exclude status CANCELLED and RETURNED from revenue, cost, and order count.\n2. Pre-2024 EMEA rows are unconverted local currency (EUR/GBP): multiply both figures by rate_to_usd\n   for both amount and product_cost before aggregating.\n",
-              "excerpt": "2. Pre-2024 EMEA rows are unconverted local currency (EUR/GBP): multiply bot",
-              "line_start": 17,
-              "line_end": 17,
-              "section": "Gross margin"
-            }
-          ]
+          "result": []
         },
         {
-          "seq": 6,
-          "command": "/tmp/ariadne-t21-eval-final-B6CtA04V/bin/ariadne list-datasets --db /tmp/ariadne-t21-eval-final-B6CtA04V/demo.db --served /tmp/ariadne-t21-eval-final-B6CtA04V/served --staging /tmp/ariadne-t21-eval-final-B6CtA04V/staging",
+          "seq": 11,
+          "command": "./bin/ariadne get-metric mean_order_amount_per_customer --dimension customer_id --db ./demo.db --served ./served --staging ./staging",
+          "exit": 1,
+          "result": {
+            "error": {
+              "type": "ValueError",
+              "message": "unknown metric 'mean_order_amount_per_customer'; available metrics: cogs, gross_margin, gross_revenue, order_count. If no governed metric above answers your question, route it to the ad-hoc path: call list_datasets() to see the queryable tables, then define_metric(definition) to compute the answer (compiled, executed read-only, auto-staged for human promotion)."
+            }
+          }
+        },
+        {
+          "seq": 12,
+          "command": "./bin/ariadne list-datasets --db ./demo.db --served ./served --staging ./staging",
           "exit": 0,
           "result": [
             {
@@ -248,7 +560,12 @@
                   "name": "rate_to_usd",
                   "type": "DOUBLE"
                 }
-              ]
+              ],
+              "source": "demo",
+              "catalog": "demo",
+              "schema": "main",
+              "table": "currency_conversion_rate",
+              "resource": "ariadne://table/WyJkZW1vIiwiZGVtbyIsIm1haW4iLCJjdXJyZW5jeV9jb252ZXJzaW9uX3JhdGUiXQ"
             },
             {
               "name": "customers",
@@ -265,7 +582,12 @@
                   "name": "country",
                   "type": "VARCHAR"
                 }
-              ]
+              ],
+              "source": "demo",
+              "catalog": "demo",
+              "schema": "main",
+              "table": "customers",
+              "resource": "ariadne://table/WyJkZW1vIiwiZGVtbyIsIm1haW4iLCJjdXN0b21lcnMiXQ"
             },
             {
               "name": "orders",
@@ -302,62 +624,45 @@
                   "name": "product_cost",
                   "type": "DOUBLE"
                 }
-              ]
+              ],
+              "source": "demo",
+              "catalog": "demo",
+              "schema": "main",
+              "table": "orders",
+              "resource": "ariadne://table/WyJkZW1vIiwiZGVtbyIsIm1haW4iLCJvcmRlcnMiXQ"
             }
           ]
         },
         {
-          "seq": 7,
-          "command": "/tmp/ariadne-t21-eval-final-B6CtA04V/bin/ariadne define-metric --help",
+          "seq": 13,
+          "command": "./bin/ariadne define-metric --help 2>&1 | head -60",
           "exit": 0
         },
         {
-          "seq": 8,
-          "command": "printf '{}\\n' | /tmp/ariadne-t21-eval-final-B6CtA04V/bin/ariadne define-metric --db /tmp/ariadne-t21-eval-final-B6CtA04V/demo.db --served /tmp/ariadne-t21-eval-final-B6CtA04V/served --staging /tmp/ariadne-t21-eval-final-B6CtA04V/staging",
-          "exit": 1,
+          "seq": 14,
+          "command": "./bin/ariadne get-metric gross_revenue --dimension status --db ./demo.db --served ./served --staging ./staging | python3 -c \"import json,sys; d=json.load(sys.stdin); print(json.dumps({'rows': d['rows'], 'governed': d['governed']}))\"",
+          "exit": 0,
           "result": {
-            "error": {
-              "type": "ValueError",
-              "message": "invalid metric name None: use a lowercase snake_case slug (letters, digits, single underscores, starting and ending alphanumeric)"
-            }
+            "rows": [
+              {
+                "status": "RETURNED",
+                "gross_revenue": 0.0
+              },
+              {
+                "status": "COMPLETED",
+                "gross_revenue": 303663.7884000002
+              },
+              {
+                "status": "CANCELLED",
+                "gross_revenue": 0.0
+              }
+            ],
+            "governed": true
           }
         },
         {
-          "seq": 9,
-          "command": "printf '{\"name\":\"mean_order_amount_per_customer\"}\\n' | /tmp/ariadne-t21-eval-final-B6CtA04V/bin/ariadne define-metric --db /tmp/ariadne-t21-eval-final-B6CtA04V/demo.db --served /tmp/ariadne-t21-eval-final-B6CtA04V/served --staging /tmp/ariadne-t21-eval-final-B6CtA04V/staging",
-          "exit": 1,
-          "result": {
-            "error": {
-              "type": "ValueError",
-              "message": "define_metric requires a non-empty string 'description'"
-            }
-          }
-        },
-        {
-          "seq": 10,
-          "command": "printf '{\"name\":\"mean_order_amount_per_customer\",\"description\":\"Average billed amount per billable order grouped by customer\"}\\n' | /tmp/ariadne-t21-eval-final-B6CtA04V/bin/ariadne define-metric --db /tmp/ariadne-t21-eval-final-B6CtA04V/demo.db --served /tmp/ariadne-t21-eval-final-B6CtA04V/served --staging /tmp/ariadne-t21-eval-final-B6CtA04V/staging",
-          "exit": 1,
-          "result": {
-            "error": {
-              "type": "ValueError",
-              "message": "define_metric requires a non-empty string 'source'"
-            }
-          }
-        },
-        {
-          "seq": 11,
-          "command": "printf '{\"name\":\"mean_order_amount_per_customer\",\"description\":\"Average billed amount per billable order grouped by customer\",\"source\":\"orders\"}\\n' | /tmp/ariadne-t21-eval-final-B6CtA04V/bin/ariadne define-metric --db /tmp/ariadne-t21-eval-final-B6CtA04V/demo.db --served /tmp/ariadne-t21-eval-final-B6CtA04V/served --staging /tmp/ariadne-t21-eval-final-B6CtA04V/staging",
-          "exit": 1,
-          "result": {
-            "error": {
-              "type": "ValueError",
-              "message": "define_metric requires a non-empty string 'expression'"
-            }
-          }
-        },
-        {
-          "seq": 12,
-          "command": "printf '%s\\n' '{\"name\":\"mean_order_amount_per_customer\",\"description\":\"Average billed amount in USD per billable order grouped by customer\",\"source\":\"SELECT o.customer_id, o.status, o.amount, CASE WHEN o.region_code = '\\''EMEA'\\'' AND o.order_timestamp < '\\''2024-01-01'\\'' THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate FROM orders o LEFT JOIN currency_conversion_rate r ON r.currency = o.currency\",\"expression\":\"SUM(CASE WHEN status NOT IN ('\\''CANCELLED'\\'', '\\''RETURNED'\\'') THEN amount * fx_rate ELSE 0 END) / NULLIF(SUM(CASE WHEN status NOT IN ('\\''CANCELLED'\\'', '\\''RETURNED'\\'') THEN 1 ELSE 0 END), 0)\",\"dimensions\":[\"customer_id\"]}' | /tmp/ariadne-t21-eval-final-B6CtA04V/bin/ariadne define-metric --db /tmp/ariadne-t21-eval-final-B6CtA04V/demo.db --served /tmp/ariadne-t21-eval-final-B6CtA04V/served --staging /tmp/ariadne-t21-eval-final-B6CtA04V/staging",
+          "seq": 15,
+          "command": "./bin/ariadne define-metric --file /tmp/mean_order_def.json --db ./demo.db --served ./served --staging ./staging",
           "exit": 0,
           "result": {
             "metric": "mean_order_amount_per_customer",
@@ -371,12 +676,68 @@
                 "mean_order_amount_per_customer": 737.9621428571429
               },
               {
+                "customer_id": 14,
+                "mean_order_amount_per_customer": 780.7349666666669
+              },
+              {
                 "customer_id": 15,
                 "mean_order_amount_per_customer": 850.51722
               },
               {
+                "customer_id": 11,
+                "mean_order_amount_per_customer": 880.1427150000002
+              },
+              {
+                "customer_id": 9,
+                "mean_order_amount_per_customer": 820.7904454545455
+              },
+              {
+                "customer_id": 5,
+                "mean_order_amount_per_customer": 744.4105375000001
+              },
+              {
+                "customer_id": 16,
+                "mean_order_amount_per_customer": 758.7263833333333
+              },
+              {
+                "customer_id": 26,
+                "mean_order_amount_per_customer": 904.0878133333333
+              },
+              {
+                "customer_id": 17,
+                "mean_order_amount_per_customer": 605.4328571428572
+              },
+              {
+                "customer_id": 30,
+                "mean_order_amount_per_customer": 698.0641666666667
+              },
+              {
+                "customer_id": 27,
+                "mean_order_amount_per_customer": 926.7762785714286
+              },
+              {
+                "customer_id": 19,
+                "mean_order_amount_per_customer": 1156.84424
+              },
+              {
                 "customer_id": 21,
                 "mean_order_amount_per_customer": 837.3688875
+              },
+              {
+                "customer_id": 1,
+                "mean_order_amount_per_customer": 632.3453357142856
+              },
+              {
+                "customer_id": 8,
+                "mean_order_amount_per_customer": 568.5253545454545
+              },
+              {
+                "customer_id": 13,
+                "mean_order_amount_per_customer": 681.5107562499999
+              },
+              {
+                "customer_id": 7,
+                "mean_order_amount_per_customer": 532.6700000000001
               },
               {
                 "customer_id": 25,
@@ -403,6 +764,10 @@
                 "mean_order_amount_per_customer": 814.5897375000001
               },
               {
+                "customer_id": 12,
+                "mean_order_amount_per_customer": 597.576111111111
+              },
+              {
                 "customer_id": 23,
                 "mean_order_amount_per_customer": 722.7657500000001
               },
@@ -411,100 +776,490 @@
                 "mean_order_amount_per_customer": 843.38862
               },
               {
-                "customer_id": 24,
-                "mean_order_amount_per_customer": 672.1690894736842
-              },
-              {
-                "customer_id": 1,
-                "mean_order_amount_per_customer": 632.3453357142856
-              },
-              {
-                "customer_id": 27,
-                "mean_order_amount_per_customer": 926.7762785714286
-              },
-              {
-                "customer_id": 7,
-                "mean_order_amount_per_customer": 532.6700000000001
-              },
-              {
-                "customer_id": 12,
-                "mean_order_amount_per_customer": 597.576111111111
+                "customer_id": 3,
+                "mean_order_amount_per_customer": 815.3047200000001
               },
               {
                 "customer_id": 20,
                 "mean_order_amount_per_customer": 981.682
               },
               {
-                "customer_id": 14,
-                "mean_order_amount_per_customer": 780.7349666666669
-              },
-              {
-                "customer_id": 9,
-                "mean_order_amount_per_customer": 820.7904454545455
-              },
-              {
-                "customer_id": 5,
-                "mean_order_amount_per_customer": 744.4105375000001
-              },
-              {
-                "customer_id": 17,
-                "mean_order_amount_per_customer": 605.4328571428572
-              },
-              {
-                "customer_id": 30,
-                "mean_order_amount_per_customer": 698.0641666666667
-              },
-              {
-                "customer_id": 3,
-                "mean_order_amount_per_customer": 815.3047200000001
-              },
-              {
                 "customer_id": 6,
                 "mean_order_amount_per_customer": 855.1501454545454
               },
               {
-                "customer_id": 19,
-                "mean_order_amount_per_customer": 1156.84424
-              },
-              {
-                "customer_id": 8,
-                "mean_order_amount_per_customer": 568.5253545454545
-              },
-              {
-                "customer_id": 13,
-                "mean_order_amount_per_customer": 681.5107562499999
-              },
-              {
-                "customer_id": 11,
-                "mean_order_amount_per_customer": 880.1427150000002
-              },
-              {
-                "customer_id": 16,
-                "mean_order_amount_per_customer": 758.7263833333333
-              },
-              {
-                "customer_id": 26,
-                "mean_order_amount_per_customer": 904.0878133333333
+                "customer_id": 24,
+                "mean_order_amount_per_customer": 672.1690894736842
               }
             ],
-            "sql": "SELECT customer_id AS customer_id, SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount * fx_rate ELSE 0 END) / NULLIF(SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN 1 ELSE 0 END), 0) AS mean_order_amount_per_customer FROM (SELECT o.customer_id, o.status, o.amount, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate FROM orders AS o LEFT JOIN currency_conversion_rate AS r ON r.currency = o.currency) GROUP BY customer_id",
+            "sql": "SELECT customer_id AS customer_id, SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount * fx_rate ELSE 0 END) / NULLIF(SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN 1 ELSE 0 END), 0) AS mean_order_amount_per_customer FROM (SELECT o.order_id, o.customer_id, o.order_timestamp, o.status, o.region_code, o.currency, o.amount, o.product_cost, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate FROM demo.main.orders AS o LEFT JOIN demo.main.currency_conversion_rate AS r ON r.currency = o.currency) GROUP BY customer_id",
             "governed": false,
             "context": null,
             "definition": {
               "name": "mean_order_amount_per_customer",
-              "description": "Average billed amount in USD per billable order grouped by customer",
-              "source": "SELECT o.customer_id, o.status, o.amount, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate FROM orders o LEFT JOIN currency_conversion_rate r ON r.currency = o.currency",
-              "expression": "SUM(CASE WHEN status NOT IN ('CANCELLED', 'RETURNED') THEN amount * fx_rate ELSE 0 END) / NULLIF(SUM(CASE WHEN status NOT IN ('CANCELLED', 'RETURNED') THEN 1 ELSE 0 END), 0)",
+              "description": "Average billed amount per billable order, grouped by customer: gross_revenue / NULLIF(order_count, 0) per customer_id, excluding CANCELLED and RETURNED orders and converting pre-2024 EMEA amounts to USD (per served metric page metrics/mean_order_amount_per_customer.md citing policies/order-status-billing.md and policies/emea-currency-cutover.md).",
+              "source": "SELECT o.order_id, o.customer_id, o.order_timestamp, o.status, o.region_code, o.currency, o.amount, o.product_cost, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate FROM demo.main.orders AS o LEFT JOIN demo.main.currency_conversion_rate AS r ON r.currency = o.currency",
+              "expression": "SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount * fx_rate ELSE 0 END) / NULLIF(SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN 1 ELSE 0 END), 0)",
               "dimensions": [
                 "customer_id"
               ]
             },
-            "staged_as": "/tmp/ariadne-t21-eval-final-B6CtA04V/staging/semantic_layer/models/adhoc/mean_order_amount_per_customer.yml",
-            "staged_context_as": "/tmp/ariadne-t21-eval-final-B6CtA04V/staging/context_layer/metrics/mean_order_amount_per_customer.md"
+            "staged_as": "staging/semantic_layer/models/adhoc/mean_order_amount_per_customer.yml",
+            "staged_context_as": "staging/context_layer/metrics/mean_order_amount_per_customer.md"
+          }
+        },
+        {
+          "seq": 16,
+          "command": "./bin/ariadne define-metric --file /tmp/mean_order_def.json --db ./demo.db --served ./served --staging ./staging > /tmp/adhoc_run2.json 2>&1 && python3 - <<'EOF'\nimport json, re\nrun = json.load(open('/tmp/adhoc_run2.json'))\nrows = {r['customer_id']: repr(r['mean_order_amount_per_customer']) for r in run['rows']}\nmd = open('answers/2-mean-order.md').read()\ntable = dict((int(a), b) for a, b in re.findall(r'^\\| (\\d+) \\| ([0-9.]+) \\|$', md, re.M))\nassert len(rows) == 30, len(rows)\nassert len(table) == 30, len(table)\nmismatch = [cid for cid in rows if repr(table[cid]) != rows[cid]]\nprint(\"rows:\", len(rows), \"mismatches:\", mismatch)\ngm = open('answers/1-gross-margin.md').read()\noc = open('answers/3-order-count.md').read()\nfor v in [\"0.3844192711869463\",\"0.3640985278027471\",\"0.3667576965122099\"]: assert v in gm, v\nfor v in [\"154\",\"86\",\"152\",\"392\"]: assert v in oc, v\nprint(\"gm/oc values present: OK\")\nEOF\nls -la --time-style=full-iso served/context_layer/metrics served/context_layer/policies served/semantic_layer/models | grep -v '^total'",
+          "exit": 0,
+          "result": [
+            22,
+            14,
+            15,
+            11,
+            9,
+            5,
+            16,
+            26,
+            17,
+            30,
+            27,
+            19,
+            21,
+            1,
+            8,
+            13,
+            7,
+            25,
+            18,
+            10,
+            29,
+            2,
+            28,
+            12,
+            23,
+            4,
+            3,
+            20,
+            6,
+            24
+          ]
+        }
+      ],
+      "final_answer": "# Mean order amount per customer\n\n**Answer — governed: false (ad-hoc definition)**: no served metric answers this question (`list-metrics` serves only `gross_revenue`, `cogs`, `gross_margin`, `order_count`), so it was computed through `ariadne define-metric` — compiled and executed read-only through the same compile gate — and auto-staged as a promotion proposal under `staging/`. It is a proposal, not a canonical governed number.\n\nMean billed amount per billable order, per customer, in USD (all 30 customers):\n\n| Customer ID | Mean order amount (USD) |\n|-------------|-------------------------|\n| 1 | 632.3453357142856 |\n| 2 | 724.0704823529412 |\n| 3 | 815.3047200000001 |\n| 4 | 843.38862 |\n| 5 | 744.4105375000001 |\n| 6 | 855.1501454545454 |\n| 7 | 532.6700000000001 |\n| 8 | 568.5253545454545 |\n| 9 | 820.7904454545455 |\n| 10 | 738.69365 |\n| 11 | 880.1427150000002 |\n| 12 | 597.576111111111 |\n| 13 | 681.5107562499999 |\n| 14 | 780.7349666666669 |\n| 15 | 850.51722 |\n| 16 | 758.7263833333333 |\n| 17 | 605.4328571428572 |\n| 18 | 878.5494285714285 |\n| 19 | 1156.84424 |\n| 20 | 981.682 |\n| 21 | 837.3688875 |\n| 22 | 737.9621428571429 |\n| 23 | 722.7657500000001 |\n| 24 | 672.1690894736842 |\n| 25 | 954.0328000000002 |\n| 26 | 904.0878133333333 |\n| 27 | 926.7762785714286 |\n| 28 | 814.5897375000001 |\n| 29 | 863.3061384615384 |\n| 30 | 698.0641666666667 |\n\nMethod: per `customer_id`, mean = SUM(billed amount) / NULLIF(count of billable orders, 0) — i.e. the served gross-revenue rules over the count of billable orders, evaluated fresh.\n\nCaveats that govern these numbers:\n\n- Orders with status `CANCELLED` or `RETURNED` are excluded from both the numerator and the denominator; in this dataset the remaining billable rows are exactly the `COMPLETED` orders.\n- Pre-2024 EMEA rows carry unconverted local currency (EUR/GBP): `amount` is multiplied by `rate_to_usd` (from `currency_conversion_rate`, joined on `currency`) before averaging. EMEA rows from 2024-01-01 onward and all NA/APAC rows are already USD (multiplier 1.0).\n- This is an ad-hoc, `governed: false` proposal: it has not been promoted or independently value-attested. The definition was informed by the served, human-verified context page `context_layer/metrics/mean_order_amount_per_customer.md`, which cites `policies/order-status-billing.md` and `policies/emea-currency-cutover.md` — that page describes this exact metric, but it is not served as a semantic-layer metric, so the number above is a fresh ad-hoc computation. A staged proposal awaits human review/promotion at `staging/semantic_layer/models/adhoc/mean_order_amount_per_customer.yml` and `staging/context_layer/metrics/mean_order_amount_per_customer.md`.\n"
+    },
+    "stale_policy": {
+      "question": "How many billable orders are there per region?",
+      "calls": [
+        {
+          "seq": 1,
+          "command": "./bin/ariadne list-metrics --db ./demo.db --served ./served --staging ./staging",
+          "exit": 0,
+          "result": [
+            {
+              "name": "gross_revenue",
+              "description": "Billed revenue in USD excluding non-billable statuses",
+              "dimensions": [
+                "order_date",
+                "region",
+                "status"
+              ]
+            },
+            {
+              "name": "cogs",
+              "description": "Direct cost of goods in USD excluding non-billable statuses",
+              "dimensions": [
+                "order_date",
+                "region",
+                "status"
+              ]
+            },
+            {
+              "name": "gross_margin",
+              "description": "Ratio of sums, not an average of per-row margins",
+              "dimensions": [
+                "order_date",
+                "region",
+                "status"
+              ]
+            },
+            {
+              "name": "order_count",
+              "description": "Count of billable orders",
+              "dimensions": [
+                "order_date",
+                "region",
+                "status"
+              ]
+            },
+            "If no governed metric above answers your question, route it to the ad-hoc path: call list_datasets() to see the queryable tables, then define_metric(definition) to compute the answer (compiled, executed read-only, auto-staged for human promotion)."
+          ]
+        },
+        {
+          "seq": 3,
+          "command": "./bin/ariadne search-context \"billable orders\" --db ./demo.db --served ./served --staging ./staging",
+          "exit": 0,
+          "result": [
+            {
+              "path": "metrics/mean_order_amount_per_customer.md",
+              "score": 10,
+              "draft": false,
+              "content": "---\ntype: metric\nstatus: stable\ntitle: mean_order_amount_per_customer\ndescription: Average billed amount per billable order, grouped by customer.\ntags:\n- metric\n- average\n- customer\ngoverned_by: adhoc_mean_order_amount_per_customer.mean_order_amount_per_customer\ndimensions:\n- customer_id\ngrain: per customer_id\nsources:\n- id: orders\n  resource: tables/orders.md\n  title: Orders table\n- id: order-status-billing\n  resource: policies/order-status-billing.md\n  title: 'Policy: order status billing'\n- id: emea-currency-cutover\n  resource: policies/emea-currency-cutover.md\n  title: 'Policy: EMEA currency cutover'\ngenerated:\n  by: ariadne-author\n  at: '2026-09-16T16:59:23+00:00'\nverified:\n- by: human:volker\n  at: '2026-09-16T16:59:24+00:00'\nstale_after: '2026-12-15'\n---\n## Business rules that govern this metric\n\nTwo policies apply:\n\n1. **Status exclusion** (`policies/order-status-billing.md`). Rows with `status` in `('CANCELLED', 'RETURNED')` must be excluded from every revenue, margin, and billed-order-count number. Only rows with `status = 'COMPLETED'` contribute.\n\n2. **EMEA currency cutover** (`policies/emea-currency-cutover.md`). For rows where `region_code = 'EMEA'` and `order_timestamp < '2024-01-01'`, `amount` is in local currency given by `currency` (`EUR` or `GBP`) and must be multiplied by `rate_to_usd` from `currency_conversion_rate` joined on `currency`. All other rows are already USD and use a multiplier of `1.0`:\n   - `region_code = 'EMEA'` with `order_timestamp >= '2024-01-01'` — migrated to USD at cutover, multiply by `1.0`.\n   - `region_code = 'NA'` — always USD, multiply by `1.0`.\n   - `region_code = 'APAC'` — always USD, multiply by `1.0`.\n\nConverting rows outside the EMEA pre-2024 boundary will silently deflate the figures.\n\n## Definition\n\n`mean_order_amount_per_customer` is defined in the `adhoc_mean_order_amount_per_customer` semantic model. It is the average billed amount per billable order, sliced by `customer_id`. Computed as `gross_revenue / NULLIF(order_count, 0)` per customer, so it inherits both rules above: the status exclusion trims the numerator and denominator, and the currency conversion is applied to `amount` inside `gross_revenue`.\n",
+              "excerpt": "stomer` semantic model. It is the average billed amount per billable order, sliced by `customer_id`. Computed as `gross_revenue ",
+              "line_start": 47,
+              "line_end": 47,
+              "section": "Definition",
+              "context_signals": {
+                "pages": [
+                  {
+                    "path": "metrics/mean_order_amount_per_customer.md",
+                    "status": "stable",
+                    "freshness": {
+                      "stale_after": "2026-12-15",
+                      "state": "current"
+                    },
+                    "verification_tier": "human-reviewed",
+                    "generated": {
+                      "by": "ariadne-author",
+                      "at": "2026-09-16T16:59:23+00:00"
+                    },
+                    "verified": [
+                      {
+                        "by": "human:volker",
+                        "at": "2026-09-16T16:59:24+00:00"
+                      }
+                    ],
+                    "sources": [
+                      {
+                        "id": "orders",
+                        "resource": "tables/orders.md",
+                        "title": "Orders table"
+                      },
+                      {
+                        "id": "order-status-billing",
+                        "resource": "policies/order-status-billing.md",
+                        "title": "Policy: order status billing"
+                      },
+                      {
+                        "id": "emea-currency-cutover",
+                        "resource": "policies/emea-currency-cutover.md",
+                        "title": "Policy: EMEA currency cutover"
+                      }
+                    ]
+                  }
+                ],
+                "warnings": []
+              }
+            },
+            {
+              "path": "metrics/order_count.md",
+              "score": 10,
+              "draft": false,
+              "content": "---\ntype: metric\nstatus: draft\nsources:\n  - orders\n  - {id: order-status-billing, resource: policies/order-status-billing.md}\n  - {id: billing-status-snapshot, resource: policies/billing-status-snapshot-2026h1.md}\n---\n\n# Order count\n\nGoverned definition: count of billable orders.\n\nBusiness rules from the seed notes (the author MUST restate every one):\n1. CANCELLED and RETURNED orders are not revenue: exclude status CANCELLED and RETURNED from\n   every revenue, cost, and order-count number.\n2. The billable-status list is fixed by the H1 2026 billing status snapshot; re-check that\n   snapshot once it expires before reusing the count for billing.\n",
+              "excerpt": "Governed definition: count of billable orders.",
+              "line_start": 12,
+              "line_end": 12,
+              "section": "Order count",
+              "context_signals": {
+                "pages": [
+                  {
+                    "path": "metrics/order_count.md",
+                    "status": "draft",
+                    "freshness": {
+                      "stale_after": null,
+                      "state": "unknown"
+                    },
+                    "verification_tier": "unverified",
+                    "generated": null,
+                    "verified": null,
+                    "sources": [
+                      "orders",
+                      {
+                        "id": "order-status-billing",
+                        "resource": "policies/order-status-billing.md"
+                      },
+                      {
+                        "id": "billing-status-snapshot",
+                        "resource": "policies/billing-status-snapshot-2026h1.md"
+                      }
+                    ]
+                  }
+                ],
+                "warnings": []
+              }
+            },
+            {
+              "path": "metrics/gross_margin.md",
+              "score": 4,
+              "draft": false,
+              "content": "---\ntype: metric\nstatus: draft\nsources:\n  - orders\n  - currency_conversion_rate\n  - {id: order-status-billing, resource: policies/order-status-billing.md}\n  - {id: emea-currency-cutover, resource: policies/emea-currency-cutover.md}\n---\n\n# Gross margin\n\nGoverned definition: ratio of sums, not an average of per-row margins.\n\nBusiness rules from the seed notes (the author MUST restate every one):\n1. CANCELLED and RETURNED orders are not revenue: exclude status CANCELLED and RETURNED from revenue, cost, and order count.\n2. Pre-2024 EMEA rows are unconverted local currency (EUR/GBP): multiply both figures by rate_to_usd\n   for both amount and product_cost before aggregating.\n",
+              "excerpt": "1. CANCELLED and RETURNED orders are not revenue: exclude status CANCELLED and RETURNED from",
+              "line_start": 16,
+              "line_end": 16,
+              "section": "Gross margin",
+              "context_signals": {
+                "pages": [
+                  {
+                    "path": "metrics/gross_margin.md",
+                    "status": "draft",
+                    "freshness": {
+                      "stale_after": null,
+                      "state": "unknown"
+                    },
+                    "verification_tier": "unverified",
+                    "generated": null,
+                    "verified": null,
+                    "sources": [
+                      "orders",
+                      "currency_conversion_rate",
+                      {
+                        "id": "order-status-billing",
+                        "resource": "policies/order-status-billing.md"
+                      },
+                      {
+                        "id": "emea-currency-cutover",
+                        "resource": "policies/emea-currency-cutover.md"
+                      }
+                    ]
+                  }
+                ],
+                "warnings": []
+              }
+            },
+            {
+              "path": "policies/billing-status-snapshot-2026h1.md",
+              "score": 4,
+              "draft": false,
+              "content": "---\ntype: policy\nstatus: draft\ntitle: Billing status snapshot H1 2026\ndescription: The billable-status list snapshot for the first half of 2026.\ntags: [policy, billing]\nstale_after: '2026-07-01'\nsources:\n  - id: seed-notes\n    resource: data/seed_notes.md\n    title: Seed notes\n---\n\n# Billing status snapshot H1 2026\n\nThe billable-status list (every status except CANCELLED and RETURNED) is the H1 2026 snapshot\nof operations billing guidance. It was valid through 2026-07-01 and must be re-validated against\ncurrent operations guidance before further billing aggregation.\n",
+              "excerpt": "The billable-status list (every status except CANCELLED and RETURNED) is",
+              "line_start": 16,
+              "line_end": 16,
+              "section": "Billing status snapshot H1 2026",
+              "context_signals": {
+                "pages": [
+                  {
+                    "path": "policies/billing-status-snapshot-2026h1.md",
+                    "status": "draft",
+                    "freshness": {
+                      "stale_after": "2026-07-01",
+                      "state": "stale"
+                    },
+                    "verification_tier": "unverified",
+                    "generated": null,
+                    "verified": null,
+                    "sources": [
+                      {
+                        "id": "seed-notes",
+                        "resource": "data/seed_notes.md",
+                        "title": "Seed notes"
+                      }
+                    ]
+                  }
+                ],
+                "warnings": [
+                  {
+                    "code": "context_stale",
+                    "path": "policies/billing-status-snapshot-2026h1.md"
+                  }
+                ]
+              }
+            },
+            {
+              "path": "policies/order-status-billing.md",
+              "score": 4,
+              "draft": false,
+              "content": "---\ntype: policy\nstatus: draft\ntitle: Order status billing\ndescription: Cancelled and returned orders are not revenue.\ntags: [policy, billing]\nsources:\n  - id: seed-notes\n    resource: data/seed_notes.md\n    title: Seed notes\n---\n\n# Order status billing\n\nCANCELLED and RETURNED orders are not revenue: rows with status IN ('CANCELLED', 'RETURNED') are excluded from\nevery revenue, cost, and order-count number.\n",
+              "excerpt": "CANCELLED and RETURNED orders are not revenue: rows with status IN ('CANCELLED', 'RETURNE",
+              "line_start": 15,
+              "line_end": 15,
+              "section": "Order status billing",
+              "context_signals": {
+                "pages": [
+                  {
+                    "path": "policies/order-status-billing.md",
+                    "status": "draft",
+                    "freshness": {
+                      "stale_after": null,
+                      "state": "unknown"
+                    },
+                    "verification_tier": "unverified",
+                    "generated": null,
+                    "verified": null,
+                    "sources": [
+                      {
+                        "id": "seed-notes",
+                        "resource": "data/seed_notes.md",
+                        "title": "Seed notes"
+                      }
+                    ]
+                  }
+                ],
+                "warnings": []
+              }
+            }
+          ]
+        },
+        {
+          "seq": 6,
+          "command": "./bin/ariadne get-metric order_count --dimension region --db ./demo.db --served ./served --staging",
+          "exit": 1,
+          "result": {
+            "error": {
+              "type": "UsageError",
+              "message": "argument --staging: expected one argument"
+            }
+          }
+        },
+        {
+          "seq": 9,
+          "command": "./bin/ariadne search-examples \"billable orders per region\" --db ./demo.db --served ./served --staging ./staging",
+          "exit": 0,
+          "result": []
+        },
+        {
+          "seq": 10,
+          "command": "./bin/ariadne get-metric order_count --dimension region --db ./demo.db --served ./served --staging ./staging",
+          "exit": 0,
+          "result": {
+            "metric": "order_count",
+            "dimensions": [
+              "region"
+            ],
+            "columns": [
+              "region",
+              "order_count"
+            ],
+            "rows": [
+              {
+                "region": "NA",
+                "order_count": 154
+              },
+              {
+                "region": "APAC",
+                "order_count": 86
+              },
+              {
+                "region": "EMEA",
+                "order_count": 152
+              }
+            ],
+            "sql": "SELECT region_code AS region, SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN 1 ELSE 0 END) AS order_count FROM (SELECT o.order_id, o.customer_id, o.order_timestamp, o.status, o.region_code, o.currency, o.amount, o.product_cost, CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01' THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate FROM demo.main.orders AS o LEFT JOIN demo.main.currency_conversion_rate AS r ON r.currency = o.currency) GROUP BY region",
+            "governed": true,
+            "context": {
+              "metric_page": "---\ntype: metric\nstatus: draft\nsources:\n  - orders\n  - {id: order-status-billing, resource: policies/order-status-billing.md}\n  - {id: billing-status-snapshot, resource: policies/billing-status-snapshot-2026h1.md}\n---\n\n# Order count\n\nGoverned definition: count of billable orders.\n\nBusiness rules from the seed notes (the author MUST restate every one):\n1. CANCELLED and RETURNED orders are not revenue: exclude status CANCELLED and RETURNED from\n   every revenue, cost, and order-count number.\n2. The billable-status list is fixed by the H1 2026 billing status snapshot; re-check that\n   snapshot once it expires before reusing the count for billing.\n",
+              "policies": [
+                "---\ntype: policy\nstatus: draft\ntitle: Order status billing\ndescription: Cancelled and returned orders are not revenue.\ntags: [policy, billing]\nsources:\n  - id: seed-notes\n    resource: data/seed_notes.md\n    title: Seed notes\n---\n\n# Order status billing\n\nCANCELLED and RETURNED orders are not revenue: rows with status IN ('CANCELLED', 'RETURNED') are excluded from\nevery revenue, cost, and order-count number.\n",
+                "---\ntype: policy\nstatus: draft\ntitle: Billing status snapshot H1 2026\ndescription: The billable-status list snapshot for the first half of 2026.\ntags: [policy, billing]\nstale_after: '2026-07-01'\nsources:\n  - id: seed-notes\n    resource: data/seed_notes.md\n    title: Seed notes\n---\n\n# Billing status snapshot H1 2026\n\nThe billable-status list (every status except CANCELLED and RETURNED) is the H1 2026 snapshot\nof operations billing guidance. It was valid through 2026-07-01 and must be re-validated against\ncurrent operations guidance before further billing aggregation.\n"
+              ],
+              "context_signals": {
+                "pages": [
+                  {
+                    "path": "metrics/order_count.md",
+                    "status": "draft",
+                    "freshness": {
+                      "stale_after": null,
+                      "state": "unknown"
+                    },
+                    "verification_tier": "unverified",
+                    "generated": null,
+                    "verified": null,
+                    "sources": [
+                      "orders",
+                      {
+                        "id": "order-status-billing",
+                        "resource": "policies/order-status-billing.md"
+                      },
+                      {
+                        "id": "billing-status-snapshot",
+                        "resource": "policies/billing-status-snapshot-2026h1.md"
+                      }
+                    ]
+                  },
+                  {
+                    "path": "policies/order-status-billing.md",
+                    "status": "draft",
+                    "freshness": {
+                      "stale_after": null,
+                      "state": "unknown"
+                    },
+                    "verification_tier": "unverified",
+                    "generated": null,
+                    "verified": null,
+                    "sources": [
+                      {
+                        "id": "seed-notes",
+                        "resource": "data/seed_notes.md",
+                        "title": "Seed notes"
+                      }
+                    ]
+                  },
+                  {
+                    "path": "policies/billing-status-snapshot-2026h1.md",
+                    "status": "draft",
+                    "freshness": {
+                      "stale_after": "2026-07-01",
+                      "state": "stale"
+                    },
+                    "verification_tier": "unverified",
+                    "generated": null,
+                    "verified": null,
+                    "sources": [
+                      {
+                        "id": "seed-notes",
+                        "resource": "data/seed_notes.md",
+                        "title": "Seed notes"
+                      }
+                    ]
+                  }
+                ],
+                "warnings": [
+                  {
+                    "code": "context_stale",
+                    "path": "policies/billing-status-snapshot-2026h1.md"
+                  }
+                ]
+              }
+            },
+            "data_signals": {
+              "version": 1,
+              "assessed_at": "2026-10-07T19:44:35.530330+00:00",
+              "metrics": [
+                {
+                  "name": "order_count",
+                  "assets": [
+                    "ariadne://table/WyJkZW1vIiwiZGVtbyIsIm1haW4iLCJvcmRlcnMiXQ",
+                    "ariadne://table/WyJkZW1vIiwiZGVtbyIsIm1haW4iLCJjdXJyZW5jeV9jb252ZXJzaW9uX3JhdGUiXQ"
+                  ],
+                  "coverage": "unknown"
+                }
+              ],
+              "assets": [
+                {
+                  "resource": "ariadne://table/WyJkZW1vIiwiZGVtbyIsIm1haW4iLCJvcmRlcnMiXQ",
+                  "page": null,
+                  "coverage": "unknown",
+                  "reports": []
+                },
+                {
+                  "resource": "ariadne://table/WyJkZW1vIiwiZGVtbyIsIm1haW4iLCJjdXJyZW5jeV9jb252ZXJzaW9uX3JhdGUiXQ",
+                  "page": null,
+                  "coverage": "unknown",
+                  "reports": []
+                }
+              ],
+              "warnings": [],
+              "truncated": false,
+              "omitted": {
+                "metrics": 0,
+                "assets": 0,
+                "pages": 0,
+                "reports": 0
+              }
+            }
           }
         }
       ],
-      "final_answer": "## 2. Mean order amount per customer\n\n| Customer ID | Mean billed order amount (USD) | Customer ID | Mean billed order amount (USD) |\n|---:|---:|---:|---:|\n| 1 | $632.35 | 16 | $758.73 |\n| 2 | $724.07 | 17 | $605.43 |\n| 3 | $815.30 | 18 | $878.55 |\n| 4 | $843.39 | 19 | $1,156.84 |\n| 5 | $744.41 | 20 | $981.68 |\n| 6 | $855.15 | 21 | $837.37 |\n| 7 | $532.67 | 22 | $737.96 |\n| 8 | $568.53 | 23 | $722.77 |\n| 9 | $820.79 | 24 | $672.17 |\n| 10 | $738.69 | 25 | $954.03 |\n| 11 | $880.14 | 26 | $904.09 |\n| 12 | $597.58 | 27 | $926.78 |\n| 13 | $681.51 | 28 | $814.59 |\n| 14 | $780.73 | 29 | $863.31 |\n| 15 | $850.52 | 30 | $698.06 |\n\nFresh `define-metric` result, grouped by `customer_id`: sum of billed USD amounts divided by billable-order count for each customer, across the available data (no date filter). **Governed: false** — an ad-hoc, read-only compiled result and staged proposal, not a canonical metric or an independent numeric attestation. **Caveats:** CANCELLED and RETURNED orders contribute neither amount nor count; pre-2024 EMEA EUR/GBP order amounts are converted to USD with `rate_to_usd`, while other rows retain their USD amounts. The served context search identified `context_layer/metrics/mean_order_amount_per_customer.md` and its cited `policies/order-status-billing.md` and `policies/emea-currency-cutover.md`; this context guided the fresh ad-hoc definition, but this metric was **not** returned by `list-metrics`, despite the served context page's stable/verified metadata. Ariadne staged the proposal under `staging/semantic_layer/models/adhoc/mean_order_amount_per_customer.yml` and `staging/context_layer/metrics/mean_order_amount_per_customer.md`; no promotion or saved example was requested or performed.\n\nResidual risks: Neither command independently verifies the numeric values. Both compiled SQL expressions fall back to FX multiplier `1.0` if a pre-2024 EMEA currency rate is absent; missing-rate incidence was not checked. Amounts and percentages above are rounded for presentation."
+      "final_answer": "# Billable orders per region\n\n**Answer — governed: true** (served metric `order_count`, queried by region)\n\n| Region | Billable orders |\n|--------|-----------------|\n| NA | 154 |\n| APAC | 86 |\n| EMEA | 152 |\n\nTotal across regions: 392.\n\nCaveats that govern these numbers:\n\n- \"Billable\" excludes orders with status `CANCELLED` or `RETURNED`; in this dataset the counted rows are exactly the `COMPLETED` orders.\n- Lifecycle caveat: this count relies on the billable-status list fixed by the H1 2026 billing status snapshot, and that cited Policy `policies/billing-status-snapshot-2026h1.md` has expired (valid through 2026-07-01, now flagged `context_stale`). Re-validate the billable-status list against current operations guidance before reusing this count for billing.\n\nProvenance: `ariadne get-metric order_count --dimension region` (governed: true). Served metric page `context_layer/metrics/order_count.md`, citing policies `policies/order-status-billing.md` and `policies/billing-status-snapshot-2026h1.md`.\n"
     }
   }
 }

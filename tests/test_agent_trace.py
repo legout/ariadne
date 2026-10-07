@@ -1,14 +1,24 @@
 """Deterministic recorded-trace check (spec 2026-09-23-0003, evidence tier 1).
 
-``tests/evals/agent_trace.json`` records a fresh Pi session (both questions
+``tests/evals/agent_trace.json`` records a fresh Pi session (all questions
 asked in ONE session) over the installed packaged Ariadne skill and synthetic
 retail demo: every observed ``ariadne`` CLI call in order, including failed
-unpromoted get-metric and define-metric probes; the minimal
-JSON outputs the assertions need, packaged-skill digest, and final answers
-verbatim from the assistant's write payload.
+unpromoted get-metric and define-metric probes; the
+JSON outputs the assertions need, packaged-skill digest, evaluated model
+identity, and final answers verbatim from the assistant's write payloads.
 Nothing is scripted or edited to pass: this check validates the RECORDED run
 only. A separately reported fresh live smoke covers the current agent (spec
 tier 2); this test calls no model and makes no live-provider claim.
+
+Three questions: the established governed gross-margin and unmodeled
+mean-order-amount evaluations (spec 0003), plus the consumed-expired-Policy
+question of spec 0011 §6/§8 AC8 — a governed number whose consumed set
+includes a Policy past its supported expiry keeps route, value and label,
+and the answer must carry ONE brief lifecycle caveat naming that Policy.
+Lifecycle-caveat demand is scoped to context the answer actually relies on:
+absent optional expiry/verification metadata and unrelated search hits never
+demand a caveat (negative controls below mutate fixture copies, never
+recorded evidence).
 
 Numbers cross three independent ways, as in tests/test_evals.py: observed
 governed rows == independent hand-written SQL == baked golden values, and
@@ -73,6 +83,27 @@ def _assert_answer_caveats(answer: str) -> None:
     )
 
 
+# Spec 0011 §6/AC8: a brief lifecycle caveat is demanded ONLY for context the
+# answer actually relies on, and must identify the issue AND name the affected
+# page. Absent optional metadata and unrelated hits never enter this check.
+_LIFECYCLE_WORDS = re.compile(
+    r"expir|stale|out[-\s]?of[-\s]?date|outdated|deprecated|unavailable|unreadable|missing"
+)
+_LIFECYCLE_CODES = {"context_stale", "context_deprecated", "context_unavailable"}
+
+
+def _assert_lifecycle_caveats(answer: str, relied_warnings: list) -> None:
+    """One brief caveat per lifecycle warning on relied-upon context. An empty
+    list demands nothing — that is the negative-control half of AC8."""
+    for warning in relied_warnings:
+        assert warning["code"] in _LIFECYCLE_CODES, warning
+        assert warning["path"] in answer and _LIFECYCLE_WORDS.search(answer.lower()), (
+            f"final answer relies on warned context {warning['path']} "
+            f"({warning['code']}) but omits the brief lifecycle caveat naming the "
+            "affected Policy/page"
+        )
+
+
 @cache
 def load_trace() -> dict:
     return json.loads(TRACE_PATH.read_text(encoding="utf-8"))
@@ -124,6 +155,9 @@ def check_provenance(trace: dict) -> None:
     digest = session["jsonl_sha256"]
     assert re.fullmatch(r"[0-9a-f]{64}", digest), "recorded run must cite its session JSONL sha256"
     assert session["run_id"] and session["session_id"], "recorded run must cite its session ids"
+    assert isinstance(meta.get("model"), str) and meta["model"], (
+        "recorded run must record the evaluated agent model identity"
+    )
     packaged = hashlib.sha256((ASSETS / "SKILL.md").read_bytes()).hexdigest()
     assert meta["skill"]["skill_md_sha256"] == packaged, (
         f"skill digest mismatch: fixture records {meta['skill']['skill_md_sha256'][:12]}… "
@@ -212,8 +246,8 @@ def check_governed(scenario: dict, sql_expected: dict, golden_expected: dict) ->
     # context root), the policy paths its frontmatter sources[] cites, and the
     # full policy body strings.
     context = result["context"]
-    assert set(context) == {"metric_page", "policies"}, (
-        "get-metric context must be the actual {metric_page, policies} payload"
+    assert set(context) == {"metric_page", "policies", "context_signals"}, (
+        "get-metric context must be the actual {metric_page, policies, context_signals} payload"
     )
     policy_paths = _policy_paths(_frontmatter(context["metric_page"]))
     assert policy_paths, "the served metric page must cite its Policy pages"
@@ -230,7 +264,27 @@ def check_governed(scenario: dict, sql_expected: dict, golden_expected: dict) ->
         "the returned policy bodies must carry the pre-2024 EMEA conversion rule"
     )
 
+    # Spec 0011 §§4–5, observed negative control (AC8): the consumed pages
+    # carry NO optional expiry/verification metadata — unknown freshness,
+    # unverified tier — and that absence must produce NO warning and NO caveat.
+    signals = context["context_signals"]
+    assert set(signals) == {"pages", "warnings"}, (
+        "context_signals is the additive {pages, warnings} envelope"
+    )
+    assert {page["path"] for page in signals["pages"]} == {
+        f"metrics/{result['metric']}.md",
+        *policy_paths,
+    }, "the assessed page set is exactly the consumed set (metric page + cited policies)"
+    for page in signals["pages"]:
+        assert page["freshness"]["state"] == "unknown" and (
+            page["verification_tier"] == "unverified"
+        ), "absent optional expiry/verification metadata reads unknown/unverified"
+    assert signals["warnings"] == [], (
+        "absent optional expiry/verification metadata alone must never warn"
+    )
+
     answer = scenario["final_answer"]
+    _assert_lifecycle_caveats(answer, signals["warnings"])
     lowered = answer.lower()
     assert "governed" in lowered and not any(
         negation in lowered for negation in ("not governed", "governed: false", "ungoverned")
@@ -262,14 +316,31 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
     define_ok = [
         i for i in _real_calls(scenario, "define-metric") if scenario["calls"][i]["exit"] == 0
     ]
-    assert list_at and datasets_at and define_ok, "ad-hoc route: incomplete recorded path"
+    # A define-metric success whose observed output is the full result payload
+    # (a verification re-run may print only its own comparison artifact — that
+    # output is recorded verbatim but is never a value source).
+    define_results = [
+        scenario["calls"][i]["result"]
+        for i in define_ok
+        if isinstance(scenario["calls"][i].get("result"), dict)
+        and "rows" in scenario["calls"][i]["result"]
+    ]
+    assert list_at and datasets_at and define_ok and define_results, (
+        "ad-hoc route: incomplete recorded path"
+    )
     assert min(list_at) < min(datasets_at) < min(define_ok), (
         "ad-hoc route: discovery (list-metrics) must precede list-datasets, "
         "which must precede the successful define-metric"
     )
-    assert not any(
-        scenario["calls"][i]["exit"] == 0 for i in _real_calls(scenario, "get-metric")
-    ), "ad-hoc route: no governed get-metric may answer an unlisted metric"
+    # The spec's trap is the UNLISTED metric: a served context page exists, but
+    # a governed get-metric of it must refuse. Successful governed probes of
+    # other LISTED metrics are honest discovery and stay allowed.
+    unlisted = "mean_order_amount_per_customer"
+    for i in _real_calls(scenario, "get-metric"):
+        if unlisted in scenario["calls"][i]["command"]:
+            assert scenario["calls"][i]["exit"] != 0, (
+                "ad-hoc route: no governed get-metric may answer an unlisted metric"
+            )
 
     # The trap the spec names: a served context page for the measure exists,
     # but list-metrics does not serve it as a semantic metric — the recorded
@@ -303,7 +374,7 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
                 "define-metric probes before the first success must be the observed failures"
             )
 
-    grouped = scenario["calls"][define_ok[-1]]["result"]
+    grouped = define_results[-1]
     assert grouped["governed"] is False, "define-metric result must be governed: false"
     assert grouped["columns"] == ["customer_id", "mean_order_amount_per_customer"], (
         "the grouped definition must return customer_id rows"
@@ -319,12 +390,28 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
         assert abs(value - expected[customer_id]) <= TOLERANCE, (
             f"ad-hoc value customer {customer_id}: observed != shared independent SQL"
         )
-    staged_model = re.search(
-        r"/staging/semantic_layer/models/adhoc/(mean_order_amount_per_customer(?:-\d+)?)\.yml$",
-        grouped["staged_as"],
+
+    # #49 fix1: the proposal paths must genuinely resolve under the staged-
+    # proposals location. The observed relative (`staging/...`) and absolute
+    # (`.../staging/...`) forms are both accepted, but a path that lacks the
+    # staging location is NOT a staged proposal and fails by name (spec 0003:
+    # proposals stay staged — never served, never governed).
+    def _under_staging(path: str, what: str) -> str:
+        assert "/staging/" in path or path.startswith("staging/"), (
+            f"{what} must resolve under the staged-proposals location (staging/), "
+            f"got {path!r} — an unstaged output is not a staged proposal"
+        )
+        return (
+            path.split("/staging/", 1)[-1] if "/staging/" in path else path.removeprefix("staging/")
+        )
+
+    staged_model = re.fullmatch(
+        r"semantic_layer/models/adhoc/(mean_order_amount_per_customer(?:-\d+)?)\.yml",
+        _under_staging(grouped["staged_as"], "staged_as"),
     )
-    assert staged_model is not None and grouped["staged_context_as"].endswith(
-        f"/staging/context_layer/metrics/{staged_model.group(1)}.md"
+    staged_ctx = _under_staging(grouped["staged_context_as"], "staged_context_as")
+    assert staged_model is not None and staged_ctx == (
+        f"context_layer/metrics/{staged_model.group(1)}.md"
     ), "the successful definition must have staged a matching OSI and OKF proposal"
 
     answer = scenario["final_answer"]
@@ -334,25 +421,34 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
     )
     assert ("staged" in lowered or "/staging/" in lowered) and (
         "not promoted" in lowered
+        or "not been promoted" in lowered
         or "unpromoted" in lowered
+        or "never promoted" in lowered
         or re.search(r"\bno promotion\b.{0,90}\bperformed", lowered)
     ), "final answer must state the proposal stays staged, never promoted"
     _assert_answer_caveats(answer)
+    # Lifecycle demand is scoped to the search hit the answer actually relies
+    # on (the cited mean-order page); unrelated hits never demand a caveat.
+    hit_signals = hit["context_signals"]
+    assert set(hit_signals) >= {"pages", "warnings"}, (
+        "each search-context hit carries its page's advisory context_signals view"
+    )
+    _assert_lifecycle_caveats(answer, hit_signals["warnings"])
     page_paths = {hit["path"], f"context_layer/{hit['path']}"}
     policies = set(_policy_paths(hit_meta))
     # A search result may be cited by its returned relative path or by its
     # served-root path; both identify the same actually returned metric page.
     cited = set(re.findall(r"`([A-Za-z0-9_./-]+\.md)`", answer))
     assert cited & page_paths, "final answer must cite the returned context page"
-    staged_page = "staging/" + grouped["staged_context_as"].split("/staging/", 1)[1]
+    staged_page = "staging/" + staged_ctx
     _assert_citations(answer, page_paths | policies | {staged_page}, policies)
 
-    # Display precision: every customer's rounded dollar figure must agree with
-    # the shared oracle. An overall per-billable-order mean is OPTIONAL (the
-    # spec asks per-customer amounts) — validated only when the answer gives one.
+    # Display precision: every customer's rounded or full-precision figure must
+    # agree with the shared oracle. An overall per-billable-order mean is
+    # OPTIONAL (the spec asks per-customer amounts) — validated when present.
     shown: dict[int, float] = {}
     for customer_id, value in re.findall(
-        r"\|\s*(\d{1,2})\s*\|\s*\$?([\d,]+\.\d{2})\s*(?=\|)", answer
+        r"\|\s*(\d{1,2})\s*\|\s*\$?([\d,]+\.\d+)\s*(?=\|)", answer
     ):
         shown[int(customer_id)] = float(value.replace(",", ""))
     assert set(shown) == set(expected), "answer must show every customer ID"
@@ -368,6 +464,103 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
         )
 
 
+def check_stale_policy(scenario: dict, sql_expected: dict) -> None:
+    """The consumed-expired-Policy question (spec 0011 §6 / §8 AC8): a governed
+    number whose consumed set includes a Policy past its supported expiry keeps
+    its route, value and governance label — the warning is advisory — and the
+    answer carries ONE brief lifecycle caveat naming that Policy."""
+    get_ok = [i for i in _real_calls(scenario, "get-metric") if scenario["calls"][i]["exit"] == 0]
+    assert get_ok, "stale-policy route: no successful get-metric call recorded"
+    assert not _real_calls(scenario, "define-metric"), (
+        "stale-policy route: define-metric must not answer a governed question"
+    )
+    discovery = _real_calls(scenario, "list-metrics") + _real_calls(scenario, "search-context")
+    assert discovery and min(discovery) < min(get_ok), (
+        "stale-policy route: discovery must precede the get-metric call"
+    )
+
+    call = scenario["calls"][get_ok[0]]
+    result = call["result"]
+    tokens = call["command"].split()
+    anchor = tokens.index("get-metric")
+    requested = [t for t in tokens[anchor + 1 :] if not t.startswith("--")][0]
+    requested_dims = [
+        tokens[i + 1] for i in range(anchor, len(tokens) - 1) if tokens[i] == "--dimension"
+    ]
+    assert requested == "order_count" and requested_dims == ["region"], (
+        f"stale-policy route: the get-metric command must request order_count by "
+        f"region, got {requested!r} by {requested_dims}"
+    )
+    assert result["metric"] == requested and result["governed"] is True, (
+        "stale-policy route: get-metric must return the requested metric, governed: true"
+    )
+    observed = {row["region"]: row["order_count"] for row in result["rows"]}
+    assert set(observed) == set(sql_expected), "region set mismatch"
+    for region in observed:
+        assert abs(observed[region] - sql_expected[region]) <= TOLERANCE, (
+            f"stale-policy value {region}: observed != independent SQL "
+            "(a lifecycle warning never changes the number)"
+        )
+
+    context = result["context"]
+    policy_paths = _policy_paths(_frontmatter(context["metric_page"]))
+    assert policy_paths and len(context["policies"]) == len(policy_paths), (
+        "observed context must return the full body of every cited policy"
+    )
+    for path, body in zip(policy_paths, context["policies"]):
+        assert isinstance(body, str) and body.strip(), f"policy body missing for {path}"
+    warnings = context["context_signals"]["warnings"]
+    assert {w["code"] for w in warnings} <= _LIFECYCLE_CODES, warnings
+    stale_paths = {w["path"] for w in warnings if w["code"] == "context_stale"}
+    assert stale_paths and stale_paths <= set(policy_paths), (
+        "the expired Policy must be one of the consumed page's cited policies"
+    )
+
+    # The recorded discovery surfaced the expired Policy WITH its own warning
+    # (each hit carries its page's advisory view) — the agent saw the lifecycle
+    # problem, and still neither route, value nor label changed.
+    search = next(c for c in scenario["calls"] if "search-context" in c["command"])
+    surfaced = [
+        w
+        for hit in search["result"]
+        if isinstance(hit, dict)
+        for w in hit.get("context_signals", {}).get("warnings", [])
+    ]
+    assert any(
+        w["code"] == "context_stale" and w["path"] == path for w in surfaced for path in stale_paths
+    ), "the recorded discovery search must have surfaced the expired Policy with its warning"
+
+    answer = scenario["final_answer"]
+    lowered = answer.lower()
+    assert "governed" in lowered and not any(
+        negation in lowered for negation in ("not governed", "governed: false", "ungoverned")
+    ), "final answer must positively label the number governed"
+    # Only the status-exclusion rule governs a count — the EMEA conversion
+    # caveat belongs to money metrics, not this consumed set (its policies say
+    # so themselves); the LIFECYCLE caveat is the spec-0011 addition.
+    assert "cancel" in lowered and "return" in lowered, (
+        "final answer caveat missing: excluded CANCELLED/RETURNED orders"
+    )
+    served_page = f"context_layer/metrics/{result['metric']}.md"
+    _assert_citations(answer, {served_page} | set(policy_paths), {served_page} | stale_paths)
+    _assert_lifecycle_caveats(answer, warnings)
+
+    shown = {
+        region: int(count)
+        for region, count in re.findall(r"\|\s*(NA|EMEA|APAC)\s*\|[^|\n]*?(\d+)\s*\|", answer)
+    }
+    assert set(shown) == set(sql_expected), "answer must show every region's count"
+    for region, count in shown.items():
+        assert count == sql_expected[region], (
+            f"answer display value {region}: {count} disagrees with the oracle"
+        )
+    total = re.search(r"[Tt]otal[^.\n]*?(\d{3})", answer)
+    if total is not None:  # optional overall total, validated when present
+        assert int(total.group(1)) == sum(sql_expected.values()), (
+            "answer total disagrees with the independent SQL sum"
+        )
+
+
 def check_all(trace: dict, demo_db: Path) -> None:
     check_provenance(trace)
     _no_promotion(trace)
@@ -380,6 +573,10 @@ def check_all(trace: dict, demo_db: Path) -> None:
     )
     check_governed(governed, sql_expected, golden_entry["expected"])
     check_adhoc(trace["scenarios"]["adhoc"], independent_adhoc_means(demo_db))
+    check_stale_policy(
+        trace["scenarios"]["stale_policy"],
+        independent_expected(demo_db, "order_count", ["region"]),
+    )
 
 
 # --- The recorded run meets the spec (spec acceptance example 1) --------------
@@ -421,8 +618,9 @@ def test_wrong_governed_route_fails_named(demo_db):
 def test_missing_caveat_fails_named(demo_db):
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
     mutilated = answer.replace(
-        "pre-2024 EMEA amounts and product costs in EUR/GBP are "
-        "converted to USD before aggregation.",
+        "Pre-2024 EMEA rows carry unconverted local currency (EUR/GBP): both "
+        "`amount` and `product_cost` are multiplied by `rate_to_usd` (from "
+        "`currency_conversion_rate`, joined on `currency`) before aggregating.",
         "",
     )
     assert mutilated != answer, "mutation must change the recorded answer"
@@ -433,7 +631,7 @@ def test_missing_caveat_fails_named(demo_db):
 
 def test_false_governed_label_fails_named(demo_db):
     answer = load_trace()["scenarios"]["adhoc"]["final_answer"]
-    relabeled = answer.replace("Governed: false", "Governed: true")
+    relabeled = answer.replace("governed: false", "governed: true")
     assert relabeled != answer, "mutation must change the recorded answer"
     trace = _mutated(**{"scenarios.adhoc.final_answer": relabeled})
     with pytest.raises(AssertionError, match="ungoverned ad-hoc"):
@@ -447,10 +645,12 @@ def test_skill_digest_mismatch_invalidates(demo_db):
 
 
 def test_unqualified_emea_caveat_fails_named(demo_db):
-    """Deleting only the time qualifier (pre-2024) while leaving EMEA and
-    'converted' must still fail: the caveat is the TIME-BOUND conversion."""
+    """Deleting only the time qualifier (pre-2024) while leaving EMEA and the
+    conversion wording must still fail: the caveat is the TIME-BOUND conversion."""
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
-    mutilated = answer.replace("pre-2024 EMEA", "EMEA")
+    mutilated = answer.replace("Pre-2024 EMEA rows", "EMEA rows").replace(
+        "EMEA rows from 2024-01-01 onward", "EMEA rows"
+    )
     assert mutilated != answer and "convert" in mutilated.lower() and "emea" in mutilated.lower()
     trace = _mutated(**{"scenarios.governed.final_answer": mutilated})
     with pytest.raises(AssertionError, match="caveat"):
@@ -508,4 +708,105 @@ def test_missing_returned_policy_body_fails_named(demo_db):
     assert len(policies) == 2 and policies[1].strip()
     trace = _mutated(**{f"scenarios.governed.calls.{get_at}.result.context.policies.1": ""})
     with pytest.raises(AssertionError, match="policy"):
+        check_all(trace, demo_db)
+
+
+# --- Lifecycle-caveat controls (spec 0011 §6 / §8 AC8; constructed checker
+# inputs only — never recorded-Agent evidence) -------------------------------
+
+
+def test_missing_lifecycle_caveat_fails_named(demo_db):
+    """An answer relying on a consumed expired Policy but omitting the brief
+    lifecycle caveat naming it must be rejected for the named reason."""
+    answer = load_trace()["scenarios"]["stale_policy"]["final_answer"]
+    mutilated = re.sub(r"(?m)^- Lifecycle caveat:.*\n", "", answer)
+    assert mutilated != answer and not _LIFECYCLE_WORDS.search(mutilated.lower()), (
+        "mutation must remove the lifecycle caveat (words and reliance naming)"
+    )
+    trace = _mutated(**{"scenarios.stale_policy.final_answer": mutilated})
+    with pytest.raises(AssertionError, match="lifecycle caveat"):
+        check_all(trace, demo_db)
+
+
+def test_unrelated_stale_hit_demands_no_caveat(demo_db):
+    """Negative control: a lifecycle warning on a search hit the answer does
+    NOT rely on (an uncited, unrelated hit) must demand no answer caveat —
+    the unchanged recorded answer still passes."""
+    scenario = load_trace()["scenarios"]["adhoc"]
+    search_idx = next(
+        i for i, call in enumerate(scenario["calls"]) if "search-context" in call["command"]
+    )
+    unrelated_idx = next(
+        i
+        for i, hit in enumerate(scenario["calls"][search_idx]["result"])
+        if isinstance(hit, dict) and hit["path"] != "metrics/mean_order_amount_per_customer.md"
+    )
+    trace = _mutated(
+        **{
+            f"scenarios.adhoc.calls.{search_idx}.result.{unrelated_idx}.context_signals.warnings": [
+                {"code": "context_stale", "path": "metrics/gross_margin.md"}
+            ]
+        }
+    )
+    check_all(trace, demo_db)  # no caveat demanded: the hit is not relied upon
+
+
+def test_optional_metadata_demands_no_warning(demo_db):
+    """Negative control: absent optional expiry/verification metadata on the
+    RELIED-UPON hit itself must demand neither a warning nor an answer caveat
+    — stripping the cited page's evidence to absent/unknown keeps the
+    unchanged answer passing."""
+    scenario = load_trace()["scenarios"]["adhoc"]
+    search_idx = next(
+        i for i, call in enumerate(scenario["calls"]) if "search-context" in call["command"]
+    )
+    absent_view = [
+        {
+            "path": "metrics/mean_order_amount_per_customer.md",
+            "status": "stable",
+            "freshness": {"stale_after": None, "state": "unknown"},
+            "verification_tier": "unverified",
+            "generated": None,
+            "verified": None,
+            "sources": [],
+        }
+    ]
+    trace = _mutated(
+        **{
+            f"scenarios.adhoc.calls.{search_idx}.result.0.context_signals.pages": absent_view,
+            f"scenarios.adhoc.calls.{search_idx}.result.0.context_signals.warnings": [],
+        }
+    )
+    check_all(trace, demo_db)  # unknown/unverified alone never warns or demands a caveat
+
+
+def test_unstaged_proposal_path_fails_named(demo_db):
+    """A definition whose proposal paths do not resolve under the staged-
+    proposals location must not pass as staged (spec 0003: the proposal stays
+    staged; #49 fix1: the staging location itself is required — plausible-
+    looking adhoc paths outside staging/ are not staged proposals)."""
+    scenario = load_trace()["scenarios"]["adhoc"]
+
+    def unstaged(path: str) -> str:
+        return (
+            path.split("/staging/", 1)[-1] if "/staging/" in path else path.removeprefix("staging/")
+        )
+
+    grouped_at = [
+        i
+        for i in _real_calls(scenario, "define-metric")
+        if isinstance(scenario["calls"][i].get("result"), dict)
+        and "rows" in scenario["calls"][i]["result"]
+    ][-1]
+    result = scenario["calls"][grouped_at]["result"]
+    assert "/staging/" in result["staged_as"] or result["staged_as"].startswith("staging/")
+    trace = _mutated(
+        **{
+            f"scenarios.adhoc.calls.{grouped_at}.result.staged_as": unstaged(result["staged_as"]),
+            f"scenarios.adhoc.calls.{grouped_at}.result.staged_context_as": unstaged(
+                result["staged_context_as"]
+            ),
+        }
+    )
+    with pytest.raises(AssertionError, match="staged-proposals location"):
         check_all(trace, demo_db)

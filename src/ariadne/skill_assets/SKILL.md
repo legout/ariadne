@@ -313,6 +313,22 @@ value-attested`.
   page, cite that page and its Policy paths from the actual `search-context`
   result in the final answer, alongside the caveats; receiving the paths in
   tool output without naming them in the answer is not a citation.
+- **Lifecycle caveats name relied-upon context only.** Responses also carry a
+  `context_signals` advisory envelope: per-page lifecycle `status`,
+  `freshness` and `verification_tier` views, plus `warnings` with three codes
+  — `context_stale` (a consumed page's supported expiry was reached),
+  `context_deprecated` (a consumed page declares deprecated status) and
+  `context_unavailable` (required metric/Policy context was missing or
+  unreadable; the context block collapses to its null/empty form). When an
+  answer actually relies on context a warning names, add ONE brief caveat
+  identifying the issue and the affected Policy/page (e.g. "this uses the
+  admitted definition, but its cited revenue Policy
+  `policies/emea-currency-cutover.md` has expired") — never print every
+  signal, and never add a caveat for an unrelated search hit you did not rely
+  on. Missing optional expiry/verification metadata (freshness `unknown`,
+  `unverified` tier, absent `generated`/`verified`) is NOT a warning and needs
+  no caveat. Warnings are advisory only: they never change values, governance
+  labels, ranking or any permission.
 - **`search_context` before novel questions.** The rule you are about to rediscover
   is probably already a policy page. Search first; if the question stays unmodeled,
   route it through `define_metric` so the definition lands in staging as a proposal.
