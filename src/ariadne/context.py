@@ -2098,20 +2098,42 @@ def _mapping_views(
     return views
 
 
-def _freshness_view(meta: dict) -> dict:
-    """The honest evidence-freshness view of one page: its declared
-    ``stale_after`` date (the ADR-0007 lifecycle field) compared to today, or
-    ``unknown`` when the page declares nothing — an absent freshness fact is
-    never proof of currency (spec 0010 §4)."""
+def _assessment_now() -> datetime:
+    """The internal freshness assessment clock (aware UTC now); tests patch
+    this seam, it is not a public argument (spec 0011, issue #47)."""
+    return datetime.now(UTC)
+
+
+def _freshness_view(meta: dict, now: datetime) -> dict:
+    """Interpret page expiry timestamps as instants and legacy dates as UTC days."""
     value = meta.get("stale_after")
-    if not isinstance(value, str):
+    if isinstance(value, datetime):
+        disclosed = value.isoformat()
+        if value.utcoffset() is None:
+            return {"stale_after": disclosed, "state": "unknown"}
+        expiry = value
+    elif isinstance(value, date):
+        disclosed = value.isoformat()
+        expiry = value
+    elif isinstance(value, str):
+        disclosed = value
+        try:
+            expiry = date.fromisoformat(value)
+        except ValueError:
+            try:
+                expiry = datetime.fromisoformat(value)
+            except ValueError:
+                return {"stale_after": disclosed, "state": "unknown"}
+            if expiry.utcoffset() is None:
+                return {"stale_after": disclosed, "state": "unknown"}
+    else:
         return {"stale_after": None, "state": "unknown"}
-    try:
-        stale_after = date.fromisoformat(value)
-    except ValueError:
-        return {"stale_after": value, "state": "unknown"}
-    state = "stale" if datetime.now(UTC).date() > stale_after else "current"
-    return {"stale_after": value, "state": state}
+
+    if isinstance(expiry, datetime):
+        state = "stale" if now >= expiry else "current"
+    else:
+        state = "stale" if now.date() > expiry else "current"
+    return {"stale_after": disclosed, "state": state}
 
 
 def _match_entry(
@@ -2125,6 +2147,7 @@ def _match_entry(
     fields: list,
     scope: list,
     mappings: list[dict],
+    now: datetime,
     representations: list[dict] | None = None,
 ) -> dict:
     """One bounded match entry: the concept/representation identity, its exact
@@ -2144,7 +2167,7 @@ def _match_entry(
         "scope": [dict(binding) for binding in scope],
         "mappings": mappings,
         "sources": [dict(source) for source in meta.get("sources") or []],
-        "freshness": _freshness_view(meta),
+        "freshness": _freshness_view(meta, now),
     }
     if representations is not None:
         entry["representations"] = representations
@@ -2158,6 +2181,7 @@ def _representation_entries(
     representations: list[dict],
     query: dict,
     needle: str | None,
+    now: datetime,
     confirmations: dict[tuple[str, object], dict] | None = None,
     max_age_hours: float | None = None,
 ) -> list[dict]:
@@ -2187,6 +2211,7 @@ def _representation_entries(
                 mappings=_mapping_views(
                     meta, representation.get("id"), rel, confirmations, max_age_hours
                 ),
+                now=now,
             )
         )
     return entries
@@ -2198,6 +2223,7 @@ def _page_matches(
     draft: bool,
     query: dict,
     needle: str | None,
+    now: datetime,
     confirmations: dict[tuple[str, object], dict] | None = None,
     max_age_hours: float | None = None,
 ) -> list[dict]:
@@ -2214,7 +2240,7 @@ def _page_matches(
     ]
     if query["kind"] == "field":
         return _representation_entries(
-            rel, meta, draft, representations, query, needle, confirmations, max_age_hours
+            rel, meta, draft, representations, query, needle, now, confirmations, max_age_hours
         )
     entries: list[dict] = []
     page_aliases = list(meta.get("aliases") or [])
@@ -2230,6 +2256,7 @@ def _page_matches(
                 fields=[],
                 scope=[],
                 mappings=_mapping_views(meta, None, rel, confirmations, max_age_hours),
+                now=now,
                 representations=[
                     {
                         "id": representation.get("id"),
@@ -2247,7 +2274,7 @@ def _page_matches(
         )
     entries.extend(
         _representation_entries(
-            rel, meta, draft, representations, query, needle, confirmations, max_age_hours
+            rel, meta, draft, representations, query, needle, now, confirmations, max_age_hours
         )
     )
     return entries
@@ -2416,6 +2443,7 @@ def resolve_term(
     if isinstance(part, bool) or not isinstance(part, int) or part < 1:
         raise ValueError("the resolve_term part must be a positive integer (part 1 of N)")
     matches: list[dict] = []
+    now = _assessment_now()
     admitted = confirmation_lookup(confirmations)
     for root, draft in roots:
         references = Path(root) / "references"
@@ -2439,7 +2467,7 @@ def resolve_term(
                 )
             matches.extend(
                 _page_matches(
-                    rel, meta, draft, query, needle, admitted or None, evidence_max_age_hours
+                    rel, meta, draft, query, needle, now, admitted or None, evidence_max_age_hours
                 )
             )
     total = len(matches)

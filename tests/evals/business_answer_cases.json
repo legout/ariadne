@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "gross-margin-billable-population",
+      "domain": "synthetic-retail",
+      "question": "What is gross margin by region for billable orders?",
+      "source_refs": [
+        "project/specs/2026-10-06-0012-business-answer-evaluation.md#4-synthetic-cases",
+        "tests/test_evals.py::independent_expected"
+      ],
+      "meaning": {
+        "entity": "order",
+        "population": "billable_orders",
+        "period": "all_available_data",
+        "timezone": null,
+        "units": "ratio",
+        "grain": "region",
+        "denominator": "gross_revenue"
+      },
+      "expected_outcome": "answer",
+      "required_evidence": ["recorded"],
+      "route": {
+        "allowed_operations": ["get-metric"],
+        "forbidden_operations": ["define-metric"],
+        "governed": true,
+        "parameters": {
+          "entity": "order",
+          "metric": "gross_margin",
+          "dimensions": ["region"],
+          "population": "billable_orders",
+          "period": "all_available_data",
+          "units": "ratio",
+          "grain": "region",
+          "denominator": "gross_revenue",
+          "excluded_statuses": ["CANCELLED", "RETURNED"]
+        }
+      },
+      "oracle": {
+        "kind": "existing",
+        "name": "gross_margin_by_region",
+        "source": "synthetic_demo",
+        "comparison": {
+          "row_keys": ["region"],
+          "value_columns": ["gross_margin"],
+          "ordered": false,
+          "absolute_tolerance": 0.000001,
+          "relative_tolerance": 0
+        }
+      },
+      "explanation": {
+        "required_caveats": ["CANCELLED and RETURNED orders are excluded"],
+        "required_labels": ["governed: true"],
+        "required_citations": [],
+        "permitted_citations": []
+      }
+    }
+  ]
+}
