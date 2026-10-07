@@ -183,6 +183,46 @@ def _policy_paths(text: str) -> set[str]:
     return set(re.findall(r"policies/[a-z0-9-]+\.md", text))
 
 
+# Issue #48 (spec 0011): expectations for the additive ``context_signals``
+# envelope are derived from §§3–5 and the fixture pages' own frontmatter,
+# never from implementation output. The golden served pages declare
+# ``status: draft`` and no expiry/verification metadata.
+SEED_NOTES_SOURCE = {"id": "seed-notes", "resource": "data/seed_notes.md"}
+GOLDEN_SOURCED_SEED_NOTES = {**SEED_NOTES_SOURCE, "title": "Seed notes"}
+_GOLDEN_METRIC_SOURCES = [
+    "orders",
+    "currency_conversion_rate",
+    {"id": "order-status-billing", "resource": "policies/order-status-billing.md"},
+    {"id": "emea-currency-cutover", "resource": "policies/emea-currency-cutover.md"},
+]
+
+
+def _unverified_page_view(path: str, *, status: str, sources: list) -> dict:
+    """One spec-0011-§4 advisory view of a fixture page declaring no expiry
+    and no document verification: the declared lifecycle status (or OKF's
+    ``stable`` default when absent — §4), §3's unknown freshness with a null
+    expiry, §4's ``unverified`` tier, explicitly absent optional evidence,
+    and the page's ACTUAL source identities."""
+    return {
+        "path": path,
+        "status": status,
+        "freshness": {"stale_after": None, "state": "unknown"},
+        "verification_tier": "unverified",
+        "generated": None,
+        "verified": None,
+        "sources": sources,
+    }
+
+
+def _golden_page_view(path: str) -> dict:
+    """The expected §4 view of one golden served page (issue #48): draft
+    lifecycle preserved, unknown freshness, unverified tier, actual sources."""
+    sources = (
+        _GOLDEN_METRIC_SOURCES if path == "metrics/gross_margin.md" else [GOLDEN_SOURCED_SEED_NOTES]
+    )
+    return _unverified_page_view(path, status="draft", sources=sources)
+
+
 # --- the ticket's scripted flows ----------------------------------------------
 
 
@@ -223,6 +263,24 @@ def test_governed_route_returns_values_with_full_context(project):
         "CANCELLED and RETURNED orders are not revenue" in body for body in context["policies"]
     )
     assert any("rate_to_usd" in body for body in context["policies"])
+
+    # Issue #48 (spec 0011 §§4–§5): the governed context additionally carries
+    # the additive ``context_signals`` envelope over exactly the consumed set
+    # — the metric page and both cited Policies (this bundle has no
+    # computation page, and an absent optional computation never warns). The
+    # golden pages declare draft status and no expiry/verification: §5 forbids
+    # warnings for absent optional metadata, and a draft never warns either.
+    signals = context["context_signals"]
+    assert set(signals) == {"pages", "warnings"}
+    expected_views = [
+        _golden_page_view("metrics/gross_margin.md"),
+        _golden_page_view("policies/order-status-billing.md"),
+        _golden_page_view("policies/emea-currency-cutover.md"),
+    ]
+    assert len(signals["pages"]) == len(expected_views)
+    for view in expected_views:
+        assert view in signals["pages"]
+    assert signals["warnings"] == []
 
     observed = {row["region"]: row["gross_margin"] for row in payload["rows"]}
     expected = independent_expected(project / "demo.db", "gross_margin", ["region"])
@@ -279,6 +337,15 @@ def test_unmodeled_route_stages_ungoverned_proposal(project):
     returned_paths = {hit["path"] for hit in hits}
     assert "policies/order-status-billing.md" in returned_paths
 
+    # Issue #48 (spec 0011 §4): EVERY search hit carries the envelope of ITS
+    # returned page — exactly one assessed page per hit, on the hit's own
+    # path — and §5 keeps the metadata-less golden pages warning-free.
+    for hit in hits:
+        hit_signals = hit["context_signals"]
+        assert set(hit_signals) == {"pages", "warnings"}
+        assert hit_signals["pages"] == [_golden_page_view(hit["path"])]
+        assert hit_signals["warnings"] == []
+
     payload = json.loads(define.result)
     # Regression (b): staged output is labeled ungoverned, and really staged.
     assert payload["governed"] is False
@@ -286,6 +353,11 @@ def test_unmodeled_route_stages_ungoverned_proposal(project):
     staged_page = Path(payload["staged_context_as"])
     assert staged_model.is_file() and "adhoc" in staged_model.parts
     assert staged_page.is_file()
+
+    # Spec 0011 §4: an ad-hoc result legitimately carries no signals — its
+    # ``context`` stays exactly the pre-envelope ``null``.
+    assert payload["context"] is None
+    assert "context_signals" not in payload
 
     oracle = independent_adhoc_means(project / "demo.db")
     observed = {row["customer_id"]: row[ADHOC_ENTRY["metric"]] for row in payload["rows"]}
@@ -425,6 +497,24 @@ def test_analyst_resolve_term_reports_alternatives_and_unconfirmed_claims(
     [mapping] = local["mappings"]
     assert mapping["claim"] == "hypothesis"
     assert mapping["confirmation"] == "unconfirmed"
+
+    # Issue #48 (spec 0011 §4): every term-resolution match carries the
+    # envelope for its matched Reference. The page declares no lifecycle
+    # status — a readable concept gets OKF's ``stable`` default — and no
+    # expiry/verification: unknown freshness, unverified tier, the page's
+    # actual sources, and no warnings (§5).
+    for match in payload["matches"]:
+        match_signals = match["context_signals"]
+        assert set(match_signals) == {"pages", "warnings"}
+        assert match_signals["pages"] == [
+            _unverified_page_view(
+                "references/order-number.md",
+                status="stable",
+                sources=[SEED_NOTES_SOURCE],
+            )
+        ]
+        assert match_signals["warnings"] == []
+
     answer = next(event.text for event in events if isinstance(event, AssistantText))
     assert "references/order-number.md" in answer
     assert "unconfirmed" in answer.lower()
@@ -538,6 +628,52 @@ def test_analyst_managed_project_resolves_through_pinned_admission(tmp_path, mon
     assert payload["admission"]["route"] == "git-review-admission"
     assert payload["admission"]["revision"] == review["revision"]
 
+    # Issue #48 (spec 0011 §§4–§5): the managed route's governed context
+    # carries the same envelope over its consumed set — the event_count
+    # metric page, its single cited Policy, and the computation page the
+    # admission finalize generates (spec 0011 §5 item 3: consumed when the
+    # existing computation-context path reads it — here it also drives the
+    # ``attestation: pending`` caveat). All three declare draft status and no
+    # expiry/verification: absent optionals never warn (§5).
+    managed_signals = payload["context"]["context_signals"]
+    assert set(managed_signals) == {"pages", "warnings"}
+    managed_views = [
+        _unverified_page_view(
+            "metrics/event_count.md",
+            status="draft",
+            sources=[
+                {
+                    "id": "all-events-count",
+                    "resource": "policies/all-events-count.md",
+                    "title": "All events count",
+                }
+            ],
+        ),
+        _unverified_page_view(
+            "policies/all-events-count.md",
+            status="draft",
+            sources=[
+                GOLDEN_SOURCED_SEED_NOTES,
+                {"id": "rule-notes", "resource": "notes.md", "title": "Rule notes"},
+            ],
+        ),
+        _unverified_page_view(
+            "computations/event_count.md",
+            status="draft",
+            sources=[
+                {
+                    "id": "model-events",
+                    "resource": "../../semantic_layer/models/events.yml",
+                    "title": "events OSI model",
+                }
+            ],
+        ),
+    ]
+    assert len(managed_signals["pages"]) == len(managed_views)
+    for view in managed_views:
+        assert view in managed_signals["pages"]
+    assert managed_signals["warnings"] == []
+
     # the managed route never widened the native surface: still exactly five
     _model, _system, _messages, tools = provider.calls[0]
     assert {tool.name for tool in tools} == ANALYST_TOOLS
@@ -602,6 +738,22 @@ def test_analyst_serves_a_context_only_admitted_project(tmp_path, monkeypatch):
         for match in resolved["matches"]
         for mapping in match["mappings"]
     )
+
+    # Issue #48 (spec 0011 §4): the admitted context-only resolver surfaces
+    # the same per-match envelope — ``stable`` default (no declared status),
+    # unknown freshness, unverified tier, actual sources, no warnings (§5).
+    for match in resolved["matches"]:
+        match_signals = match["context_signals"]
+        assert set(match_signals) == {"pages", "warnings"}
+        assert match_signals["pages"] == [
+            _unverified_page_view(
+                "references/order-number.md",
+                status="stable",
+                sources=[GOLDEN_SOURCED_SEED_NOTES],
+            )
+        ]
+        assert match_signals["warnings"] == []
+
     assert activity[1].is_error is True
     assert MISSING_CATALOG_MARK in activity[1].result
 

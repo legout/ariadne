@@ -748,6 +748,29 @@ def test_native_resolve_term_reads_the_selected_candidate(tmp_path):
         [mapping] = local["mappings"]
         assert mapping["claim"] == "hypothesis"
         assert mapping["confirmation"] == "unconfirmed"
+
+        # Issue #48 (spec 0011 §§3–§5): the CANDIDATE resolver's matches carry
+        # the same advisory envelope as every other surface — one assessed
+        # page per match on the match's own page, OKF's ``stable`` default
+        # (the page declares no status), unknown freshness with a null expiry
+        # (never an invented currency), an ``unverified`` document tier
+        # (distinct from the mapping's own claim/confirmation status), the
+        # page's actual sources, and no warnings for absent optional metadata.
+        for match in resolved["matches"]:
+            match_signals = match["context_signals"]
+            assert set(match_signals) == {"pages", "warnings"}
+            assert match_signals["pages"] == [
+                {
+                    "path": "references/order-number.md",
+                    "status": "stable",
+                    "freshness": {"stale_after": None, "state": "unknown"},
+                    "verification_tier": "unverified",
+                    "generated": None,
+                    "verified": None,
+                    "sources": [{"id": "seed-notes", "resource": "data/seed_notes.md"}],
+                }
+            ]
+            assert match_signals["warnings"] == []
     finally:
         session.close()
 
