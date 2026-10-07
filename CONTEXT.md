@@ -34,6 +34,30 @@ _Avoid_: schema, data model
 A named measure with one canonical Semantic Layer definition admitted by human review through the applicable Promotion or Git Review Admission route. Never computed by ad-hoc agent SQL.
 _Avoid_: KPI, ad-hoc metric
 
+**Freshness**:
+The temporal state of a Context Layer page or measured evidence against its declared expiry or applicable evidence-age rule. It is distinct from human admission and is not proof that live data is unchanged.
+_Avoid_: approval, live-data correctness
+
+**Source Quality Evidence**:
+A source-linked, scoped, as-of report supplied by a domain owner or upstream producer about data recency or completeness. It is reported evidence, not proof of current source health, artifact admission or independent numerical correctness.
+_Avoid_: live quality guarantee, core measurement
+
+**Data Watermark**:
+A source-reported boundary with an explicit meaning, such as event time, ingestion progress or snapshot coverage. Its value and observation scope do not by themselves prove that every expected record has arrived.
+_Avoid_: last modified, completeness guarantee
+
+**Document Verification**:
+Confirmations declared against a Context Layer document's sources or underlying resource. These are advisory trust signals, not artifact admission or execution proof.
+_Avoid_: admission, numerical attestation
+
+**Execution Attestation**:
+A per-run check that the sanctioned computation produced the result and the reported value matches its authoritative execution result. It is distinct from Independent Numerical Validation.
+_Avoid_: compile success, human admission
+
+**Independent Numerical Validation**:
+A check of a computed answer against an independent expected-value source. It is distinct from definition admission and Execution Attestation.
+_Avoid_: execution fidelity, model agreement
+
 **Fan-out**:
 A row join that repeats one fact's measures and inflates their aggregates. Aggregating each fact before alignment avoids cross-fact fan-out, but a pre-joined dataset can still contain it.
 _Avoid_: row explosion
@@ -129,8 +153,8 @@ A human-owned business rule published as an OKF page in `policies/` (e.g. status
 _Avoid_: rule note, guideline
 
 **Computation**:
-An OKF page carrying the sanctioned way to calculate a value and its independent-attestation status; a newly modeled metric may still have `attestation: pending` after human review.
+An OKF page carrying the sanctioned way to calculate a value and its Independent Numerical Validation status; a newly modeled metric may still have `attestation: pending` after human review.
 
 **Attested Computation**:
-A Computation with an actual independent expected-value check identified by its `attester`, not merely a compiled or human-reviewed definition.
+In Ariadne's application profile, a Computation with an actual independent expected-value check identified by its `attester`, not merely a compiled or human-reviewed definition. A cited attester does not establish per-run Execution Attestation or prove that each current answer was independently checked.
 _Avoid_: query snippet

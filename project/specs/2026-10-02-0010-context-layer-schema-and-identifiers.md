@@ -8,6 +8,8 @@
 | **Sources** | [Research comparison](../research/2026-10-02-context-layer-okf-and-identifiers.md), [modular-core/Git authoring](2026-10-02-0009-modular-core-git-authoring.md), [harness-led authoring](2026-09-24-0005-harness-led-authoring.md), [Context retrieval](2026-09-23-0002-context-retrieval.md), [Agent roles](2026-09-29-0006-ariadne-agent-backend.md), [vocabulary](../../CONTEXT.md), [ADR-0017](../adr/0017-context-schema-and-identifier-knowledge.md). |
 | **Contract** | planning-contract v1; installed skill provenance unknown. |
 
+**Later scoped consumer extension (owner, 2026-10-06):** [specification 0011](2026-10-06-0011-context-trust-signals.md), approved design revision 1, corrects freshness readers and adds advisory `context_signals` to existing search, term and metric results. It preserves this specification's generation requirements, source/admission/confirmation authority, mapping-evidence checks, bounded disclosure, full rule text and search eligibility. Producer changes, recursive dependency traversal, lifecycle-based refusals and the OKF executor/receipt ABI remain outside that round.
+
 ## 1. Purpose, boundaries and alternatives
 
 Make a data project's Context Layer closer to Google's OKF v0.2 examples without creating a second authoritative knowledge store. Share physical schemas and source-linked business meaning, distinguish language aliases from identifier equivalence, and let an Authoring Agent investigate and retain hypotheses rather than rediscovering them each session.

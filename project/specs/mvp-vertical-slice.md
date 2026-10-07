@@ -1,6 +1,8 @@
 # Specification: MVP Vertical Slice — Agentic Semantic Layer
 
 > **Consumption-interface notice (2026-09-23):** `2026-09-23-0001-local-artifact-runtime.md` supersedes this specification's MCP-first behavior in §§1, 3–5, 7–8. Unaffected MVP invariants remain authoritative.
+>
+> **Additive context-consumer extension (owner, 2026-10-06):** [specification 0011](2026-10-06-0011-context-trust-signals.md) adds advisory `context_signals` and brief relevant lifecycle caveats to the existing context-carrying response/guidance contract. Full rule bodies, numeric/governed labels, ad-hoc `context: null` and the existing non-failing required-context fallback remain intact; this is not lifecycle-based query refusal or a producer/attestation-runtime change.
 
 | | |
 | :--- | :--- |
