@@ -1,5 +1,7 @@
 # Implementation plan: Multi-fact planner core and local admission
 
+> **Historical status — 2026-10-07:** Historical core execution map: #26–#30 are closed. The production reviewed-Git/live-CI/deployment workstream explicitly remains deferred/blocked as described below; core ticket closure does not complete production AC6 or authorize a production ticket/run.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved — ticketized; implementation not authorized by ticketization** |

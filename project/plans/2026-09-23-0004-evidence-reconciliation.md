@@ -1,5 +1,7 @@
 # Implementation plan: Opt-in document evidence reconciliation
 
+> **Historical status — 2026-10-07:** Historical execution map: #12 is closed. Original approval/security/validation statements below describe that scope and are not current dispatch authority; preserve the opt-in disclosure and human-admission guarantees in later work.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved — ticketized; implementation not authorized by ticketization** |

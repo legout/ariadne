@@ -1,5 +1,7 @@
 # Implementation plan: Saved answer examples
 
+> **Historical status — 2026-10-07:** Historical execution map: #19–#21 are closed. Capture-time dirty-checkout/source-publication statements and test ordering below are historical, not current prerequisites; preserve the separate example-store and human-review boundaries.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved — ticketized; implementation not authorized by ticketization** |

@@ -1,8 +1,10 @@
 # Implementation plan: Context Layer schemas, terminology and identifier knowledge
 
+> **Historical status — 2026-10-07:** Historical execution map: #41–#46 are closed and their implementation commits are present. Original proposed/approval-pending and local-source statements below are capture-time records, not current prerequisites; this notice does not invent retrospective approval. New trust/quality work uses plans 0011/0013 and their accepted source contracts.
+
 | | |
 | :--- | :--- |
-| **Status** | **Proposed, revision 1 — owner review required; ticketized** |
+| **Status** | **Historical — #41–#46 closed; original approval provenance preserved below** |
 | **Goal** | Extend the shared OKF profile with physical schema facts, scoped terminology, bounded mapping evidence and durable hypotheses, including context-only human admission. |
 | **Behavioral source** | [Specification 0010, approved revision 1](../specs/2026-10-02-0010-context-layer-schema-and-identifiers.md). Owner approved the written revision with “approved.”, then requested “ticketzize” in the Pi conversation, 2026-10-02. The latter authorizes planning/decomposition and GitHub ticket publication, not approval of this plan or implementation. |
 | **Architecture/vocabulary** | [ADR-0017](../adr/0017-context-schema-and-identifier-knowledge.md), [ADR-0016](../adr/0016-modular-core-git-authoring.md), [CONTEXT.md](../../CONTEXT.md). |

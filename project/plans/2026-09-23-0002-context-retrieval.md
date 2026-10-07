@@ -1,5 +1,7 @@
 # Implementation plan: Measured Context Layer retrieval
 
+> **Historical status — 2026-10-07:** Historical execution map: #10 is closed. Preserve its measured-retrieval evidence and original approval record; later shared Context interfaces govern new work. Old red/green instructions below are not a new general test-first mandate.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved — ticketized; implementation not authorized by ticketization** |

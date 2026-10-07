@@ -1,5 +1,7 @@
 # Implementation Plan: Rev 6 — Grain Enforcement + OKF Bundle Maturity
 
+> **Historical status — 2026-10-07:** Historical grain/OKF execution record. The paths, interfaces and test-order wording below are retained as history, not a current dispatch contract. Consult the later accepted specifications/ADRs for current authority; this notice claims no new runtime verification.
+
 | | |
 | :--- | :--- |
 | **Goal** | Grain audit in the validation loop (ADR-0006 §5) and the OKF v0.2 bundle structure with agent-authored generation (ADR-0007) |

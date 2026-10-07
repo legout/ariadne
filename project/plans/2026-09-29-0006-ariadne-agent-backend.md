@@ -1,5 +1,7 @@
 # Implementation plan: Ariadne Agent backend
 
+> **Historical status — 2026-10-07:** Historical execution map: #22–#25 are closed. The proposed `ariadne-core`/`ariadne-agent` distribution names below are superseded by [ADR-0018](../adr/0018-distribution-naming-ariadneai.md): current distributions are `ariadneai`/`ariadneai-agent`, with unchanged import namespaces. Preserve original decisions as history; no retrospective approval is inferred.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved — owner approval 2026-09-30; execution authorization still required** |

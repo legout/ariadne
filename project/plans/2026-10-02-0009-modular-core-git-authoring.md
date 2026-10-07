@@ -1,8 +1,10 @@
 # Implementation plan: Modular Core and local Git authoring
 
+> **Historical status — 2026-10-07:** Historical execution map: #32–#40 are closed and their implementation commits are present. The original proposed/approval-pending statements below are preserved as capture-time records, not current dispatch gates; ticket closure does not reconstruct missing historical approval. Current distribution naming is owned by [ADR-0018](../adr/0018-distribution-naming-ariadneai.md).
+
 | | |
 | :--- | :--- |
-| **Status** | **Proposed — owner review required; ticketized** |
+| **Status** | **Historical — #32–#40 closed; original approval provenance preserved below** |
 | **Goal** | Extract shared core responsibilities, then deliver independent Git-backed authoring edits and exact-revision human admission, with Analyst/Authoring/Combined MCP adapters and migrated callers. |
 | **Behavioral source** | [Specification 0009, approved revision 1](../specs/2026-10-02-0009-modular-core-git-authoring.md). Owner approved the in-chat baseline and accepted the written capture with “Well done. create the implementation plan (or plans)”. This authorized planning, not implementation. |
 | **Architecture/vocabulary** | [ADR-0016](../adr/0016-modular-core-git-authoring.md), [CONTEXT.md](../../CONTEXT.md), and the specification's linked scoped amendments. |

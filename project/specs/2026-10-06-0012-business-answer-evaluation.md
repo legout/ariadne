@@ -2,7 +2,8 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Approved, revision 1 — written review complete** |
+| **Status** | **Approved, revision 2 — workflow-policy amendment; behavioral scope unchanged** |
+| **Workflow amendment approval** | Owner requested “can you execute the recommende migration for me?” in Pi session `01a115c0-1a8b-7099-87c3-df0aa8d87abc`, 2026-10-07, after the workflow audit. This approves the workflow-policy/source-handoff amendment and existing issue updates only; feature implementation, source/report acquisition, candidate assembly/integration, deployment, commits/pushes and releases remain separately gated. Original revision-1 approvals below remain historical provenance. |
 | **Written approval** | Owner replied “approved” after receiving both captured specification paths and the written-review request in this Pi conversation, 2026-10-06. This approves written revision 1 and opens separate implementation planning; it does not authorize execution, source access or publication. |
 | **Approval** | Owner, Pi conversation 2026-10-06: authorized the supporting-only Anthropic citation in plan 0011 and separate evaluation/source-quality shaping. Selected “Synthetic plus real domain,” then “Trace Data brakes” and “Reviewed snapshot SQL.” Approved the complete two-design proposal with “Approve both for capture,” covering specification/vocabulary capture only. No implementation, source access, snapshot acquisition, ticket changes, integration or publication is authorized. |
 | **Scope** | A compact question-to-answer evaluation using synthetic cases plus a private Trace Data brake-batch/holding-torque slice, independent reviewed snapshot SQL, observed Agent evidence and explicit per-case outcomes. |
@@ -102,7 +103,7 @@ Reports distinguish: failed assertion, uncovered required capability, missing/un
 8. **Current versus recorded:** a passing old trace with a changed skill/model environment cannot be labeled a passing current-Agent run. Missing provider/oracle/snapshot evidence remains unverified.
 9. **Scope preservation:** no evaluation run admits artifacts, opens unapproved sources, changes 0011's acceptance or expands Agent tool permissions.
 
-Implementation obligation: **new-test** for the named additional assertion/scenario behavior, with focused failing-first controls when practical; **existing-check** for preserved numerical, trace, privacy and governance contracts. Actual current-Agent/domain evidence is a separate gate from deterministic checker tests. No tests or evaluations were run by this documentation capture.
+Implementation obligation: **new-test** only for named additional checker behavior lacking meaningful existing coverage, with expectations derived independently from reviewed question contracts and numerical oracles; **existing-check** for observed cases already supported by the accepted checker and preserved numerical, trace, privacy and governance contracts. Ordering for new behavior is the worker's choice; discovered checker bugs require a synthetic reproducing test that fails before repair, and behavior-affecting refactors require characterization before mutation. Actual current-Agent/domain evidence is a separate gate from deterministic checker tests. No tests or evaluations were run by this documentation capture.
 
 ## 7. Capture checkpoint and handoff
 
@@ -111,4 +112,4 @@ Implementation obligation: **new-test** for the named additional assertion/scena
 - **Behavior:** this revision captures the owner-approved complete design and observable examples. The Anthropic article is supporting evidence, not a behavioral source or accuracy guarantee.
 - **Uncertainty:** material scope choices are settled. Private question contracts, oracle review, fixed-slice acquisition, provider access and exact fixture/checker organization remain explicit planning/execution prerequisites. Their absence blocks relevant evidence, not permission to invent results.
 
-Planning-contract v1; installed skill provenance unknown. Written revision 1 is owner-approved. The [paired implementation plan](../plans/2026-10-06-0012-business-answer-evaluation.md) is owner-approved, revision 1, by the planning-only “approved” response in this Pi conversation, 2026-10-06; no existing plan/ticket is expanded. Implementation, source access, integration, commits/pushes, tickets and publication need their own applicable authority.
+Planning-contract v1; installed skill provenance unknown. Behavioral revision 1 remains approved; revision 2 adds only the owner-approved 2026-10-07 workflow-policy amendment. The [paired implementation plan](../plans/2026-10-06-0012-business-answer-evaluation.md) is owner-approved, revision 2: original revision 1 approval was the planning-only “approved” response in this Pi conversation, 2026-10-06; the workflow amendment expands no feature scope. Implementation, source access, integration, commits/pushes, tickets and publication need their own applicable authority.

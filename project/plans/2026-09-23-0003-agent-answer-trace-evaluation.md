@@ -1,5 +1,7 @@
 # Implementation plan: Agent answer-trace evaluation
 
+> **Historical status — 2026-10-07:** Historical execution map: #11 is closed. Its actual-observation/independent-oracle discipline remains the evidence source for later trace refreshes; closure does not prove the saved trace matches today's skill. See plan 0011 §1 for the known current digest mismatch.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved — ticketized; implementation not authorized by ticketization** |

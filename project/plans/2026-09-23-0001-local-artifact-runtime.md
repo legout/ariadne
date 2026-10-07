@@ -1,5 +1,7 @@
 # Implementation plan: Local-first artifact runtime
 
+> **Historical status — 2026-10-07:** Historical execution map: #7–#9 are closed. The original approvals, compatibility seams and gates below are capture-time history, not a new execution authorization. Later modular-core constraints govern changed interfaces.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved — ticketized** |

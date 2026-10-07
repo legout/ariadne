@@ -1,5 +1,7 @@
 # Implementation Plan: MVP Vertical Slice (Overview)
 
+> **Historical status — 2026-10-07:** Historical MVP execution map. Issues #1–#6 are closed; original runtime/compiler assumptions below describe their capture-time baseline. Later architecture/packaging sources supersede those assumptions; this notice neither reopens the tickets nor claims a new verification run.
+
 | | |
 | :--- | :--- |
 | **Goal** | Prove the authoring loop: profile → synthesize OKF+OSI → deterministic validate → human promote → governed MCP query |
