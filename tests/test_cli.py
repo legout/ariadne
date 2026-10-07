@@ -127,6 +127,11 @@ def test_get_metric_matches_runtime_including_context(served, tmp_path, capsys):
         expected["rows"], key=lambda r: r["region"]
     )
     result["rows"] = expected["rows"]
+    # The advisory data_signals view carries the assessment instant of ITS OWN
+    # execution (issue #53: every read is a fresh pure assessment) — like row
+    # order above, it is not stable across independent executions; compare the
+    # view with the instant normalized out, everything else exactly.
+    result["data_signals"]["assessed_at"] = expected["data_signals"]["assessed_at"]
     assert result == expected  # metric/dimensions/columns/sql/governed/context
     assert result["governed"] is True
     assert result["rows"] and "CANCELLED" in result["sql"]

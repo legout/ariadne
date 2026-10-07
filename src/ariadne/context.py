@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
@@ -497,6 +498,11 @@ def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list
                 f"{rel}: a declared table grain block requires primary_key and "
                 "cardinality_enforcement (an undeclared physical Grain stays unknown)"
             )
+        # Spec 0013 §2 (issue #53): the optional authored ``ariadne_quality``
+        # profile — validated here so malformed/unsupported declarations fail
+        # AUTHORING validation before human admission, never as a query
+        # refusal. A table page without the key is the plain legacy form.
+        errors.extend(_quality_profile_errors(rel, meta))
     elif expected_type == "metric":
         for key in ("governed_by", "dimensions", "grain"):  # attached mechanically
             if not meta.get(key):
@@ -2796,7 +2802,10 @@ def _promoted_text(text: str, by: str, at: str, prior_verified: list | None = No
 
 def _index_for(directory: Path, served_context: Path) -> str:
     """One index.md body: subdirectory links, then page links with the target's
-    frontmatter description (SPEC §8 progressive disclosure)."""
+    frontmatter description (SPEC §8 progressive disclosure). Pages carrying a
+    canonical ``resource`` (spec 0010 §4: ``resource`` authoritative, filenames
+    navigational) append it as a trailing marker — the regenerated index is
+    the reader's resource->page resolution source (owner-approved fix4)."""
     if directory == served_context:
         heading = "Context Layer"
     else:
@@ -2815,7 +2824,11 @@ def _index_for(directory: Path, served_context: Path) -> str:
             meta = None  # unparseable frontmatter: fall back to the file stem
         title = str((meta or {}).get("title") or page.stem.replace("_", " "))
         desc = str((meta or {}).get("description") or "")
-        lines.append(f"* [{title}]({page.name}) - {desc}".rstrip(" -"))
+        line = f"* [{title}]({page.name}) - {desc}".rstrip(" -")
+        resource = str((meta or {}).get("resource") or "")
+        if resource:
+            line += f" - resource: `{resource}`"
+        lines.append(line)
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -2864,3 +2877,907 @@ def _append_log(served_context: Path, changes: list, by: str, date: str) -> None
         pos += 2
     lines[pos:pos] = entries
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# ------------------ advisory supplied source-quality evidence (spec 0013, #53)
+
+# The optional authored ``ariadne_quality`` profile of a physical-table page
+# (spec 0013 §§2–3, plan 0013 §2 "Authored metadata"): one bounded,
+# closed-shape declaration of SUPPLIED reports — a domain owner's/upstream
+# producer's reported claims with citations, never a core-produced
+# measurement or a new registry. The shared per-type gate validates it before
+# human admission; the shared :func:`data_signals` consumer reads it. Every
+# bound below is an approved public-contract limit (plan §2), not an
+# adjustable mechanical budget.
+ARIADNE_QUALITY_VERSION = 1
+QUALITY_MAX_REPORTS = 8
+QUALITY_MAX_CHECKS = 8
+QUALITY_MAX_SOURCE_IDS = 8
+QUALITY_MAX_ID_CHARS = 128  # id/version/field/actor strings
+QUALITY_MAX_TEXT_CHARS = 1024  # description/criterion/population/meaning/provenance
+QUALITY_MAX_CADENCE_CHARS = 256
+QUALITY_MAX_UNITS_CHARS = 64  # units/timezone
+QUALITY_PROFILE_MAX_BYTES = 8 * 1024
+
+_QUALITY_ROOT_KEYS = frozenset({"version", "reports"})
+_QUALITY_REPORT_KEYS = frozenset(
+    {
+        "id",
+        "asset",
+        "source_ids",
+        "scope",
+        "reported_at",
+        "observed_at",
+        "source_version",
+        "provenance",
+        "reported_by",
+        "cadence",
+        "valid_until",
+        "checks",
+        "watermark",
+    }
+)
+_QUALITY_OPTIONAL_REPORT_KEYS = frozenset(
+    {
+        "observed_at",
+        "source_version",
+        "provenance",
+        "reported_by",
+        "cadence",
+        "valid_until",
+        "watermark",
+    }
+)
+_QUALITY_SCOPE_KEYS = frozenset({"kind", "description", "population", "period"})
+_QUALITY_PERIOD_KEYS = frozenset({"field", "start", "end"})
+_QUALITY_VERSION_KEYS = frozenset({"kind", "value"})
+_QUALITY_CHECK_KEYS = frozenset(
+    {"id", "kind", "outcome", "criterion", "tested_population", "tested_period"}
+)
+_QUALITY_WATERMARK_KEYS = frozenset(
+    {"kind", "value", "field", "meaning", "units", "timezone", "observed_at"}
+)
+QUALITY_SCOPE_KINDS = ("asset", "subset")
+QUALITY_VERSION_KINDS = ("snapshot", "version")
+QUALITY_CHECK_OUTCOMES = ("pass", "fail", "unknown")
+QUALITY_WATERMARK_KINDS = ("event_time", "ingestion_time", "snapshot_as_of", "other")
+
+
+def _aware_instant(value: object, where: str) -> tuple[datetime | None, str | None]:
+    """``(instant, error)`` of one required structured timestamp (spec 0013
+    §3): an aware ``datetime`` (YAML-native) or an ISO-8601 string carrying an
+    explicit offset. Naive datetimes, plain dates and non-temporal values are
+    rejected — new structured temporal evidence never silently inherits
+    UTC."""
+    if isinstance(value, bool) or not isinstance(value, (datetime, str)):
+        return None, (
+            f"{where} must be an aware instant (an ISO-8601 string or YAML datetime "
+            "with explicit offset) — a naive datetime, plain date or non-temporal "
+            "value is rejected, never silently assigned UTC"
+        )
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None, f"{where} must be a parseable ISO-8601 instant, got {value!r}"
+    if not isinstance(value, datetime) or value.utcoffset() is None:
+        return None, (
+            f"{where} carries no timezone/offset — a naive timestamp is rejected, "
+            "never silently assigned UTC"
+        )
+    return value, None
+
+
+def _quality_text_error(value: object, where: str, cap: int) -> str | None:
+    """The error string of one supplied bounded text field, or None."""
+    if not isinstance(value, str) or not value:
+        return f"{where} must be supplied non-empty text"
+    if len(value) > cap:
+        return f"{where} exceeds its {cap}-character bound ({len(value)})"
+    return None
+
+
+def _quality_period_errors(period: object, where: str) -> list[str]:
+    """A period is ``None`` for explicitly non-time-bounded evidence,
+    otherwise ``{field, start, end}`` with an exact physical-field identity,
+    aware instants and ``start < end`` (interpreted ``[start, end)``)."""
+    if period is None:
+        return []
+    if not isinstance(period, dict):
+        return [f"{where} must be a period mapping or null (explicitly non-time-bounded)"]
+    errors: list[str] = []
+    unknown = sorted(set(period) - _QUALITY_PERIOD_KEYS)
+    if unknown:
+        errors.append(f"{where} carries unsupported field(s) {unknown}")
+    error = _quality_text_error(period.get("field"), f"{where} field", QUALITY_MAX_ID_CHARS)
+    if error:
+        errors.append(error)
+    start, start_error = _aware_instant(period.get("start"), f"{where} start")
+    if start_error:
+        errors.append(start_error)
+    end, end_error = _aware_instant(period.get("end"), f"{where} end")
+    if end_error:
+        errors.append(end_error)
+    if start is not None and end is not None and not start < end:
+        errors.append(f"{where} must satisfy start < end (interpreted [start, end))")
+    return errors
+
+
+def _finite_scalar(value: object) -> bool:
+    """A finite JSON scalar (string, number or boolean — never null,
+    non-finite floats or containers)."""
+    if value is None or isinstance(value, (dict, list)):
+        return False
+    if isinstance(value, float) and not math.isfinite(value):
+        return False
+    return isinstance(value, (str, int, float, bool))
+
+
+def _normalize_quality_value(value: object):
+    """The JSON-normalized form of supplied profile content: aware datetimes
+    (and plain dates, should a legacy value slip through) become ISO-8601
+    strings; containers are rebuilt in order."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _normalize_quality_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_quality_value(item) for item in value]
+    return value
+
+
+def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
+    """The optional ``ariadne_quality`` profile of one table page (spec 0013
+    §2, plan 0013 §2): version 1, at most :data:`QUALITY_MAX_REPORTS`
+    closed-shape reports whose ``asset`` equals the containing page's exact
+    core ``resource`` binding, citations resolving to the page's actual
+    ``sources`` entries, aware structured instants, checks stating their
+    tested population/criterion and outcome, watermarks declaring
+    kind/value/meaning, and the normalized profile within its byte ceiling.
+    Unsupported versions, unexpected keys (there is no sql/script/command or
+    other executable payload field anywhere), malformed values, duplicate
+    IDs and mismatched asset/citation identity fail this AUTHORING gate
+    before human admission. A table page WITHOUT the key is the plain legacy
+    form and reports no errors; validation establishes shape and binding,
+    never real quality or business truth (admission authorizes the exact
+    artifact, not the report's current truth)."""
+    if "ariadne_quality" not in meta:
+        return []  # the profile is optional: ordinary pages keep their behavior
+    profile = meta["ariadne_quality"]
+    if profile is None:
+        return [
+            f"{rel}: ariadne_quality is null — null is not the (absent) legacy "
+            "form; declare the versioned profile or remove the key"
+        ]
+    if not isinstance(profile, dict):
+        return [f"{rel}: ariadne_quality must be a mapping, got {type(profile).__name__}"]
+    version = profile.get("version")
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version != ARIADNE_QUALITY_VERSION
+    ):
+        return [
+            f"{rel}: ariadne_quality version must be the integer "
+            f"{ARIADNE_QUALITY_VERSION}, got {version!r}"
+        ]
+    errors: list[str] = []
+    unknown = sorted(set(profile) - _QUALITY_ROOT_KEYS)
+    if unknown:
+        errors.append(f"{rel}: ariadne_quality carries unsupported field(s) {unknown}")
+    binding = meta.get("resource")
+    if not isinstance(binding, str) or not binding:
+        errors.append(
+            f"{rel}: ariadne_quality requires the page's canonical resource binding "
+            "— a page without an established table binding cannot carry a quality "
+            "report (an asset is never guessed from a display name)"
+        )
+    citation_resources = {
+        source["id"]: source.get("resource")
+        for source in meta.get("sources") or []
+        # a citation id must be a string: a later-edited non-string id (e.g.
+        # ``id: [owner-report]``) simply resolves to nothing — malformed, but
+        # never an unhashable-key crash out of the advisory reader
+        if isinstance(source, dict) and isinstance(source.get("id"), str) and source["id"]
+    }
+    reports = profile.get("reports")
+    if not isinstance(reports, list):
+        return errors + [f"{rel}: ariadne_quality reports must be a list"]
+    if len(reports) > QUALITY_MAX_REPORTS:
+        errors.append(
+            f"{rel}: ariadne_quality carries {len(reports)} reports — at most "
+            f"{QUALITY_MAX_REPORTS} are declared per page (plan 0013 §2)"
+        )
+    report_ids: set[str] = set()
+    for position, report in enumerate(reports):
+        where = f"{rel}: ariadne_quality.reports[{position}]"
+        if not isinstance(report, dict):
+            errors.append(f"{where} must be a mapping")
+            continue
+        unknown = sorted(set(report) - _QUALITY_REPORT_KEYS)
+        if unknown:
+            errors.append(
+                f"{where} carries unsupported field(s) {unknown} — the profile is a "
+                "closed declaration with no sql/script/command or other executable "
+                "payload field; descriptions are inert text"
+            )
+        missing = sorted(_QUALITY_REPORT_KEYS - _QUALITY_OPTIONAL_REPORT_KEYS - set(report))
+        if missing:
+            errors.append(f"{where} requires field(s) {missing}")
+        identifier = report.get("id")
+        if not isinstance(identifier, str) or not identifier:
+            errors.append(f"{where} id must be a nonempty stable string")
+        elif len(identifier) > QUALITY_MAX_ID_CHARS:
+            errors.append(f"{where} id exceeds its {QUALITY_MAX_ID_CHARS}-character bound")
+        elif identifier in report_ids:
+            errors.append(
+                f"{where} duplicates report id {identifier!r} — report IDs are "
+                "stable: repeated findings update the same declaration"
+            )
+        else:
+            report_ids.add(identifier)
+        if isinstance(binding, str) and binding and report.get("asset") != binding:
+            errors.append(
+                f"{where} asset must equal the containing page's canonical resource "
+                f"binding {binding!r} — a report is tied to its page's exact asset, "
+                "never a display-name match"
+            )
+        source_ids = report.get("source_ids")
+        if (
+            not isinstance(source_ids, list)
+            or not source_ids
+            or len(source_ids) > QUALITY_MAX_SOURCE_IDS
+            or not all(isinstance(source_id, str) and source_id for source_id in source_ids)
+        ):
+            errors.append(
+                f"{where} source_ids must be a nonempty list of at most "
+                f"{QUALITY_MAX_SOURCE_IDS} citation ids"
+            )
+        else:
+            unresolved = [s for s in source_ids if s not in citation_resources]
+            if unresolved:
+                errors.append(
+                    f"{where} source_ids {unresolved} resolves to no page sources[] "
+                    "citation — supplied evidence cites the page's actual sources"
+                )
+            resourceless = [s for s in source_ids if not citation_resources.get(s)]
+            if resourceless:
+                errors.append(
+                    f"{where} source_ids {resourceless} cite a source without a "
+                    "resource — a citation is an identity, and needs one"
+                )
+        scope = report.get("scope")
+        if not isinstance(scope, dict):
+            errors.append(f"{where} scope must be {{kind, description, population, period}}")
+        else:
+            unknown = sorted(set(scope) - _QUALITY_SCOPE_KEYS)
+            if unknown:
+                errors.append(f"{where} scope carries unsupported field(s) {unknown}")
+            if scope.get("kind") not in QUALITY_SCOPE_KINDS:
+                errors.append(
+                    f"{where} scope kind must be one of {list(QUALITY_SCOPE_KINDS)}, "
+                    f"got {scope.get('kind')!r}"
+                )
+            for key in ("description", "population"):
+                error = _quality_text_error(
+                    scope.get(key), f"{where} scope {key}", QUALITY_MAX_TEXT_CHARS
+                )
+                if error:
+                    errors.append(error)
+            missing = sorted(_QUALITY_SCOPE_KEYS - set(scope))
+            if missing:
+                errors.append(
+                    f"{where} scope requires field(s) {missing} — period is null only "
+                    "when non-time-bounded evidence is EXPLICITLY declared; "
+                    "omission is not a declaration"
+                )
+            errors.extend(_quality_period_errors(scope.get("period"), f"{where} scope period"))
+        reported_at, reported_error = _aware_instant(
+            report.get("reported_at"), f"{where} reported_at"
+        )
+        if reported_error:
+            errors.append(reported_error)
+        if "observed_at" in report:
+            _observed, observed_error = _aware_instant(
+                report.get("observed_at"), f"{where} observed_at"
+            )
+            if observed_error:
+                errors.append(observed_error)
+        if "valid_until" in report:
+            valid_until, valid_error = _aware_instant(
+                report.get("valid_until"), f"{where} valid_until"
+            )
+            if valid_error:
+                errors.append(valid_error)
+            elif reported_at is not None and valid_until is not None and valid_until < reported_at:
+                errors.append(f"{where} valid_until must not precede reported_at")
+        if "source_version" in report:
+            source_version = report.get("source_version")
+            if not isinstance(source_version, dict):
+                errors.append(f"{where} source_version must be {{kind, value}}")
+            else:
+                unknown = sorted(set(source_version) - _QUALITY_VERSION_KEYS)
+                if unknown:
+                    errors.append(f"{where} source_version carries unsupported field(s) {unknown}")
+                if source_version.get("kind") not in QUALITY_VERSION_KINDS:
+                    errors.append(
+                        f"{where} source_version kind must be one of "
+                        f"{list(QUALITY_VERSION_KINDS)}, got "
+                        f"{source_version.get('kind')!r}"
+                    )
+                error = _quality_text_error(
+                    source_version.get("value"),
+                    f"{where} source_version value",
+                    QUALITY_MAX_ID_CHARS,
+                )
+                if error:
+                    errors.append(error)
+        for key, cap in (
+            ("provenance", QUALITY_MAX_TEXT_CHARS),
+            ("reported_by", QUALITY_MAX_ID_CHARS),
+            ("cadence", QUALITY_MAX_CADENCE_CHARS),
+        ):
+            if key in report:
+                error = _quality_text_error(report.get(key), f"{where} {key}", cap)
+                if error:
+                    errors.append(error)
+        checks = report.get("checks")
+        if not isinstance(checks, list) or not checks:
+            errors.append(f"{where} requires a nonempty checks list")
+        elif len(checks) > QUALITY_MAX_CHECKS:
+            errors.append(
+                f"{where} carries {len(checks)} checks — at most "
+                f"{QUALITY_MAX_CHECKS} per report (plan 0013 §2)"
+            )
+        else:
+            check_ids: set[str] = set()
+            for index, check in enumerate(checks):
+                spot = f"{where} checks[{index}]"
+                if not isinstance(check, dict):
+                    errors.append(f"{spot} must be a mapping")
+                    continue
+                unknown = sorted(set(check) - _QUALITY_CHECK_KEYS)
+                if unknown:
+                    errors.append(f"{spot} carries unsupported field(s) {unknown}")
+                missing = sorted(_QUALITY_CHECK_KEYS - set(check))
+                if missing:
+                    errors.append(f"{spot} requires field(s) {missing}")
+                check_id = check.get("id")
+                if not isinstance(check_id, str) or not check_id:
+                    errors.append(f"{spot} id must be a nonempty stable string")
+                elif len(check_id) > QUALITY_MAX_ID_CHARS:
+                    errors.append(f"{spot} id exceeds its {QUALITY_MAX_ID_CHARS}-character bound")
+                elif check_id in check_ids:
+                    errors.append(f"{spot} duplicates check id {check_id!r} within the report")
+                else:
+                    check_ids.add(check_id)
+                error = _quality_text_error(check.get("kind"), f"{spot} kind", QUALITY_MAX_ID_CHARS)
+                if error:
+                    errors.append(error)
+                if check.get("outcome") not in QUALITY_CHECK_OUTCOMES:
+                    errors.append(
+                        f"{spot} outcome must be exactly one of "
+                        f"{list(QUALITY_CHECK_OUTCOMES)}, got {check.get('outcome')!r}"
+                    )
+                for key in ("criterion", "tested_population"):
+                    error = _quality_text_error(
+                        check.get(key), f"{spot} {key}", QUALITY_MAX_TEXT_CHARS
+                    )
+                    if error:
+                        errors.append(error)
+                errors.extend(
+                    _quality_period_errors(check.get("tested_period"), f"{spot} tested_period")
+                )
+        if "watermark" in report:
+            watermark = report.get("watermark")
+            if not isinstance(watermark, dict):
+                errors.append(
+                    f"{where} watermark must be "
+                    "{kind, value, field, meaning, units, timezone, observed_at}"
+                )
+            else:
+                unknown = sorted(set(watermark) - _QUALITY_WATERMARK_KEYS)
+                if unknown:
+                    errors.append(f"{where} watermark carries unsupported field(s) {unknown}")
+                kind = watermark.get("kind")
+                if kind not in QUALITY_WATERMARK_KINDS:
+                    errors.append(
+                        f"{where} watermark kind must be one of "
+                        f"{list(QUALITY_WATERMARK_KINDS)}, got {kind!r}"
+                    )
+                value = watermark.get("value")
+                if kind in ("event_time", "ingestion_time", "snapshot_as_of"):
+                    _instant, value_error = _aware_instant(value, f"{where} watermark value")
+                    if value_error:
+                        errors.append(
+                            f"{where} watermark value: a temporal watermark carries an "
+                            "aware instant as its value"
+                        )
+                elif not _finite_scalar(value):
+                    errors.append(
+                        f"{where} watermark value must be a finite scalar with its stated meaning"
+                    )
+                for key, cap in (
+                    ("field", QUALITY_MAX_ID_CHARS),
+                    ("meaning", QUALITY_MAX_TEXT_CHARS),
+                    ("units", QUALITY_MAX_UNITS_CHARS),
+                    ("timezone", QUALITY_MAX_UNITS_CHARS),
+                ):
+                    error = _quality_text_error(watermark.get(key), f"{where} watermark {key}", cap)
+                    if error:
+                        errors.append(error)
+                _observed, observed_error = _aware_instant(
+                    watermark.get("observed_at"), f"{where} watermark observed_at"
+                )
+                if observed_error:
+                    errors.append(observed_error)
+    if not errors:
+        payload = _normalize_quality_value(profile)
+        size = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        if size > QUALITY_PROFILE_MAX_BYTES:
+            errors.append(
+                f"{rel}: the normalized ariadne_quality profile is {size} UTF-8 "
+                f"bytes — at most {QUALITY_PROFILE_MAX_BYTES} are declared per page "
+                "(plan 0013 §2)"
+            )
+    return errors
+
+
+# The shared advisory ``data_signals`` view (spec 0013 §4, plan 0013 §2
+# "data_signals view"). Approved public-contract bounds, not adjustable
+# mechanical budgets: finite metric/asset/page/report counts, the bounded
+# per-page frontmatter read and the total view byte ceiling.
+DATA_SIGNALS_VERSION = 1
+DATA_SIGNALS_MAX_METRICS = 64
+DATA_SIGNALS_MAX_ASSETS = 64
+DATA_SIGNALS_MAX_PAGES = 32
+DATA_SIGNALS_MAX_REPORTS = 128
+DATA_SIGNALS_MAX_BYTES = 64 * 1024
+_PAGE_FRONTMATTER_READ_BYTES = 64 * 1024
+
+
+def _read_page_meta_bounded(path: Path) -> dict | None:
+    """Frontmatter meta of one OKF page from a BOUNDED read — at most 64 KiB
+    of the file, never the body or external citations. ``None`` when the page
+    is unreadable or carries no parseable frontmatter: unknown evidence,
+    never a query failure."""
+    try:
+        with path.open("rb") as handle:
+            prefix = handle.read(_PAGE_FRONTMATTER_READ_BYTES).decode("utf-8", "replace")
+    except OSError:
+        return None
+    match = _FRONTMATTER_RE.match(prefix)
+    if not match:
+        return None
+    try:
+        meta = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError:
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
+def _coerce_validated_instant(value: object) -> datetime:
+    """The instant of a VALIDATED profile timestamp (aware datetime or aware
+    ISO string — the authoring gate rejected everything else)."""
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value))
+
+
+# One enriched index line: the page link plus the trailing core-appended
+# resource marker ``resource: `ariadne://…` ``. The label may itself contain
+# ``]`` (authored titles are preserved verbatim), so the link ends at the
+# FIRST ``](`` — first-link-target semantics. Greedy prefix matching keeps
+# the LAST marker on a line — the one the generator appends — ahead of any
+# identical text authored into a description.
+_INDEX_RESOURCE_RE = re.compile(r"^\s*\*\s+\[(?:.*?)\]\(([^)\s]+)\).*\bresource:\s*`([^`]+)`")
+
+
+def _table_index_bindings(context_dir: Path) -> dict[str, str]:
+    """The resource->page resolution map of the system-generated
+    ``tables/index.md`` (spec 0010 §4: ``resource`` authoritative, page
+    filenames navigational; the owner-approved fix4 design makes the
+    regenerated index the reader's resolution source). ONE bounded metadata
+    read — at most 64 KiB — explicitly NOT charged against the 32-page
+    evidence budget. A missing or unreadable index, or one written by an
+    older core without resource markers, resolves nothing: every canonical
+    citation then degrades to a ``binding_unknown`` disclosure, never to a
+    scan. ponytail: duplicate-resource lines (an authoring anomaly — pages
+    bound to resources keep protected single resources) resolve to the
+    first line, matching the index's sorted page order."""
+    try:
+        with (context_dir / "tables" / "index.md").open("rb") as handle:
+            text = handle.read(_PAGE_FRONTMATTER_READ_BYTES).decode("utf-8", "replace")
+    except OSError:
+        return {}
+    bindings: dict[str, str] = {}
+    for line in text.splitlines():
+        match = _INDEX_RESOURCE_RE.match(line)
+        if match and match.group(2) not in bindings:
+            name = match.group(1)
+            if name == Path(name).name and name.endswith(".md"):  # one served page file
+                bindings[match.group(2)] = f"tables/{name}"
+    return bindings
+
+
+def _direct_table_citations(
+    context_dir: Path, metric_names: list[str]
+) -> tuple[set[str], set[str]]:
+    """The DIRECTLY-cited table identities recorded on the CONSUMING metric
+    pages (``metrics/<name>.md`` frontmatter ``sources[]``): cited table page
+    paths (``tables/<plain-name>.md``) and cited canonical table resources
+    (``ariadne://table/…``). This is the consuming side of spec 0013 §4's
+    contract — a table page citing its own source is a self-citation, never a
+    citation by the metric — and it is resolved BEFORE any ``tables/*.md``
+    read, so only directly-cited pages ever enter evidence consideration. A
+    missing or unparseable metric page, a ``sources[]`` that is not a list,
+    bare display names, ``policies/...`` refs, non-plain page paths
+    (subdirectories, traversal — the citation names one served page file) and
+    malformed resources cite nothing: unknown coverage, never a guess."""
+    root = context_dir.resolve()
+    cited_pages: set[str] = set()
+    cited_resources: set[str] = set()
+    for name in metric_names:
+        page = root / "metrics" / f"{name}.md"
+        try:
+            if not page.resolve().is_relative_to(root):
+                continue  # containment: a crafted name is just another missing page
+        except OSError:
+            continue
+        meta = _read_page_meta_bounded(page)
+        sources = meta.get("sources") if meta else None
+        if not isinstance(sources, list):
+            continue
+        for source in sources:
+            resource = source.get("resource") if isinstance(source, dict) else None
+            if not (isinstance(resource, str) and resource):
+                continue
+            if resource.startswith("tables/"):
+                name_part = resource[len("tables/") :]
+                if name_part == Path(name_part).name and name_part.endswith(".md"):
+                    cited_pages.add(f"tables/{name_part}")
+                continue
+            try:
+                kind, _parts = parse_resource(resource)
+            except ValueError:
+                continue
+            if kind == "table":
+                cited_resources.add(resource)
+    return cited_pages, cited_resources
+
+
+def _report_view(report: dict, now: datetime) -> dict:
+    """The normalized advisory view of one VALIDATED report: every supplied
+    field (instants as ISO-8601 strings) plus ``evidence_kind: supplied`` and
+    the honest ``age``/``applicability`` axes with closed ``limitations``
+    codes. Age is expiry of the SUPPLIED validity only — an unexpired report
+    never establishes live health. Applicability is mechanical
+    correspondence, never a guess: a subset scope without established
+    correspondence and a source version the runtime cannot cross-check
+    (absent, or supplied with no runtime dataset-version fact to match
+    against — an admission digest is not a dataset version) are explicit
+    unknowns; ``as_of`` means available unexpired as-of evidence, nothing
+    more."""
+    limitations: list[str] = []
+    applicability = "unknown"
+    if (report.get("scope") or {}).get("kind") == "subset":
+        limitations.append("scope_unknown")  # subset text alone proves no correspondence
+    # Version correspondence needs mechanically established matching from
+    # existing source/query facts (spec §3): this runtime holds no
+    # dataset-version fact, so a supplied source_version is an upstream CLAIM
+    # — unknown correspondence whether absent or merely supplied, never a
+    # matching assessment.
+    limitations.append("source_version_unknown")
+    reported_at = _coerce_validated_instant(report["reported_at"])
+    age = "unknown"
+    if reported_at > now:
+        limitations.append("report_time_in_future")
+    elif "valid_until" not in report:
+        limitations.append("validity_not_supplied")  # as-of timestamps stay visible
+    else:
+        age = "expired" if now >= _coerce_validated_instant(report["valid_until"]) else "as_of"
+    view: dict = {key: _normalize_quality_value(item) for key, item in report.items()}
+    view["evidence_kind"] = "supplied"
+    view["age"] = age
+    view["applicability"] = applicability
+    view["limitations"] = limitations
+    return view
+
+
+def data_signals(context_dir: str | Path, dependencies: dict[str, list[str | None]]) -> dict:
+    """The shared read-only advisory quality-evidence view of spec 0013 §4
+    (plan 0013 §2): for every metric's DIRECT table dependencies — already
+    resolved to canonical table resources by the caller against the built
+    execution catalog — the directly cited physical-table pages under the
+    served ``tables/`` section are read (bounded: at most 64 KiB of
+    frontmatter per page, at most 32 pages physically read), and each page's
+    optional validated ``ariadne_quality`` reports are disclosed with their
+    age, applicability, limitations, checks and watermarks.
+
+    A page is DIRECTLY CITED only when the CONSUMING metric page
+    (``metrics/<name>.md``) records the citation in its own ``sources[]`` —
+    a ``tables/...`` page path or a canonical table resource (spec §4's
+    "admitted table citations"). Every citation is resolved to an EXACT
+    page path BEFORE any table-page read: a path citation names its page
+    directly, and a canonical-resource citation resolves through the
+    regenerated ``tables/index.md`` — the reader's resource->page resolution
+    source (spec 0010 §4: ``resource`` is authoritative, filenames
+    navigational; existing pages bound to resources keep their names) — via
+    ONE bounded index read that is explicitly NOT charged against the
+    page-read budget, with each resolved page's OWN frontmatter — its
+    declared ``resource`` — confirming the resolution as it is read.
+    Resolution is INDEX-ONLY: an index without resource markers (a
+    pre-existing served context), a missing/unreadable index or a citation
+    the index does not resolve degrades to a ``binding_unknown`` disclosure
+    for that citation — the query still succeeds, nothing is scanned. A
+    table page citing its own source is a self-citation and establishes
+    nothing. The resolved pages are the ONLY pages ever read: unrelated
+    pages are never read, never sorted against and never consume the
+    page-read budget, and each resolved page's declared binding is
+    cross-checked against the catalog-resolved direct dependencies
+    (same-named tables in distinct sources stay distinct assets). Citing
+    more pages than the budget reads is the one truncation scenario: a
+    cited page beyond it is disclosed under ``omitted``/``truncated``, never
+    silently assessed.
+
+    Coverage is honesty about EVIDENCE, not about data: ``complete`` means
+    every direct dependency is identified and covered by applicable parseable
+    report evidence (an expired or reported-failed report still covers an
+    identified dependency); ``partial`` means identified coverage is
+    incomplete; ``unknown`` means correspondence/evidence is unavailable. A
+    missing binding, a missing table citation, an absent optional profile or
+    a later-unreadable declared profile is explicit unknown coverage — the
+    last additionally warns ``data_evidence_unavailable``; a wholly absent
+    optional profile never warns merely for its absence. No pass outcome,
+    watermark recency or admission is ever presented as live health.
+
+    The read is PURE (no restamp, no write, no fetch, no probe — retries
+    return another assessment of the same pinned bytes) and never fails a
+    numerically valid query: bounded counts and the total view size elide
+    trailing entries deterministically, count them under ``omitted`` and mark
+    ``truncated`` (elided evidence never leaves a complete/warning-free
+    claim). No recursive lineage traversal, directory-wide report discovery
+    or external read happens here — only the directly cited table pages of
+    the named dependencies."""
+    now = _assessment_now()
+    metric_names = list(dependencies)[:DATA_SIGNALS_MAX_METRICS]
+    omitted_metrics = len(dependencies) - len(metric_names)
+    asset_order: list[str] = []
+    for name in metric_names:
+        for resource in dependencies[name]:
+            if isinstance(resource, str) and resource and resource not in asset_order:
+                asset_order.append(resource)
+    omitted_assets = max(0, len(asset_order) - DATA_SIGNALS_MAX_ASSETS)
+    asset_order = asset_order[:DATA_SIGNALS_MAX_ASSETS]
+    wanted = set(asset_order)
+    # The directly-cited set resolved from the CONSUMING side before any
+    # table-page read (spec 0013 §4, issue #53's "exactly bound directly
+    # cited table"): the metric pages' recorded table citations name the
+    # pages (``tables/...`` paths) or canonical resources that may supply
+    # evidence. A table page citing its own source is a self-citation and
+    # establishes nothing; an uncited page — same resource or not — never
+    # enters evidence consideration.
+    cited_pages, cited_resources = _direct_table_citations(Path(context_dir), metric_names)
+    # The citation resolution, built BEFORE any table-page read (spec 0010
+    # §4 + the owner-approved fix4 design): a path citation names its page
+    # directly, and a canonical-resource citation resolves through the
+    # regenerated ``tables/index.md`` — ONE bounded metadata read, explicitly
+    # NOT charged against the 32-page evidence budget — to the exact page
+    # the index binds that resource to, each resolved page's OWN frontmatter
+    # (its declared ``resource``) confirming the resolution as it is read.
+    # Resolution is INDEX-ONLY: no ``tables/*.md`` walk, no generated-name
+    # convention, no scan loop — unrelated pages are never candidates, never
+    # read and never charged to the page-read budget. An index without
+    # resource markers (a pre-existing served context), a missing/unreadable
+    # index or a citation the index does not resolve degrades to a
+    # ``binding_unknown`` disclosure — the query still succeeds, nothing is
+    # scanned.
+    cited_wanted = cited_resources & wanted
+    resolved: dict[str, str] = {}
+    if cited_wanted:
+        for resource, page in _table_index_bindings(Path(context_dir)).items():
+            if resource in cited_wanted:
+                resolved[resource] = page
+    candidates: set[str] = set(cited_pages) | set(resolved.values())
+    bindings: dict[str, tuple[str, dict]] = {}
+    omitted_pages = 0
+    pages_read = 0
+    read_pages: set[str] = set()
+    tables_dir = Path(context_dir) / "tables"
+    if tables_dir.is_dir():
+        for rel in sorted(candidates):
+            if pages_read >= DATA_SIGNALS_MAX_PAGES:
+                # direct citations the read budget never reached — disclosed
+                # as omitted: citing more pages than the budget reads is the
+                # one truncation scenario, never silently assessed
+                omitted_pages = len(candidates) - pages_read
+                break  # the budget bounds pages physically read (plan §2)
+            pages_read += 1
+            read_pages.add(rel)
+            meta = _read_page_meta_bounded(tables_dir / Path(rel).name)
+            if not meta:
+                continue
+            resource = meta.get("resource")
+            # the identity cross-check of the cited pages against the runtime
+            # catalog: a directly-cited page still binds only when its declared
+            # resource is one of the catalog-resolved direct dependencies
+            if not (isinstance(resource, str) and resource in wanted):
+                continue
+            if (rel in cited_pages or resource in cited_resources) and resource not in bindings:
+                bindings[resource] = (rel, meta)  # the first cited page in sorted order binds
+    # honest degradation (owner-approved fix4 design): a canonical citation
+    # the index did not resolve at all, or whose resolved page was read but
+    # did not confirm the binding, is disclosed binding_unknown — never a
+    # guess and never a scan (a page the budget never reached stays covered
+    # by the omitted/truncated disclosure alone)
+    unresolved: list[str] = []
+    for resource in sorted(cited_wanted):
+        if resource in bindings:
+            continue
+        page = resolved.get(resource)
+        if page is None or page in read_pages:
+            unresolved.append(resource)
+    assets: list[dict] = []
+    state: dict[str, dict] = {}
+    omitted_reports = 0
+    reports_emitted = 0
+    for resource in asset_order:
+        page, meta = bindings.get(resource, (None, None))
+        entry = {"resource": resource, "page": page, "coverage": "unknown", "reports": []}
+        info: dict = {"entry": entry, "elided": False, "invalid": False}
+        state[resource] = info
+        profile = meta.get("ariadne_quality") if meta else None
+        if profile is not None:
+            try:
+                invalid = bool(_quality_profile_errors(page or resource, meta or {}))
+                if not invalid:
+                    applicable = False
+                    for report in profile.get("reports") or []:
+                        if reports_emitted >= DATA_SIGNALS_MAX_REPORTS:
+                            omitted_reports += 1
+                            info["elided"] = True
+                            continue
+                        reports_emitted += 1
+                        view = _report_view(report, now)
+                        entry["reports"].append(view)
+                        if view["applicability"] == "applicable":
+                            applicable = True
+                    entry["coverage"] = (
+                        "partial" if info["elided"] else ("complete" if applicable else "unknown")
+                    )
+            except Exception:
+                # Advisory interpretation NEVER fails the query (spec §5): a
+                # later-edited unreadable declaration (e.g. a citation with a
+                # non-string id) degrades to unknown evidence with the
+                # unavailability warning — the computed result is already safe.
+                invalid = True
+                entry["reports"] = []
+                entry["coverage"] = "unknown"
+                info["elided"] = False
+            if invalid:
+                info["invalid"] = True  # later-unreadable declared evidence
+        assets.append(entry)
+    view: dict = {}
+    while True:  # elide trailing reports (deterministic reverse order) while over budget
+        metrics: list[dict] = []
+        warnings: list[dict] = []
+        for name in metric_names:
+            contributions: list[str] = []
+            asset_refs: list[str | None] = []
+            for resource in dependencies[name]:
+                if resource is None:
+                    asset_refs.append(None)
+                    contributions.append("unknown")
+                elif resource not in state:  # identified but omitted by the asset bound
+                    asset_refs.append(None)
+                    contributions.append("partial")
+                else:
+                    asset_refs.append(resource)
+                    contributions.append(state[resource]["entry"]["coverage"])
+            if contributions and all(coverage == "complete" for coverage in contributions):
+                coverage = "complete"
+            elif any(coverage in ("complete", "partial") for coverage in contributions):
+                coverage = "partial"
+            else:
+                coverage = "unknown"
+            metrics.append({"name": name, "assets": asset_refs, "coverage": coverage})
+            if coverage == "partial":
+                warnings.append(
+                    {
+                        "code": "data_coverage_partial",
+                        "metric": name,
+                        "asset": None,
+                        "page": None,
+                        "report": None,
+                    }
+                )
+        truncated = bool(omitted_metrics or omitted_assets or omitted_pages or omitted_reports)
+        for resource in asset_order:
+            info = state[resource]
+            entry = info["entry"]
+            if info["invalid"]:
+                warnings.append(
+                    {
+                        "code": "data_evidence_unavailable",
+                        "metric": None,
+                        "asset": resource,
+                        "page": entry["page"],
+                        "report": None,
+                    }
+                )
+                continue
+            for report_view_entry in entry["reports"]:
+                base = {
+                    "metric": None,
+                    "asset": resource,
+                    "page": entry["page"],
+                    "report": report_view_entry.get("id"),
+                }
+                if report_view_entry["applicability"] == "inapplicable":
+                    warnings.append({**base, "code": "data_report_inapplicable"})
+                    continue  # disclosed as inapplicable, never as the requested data's check
+                if report_view_entry["applicability"] == "unknown":
+                    warnings.append({**base, "code": "data_applicability_unknown"})
+                if report_view_entry["age"] == "expired":
+                    warnings.append({**base, "code": "data_report_expired"})
+                if any(
+                    check.get("outcome") == "fail"
+                    for check in report_view_entry.get("checks") or []
+                ):
+                    warnings.append({**base, "code": "data_report_failed"})
+        for resource in unresolved:  # citations the index never resolved to a
+            # confirmed page binding — the honest-degradation disclosure of the
+            # owner-approved fix4 design (spec 0013 §4: unresolved dependency is
+            # unknown coverage, never a guess, never a scan)
+            warnings.append(
+                {
+                    "code": "data_binding_unknown",
+                    "metric": None,
+                    "asset": resource,
+                    "page": None,
+                    "report": None,
+                }
+            )
+        if truncated and not any(
+            warning["code"] == "data_signals_truncated" for warning in warnings
+        ):
+            warnings.append(
+                {
+                    "code": "data_signals_truncated",
+                    "metric": None,
+                    "asset": None,
+                    "page": None,
+                    "report": None,
+                }
+            )
+        view = {
+            "version": DATA_SIGNALS_VERSION,
+            "assessed_at": now.isoformat(),
+            "metrics": metrics,
+            "assets": assets,
+            "warnings": warnings,
+            "truncated": truncated,
+            "omitted": {
+                "metrics": omitted_metrics,
+                "assets": omitted_assets,
+                "pages": omitted_pages,
+                "reports": omitted_reports,
+            },
+        }
+        size = len(json.dumps(view, ensure_ascii=False).encode("utf-8"))
+        if size <= DATA_SIGNALS_MAX_BYTES:
+            return view
+        for info in reversed(state.values()):  # over budget: elide the last report
+            if info["entry"]["reports"]:
+                info["entry"]["reports"].pop()
+                omitted_reports += 1
+                info["elided"] = True
+                info["entry"]["coverage"] = "partial"
+                break
+        else:
+            # ponytail: even report-less entries overflowed (pathological
+            # asset/metric counts) — the truncation flag and omitted counts
+            # disclose it; per-entry elision is Q2's shared-association work
+            return view

@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
@@ -942,3 +943,182 @@ def test_query_routes_ad_hoc_staging_through_the_shared_stage_ad_hoc(tmp_path, s
     assert (staging / "semantic_layer" / "models" / "adhoc" / "orders_total.yml").is_file()
     assert (staging / "context_layer" / "metrics" / "orders_total.md").is_file()
     assert not (tmp_path / ".ariadne").exists()  # never a Git proposal store
+
+
+def _generated_table_page(resource: str) -> str:
+    """A committed generated-style table page: the core-owned ``resource``
+    binding and ``ariadne`` schema/observations block, a catalog citation and
+    authored summary only (no core-owned body sections in this minimal form)."""
+    meta = {
+        "type": "table",
+        "title": "demo.main.orders",
+        "description": "One row per order.",
+        "tags": ["table"],
+        "sources": [
+            {
+                "id": "catalog-demo-main-orders",
+                "resource": resource,
+                "title": "catalog and profile of demo.main.orders",
+            }
+        ],
+        "resource": resource,
+        "ariadne": {
+            "schema": [
+                {
+                    "column": "order_id",
+                    "type": "BIGINT",
+                    "nullable": "unknown",
+                    "default": "unknown",
+                    "comment": "unknown",
+                }
+            ],
+            "observations": {
+                "observed_at": "2026-01-01T00:00:00+00:00",
+                "scope": "full",
+                "row_count": 3,
+                "candidate_keys": ["order_id"],
+                "columns": {"order_id": {"null_count": 0, "distinct_count": 3}},
+                "citation": resource,
+            },
+        },
+    }
+    front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
+    return f"---\n{front}\n---\n\n# Orders\n"
+
+
+def _quality_block(resource: str, reported_at: str) -> dict:
+    return {
+        "version": 1,
+        "reports": [
+            {
+                "id": "owner-completeness",
+                "asset": resource,
+                "source_ids": ["catalog-demo-main-orders"],
+                "scope": {
+                    "kind": "asset",
+                    "description": "All rows of the orders table.",
+                    "population": "every row of the physical table",
+                    "period": None,
+                },
+                "reported_at": reported_at,
+                "checks": [
+                    {
+                        "id": "completeness",
+                        "kind": "completeness",
+                        "outcome": "unknown",
+                        "criterion": "every order placed is present",
+                        "tested_population": "all orders",
+                        "tested_period": None,
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def git_project_with_generated_table_page(tmp_path: Path) -> tuple[Path, str]:
+    """A real temporary Git data project whose initial commit carries one
+    generated-style table page; returns (project, the canonical resource)."""
+    import base64
+    import json as _json
+
+    payload = _json.dumps(["demo", "demo", "main", "orders"], separators=(",", ":"))
+    resource = "ariadne://table/" + base64.urlsafe_b64encode(payload.encode("utf-8")).decode(
+        "ascii"
+    ).rstrip("=")
+    project = tmp_path / "proj"
+    scaffold_artifacts(project)
+    (project / "context_layer" / "tables").mkdir(parents=True, exist_ok=True)
+    (project / "context_layer" / "tables" / "orders.md").write_text(
+        _generated_table_page(resource), encoding="utf-8"
+    )
+    run_git(project, "init", "-q")
+    run_git(project, "config", "user.name", "Ariadne Tests")
+    run_git(project, "config", "user.email", "tests@ariadne.local")
+    run_git(
+        project,
+        "add",
+        "--",
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "semantic_layer/models/events.yml",
+        "context_layer/tables/orders.md",
+    )
+    run_git(project, "commit", "-q", "-m", "human: initial artifacts")
+    return project, resource
+
+
+def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_claims(
+    tmp_path,
+):
+    """Issue #53 (spec 0013 §2): ordinary page editing adds the supplied
+    ``ariadne_quality`` profile without changing the protected
+    resource/schema/observations — the authored extension is NOT a system
+    claim (the edit seam accepts it), while the core-owned bindings stay
+    unforgeable and a malformed declaration fails the shared authoring gate
+    before any human admission."""
+    from ariadne.context import _load_frontmatter_meta, _page_contract_errors
+
+    project, resource = git_project_with_generated_table_page(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    worktree = worktree_of(project, started["proposal"])
+    page = worktree / "context_layer" / "tables" / "orders.md"
+    original = page.read_text(encoding="utf-8")
+
+    def with_quality(reported_at: str) -> str:
+        meta = _load_frontmatter_meta(original)
+        meta["ariadne_quality"] = _quality_block(resource, reported_at)
+        front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
+        return f"---\n{front}\n---\n\n# Orders\n"
+
+    # the ordinary edit lands: authored metadata, not a system-owned claim
+    edited = api.edit_proposal(
+        started["proposal"],
+        started["candidate_revision"],
+        {
+            "kind": "page",
+            "section": "tables",
+            "name": "orders",
+            "content": with_quality("2026-01-15T00:00:00+00:00"),
+        },
+    )
+    assert edited["changed"] is True
+    added = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
+    assert added["resource"] == resource  # the core binding is untouched
+    before = _load_frontmatter_meta(original)
+    assert added["ariadne"] == before["ariadne"]  # schema/observations untouched
+    assert added["sources"] == before["sources"]
+    # the added profile passes the shared authoring gate
+    assert _page_contract_errors(worktree, page, "table") == []
+
+    # a malformed (naive-timestamp) declaration fails authoring validation —
+    # BEFORE human admission, never as a query refusal (spec §5/§7 AC6)
+    naive = api.edit_proposal(
+        started["proposal"],
+        edited["revision"],
+        {
+            "kind": "page",
+            "section": "tables",
+            "name": "orders",
+            "content": with_quality("2026-01-15T00:00:00"),
+        },
+    )
+    assert naive["changed"] is True  # the seam edits; the GATE owns the refusal
+    errors = _page_contract_errors(worktree, page, "table")
+    assert errors and "naive" in errors[0]
+
+    # the protected resource binding itself stays unforgeable (unchanged seam)
+    with pytest.raises(ValueError, match="system-owned"):
+        api.edit_proposal(
+            started["proposal"],
+            naive["revision"],
+            {
+                "kind": "page",
+                "section": "tables",
+                "name": "orders",
+                "content": page.read_text(encoding="utf-8").replace(
+                    resource, resource[:-4] + "XXXX"
+                ),
+            },
+        )

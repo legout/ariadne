@@ -69,7 +69,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import yaml
+import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+from sqlglot import exp  # pyright: ignore[reportMissingImports]
 
 # Issue #19 (ADR-0015, spec 2026-09-29-0007): the answer-example store is a
 # separate transport-neutral module — the runtime only contributes its selected
@@ -89,6 +91,7 @@ from ariadne import (  # pyright: ignore[reportMissingImports] — new-module re
 # Shared Context Layer (issue #33, ADR-0016): retrieval, citation attachment and
 # deterministic OKF generation live in ariadne.context.
 from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
+    data_signals,
     resolve_term,
     search_pages,
 )
@@ -176,6 +179,9 @@ MISSING_CATALOG = (
 # front with an actionable message (lowercase snake_case, no double underscore).
 _SLUG_RE = re.compile(r"[a-z][a-z0-9_]*[a-z0-9]")
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# A fully qualified physical-table reference ("demo.main.orders",
+# "events.events") — the identity form the catalog match below requires.
+_IDENTIFIER_PATH_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 
 class QueryRuntime:
@@ -283,6 +289,11 @@ class QueryRuntime:
         # lifetime (ponytail: one COUNT scan per join key, paid once per process;
         # re-key by model file mtime if served models ever hot-reload).
         self._grain_checked: set[str] = set()
+        # Issue #53 (spec 0013 §4): the exact-identity map of the ALREADY-BUILT
+        # execution catalog — qualified table name → canonical resource — built
+        # lazily once and reused by every data_signals attachment. No new catalog
+        # or source query ever runs for quality evidence.
+        self._catalog_resources: dict[str, str] | None = None
         # Issue #30: the admitted multi-fact graph. Admission is the human local
         # Promotion of a validated bundle — the promotion-written admission record
         # under the served semantic layer binds the post-Promotion served-tree
@@ -458,7 +469,40 @@ class QueryRuntime:
             # caveats (spec §5: governed answers identify the admitted revision
             # and route) — legacy responses keep their exact shape.
             result["admission"] = self._admission_view(self._managed)
+        # Issue #53 (spec 0013 §4): the additive advisory source-quality view.
+        # Identity comes from the executed query's direct dataset dependencies
+        # matched EXACTLY against the built catalog; the shared reader is pure
+        # and never fails or changes the governed result above.
+        result["data_signals"] = data_signals(
+            self.context_dir, {name: self._direct_table_dependencies(name)}
+        )
         return result
+
+    def _direct_table_dependencies(self, name: str) -> list[str | None]:
+        """The canonical table resources of the metric's DIRECT dataset
+        dependencies (spec 0013 §4, issue #53): every dataset source — a
+        qualified table name or a SELECT — is matched against the ALREADY-BUILT
+        execution catalog by exact qualified identity, never an unqualified
+        display-name match (same-named tables in distinct sources stay distinct
+        assets, which is why :func:`ariadne.context._source_tables` — it
+        deliberately strips qualification — is never used as an identity
+        resolver here). An unmatched or unresolvable dependency is ``None``:
+        unknown coverage, never a guess."""
+        if self._catalog_resources is None:
+            self._catalog_resources = {
+                f"{table['ref']}.{table['name']}": table["resource"]
+                for source in self.catalog
+                for table in source["tables"]
+            }
+        dependencies: list[str | None] = []
+        for dataset in self._metrics[name]["model"]["semantic_model"][0].get("datasets") or []:
+            dependencies.extend(
+                None if ref is None else self._catalog_resources.get(ref)
+                for ref in _qualified_source_refs(
+                    dataset.get("source") if isinstance(dataset, dict) else None
+                )
+            )
+        return dependencies
 
     def _load_managed_graph(self, semantic_dir: Path) -> None:
         """The managed route's multi-fact gate (issue #37/G5): the pinned
@@ -872,9 +916,7 @@ class QueryRuntime:
             # current guidance (needs-revalidation, history disclosed).
             confirmations=(self._managed or {}).get("confirmed_mappings"),
             evidence_max_age_hours=(
-                authoring_inputs.project_inspection_limits(self._project)[
-                    "receipt_max_age_hours"
-                ]
+                authoring_inputs.project_inspection_limits(self._project)["receipt_max_age_hours"]
                 if self._project is not None
                 else None
             ),
@@ -883,6 +925,28 @@ class QueryRuntime:
             # the resolved terms identify the admitted revision they came from
             result["admission"] = self._admission_view(self._managed)
         return result
+
+
+def _qualified_source_refs(source: object) -> list[str | None]:
+    """The QUALIFIED table references of one dataset source (spec 0013 §4,
+    issue #53): a bare dotted identifier path is itself; a SELECT keeps every
+    FROM/JOIN target WITH its qualification (a CTE or otherwise unresolvable
+    name stays what it is and fails the exact catalog match — unknown
+    dependency identity, never a stripped-name guess). An absent or
+    unparseable source yields ``None``."""
+    if not isinstance(source, str) or not source.strip():
+        return [None]
+    text = source.strip()
+    if _IDENTIFIER_PATH_RE.fullmatch(text):
+        return [text]
+    try:
+        tree = sqlglot.parse_one(text)
+    except Exception:  # unparseable: the compile gate owns the real error
+        return [None]
+    refs: list[str | None] = [
+        ".".join(part.name for part in table.parts) for table in tree.find_all(exp.Table)
+    ]
+    return refs or [None]
 
 
 def _normalize_definition(definition: dict) -> dict:
