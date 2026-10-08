@@ -650,9 +650,7 @@ def _model_index(staging: Path) -> tuple[dict[str, dict], bool]:
                 if not name:
                     continue
                 block = metric.get("expression")
-                dialects = (block.get("dialects") if isinstance(block, dict) else None) or [
-                    {}
-                ]
+                dialects = (block.get("dialects") if isinstance(block, dict) else None) or [{}]
                 lead = dialects[0]
                 if not isinstance(lead, dict):
                     all_parsed = False
@@ -1063,9 +1061,7 @@ def _table_body(
     authored_chunks = [
         (heading, lines) for heading, lines in chunks if heading not in _CORE_SECTIONS
     ]
-    has_authored = any(
-        line.strip() for _heading, lines in authored_chunks for line in lines
-    )
+    has_authored = any(line.strip() for _heading, lines in authored_chunks for line in lines)
     if not has_authored:  # a page refresh never saw: seed the authored scaffold
         authored_chunks = [
             (
@@ -1193,9 +1189,7 @@ def _history_entries(flags: dict, observed_at: str, retained: dict[str, str]) ->
     sorted by column, quoting the retained authored meaning when one exists."""
     entries: list[str] = []
     for column in sorted(flags["removed"]):
-        was = next(
-            (c["type"] for c in flags.get("_old_schema", []) if c["column"] == column), None
-        )
+        was = next((c["type"] for c in flags.get("_old_schema", []) if c["column"] == column), None)
         note = f"`{column}` removed" + (f" (was {was})" if was else "")
         if column in retained:
             note += f"; retained meaning: {retained[column]}"
@@ -1547,25 +1541,19 @@ def validate_inspection_candidate(candidate: object) -> dict:
         if prefix_lookup is not None:
             if not isinstance(prefix_lookup, dict) or set(prefix_lookup) != _PREFIX_LOOKUP_KEYS:
                 raise ValueError(
-                    "candidate prefix_lookup must be exactly "
-                    "{asset, key_fields, prefix_field}"
+                    "candidate prefix_lookup must be exactly {asset, key_fields, prefix_field}"
                 )
-            prefix_lookup, lookup_bindings = _lookup_asset(
-                prefix_lookup, "candidate prefix_lookup"
-            )
+            prefix_lookup, lookup_bindings = _lookup_asset(prefix_lookup, "candidate prefix_lookup")
             if len(lookup_bindings["key_fields"]) > len(left):
                 raise ValueError(
-                    "candidate prefix_lookup key_fields outnumber the left "
-                    "components they identify"
+                    "candidate prefix_lookup key_fields outnumber the left components they identify"
                 )
             binding_count += lookup_bindings["count"]
             assets.add(prefix_lookup["asset"])
     else:  # lookup
         lookup = candidate.get("lookup")
         if not isinstance(lookup, dict) or set(lookup) != _LOOKUP_KEYS:
-            raise ValueError(
-                "candidate lookup must be exactly {asset, key_fields, value_fields}"
-            )
+            raise ValueError("candidate lookup must be exactly {asset, key_fields, value_fields}")
         lookup, lookup_bindings = _lookup_asset(lookup, "candidate lookup")
         if len(left) != len(lookup["key_fields"]):
             raise ValueError(
@@ -1738,9 +1726,7 @@ def _reference_extension_errors(rel: str, meta: dict) -> list[str]:
         errors.append(f"{rel}: the ariadne extension carries unsupported field(s) {unknown}")
     role = extension.get("reference_role")
     if role not in REFERENCE_ROLES:
-        errors.append(
-            f"{rel}: reference_role must be one of {list(REFERENCE_ROLES)}, got {role!r}"
-        )
+        errors.append(f"{rel}: reference_role must be one of {list(REFERENCE_ROLES)}, got {role!r}")
     if meta.get("aliases") is not None:  # page aliases are optional (the
         # concept may have none — only their FORM is validated)
         errors.extend(_aliases_errors(f"{rel}: page", meta.get("aliases")))
@@ -1846,9 +1832,7 @@ def _reference_extension_errors(rel: str, meta: dict) -> list[str]:
                 )
         claim = mapping.get("claim")
         if claim not in MAPPING_CLAIMS:
-            errors.append(
-                f"{where} claim must be one of {list(MAPPING_CLAIMS)}, got {claim!r}"
-            )
+            errors.append(f"{where} claim must be one of {list(MAPPING_CLAIMS)}, got {claim!r}")
         source_ids = mapping.get("source_ids")
         if not isinstance(source_ids, list) or not all(
             isinstance(source_id, str) and source_id for source_id in source_ids
@@ -1949,9 +1933,7 @@ def _endpoint_correspondence(representation: object) -> dict | None:
     )
     return {
         "fields": fields,
-        "scope": [
-            {"resource": resource, "column": column} for resource, column in scope
-        ],
+        "scope": [{"resource": resource, "column": column} for resource, column in scope],
     }
 
 
@@ -2009,9 +1991,7 @@ def evidence_freshness(observed_at: object, max_age_hours: float | None) -> dict
     if max_age_hours is None:
         return {"state": "unknown", "observed_at": observed_at, "max_age_hours": None}
     try:
-        observed = (
-            datetime.fromisoformat(observed_at) if isinstance(observed_at, str) else None
-        )
+        observed = datetime.fromisoformat(observed_at) if isinstance(observed_at, str) else None
         if observed is None:
             raise ValueError(observed_at)
         age = datetime.now(UTC) - observed
@@ -2050,9 +2030,7 @@ def _evidence_views(
                 "designation": summary.get("designation"),
                 "outcome": summary.get("outcome"),
                 "mismatch_count": summary.get("mismatch_count"),
-                "freshness": evidence_freshness(
-                    summary.get("observed_at"), max_age_hours
-                ),
+                "freshness": evidence_freshness(summary.get("observed_at"), max_age_hours),
             }
         )
     return views
@@ -2089,9 +2067,7 @@ def _confirmation_matches(
         for receipt in entry.get("receipts") or []
         if isinstance(receipt, dict) and receipt.get("digest") is not None
     )
-    current = sorted(
-        str(view["digest"]) for view in evidence if view.get("digest") is not None
-    )
+    current = sorted(str(view["digest"]) for view in evidence if view.get("digest") is not None)
     return recorded == current
 
 
@@ -2161,8 +2137,7 @@ def _mapping_views(
                     "stale"
                     if any(item["freshness"]["state"] == "stale" for item in evidence)
                     else "as_of"
-                    if evidence
-                    and all(item["freshness"]["state"] == "as_of" for item in evidence)
+                    if evidence and all(item["freshness"]["state"] == "as_of" for item in evidence)
                     else "unknown"
                 )
             },
@@ -2455,12 +2430,8 @@ def _page_matches(
                     {
                         "id": representation.get("id"),
                         "aliases": list(representation.get("aliases") or []),
-                        "fields": [
-                            dict(binding) for binding in representation.get("fields") or []
-                        ],
-                        "scope": [
-                            dict(binding) for binding in representation.get("scope") or []
-                        ],
+                        "fields": [dict(binding) for binding in representation.get("fields") or []],
+                        "scope": [dict(binding) for binding in representation.get("scope") or []],
                     }
                     for representation in representations
                 ],
@@ -2505,8 +2476,7 @@ def _disclosed_entry(entry: dict, budget: int) -> dict:
             return [cap(item, f"{path}[{index}]") for index, item in enumerate(node)]
         if isinstance(node, dict):
             return {
-                key: cap(value, f"{path}.{key}" if path else key)
-                for key, value in node.items()
+                key: cap(value, f"{path}.{key}" if path else key) for key, value in node.items()
             }
         return node
 
@@ -2529,9 +2499,7 @@ def _disclosed_entry(entry: dict, budget: int) -> dict:
     return bounded
 
 
-def _resolve_response_parts(
-    matches: list[dict], *, limit: int, max_bytes: int
-) -> list[list[dict]]:
+def _resolve_response_parts(matches: list[dict], *, limit: int, max_bytes: int) -> list[list[dict]]:
     """Deterministic response parts honoring BOTH bounds: at most ``limit``
     matches per part AND at most ``max_bytes`` serialized bytes per part (plan
     §2's 64 KiB ceiling). A part stops before exceeding the byte budget; an
@@ -2665,9 +2633,7 @@ def resolve_term(
                 )
             )
     total = len(matches)
-    response_parts = _resolve_response_parts(
-        matches, limit=limit, max_bytes=RESOLVE_TERM_MAX_BYTES
-    )
+    response_parts = _resolve_response_parts(matches, limit=limit, max_bytes=RESOLVE_TERM_MAX_BYTES)
     parts = len(response_parts)
     exhausted = part > parts
     returned = [] if exhausted else response_parts[part - 1]
@@ -2699,9 +2665,7 @@ def build_dataset_page(
     except yaml.YAMLError:
         existing_meta = {}
     existing_ariadne = existing_meta.get("ariadne") if isinstance(existing_meta, dict) else None
-    old_tables = (
-        existing_ariadne.get("tables") if isinstance(existing_ariadne, dict) else None
-    )
+    old_tables = existing_ariadne.get("tables") if isinstance(existing_ariadne, dict) else None
     old_tables = old_tables if isinstance(old_tables, list) else []
     linked = [table["resource"] for table in tables]
     flags = {

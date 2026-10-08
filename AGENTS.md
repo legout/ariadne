@@ -1,7 +1,7 @@
 <!-- pi-implementation-orchestrator:start -->
 ## Agent workflow
 
-- Every validation unit receives one test obligation: `new-test`, `existing-check`, or `no-new-test`; related tasks may share a validation unit, and focused TDD is required only for `new-test` work.
+- Every validation unit receives one test obligation: `new-test`, `existing-check`, or `no-new-test`; related tasks may share a validation unit. `new-test` means one focused test at the cheapest stable public seam with expected values derived independently of the implementation under test (spec, acceptance criteria, or another oracle); failing-test-first applies only to bug repros and behavior pinning before refactors. Prefer the cheapest stable check that satisfies the obligation — types/lint/build, then an existing focused check, then a new focused test.
 - Review is adaptive and orchestrator-owned: low-risk work uses parent diff inspection; normal-risk work gets one candidate review; high-risk or dependency-defining work gets immediate plus candidate review.
 - Plans and tickets reference exact feature sources; this file defines stable repository-wide scope.
 - Scoped authority: glossaries own terminology; ADRs own accepted architectural constraints; specifications own behavior; plans/tickets own execution decomposition. No scope silently overrides another; reconcile owner decisions into the affected artifacts before dependent work proceeds.
@@ -13,18 +13,19 @@
 - Findings need a named requirement or written rule, a problem this change caused or worsened, reachability through real callers/inputs/environment, material impact, and a proportionate response.
 - Security requires a touched boundary (untrusted/external input, credentials, auth, dependency changes), named asset, realistic attacker, and actual attack path. Stories needing stolen secrets, broken TLS, malicious admins, or generic hardening are not findings. No boundary touched: `security: n/a`; missing security facts: `unverified`, never invent a threat model. Trusted internal callers and the user's own local files are not hostile by default.
 - Test requests are findings: name a real scenario or drop them. Coverage percentage is not a reason.
+- Generated tests are findings when they mirror the implementation's structure, over-mock, relax assertions to force green, or hardcode expectations copied from implementation output; expected values come from the spec, acceptance criteria, or an independent oracle — never from reading the code under test.
 - Disposition before repair: parent rejects failed gates in one line, authorizes small in-scope fixes, or hands large/out-of-scope fixes to the human. Reviewers never start fixes or re-reviews.
 - Reviews end when criteria, real risks, and written rules are covered: `pass or fix-first`, then stop. One fix pass, one delta recheck; unresolved findings go to the human, never round three. Candidate review checks integration effects, not settled findings again.
 - Paste the full reviewer contract from `orchestrate-implementation` into every fresh reviewer prompt, with criteria, conventions, and real-use context; file links alone do not deliver it.
-- After each task: restate it, compare the result, choose `accept / fix / hand back / ask`. Extra ideas get one line, not code. Smallest safe change; one behavior and, for `new-test`, one failing test first. Dependencies and abstractions need a job today. No extra ledgers or sign-off artifacts.
+- After each task: restate it, compare the result, choose `accept / fix / hand back / ask`. Extra ideas get one line, not code. Smallest safe change; one behavior and, for `new-test`, one focused test with independently derived expectations — failing-first only for bug repros and refactor pinning. Dependencies and abstractions need a job today. No extra ledgers or sign-off artifacts.
 
 ### Routing and authority
 
 - Read `project/agents/artifacts.md` for the project artifact mapping and load the `planning-contract` skill for artifact classification and planning handoffs; read `project/agents/issue-tracker.md` and `project/agents/domain.md` when their scope applies. Preserve established project conventions.
 - Use `shape-design` for unresolved behavior/design choices, `write-implementation-plan` for approved multi-step work, and `orchestrate-implementation` to execute approved work. Do not turn a trivial edit into a planning exercise.
 - Default orchestrated execution to `supervised`: builtin `worker` may implement and validate, but candidate assembly, integration, and publication retain explicit approval gates.
-- Route implementation to builtin `worker` and, when required by the selected policy, independent review to a fresh read-only builtin `reviewer`; confirm both are executable before dispatch and record the resolved names in the run manifest.
-- Keep one writer per worktree. Use `pi-subagents` for spawned-child lifecycle; named persistent `pi-intercom` peers are read-only advisors, not implementation or review agents.
+- Route implementation to builtin `worker` and, when required by the selected policy, independent review to a fresh read-only builtin `reviewer` by default; confirm selected roles are executable before dispatch and record the resolved names in the run manifest. Explicit run/lane selections may instead use `herdr-pane` or `paseo`; record and preflight the selected backend.
+- Keep one writer per isolated worktree. Use `pi-subagents` for spawned-child lifecycle, `pi-intercom` for Herdr lane communication, and Paseo's supported tools/CLI for Paseo lanes. Named persistent peers remain read-only advisors.
 - Use `systematic-debugging` for unexpected failures and `verification-before-completion` before success claims; match evidence to the exact change and report skipped checks.
 - Use `merge-worktree` for target integration and `make-release` for releases. Local integration does not authorize pushing; opening a PR does not authorize merging; release or publication requires its own approved plan.
 - Stop on conflicting authoritative sources, unclear ownership, failed required gates, or missing required tooling. Never silently switch execution modes to bypass a blocker.
