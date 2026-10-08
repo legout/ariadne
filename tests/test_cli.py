@@ -543,6 +543,64 @@ def test_serve_main_startup_failure_not_masked_as_missing_mcp(tmp_path, monkeypa
     assert "error:" in err  # the runtime startup failure itself
 
 
+def test_query_records_cli_success_and_refusal_contract(served, tmp_path, capsys):
+    """Issue #57/S2 (spec 0014 §3): ``query-records`` takes the JSON record
+    request from stdin or --file under the existing legacy-root conventions —
+    one JSON success on stdout (governed: false, requested-top-N
+    completeness), or one bounded JSON error on stderr with a nonzero exit."""
+    served_dir, db = served
+    request = {
+        "dataset": "orders",
+        "fields": ["order_id", "status"],
+        "order": [{"field": "order_id"}],
+        "limit": 2,
+    }
+    code = cli(
+        ["query-records", "--served", str(served_dir), "--db", str(db)],
+        io.StringIO(json.dumps(request)),
+    )
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["governed"] is False
+    assert payload["result"]["scope"] == "requested_top_n"
+    assert payload["result"]["requested_limit"] == 2
+    assert len(payload["rows"]) == 2
+    assert [row["order_id"] for row in payload["rows"]] == sorted(
+        row["order_id"] for row in payload["rows"]
+    )
+    assert payload["result"]["has_more_matching"] is True  # the seeded demo orders
+    # the --file form reads the same request
+    capsys.readouterr()
+    request_file = tmp_path / "records-request.json"
+    request_file.write_text(json.dumps(request), encoding="utf-8")
+    code = cli(
+        [
+            "query-records",
+            "--file",
+            str(request_file),
+            "--served",
+            str(served_dir),
+            "--db",
+            str(db),
+        ],
+        io.StringIO(""),
+    )
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["rows"] == payload["rows"]
+    # a refusal keeps the §4 contract: one bounded JSON error, nonzero exit,
+    # no success value on stdout
+    code = cli(
+        ["query-records", "--served", str(served_dir), "--db", str(db)],
+        io.StringIO(json.dumps({**request, "dataset": "nope.x"})),
+    )
+    assert code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    error = json.loads(captured.err)
+    assert error["error"]["type"] == "PlannerError"
+    assert error["error"]["code"] == "unknown_dataset"
+
+
 def test_query_metrics_without_admission_errors_per_the_json_contract(served, tmp_path, capsys):
     """Issue #30: on a served root with no admission record (the legacy
     single-dataset layout), ``query-metrics`` keeps the §4 contract — exactly

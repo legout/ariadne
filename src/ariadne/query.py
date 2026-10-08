@@ -116,11 +116,14 @@ from ariadne.grain import check_grain_preserving
 # surface, and no call reaches execution without admission, planning, binding,
 # and the per-request live audits.
 from ariadne.planner import (  # pyright: ignore[reportMissingImports] — drift
+    TIMESTAMP_MARKER,
+    TIMESTAMP_REFUSAL_CODE,
     PlannerError,
     QueryPlan,
     _closure,
     plan_detail,
     plan_query,
+    plan_records,
 )
 
 # (the pyright ignore below: the analyzer may bind `ariadne` to a copy predating
@@ -167,7 +170,9 @@ INSTALL_HINT = (
 ROUTING_HINT = (
     "If no governed metric above answers your question, route it to the ad-hoc path: "
     "call list_datasets() to see the queryable tables, then define_metric(definition) "
-    "to compute the answer (compiled, executed read-only, auto-staged for human promotion)."
+    "to compute the answer (compiled, executed read-only, auto-staged for human promotion). "
+    "For bounded record selection over one known table (no aggregation, no staging), "
+    "call query_records(request) with {dataset, fields, order, limit?} — never raw SQL."
 )
 
 # K4 (issue #44, spec 0010 §6/§9): the SPECIFIC missing-catalog error every
@@ -1021,6 +1026,142 @@ class QueryRuntime:
             raise query_results.deadline_refusal(budget.seconds)
         return result
 
+    async def query_records(self, request: dict) -> dict:
+        """Bounded Ad-hoc Record Query (spec 0014 §3, issue #57/S2): a
+        requested top-N selection of records from ONE already-known catalog
+        dataset — strict known fields/request keys, AND-combined typed
+        predicates, one optional declared timestamp interpretation (the only
+        way the documented VARCHAR sorts as time), explicit NULLS LAST and the
+        selected-value tie tuple, and a same-execution lookahead indicator —
+        never a metric, never an admitted graph traversal, never caller SQL.
+        Every answer reports ``governed: false`` and truthful bounded
+        provenance; nothing is ever staged. The managed route keeps its
+        pinned-admission and approved-source rechecks (admission is a
+        provenance fact, not admission of this request); the legacy route
+        needs no graph admission. Compiled through the existing planner
+        ownership, the single-statement guard and the EXPLAIN bind, then the
+        shared S1 output safeguards bound the answer."""
+        if self._managed is not None:
+            # spec 0014 §3: managed projects retain pinned admission +
+            # approved-source rechecks; a stale pin or withdrawn approval
+            # refuses here, never a legacy fallback.
+            self._recheck_pinned()
+        budget = self._claim_operation_budget()
+        with self._phase(budget):
+            plan = plan_records(
+                self.catalog, request, self.con, row_ceiling=self._limits["max_rows"]
+            )
+            # Choke point shared with the EXPLAIN bind (spec §6): the planner's
+            # compiled output only, exactly one statement before any duckdb call.
+            assert_single_statement(plan.executed_sql)
+            self._execution.bind(plan.executed_sql)
+            try:
+                # the executed statement is the planner's compiled output and
+                # nothing else (spec §6)
+                bounded = self._collect(plan.executed_sql, budget)
+            except Exception as exc:
+                # the row-level timestamp interpretation refusal (spec 0014
+                # §3/§5): its fixed marker converts into the stable code —
+                # identifying field and interpretation, never a source value.
+                refusal = _timestamp_refusal(exc)
+                if refusal is not None:
+                    raise refusal from exc
+                raise
+        if budget.expired():  # no complete answer after expiry (spec 0014 §6)
+            raise query_results.deadline_refusal(budget.seconds)
+        # the TRAILING execution-only columns of the executed statement — the
+        # same-execution lookahead indicator and, when declared, the
+        # normalized timestamp instant that keeps the interpretation
+        # evaluated on every eligible row — are stripped POSITIONALLY from
+        # the collected dict rows (they keep the executed column order): the
+        # plan names its execution-only columns, so a physical column named
+        # like a helper is still an ordinary value column (fix pass 1,
+        # findings 2 and 3)
+        execution_only = plan.execution_only_columns
+        rows: list[dict] = []
+        tail: dict = {}
+        for raw in bounded.rows:
+            items = list(dict(raw).items())
+            tail = dict(items[-len(execution_only) :]) if execution_only else {}
+            rows.append(dict(items[: len(items) - len(execution_only)]))
+        # the lookahead indicator: one boolean on the last returned row of
+        # the SAME execution (the extra row's payload never transfers)
+        has_more = bool(tail.get(plan.has_more_column)) if rows else False
+        columns = bounded.columns[: len(bounded.columns) - len(execution_only)]
+        result = {
+            "dataset": plan.dataset,
+            "resource": plan.resource,
+            "fields": list(plan.fields),
+            "columns": columns,
+            "rows": rows,
+            "sql": plan.sql,  # the logical top-N selection (provenance)
+            # the ACTUAL compiled execution statement: the same selection
+            # wrapped in the execution-only lookahead guard
+            "executed_sql": plan.executed_sql,
+            "plan": {
+                "dataset": plan.dataset,
+                "resource": plan.resource,
+                "fields": list(plan.fields),
+                "filters": list(plan.filters),
+                "order": list(plan.order),
+                "tie_order": list(plan.tie_order),
+                "timestamp": plan.timestamp,
+                "limit": plan.limit,
+                "lookahead": (
+                    "has_more_matching comes from one LEAD existence indicator "
+                    "in the same execution; no lookahead payload cells, no "
+                    "second query, no COUNT"
+                ),
+                "guards": (
+                    "execution-only row/cell/byte/deadline guards bound the "
+                    "executed statement (spec 0014 §4); the logical sql is "
+                    "provenance, executed_sql is what actually ran"
+                ),
+            },
+            "governed": False,  # every Ad-hoc Record Query, even on admitted sources
+            "provenance": self._record_provenance(),
+            "result": {
+                "status": "complete",
+                "complete": True,
+                "scope": "requested_top_n",
+                "requested_limit": plan.limit,
+                "returned_rows": len(rows),
+                "has_more_matching": has_more,
+            },
+        }
+        query_results.account_rows(self._limits, result, rows)
+        query_results.finalize_response(self._limits, result, response_measure=self._measure)
+        if budget.expired():  # the last check before return
+            raise query_results.deadline_refusal(budget.seconds)
+        return result
+
+    def _record_provenance(self) -> dict:
+        """The record answer's truthful provenance (spec 0014 §3): the actual
+        route and artifact identity when established — the managed route's
+        pinned admission view — otherwise the unversioned/as-of disclosure;
+        legacy host configuration is never called Git Review Admission."""
+        if self._managed is not None:
+            return {
+                "route": "managed-pinned-admission",
+                "admission": self._admission_view(self._managed),
+                "disclosure": (
+                    "source admission is a provenance fact, not admission of "
+                    "this requested record definition; the admission revision "
+                    "and artifact digest identify the admitted registry/models/"
+                    "context artifacts, not the live source data — source data "
+                    "is unversioned/as-of unless an independent source snapshot "
+                    "identity is established"
+                ),
+            }
+        return {
+            "route": "legacy-local-sources" if self._qualified else "legacy-local-attach",
+            "admission": None,
+            "disclosure": (
+                "unversioned, as-of source data — legacy host configuration is "
+                "not Git Review Admission; no snapshot identity is established"
+            ),
+        }
+
     async def save_example(self, submission: dict) -> dict:
         """Issue #19 (spec 2026-09-29-0007, ADR-0015): stage one explicitly
         submitted answer example as a labeled ``status: draft`` OKF record
@@ -1222,6 +1363,20 @@ class QueryRuntime:
             # the resolved terms identify the admitted revision they came from
             result["admission"] = self._admission_view(self._managed)
         return result
+
+
+def _timestamp_refusal(exc: BaseException) -> QueryResultError | None:
+    """Convert the record plan's row-level timestamp interpretation marker
+    into the stable structured refusal (spec 0014 §5): the guarded SQL raises
+    the FIXED marker through DuckDB's ``error()`` — the refusal message
+    identifies the field and the declared interpretation, never the source
+    value. ``None`` for any other exception (those keep their established
+    behavior)."""
+    text = str(exc)
+    index = text.find(TIMESTAMP_MARKER)
+    if index < 0:
+        return None
+    return QueryResultError(TIMESTAMP_REFUSAL_CODE, text[index:])
 
 
 def _qualified_source_refs(source: object) -> list[str | None]:

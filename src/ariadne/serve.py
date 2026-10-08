@@ -152,6 +152,145 @@ HTTP_TOKEN_ENV = "ARIADNE_HTTP_TOKEN"
 # owner's separate approval and is deliberately not reachable from here.
 HTTP_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
+# Issue #57/S2 (spec 0014 §3/§7 V4-12): the explicit nested input schema of the
+# query_records tool — discovery-grade JSON Schema for the record request
+# contract (dataset/fields/filters/timestamp/order/limit with defaults,
+# supported operators and the overflow policy), so Analyst/Combined clients
+# can distinguish record selection from metric aggregation and admitted
+# detail before calling. The core's strict validation remains the gate: this
+# schema is documentation the adapter serves, not a transport filter.
+_QUERY_RECORDS_REQUEST_SCHEMA: dict = {
+    "type": "object",
+    "description": (
+        "One bounded record request (spec 0014 §3): a requested top-N selection "
+        "of records from one known catalog dataset — never SQL, never a metric. "
+        "Overflow policy: row/cell/byte/deadline guards refuse all-or-nothing "
+        "(spec 0014 §§4–5); narrow the request or selected fields to fit."
+    ),
+    "properties": {
+        "dataset": {
+            "type": "string",
+            "description": (
+                "One exact known catalog dataset as listed by list_datasets() "
+                "(or its canonical ariadne://table/ resource when a display name "
+                "is ambiguous). Resolved to the built catalog; never SQL text."
+            ),
+        },
+        "fields": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string"},
+            "description": (
+                "Known physical columns of the dataset; duplicates are removed "
+                "keeping the first occurrence. No *, expressions or traversal."
+            ),
+        },
+        "filters": {
+            "type": "array",
+            "description": "Optional AND-combined predicates.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "field": {"type": "string", "description": "A known column."},
+                    "op": {
+                        "type": "string",
+                        "enum": [
+                            "=",
+                            "!=",
+                            "<",
+                            "<=",
+                            ">",
+                            ">=",
+                            "in",
+                            "is_null",
+                            "is_not_null",
+                            "regex",
+                        ],
+                        "description": (
+                            "comparison/in/regex require a value; is_null/"
+                            "is_not_null take none. Strings are capped at 4,096 "
+                            "characters, IN lists at 100 values. Regex uses "
+                            "DuckDB's regexp_matches semantics (case-sensitive "
+                            "unless the pattern syntax says otherwise), always "
+                            "a literal."
+                        ),
+                    },
+                    "value": {
+                        "description": (
+                            "The predicate value (omit for is_null/is_not_null); "
+                            "a timestamp comparison on the declared timestamp "
+                            "field is interpreted under its declared clock."
+                        )
+                    },
+                },
+                "required": ["field", "op"],
+            },
+        },
+        "timestamp": {
+            "type": "object",
+            "description": (
+                "Optional typed normalization of ONE identified temporal field; "
+                "mandatory when ordering the documented VARCHAR as time. "
+                "Revision 1 supports exactly the %Y-%m-%d %H:%M:%S encoding: "
+                "wall times in the declared IANA timezone normalize to instants "
+                "(rows keep the original selected value); malformed, nonexistent "
+                "and ambiguous wall times refuse, never a fold/offset guess."
+            ),
+            "properties": {
+                "field": {"type": "string", "description": "The temporal column."},
+                "format": {
+                    "type": "string",
+                    "enum": ["%Y-%m-%d %H:%M:%S"],
+                    "description": "Revision 1's one documented encoding.",
+                },
+                "timezone": {
+                    "type": "string",
+                    "description": "IANA timezone name, e.g. Europe/Berlin.",
+                },
+            },
+            "required": ["field", "format", "timezone"],
+        },
+        "order": {
+            "type": "array",
+            "minItems": 1,
+            "description": (
+                "Required, nonempty; every key sorts NULLS LAST. Remaining "
+                "selected sortable columns follow in field-list order as the "
+                "disclosed deterministic tie order."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "field": {"type": "string", "description": "A known column."},
+                    "direction": {
+                        "type": "string",
+                        "enum": ["asc", "desc"],
+                        "default": "asc",
+                    },
+                },
+                "required": ["field"],
+            },
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 10,
+            "description": (
+                "The requested top-N; at most the effective host row ceiling. "
+                "Booleans are not integers."
+            ),
+        },
+    },
+    "required": ["dataset", "fields", "order"],
+    "additionalProperties": False,
+}
+_QUERY_RECORDS_INPUT_SCHEMA: dict = {
+    "type": "object",
+    "properties": {"request": _QUERY_RECORDS_REQUEST_SCHEMA},
+    "required": ["request"],
+}
+
 
 # ---- issue #56/S1 (spec 0014 §4–§5): the MCP adapter's actual-representation
 # preflight and structured tool refusal. The CORE never imports MCP; these
@@ -291,6 +430,9 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
     from mcp.server.fastmcp import (  # pyright: ignore[reportMissingImports, reportAttributeAccessIssue]
         FastMCP,  # mcp<2 (pinned) exports FastMCP; the 2.x shim renames it
     )
+    from mcp.server.fastmcp.tools import (  # pyright: ignore[reportMissingImports] — [mcp] extra
+        Tool,  # explicit tool registration (the query_records nested schema)
+    )
 
     app: FastMCP = FastMCP("ariadne")
 
@@ -387,7 +529,9 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             """List every table in the attached database with its columns and types.
 
             Pairs with define_metric: pick tables here, then define an ad-hoc metric
-            for any question no governed metric answers.
+            for any question no governed metric answers. For bounded record
+            selection over one table (no aggregation, no staging), pass the table
+            to query_records instead.
             """
             return await _runtime().list_datasets()
 
@@ -469,7 +613,9 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             """Project one declared root dataset's fields through safe
             many-to_one/one_to_one lookup paths — no aggregates, no fan-out: exactly
             one row per root key. Same contract as ``ariadne query-detail``, over the
-            same admitted graph (an unadmitted graph refuses).
+            same admitted graph (an unadmitted graph refuses). For bounded record
+            selection over one physical table with no aggregation or admission
+            requirement, use query_records instead.
 
             Args:
                 request: {dataset: the root dataset name, fields: [field names]} — a
@@ -490,6 +636,58 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 if bounded is not None:
                     return bounded
                 raise
+
+        async def _query_records(request: dict) -> dict:
+            """Select a bounded top-N of records from ONE known catalog table —
+            an Ad-hoc Record Query (spec 0014 §3): no aggregation, no admitted
+            graph, no staging, and every answer reports governed: false with
+            truthful bounded provenance. Use query_metrics for governed metric
+            aggregation over the admitted graph, query_detail for an admitted
+            root-dataset projection through proven lookup paths. This tool's
+            description prose never becomes WHERE/ORDER/LIMIT — the request
+            contract below is the only filter surface.
+
+            Args:
+                request: the record request — dataset (one exact known catalog
+                    dataset or its canonical ariadne://table/ resource, never SQL),
+                    fields (nonempty known physical columns, no * or expressions),
+                    optional filters (AND-combined: =, !=, <, <=, >, >=, in, is_null,
+                    is_not_null, regex — comparison/in/regex need a value, strings
+                    capped at 4,096 characters, IN at 100 values), optional
+                    timestamp (one declared field's wall-time interpretation: the
+                    documented %Y-%m-%d %H:%M:%S encoding plus an IANA timezone;
+                    malformed, nonexistent and ambiguous values refuse), required
+                    order (nonempty known columns, asc/desc default asc, every key
+                    NULLS LAST, remaining selected columns appended as the
+                    disclosed deterministic tie order), optional limit (default 10,
+                    positive integer, at most 1,000 and the host row ceiling).
+                    Overflow policy: row/cell/byte/deadline guards refuse the
+                    whole answer all-or-nothing rather than returning a partial
+                    prefix (spec 0014 §§4–5); narrow the request to fit.
+            """
+            try:
+                runtime = _runtime()
+                return await runtime.query_records(request)
+            except QueryResultError as exc:  # spec 0014 §5: isError + refusal
+                return _refusal(exc)
+            except Exception as exc:  # fix pass 1, finding 2c: fitting errors keep
+                bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
+                    "query_records",
+                    exc,
+                    _tool_mcp_budget(),  # oversized representation is replaced
+                )
+                if bounded is not None:
+                    return bounded
+                raise
+
+        # Explicit discoverable nested request schema (spec 0014 §7 V4-12): the
+        # docstring gives prose; this JSON Schema is what clients enumerate —
+        # discovery-only. The tool keeps a plain dict parameter so transport
+        # typing never coerces invalid numeric/boolean values or drops unknown
+        # keys before the core's strict validation (spec 0014 §3).
+        record_tool = Tool.from_function(_query_records, name="query_records")
+        record_tool.parameters = _QUERY_RECORDS_INPUT_SCHEMA
+        app._tool_manager._tools["query_records"] = record_tool  # mcp 1.30.0 manager seam
 
         # --- the two answer-example tools (issue #21, spec 2026-09-29-0007) ---
         # Thin adapters over the runtime's transport-neutral save/search (issue
