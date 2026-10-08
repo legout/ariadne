@@ -8,6 +8,7 @@
 | **Scope** | Correct freshness interpretation; additive shared Context signals and dependency warnings; brief relevant answer caveats; precise attestation terminology. |
 | **Sources** | [Research](../research/2026-10-06-okf-v02-trust-signals.md), [schema/terminology specification 0010](2026-10-02-0010-context-layer-schema-and-identifiers.md), [modular-core/Git specification 0009](2026-10-02-0009-modular-core-git-authoring.md), [Context retrieval](2026-09-23-0002-context-retrieval.md), [context-carrying answers](mvp-vertical-slice.md), [ADR-0007](../adr/0007-okf-bundle-structure-agent-generation.md), [ADR-0011](../adr/0011-context-carrying-answers-and-skill.md), [ADR-0016](../adr/0016-modular-core-git-authoring.md), [ADR-0017](../adr/0017-context-schema-and-identifier-knowledge.md), [vocabulary](../../CONTEXT.md). |
 | **Contract** | planning-contract v1; installed skill provenance unknown. |
+| **Later output-budget reconciliation** | Owner-approved design [0014, revision 1](2026-10-08-0014-bounded-record-queries-and-results.md), 2026-10-08: fitting results retain full required context and advisory signals. A complete query response exceeding the shared output budget refuses instead of dropping Policies or warnings. This is a representation-size refusal, not lifecycle-based enforcement; warning interpretation, arithmetic, consumed dependencies and admission remain unchanged. No existing task or permission scope is expanded. |
 
 ## 1. Purpose and boundaries
 

@@ -110,8 +110,12 @@ _Avoid_: hints file
 An agent-drafted, one-shot metric: validated by the deterministic compile gate and executed read-only, but not admitted. Queryable now, canonical never, until human admission.
 _Avoid_: dynamic metric, on-the-fly metric
 
+**Ad-hoc Record Query**:
+A bounded selection of records from a known project dataset, validated and executed read-only but not admitted as a governed definition. It is not a metric and produces no Proposal.
+_Avoid_: ad-hoc metric, governed detail query, raw SQL
+
 **Proposal**:
-An auto-staged Ad-hoc Metric definition awaiting human promotion; successful questions leave their definitions in `staging/` as candidates for the catalog.
+An auto-staged Ad-hoc Metric definition awaiting human promotion; successful Ad-hoc Metric answers leave candidates for the catalog, unlike Ad-hoc Record Queries or output-refused computations.
 _Avoid_: draft, candidate file
 
 **Answer Example**:
