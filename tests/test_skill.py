@@ -105,6 +105,37 @@ def test_skill_separates_managed_project_queries_from_legacy_roots():
     assert "local Promotion only" not in querying  # the exclusive claim is gone
 
 
+def test_skill_routes_record_questions_to_the_separate_operation():
+    """Issue #58/S3 (spec 0014 §7 V4 items 11 and 13, §8): the packaged skill
+    routes record questions — the bounded latest-N of ONE known table, no
+    aggregation — to the separate `query-records` operation rather than
+    define-metric, teaches its default/bounds, truthful requested-top-N
+    completeness, no staging and narrowing after an all-or-nothing refusal,
+    and requires hosts without the record operation to report the question
+    unsupported instead of silently aggregating records."""
+    skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
+    querying = skill[: skill.index("## Answer examples")]  # the default workflow
+    normalized = " ".join(querying.split())  # line-wrapped prose compares normalized
+    assert "ariadne query-records" in normalized  # the separate operation is taught
+    # record selection is distinguished from metric aggregation, both ways
+    assert "never a metric" in normalized
+    assert "do not invent an aggregation to retrieve records" in normalized
+    # default/bounds of the request contract
+    assert "defaults to 10" in normalized and "1,000" in normalized
+    # truthful completeness: the requested top-N, never the full population
+    assert "REQUESTED TOP-N" in normalized
+    assert "has_more_matching" in normalized
+    # never staged, always ungoverned — even on an admitted source
+    assert "NEVER" in normalized and "stages a proposal" in normalized
+    # narrowing after an all-or-nothing refusal, never a widened limit
+    assert "ALL-OR-NOTHING" in normalized and "narrow the request" in normalized
+    # hosts without the operation report unsupported, never aggregate silently
+    assert "unsupported" in normalized
+    assert "never silently aggregate" in normalized
+    # the optional registration list carries the record tool too
+    assert "`query_records`" in skill
+
+
 def test_path_prints_packaged_dir(project, capsys):
     assert main(["path"]) == 0
     assert capsys.readouterr().out.strip() == str(ASSETS)

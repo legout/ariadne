@@ -76,13 +76,43 @@ pass `--project .` instead. Never start a server just to answer a question.
    or hand-edited graph refuses with that reason; never call them governed
    by another route, and never present a validated-but-unadmitted graph as
    governed.
-6. **Unmodeled question?** `ariadne list-datasets --sources ariadne.yaml`,
+6. **Record questions — the separate operation.** A question that asks for
+   records themselves — the latest N rows of ONE known table, no aggregation
+   collapsing rows away — is an Ad-hoc Record Query, never a metric: `ariadne
+   query-records --file req.json` (stdin when `--file` is absent; the same
+   route options as the commands above). The request selects from exactly one
+   catalog dataset (`list-datasets` shows them): `{"dataset": "shop.orders",
+   "fields": ["...known physical columns..."],
+   "filters": [{"field": "state", "op": "=", "value": "OK"}],
+   "timestamp": {"field": "event_time", "format": "%Y-%m-%d %H:%M:%S",
+   "timezone": "Europe/Berlin"}, "order": [{"field": "event_time",
+   "direction": "desc"}], "limit": 10}`. Filters AND-combine (`=`, `!=`,
+   `<`, `<=`, `>`, `>=`, `in`, `is_null`, `is_not_null`, `regex`); a documented
+   VARCHAR time column sorts as time ONLY through the declared `timestamp`
+   interpretation; `order` is required (every key NULLS LAST, the remaining
+   selected columns break ties deterministically); `limit` defaults to 10 and
+   is capped at 1,000 and the host row ceiling. The answer returns the rows,
+   the compiled `sql` vs `executed_sql`, the plan and truthful provenance
+   (the actual route and artifact identity, else unversioned/as-of data) —
+   always `governed: false`, even on an admitted managed source, and it NEVER
+   stages a proposal. Completeness is truthful: `result.complete: true` means
+   the REQUESTED TOP-N, not the whole matching population —
+   `result.has_more_matching` says whether more rows match beyond it. Overflow
+   refuses ALL-OR-NOTHING with a stable code (`result_row_limit`,
+   `result_cell_limit`, `result_byte_limit`, `execution_deadline`,
+   `timestamp_interpretation`) and no rows: narrow the request or selected
+   fields and retry — never widen a limit, raise a ceiling or guess from a
+   retained fragment. A host whose toolset lacks the record operation reports
+   the question unsupported — never silently aggregate records through
+   `define-metric`.
+7. **Unmodeled question?** `ariadne list-datasets --sources ariadne.yaml`,
    then `ariadne define-metric --file def.json --sources ariadne.yaml` (or
    pipe the JSON definition via stdin when `--file` is absent). The definition
    runs read-only through the same compile gate, returns `governed: false`,
    and stages an OSI proposal plus an OKF draft under `staging/` for human
-   promotion.
-7. **Label answers accurately.** Governed numbers ship with their caveats and
+   promotion. A record question (item 6) is not an unmodeled metric question:
+   do not invent an aggregation to retrieve records.
+8. **Label answers accurately.** Governed numbers ship with their caveats and
    `governed: true`; ad-hoc numbers are `governed: false` proposals — label
    them as such, never as canonical. `query-metrics` responses are governed
    through human admission — legacy Promotion or Git Review Admission: name
@@ -410,7 +440,8 @@ toolsets over one core — pick the registration at launch:
 artifact-root project keeps `ariadne-serve --sources ariadne.yaml`),
 `--toolset analyst` (Query only: `list_metrics`, `search_context`,
 `get_metric`, `list_datasets`, `define_metric`, `query_metrics`,
-`query_detail`, `resolve_term`, `save_example`, `search_examples`), or
+`query_detail`, `query_records`, `resolve_term`, `save_example`,
+`search_examples`), or
 `--toolset authoring` (the Git proposal contract:
 `authoring_start_proposal`, `authoring_read_artifact`,
 `authoring_edit_proposal`, `authoring_propose_sources`,
