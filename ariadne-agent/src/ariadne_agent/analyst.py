@@ -141,14 +141,23 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
         "list_datasets": (
             "List every queryable table in the attached sources with its columns "
             "and types. Pairs with define_metric: pick tables here, then define "
-            "an ad-hoc metric for any question no governed metric answers."
+            "an ad-hoc metric for any question no governed metric answers. "
+            "Bounded RECORD selection (the latest N raw rows of one table, no "
+            "aggregation) is a separate operation this fixed toolset does not "
+            "expose — report such questions unsupported rather than aggregating "
+            "records away; ariadneai's CLI/MCP facade serves it as query_records."
         ),
         "define_metric": (
             "Define an ad-hoc metric for a question no governed metric answers: "
             "compiled, executed read-only, auto-staged for human promotion. The "
             "definition runs through the same compile/grain gate; success returns "
             "rows, the compiled SQL, governed: false, and the staging paths of "
-            "the auto-staged proposal. Joins must be grain-preserving."
+            "the auto-staged proposal. Joins must be grain-preserving. This is an "
+            "AGGREGATION tool: a bounded record request (the latest N raw rows of "
+            "one table) is not a metric definition, and this fixed toolset has no "
+            "record operation — report record questions unsupported instead of "
+            "silently aggregating them; ariadneai's CLI/MCP facade serves them as "
+            "query_records (governed: false, never staged)."
         ),
         "resolve_term": (
             "Resolve a shared business term or an exact {resource, column} field "

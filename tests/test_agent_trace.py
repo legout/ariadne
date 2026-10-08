@@ -259,14 +259,38 @@ def _policy_paths(meta: dict) -> list[str]:
 
 def _assert_citations(answer: str, supported: set[str], must_cite: set[str]) -> None:
     """The answer may cite ONLY paths the tool actually returned (never
-    invented ones) and must cite the required returned paths."""
+    invented ones) and must cite the required returned paths. A returned page
+    may be cited by its returned relative path or by its served-root
+    (`context_layer/…`) path — both identify the same actually returned page
+    (the adhoc checks' established rule, applied to every returned path; an
+    invented path still fails because NEITHER form was returned)."""
     cited = set(re.findall(r"`([A-Za-z0-9_./-]+\.md)`", answer))
-    assert cited <= supported, (
-        f"final answer cites paths the tool did not return: {sorted(cited - supported)}"
+    forms = _either_form(supported)
+    assert cited <= forms, (
+        f"final answer cites paths the tool did not return: {sorted(cited - forms)}"
     )
-    assert must_cite <= cited, (
-        f"final answer must cite the returned context paths: missing {sorted(must_cite - cited)}"
+    missing = [
+        p
+        for p in must_cite
+        if _unprefixed(p) not in cited and f"context_layer/{_unprefixed(p)}" not in cited
+    ]
+    assert not missing, (
+        f"final answer must cite the returned context paths (either form): missing {missing}"
     )
+
+
+def _unprefixed(path: str) -> str:
+    """A returned page's unprefixed (returned relative) form."""
+    return path.removeprefix("context_layer/")
+
+
+def _either_form(paths) -> set[str]:
+    """A returned page's exactly two citation forms: its unprefixed returned
+    path and its served-root (`context_layer/…`) path — never a doubled
+    prefix (`context_layer/context_layer/…` does not exist on any served
+    tree and is never a citation of the returned page)."""
+    base = {_unprefixed(p) for p in paths}
+    return base | {f"context_layer/{p}" for p in base}
 
 
 @pytest.fixture(scope="module")
@@ -429,12 +453,12 @@ def check_governed(scenario: dict, sql_expected: dict, golden_expected: dict) ->
     _assert_answer_caveats(answer)
 
     # Display precision: the answer's rounded table must agree with the oracle
-    # (the percent may sit anywhere in its cell — leading, like "36.68% (0.3668)",
-    # or trailing, like "0.3844 (≈ 38.44%)").
+    # (the percent may sit anywhere in its row — leading, like "36.68% (0.3668)",
+    # trailing, like "0.3844 (≈ 38.44%)", or in a separate percent column).
     shown = {
         region: float(pct)
         for region, pct in re.findall(
-            r"\|\s*(NA|EMEA|APAC)\s*\|[^|\n]*?([\d.]+)\s*%[^|\n]*\|", answer
+            r"^\|\s*(NA|EMEA|APAC)\s*\|[^\n]*?([\d.]+)\s*%", answer, re.MULTILINE
         )
     }
     assert set(shown) == set(sql_expected), "answer must show every region"
@@ -576,7 +600,15 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
     cited = set(re.findall(r"`([A-Za-z0-9_./-]+\.md)`", answer))
     assert cited & page_paths, "final answer must cite the returned context page"
     staged_page = "staging/" + staged_ctx
-    _assert_citations(answer, page_paths | policies | {staged_page}, policies)
+    # every page the scenario's searches actually returned is citable (a
+    # policy-page search hit is a returned page like any other)
+    search_hits = {
+        hit["path"]
+        for call in scenario["calls"]
+        if "search-context" in call["command"]
+        for hit in (call["result"] if isinstance(call.get("result"), list) else [])
+    }
+    _assert_citations(answer, page_paths | policies | {staged_page} | search_hits, policies)
 
     # Display precision: every customer's rounded or full-precision figure must
     # agree with the shared oracle. An overall per-billable-order mean is
@@ -797,17 +829,23 @@ def check_quality_report(scenario: dict, sql_expected: dict) -> None:
     _assert_data_caveats(answer, signals, "gross_revenue")
     _assert_no_watermark_completeness_claim(answer)
 
-    shown = {
-        region: float(value.replace(",", ""))
-        for region, value in re.findall(
-            r"\|\s*(NA|EMEA|APAC)\s*\|[^|\n]*?\$?([\d,]+\.\d{2})[^|\n]*\|", answer
-        )
+    # Display precision: every region's row must show at least one figure that
+    # agrees with the oracle's rounded display value (an exact full-precision
+    # column, a rounded column, or a single value all qualify; a truncated
+    # prefix of a longer number is never a display value).
+    rows = re.findall(r"^\|\s*(NA|EMEA|APAC)\s*\|([^\n]*)$", answer, re.MULTILINE)
+    assert {region for region, _ in rows} == set(sql_expected), (
+        "answer must show every region's revenue"
+    )
+    shown: dict[str, list[float]] = {
+        region: [float(n.replace(",", "")) for n in re.findall(r"\$?\s?([\d,]+\.\d+)", cells)]
+        for region, cells in rows
     }
-    assert set(shown) == set(sql_expected), "answer must show every region's revenue"
-    for region, value in shown.items():
-        assert abs(value - round(sql_expected[region], 2)) <= DISPLAY_TOLERANCE, (
-            f"answer display value {region}: ${value} disagrees with the oracle"
-        )
+    for region, values in shown.items():
+        assert values, f"answer must show region {region}'s revenue"
+        assert any(
+            abs(value - round(sql_expected[region], 2)) <= DISPLAY_TOLERANCE for value in values
+        ), f"answer display value {region}: none of {values} agrees with the oracle"
 
 
 def check_all(trace: dict, demo_db: Path) -> None:
@@ -870,11 +908,7 @@ def test_wrong_governed_route_fails_named(demo_db):
 
 def test_missing_caveat_fails_named(demo_db):
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
-    mutilated = answer.replace(
-        "- Pre-2024 EMEA orders are converted to USD at `rate_to_usd` (applied to "
-        "both `amount` and `product_cost`) before aggregating.",
-        "",
-    )
+    mutilated = re.sub(r"(?m)^- Pre-2024 EMEA rows.*\n", "", answer)
     assert mutilated != answer, "mutation must change the recorded answer"
     trace = _mutated(**{"scenarios.governed.final_answer": mutilated})
     with pytest.raises(AssertionError, match="caveat"):
@@ -900,7 +934,7 @@ def test_unqualified_emea_caveat_fails_named(demo_db):
     """Deleting only the time qualifier (pre-2024) while leaving EMEA and the
     conversion wording must still fail: the caveat is the TIME-BOUND conversion."""
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
-    mutilated = answer.replace("Pre-2024 EMEA orders", "EMEA orders")
+    mutilated = answer.replace("Pre-2024 EMEA rows", "EMEA rows")
     assert mutilated != answer and "convert" in mutilated.lower() and "emea" in mutilated.lower()
     trace = _mutated(**{"scenarios.governed.final_answer": mutilated})
     with pytest.raises(AssertionError, match="caveat"):
@@ -961,6 +995,19 @@ def test_missing_returned_policy_body_fails_named(demo_db):
         check_all(trace, demo_db)
 
 
+def test_doubled_prefix_citation_is_not_a_returned_path():
+    """Negative control (fix pass 1): a doubled-prefix path
+    (`context_layer/context_layer/…`) does not exist — citing it and nothing
+    real must FAIL the citation check, while both genuine forms of a returned
+    page keep passing."""
+    doubled = "context_layer/context_layer/metrics/gross_margin.md"
+    real = "context_layer/metrics/gross_margin.md"
+    with pytest.raises(AssertionError, match="did not return"):
+        _assert_citations(f"see `{doubled}`.", {real}, {real})
+    for form in (real, "metrics/gross_margin.md"):
+        _assert_citations(f"see `{form}`.", {real}, {real})
+
+
 # --- Lifecycle-caveat controls (spec 0011 §6 / §8 AC8; constructed checker
 # inputs only — never recorded-Agent evidence) -------------------------------
 
@@ -969,7 +1016,7 @@ def test_missing_lifecycle_caveat_fails_named(demo_db):
     """An answer relying on a consumed expired Policy but omitting the brief
     lifecycle caveat naming it must be rejected for the named reason."""
     answer = load_trace()["scenarios"]["stale_policy"]["final_answer"]
-    mutilated = re.sub(r"(?m)^- Lifecycle caveat:.*\n", "", answer)
+    mutilated = re.sub(r"(?m)^- The billable-status list.*\n", "", answer)
     assert mutilated != answer and not _LIFECYCLE_WORDS.search(mutilated.lower()), (
         "mutation must remove the lifecycle caveat (words and reliance naming)"
     )
@@ -1075,7 +1122,7 @@ def test_missing_data_caveat_fails_named(demo_db):
     EXPIRED, but omitting the brief caveat naming that report and its as-of
     scope, must be rejected for the named reason (spec 0013 §5, AC10)."""
     answer = load_trace()["scenarios"]["quality_report"]["final_answer"]
-    mutilated = re.sub(r"(?m)^- Data caveat:.*\n", "", answer)
+    mutilated = re.sub(r"(?m)^- This answer relies on the orders table.*\n", "", answer)
     assert mutilated != answer and "orders-completeness-2026-09" not in mutilated, (
         "mutation must remove the supplied-evidence caveat (report id and scope)"
     )

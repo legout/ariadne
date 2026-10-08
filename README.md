@@ -199,8 +199,8 @@ the same local stdio server exposes the role toolsets over one core — pick the
 registration at launch: `python -m ariadne.serve --project DIR` (combined,
 the default), `--toolset analyst` (the query tools `list_metrics`,
 `search_context`, `get_metric`, `list_datasets`, `define_metric`,
-`query_metrics`, `query_detail`, `resolve_term`, `save_example`,
-`search_examples`), or `--toolset authoring` (the Git proposal contract:
+`query_metrics`, `query_detail`, `query_records`, `resolve_term`,
+`save_example`, `search_examples`), or `--toolset authoring` (the Git proposal contract:
 `authoring_start_proposal`, `authoring_read_artifact`,
 `authoring_edit_proposal`, `authoring_propose_sources`, `authoring_inputs`,
 `authoring_upload_document` for bounded ≤5 MiB uploads,
@@ -257,6 +257,7 @@ MCP registers the same operations as tools when the `mcp` extra is installed.
 | `ariadne search-context QUERY` | Look up business rules, policies, and table caveats before answering |
 | `ariadne resolve-term TERM` | Resolve shared business terms and identifier knowledge (representations, exact field bindings, scope, ambiguity, claim/confirmation status) against the admitted context — read-only guidance, never join authority |
 | `ariadne list-datasets` | See every table across all registered sources |
+| `ariadne query-records` | Bounded record selection from one known table — the latest N rows, no aggregation: explicit filters/order/timestamp contract, `governed: false`, never staged, truthful requested-top-N completeness, and all-or-nothing overflow refusals with narrowing guidance |
 | `ariadne define-metric` | Answer an unmodeled question: draft a metric (JSON via `--file` or stdin), pass the safety checks, run it read-only, label it `governed: false`, and auto-stage it as a proposal |
 | `ariadne search-examples QUERY` | Find explicitly saved answer examples — labeled references (draft/stable, staleness, provenance) for checking a method, never cached answers; never executes a query |
 | `ariadne save-example` | Save one answer example after the user explicitly confirms the bounded record (question, interpretation, method, result excerpt, self-declared attestation); stages a draft under `staging/answer_examples/` for operator review |
