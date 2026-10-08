@@ -65,13 +65,13 @@ install hint.
 import json
 import re
 import sys
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-from sqlglot import exp  # pyright: ignore[reportMissingImports]
+from sqlglot.optimizer.scope import Scope, build_scope  # pyright: ignore[reportMissingImports]
 
 # Issue #19 (ADR-0015, spec 2026-09-29-0007): the answer-example store is a
 # separate transport-neutral module — the runtime only contributes its selected
@@ -114,6 +114,8 @@ from ariadne.grain import check_grain_preserving
 # and the per-request live audits.
 from ariadne.planner import (  # pyright: ignore[reportMissingImports] — drift
     PlannerError,
+    QueryPlan,
+    _closure,
     plan_detail,
     plan_query,
 )
@@ -469,18 +471,67 @@ class QueryRuntime:
             # caveats (spec §5: governed answers identify the admitted revision
             # and route) — legacy responses keep their exact shape.
             result["admission"] = self._admission_view(self._managed)
-        # Issue #53 (spec 0013 §4): the additive advisory source-quality view.
-        # Identity comes from the executed query's direct dataset dependencies
-        # matched EXACTLY against the built catalog; the shared reader is pure
-        # and never fails or changes the governed result above.
+        # Issue #53/#54 (spec 0013 §4): the additive advisory source-quality
+        # view. Identity comes from the executed query's direct dataset
+        # dependencies matched EXACTLY against the built catalog; the shared
+        # reader is pure and never fails or changes the governed result above.
+        # The requested range is the runtime's own mechanical period fact
+        # (issue #54 W1 fix3): an inclusive [start, end] render range becomes
+        # the exclusive instant span — render predicates the inner aggregate,
+        # so consumed == requested here — and period correspondence is only
+        # assessed for a report whose period field IS the model's ``is_time``
+        # field, the one field the range predicates.
         result["data_signals"] = data_signals(
-            self.context_dir, {name: self._direct_table_dependencies(name)}
+            self.context_dir,
+            {name: self._direct_table_dependencies(name)},
+            requested_period=_requested_period(range, inclusive_end=True),
+            period_fields=self._model_time_fields(name),
         )
         return result
 
+    def _model_time_fields(self, name: str) -> set[str]:
+        """The ``is_time`` dimension names of the metric's model (issue #54 W1
+        fix3): the exact fields a get_metric range predicates, so a report's
+        declared evidence-period FIELD can be matched mechanically — a period
+        on any other field never proves correspondence with the range."""
+        fields: set[str] = set()
+        for dataset in self._metrics[name]["model"]["semantic_model"][0].get("datasets") or []:
+            for field in (dataset.get("fields") if isinstance(dataset, dict) else None) or []:
+                flag = field.get("dimension") if isinstance(field, dict) else None
+                if (
+                    isinstance(flag, dict)
+                    and flag.get("is_time")
+                    and isinstance(field.get("name"), str)
+                ):
+                    fields.add(field["name"])
+        return fields
+
+    def _catalog_resource_map(self) -> dict[str, str]:
+        """The exact-identity map of the ALREADY-BUILT execution catalog —
+        fully qualified table name (attach: ``<catalog>.<schema>.<table>``;
+        file view: ``<schema>.<table>`` with the catalog-null convention) →
+        canonical resource. Built lazily once and reused by every
+        data_signals attachment; no new catalog or source query ever runs
+        for quality evidence."""
+        if self._catalog_resources is None:
+            self._catalog_resources = {
+                f"{table['ref']}.{table['name']}": table["resource"]
+                for source in self.catalog
+                for table in source["tables"]
+            }
+        return self._catalog_resources
+
+    def _dataset_resources(self, source: object) -> list[str | None]:
+        """The canonical resources of ONE dataset source's physical table
+        references, matched against the built catalog by exact qualified
+        identity (spec 0013 §4). An unmatched reference stays ``None`` —
+        unknown dependency identity, never a stripped-name guess."""
+        catalog = self._catalog_resource_map()
+        return [None if ref is None else catalog.get(ref) for ref in _qualified_source_refs(source)]
+
     def _direct_table_dependencies(self, name: str) -> list[str | None]:
         """The canonical table resources of the metric's DIRECT dataset
-        dependencies (spec 0013 §4, issue #53): every dataset source — a
+        dependencies (spec 0013 §4, issues #53/#54): every dataset source — a
         qualified table name or a SELECT — is matched against the ALREADY-BUILT
         execution catalog by exact qualified identity, never an unqualified
         display-name match (same-named tables in distinct sources stay distinct
@@ -488,20 +539,46 @@ class QueryRuntime:
         deliberately strips qualification — is never used as an identity
         resolver here). An unmatched or unresolvable dependency is ``None``:
         unknown coverage, never a guess."""
-        if self._catalog_resources is None:
-            self._catalog_resources = {
-                f"{table['ref']}.{table['name']}": table["resource"]
-                for source in self.catalog
-                for table in source["tables"]
-            }
         dependencies: list[str | None] = []
         for dataset in self._metrics[name]["model"]["semantic_model"][0].get("datasets") or []:
-            dependencies.extend(
-                None if ref is None else self._catalog_resources.get(ref)
-                for ref in _qualified_source_refs(
-                    dataset.get("source") if isinstance(dataset, dict) else None
-                )
-            )
+            source = dataset.get("source") if isinstance(dataset, dict) else None
+            dependencies.extend(self._dataset_resources(source))
+        return dependencies
+
+    def _plan_table_dependencies(
+        self, graph: SemanticGraph, plan: QueryPlan
+    ) -> dict[str, list[str | None]]:
+        """Per-metric direct table dependencies of an EXECUTED multi-fact plan
+        (issue #54, spec 0013 §4, plan 0013 §2): each retained metric is
+        associated with the physical tables of exactly the fact branches its
+        metric closure aggregates in, plus the lookup datasets those branches
+        traverse — the plan's own bounded lineage, never the whole query's
+        asset union presented as a proven per-metric match. A metric whose
+        correspondence no branch proves, and a dataset source that does not
+        resolve to the exact catalog identity, stay ``None``: unknown
+        coverage."""
+        edge_targets = {edge.name: edge.to_dataset for edge in graph.relationships}
+        dependencies: dict[str, list[str | None]] = {}
+        for name in plan.metrics:
+            members = set(_closure(graph, name))
+            datasets: list[str] = []
+            for branch in plan.branches:
+                if any(member in branch.metrics for member in members):
+                    if branch.dataset not in datasets:
+                        datasets.append(branch.dataset)
+                    for join in branch.joins:
+                        target = edge_targets.get(join)
+                        if target is not None and target not in datasets:
+                            datasets.append(target)
+            if not datasets:
+                dependencies[name] = [None]  # no provable branch correspondence
+                continue
+            resolved: list[str | None] = []
+            for dataset in datasets:
+                for resource in self._dataset_resources(graph.datasets[dataset].source):
+                    if resource not in resolved:
+                        resolved.append(resource)
+            dependencies[name] = resolved
         return dependencies
 
     def _load_managed_graph(self, semantic_dir: Path) -> None:
@@ -696,7 +773,7 @@ class QueryRuntime:
         self._execution.bind(plan.sql)
         columns, rows = self._execution.fetch(plan.sql)
         now = context._assessment_now()  # one clock value for every metric's context (spec 0011 §2)
-        return {
+        result = {
             "metrics": list(plan.metrics),
             "dimensions": list(plan.dimensions),
             "columns": columns,
@@ -727,6 +804,41 @@ class QueryRuntime:
             "governed": True,
             "context": {name: self._metric_context(name, _now=now) for name in plan.metrics},
             "admission": self._admission_view(admission),
+        }
+        # Issue #54 (spec 0013 §4): the additive advisory source-quality view
+        # for MULTI-METRIC work — every retained metric associated with its own
+        # identified fact/lookup dependencies through the executed plan and the
+        # admitted graph (shared asset/report entries, one budget, one
+        # assessment instant — plan 0013 §2). The shared reader is pure and
+        # never fails or changes the governed result above. W1 fix3: the
+        # period fact is the plan's mechanically CONSUMED fetch range (window
+        # lookback precedes the display trim, so the display range would
+        # mislabel material lookback evidence as inapplicable), and period
+        # correspondence is only assessed for a report whose period field is
+        # one of the conformed time dimension's native member fields.
+        result["data_signals"] = data_signals(
+            self.context_dir,
+            self._plan_table_dependencies(graph, plan),
+            requested_period=_plan_requested_period(plan.fetch_bounds),
+            period_fields=self._conformed_time_fields(graph, plan.time_dimension),
+        )
+        return result
+
+    @staticmethod
+    def _conformed_time_fields(graph: SemanticGraph, time_dimension: str | None) -> set[str]:
+        """The native member field names of the request's conformed primary
+        business time (issue #54 W1 fix3): the fields the time range
+        predicates on each fact — the cheap mechanical correspondence for a
+        report's declared evidence-period field. No time request (or no such
+        edge) yields an empty set: period correspondence stays unknown, never
+        an unproven inapplicable."""
+        if time_dimension is None:
+            return set()
+        return {
+            field
+            for edge in graph.conformed_dimensions
+            if edge.name == time_dimension
+            for _dataset, field in edge.members
         }
 
     async def query_detail(self, request: dict) -> dict:
@@ -928,25 +1040,106 @@ class QueryRuntime:
 
 
 def _qualified_source_refs(source: object) -> list[str | None]:
-    """The QUALIFIED table references of one dataset source (spec 0013 §4,
-    issue #53): a bare dotted identifier path is itself; a SELECT keeps every
-    FROM/JOIN target WITH its qualification (a CTE or otherwise unresolvable
-    name stays what it is and fails the exact catalog match — unknown
-    dependency identity, never a stripped-name guess). An absent or
-    unparseable source yields ``None``."""
+    """The QUALIFIED PHYSICAL table references of one dataset source (spec
+    0013 §4, issues #53/#54): a bare dotted identifier path is itself; a
+    SELECT is resolved with the installed SQLGlot's scope-aware parsing — a
+    CTE or derived-table alias is resolved THROUGH its own subquery scope to
+    the physical tables it reads, never reported as a table itself, and a
+    same-named CTE never shadows or borrows a physical table's identity.
+    Predicate/scalar subqueries (EXISTS/IN/comparisons) are physical reads
+    too — their scopes are reached and collected recursively (W1 fix1: the
+    Q1 base caught these; dropping them silently lost a real dependency's
+    evidence). A reference with no resolvable physical table at all (an
+    unqualified name, a tableless expression) and an absent or unparseable
+    source yield ``None`` — unknown dependency identity, never a
+    stripped-name guess; the compile gate owns the real error for anything
+    the renderer rejects."""
     if not isinstance(source, str) or not source.strip():
         return [None]
     text = source.strip()
     if _IDENTIFIER_PATH_RE.fullmatch(text):
         return [text]
+
+    def collect(node: Scope) -> list[str | None]:
+        refs: list[str | None] = []
+        for _alias, entry in node.selected_sources.items():
+            table, origin = entry
+            if isinstance(origin, Scope):  # a CTE/derived alias: resolve through
+                refs.extend(collect(origin))
+            else:
+                refs.append(".".join(part.name for part in table.parts))
+        for subquery in node.subqueries:  # predicate/scalar subquery reads
+            subquery_scope = build_scope(subquery)
+            if subquery_scope is not None:
+                refs.extend(collect(subquery_scope))
+        return refs
+
     try:
-        tree = sqlglot.parse_one(text)
-    except Exception:  # unparseable: the compile gate owns the real error
+        root = build_scope(sqlglot.parse_one(text))
+        refs = collect(root) if root is not None else []
+    except Exception:  # unparseable/unscopable: unknown identity, never a guess
         return [None]
-    refs: list[str | None] = [
-        ".".join(part.name for part in table.parts) for table in tree.find_all(exp.Table)
-    ]
     return refs or [None]
+
+
+def _requested_period(
+    raw: object, *, inclusive_end: bool
+) -> tuple[datetime | None, datetime | None] | None:
+    """The requested query period as aware instants — the runtime's own
+    mechanical fact for the period-correspondence assessment of issue #54
+    (spec 0013 §3/§4). Date bounds anchor at UTC midnight (the request's own
+    dates carry no timezone); an inclusive end (get_metric's render contract:
+    ``>= start AND <= end``) becomes the following day's exclusive bound,
+    while query_metrics' half-open ``[start, end)`` time range maps directly.
+    A missing or unparseable bound stays ``None`` (unbounded — no
+    contradiction can be established on that side), and a request with no
+    bounds at all yields ``None`` so the assessment cannot invent one."""
+    if not isinstance(raw, dict):
+        return None
+
+    def bound(key: str, *, day_after: bool = False) -> datetime | None:
+        value = raw.get(key)
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return None  # naive: no unambiguous mechanical instant
+            return value + timedelta(days=1) if day_after else value
+        if isinstance(value, date):
+            day = value + timedelta(days=1) if day_after else value
+            return datetime(day.year, day.month, day.day, tzinfo=UTC)
+        if isinstance(value, str):
+            try:
+                day = date.fromisoformat(value)
+            except ValueError:
+                return None
+            day = day + timedelta(days=1) if day_after else day
+            return datetime(day.year, day.month, day.day, tzinfo=UTC)
+        return None
+
+    start = bound("start")
+    end = bound("end", day_after=inclusive_end)
+    return None if start is None and end is None else (start, end)
+
+
+def _plan_requested_period(
+    fetch_bounds: tuple[date | None, date | None] | None,
+) -> tuple[datetime | None, datetime | None] | None:
+    """The CONSUMED query period of an executed multi-fact plan as aware
+    instants (issue #54 W1 fix3): the planner's fetch bounds — the half-open
+    NATIVE fetch range that already includes any window lookback extension
+    and precedes the display trim — mapped at UTC midnight like every other
+    runtime period fact. ``None`` (no time request) or fully unbounded
+    bounds yield ``None``; one-sided bounds keep their ``None`` side."""
+    if fetch_bounds is None:
+        return None
+    start_day, end_day = fetch_bounds
+
+    def instant(day: date | None) -> datetime | None:
+        if day is None:
+            return None
+        return datetime(day.year, day.month, day.day, tzinfo=UTC)
+
+    start, end = instant(start_day), instant(end_day)
+    return None if start is None and end is None else (start, end)
 
 
 def _normalize_definition(definition: dict) -> dict:

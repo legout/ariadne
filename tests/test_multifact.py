@@ -3009,8 +3009,18 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
 
     def _normalized(response: dict) -> dict:
         # without an explicit `order`, the aligned keys-UNION row order is not
-        # part of the contract — parity is over the value, not the sequencing
-        return {**response, "rows": sorted(response["rows"], key=lambda row: row["region"])}
+        # part of the contract — parity is over the value, not the sequencing.
+        # The advisory data_signals view likewise carries the assessment
+        # instant of ITS OWN execution (issue #54: every read is a fresh pure
+        # assessment) — normalized out here exactly as the get-metric CLI
+        # parity test does, everything else compared exactly.
+        normalized = {**response, "rows": sorted(response["rows"], key=lambda row: row["region"])}
+        if "data_signals" in normalized:
+            normalized["data_signals"] = {
+                **normalized["data_signals"],
+                "assessed_at": "<assessed_at>",
+            }
+        return normalized
 
     cli_result = json.loads(capsys.readouterr().out)
     assert _normalized(cli_result) == _normalized(result)
