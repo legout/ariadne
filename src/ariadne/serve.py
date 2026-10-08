@@ -1064,18 +1064,23 @@ def main(argv: list[str] | None = None) -> int:
             )
         # Spec 0014 §5 (fix pass 1, finding 2a): reject an MCP byte budget that
         # cannot represent EVERY refusal form in its actual isError representation
-        # (text + structured duplication) BEFORE any tool uses it.
-        for form in query_results.refusal_forms():
-            size = _refusal_envelope_bytes(form)
-            if size > runtime._limits["mcp_response_bytes"]:
-                raise ValueError(
-                    "the host query limits' mcp_response_bytes="
-                    f"{runtime._limits['mcp_response_bytes']} cannot represent every "
-                    f"refusal form on this transport (largest {size} bytes) — tighten "
-                    "nothing further"
-                )
-        # The actual-transport preflight the core coordinates before staging.
-        runtime._measure = _mcp_result_bytes
+        # (text + structured duplication) BEFORE any tool uses it. The battery
+        # and the measure touch the SDK, so they run only when the optional
+        # [mcp] extra is actually present — with it absent there is no MCP
+        # transport to preflight, and the mcp-absent hint path must stay
+        # reachable ("optional MCP remains optional", plan 0014 §2).
+        if not _mcp_sdk_absent():
+            for form in query_results.refusal_forms():
+                size = _refusal_envelope_bytes(form)
+                if size > runtime._limits["mcp_response_bytes"]:
+                    raise ValueError(
+                        "the host query limits' mcp_response_bytes="
+                        f"{runtime._limits['mcp_response_bytes']} cannot represent every "
+                        f"refusal form on this transport (largest {size} bytes) — tighten "
+                        "nothing further"
+                    )
+            # The actual-transport preflight the core coordinates before staging.
+            runtime._measure = _mcp_result_bytes
         return runtime
 
     facade: FacadeSource
