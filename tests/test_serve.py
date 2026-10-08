@@ -369,7 +369,9 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
     (``resolve_term`` over the served context and
     ``authoring_resolve_term`` over an explicitly selected proposal); issue
     #43/K3 adds exactly one more — ``authoring_inspect_mapping`` (the bounded
-    mapping inspection with authentic retained receipts); never a
+    mapping inspection with authentic retained receipts); issue #57/S2 adds
+    exactly one more — ``query_records`` (the bounded Ad-hoc Record Query over
+    one known catalog table, spec 0014 §3); never a
     source-approval, Promotion, admission or example-review tool (ADR-0013/#20:
     review is human-only; the surfaces are tool-surface separation, spec §6)."""
     from ariadne.serve import build_app
@@ -385,6 +387,7 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
         "define_metric",
         "query_metrics",
         "query_detail",
+        "query_records",
         "save_example",
         "search_examples",
         "resolve_term",

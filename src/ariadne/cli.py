@@ -14,6 +14,10 @@ in the runtime:
     ariadne query-metrics [--file PATH]        (the admitted multi-fact graph,
                                                issue #30; stdin when absent)
     ariadne query-detail [--file PATH]         (root-dataset projection, no fan-out)
+    ariadne query-records [--file PATH]        (bounded record selection over one
+                                               known table, spec 0014 §3; stdin
+                                               when absent; governed: false,
+                                               nothing staged)
     ariadne save-example [--file PATH]          (stdin when absent; issue #19 —
                                                explicit answer-example submission)
     ariadne search-examples QUERY [--limit N] [--include-history]
@@ -201,6 +205,15 @@ def build_parser() -> _Parser:
     )
     detail.add_argument("--file", help="JSON request file (stdin when absent)")
 
+    records = sub.add_parser(
+        "query-records",
+        parents=[common],
+        help="bounded record selection over one known table: {dataset, fields, "
+        "filters?, timestamp?, order, limit?} — no aggregation, no staging, "
+        "governed: false (spec 0014 §3)",
+    )
+    records.add_argument("--file", help="JSON record request file (stdin when absent)")
+
     save = sub.add_parser(
         "save-example",
         parents=[common],
@@ -267,6 +280,7 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         "save-example",
         "query-metrics",
         "query-detail",
+        "query-records",
     ):
         definition = _read_definition(
             args.file,
@@ -354,6 +368,9 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
     elif args.command == "query-detail":
         assert definition is not None  # _read_definition ran above
         result = asyncio.run(runtime.query_detail(definition))
+    elif args.command == "query-records":
+        assert definition is not None  # _read_definition ran above
+        result = asyncio.run(runtime.query_records(definition))
     else:  # define-metric
         assert definition is not None  # _read_definition ran above
         result = asyncio.run(runtime.define_metric(definition))

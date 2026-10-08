@@ -245,6 +245,7 @@ def _stepped_clock(jump_after: int):
         "type_classification_matrix",
         "enum_labels_are_raw_guarded_as_variable",
         "flag_namespace_collision_is_positional",
+        "oversized_cell_on_lookahead_row_keeps_fitting_top_n",
         "rows_fit_but_metadata_overflows",
         "metadata_accounting_stops_at_the_first_oversized_component",
         "mcp_envelope_only_overflow_refuses",
@@ -435,6 +436,29 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert bounded.cell_overflow == []
         result = asyncio.run(rt.get_metric("t", ["__ariadne_cell_overflow_0"]))
         assert result["rows"] == [{"__ariadne_cell_overflow_0": "a-real-value", "t": 1}]
+
+    elif case == "oversized_cell_on_lookahead_row_keeps_fitting_top_n":
+        # S2 (spec 0014 §3 + §7 V2-7, issue #57): an oversized cell ONLY on
+        # the top-N lookahead row must not refuse an otherwise fitting top-N —
+        # the same-execution existence indicator rides the last returned row,
+        # so the extra row's payload cells never transfer. The enums fixture:
+        # row id 1 ('ok') fits a 16-byte cell ceiling; the next row's 40-byte
+        # label would flag cell_overflow if it transferred — it does not.
+        rt = make_runtime(served, tmp_path / "staging", cell_bytes=16)
+        result = asyncio.run(
+            rt.query_records(
+                {
+                    "dataset": "enums",
+                    "fields": ["id", "label"],
+                    "order": [{"field": "id"}],
+                    "limit": 1,
+                }
+            )
+        )
+        assert result["rows"] == [{"id": 1, "label": "ok"}]
+        assert result["result"]["complete"] is True
+        assert result["result"]["scope"] == "requested_top_n"
+        assert result["result"]["has_more_matching"] is True
 
     elif case == "rows_fit_but_metadata_overflows":
         # 2000 clears the refusal-form floor (every refusable representation

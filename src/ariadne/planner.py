@@ -76,10 +76,14 @@ Task 3 (issue #28) adds the scoped request surface on the same contract:
 from __future__ import annotations
 
 import calendar
+import math
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
+from functools import lru_cache
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 from sqlglot import (  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -89,6 +93,9 @@ from sqlglot import (  # pyright: ignore[reportMissingImports] — analysis env 
 from ariadne.grain import (  # pyright: ignore[reportMissingImports] — drift
     check_grain_preserving,
     relationship_target_audit,
+)
+from ariadne.query_results import (  # pyright: ignore[reportMissingImports] — drift
+    classify_output_type,
 )
 from ariadne.render import (  # pyright: ignore[reportMissingImports] — drift
     RenderError,
@@ -257,9 +264,7 @@ def _parse_predicate(entry: Any, context: str) -> _Predicate:
         # mf-t3 review F3: a malformed "op" (e.g. a list) must fall through to
         # the structured refusal, not hit the hash-based membership check
         if isinstance(value, list):
-            raise PlannerError(
-                "filter_invalid", f"{context}: op {op!r} takes exactly one value"
-            )
+            raise PlannerError("filter_invalid", f"{context}: op {op!r} takes exactly one value")
     else:
         raise PlannerError(
             "filter_invalid",
@@ -294,9 +299,7 @@ def _parse_predicates(request: dict) -> tuple[list[_Predicate], tuple[str, ...]]
             if not isinstance(name, str) or not name.strip():
                 raise PlannerError("filter_invalid", "a segment needs a nonempty 'name'")
             if name in segment_names:
-                raise PlannerError(
-                    "filter_invalid", f"duplicate segment name {name!r}"
-                )
+                raise PlannerError("filter_invalid", f"duplicate segment name {name!r}")
             body = entry["filters"]
             if not isinstance(body, list) or not body:
                 raise PlannerError(
@@ -304,9 +307,7 @@ def _parse_predicates(request: dict) -> tuple[list[_Predicate], tuple[str, ...]]
                     f"segment {name!r} composes at least one predicate — an empty "
                     "segment is a mistake, not a no-op",
                 )
-            out.extend(
-                _parse_predicate(item, f"segment {name!r}") for item in body
-            )
+            out.extend(_parse_predicate(item, f"segment {name!r}") for item in body)
             segment_names.append(name)
     return out, tuple(segment_names)
 
@@ -322,15 +323,12 @@ def _parse_parameters(raw: Any) -> dict[str, tuple[str, Any]]:
     bound: dict[str, tuple[str, Any]] = {}
     for name, declaration in raw.items():
         if not isinstance(name, str) or not isinstance(declaration, dict):
-            raise PlannerError(
-                "parameter_invalid", "'parameters' maps names to declarations"
-            )
+            raise PlannerError("parameter_invalid", "'parameters' maps names to declarations")
         unknown = sorted(set(declaration) - _PARAMETER_KEYS)
         if unknown:
             raise PlannerError(
                 "parameter_invalid",
-                f"parameter {name!r}: unknown key(s) {unknown}; "
-                f"allowed: {sorted(_PARAMETER_KEYS)}",
+                f"parameter {name!r}: unknown key(s) {unknown}; allowed: {sorted(_PARAMETER_KEYS)}",
             )
         kind = declaration.get("type")
         value = declaration.get("value")
@@ -359,8 +357,7 @@ def _parse_parameters(raw: Any) -> dict[str, tuple[str, Any]]:
             if len(value) > limit:
                 raise PlannerError(
                     "parameter_invalid",
-                    f"{where}: value of {len(value)} character(s) exceeds the bound "
-                    f"of {limit}",
+                    f"{where}: value of {len(value)} character(s) exceeds the bound of {limit}",
                 )
         elif kind in ("int", "float"):
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -376,14 +373,11 @@ def _parse_parameters(raw: Any) -> dict[str, tuple[str, Any]]:
                 if edge is not None and (
                     isinstance(edge, bool) or not isinstance(edge, (int, float))
                 ):
-                    raise PlannerError(
-                        "parameter_invalid", f"{where}: '{key}' must be a number"
-                    )
+                    raise PlannerError("parameter_invalid", f"{where}: '{key}' must be a number")
             if (low is not None and value < low) or (high is not None and value > high):
                 raise PlannerError(
                     "parameter_invalid",
-                    f"{where}: value {value!r} is outside the declared bounds "
-                    f"[{low!r}, {high!r}]",
+                    f"{where}: value {value!r} is outside the declared bounds [{low!r}, {high!r}]",
                 )
         else:  # date
             if not isinstance(value, str):
@@ -443,12 +437,8 @@ def _predicate_ast(
         kind, bound = parameters[name]
         return _COMPARISONS[predicate.op](this=column, expression=_bound_literal(kind, bound))
     if isinstance(raw, list):
-        return exp.In(
-            this=column, expressions=[_direct_literal(item, context) for item in raw]
-        )
-    return _COMPARISONS[predicate.op](
-        this=column, expression=_direct_literal(raw, context)
-    )
+        return exp.In(this=column, expressions=[_direct_literal(item, context) for item in raw])
+    return _COMPARISONS[predicate.op](this=column, expression=_direct_literal(raw, context))
 
 
 def _parse_order_limit(request: dict) -> tuple[list[tuple[str, bool]], int | None]:
@@ -466,8 +456,7 @@ def _parse_order_limit(request: dict) -> tuple[list[tuple[str, bool]], int | Non
             if not isinstance(entry, dict) or set(entry) - _ORDER_KEYS or "field" not in entry:
                 raise PlannerError(
                     "order_invalid",
-                    "an order entry is {'field': <output column>} plus optional "
-                    "'direction'",
+                    "an order entry is {'field': <output column>} plus optional 'direction'",
                 )
             field = entry["field"]
             direction = entry.get("direction", "asc")
@@ -514,8 +503,7 @@ def _parse_time(raw: Any) -> _TimeRequest:
     if not isinstance(raw, dict):
         raise PlannerError(
             "time_invalid",
-            "'time' must be a mapping {'dimension': ..., 'grain': ..., 'start': ..., "
-            "'end': ...}",
+            "'time' must be a mapping {'dimension': ..., 'grain': ..., 'start': ..., 'end': ...}",
         )
     unknown = sorted(set(raw) - _TIME_KEYS)
     if unknown:
@@ -530,9 +518,7 @@ def _parse_time(raw: Any) -> _TimeRequest:
             "'time.dimension' must name the declared conformed primary business time",
         )
     if not isinstance(grain, str) or not grain.strip():
-        raise PlannerError(
-            "time_invalid", "'time.grain' must declare one of the grouping grains"
-        )
+        raise PlannerError("time_invalid", "'time.grain' must declare one of the grouping grains")
     if grain not in TIME_GRAINS:
         raise PlannerError(
             "time_grain_invalid",
@@ -544,9 +530,7 @@ def _parse_time(raw: Any) -> _TimeRequest:
         if value is None:
             continue
         if not isinstance(value, str):
-            raise PlannerError(
-                "time_invalid", f"'time.{key}' must be an ISO 8601 date string"
-            )
+            raise PlannerError("time_invalid", f"'time.{key}' must be an ISO 8601 date string")
         try:
             bounds[key] = date.fromisoformat(value)
         except ValueError as exc:
@@ -650,20 +634,14 @@ def _parse_request(request: Any) -> tuple[list[str], list[str]]:
         or not metrics
         or not all(isinstance(name, str) for name in metrics)
     ):
-        raise PlannerError(
-            "request_invalid", "'metrics' must be a non-empty list of metric names"
-        )
+        raise PlannerError("request_invalid", "'metrics' must be a non-empty list of metric names")
     dimensions = request.get("dimensions", [])
-    if not isinstance(dimensions, list) or not all(
-        isinstance(name, str) for name in dimensions
-    ):
+    if not isinstance(dimensions, list) or not all(isinstance(name, str) for name in dimensions):
         raise PlannerError("request_invalid", "'dimensions' must be a list of dimension names")
     return list(dict.fromkeys(metrics)), list(dict.fromkeys(dimensions))
 
 
-def _resolve_owner(
-    graph: SemanticGraph, name: str, memo: dict[str, str | None]
-) -> str | None:
+def _resolve_owner(graph: SemanticGraph, name: str, memo: dict[str, str | None]) -> str | None:
     """The dataset a metric compiles against: base metrics carry it on the
     node; a derived metric compiles against the single dataset owning its whole
     dependency closure, else ``None`` (cross-fact — post-alignment, #29)."""
@@ -762,9 +740,7 @@ def _resolve_field_key(
         members: dict[str, str] = {}
         missing: list[str] = []
         for dataset in branch_datasets:
-            field_name = next(
-                (field for member, field in edge.members if member == dataset), None
-            )
+            field_name = next((field for member, field in edge.members if member == dataset), None)
             if field_name is None:
                 missing.append(dataset)
             else:
@@ -975,9 +951,7 @@ def resolved_target_keys(graph: SemanticGraph, edge: RelationshipEdge) -> tuple[
     uniqueness of the SAME expression the generated join compares."""
     expressions = graph.datasets[edge.to_dataset].expressions
     field_asts = {
-        name: _strip_qualifiers(
-            _parse(sql, f"field {name!r} of dataset '{edge.to_dataset}'")
-        )
+        name: _strip_qualifiers(_parse(sql, f"field {name!r} of dataset '{edge.to_dataset}'"))
         for name, sql in expressions.items()
     }
     resolved = []
@@ -987,9 +961,7 @@ def resolved_target_keys(graph: SemanticGraph, edge: RelationshipEdge) -> tuple[
             # no usable dialect declaration: the physical column itself
             resolved.append(field)
             continue
-        resolved.append(
-            _resolve_fields(tree.copy(), field_asts, set()).sql(dialect="duckdb")
-        )
+        resolved.append(_resolve_fields(tree.copy(), field_asts, set()).sql(dialect="duckdb"))
     return tuple(resolved)
 
 
@@ -1096,9 +1068,7 @@ def _joined_branch_sql(
     for key in dim_keys:
         path = key.paths[dataset]
         home = path[-1].to_dataset if path else dataset
-        native = lower(
-            exp.column(key.members[dataset]), home, f"dimension '{key.dimension}'"
-        )
+        native = lower(exp.column(key.members[dataset]), home, f"dimension '{key.dimension}'")
         expression = key.group_expression(native)
         group_exprs.append(expression)
         # F4: project under the branch's OUTPUT column — the alignment layer
@@ -1127,9 +1097,7 @@ def _joined_branch_sql(
     for predicate, key in row_preds:
         path = key.paths[dataset]
         home = path[-1].to_dataset if path else dataset
-        column = lower(
-            exp.column(key.members[dataset]), home, f"filter on '{predicate.field}'"
-        )
+        column = lower(exp.column(key.members[dataset]), home, f"filter on '{predicate.field}'")
         condition = _predicate_ast(column, predicate, parameters or {})
         where = condition if where is None else exp.And(this=where, expression=condition)
     # the conformed business time fetch range (half-open, lookback already
@@ -1245,18 +1213,16 @@ def _branch_sql(
         if fetch is not None:
             plain.append(fetch)
     if plain:
-        filtered = exp.Select().select("*").from_(
-            _source_subquery(
-                graph.datasets[dataset].source, f"dataset '{dataset}' source"
-            )
+        filtered = (
+            exp.Select()
+            .select("*")
+            .from_(_source_subquery(graph.datasets[dataset].source, f"dataset '{dataset}' source"))
         )
         where = None
         for condition in plain:
             where = condition if where is None else exp.And(this=where, expression=condition)
         filtered = filtered.where(where)
-        sub["semantic_model"][0]["datasets"][0]["source"] = filtered.sql(
-            dialect="duckdb"
-        )
+        sub["semantic_model"][0]["datasets"][0]["source"] = filtered.sql(dialect="duckdb")
     try:
         return (
             render(
@@ -1344,9 +1310,7 @@ def _window_expression(name: str, window: WindowDecl, stage: _PostStage) -> exp.
         size = window.size or 1  # a rolling window always carries a size (load)
         spec = exp.WindowSpec(kind="ROWS", start=f"{size - 1} PRECEDING", end="CURRENT ROW")
     elif window.kind == "cumulative":
-        spec = exp.WindowSpec(
-            kind="ROWS", start="UNBOUNDED PRECEDING", end="CURRENT ROW"
-        )
+        spec = exp.WindowSpec(kind="ROWS", start="UNBOUNDED PRECEDING", end="CURRENT ROW")
     else:  # value_window: a RANGE frame over the time axis by grain periods
         unit, per = _INTERVAL_UNIT[stage.grain or "day"]
         size = window.size or 1
@@ -1408,9 +1372,7 @@ def _final_sql(
     outer = exp.Select()
     for canonical, _output in branch_keys[0] if branch_keys else []:
         outer = outer.select(
-            exp.alias_(
-                exp.column(canonical, table="keys", quoted=True), canonical, quoted=True
-            )
+            exp.alias_(exp.column(canonical, table="keys", quoted=True), canonical, quoted=True)
         )
     for metric, index, column, bare_count in columns:
         expression = exp.column(column, table=names[index], quoted=True)
@@ -1454,9 +1416,7 @@ def _final_sql(
         # derived metrics, one level per dependency level — a windowed BASE
         # aggregate skips the expression layer: its branch already produced
         # the aligned column, only its window applies below (C4)
-        for level in sorted(
-            {metric.level for metric in stage.metrics if not metric.base}
-        ):
+        for level in sorted({metric.level for metric in stage.metrics if not metric.base}):
             tree, current = _layer(
                 tree,
                 current,
@@ -1485,9 +1445,7 @@ def _final_sql(
         # of a [2026-01-15, ...) range): grouped keys are period starts, so the
         # start bound compares one grain period back, keeping every bucket
         # whose period reaches past the display start (C2, candidate review)
-        if stage.time_column is not None and any(
-            bound is not None for bound in stage.trim
-        ):
+        if stage.time_column is not None and any(bound is not None for bound in stage.trim):
             column = exp.column(stage.time_column, quoted=True)
             trim = None
             if stage.trim[0] is not None:
@@ -1560,9 +1518,7 @@ def _run_live_audits(
     for edge in sorted(participating.values(), key=lambda e: e.name):
         source = graph.datasets[edge.to_dataset].source
         try:
-            audit = relationship_target_audit(
-                connection, source, resolved_target_keys(graph, edge)
-            )
+            audit = relationship_target_audit(connection, source, resolved_target_keys(graph, edge))
         except Exception as exc:
             raise PlannerError(
                 "relationship_audit_failed",
@@ -1589,8 +1545,7 @@ def _run_live_audits(
             AuditRecord(
                 f"relationship:{edge.name}",
                 "passed",
-                f"target key {list(edge.to_fields)} unique and non-NULL over "
-                f"{audit.rows} rows",
+                f"target key {list(edge.to_fields)} unique and non-NULL over {audit.rows} rows",
             )
         )
     if participating:
@@ -1664,9 +1619,7 @@ def plan_query(
     for name in sorted({member for closure in closures.values() for member in closure}):
         node = graph.metrics[name]
         owner_of[name] = (
-            None
-            if node.window is not None and node.derived
-            else _resolve_owner(graph, name, memo)
+            None if node.window is not None and node.derived else _resolve_owner(graph, name, memo)
         )
 
     branch_datasets = sorted({owner for owner in owner_of.values() if owner is not None})
@@ -1826,8 +1779,7 @@ def plan_query(
     for name in metric_names:
         for member in closures[name]:
             if (
-                owner_of[member] is None
-                or graph.metrics[member].window is not None
+                owner_of[member] is None or graph.metrics[member].window is not None
             ) and member not in post_needed:
                 post_needed.append(member)
     has_post = bool(post_needed)
@@ -1836,9 +1788,7 @@ def plan_query(
     branch_keys: list[list[tuple[str, str]]] = []
     participating: dict[str, RelationshipEdge] = {}
     for dataset in branch_datasets:
-        routed = [
-            (predicate, key) for predicate, key in row_filters if dataset in key.members
-        ]
+        routed = [(predicate, key) for predicate, key in row_filters if dataset in key.members]
         sql, edges = _branch_sql(
             graph,
             dataset,
@@ -1846,11 +1796,7 @@ def plan_query(
             branch_metrics[dataset],
             # without post-aggregate metrics the branch keeps exactly the
             # requested outputs; with them it also exposes their dependencies
-            [
-                name
-                for name in branch_metrics[dataset]
-                if has_post or name in metric_names
-            ],
+            [name for name in branch_metrics[dataset] if has_post or name in metric_names],
             routed,
             parameters,
             fetch_bounds,
@@ -1862,9 +1808,7 @@ def plan_query(
                 metrics=tuple(sorted(branch_metrics[dataset])),
                 joins=tuple(edge.name for edge in edges),
                 keys=tuple((key.dimension, key.members[dataset]) for key in dim_keys),
-                filters=tuple(
-                    dict.fromkeys(predicate.field for predicate, _key in routed)
-                ),
+                filters=tuple(dict.fromkeys(predicate.field for predicate, _key in routed)),
             )
         )
         branch_keys.append([(key.dimension, key.output(dataset)) for key in dim_keys])
@@ -1922,9 +1866,7 @@ def plan_query(
             time_column=time_request.dimension if time_request is not None else None,
             grain=time_request.grain if time_request is not None else None,
             trim=(
-                (time_request.start, time_request.end)
-                if time_request is not None
-                else (None, None)
+                (time_request.start, time_request.end) if time_request is not None else (None, None)
             ),
             partition=tuple(dimension_names),
             output=(
@@ -1964,9 +1906,7 @@ def plan_query(
         audits = []
         relationship_outcome = "not-run"
         relationship_detail = "compile-only plan — no connection, no live relationship audit"
-    audits.append(
-        AuditRecord("relationship_audit", relationship_outcome, relationship_detail)
-    )
+    audits.append(AuditRecord("relationship_audit", relationship_outcome, relationship_detail))
     return QueryPlan(
         sql=sql,
         metrics=tuple(metric_names),
@@ -2010,9 +1950,7 @@ class DetailPlan:
     relationship_audit: str  # passed | not-run (never silently passed)
 
 
-def _child_side_chain(
-    graph: SemanticGraph, root: str, home: str
-) -> tuple[str, ...] | None:
+def _child_side_chain(graph: SemanticGraph, root: str, home: str) -> tuple[str, ...] | None:
     """The relationship chain ``root -> home`` traversed BACKWARDS along edge
     directions — root on the unique-target side reaching its CHILD datasets.
     That is the fan-out side: a detail traversal onto it would multiply the
@@ -2072,9 +2010,7 @@ def plan_detail(
         or not fields
         or not all(isinstance(name, str) for name in fields)
     ):
-        raise PlannerError(
-            "request_invalid", "'fields' must be a non-empty list of field names"
-        )
+        raise PlannerError("request_invalid", "'fields' must be a non-empty list of field names")
     fields = list(dict.fromkeys(fields))
 
     resolved: list[DetailField] = []
@@ -2158,9 +2094,7 @@ def plan_detail(
 
     select = exp.Select().from_(
         exp.alias_(
-            _source_subquery(
-                graph.datasets[dataset].source, f"dataset '{dataset}' source"
-            ),
+            _source_subquery(graph.datasets[dataset].source, f"dataset '{dataset}' source"),
             aliases[dataset],
         )
     )
@@ -2248,8 +2182,7 @@ def plan_detail(
             "relationship_audit",
             relationship_outcome,
             (
-                f"{len(participating)} participating relationship(s) rechecked on this "
-                "request"
+                f"{len(participating)} participating relationship(s) rechecked on this request"
                 if connection is not None and participating
                 else "no relationship traversal participates in this request"
                 if connection is not None
@@ -2264,4 +2197,744 @@ def plan_detail(
         joins=tuple(edge.name for edge in order),
         audits=tuple(audits),
         relationship_audit=relationship_outcome,
+    )
+
+
+# ------------------------- the bounded record plan (spec 0014 §3, issue #57/S2)
+
+_RECORD_REQUEST_KEYS = frozenset({"dataset", "fields", "filters", "timestamp", "order", "limit"})
+_RECORD_FILTER_KEYS = frozenset({"field", "op", "value"})
+_RECORD_TIMESTAMP_KEYS = frozenset({"field", "format", "timezone"})
+_RECORD_ORDER_KEYS = frozenset({"field", "direction"})
+_RECORD_OPS = frozenset({*_COMPARISONS, "in", "is_null", "is_not_null", "regex"})
+# spec 0014 §3 revision 1: exactly the one documented text encoding is
+# supported — its strict canonical shape (zero-padded) is fixed alongside it
+# because DuckDB's strptime accepts non-padded fields.
+_RECORD_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+_RECORD_TIMESTAMP_SHAPE = "\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}"
+_RECORD_TEXT_TYPES = frozenset({"VARCHAR", "CHAR", "BPCHAR", "TEXT", "STRING"})
+MAX_RECORD_LIMIT = 1000  # spec 0014 §3: the requested top-N hard ceiling
+DEFAULT_RECORD_LIMIT = 10
+# preferred execution-only helper names: every helper identity a plan uses
+# is ALLOCATED against the dataset's known physical column names (suffix
+# allocation on collision — fix pass 1, finding 2): a physical column named
+# like a helper is an ordinary value column and can never be shadowed by,
+# nor shadow, an execution-only helper
+_RECORD_TS = "__ariadne_record_ts"
+_RECORD_RN = "__ariadne_record_rn"
+RECORD_HAS_MORE = "__ariadne_record_has_more"
+_RECORD_BASE = "__ariadne_record_base"
+_RECORD_TOPN = "__ariadne_record_topn"
+
+
+def _allocate_helper(preferred: str, taken: set[str]) -> str:
+    """One collision-free execution-only helper identity: the dataset's
+    physical column names are caller data, so a helper never shares a name
+    with one (nor with an already-allocated helper). Comparison is on the
+    UPPERCASED forms — DuckDB resolves identifiers case-insensitively, so a
+    physical ``__ARIADNE_RECORD_RN`` collides with the lowercase helper just
+    as much as an exactly-matched name (fix pass 2); ``taken`` carries
+    uppercase forms and receives the allocated name's uppercase."""
+    name = preferred
+    counter = 2
+    while name.upper() in taken:
+        name = f"{preferred}_{counter}"
+        counter += 1
+    taken.add(name.upper())
+    return name
+
+
+# the row-level timestamp refusal: the fixed marker the guarded SQL raises
+# through DuckDB's error() and the runtime converts into this stable code —
+# the message identifies field and interpretation, never the source value
+TIMESTAMP_MARKER = "ariadne timestamp interpretation:"
+TIMESTAMP_REFUSAL_CODE = "timestamp_interpretation"
+
+
+@dataclass(frozen=True)
+class RecordPlan:
+    """One bounded record selection plan (spec 0014 §3): the LOGICAL top-N
+    SELECT (the caller-visible provenance) plus the ACTUAL executed statement
+    (the same selection wrapped in the execution-only same-execution lookahead
+    indicator), the resolved catalog identity, the applied request echo and
+    the disclosed deterministic tie order."""
+
+    sql: str  # the logical top-N selection
+    executed_sql: str  # the actual compiled execution statement
+    dataset: str  # the resolved qualified catalog identity
+    resource: str  # the canonical credential-free resource URI
+    fields: tuple[str, ...]
+    filters: tuple[dict, ...]
+    order: tuple[dict, ...]
+    tie_order: tuple[str, ...]
+    timestamp: dict | None  # the declared interpretation disclosure
+    limit: int
+    has_more_column: str  # the allocated same-execution lookahead column
+    # the TRAILING execution-only columns of executed_sql (the lookahead
+    # indicator, plus the declared timestamp's normalized instant when it
+    # is not otherwise consumed): the runtime strips them POSITIONALLY —
+    # the association is structural, never a guessable name (fix pass 1,
+    # finding 2)
+    execution_only_columns: tuple[str, ...]
+
+
+def _record_column(entry: dict, name: str) -> dict | None:
+    for column in entry["columns"]:
+        if column["name"] == name:
+            return column
+    return None
+
+
+def _resolve_record_dataset(catalog: list, dataset: Any) -> dict:
+    """Resolve one exact known catalog dataset/resource (spec 0014 §3):
+    the qualified catalog identity, the ``<source>.<table>`` display name, the
+    bare table name and the canonical resource URI are the accepted forms;
+    caller text never reaches a FROM clause — only a built catalog entry does.
+    A name matching several distinct tables refuses as ambiguous (the request
+    then names the canonical resource), an unknown name refuses with the
+    known identities as candidates."""
+    if not isinstance(dataset, str) or not dataset.strip():
+        raise PlannerError("request_invalid", "'dataset' must be a non-empty string")
+    forms: dict[str, list[dict]] = {}
+    for source in catalog:
+        for table in source["tables"]:
+            qualified = f"{table['ref']}.{table['name']}"
+            for form in (
+                qualified,
+                f"{source['name']}.{table['name']}",
+                table["name"],
+                table["resource"],
+            ):
+                forms.setdefault(form, []).append(table)
+    matches = forms.get(dataset, [])
+    unique = {id(table): table for table in matches}
+    if not unique:
+        raise PlannerError(
+            "unknown_dataset",
+            f"unknown dataset {dataset!r}; pass one exact known catalog dataset "
+            "(see list_datasets) or its canonical resource",
+            candidates=tuple(sorted(forms)),
+        )
+    if len(unique) > 1:
+        raise PlannerError(
+            "ambiguous_dataset",
+            f"dataset name {dataset!r} matches {len(unique)} tables — pass the "
+            "canonical resource of the intended one",
+            candidates=tuple(sorted(table["resource"] for table in unique.values())),
+        )
+    return next(iter(unique.values()))
+
+
+def _record_instant(value: str, zone: ZoneInfo, field: str) -> datetime:
+    """Normalize one caller-supplied wall-time literal under the declared
+    clock to a naive UTC instant (the planner-side mirror of the guarded SQL
+    interpretation): the canonical zero-padded shape, then a strict parse, then
+    the two DST rejections — an ambiguous fall-back or nonexistent
+    spring-forward wall time refuses explicitly, never a fold/offset guess."""
+    if not isinstance(value, str) or not re.fullmatch(_RECORD_TIMESTAMP_SHAPE, value):
+        raise PlannerError(
+            TIMESTAMP_REFUSAL_CODE,
+            f"filter value for the declared timestamp field '{field}' does not "
+            f"carry the documented encoding {_RECORD_TIMESTAMP_FORMAT!r}",
+        )
+    try:
+        wall = datetime.strptime(value, _RECORD_TIMESTAMP_FORMAT)
+    except ValueError as exc:
+        raise PlannerError(
+            TIMESTAMP_REFUSAL_CODE,
+            f"filter value for the declared timestamp field '{field}' is not a "
+            f"valid {_RECORD_TIMESTAMP_FORMAT!r} time",
+        ) from exc
+    fold0 = wall.replace(tzinfo=zone)
+    fold1 = wall.replace(tzinfo=zone, fold=1)
+    if fold0.utcoffset() != fold1.utcoffset():
+        if fold0.astimezone(UTC).astimezone(zone).replace(tzinfo=None) == wall:
+            raise PlannerError(
+                TIMESTAMP_REFUSAL_CODE,
+                f"filter value for the declared timestamp field '{field}' is an "
+                "ambiguous fall-back wall time — no fold is guessed",
+            )
+        raise PlannerError(
+            TIMESTAMP_REFUSAL_CODE,
+            f"filter value for the declared timestamp field '{field}' is a "
+            "nonexistent spring-forward wall time — no offset is guessed",
+        )
+    return fold0.astimezone(UTC).replace(tzinfo=None)
+
+
+@lru_cache(maxsize=64)
+def _zone_offsets(zone: ZoneInfo) -> tuple[int, ...]:
+    """The zone's distinct UTC offsets in seconds (fix pass 1, finding 5):
+    the pre-transition LMT, every offset in effect across a dense grid of
+    the tz database's transition span, and the recurring tail rule's
+    alternation. These embedded computed constants are the guarded fold/gap
+    predicate's candidate offsets: a wall time's instants are exactly the
+    candidates ``wall - offset`` that round-trip back to the wall time, for
+    ANY transition width (Berlin's ±1 hour and Lord Howe's 30 minutes
+    alike — plan 0014 §1's zoneinfo prerequisite)."""
+
+    def offset(day: datetime) -> int:
+        return int((day.replace(tzinfo=zone).utcoffset() or timedelta(0)).total_seconds())
+
+    found = {offset(datetime.min), offset(datetime.max)}
+    day = datetime(1830, 1, 1)
+    while day.year <= 2040:
+        found.add(offset(day))
+        day += timedelta(days=10)
+    return tuple(sorted(found))
+
+
+def _record_ts_expression(column: exp.Expression, field: str, zone: ZoneInfo) -> exp.Expression:
+    """The guarded per-row normalization of the declared timestamp field: a
+    CASE that keeps NULL as NULL and otherwise yields the wall time's UTC
+    instant, raising the fixed marker (never the source value) for malformed,
+    nonexistent and ambiguous values. DuckDB's strptime accepts non-padded
+    fields, so the canonical shape is enforced first. Existence and
+    ambiguity follow the zone's OWN transition semantics instead of a fixed
+    ±1-hour assumption: a wall time's instants are exactly the candidates
+    ``wall - offset`` — one per distinct offset of the zone (embedded as
+    computed constants from ``zoneinfo``) — whose round-trip back to the
+    zone's wall clock equals the wall time; zero candidates is a nonexistent
+    spring-forward time, two or more an ambiguous fall-back time, whatever
+    the fold's width (probed against the ICU backend, plan 0014 §1 — both
+    Berlin DST examples of spec §7 V1 refuse through exactly these checks,
+    so a missing timezone backend is a refusal, never a guess)."""
+    zone_name = zone.key
+    shape = exp.Literal.string(_RECORD_TIMESTAMP_SHAPE)
+    fmt = exp.Literal.string(_RECORD_TIMESTAMP_FORMAT)
+    where = f"field '{field[:64]}'"  # a known catalog name, bounded regardless
+
+    def marker(reason: str) -> exp.Expression:
+        return exp.Anonymous(
+            this="error",
+            expressions=[
+                exp.Literal.string(
+                    f"{TIMESTAMP_MARKER} {reason} (declared for {where} as "
+                    f"{_RECORD_TIMESTAMP_FORMAT} in {zone_name})"
+                )
+            ],
+        )
+
+    def wall() -> exp.Expression:
+        return exp.Anonymous(this="try_strptime", expressions=[column.copy(), fmt.copy()])
+
+    def instant() -> exp.Expression:  # wall time -> instant in the declared zone
+        return exp.Anonymous(
+            this="timezone",
+            expressions=[exp.Literal.string(zone_name), wall()],
+        )
+
+    def utc() -> exp.Expression:  # instant -> naive UTC wall clock (order basis)
+        return exp.Anonymous(
+            this="timezone",
+            expressions=[exp.Literal.string("UTC"), instant()],
+        )
+
+    def back(expr: exp.Expression) -> exp.Expression:  # instant -> zone wall clock
+        return exp.Anonymous(
+            this="timezone",
+            expressions=[exp.Literal.string(zone_name), expr],
+        )
+
+    def candidate(offset_seconds: int) -> exp.Expression:
+        # the parsed wall time minus the offset as an instant, taken back to
+        # the zone's wall clock (evaluated only after the shape/parse checks)
+        shifted = exp.Sub(
+            this=wall(),
+            expression=exp.Anonymous(
+                this="to_seconds", expressions=[exp.Literal.number(offset_seconds)]
+            ),
+        )
+        tagged = exp.Anonymous(this="timezone", expressions=[exp.Literal.string("UTC"), shifted])
+        return exp.EQ(this=back(tagged), expression=wall())
+
+    malformed = marker("a malformed non-null value")
+    shape_ok = exp.Anonymous(this="regexp_full_match", expressions=[column.copy(), shape])
+    preimages = None  # the wall time's instant count, however wide the fold
+    for offset_seconds in _zone_offsets(zone):
+        vote = exp.Cast(this=candidate(offset_seconds), to=exp.DataType.build("INTEGER"))
+        preimages = vote if preimages is None else exp.Add(this=preimages, expression=vote)
+    case = (
+        exp.Case()
+        .when(exp.Is(this=column.copy(), expression=exp.Null()), exp.Null())
+        .when(exp.Not(this=shape_ok), malformed)
+        .when(exp.Is(this=wall(), expression=exp.Null()), malformed)
+        .when(
+            exp.EQ(this=preimages, expression=exp.Literal.number(0)),
+            marker("a nonexistent spring-forward wall time"),
+        )
+        .when(
+            exp.GTE(this=preimages, expression=exp.Literal.number(2)),
+            marker("an ambiguous fall-back wall time"),
+        )
+        .else_(utc())
+    )
+    return case
+
+
+def _parse_record_filters(
+    raw: Any, entry: dict, timestamp_field: str | None
+) -> tuple[list[tuple[str, str, Any]], list[tuple[str, str, Any]]]:
+    """Parse the optional AND-combined record predicates (spec 0014 §3,
+    reusing the metric request's value/literal builders): comparisons and IN
+    share the established parsing and ceilings; ``is_null``/``is_not_null``
+    carry no value; ``regex`` is one bounded literal whose PATTERN VALIDITY
+    is the execution engine's RE2 judgement, probed on the request's
+    connection by :func:`plan_records` (fix pass 1, finding 4). Returns
+    (non-temporal, temporal) — the temporal comparisons on the declared
+    timestamp field are applied after its interpretation."""
+    if raw is None:
+        return [], []
+    if not isinstance(raw, list):
+        raise PlannerError("filter_invalid", "'filters' must be a list of predicates")
+    non_temporal: list[tuple[str, str, Any]] = []
+    temporal: list[tuple[str, str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict) or set(item) - _RECORD_FILTER_KEYS or "field" not in item:
+            raise PlannerError(
+                "filter_invalid",
+                f"a record predicate is exactly {{'field', 'op'('value')}}; allowed "
+                f"keys {sorted(_RECORD_FILTER_KEYS)}",
+            )
+        field, op = item["field"], item["op"]
+        if not isinstance(field, str) or not field.strip():
+            raise PlannerError("filter_invalid", "a record predicate needs a non-empty 'field'")
+        if _record_column(entry, field) is None:
+            raise PlannerError(
+                "unknown_field",
+                f"unknown filter field {field!r}",
+                candidates=tuple(column["name"] for column in entry["columns"]),
+            )
+        if not isinstance(op, str) or op not in _RECORD_OPS:
+            raise PlannerError(
+                "filter_invalid",
+                f"unsupported op {op!r}; allowed: {sorted(_RECORD_OPS)}",
+            )
+        has_value = "value" in item
+        value = item.get("value")
+        where = f"filter on {field!r}"
+        if op in ("is_null", "is_not_null"):
+            if has_value:
+                raise PlannerError("filter_invalid", f"{where}: op {op!r} takes no value")
+        elif not has_value:
+            raise PlannerError("filter_invalid", f"{where}: op {op!r} requires a value")
+        elif op == "regex":
+            if not isinstance(value, str):
+                raise PlannerError(
+                    "filter_invalid", f"{where}: a regex predicate takes a string pattern"
+                )
+            if len(value) > MAX_PARAMETER_LENGTH:
+                raise PlannerError(
+                    "filter_invalid",
+                    f"{where}: pattern of {len(value)} character(s) exceeds the bound "
+                    f"of {MAX_PARAMETER_LENGTH}",
+                )
+        elif op == "in":
+            if not isinstance(value, list):
+                raise PlannerError(
+                    "filter_invalid", f"{where}: op 'in' takes a literal list of values"
+                )
+            if not 1 <= len(value) <= MAX_IN_VALUES:
+                raise PlannerError(
+                    "filter_invalid",
+                    f"{where}: an IN list needs 1..{MAX_IN_VALUES} values",
+                )
+            for element in value:
+                if element is None or isinstance(element, dict):
+                    raise PlannerError(
+                        "filter_invalid",
+                        f"{where}: IN list elements are scalars (use is_null for nulls)",
+                    )
+                if isinstance(element, str) and len(element) > MAX_PARAMETER_LENGTH:
+                    raise PlannerError(
+                        "filter_invalid",
+                        f"{where}: a string value of {len(element)} character(s) exceeds "
+                        f"the bound of {MAX_PARAMETER_LENGTH}",
+                    )
+                if isinstance(element, float) and not math.isfinite(element):
+                    raise PlannerError(
+                        "filter_invalid", f"{where}: non-finite numbers are rejected"
+                    )
+        else:  # a comparison
+            if value is None:
+                raise PlannerError(
+                    "filter_invalid",
+                    f"{where}: null is tested with is_null/is_not_null, not a comparison",
+                )
+            if isinstance(value, (dict, list)):
+                raise PlannerError(
+                    "filter_invalid", f"{where}: op {op!r} takes exactly one scalar value"
+                )
+            if isinstance(value, str) and len(value) > MAX_PARAMETER_LENGTH:
+                raise PlannerError(
+                    "filter_invalid",
+                    f"{where}: a string value of {len(value)} character(s) exceeds the "
+                    f"bound of {MAX_PARAMETER_LENGTH}",
+                )
+            if isinstance(value, float) and not math.isfinite(value):
+                raise PlannerError("filter_invalid", f"{where}: non-finite numbers are rejected")
+        bucket = (
+            temporal
+            if (timestamp_field is not None and field == timestamp_field and op in _COMPARISONS)
+            else non_temporal
+        )
+        bucket.append((field, op, value))
+    return non_temporal, temporal
+
+
+def _validate_regex(connection: Any, pattern: str, field: str) -> None:
+    """Validate one regex predicate with the engine that will run it (fix
+    pass 1, finding 4): the advertised semantics are DuckDB's RE2 — Python
+    ``re`` both refuses RE2-valid constructs (Unicode classes like ``\\p{L}``)
+    and accepts RE2-invalid ones (lookaheads) — so validity is probed as a
+    constant ``regexp_matches`` on the request's connection, which raises on
+    invalid RE2 patterns before result execution."""
+    try:
+        connection.execute("SELECT regexp_matches('probe', ?)", [pattern])
+    except Exception as exc:
+        raise PlannerError(
+            "filter_invalid", f"filter on {field!r}: invalid regular expression: {exc}"
+        ) from exc
+
+
+def plan_records(
+    catalog: list,
+    request: dict,
+    connection: Any = None,
+    *,
+    row_ceiling: int = MAX_RECORD_LIMIT,
+) -> RecordPlan:
+    """Compile ONE bounded single-dataset record selection (spec 0014 §3,
+    issue #57/S2): strict known fields/request keys, AND-combined typed
+    predicates, one optional declared timestamp interpretation (mandatory
+    semantics apply wherever the request orders that field), a required
+    deterministic order with explicit NULLS LAST and the selected-value tie
+    tuple, and a requested top-N within the ceilings. The plan's executed
+    statement carries the SAME-execution lookahead indicator — ``ROW_NUMBER``
+    over the deterministic order plus a ``LEAD`` existence boolean on the last
+    returned row — so the extra row never transfers payload cells and no
+    second mutable-source query or COUNT runs. No relationship traversal, no
+    aggregates, no caller SQL: the FROM identity is a built catalog entry and
+    every value binds as a planner-built literal (``connection`` is accepted
+    for the shared plan interface; a record selection runs no live audits).
+    Regex pattern validity is DuckDB's RE2 judgement, probed on
+    ``connection`` when supplied — the runtime always supplies its
+    connection, so the guaranteed validation point is covered; a
+    connection-less plan defers an invalid pattern to execution's own bind
+    refusal."""
+    if not isinstance(request, dict):
+        raise PlannerError(
+            "request_invalid",
+            "record request must be a mapping {dataset, fields, filters?, "
+            "timestamp?, order, limit?}",
+        )
+    unknown = sorted(set(request) - _RECORD_REQUEST_KEYS)
+    if unknown:
+        raise PlannerError(
+            "request_invalid",
+            f"unknown record request key(s) {unknown}; allowed: {sorted(_RECORD_REQUEST_KEYS)}",
+        )
+    entry = _resolve_record_dataset(catalog, request.get("dataset"))
+
+    fields = request.get("fields")
+    if not isinstance(fields, list) or not fields:
+        raise PlannerError("request_invalid", "'fields' must be a non-empty list of field names")
+    checked: list[str] = []
+    for name in fields:
+        if not isinstance(name, str):
+            raise PlannerError(
+                "request_invalid", "'fields' must be a non-empty list of field names"
+            )
+        checked.append(name)
+    fields = list(dict.fromkeys(checked))  # duplicates removed, first kept
+    column_types = {column["name"]: str(column["type"]) for column in entry["columns"]}
+    for field in fields:
+        if _record_column(entry, field) is None:
+            raise PlannerError(
+                "unknown_field",
+                f"unknown field {field!r}",
+                candidates=tuple(column["name"] for column in entry["columns"]),
+            )
+
+    timestamp = request.get("timestamp")
+    zone = None
+    zone_name: str | None = None
+    timestamp_field = None
+    if timestamp is not None:
+        if not isinstance(timestamp, dict) or set(timestamp) != _RECORD_TIMESTAMP_KEYS:
+            raise PlannerError(
+                "timestamp_invalid",
+                f"'timestamp' is exactly {sorted(_RECORD_TIMESTAMP_KEYS)}",
+            )
+        timestamp_field = timestamp.get("field")
+        ts_column = (
+            _record_column(entry, timestamp_field) if isinstance(timestamp_field, str) else None
+        )
+        if ts_column is None:
+            raise PlannerError(
+                "unknown_field",
+                f"unknown timestamp field {timestamp_field!r}",
+                candidates=tuple(column["name"] for column in entry["columns"]),
+            )
+        declared_type = str(ts_column["type"]).split("(")[0].strip().upper()
+        if declared_type not in _RECORD_TEXT_TYPES:
+            raise PlannerError(
+                "timestamp_invalid",
+                f"the declared timestamp field '{timestamp_field}' has type "
+                f"{declared_type!r}, which does not carry the documented "
+                f"{_RECORD_TIMESTAMP_FORMAT!r} text encoding",
+            )
+        if timestamp.get("format") != _RECORD_TIMESTAMP_FORMAT:
+            raise PlannerError(
+                "timestamp_invalid",
+                f"revision 1 supports exactly the documented "
+                f"{_RECORD_TIMESTAMP_FORMAT!r} encoding, got {timestamp.get('format')!r}",
+            )
+        zone_name = timestamp.get("timezone")
+        if not isinstance(zone_name, str) or not zone_name.strip():
+            raise PlannerError("timestamp_invalid", "'timezone' must be an IANA timezone name")
+        try:
+            zone = ZoneInfo(zone_name)
+        except Exception as exc:
+            raise PlannerError(
+                "timestamp_invalid",
+                f"timezone {zone_name!r} is not an available IANA zone",
+            ) from exc
+
+    non_temporal, temporal = _parse_record_filters(request.get("filters"), entry, timestamp_field)
+    if connection is not None:  # the runtime always supplies its connection
+        for field, op, value in non_temporal + temporal:
+            if op == "regex":
+                _validate_regex(connection, value, field)
+
+    raw_order = request.get("order")
+    if not isinstance(raw_order, list) or not raw_order:
+        raise PlannerError(
+            "order_invalid", "'order' is required: a non-empty list of {field, direction?}"
+        )
+    order: list[dict] = []
+    for item in raw_order:
+        if not isinstance(item, dict) or set(item) - _RECORD_ORDER_KEYS or "field" not in item:
+            raise PlannerError(
+                "order_invalid",
+                "an order entry is {'field': <column>} plus optional 'direction'",
+            )
+        field = item["field"]
+        direction = item.get("direction", "asc")
+        if not isinstance(field, str) or not field.strip():
+            raise PlannerError("order_invalid", "order 'field' must be a column name")
+        if _record_column(entry, field) is None:
+            raise PlannerError(
+                "unknown_field",
+                f"unknown order field {field!r}",
+                candidates=tuple(column["name"] for column in entry["columns"]),
+            )
+        if direction not in ("asc", "desc"):
+            raise PlannerError(
+                "order_invalid",
+                f"order direction must be 'asc' or 'desc', got {direction!r}",
+            )
+        order.append({"field": field, "direction": direction})
+
+    raw_limit = request.get("limit", DEFAULT_RECORD_LIMIT)
+    if (
+        isinstance(raw_limit, bool)
+        or not isinstance(raw_limit, int)
+        or not 1 <= raw_limit <= min(MAX_RECORD_LIMIT, row_ceiling)
+    ):
+        raise PlannerError(
+            "limit_invalid",
+            f"'limit' must be a positive integer of at most "
+            f"{min(MAX_RECORD_LIMIT, row_ceiling)} (booleans are not integers)",
+        )
+
+    # ---- the deterministic order: requested keys, then the remaining selected
+    # sortable scalar columns ascending NULLS LAST (ties disclosed in the plan)
+    tie_fields = [
+        field
+        for field in fields
+        if field not in {item["field"] for item in order}
+        and classify_output_type(column_types[field]) != "unsupported"
+    ]
+
+    def col(name: str) -> exp.Expression:
+        return exp.column(exp.to_identifier(name, quoted=True))
+
+    # fix pass 1, finding 2 + fix pass 2: helper identities are allocated
+    # against the dataset's known physical column names under DuckDB's
+    # case-insensitive identifier equivalence — a physical column named like
+    # a helper (exact or uppercased) stays an ordinary value column
+    taken = {column["name"].upper() for column in entry["columns"]}
+    ts_helper = _allocate_helper(_RECORD_TS, taken) if timestamp_field is not None else None
+    rn_helper = _allocate_helper(_RECORD_RN, taken)
+    has_more_helper = _allocate_helper(RECORD_HAS_MORE, taken)
+    base_alias = _allocate_helper(_RECORD_BASE, taken)
+    topn_alias = _allocate_helper(_RECORD_TOPN, taken)
+
+    def order_key(name: str) -> exp.Expression:
+        # ordering on the declared timestamp field uses its normalized instant
+        # (ts_helper is allocated exactly when a timestamp is declared)
+        helper = ts_helper if name == timestamp_field else None
+        return col(helper) if helper is not None else col(name)
+
+    def ordered(name: str, direction: str) -> exp.Ordered:
+        return exp.Ordered(this=order_key(name), desc=direction == "desc", nulls_first=False)
+
+    def window_order() -> exp.Order:
+        keys = [ordered(item["field"], item["direction"]) for item in order]
+        keys += [ordered(field, "asc") for field in tie_fields]
+        return exp.Order(expressions=keys)
+
+    def predicate_ast(field: str, op: str, value: Any) -> exp.Expression:
+        column = col(field)
+        context = f"filter on {field!r}"
+        if op == "is_null":
+            return exp.Is(this=column, expression=exp.Null())
+        if op == "is_not_null":
+            return exp.Not(this=exp.Is(this=column, expression=exp.Null()))
+        if op == "regex":
+            return exp.RegexpLike(this=column, expression=_direct_literal(value, context))
+        if op == "in":
+            return exp.In(
+                this=column, expressions=[_direct_literal(element, context) for element in value]
+            )
+        helper = ts_helper if field == timestamp_field else None
+        if helper is not None and zone is not None:
+            instant = _record_instant(value, zone, field)
+            literal = exp.Cast(
+                this=exp.Literal.string(instant.strftime(_RECORD_TIMESTAMP_FORMAT)),
+                to=exp.DataType.build("TIMESTAMP"),
+            )
+            return _COMPARISONS[op](this=col(helper), expression=literal)
+        return _COMPARISONS[op](this=column, expression=_direct_literal(value, context))
+
+    parts = [part for part in entry["ref"].split(".") if part] + [entry["name"]]
+    table = exp.Table(
+        **{
+            key: exp.to_identifier(part, quoted=True)
+            for key, part in zip(("catalog", "db", "this"), [None] * (3 - len(parts)) + parts)
+        }
+    )
+    needed: list[str] = list(fields)
+    for field, _op, _value in non_temporal + temporal:
+        if field not in needed:
+            needed.append(field)
+    for item in order:
+        if item["field"] not in needed:
+            needed.append(item["field"])
+    if timestamp_field is not None and timestamp_field not in needed:
+        needed.append(timestamp_field)
+
+    base = exp.Select().from_(table)
+    for name in needed:
+        base = base.select(exp.alias_(col(name), name, quoted=True))
+    base_with_ts = base
+    if timestamp_field is not None and ts_helper is not None and zone is not None:
+        ts_expression = _record_ts_expression(col(timestamp_field), timestamp_field, zone)
+        base_with_ts = base.select(exp.alias_(ts_expression, ts_helper, quoted=True))
+    for field, op, value in non_temporal:
+        base_with_ts = base_with_ts.where(predicate_ast(field, op, value))
+
+    record_base = exp.Subquery(
+        this=base_with_ts,
+        alias=exp.TableAlias(this=exp.to_identifier(base_alias, quoted=True)),
+    )
+    windowed = (
+        exp.Select()
+        .from_(record_base)
+        .select(*[exp.alias_(col(name), name, quoted=True) for name in fields])
+    )
+    if ts_helper is not None:
+        windowed = windowed.select(exp.alias_(col(ts_helper), ts_helper, quoted=True))
+    windowed = windowed.select(
+        exp.alias_(
+            exp.Window(this=exp.RowNumber(), order=window_order()),
+            rn_helper,
+            quoted=True,
+        )
+    ).select(
+        exp.alias_(
+            exp.Not(
+                this=exp.Is(
+                    this=exp.Window(
+                        this=exp.Lead(this=exp.Literal.number(1)), order=window_order()
+                    ),
+                    expression=exp.Null(),
+                )
+            ),
+            has_more_helper,
+            quoted=True,
+        )
+    )
+    for field, op, value in temporal:
+        windowed = windowed.where(predicate_ast(field, op, value))
+
+    executed = (
+        exp.Select()
+        .from_(
+            exp.Subquery(
+                this=windowed,
+                alias=exp.TableAlias(this=exp.to_identifier(topn_alias, quoted=True)),
+            )
+        )
+        .select(*[exp.alias_(col(name), name, quoted=True) for name in fields])
+        .select(exp.alias_(col(has_more_helper), has_more_helper, quoted=True))
+        .where(exp.LTE(this=col(rn_helper), expression=exp.Literal.number(raw_limit)))
+        .order_by(exp.Ordered(this=col(rn_helper), nulls_first=False))
+    )
+    if ts_helper is not None:
+        # fix pass 1, finding 3: the declared interpretation stays evaluated
+        # on every ELIGIBLE row even when nothing else consumes the normalized
+        # instant — it rides as a trailing execution-only column (stripped
+        # before assembly) so no projection pruning can silence a malformed,
+        # nonexistent or ambiguous value below the top-N boundary
+        executed = executed.select(exp.alias_(col(ts_helper), ts_helper, quoted=True))
+
+    logical = exp.Select().from_(table)
+    for name in fields:
+        logical = logical.select(exp.alias_(col(name), name, quoted=True))
+    for field, op, value in non_temporal + temporal:
+        logical = logical.where(predicate_ast(field, op, value))
+    logical = logical.order_by(window_order()).limit(raw_limit)
+
+    executed_sql = executed.sql(dialect="duckdb")
+    sql = logical.sql(dialect="duckdb")
+    for statement, what in ((executed_sql, "executed"), (sql, "logical")):
+        if len(sqlglot.parse(statement)) != 1:  # self-check, the spec §6 invariant
+            raise PlannerError(
+                "not_one_statement",
+                f"compiled {what} record plan is not exactly one statement "
+                "(no-unvalidated-execution invariant, spec §6)",
+            )
+    return RecordPlan(
+        sql=sql,
+        executed_sql=executed_sql,
+        dataset=f"{entry['ref']}.{entry['name']}",
+        resource=entry["resource"],
+        fields=tuple(fields),
+        filters=tuple(
+            {"field": field, "op": op, **({"value": value} if value is not None else {})}
+            for field, op, value in non_temporal + temporal
+        ),
+        order=tuple(order),
+        tie_order=tuple(tie_fields),
+        timestamp=(
+            {
+                "field": timestamp_field,
+                "format": _RECORD_TIMESTAMP_FORMAT,
+                "timezone": zone_name,
+                "interpretation": (
+                    f"wall times in {zone_name} normalized to UTC instants "
+                    f"({_RECORD_TIMESTAMP_FORMAT}); malformed, nonexistent and ambiguous "
+                    "values refuse; rows keep the original selected value"
+                ),
+            }
+            if timestamp_field is not None
+            else None
+        ),
+        limit=raw_limit,
+        has_more_column=has_more_helper,
+        execution_only_columns=(
+            (has_more_helper, ts_helper) if ts_helper is not None else (has_more_helper,)
+        ),
     )

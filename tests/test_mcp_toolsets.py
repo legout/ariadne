@@ -56,6 +56,7 @@ QUERY_TOOLS = {
     "define_metric",
     "query_metrics",
     "query_detail",
+    "query_records",  # S2 (issue #57): the bounded Ad-hoc Record Query
     "save_example",
     "search_examples",
     "resolve_term",  # K2 (issue #42): shared terminology resolution
@@ -401,6 +402,92 @@ def test_stdio_admitted_project_serves_queries_and_keeps_authoring(tmp_path):
     assert read["revision"] == started["candidate_revision"]
     assert "The rule body, admitted." in read["content"]
     assert read["complete"] is True
+
+
+def test_record_query_discovery(tmp_path):
+    """V4-12 (spec 0014 §7, issue #57/S2): the Analyst/Combined registrations
+    expose ``query_records`` with an explicit discoverable nested request
+    schema — dataset/fields/filters/timestamp/order/limit with defaults,
+    supported operators and the overflow policy — so discovery differentiates
+    bounded record selection from metric aggregation and admitted detail; the
+    Authoring registration gains no query operation. One bounded call over the
+    admitted project proves the registered surface; the business cases live in
+    ``tests/test_query_records.py`` (not repeated per transport)."""
+    project, _review = _admitted_project(tmp_path)
+
+    async def run() -> dict:
+        out = {}
+        for toolset in ("analyst", "combined", "authoring"):
+            async with _launch(project, toolset) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    out[toolset] = {tool.name: tool for tool in (await session.list_tools()).tools}
+                    if toolset == "analyst":
+                        out["called"] = await session.call_tool(
+                            "query_records",
+                            {
+                                "request": {
+                                    "dataset": "events.events",
+                                    "fields": ["id", "label"],
+                                    "order": [{"field": "id"}],
+                                    "limit": 2,
+                                }
+                            },
+                        )
+        return out
+
+    out = asyncio.run(run())
+
+    # Analyst and Combined register the tool; Authoring gains no query tool
+    assert "query_records" in out["analyst"]
+    assert "query_records" in out["combined"]
+    assert "query_records" not in out["authoring"]
+
+    # the explicit nested request schema is discoverable (same registration
+    # on both query surfaces)
+    schema = out["analyst"]["query_records"].inputSchema
+    assert schema == out["combined"]["query_records"].inputSchema
+    request_schema = schema["properties"]["request"]
+    assert set(request_schema["properties"]) == {
+        "dataset",
+        "fields",
+        "filters",
+        "timestamp",
+        "order",
+        "limit",
+    }
+    assert request_schema["required"] == ["dataset", "fields", "order"]
+    assert request_schema["properties"]["limit"] == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000,
+        "default": 10,
+        "description": request_schema["properties"]["limit"]["description"],
+    }
+    op_enum = request_schema["properties"]["filters"]["items"]["properties"]["op"]["enum"]
+    for op in ("=", "!=", "in", "is_null", "is_not_null", "regex"):
+        assert op in op_enum
+    # ungoverned status and the overflow policy are discoverable in the prose
+    prose = json.dumps(schema) + out["analyst"]["query_records"].description
+    assert "governed: false" in prose
+    assert "overflow" in prose.lower() or "all-or-nothing" in prose
+
+    # one bounded call over the admitted project (its pinned snapshot's
+    # events fixture: three rows (1,'a'),(2,'b'),(3,'c'))
+    called = out["called"]
+    assert not called.isError
+    payload = json.loads(_text(called))
+    assert payload["governed"] is False  # a record answer, even on an admitted source
+    assert payload["rows"] == [{"id": 1, "label": "a"}, {"id": 2, "label": "b"}]
+    assert payload["result"] == {
+        "status": "complete",
+        "complete": True,
+        "scope": "requested_top_n",
+        "requested_limit": 2,
+        "returned_rows": 2,
+        "has_more_matching": True,
+    }
+    assert payload["provenance"]["route"] == "managed-pinned-admission"
 
 
 # ------------------------------------- the fixed-toolset console-script entries
