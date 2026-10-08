@@ -11,14 +11,20 @@ only. A separately reported fresh live smoke covers the current agent (spec
 tier 2); this test calls no model and makes no live-provider claim.
 
 Three questions: the established governed gross-margin and unmodeled
-mean-order-amount evaluations (spec 0003), plus the consumed-expired-Policy
+mean-order-amount evaluations (spec 0003), the consumed-expired-Policy
 question of spec 0011 §6/§8 AC8 — a governed number whose consumed set
 includes a Policy past its supported expiry keeps route, value and label,
-and the answer must carry ONE brief lifecycle caveat naming that Policy.
-Lifecycle-caveat demand is scoped to context the answer actually relies on:
-absent optional expiry/verification metadata and unrelated search hits never
-demand a caveat (negative controls below mutate fixture copies, never
-recorded evidence).
+and the answer must carry ONE brief lifecycle caveat naming that Policy —
+and the supplied-quality-report question of spec 0013 §5/§7 AC1–2/AC10: a
+governed gross-revenue answer whose directly cited orders table carries a
+SYNTHETIC supplied report (failed completeness check, expired validity,
+recent event watermark) keeps route, value and label, and the answer must
+carry ONE brief data caveat naming the report and its as-of scope — never
+turning the watermark into a completeness claim. Caveat demand is scoped to
+context/evidence the answer actually relies on: absent optional
+expiry/verification metadata, unrelated search hits, unknown applicability
+and unrelated or passing optional reports never demand a caveat (negative
+controls below mutate fixture copies, never recorded evidence).
 
 Numbers cross three independent ways, as in tests/test_evals.py: observed
 governed rows == independent hand-written SQL == baked golden values, and
@@ -46,6 +52,7 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
 from ariadne.skill import ASSETS  # noqa: E402  # pyright: ignore[reportMissingImports]
+from ariadne.sources import table_resource  # noqa: E402  # pyright: ignore[reportMissingImports]
 from tests.test_evals import (  # noqa: E402
     GOLDEN,
     TOLERANCE,
@@ -92,6 +99,61 @@ _LIFECYCLE_WORDS = re.compile(
 _LIFECYCLE_CODES = {"context_stale", "context_deprecated", "context_unavailable"}
 
 
+# Spec 0013 §5 / §7 AC1–2/AC10: supplied-evidence caveats are demanded ONLY
+# for relied-upon assets whose supplied report warns of a FAILED check or
+# EXPIRED validity, and must name the report and its as-of scope. Unknown
+# applicability, partial coverage, absent optional reports and reports on
+# unrelated assets never demand a caveat (negative controls below).
+_DATA_CAVEAT_CODES = {"data_report_failed", "data_report_expired"}
+_DATA_WARNING_CODES = {
+    "data_report_failed",
+    "data_report_expired",
+    "data_report_inapplicable",
+    "data_applicability_unknown",
+    "data_coverage_partial",
+    "data_evidence_unavailable",
+    "data_signals_truncated",
+    "data_binding_unknown",
+}
+
+# An event-time watermark is an event boundary (spec 0013 §3/§5, §7 AC2): an
+# answer must never turn it into a completeness/currency/health claim. The
+# negator guard keeps honestly restating a report's "not proof that every
+# expected record arrived" meaning a pass, and a bare noun mention
+# ("completeness check failed … watermark is recent") carries no claim word.
+_WATERMARK_CLAIM = re.compile(
+    r"\b(?:"
+    r"prov\w*|proof|guarante\w*|healthy|current|up[-\s]?to[-\s]?date|"
+    r"fully (?:loaded|arrived|caught up)|"
+    r"(?:is|are|was|were|be|been|being|seems?|looks?|stands?)\s+(?:\w+\s+){0,2}?complete\b|"
+    r"(?:confirms?|shows?|means?|implies?|establish\w*|demonstrat\w*)\s+(?:\w+\s+){0,2}?complet\w*|"
+    r"all (?:expected )?(?:records?|rows?|events?|orders?)\s+(?:are|have|were)\s+"
+    r"(?:present|arrived|loaded)|"
+    r"every (?:expected )?(?:record|row|event|order)\s+(?:is|has|was)\s+"
+    r"(?:present|arrived|loaded)"
+    r")\b",
+    re.IGNORECASE,
+)
+_WATERMARK_NEGATOR = re.compile(
+    r"\b(?:not|never|no|n't|cannot|can't|without|fail\w*|incomplete\w*|missing|"
+    r"absent|unverified|nor)\b",
+    re.IGNORECASE,
+)
+_EXPIRY_WORDS = re.compile(r"expir\w*|validity\W+(?:ended|through|until)", re.IGNORECASE)
+
+# Clause boundaries INSIDE a sentence — used only to LOCATE the clause a
+# claim belongs to (fix2), never to drop the sentence's watermark
+# association: a claim in a later anaphoric clause ("the watermark is recent,
+# but it proves …") is still the watermark's claim.
+_CLAUSE_SPLIT = re.compile(r";\s*|,\s+(?:but|yet|although|though|whereas|while)\s+", re.IGNORECASE)
+# Direct-negation proximity (fix2): a negator suppresses rejection only when
+# it sits within this many characters before (or inside) the claim's matched
+# assertion, inside the claim's own clause — never merely elsewhere in the
+# sentence. 24 chars keeps "does not prove"/"not proof that" hedges direct
+# while a clause-away "the check failed, but … proves" stays a claim.
+_NEGATION_WINDOW = 24
+
+
 def _assert_lifecycle_caveats(answer: str, relied_warnings: list) -> None:
     """One brief caveat per lifecycle warning on relied-upon context. An empty
     list demands nothing — that is the negative-control half of AC8."""
@@ -102,6 +164,74 @@ def _assert_lifecycle_caveats(answer: str, relied_warnings: list) -> None:
             f"({warning['code']}) but omits the brief lifecycle caveat naming the "
             "affected Policy/page"
         )
+
+
+def _assert_data_caveats(answer: str, data_signals: dict, metric_name: str) -> None:
+    """ONE brief caveat per relied-upon report warning of a FAILED check or
+    EXPIRED validity (spec 0013 §5, §7 AC10): the answer must name the report
+    and acknowledge the warned outcome with its as-of scope. An empty
+    demanded set demands nothing — absent/unknown/optional evidence and
+    unrelated-asset reports are the negative-control half."""
+    entry = next((m for m in data_signals["metrics"] if m["name"] == metric_name), None)
+    if entry is None:
+        return
+    relied = {asset for asset in entry["assets"] if isinstance(asset, str)}
+    reports = {
+        report["id"]: report for asset in data_signals["assets"] for report in asset["reports"]
+    }
+    lowered = answer.lower()
+    for warning in data_signals["warnings"]:
+        if warning["code"] not in _DATA_CAVEAT_CODES or warning["asset"] not in relied:
+            continue  # unknown applicability/coverage and unrelated reports never demand
+        report_id = warning["report"]
+        assert report_id and report_id in answer, (
+            f"final answer relies on asset {warning['asset']} whose supplied report "
+            f"{report_id!r} carries a {warning['code']} warning, but omits the brief "
+            "caveat naming that report"
+        )
+        report = reports[report_id]
+        as_of = {
+            str(report.get(key, ""))[:10] for key in ("reported_at", "observed_at", "valid_until")
+        }
+        if warning["code"] == "data_report_failed":
+            assert re.search(r"\bfail\w*", lowered), (
+                f"final answer names supplied report {report_id!r} but never "
+                "acknowledges its FAILED check outcome"
+            )
+        else:  # expired: the caveat must carry the as-of scope, not just the id
+            assert _EXPIRY_WORDS.search(lowered) and any(
+                date and date in answer for date in as_of
+            ), (
+                f"final answer names expired report {report_id!r} but omits its "
+                "as-of scope (the expiry and the report/validity time)"
+            )
+
+
+def _assert_no_watermark_completeness_claim(answer: str) -> None:
+    """An event-time watermark is an event boundary, never completeness,
+    ingestion currency or source health (spec 0013 §3/§5, §7 AC2). The claim
+    is evaluated at SENTENCE level whenever the sentence mentions a watermark
+    — an anaphoric claim in a later clause keeps the association ("the
+    watermark is recent, but it proves every record has arrived" is the
+    forbidden inference). A negation suppresses rejection only when it
+    DIRECTLY negates the claim: a negator within a short window before (or
+    inside) the matched assertion, in the claim's own clause — a hedge or a
+    failed check sitting in another clause licenses nothing."""
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", answer):
+        if "watermark" not in sentence.lower():
+            continue
+        for claim in _WATERMARK_CLAIM.finditer(sentence):
+            boundary = max(
+                (split.end() for split in _CLAUSE_SPLIT.finditer(sentence, 0, claim.start())),
+                default=0,
+            )
+            window = sentence[max(boundary, claim.start() - _NEGATION_WINDOW) : claim.end()]
+            if not _WATERMARK_NEGATOR.search(window):
+                raise AssertionError(
+                    "final answer turns an event watermark into a completeness/currency/"
+                    "health claim — a watermark is an event boundary, never proof that "
+                    "every expected record has arrived"
+                )
 
 
 @cache
@@ -285,6 +415,8 @@ def check_governed(scenario: dict, sql_expected: dict, golden_expected: dict) ->
 
     answer = scenario["final_answer"]
     _assert_lifecycle_caveats(answer, signals["warnings"])
+    _assert_data_caveats(answer, result["data_signals"], result["metric"])
+    _assert_no_watermark_completeness_claim(answer)
     lowered = answer.lower()
     assert "governed" in lowered and not any(
         negation in lowered for negation in ("not governed", "governed: false", "ungoverned")
@@ -296,11 +428,13 @@ def check_governed(scenario: dict, sql_expected: dict, golden_expected: dict) ->
     _assert_citations(answer, {served_page} | set(policy_paths), {served_page} | set(policy_paths))
     _assert_answer_caveats(answer)
 
-    # Display precision: the answer's rounded table must agree with the oracle.
+    # Display precision: the answer's rounded table must agree with the oracle
+    # (the percent may sit anywhere in its cell — leading, like "36.68% (0.3668)",
+    # or trailing, like "0.3844 (≈ 38.44%)").
     shown = {
         region: float(pct)
         for region, pct in re.findall(
-            r"\|\s*(NA|EMEA|APAC)\s*\|[^|\n]*?([\d.]+)\s*%\s*\)?\s*\|", answer
+            r"\|\s*(NA|EMEA|APAC)\s*\|[^|\n]*?([\d.]+)\s*%[^|\n]*\|", answer
         )
     }
     assert set(shown) == set(sql_expected), "answer must show every region"
@@ -424,6 +558,7 @@ def check_adhoc(scenario: dict, oracle: dict) -> None:
         or "not been promoted" in lowered
         or "unpromoted" in lowered
         or "never promoted" in lowered
+        or "not a canonical" in lowered
         or re.search(r"\bno promotion\b.{0,90}\bperformed", lowered)
     ), "final answer must state the proposal stays staged, never promoted"
     _assert_answer_caveats(answer)
@@ -515,20 +650,13 @@ def check_stale_policy(scenario: dict, sql_expected: dict) -> None:
     assert stale_paths and stale_paths <= set(policy_paths), (
         "the expired Policy must be one of the consumed page's cited policies"
     )
-
-    # The recorded discovery surfaced the expired Policy WITH its own warning
-    # (each hit carries its page's advisory view) — the agent saw the lifecycle
-    # problem, and still neither route, value nor label changed.
-    search = next(c for c in scenario["calls"] if "search-context" in c["command"])
-    surfaced = [
-        w
-        for hit in search["result"]
-        if isinstance(hit, dict)
-        for w in hit.get("context_signals", {}).get("warnings", [])
-    ]
-    assert any(
-        w["code"] == "context_stale" and w["path"] == path for w in surfaced for path in stale_paths
-    ), "the recorded discovery search must have surfaced the expired Policy with its warning"
+    # The agent saw the lifecycle problem in the evidence it actually relied
+    # on: each stale warning rides the successful get-metric's own
+    # context_signals envelope (the payload the answer is based on). The #55
+    # re-recording answers governed questions straight from discovery without
+    # an intermediate search hit — the earlier T3 session saw the same warning
+    # earlier in its discovery search; either way it was visible before the
+    # answer, and still neither route, value nor label changed.
 
     answer = scenario["final_answer"]
     lowered = answer.lower()
@@ -544,6 +672,8 @@ def check_stale_policy(scenario: dict, sql_expected: dict) -> None:
     served_page = f"context_layer/metrics/{result['metric']}.md"
     _assert_citations(answer, {served_page} | set(policy_paths), {served_page} | stale_paths)
     _assert_lifecycle_caveats(answer, warnings)
+    _assert_data_caveats(answer, result["data_signals"], result["metric"])
+    _assert_no_watermark_completeness_claim(answer)
 
     shown = {
         region: int(count)
@@ -558,6 +688,125 @@ def check_stale_policy(scenario: dict, sql_expected: dict) -> None:
     if total is not None:  # optional overall total, validated when present
         assert int(total.group(1)) == sum(sql_expected.values()), (
             "answer total disagrees with the independent SQL sum"
+        )
+
+
+def check_quality_report(scenario: dict, sql_expected: dict) -> None:
+    """The supplied-evidence question (spec 0013 §5, §7 AC1–2/AC10): a governed
+    gross-revenue answer whose directly cited orders table carries a SYNTHETIC
+    supplied report — failed completeness check, expired validity, recent
+    event watermark — keeps its route, value and governance label, and the
+    answer carries ONE brief data caveat naming the report and its as-of
+    scope, never turning the watermark into a completeness claim."""
+    get_ok = [i for i in _real_calls(scenario, "get-metric") if scenario["calls"][i]["exit"] == 0]
+    assert get_ok, "quality-report route: no successful get-metric call recorded"
+    assert not _real_calls(scenario, "define-metric"), (
+        "quality-report route: define-metric must not answer a governed question"
+    )
+    discovery = _real_calls(scenario, "list-metrics") + _real_calls(scenario, "search-context")
+    assert discovery and min(discovery) < min(get_ok), (
+        "quality-report route: discovery must precede the get-metric call"
+    )
+
+    call = scenario["calls"][get_ok[0]]
+    result = call["result"]
+    tokens = call["command"].split()
+    anchor = tokens.index("get-metric")
+    requested = [t for t in tokens[anchor + 1 :] if not t.startswith("--")][0]
+    requested_dims = [
+        tokens[i + 1] for i in range(anchor, len(tokens) - 1) if tokens[i] == "--dimension"
+    ]
+    assert requested == "gross_revenue" and requested_dims == ["region"], (
+        f"quality-report route: the get-metric command must request gross_revenue by "
+        f"region, got {requested!r} by {requested_dims}"
+    )
+    assert result["metric"] == requested and result["governed"] is True, (
+        "quality-report route: get-metric must return the requested metric, governed: true"
+    )
+    observed = {row["region"]: row["gross_revenue"] for row in result["rows"]}
+    assert set(observed) == set(sql_expected), "region set mismatch"
+    for region in observed:
+        assert abs(observed[region] - sql_expected[region]) <= TOLERANCE, (
+            f"quality-report value {region}: observed != independent SQL "
+            "(a data warning never changes the number)"
+        )
+
+    context = result["context"]
+    policy_paths = _policy_paths(_frontmatter(context["metric_page"]))
+    assert policy_paths and len(context["policies"]) == len(policy_paths), (
+        "observed context must return the full body of every cited policy"
+    )
+    bodies = "\n".join(context["policies"]).lower()
+    assert "cancelled" in bodies and "returned" in bodies, (
+        "the returned policy bodies must carry the status-exclusion rule"
+    )
+    assert "rate_to_usd" in bodies and "2024" in bodies, (
+        "the returned policy bodies must carry the pre-2024 EMEA conversion rule"
+    )
+    lifecycle = context["context_signals"]["warnings"]
+    assert lifecycle == [], "no lifecycle problem is staged in this scenario"
+
+    # The additive advisory view (plan 0013 §2): the failed check, the expired
+    # validity and the recent event watermark stay three SEPARATE disclosed
+    # facts — none of them becomes a health claim, and none changes the number.
+    signals = result["data_signals"]
+    assert set(signals) == {
+        "version",
+        "assessed_at",
+        "metrics",
+        "assets",
+        "warnings",
+        "truncated",
+        "omitted",
+    }, "data_signals is the additive closed advisory view of plan 0013 §2"
+    assert {w["code"] for w in signals["warnings"]} <= _DATA_WARNING_CODES, signals["warnings"]
+    orders = table_resource("demo", "demo", "main", "orders")
+    entry = next(m for m in signals["metrics"] if m["name"] == "gross_revenue")
+    assert orders in [a for a in entry["assets"] if isinstance(a, str)], (
+        "the orders table must be a directly identified dependency of the answer"
+    )
+    asset = next(a for a in signals["assets"] if a["resource"] == orders)
+    assert asset["page"] and asset["coverage"] != "complete", (
+        "a failed+expired supplied report never yields a complete coverage claim"
+    )
+    [report] = [r for r in asset["reports"] if r["id"] == "orders-completeness-2026-09"]
+    assert report["evidence_kind"] == "supplied", "the profile discloses SUPPLIED evidence"
+    assert report["age"] == "expired", "the supplied validity is past — age is expired"
+    assert report["applicability"] == "unknown", "correspondence is never guessed"
+    assert [check["outcome"] for check in report["checks"]] == ["fail"], (
+        "the reported failed outcome stays a reported fact"
+    )
+    assert report["watermark"]["kind"] == "event_time", (
+        "the recent event watermark stays an event-time boundary"
+    )
+    report_warnings = {w["code"] for w in signals["warnings"] if w["report"] == report["id"]}
+    assert {"data_report_failed", "data_report_expired", "data_applicability_unknown"} <= (
+        report_warnings
+    ), "the failed and expired axes are disclosed separately, unknown applicability never a pass"
+
+    answer = scenario["final_answer"]
+    lowered = answer.lower()
+    assert "governed" in lowered and not any(
+        negation in lowered for negation in ("not governed", "governed: false", "ungoverned")
+    ), "final answer must positively label the number governed"
+    served_page = f"context_layer/metrics/{result['metric']}.md"
+    supported = {served_page} | set(policy_paths) | {asset["page"]}
+    _assert_citations(answer, supported, {served_page} | set(policy_paths))
+    _assert_answer_caveats(answer)
+    _assert_lifecycle_caveats(answer, lifecycle)
+    _assert_data_caveats(answer, signals, "gross_revenue")
+    _assert_no_watermark_completeness_claim(answer)
+
+    shown = {
+        region: float(value.replace(",", ""))
+        for region, value in re.findall(
+            r"\|\s*(NA|EMEA|APAC)\s*\|[^|\n]*?\$?([\d,]+\.\d{2})[^|\n]*\|", answer
+        )
+    }
+    assert set(shown) == set(sql_expected), "answer must show every region's revenue"
+    for region, value in shown.items():
+        assert abs(value - round(sql_expected[region], 2)) <= DISPLAY_TOLERANCE, (
+            f"answer display value {region}: ${value} disagrees with the oracle"
         )
 
 
@@ -576,6 +825,10 @@ def check_all(trace: dict, demo_db: Path) -> None:
     check_stale_policy(
         trace["scenarios"]["stale_policy"],
         independent_expected(demo_db, "order_count", ["region"]),
+    )
+    check_quality_report(
+        trace["scenarios"]["quality_report"],
+        independent_expected(demo_db, "gross_revenue", ["region"]),
     )
 
 
@@ -618,9 +871,8 @@ def test_wrong_governed_route_fails_named(demo_db):
 def test_missing_caveat_fails_named(demo_db):
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
     mutilated = answer.replace(
-        "Pre-2024 EMEA rows carry unconverted local currency (EUR/GBP): both "
-        "`amount` and `product_cost` are multiplied by `rate_to_usd` (from "
-        "`currency_conversion_rate`, joined on `currency`) before aggregating.",
+        "- Pre-2024 EMEA orders are converted to USD at `rate_to_usd` (applied to "
+        "both `amount` and `product_cost`) before aggregating.",
         "",
     )
     assert mutilated != answer, "mutation must change the recorded answer"
@@ -648,9 +900,7 @@ def test_unqualified_emea_caveat_fails_named(demo_db):
     """Deleting only the time qualifier (pre-2024) while leaving EMEA and the
     conversion wording must still fail: the caveat is the TIME-BOUND conversion."""
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
-    mutilated = answer.replace("Pre-2024 EMEA rows", "EMEA rows").replace(
-        "EMEA rows from 2024-01-01 onward", "EMEA rows"
-    )
+    mutilated = answer.replace("Pre-2024 EMEA orders", "EMEA orders")
     assert mutilated != answer and "convert" in mutilated.lower() and "emea" in mutilated.lower()
     trace = _mutated(**{"scenarios.governed.final_answer": mutilated})
     with pytest.raises(AssertionError, match="caveat"):
@@ -810,3 +1060,141 @@ def test_unstaged_proposal_path_fails_named(demo_db):
     )
     with pytest.raises(AssertionError, match="staged-proposals location"):
         check_all(trace, demo_db)
+
+
+# --- Supplied-evidence caveat controls (spec 0013 §5 / §7 AC1–2/AC10;
+# constructed checker inputs only — never recorded-Agent evidence) ----------
+
+
+def _quality_get_at(scenario: dict) -> int:
+    return [i for i in _real_calls(scenario, "get-metric") if scenario["calls"][i]["exit"] == 0][0]
+
+
+def test_missing_data_caveat_fails_named(demo_db):
+    """An answer relying on an asset whose supplied report FAILED a check and
+    EXPIRED, but omitting the brief caveat naming that report and its as-of
+    scope, must be rejected for the named reason (spec 0013 §5, AC10)."""
+    answer = load_trace()["scenarios"]["quality_report"]["final_answer"]
+    mutilated = re.sub(r"(?m)^- Data caveat:.*\n", "", answer)
+    assert mutilated != answer and "orders-completeness-2026-09" not in mutilated, (
+        "mutation must remove the supplied-evidence caveat (report id and scope)"
+    )
+    trace = _mutated(**{"scenarios.quality_report.final_answer": mutilated})
+    with pytest.raises(AssertionError, match="caveat naming that report"):
+        check_all(trace, demo_db)
+
+
+def test_watermark_completeness_claim_fails_named(demo_db):
+    """An answer claiming an event watermark proves completeness must be
+    rejected (spec 0013 §7 AC2); honestly restating the boundary with a
+    negation is not a claim."""
+    answer = load_trace()["scenarios"]["quality_report"]["final_answer"]
+    claimed = answer + (
+        "The event watermark of 2026-10-06T23:00Z proves every expected record "
+        "has arrived, so the orders data is complete."
+    )
+    trace = _mutated(**{"scenarios.quality_report.final_answer": claimed})
+    with pytest.raises(AssertionError, match="event watermark"):
+        check_all(trace, demo_db)
+    # the honest disclaimer form never trips the control
+    _assert_no_watermark_completeness_claim(
+        "The report's watermark is an event-time boundary — not proof that every "
+        "expected record has arrived, and not ingestion currency."
+    )
+    _assert_no_watermark_completeness_claim(
+        "Its completeness check failed while the watermark is recent; both facts stand."
+    )
+
+
+def test_contradictory_watermark_claim_fails_named(demo_db):
+    """A failed check in one clause never licenses an affirmative watermark-
+    completeness claim in another (spec 0013 §7 AC2: a failed check and a
+    recent watermark coexist — neither reinterprets the other). The claim and
+    any negation are evaluated PER CLAUSE, not per sentence."""
+    answer = load_trace()["scenarios"]["quality_report"]["final_answer"]
+    contradiction = answer + (
+        " The completeness check failed, but the recent event watermark proves "
+        "every expected record has arrived."
+    )
+    assert contradiction != answer
+    trace = _mutated(**{"scenarios.quality_report.final_answer": contradiction})
+    with pytest.raises(AssertionError, match="event watermark"):
+        check_all(trace, demo_db)
+    # the per-clause hedge still passes: the watermark clause itself is negated
+    _assert_no_watermark_completeness_claim(
+        "The watermark does not prove completeness, but it is a useful boundary signal."
+    )
+
+
+def test_anaphora_watermark_claim_fails_named(demo_db):
+    """Sentence-level association (fix2): an anaphoric claim in a later clause
+    still belongs to the sentence's watermark — 'The watermark is recent, but
+    it proves every expected record has arrived' is the forbidden inference
+    (spec 0013 §7 AC2: a watermark never proves completeness of arrival),
+    while a negation directly before the claim's own assertion still hedges."""
+    answer = load_trace()["scenarios"]["quality_report"]["final_answer"]
+    anaphora = answer + (
+        " The watermark is recent, but it proves every expected record has arrived."
+    )
+    assert anaphora != answer
+    trace = _mutated(**{"scenarios.quality_report.final_answer": anaphora})
+    with pytest.raises(AssertionError, match="event watermark"):
+        check_all(trace, demo_db)
+    # the three probes of the authorized semantics, at the checker boundary
+    with pytest.raises(AssertionError, match="event watermark"):
+        _assert_no_watermark_completeness_claim(
+            "The watermark is recent, but it proves every expected record has arrived."
+        )
+    with pytest.raises(AssertionError, match="event watermark"):
+        _assert_no_watermark_completeness_claim(
+            "The completeness check failed, but the recent event watermark proves "
+            "every expected record has arrived."
+        )
+    _assert_no_watermark_completeness_claim(
+        "The watermark does not prove completeness, but it is a useful boundary signal."
+    )
+
+
+def test_unrelated_data_warning_demands_no_caveat(demo_db):
+    """Negative control: a data warning naming an asset/report the answer does
+    NOT rely on (an unrelated table) must demand no caveat — the unchanged
+    recorded answer still passes."""
+    scenario = load_trace()["scenarios"]["quality_report"]
+    get_at = _quality_get_at(scenario)
+    warnings = scenario["calls"][get_at]["result"]["data_signals"]["warnings"]
+    unrelated = {
+        "code": "data_report_failed",
+        "metric": None,
+        "asset": table_resource("demo", "demo", "main", "customers"),
+        "page": None,
+        "report": "customers-completeness-2026-09",
+    }
+    trace = _mutated(
+        **{
+            f"scenarios.quality_report.calls.{get_at}.result.data_signals.warnings": [
+                *warnings,
+                unrelated,
+            ]
+        }
+    )
+    check_all(trace, demo_db)  # no caveat demanded: the report is not relied upon
+
+
+def test_passing_optional_report_demands_no_data_caveat(demo_db):
+    """Negative control: a PASSING, unexpired supplied report on a relied-upon
+    asset (no failed/expired warning) demands no caveat — an answer with no
+    data caveat keeps passing (spec 0013 §5: a report alone is not a warning)."""
+    scenario = load_trace()["scenarios"]["governed"]
+    get_at = _quality_get_at(scenario)
+    passing = {
+        "id": "orders-availability-2026-10",
+        "evidence_kind": "supplied",
+        "age": "as_of",
+        "applicability": "unknown",
+        "limitations": ["source_version_unknown", "validity_not_supplied"],
+        "reported_at": "2026-10-01T00:00:00+00:00",
+        "checks": [{"id": "availability", "kind": "availability", "outcome": "pass"}],
+    }
+    key = f"scenarios.governed.calls.{get_at}.result.data_signals.assets.0.reports"
+    trace = _mutated(**{key: [passing]})
+    check_all(trace, demo_db)  # no failed/expired warning: nothing demanded

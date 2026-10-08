@@ -329,6 +329,28 @@ value-attested`.
   `unverified` tier, absent `generated`/`verified`) is NOT a warning and needs
   no caveat. Warnings are advisory only: they never change values, governance
   labels, ranking or any permission.
+- **Supplied-evidence caveats name relied-upon evidence only.** Responses also
+  carry a `data_signals` advisory view of SUPPLIED source-quality reports on
+  the metric's directly cited table pages: per-asset coverage and per-report
+  `age` (`as_of`/`expired`/`unknown`), `applicability`
+  (`applicable`/`inapplicable`/`unknown`), `limitations`, reported `checks`
+  and optional `watermark`, plus `warnings` — `data_report_failed`,
+  `data_report_expired`, `data_report_inapplicable`,
+  `data_applicability_unknown`, `data_coverage_partial`,
+  `data_evidence_unavailable`, `data_signals_truncated`,
+  `data_binding_unknown`. When an answer relies on an asset named by a
+  `data_report_failed` or `data_report_expired` warning, add ONE brief caveat
+  naming the report id and its as-of scope — the reported outcome and the
+  report/validity time (e.g. "relies on the orders table's supplied report
+  `orders-completeness-2026-09`: its completeness check FAILED and its
+  validity ended 2026-09-30"). A report is a supplied claim reported as of
+  its observation/report time — never an independent validation, execution
+  attestation or live source-health claim. Unknown applicability or partial
+  coverage stays unknown (a scope/version mismatch is never a matching pass);
+  an event-time watermark is an event boundary, not completeness or currency
+  — recent events never turn a failed check into a healthy source. Unrelated
+  or absent optional reports and unknown applicability alone demand no
+  caveat; warnings never change values, governance labels or permissions.
 - **`search_context` before novel questions.** The rule you are about to rediscover
   is probably already a policy page. Search first; if the question stays unmodeled,
   route it through `define_metric` so the definition lands in staging as a proposal.
