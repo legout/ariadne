@@ -51,8 +51,13 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, NoReturn
 
+from ariadne import (
+    query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: analyzer binds the venv copy
+)
+from ariadne.execution import DeadlineBudget  # pyright: ignore[reportMissingImports] — drift
 from ariadne.planner import PlannerError
 from ariadne.query import QueryRuntime  # pyright: ignore[reportMissingImports] — drift
+from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift
 from ariadne.sources import default_registry_path
 
 
@@ -292,16 +297,31 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         # An omitted --staging (None) lets the managed factory apply its
         # project-owned default <project>/staging — the CLI's CWD-relative
         # legacy default must never pull staging outside the selected project
-        # (issue #40 finding 1); an explicit path still wins.
-        runtime = QueryRuntime.open_project(args.project, staging_dir=args.staging)
+        # (issue #40 finding 1); an explicit path still wins. ONE request
+        # budget covers the managed construction AND its operation (fix pass
+        # 1, finding 1): a CLI invocation can never spend ~2x the deadline.
+        limits = query_results.load_host_query_limits(args.project)
+        runtime = QueryRuntime.open_project(
+            args.project,
+            staging_dir=args.staging,
+            deadline_budget=DeadlineBudget(limits["execution_seconds"]),
+        )
     else:
         sources_path = default_registry_path(args.sources, args.db)
+        # Issue #56/S1 (plan 0014 §2): legacy use reads the FIXED host CWD's
+        # operator ``query:`` ceilings — an explicit --sources stays source
+        # identity only, never a second implicit limit root. The same ONE
+        # request budget bounds this construction and its operation.
         runtime = QueryRuntime(
             root / "semantic_layer",
             root / "context_layer",
             args.db or "examples/retail-demo/data/demo.db",
             staging_dir="staging" if args.staging is None else args.staging,
             sources=sources_path,
+            query_limits=query_results.load_host_query_limits(Path.cwd()),
+            deadline_budget=DeadlineBudget(
+                query_results.load_host_query_limits(Path.cwd())["execution_seconds"]
+            ),
         )
     if args.command == "list-metrics":
         result = asyncio.run(runtime.list_metrics())
@@ -341,12 +361,37 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
     return 0
 
 
+def _effective_error_budget(args: argparse.Namespace | None) -> float:
+    """The EFFECTIVE host response budget for bounding generic CLI errors
+    (fix pass 2, finding 2a): the route the invocation selected — the managed
+    --project root, else the fixed legacy host CWD — with the built-in default
+    when no invocation was parsed or the host config itself is unusable."""
+    try:
+        root = args.project if args is not None and args.project is not None else Path.cwd()
+        return query_results.load_host_query_limits(root)["response_bytes"]
+    except Exception:
+        return query_results.DEFAULT_QUERY_LIMITS["response_bytes"]
+
+
 def main(argv: list[str] | None = None, stdin: Any = None) -> int:
     """Console-script entry point. Returns the process exit code: 0 on success,
     1 after writing exactly one JSON error object to stderr."""
+    args = None
     try:
-        return _dispatch(build_parser().parse_args(argv), sys.stdin if stdin is None else stdin)
+        args = build_parser().parse_args(argv)
+        return _dispatch(args, sys.stdin if stdin is None else stdin)
+    except QueryResultError as exc:
+        # Issue #56/S1 (spec 0014 §5): one bounded structured refusal on
+        # stderr with a nonzero exit — never a successful partial on stdout.
+        # The refusal body is fixed-size by construction and was validated to
+        # fit the effective bounds when the host ceilings were loaded.
+        print(json.dumps(exc.refusal(), default=_json_default), file=sys.stderr)
+        return 1
     except Exception as exc:  # one JSON error object, message verbatim (spec §4)
+        # Fix pass 2, finding 2a (spec 0014 §5): a FITTING error keeps its
+        # verbatim fields; an oversized error representation is replaced by
+        # the bounded explicit refusal under the EFFECTIVE host budgets —
+        # every appended field (stable code, planner candidates) accounted.
         error: dict[str, Any] = {"type": type(exc).__name__, "message": str(exc)}
         if isinstance(exc, PlannerError):
             # mf-t5 fix F4 (spec rev 1 "Failure and compatibility behavior"):
@@ -357,6 +402,7 @@ def main(argv: list[str] | None = None, stdin: Any = None) -> int:
             error["code"] = exc.code
             if exc.candidates:
                 error["candidates"] = list(exc.candidates)
+        error = query_results.bounded_error_object(error, _effective_error_budget(args))
         print(json.dumps({"error": error}), file=sys.stderr)
         return 1
 

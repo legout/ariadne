@@ -28,6 +28,7 @@ import io
 import json
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -90,7 +91,9 @@ def admitted_ready(api: AuthoringProject, project: Path, edit: dict) -> tuple[di
     return review, {"started": started, "validated": validated}
 
 
-def admit(project: Path, review: dict, *, confirm: bool = True, extra: list[str] = ()) -> int:
+def admit(  # type-honest default (S1 #56 turn check): Sequence accepts the tuple default
+    project: Path, review: dict, *, confirm: bool = True, extra: Sequence[str] = ()
+) -> int:
     argv = [
         "--project",
         str(project),
@@ -575,9 +578,9 @@ def test_managed_sources_resolve_through_operator_identity_not_snapshot_paths(
     opened: list[list[str | None]] = []
     real = ariadne.sources.build_connection
 
-    def spy(registry, read_only=True):
+    def spy(registry, read_only=True, deadline=None):  # S1 #56: bounded setup passes its deadline
         opened.append([src.path for src in registry.sources])
-        return real(registry, read_only)
+        return real(registry, read_only, deadline=deadline)
 
     monkeypatch.setattr(ariadne.sources, "build_connection", spy)
 

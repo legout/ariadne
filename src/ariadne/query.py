@@ -65,6 +65,7 @@ install hint.
 import json
 import re
 import sys
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -86,6 +87,7 @@ from ariadne import (  # pyright: ignore[reportMissingImports] — new-module re
     authoring_inputs,  # K4 fix pass: the operator evidence age budget (host config)
     context,  # issue #48 fix: the assessment clock/assembly seams stay internal
     proposals,  # pyright: ignore[reportMissingImports] — drift
+    query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: the analyzer binds `ariadne` to the venv's editable main checkout, which lacks this lane's new module; runtime/uvx resolve the worktree
 )
 
 # Shared Context Layer (issue #33, ADR-0016): retrieval, citation attachment and
@@ -99,6 +101,7 @@ from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
 # Shared Execution (issue #33, ADR-0016): the DuckDB session, catalog, bind
 # operation, statement guard and result collection are execution-owned.
 from ariadne.execution import (  # pyright: ignore[reportMissingImports] — drift
+    DeadlineBudget,
     DuckDBExecution,
     assert_single_statement,
 )
@@ -122,6 +125,9 @@ from ariadne.planner import (  # pyright: ignore[reportMissingImports] — drift
 
 # (the pyright ignore below: the analyzer may bind `ariadne` to a copy predating
 # this lane's render module — see ADR-0008; runtime and uvx pyright resolve it)
+# (the pyright ignore below: the analyzer may bind `ariadne` to a copy predating
+# this lane's render module — see ADR-0008; runtime and uvx pyright resolve it)
+from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift
 from ariadne.render import render  # pyright: ignore[reportMissingImports]
 from ariadne.semantic_graph import (  # pyright: ignore[reportMissingImports] — drift
     SemanticGraph,
@@ -196,13 +202,16 @@ class QueryRuntime:
         self,
         semantic_dir: str | Path,
         context_dir: str | Path,
-        db_path: str | Path,
+        db_path: str | Path | None,
         staging_dir: str | Path = "staging",
         sources: str | Path | None = None,
         *,
         registry: Registry | None = None,
         admission_record: dict | None = None,
         project_root: str | Path | None = None,
+        query_limits: dict | None = None,
+        response_measure=None,
+        deadline_budget: DeadlineBudget | None = None,
     ):
         """``db_path``/``sources`` select the LEGACY explicit source identity
         (the ``--db`` shorthand or an ADR-0010 registry file). The keyword-only
@@ -213,7 +222,17 @@ class QueryRuntime:
         project root that anchors the staging/ad-hoc/Answer Example stores —
         separate from the pinned artifact root, which is derived from
         ``context_dir``. An explicit legacy construction (no ``registry``/
-        ``admission_record``) keeps its legacy behavior exactly."""
+        ``admission_record``) keeps its legacy behavior exactly.
+
+        Issue #56/S1 (spec 0014 §4–§6): ``query_limits`` is the HOST-owned
+        complete-output ceilings (validated tightening-only; built-ins when
+        omitted — never a tool/request field), ``response_measure`` the
+        selected transport's actual-representation preflight (a callable the
+        ADAPTER supplies; the core only calls it — it never imports MCP), and
+        ``deadline_budget`` the ONE remaining-seconds budget a REQUEST-LIFETIME
+        construction (CLI invocation / lazy MCP factory) shares between source
+        setup and its first operation (fix pass 1, finding 1) — long-lived
+        eager runtimes omit it and every operation starts a fresh budget."""
         if _DATUS_IMPORT_ERROR is not None:  # spec §7: fail fast with the hint
             raise RuntimeError(f"{INSTALL_HINT}: {_DATUS_IMPORT_ERROR}")
 
@@ -272,12 +291,32 @@ class QueryRuntime:
         # non-DuckDB attaches are connection-local, so this happens exactly
         # once. Compiled SQL references <catalog>.<schema>.<table> — the legacy
         # shorthand keeps the authoring contract's catalog name demo.
-        source_registry = (
-            registry
-            if registry is not None
-            else (load_registry(sources) if sources is not None else implicit_registry(db_path))
+        if registry is not None:
+            source_registry = registry
+        elif sources is not None:
+            source_registry = load_registry(sources)
+        else:
+            if db_path is None:
+                # unreachable via the public factories (the managed route always
+                # resolves an approved registry; the legacy roots always carry a
+                # --db) — kept type-honest for direct construction
+                raise ValueError("legacy construction requires db_path or sources")
+            source_registry = implicit_registry(db_path)
+        # Issue #56/S1 (spec 0014 §4/§6): the host-owned ceilings are loaded and
+        # validated BEFORE source construction, and the eager setup runs under
+        # one bounded setup budget (the existing K3 mechanism) — construction
+        # never opens an unbounded source before the guard starts. A
+        # request-time construction passes its OWN budget: setup and the
+        # request's first operation then share ONE remaining-seconds allowance.
+        self._limits = query_results.effective_limits(query_limits)
+        self._measure = response_measure
+        self._request_budget = deadline_budget
+        self._execution = DuckDBExecution(
+            source_registry,
+            budget=deadline_budget
+            if deadline_budget is not None
+            else DeadlineBudget(self._limits["execution_seconds"]),
         )
-        self._execution = DuckDBExecution(source_registry)
         # The connection/catalog aliases preserve the historical runtime surface
         # (consumers close via con; list_datasets reads the catalog).
         self.con, self.catalog = self._execution.con, self._execution.catalog
@@ -334,7 +373,11 @@ class QueryRuntime:
 
     @classmethod
     def open_project(
-        cls, project: str | Path, *, staging_dir: str | Path | None = None
+        cls,
+        project: str | Path,
+        *,
+        staging_dir: str | Path | None = None,
+        deadline_budget: DeadlineBudget | None = None,
     ) -> "QueryRuntime":
         """The managed-project factory (issue #37/G5, plan §2): resolve the
         pinned snapshot and its approved source configuration of a Git-managed
@@ -359,6 +402,10 @@ class QueryRuntime:
             registry=admission.approved_registry(record),
             admission_record=record,
             project_root=root,
+            # issue #56/S1: the LOGICAL host project's operator ceilings — never
+            # the pinned snapshot's inert ``query:`` copy (plan 0014 §2)
+            query_limits=query_results.load_host_query_limits(root),
+            deadline_budget=deadline_budget,
         )
 
     async def list_metrics(self) -> list[dict | str]:
@@ -369,6 +416,7 @@ class QueryRuntime:
         (issue #37 fix pass). A context-only admitted snapshot keeps the
         SPECIFIC missing-catalog error (K4): an empty list would pose as a
         served catalog over an admitted revision that carries none."""
+        self._discard_request_budget()  # fix pass 2, finding 1b (list_metrics)
         if self._managed is not None:
             self._recheck_pinned()
         if self._context_only:
@@ -394,6 +442,7 @@ class QueryRuntime:
         ``resource``) — same-named tables in distinct schemas/collections stay
         distinct assets, and consumers use these fields rather than parsing
         display names."""
+        self._discard_request_budget()  # fix pass 2, finding 1b (list_datasets)
         datasets: list[dict] = []
         for source in self.catalog:
             for table in source["tables"]:
@@ -413,6 +462,63 @@ class QueryRuntime:
                     }
                 )
         return datasets
+
+    def _claim_operation_budget(self) -> DeadlineBudget:
+        """One remaining-seconds budget per operation (spec 0014 §6, fix pass
+        1 finding 1): a runtime constructed INSIDE a request (CLI invocation /
+        lazy MCP factory) draws its FIRST operation from the very budget that
+        bounded construction — setup + bind + audits + collection + preflight
+        share ONE allowance — while every later operation on the reused
+        session starts a fresh budget."""
+        if self._request_budget is not None:
+            budget, self._request_budget = self._request_budget, None
+            return budget
+        return DeadlineBudget(self._limits["execution_seconds"])
+
+    def _discard_request_budget(self) -> None:
+        """Request-budget hygiene (fix pass 2, finding 1b). Invariant: a
+        request-lifetime budget belongs to exactly ONE request — the one whose
+        construction it bounded. Non-result operations discard any stored
+        request budget at entry, so the request that lazily constructed this
+        runtime through e.g. ``list_metrics`` can never strand its (possibly
+        expired) allowance where a LATER result request would inherit it:
+        every result operation either claims the current request's budget or
+        starts a fresh one."""
+        self._request_budget = None
+
+    @contextmanager
+    def _phase(self, budget: DeadlineBudget):
+        """One guarded operation phase (spec 0014 §6): the shared budget arms
+        the owned connection's interrupt for bind, live audits and bounded
+        collection, and a budget spent at the phase boundary — including an
+        interrupt the planner wrapped into its own error — becomes the
+        structured ``execution_deadline`` refusal, never a complete answer
+        after expiry."""
+        try:
+            with budget.guard(self.con):
+                yield
+        except QueryResultError:
+            raise  # a refusal is a refusal; never relabeled by the clock
+        except Exception as exc:
+            if budget.expired():
+                raise query_results.deadline_refusal(budget.seconds) from exc
+            raise
+
+    def _collect(self, sql: str, budget: DeadlineBudget):
+        """Bounded collection of one compiled statement under the operation's
+        budget (spec 0014 §4): all-or-nothing on the overflow facts — a row
+        or cell overflow is the structured refusal, with observed lower
+        bounds only (counting stopped at the indicator row)."""
+        bounded = self._execution.fetch_bounded(sql, self._limits, budget)
+        if bounded.row_overflow:
+            raise query_results.row_limit_refusal(
+                self._limits["max_rows"], self._limits["max_rows"] + 1
+            )
+        if bounded.cell_overflow:
+            raise query_results.cell_limit_refusal(
+                self._limits["cell_bytes"], bounded.cell_overflow
+            )
+        return bounded
 
     async def get_metric(
         self,
@@ -442,26 +548,33 @@ class QueryRuntime:
         # Choke point shared with the EXPLAIN bind-check below (spec §6): exactly
         # one statement at parse level before any duckdb call.
         assert_single_statement(sql)
-        # Same gauntlet as the ad-hoc path (spec §8.9): the renderer compiles
-        # structurally, so a column missing from the source only surfaces at bind
-        # time. EXPLAIN binds the plan without executing it — while still only
-        # ever feeding compiler output to duckdb.
-        self._execution.bind(sql)
-        # Grain guard on the model's dataset source (spec rev 5 §13): a fan-out
-        # baked into a served model would aggregate at joined-row grain
-        # (Datus-ai/Datus-agent#1426) — identical rejection contract to
-        # define_metric. Memoized per metric (see __init__).
-        if name not in self._grain_checked:
-            (dataset,) = self._metrics[name]["model"]["semantic_model"][0].get("datasets") or []
-            check_grain_preserving(self.con, dataset["source"])
-            self._grain_checked.add(name)
-        # sql is the render compile step's output and nothing else (spec §6).
-        columns, rows = self._execution.fetch(sql)
+        # Issue #56/S1 (spec 0014 §6): one fresh remaining-seconds budget covers
+        # bind, the live grain audit and bounded execution/collection; a reused
+        # session never inherits a previous operation's allowance.
+        budget = self._claim_operation_budget()
+        with self._phase(budget):
+            # Same gauntlet as the ad-hoc path (spec §8.9): the renderer compiles
+            # structurally, so a column missing from the source only surfaces at
+            # bind time. EXPLAIN binds the plan without executing it — while still
+            # only ever feeding compiler output to duckdb.
+            self._execution.bind(sql)
+            # Grain guard on the model's dataset source (spec rev 5 §13): a fan-out
+            # baked into a served model would aggregate at joined-row grain
+            # (Datus-ai/Datus-agent#1426) — identical rejection contract to
+            # define_metric. Memoized per metric (see __init__).
+            if name not in self._grain_checked:
+                (dataset,) = self._metrics[name]["model"]["semantic_model"][0].get("datasets") or []
+                check_grain_preserving(self.con, dataset["source"])
+                self._grain_checked.add(name)
+            # sql is the render compile step's output and nothing else (spec §6).
+            bounded = self._collect(sql, budget)
+        if budget.expired():  # no complete answer after expiry (spec 0014 §6)
+            raise query_results.deadline_refusal(budget.seconds)
         result = {
             "metric": name,
             "dimensions": dimensions or [],
-            "columns": columns,
-            "rows": rows,
+            "columns": bounded.columns,
+            "rows": bounded.rows,
             "sql": sql,
             "governed": True,  # spec rev 3 §8.10: symmetry with define_metric
             "context": self._metric_context(name),  # spec rev 10 §8.21 (ADR-0011)
@@ -487,6 +600,14 @@ class QueryRuntime:
             requested_period=_requested_period(range, inclusive_end=True),
             period_fields=self._model_time_fields(name),
         )
+        # Issue #56/S1 (spec 0014 §5): additive completeness metadata for the
+        # fitting answer, then the full-envelope accounting and the selected
+        # transport's actual-representation preflight before it is returned.
+        result["result"] = query_results.completeness(len(bounded.rows))
+        query_results.account_rows(self._limits, result, bounded.rows)
+        query_results.finalize_response(self._limits, result, response_measure=self._measure)
+        if budget.expired():  # the last check before return (fix pass 1, finding 1)
+            raise query_results.deadline_refusal(budget.seconds)
         return result
 
     def _model_time_fields(self, name: str) -> set[str]:
@@ -629,7 +750,7 @@ class QueryRuntime:
             )
 
     def _load_admission(
-        self, semantic_dir: Path, db_path: str | Path, sources: str | Path | None
+        self, semantic_dir: Path, db_path: str | Path | None, sources: str | Path | None
     ) -> None:
         """Resolve the served tree's multi-fact admission (issue #30). The
         promotion-written ``semantic_layer/admission.json`` maps the exact
@@ -768,16 +889,23 @@ class QueryRuntime:
         provenance — ``governed: true`` only because a human Promoted the exact
         validated bytes."""
         graph, admission = self._admitted()
-        plan = plan_query(graph, request, self.con)
-        assert_single_statement(plan.sql)
-        self._execution.bind(plan.sql)
-        columns, rows = self._execution.fetch(plan.sql)
+        # Issue #56/S1 (spec 0014 §6): the shared budget covers the planner's
+        # live relationship/grain audits, the EXPLAIN bind and the bounded
+        # collection — one allowance for the whole operation.
+        budget = self._claim_operation_budget()
+        with self._phase(budget):
+            plan = plan_query(graph, request, self.con)
+            assert_single_statement(plan.sql)
+            self._execution.bind(plan.sql)
+            bounded = self._collect(plan.sql, budget)
+        if budget.expired():  # no complete answer after expiry (spec 0014 §6)
+            raise query_results.deadline_refusal(budget.seconds)
         now = context._assessment_now()  # one clock value for every metric's context (spec 0011 §2)
         result = {
             "metrics": list(plan.metrics),
             "dimensions": list(plan.dimensions),
-            "columns": columns,
-            "rows": rows,
+            "columns": bounded.columns,
+            "rows": bounded.rows,
             "sql": plan.sql,
             "plan": {
                 "branches": [
@@ -822,6 +950,13 @@ class QueryRuntime:
             requested_period=_plan_requested_period(plan.fetch_bounds),
             period_fields=self._conformed_time_fields(graph, plan.time_dimension),
         )
+        # Issue #56/S1 (spec 0014 §5): completeness metadata + full-envelope
+        # accounting + the selected transport's actual-representation preflight.
+        result["result"] = query_results.completeness(len(bounded.rows))
+        query_results.account_rows(self._limits, result, bounded.rows)
+        query_results.finalize_response(self._limits, result, response_measure=self._measure)
+        if budget.expired():  # the last check before return (fix pass 1, finding 1)
+            raise query_results.deadline_refusal(budget.seconds)
         return result
 
     @staticmethod
@@ -848,15 +983,19 @@ class QueryRuntime:
         fan-out, over the ADMITTED served graph, behind the same admission,
         single-statement, and EXPLAIN bind gauntlet."""
         graph, admission = self._admitted()
-        plan = plan_detail(graph, request, self.con)
-        assert_single_statement(plan.sql)
-        self._execution.bind(plan.sql)
-        columns, rows = self._execution.fetch(plan.sql)
-        return {
+        budget = self._claim_operation_budget()
+        with self._phase(budget):
+            plan = plan_detail(graph, request, self.con)
+            assert_single_statement(plan.sql)
+            self._execution.bind(plan.sql)
+            bounded = self._collect(plan.sql, budget)
+        if budget.expired():  # no complete answer after expiry (spec 0014 §6)
+            raise query_results.deadline_refusal(budget.seconds)
+        result = {
             "dataset": plan.dataset,
             "fields": [field.name for field in plan.fields],
-            "columns": columns,
-            "rows": rows,
+            "columns": bounded.columns,
+            "rows": bounded.rows,
             "sql": plan.sql,
             "plan": {
                 "fields": [
@@ -873,6 +1012,14 @@ class QueryRuntime:
             "governed": True,
             "admission": self._admission_view(admission),
         }
+        # Issue #56/S1 (spec 0014 §5): completeness metadata + full-envelope
+        # accounting + the selected transport's actual-representation preflight.
+        result["result"] = query_results.completeness(len(bounded.rows))
+        query_results.account_rows(self._limits, result, bounded.rows)
+        query_results.finalize_response(self._limits, result, response_measure=self._measure)
+        if budget.expired():  # the last check before return (fix pass 1, finding 1)
+            raise query_results.deadline_refusal(budget.seconds)
+        return result
 
     async def save_example(self, submission: dict) -> dict:
         """Issue #19 (spec 2026-09-29-0007, ADR-0015): stage one explicitly
@@ -885,6 +1032,7 @@ class QueryRuntime:
         nothing. The served roots are never touched. Citations resolve against
         the PINNED artifact root on the managed route; the staging store stays
         at its original project-owned location (issue #37 fix pass)."""
+        self._discard_request_budget()  # fix pass 2, finding 1b (save_example)
         return answer_examples.save_example(
             submission,
             self.context_dir.parent,
@@ -904,6 +1052,7 @@ class QueryRuntime:
         root. ``search_context`` and governed ``get_metric.context`` are
         unaffected: examples live outside ``context_layer/`` and never enter
         them."""
+        self._discard_request_budget()  # fix pass 2, finding 1b (search_examples)
         return answer_examples.search_examples(
             self.context_dir.parent,
             self.staging_dir,
@@ -923,52 +1072,86 @@ class QueryRuntime:
         return context._metric_context(self.context_dir, name, now=_now)
 
     async def define_metric(self, definition: dict) -> dict:
-        """Ad-hoc path (spec rev 3 §4/§5): draft -> compile gate -> execute -> stage.
+        """Ad-hoc path (spec rev 3 §4/§5, amended by spec 0014 §5): draft ->
+        compile gate -> bounded execute -> FULL core + selected-transport
+        success preflight -> stage -> return.
 
         The definition is expanded into an ephemeral OSI model and rendered by
         ariadne.render; failure returns the compiler's error verbatim (nothing
-        staged, nothing executed). On success the compiled SQL is executed
-        read-only and the definition is auto-staged as a proposal (never
-        auto-promoted).
+        staged, nothing executed). On success the compiled SQL executes
+        read-only under the shared complete-output safeguards; the complete
+        bounded staging receipt is reserved and preflighted BEFORE the write,
+        so an output refusal after successful computation — including an
+        MCP-envelope refusal — stages NOTHING and the definition is never
+        auto-promoted (issue #56/S1).
         """
         params = _normalize_definition(definition)
-        # Grain guard BEFORE envelope expansion/compile (spec rev 5 §13): a source
-        # that fans out the fact grain is rejected outright — the compiler would
-        # aggregate at joined-row grain (Datus-ai/Datus-agent#1426). Nothing staged,
-        # nothing executed; same contract as the single-statement guard below.
-        check_grain_preserving(self.con, params["source"])
-        envelope = _expand_adhoc_model(params)
-        sql = await self._compile_adhoc(envelope, params["name"], params["dimensions"])
-        # Choke point shared by the EXPLAIN bind-check below and the execution
-        # above it: exactly one statement, checked at parse level before any
-        # duckdb call (a crafted source can otherwise smuggle DDL past EXPLAIN).
-        assert_single_statement(sql)
-        # The renderer compiles structurally without schema introspection, so a
-        # column missing from the source only surfaces at bind time. EXPLAIN binds
-        # the plan without executing it, keeping §8.9's "no execution" honest for
-        # that shape — while still only ever feeding compiler output to duckdb.
-        self._execution.bind(sql)
-        # sql is the render compile step's output and nothing else (spec §6): the
-        # definition reached execution exclusively through the compiler above.
-        columns, rows = self._execution.fetch(sql)
-        # The SHARED compiled ad-hoc staging operation (moved intact into
-        # ariadne.proposals, issue #34): the OSI model + draft OKF page land in
-        # the legacy staging store — ungoverned, discoverable, never a Git
-        # proposal, never admitted.
-        staged_as, staged_page = proposals.stage_ad_hoc(
-            self.staging_dir, params["name"], envelope, params
-        )
-        return {
-            "metric": params["name"],
-            "columns": columns,
-            "rows": rows,
-            "sql": sql,
-            "governed": False,
-            "context": None,  # spec rev 10: no served page exists for ad-hoc metrics
-            "definition": params,  # echoed definition
-            "staged_as": str(staged_as),
-            "staged_context_as": str(staged_page),
-        }
+        budget = self._claim_operation_budget()
+        with self._phase(budget):
+            # Grain guard BEFORE envelope expansion/compile (spec rev 5 §13): a
+            # source that fans out the fact grain is rejected outright — the
+            # compiler would aggregate at joined-row grain
+            # (Datus-ai/Datus-agent#1426). Nothing staged, nothing executed;
+            # same contract as the single-statement guard below.
+            check_grain_preserving(self.con, params["source"])
+            envelope = _expand_adhoc_model(params)
+            sql = await self._compile_adhoc(envelope, params["name"], params["dimensions"])
+            # Choke point shared by the EXPLAIN bind-check below and the execution
+            # above it: exactly one statement, checked at parse level before any
+            # duckdb call (a crafted source can otherwise smuggle DDL past EXPLAIN).
+            assert_single_statement(sql)
+            # The renderer compiles structurally without schema introspection, so
+            # a column missing from the source only surfaces at bind time. EXPLAIN
+            # binds the plan without executing it, keeping §8.9's "no execution"
+            # honest for that shape — while still only ever feeding compiler
+            # output to duckdb.
+            self._execution.bind(sql)
+            # sql is the render compile step's output and nothing else (spec §6):
+            # the definition reached execution exclusively through the compiler
+            # above.
+            bounded = self._collect(sql, budget)
+        if budget.expired():  # exhaustion is checked before preflight/staging
+            raise query_results.deadline_refusal(budget.seconds)
+        # The complete bounded staging receipt is RESERVED (atomically claimed,
+        # collision-suffixed exactly as the write would be) so the preflight
+        # measures the actual receipt paths — then the payloads are written only
+        # after every preflight passed; a refusal releases the reservation and
+        # leaves no model or draft page behind (spec 0014 §5).
+        reserved = proposals.reserve_ad_hoc(self.staging_dir, params["name"])
+        try:
+            result = {
+                "metric": params["name"],
+                "columns": bounded.columns,
+                "rows": bounded.rows,
+                "sql": sql,
+                "governed": False,
+                "context": None,  # spec rev 10: no served page exists for ad-hoc metrics
+                "definition": params,  # echoed definition
+                "staged_as": str(reserved[0]),
+                "staged_context_as": str(reserved[1]),
+                "result": query_results.completeness(len(bounded.rows)),
+            }
+            query_results.account_rows(self._limits, result, bounded.rows)
+            query_results.finalize_response(self._limits, result, response_measure=self._measure)
+            if budget.expired():  # no staging after expiry (spec 0014 §6)
+                raise query_results.deadline_refusal(budget.seconds)
+            # The SHARED compiled ad-hoc staging operation (moved intact into
+            # ariadne.proposals, issue #34): the OSI model + draft OKF page land
+            # in the legacy staging store — ungoverned, discoverable, never a
+            # Git proposal, never admitted.
+            proposals.stage_reserved_ad_hoc(reserved, envelope, params)
+        except BaseException:
+            proposals.release_reserved(reserved)  # an output refusal stages nothing
+            raise
+        if budget.expired():
+            # Fix pass 2, finding 1a (spec 0014 §6): staging completed but the
+            # budget is spent — no successful complete result is returned after
+            # exhaustion. The fulfilled reservation is NOT released (the write
+            # happened); the refusal reports the staging honestly instead of
+            # claiming nothing occurred, mirroring the spec's
+            # network-failure-after-staging stance (§5).
+            raise query_results.deadline_refusal(budget.seconds, staging_status="staged")
+        return result
 
     async def _compile_adhoc(self, envelope: dict, name: str, dimensions: list[str]) -> str:
         """Render-gate compile (ADR-0008) of the ephemeral model — the only gate
@@ -992,6 +1175,7 @@ class QueryRuntime:
         Serves pinned snapshot bytes on the managed route, so the pinned digest
         is re-checked first — mid-session tampering refuses here exactly like
         ``get_metric`` (issue #37 fix pass)."""
+        self._discard_request_budget()  # fix pass 2, finding 1b (search_context)
         if self._managed is not None:
             self._recheck_pinned()
         return search_pages(
@@ -1011,6 +1195,7 @@ class QueryRuntime:
         resolver applies no transform, rewrites no SQL and authorizes no join;
         ``search_context`` keeps its lexical ranking and passage pointers
         unchanged."""
+        self._discard_request_budget()  # fix pass 2, finding 1b (resolve_term)
         if self._managed is not None:
             self._recheck_pinned()
         result = resolve_term(

@@ -909,8 +909,9 @@ def served(tmp_path_factory):
 
 def test_query_routes_ad_hoc_staging_through_the_shared_stage_ad_hoc(tmp_path, served, monkeypatch):
     """Plan §2 proof: Query stages the compiled ad-hoc definition through
-    ariadne.proposals.stage_ad_hoc (patched target) — the shared operation, not
-    a Query-local copy — and the staged model/page land in the legacy staging
+    the shared ad-hoc staging owner in ariadne.proposals (patched target) —
+    the reservation-based seam spec 0014 §5 added (issue #56/S1), still not a
+    Query-local copy — and the staged model/page land in the legacy staging
     store, never in a Git proposal."""
     import asyncio
 
@@ -920,13 +921,13 @@ def test_query_routes_ad_hoc_staging_through_the_shared_stage_ad_hoc(tmp_path, s
     staging = tmp_path / "staging"
     runtime = QueryRuntime(root / "semantic_layer", root / "context_layer", db, staging_dir=staging)
     calls: list[tuple] = []
-    real = proposals.stage_ad_hoc
+    real = proposals.stage_reserved_ad_hoc
 
-    def spy(staging_dir, name, envelope, params):
-        calls.append((str(Path(staging_dir)), name))
-        return real(staging_dir, name, envelope, params)
+    def spy(reserved, envelope, params):
+        calls.append((str(reserved[0].parents[3]), reserved[0].stem))
+        return real(reserved, envelope, params)
 
-    monkeypatch.setattr(proposals, "stage_ad_hoc", spy)
+    monkeypatch.setattr(proposals, "stage_reserved_ad_hoc", spy)
     result = asyncio.run(
         runtime.define_metric(
             {

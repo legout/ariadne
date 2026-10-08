@@ -38,6 +38,10 @@ from typing import Any
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 from sqlglot import exp  # pyright: ignore[reportMissingImports]
 
+from ariadne.query_results import (  # pyright: ignore[reportMissingImports] — drift
+    classify_output_type,
+)
+
 # The DATUS extension hint (authoring contract, datus-spike.md §6.6): strictly
 # validated keys — a stray key must fail the compile, exactly like the datus
 # gate it replaces (tests/test_validate.py pins this contract).
@@ -370,3 +374,61 @@ def render(
     except Exception as exc:
         raise RenderError(f"rendered SQL failed to re-parse: {type(exc).__name__}: {exc}") from exc
     return sql
+
+
+def output_guard(
+    sql: str,
+    columns: list[str],
+    types: list[str],
+    *,
+    cell_bytes: int,
+    max_rows: int,
+) -> str:
+    """The compiler-owned OUTPUT guard over one already completed logical
+    query (spec 0014 §4 guards 1–2, plan 0014 §2): one outer SELECT around
+    the logical aggregate/window/detail statement — never inside its inputs,
+    lookback or fact branches — that (a) caps materialized rows at the row
+    ceiling plus exactly one overflow indicator row via LIMIT, and (b) for
+    variable-size text/blob output columns, replaces oversized raw values
+    with NULL inside DuckDB and surfaces one boolean overflow flag per
+    guarded column, so an oversized cell never crosses into Python. The
+    flag↔column association is POSITIONAL (flag column i+1 ↔ logical column
+    i) — a physical output column whose name collides with the generated
+    flag namespace is still a value column, never swallowed or misread
+    (fix pass 1, finding 4). The logical SQL/provenance stays the caller's
+    statement; this is the actual guarded execution statement. Fixed-width
+    scalar columns pass through unmodified (their serialized size is checked
+    exactly after transfer)."""
+    inner = sqlglot.parse_one(sql, dialect="duckdb")
+    select = exp.Select().from_(
+        exp.Subquery(this=inner, alias=exp.TableAlias(this=exp.to_identifier("__ariadne_guarded")))
+    )
+    for index, (name, type_name) in enumerate(zip(columns, types)):
+        column = exp.column(exp.to_identifier(name, quoted=True))
+        if classify_output_type(type_name) != "variable":
+            select = select.select(exp.alias_(column, name, quoted=True))
+            continue
+        base = type_name.strip().split("(")[0].strip().upper()
+        if base in ("BLOB", "VARBINARY"):
+            size = exp.Anonymous(this="octet_length", expressions=[column.copy()])
+        else:
+            # UTF-8 byte length of text/enum: encode() first (CAST AS BLOB
+            # rejects non-ASCII); ENUM labels arrive as strings and are
+            # guarded through the same VARCHAR text form (fix pass 1, finding 3)
+            text_value = (
+                exp.Cast(this=column.copy(), to=exp.DataType(this=exp.DataType.Type.VARCHAR))
+                if base == "ENUM"
+                else column.copy()
+            )
+            size = exp.Anonymous(
+                this="octet_length",
+                expressions=[exp.Anonymous(this="encode", expressions=[text_value])],
+            )
+        oversized = exp.GT(this=size.copy(), expression=exp.Literal.number(cell_bytes))
+        guarded = exp.Case().when(oversized.copy(), exp.null()).else_(column.copy())
+        select = select.select(exp.alias_(guarded, name, quoted=True))
+        select = select.select(
+            exp.alias_(oversized, f"__ariadne_cell_overflow_{index}", quoted=True)
+        )
+    select = select.limit(max_rows + 1)
+    return select.sql(dialect="duckdb")
