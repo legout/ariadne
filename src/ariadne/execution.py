@@ -29,6 +29,13 @@ from pathlib import Path
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
 from ariadne import sources
+from ariadne.query_results import (  # pyright: ignore[reportMissingImports] — drift
+    cell_json_bytes,
+    classify_output_type,
+    encode_scalar,
+    type_unsupported_refusal,
+)
+from ariadne.render import output_guard  # pyright: ignore[reportMissingImports] — drift
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     Registry,
     build_connection,  # noqa: F401 — re-export: the historical patch seam stays importable
@@ -45,6 +52,16 @@ DEADLINE_MESSAGE = (
     "complete — every statement was interrupted and nothing was claimed "
     "complete; re-inspect with a narrower candidate or scope"
 )
+
+
+class DeadlineExhausted(ValueError):
+    """The deadline refusal raised by :meth:`DeadlineBudget.guard` and the
+    bounded setup (spec 0014 §6 reuses the K3 mechanism for query
+    operations). A ValueError subclass so the existing inspection callers
+    and tests keep their exact behavior; the query runtime converts it into
+    the structured ``execution_deadline`` refusal."""
+
+
 UNCANCELLABLE_MESSAGE = (
     "the owned connection exposes no interruptible execution for this backend "
     "— an inspection whose execution cannot be bounded and cancelled is an "
@@ -79,7 +96,7 @@ class DeadlineBudget:
         interruption that fired at/after expiry into the explicit deadline
         refusal (never a partial result)."""
         if self.expired():
-            raise ValueError(DEADLINE_MESSAGE.format(budget=self.seconds))
+            raise DeadlineExhausted(DEADLINE_MESSAGE.format(budget=self.seconds))
         if not hasattr(con, "interrupt"):
             raise ValueError(UNCANCELLABLE_MESSAGE)
         timer = threading.Timer(max(self.remaining(), 1e-6), con.interrupt)
@@ -89,7 +106,7 @@ class DeadlineBudget:
             yield
         except duckdb.Error:
             if self.expired():
-                raise ValueError(DEADLINE_MESSAGE.format(budget=self.seconds)) from None
+                raise DeadlineExhausted(DEADLINE_MESSAGE.format(budget=self.seconds)) from None
             raise
         finally:
             timer.cancel()  # the phase ended: no background read keeps running
@@ -97,7 +114,7 @@ class DeadlineBudget:
         # budget is exhaustion too — its result escaped the deadline and is
         # never returned as a completed measurement.
         if self.expired():
-            raise ValueError(DEADLINE_MESSAGE.format(budget=self.seconds))
+            raise DeadlineExhausted(DEADLINE_MESSAGE.format(budget=self.seconds))
 
 
 def assert_single_statement(sql: str) -> None:
@@ -117,6 +134,24 @@ def assert_single_statement(sql: str) -> None:
             f"compiled SQL must be exactly one statement, got {count} "
             "(no-unvalidated-execution invariant, spec §6); nothing staged, nothing executed"
         )
+
+
+class BoundedCollection:
+    """One compiled query's bounded collection result (spec 0014 §4):
+    the logical output columns, the collected rows as scalar-encoded dicts,
+    and the overflow facts — ``row_overflow`` is True exactly when the row
+    ceiling plus its one indicator row was reached; ``cell_overflow`` names
+    the logical columns whose values were oversized in raw bytes (DuckDB
+    markers — the value never transferred) or in serialized form (exact
+    post-transfer check: escaped form can exceed raw size)."""
+
+    def __init__(
+        self, columns: list[str], rows: list[dict], row_overflow: bool, cell_overflow: list[str]
+    ) -> None:
+        self.columns = columns
+        self.rows = rows
+        self.row_overflow = row_overflow
+        self.cell_overflow = cell_overflow
 
 
 class DuckDBExecution:
@@ -142,9 +177,7 @@ class DuckDBExecution:
             self.con, self.catalog = sources.build_connection(registry)
         if budget is not None and budget.expired():
             self.close()
-            raise ValueError(
-                DEADLINE_MESSAGE.format(budget=budget.seconds)
-            )
+            raise DeadlineExhausted(DEADLINE_MESSAGE.format(budget=budget.seconds))
 
     @classmethod
     def legacy_sqlite(cls, db_path: str | Path) -> DuckDBExecution:
@@ -174,11 +207,87 @@ class DuckDBExecution:
 
     def fetch(self, sql: str) -> tuple[list[str], list[dict]]:
         """Collect one compiled query's result: sql is the compile step's
-        output and nothing else (spec §6) — returns (columns, row dicts)."""
+        output and nothing else (spec §6) — returns (columns, row dicts).
+        The historical unbounded collection, kept for the trusted internal
+        callers (profiling/validation); the four Query result operations use
+        :meth:`fetch_bounded` (spec 0014 §4)."""
         relation = self.con.sql(sql)
         columns = list(relation.columns)
         rows = [dict(zip(columns, row)) for row in relation.fetchall()]
         return columns, rows
+
+    def fetch_bounded(self, sql: str, limits: dict, budget: DeadlineBudget) -> BoundedCollection:
+        """Bounded collection of one compiled query's result (spec 0014 §4,
+        issue #56/S1): sql is the compile step's output and nothing else
+        (spec §6). The output types are inspected and nested/complex types
+        refuse BEFORE any execution; the compiler-owned output guard then
+        caps materialized rows at the ceiling plus ONE overflow indicator
+        row and raw-guards variable-size cells inside DuckDB (oversized
+        values become NULL plus a flag — the value never crosses into
+        Python); collection uses bounded cursor reads (``fetchmany``), never
+        ``fetchall()`` followed by slicing; and every collected cell is
+        encoded and exactly byte-checked (escaped form can exceed raw
+        size). The guarded execution runs under the shared deadline budget;
+        the cursor is drained only up to the indicator row and never past
+        it — counting stops rather than scanning the rejected remainder.
+        The flag↔column association is POSITIONAL against the guarded layout
+        this method derives from the same classification the guard used
+        (fix pass 1, finding 4): a physical output column whose name
+        collides with the ``__ariadne_cell_overflow_`` namespace is still a
+        value column — never swallowed or misread as a marker."""
+        relation = self.con.sql(sql)  # bind-only: schema without execution
+        columns = list(relation.columns)
+        types = [str(t) for t in relation.types]
+        unsupported = [
+            name
+            for name, type_name in zip(columns, types)
+            if classify_output_type(type_name) == "unsupported"
+        ]
+        if unsupported:
+            raise type_unsupported_refusal(unsupported)
+        guarded = output_guard(
+            sql, columns, types, cell_bytes=limits["cell_bytes"], max_rows=limits["max_rows"]
+        )
+        # the guarded SELECT's positional layout, derived from the SAME
+        # classification the guard used: one value slot per logical column,
+        # plus one flag slot immediately after each guarded (variable) column
+        layout: list[tuple[str, int]] = []
+        for index, type_name in enumerate(types):
+            layout.append(("value", index))
+            if classify_output_type(type_name) == "variable":
+                layout.append(("flag", index))
+        raw: list[tuple] = []
+        with budget.guard(self.con):
+            # nosemgrep — the compiler-built output guard over compile-step
+            # output only (spec §6): render()/planner SQL, never caller text.
+            self.con.execute(guarded)
+            remaining = limits["max_rows"] + 1
+            while remaining > 0:
+                batch = self.con.fetchmany(min(remaining, 256))
+                if not batch:
+                    break
+                raw.extend(batch)
+                remaining -= len(batch)
+        row_overflow = len(raw) > limits["max_rows"]
+        if row_overflow:
+            raw = raw[: limits["max_rows"] + 1]  # the indicator row: stop counting here
+        rows: list[dict] = []
+        cell_overflow: list[str] = []
+        for row in raw:
+            entry: dict = {}
+            for value, (kind, index) in zip(row, layout, strict=True):
+                if kind == "flag":  # positional marker slot: no name parsing
+                    if value:
+                        cell_overflow.append(columns[index])
+                    continue
+                entry[columns[index]] = encode_scalar(value)
+            rows.append(entry)
+        if not row_overflow:  # exact serialized-cell check on the bounded values
+            for entry in rows:
+                for name, value in entry.items():
+                    if cell_json_bytes(value) > limits["cell_bytes"]:
+                        cell_overflow.append(name)
+        return BoundedCollection(columns, rows, row_overflow, list(dict.fromkeys(cell_overflow)))
 
     def close(self) -> None:
         """Close the owned connection (the single owner closes it)."""

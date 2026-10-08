@@ -1170,6 +1170,16 @@ def _stage_atomic(directory: Path, stem: str, ext: str, payload: bytes) -> Path:
     exists()-then-write TOCTOU). Same discipline for the model (.yml) and
     the context page (.md) — spec rev 4 §4. (Moved intact from the Query
     runtime, issue #34/G2.)"""
+    return _write_claimed(_claim_atomic(directory, stem, ext), payload)
+
+
+def _claim_atomic(directory: Path, stem: str, ext: str) -> Path:
+    """Atomically CLAIM one artifact path (empty file, O_CREAT|O_EXCL,
+    numeric suffix on collision — never overwrites). The claim is the exact
+    receipt a caller may preflight against: until it is written or released,
+    no other writer can take the path, so an exists-then-stage guess that
+    could pick a longer suffixed path after the preflight is impossible
+    (spec 0014 §5, issue #56/S1)."""
     directory.mkdir(parents=True, exist_ok=True)
     candidate = directory / f"{stem}{ext}"
     suffix = 2
@@ -1180,9 +1190,18 @@ def _stage_atomic(directory: Path, stem: str, ext: str, payload: bytes) -> Path:
             candidate = directory / f"{stem}-{suffix}{ext}"
             suffix += 1
             continue
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(payload)
+        os.close(fd)
         return candidate
+
+
+def _write_claimed(candidate: Path, payload: bytes) -> Path:
+    """Write the payload into an ALREADY-claimed path (issue #56/S1): the
+    claim guaranteed the path, so the write cannot collide or drift to a
+    different suffix than the preflighted receipt."""
+    fd = os.open(candidate, os.O_WRONLY)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(payload)
+    return candidate
 
 
 def stage_ad_hoc(
@@ -1195,14 +1214,43 @@ def stage_ad_hoc(
     can discover it — ungoverned, awaiting human promotion, never a Git
     proposal and never an admitted artifact. Query calls exactly this shared
     operation; its legacy staging store and review meaning are unchanged."""
+    reserved = reserve_ad_hoc(staging_dir, name)
+    return stage_reserved_ad_hoc(reserved, envelope, params)
+
+
+def reserve_ad_hoc(staging_dir: str | Path, name: str) -> tuple[Path, Path]:
+    """RESERVE the complete ad-hoc staging receipt (spec 0014 §5, issue
+    #56/S1): atomically claim the model and page paths with the exact
+    collision suffixes the write would take, so the response's staging
+    receipt can be preflighted against the paths that will actually exist —
+    a safe serialized receipt reservation across valid collision-suffixed
+    paths, never an exists-then-stage guess."""
     staging_dir = Path(staging_dir)
-    model = _stage_atomic(
-        staging_dir / "semantic_layer" / "models" / "adhoc",
-        name,
-        ".yml",
-        yaml.safe_dump(envelope, sort_keys=False).encode("utf-8"),
-    )
-    page = _stage_atomic(
-        staging_dir / "context_layer" / "metrics", name, ".md", _build_adhoc_page(params)
-    )
+    model = _claim_atomic(staging_dir / "semantic_layer" / "models" / "adhoc", name, ".yml")
+    page = _claim_atomic(staging_dir / "context_layer" / "metrics", name, ".md")
     return model, page
+
+
+def stage_reserved_ad_hoc(
+    reserved: tuple[Path, Path], envelope: dict, params: dict
+) -> tuple[Path, Path]:
+    """Write the compiled payloads into an ALREADY-RESERVED receipt (the
+    claim made the paths exact); identical content and collision behavior
+    to the historical one-shot staging."""
+    model, page = reserved
+    _write_claimed(model, yaml.safe_dump(envelope, sort_keys=False).encode("utf-8"))
+    _write_claimed(page, _build_adhoc_page(params))
+    return model, page
+
+
+def release_reserved(reserved: tuple[Path, Path]) -> None:
+    """Release a reservation an output refusal left behind (spec 0014 §5:
+    a refused output stages NOTHING): only still-empty claims are removed —
+    a payload that was already written keeps the historical non-transactional
+    staging-I/O behavior (not redesigned here)."""
+    for path in reserved:
+        try:
+            if path.stat().st_size == 0:
+                path.unlink()
+        except FileNotFoundError:
+            continue

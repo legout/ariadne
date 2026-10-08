@@ -104,6 +104,7 @@ Usage::
 import argparse
 import base64
 import hmac
+import json
 import os
 import sys
 from collections.abc import Callable
@@ -112,12 +113,17 @@ from pathlib import Path
 # The transport-neutral authoring service (plan §2's Authoring call contract):
 # one import, the tool bodies are one-line delegations with its verbatim
 # contracts.
+from ariadne import (
+    query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: analyzer binds the venv copy lacking this lane's new module
+)
 from ariadne.authoring import AuthoringProject
+from ariadne.execution import DeadlineBudget  # pyright: ignore[reportMissingImports] — drift
 
 # The grain guidance constant lives in ariadne.grain; it stays importable from
 # this module for backward compatibility (tests import it from here).
 from ariadne.grain import GRAIN_GUIDANCE  # noqa: F401 — re-export
 from ariadne.query import QueryRuntime  # pyright: ignore[reportMissingImports] — drift
+from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     default_registry_path,
 )
@@ -147,6 +153,127 @@ HTTP_TOKEN_ENV = "ARIADNE_HTTP_TOKEN"
 HTTP_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
+# ---- issue #56/S1 (spec 0014 §4–§5): the MCP adapter's actual-representation
+# preflight and structured tool refusal. The CORE never imports MCP; these
+# helpers do, and only when the optional transport is in use.
+
+# The framing id reserve (fix pass 1, finding 7): the measure frames every
+# envelope with a QUOTED UUID-LENGTH STRING id (38 serialized bytes) instead
+# of the 1-byte ``id=1`` — a bounded worst-case id representation. Any client
+# id whose serialized form is at most a UUID string (every integer id up to
+# 2^63 and every UUID-string id) is therefore fully counted; the reserve is
+# a conservative headroom, and no request id of a supported shape can make
+# the actual envelope LARGER than the measured one by more than nothing.
+_RESERVED_REQUEST_ID = "00000000-0000-0000-0000-000000000000"
+
+
+def _wire_bytes(call_result) -> int:
+    """The exact serialized size of the JSON-RPC message the installed MCP
+    SDK puts on the wire for one ``CallToolResult`` (mcp 1.30.0): the session
+    serializes ``JSONRPCResponse(result=call_result.model_dump(by_alias=True,
+    mode="json", exclude_none=True))`` through ``model_dump_json(by_alias=True,
+    exclude_none=True)`` — with the reserved worst-case framing id."""
+    from mcp.types import (  # pyright: ignore[reportMissingImports] — the [mcp] extra
+        JSONRPCMessage,
+        JSONRPCResponse,
+    )
+
+    message = JSONRPCMessage(
+        JSONRPCResponse(
+            jsonrpc="2.0",
+            id=_RESERVED_REQUEST_ID,
+            result=call_result.model_dump(by_alias=True, mode="json", exclude_none=True),
+        )
+    )
+    return len(message.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8"))
+
+
+def _mcp_result_bytes(result: dict) -> int:
+    """The exact serialized size of the tool-result envelope the installed
+    MCP SDK would put on the wire for this dict (spec 0014 §4 guard 5 / plan
+    §1 blocking evidence): FastMCP converts a dict return to one TextContent
+    whose text is ``pydantic_core.to_json(result, fallback=str, indent=2)``
+    (mcp 1.30.0 ``_convert_to_content``), the lowlevel handler wraps it into
+    ``CallToolResult`` — so the envelope duplicates the response as ESCAPED
+    text inside the outer JSON, which is strictly larger than the inner dict.
+    Measured on the SDK's own models; never re-serialized differently after
+    preflight."""
+    import pydantic_core  # pyright: ignore[reportMissingImports] — the [mcp] extra ships it
+    from mcp.types import (  # pyright: ignore[reportMissingImports] — the [mcp] extra
+        CallToolResult,
+        TextContent,
+    )
+
+    text = pydantic_core.to_json(result, fallback=str, indent=2).decode()
+    call_result = CallToolResult(content=[TextContent(type="text", text=text)], isError=False)
+    return _wire_bytes(call_result)
+
+
+def _mcp_refusal_result(exc: QueryResultError):
+    """The structured MCP tool refusal (spec 0014 §5): ``isError: true`` with
+    the bounded refusal as BOTH escaped text and structured content — never a
+    successful partial tool answer. FastMCP passes a returned ``CallToolResult``
+    through untouched (mcp 1.30.0 ``convert_result``), and the lowlevel
+    handler wraps it verbatim."""
+    return _refusal_call_result(exc.refusal())
+
+
+def _refusal_call_result(refusal: dict):
+    """The isError CallToolResult for one refusal body dict (fix pass 1,
+    finding 2a: the refusal-form battery measures THIS shape — the text+
+    structured duplication, not just the inner dict)."""
+    from mcp.types import (  # pyright: ignore[reportMissingImports] — the [mcp] extra
+        CallToolResult,
+        TextContent,
+    )
+
+    return CallToolResult(
+        content=[TextContent(type="text", text=json.dumps(refusal, indent=2))],
+        structuredContent=refusal,
+        isError=True,
+    )
+
+
+def _refusal_envelope_bytes(refusal: dict) -> int:
+    """Wire bytes of one refusal body in its actual isError representation."""
+    return _wire_bytes(_refusal_call_result(refusal))
+
+
+def _mcp_error_envelope_bytes(tool_name: str, exc: BaseException) -> int:
+    """Wire bytes of the tool-error result the installed SDK ACTUALLY emits
+    for a raised exception (fix pass 2, finding 2c): mcp 1.30.0's lowlevel
+    ``_make_error_result`` returns ``ServerResult(CallToolResult(
+    content=[TextContent(text=str(ToolError))], isError=True))`` — NOT a
+    JSONRPCError — and the session serializes it through the same
+    ``JSONRPCResponse`` path as every result (probe-confirmed: 27 bytes
+    larger than the JSONRPCError model, so modeling the wrong form could
+    pass preflight then overflow near the ceiling)."""
+    from mcp.types import (  # pyright: ignore[reportMissingImports] — the [mcp] extra
+        CallToolResult,
+        TextContent,
+    )
+
+    call_result = CallToolResult(
+        content=[TextContent(type="text", text=f"Error executing tool {tool_name}: {exc}")],
+        isError=True,
+    )
+    return _wire_bytes(call_result)
+
+
+def _bounded_tool_error(tool_name: str, exc: BaseException, mcp_budget: float):
+    """Fix pass 1, finding 2c (spec 0014 §5): a FITTING generic error keeps
+    the SDK's verbatim error path (return None to re-raise); an oversized
+    error representation is replaced by the bounded explicit refusal."""
+    if _mcp_error_envelope_bytes(tool_name, exc) <= mcp_budget:
+        return None
+    return _refusal(query_results.oversized_error_refusal())
+
+
+def _refusal(exc: QueryResultError):
+    """The four bounded query tools' shared refusal branch."""
+    return _mcp_refusal_result(exc)
+
+
 def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str = "combined"):
     """Wire one tool registration of the shared core onto one MCP stdio
     server (spec §6): ``analyst`` registers the Query operations, ``authoring``
@@ -174,8 +301,36 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         def _runtime() -> QueryRuntime:
             """The query runtime — a live instance, or the launch-time factory
             (empty project: the authoring tools work, query calls surface the
-            construction error)."""
-            return facade() if callable(facade) else facade
+            construction error). Fix pass 1, finding 6: the DEFAULT MCP
+            response measure is established HERE — at the registration seam —
+            for BOTH instance and factory callers (a factory's runtimes get it
+            as they are constructed), so every MCP result operation gets the
+            envelope preflight however the app was built; an explicitly set
+            measure still wins (this only fills a missing one, once per
+            runtime, together with the one-time refusal-representability check
+            on this transport)."""
+            runtime = facade() if callable(facade) else facade
+            if runtime._measure is None:
+                runtime._measure = _mcp_result_bytes
+                for form in query_results.refusal_forms():
+                    size = _refusal_envelope_bytes(form)
+                    if size > runtime._limits["mcp_response_bytes"]:
+                        raise ValueError(
+                            "the host query limits' mcp_response_bytes="
+                            f"{runtime._limits['mcp_response_bytes']} cannot represent "
+                            f"every refusal form on this transport (largest {size} "
+                            "bytes) — nothing could ever be answered or refused"
+                        )
+            return runtime
+
+        def _tool_mcp_budget() -> float:
+            """The effective MCP envelope ceiling for bounding GENERIC tool
+            errors (fix pass 1, finding 2c): the live runtime's host limits
+            when reachable — even mid-construction failure — else the built-in."""
+            try:
+                return _runtime()._limits["mcp_response_bytes"]
+            except Exception:
+                return query_results.DEFAULT_QUERY_LIMITS["mcp_response_bytes"]
 
         # --- the five query/ad-hoc tools (spec 2026-09-23-0001, unchanged) ---
 
@@ -212,7 +367,20 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 dimensions: dimensions to group by (e.g. ["region"]).
                 range: optional {"start", "end"} dates on the primary date dimension.
             """
-            return await _runtime().get_metric(name, dimensions, range)
+            try:
+                runtime = _runtime()
+                return await runtime.get_metric(name, dimensions, range)
+            except QueryResultError as exc:  # spec 0014 §5: isError + refusal
+                return _refusal(exc)
+            except Exception as exc:  # fix pass 1, finding 2c: fitting errors keep
+                bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
+                    "get_metric",
+                    exc,
+                    _tool_mcp_budget(),  # oversized representation is replaced
+                )
+                if bounded is not None:
+                    return bounded
+                raise
 
         @app.tool()
         async def list_datasets() -> list[dict]:
@@ -245,7 +413,20 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     semantic_layer/models/adhoc/ plus an OKF draft under
                     context_layer/metrics/ that search_context can find).
             """
-            return await _runtime().define_metric(definition)
+            try:
+                runtime = _runtime()
+                return await runtime.define_metric(definition)
+            except QueryResultError as exc:  # refusal staged nothing
+                return _refusal(exc)
+            except Exception as exc:  # fix pass 1, finding 2c: fitting errors keep
+                bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
+                    "define_metric",
+                    exc,
+                    _tool_mcp_budget(),  # oversized representation is replaced
+                )
+                if bounded is not None:
+                    return bounded
+                raise
 
         @app.tool()
         async def query_metrics(request: dict) -> dict:
@@ -268,7 +449,20 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     {type, value, min?, max?, max_length?}}, order?: [{field,
                     direction}], limit?: int, time?: {dimension, grain, start, end}}.
             """
-            return await _runtime().query_metrics(request)
+            try:
+                runtime = _runtime()
+                return await runtime.query_metrics(request)
+            except QueryResultError as exc:  # spec 0014 §5: isError + refusal
+                return _refusal(exc)
+            except Exception as exc:  # fix pass 1, finding 2c: fitting errors keep
+                bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
+                    "query_metrics",
+                    exc,
+                    _tool_mcp_budget(),  # oversized representation is replaced
+                )
+                if bounded is not None:
+                    return bounded
+                raise
 
         @app.tool()
         async def query_detail(request: dict) -> dict:
@@ -282,7 +476,20 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     field lives on the root directly or on a dataset reachable from
                     it through proven unique-target paths; child-side fields refuse.
             """
-            return await _runtime().query_detail(request)
+            try:
+                runtime = _runtime()
+                return await runtime.query_detail(request)
+            except QueryResultError as exc:  # spec 0014 §5: isError + refusal
+                return _refusal(exc)
+            except Exception as exc:  # fix pass 1, finding 2c: fitting errors keep
+                bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
+                    "query_detail",
+                    exc,
+                    _tool_mcp_budget(),  # oversized representation is replaced
+                )
+                if bounded is not None:
+                    return bounded
+                raise
 
         # --- the two answer-example tools (issue #21, spec 2026-09-29-0007) ---
         # Thin adapters over the runtime's transport-neutral save/search (issue
@@ -838,16 +1045,38 @@ def main(argv: list[str] | None = None) -> int:
     sources_path = default_registry_path(args.sources, args.db)
     db = args.db or "examples/retail-demo/data/demo.db"
 
-    def _new_runtime() -> QueryRuntime:
+    def _new_runtime(budget=None) -> QueryRuntime:
         if managed:
-            return QueryRuntime.open_project(project)
-        return QueryRuntime(
-            args.semantic,
-            args.context,
-            db,
-            staging_dir=args.staging,
-            sources=sources_path,
-        )
+            # open_project reads the LOGICAL host project's ``query:`` ceilings
+            # itself (never the pinned snapshot's inert copy).
+            runtime = QueryRuntime.open_project(project, deadline_budget=budget)
+        else:
+            runtime = QueryRuntime(
+                args.semantic,
+                args.context,
+                db,
+                staging_dir=args.staging,
+                sources=sources_path,
+                # the fixed host CWD configuration (main() chdir'd into the one
+                # launch-selected --project root)
+                query_limits=query_results.load_host_query_limits(Path.cwd()),
+                deadline_budget=budget,
+            )
+        # Spec 0014 §5 (fix pass 1, finding 2a): reject an MCP byte budget that
+        # cannot represent EVERY refusal form in its actual isError representation
+        # (text + structured duplication) BEFORE any tool uses it.
+        for form in query_results.refusal_forms():
+            size = _refusal_envelope_bytes(form)
+            if size > runtime._limits["mcp_response_bytes"]:
+                raise ValueError(
+                    "the host query limits' mcp_response_bytes="
+                    f"{runtime._limits['mcp_response_bytes']} cannot represent every "
+                    f"refusal form on this transport (largest {size} bytes) — tighten "
+                    "nothing further"
+                )
+        # The actual-transport preflight the core coordinates before staging.
+        runtime._measure = _mcp_result_bytes
+        return runtime
 
     facade: FacadeSource
     if args.toolset == "authoring":
@@ -895,7 +1124,11 @@ def main(argv: list[str] | None = None) -> int:
 
             def lazy_facade() -> QueryRuntime:
                 if not memo:
-                    memo.append(_new_runtime())
+                    # Fix pass 1, finding 1: the lazy factory constructs INSIDE a
+                    # tool call (a request lifecycle) — construction and that
+                    # request's first operation share ONE remaining-seconds budget.
+                    seconds = query_results.load_host_query_limits(Path.cwd())["execution_seconds"]
+                    memo.append(_new_runtime(DeadlineBudget(seconds)))
                 return memo[0]
 
             facade = lazy_facade
