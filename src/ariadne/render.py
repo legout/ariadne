@@ -328,8 +328,7 @@ def render(
     unknown = sorted(carried - set(metric_sqls))
     if unknown:
         raise RenderError(
-            f"unknown carried metric(s) {unknown}; "
-            f"available: {', '.join(sorted(metric_sqls))}"
+            f"unknown carried metric(s) {unknown}; available: {', '.join(sorted(metric_sqls))}"
         )
     stray = sorted(carried - wanted)
     if stray:
