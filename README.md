@@ -258,7 +258,7 @@ MCP registers the same operations as tools when the `mcp` extra is installed.
 | `ariadne resolve-term TERM` | Resolve shared business terms and identifier knowledge (representations, exact field bindings, scope, ambiguity, claim/confirmation status) against the admitted context — read-only guidance, never join authority |
 | `ariadne list-datasets` | See every table across all registered sources |
 | `ariadne query-records` | Bounded record selection from one known table — the latest N rows, no aggregation: explicit filters/order/timestamp contract, `governed: false`, never staged, truthful requested-top-N completeness, and all-or-nothing overflow refusals with narrowing guidance |
-| `ariadne define-metric` | Answer an unmodeled question: draft a metric (JSON via `--file` or stdin), pass the safety checks, run it read-only, label it `governed: false`, and auto-stage it as a proposal |
+| `ariadne define-metric` | Answer an unmodeled question: draft a metric (JSON via `--file` or stdin), pass the safety checks (ad-hoc SQL may read only registered catalog relations — file, network and table-function reads are refused before execution), run it read-only, label it `governed: false`, and auto-stage it as a proposal |
 | `ariadne search-examples QUERY` | Find explicitly saved answer examples — labeled references (draft/stable, staleness, provenance) for checking a method, never cached answers; never executes a query |
 | `ariadne save-example` | Save one answer example after the user explicitly confirms the bounded record (question, interpretation, method, result excerpt, self-declared attestation); stages a draft under `staging/answer_examples/` for operator review |
 

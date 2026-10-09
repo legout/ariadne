@@ -1014,7 +1014,7 @@ def test_define_metric_rejects_on_true_cartesian_source(facade):
                     "name": "on_true_metric",
                     "description": "ON TRUE fans out unboundedly",
                     "source": (
-                        "SELECT o.order_id, l.line_amount FROM orders o JOIN order_lines l ON TRUE"
+                        "SELECT o.order_id, l.line_amount FROM orders o JOIN customers l ON TRUE"
                     ),
                     "expression": "SUM(o.amount)",
                     "dimensions": [],
@@ -1038,7 +1038,7 @@ def test_define_metric_rejects_non_equality_join_predicate(facade):
                     "description": "inequality ON fans out without a provable key",
                     "source": (
                         "SELECT o.order_id, l.line_amount "
-                        "FROM orders o JOIN order_lines l ON l.order_id > o.order_id"
+                        "FROM orders o JOIN customers l ON l.customer_id > o.customer_id"
                     ),
                     "expression": "SUM(o.amount)",
                     "dimensions": [],
