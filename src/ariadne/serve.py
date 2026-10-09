@@ -433,6 +433,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
     from mcp.server.fastmcp.tools import (  # pyright: ignore[reportMissingImports] — [mcp] extra
         Tool,  # explicit tool registration (the query_records nested schema)
     )
+    from mcp.types import CallToolResult
 
     app: FastMCP = FastMCP("ariadne")
 
@@ -494,10 +495,10 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             """
             return await _runtime().search_context(query)
 
-        @app.tool()
+        @app.tool(structured_output=False)
         async def get_metric(
             name: str, dimensions: list[str] | None = None, range: dict | None = None
-        ) -> dict:
+        ) -> dict | CallToolResult:
             """Rows plus compiled SQL for a named governed metric — never raw SQL.
 
             The response carries a context field: the full served OKF metric page
@@ -535,8 +536,8 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             """
             return await _runtime().list_datasets()
 
-        @app.tool()
-        async def define_metric(definition: dict) -> dict:
+        @app.tool(structured_output=False)
+        async def define_metric(definition: dict) -> dict | CallToolResult:
             """Define an ad-hoc metric for a question no governed metric answers:
             compiled, executed read-only, auto-staged for human promotion.
 
@@ -572,8 +573,8 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     return bounded
                 raise
 
-        @app.tool()
-        async def query_metrics(request: dict) -> dict:
+        @app.tool(structured_output=False)
+        async def query_metrics(request: dict) -> dict | CallToolResult:
             """Query one or more governed metrics TOGETHER over the admitted multi-fact
             graph: each fact aggregates at its own grain and the branches align on
             conformed keys — a raw fact-to-fact join never executes. Same contract as
@@ -608,8 +609,8 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     return bounded
                 raise
 
-        @app.tool()
-        async def query_detail(request: dict) -> dict:
+        @app.tool(structured_output=False)
+        async def query_detail(request: dict) -> dict | CallToolResult:
             """Project one declared root dataset's fields through safe
             many-to_one/one_to_one lookup paths — no aggregates, no fan-out: exactly
             one row per root key. Same contract as ``ariadne query-detail``, over the
@@ -637,7 +638,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     return bounded
                 raise
 
-        async def _query_records(request: dict) -> dict:
+        async def _query_records(request: dict) -> dict | CallToolResult:
             """Select a bounded top-N of records from ONE known catalog table —
             an Ad-hoc Record Query (spec 0014 §3): no aggregation, no admitted
             graph, no staging, and every answer reports governed: false with
@@ -685,7 +686,9 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         # discovery-only. The tool keeps a plain dict parameter so transport
         # typing never coerces invalid numeric/boolean values or drops unknown
         # keys before the core's strict validation (spec 0014 §3).
-        record_tool = Tool.from_function(_query_records, name="query_records")
+        record_tool = Tool.from_function(
+            _query_records, name="query_records", structured_output=False
+        )
         record_tool.parameters = _QUERY_RECORDS_INPUT_SCHEMA
         app._tool_manager._tools["query_records"] = record_tool  # mcp 1.30.0 manager seam
 

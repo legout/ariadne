@@ -258,6 +258,7 @@ def test_iceberg_statements(recorded, tmp_path):
         [{"name": "ice", "type": "iceberg", "path": "/data/warehouse/sales", "table": "sales"}],
     )
     con, catalog = build_connection(load_registry(reg))
+    assert isinstance(con, RecordingConnection)
     assert con.statements == [
         "LOAD iceberg",
         "CREATE SCHEMA ice",
@@ -271,6 +272,7 @@ def test_ducklake_statements(recorded, tmp_path):
         tmp_path, [{"name": "dl", "type": "ducklake", "path": "ducklake:warehouse.ducklake"}]
     )
     con, _ = build_connection(load_registry(reg))
+    assert isinstance(con, RecordingConnection)
     assert con.statements == [
         "LOAD ducklake",
         "ATTACH 'ducklake:warehouse.ducklake' AS dl (TYPE DUCKLAKE, READ_ONLY)",
@@ -283,6 +285,7 @@ def test_postgres_statements(recorded, monkeypatch, tmp_path):
         tmp_path, [{"name": "pg", "type": "postgres", "connection_env": "ARIADNE_PG_DSN"}]
     )
     con, catalog = build_connection(load_registry(reg))
+    assert isinstance(con, RecordingConnection)
     assert con.statements == [
         "LOAD postgres",
         "ATTACH 'dbname=warehouse user=ro' AS pg (TYPE POSTGRES, READ_ONLY)",
@@ -375,6 +378,7 @@ def test_remote_parquet_loads_httpfs_once(recorded, tmp_path):
         ],
     )
     con, _ = build_connection(load_registry(reg))
+    assert isinstance(con, RecordingConnection)
     loads = [s for s in con.statements if s.startswith("LOAD")]
     assert loads == ["LOAD httpfs"]
     assert con.statements[0] == "LOAD httpfs"
@@ -390,6 +394,7 @@ def test_writable_build_drops_read_only(recorded, tmp_path):
     """build_connection(read_only=False): attaches lose the READ_ONLY suffix."""
     reg = write_registry(tmp_path, [{"name": "d", "type": "ducklake", "path": "x.ducklake"}])
     con, _ = build_connection(load_registry(reg), read_only=False)
+    assert isinstance(con, RecordingConnection)
     assert con.statements == [
         "LOAD ducklake",
         f"ATTACH '{tmp_path / 'x.ducklake'}' AS d (TYPE DUCKLAKE)",  # resolved vs registry dir

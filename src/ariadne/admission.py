@@ -64,7 +64,7 @@ import tempfile
 from datetime import UTC, datetime
 from getpass import getuser
 from pathlib import Path, PurePosixPath
-from typing import NoReturn
+from typing import NoReturn, cast
 
 from ariadne import authoring, authoring_inputs, authoring_sources, context, proposals
 from ariadne.sources import Registry
@@ -561,12 +561,12 @@ def _retained_confirmations(
             None,
         )
         receipt_digests = sorted(
-            receipt.get("digest")
+            cast(str, receipt.get("digest"))
             for receipt in record.get("receipts") or []
             if isinstance(receipt, dict)
         )
         current_digests = sorted(
-            receipt.get("digest")
+            cast(str, receipt.get("digest"))
             for receipt in (current or {}).get("receipts") or []
             if isinstance(receipt, dict)
         )
@@ -586,7 +586,7 @@ def _retained_confirmations(
             and not expired
         ):
             entry = _confirmation_entry(current, by=by, at=at)
-            entry["retained_from"] = prior.get("commit")
+            entry["retained_from"] = (prior or {}).get("commit")
             entry["by"] = record.get("by")
             entry["at"] = record.get("at")
             retained.append(entry)

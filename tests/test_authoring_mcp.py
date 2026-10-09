@@ -531,6 +531,7 @@ def _launch_http(project: Path, *, token: str | None, extra_args: list[str] | No
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+        assert proc.stdout is not None and proc.stderr is not None
         proc.stdout.close()
         proc.stderr.close()
 

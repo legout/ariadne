@@ -41,6 +41,15 @@ where = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
 
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["..", "../src", "src"]
+executionEnvironments = [
+    { root = "tests", extraPaths = ["..", "../src", "src"] },
+    { root = "src", extraPaths = ["../src", "src"] },
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

@@ -131,12 +131,10 @@ class SessionMcp:
             # requires a *named* error for a permitted-but-unavailable
             # server, not a generic timeout (issue #25 recheck P2).
             eager_names = {
-                name for name, cfg in settings.servers.items()
-                if cfg.lifecycle == "eager"
+                name for name, cfg in settings.servers.items() if cfg.lifecycle == "eager"
             }
             not_ready = {
-                status.name for status in self._registry.statuses()
-                if status.state != "ready"
+                status.name for status in self._registry.statuses() if status.state != "ready"
             }
             pending = ", ".join(sorted((eager_names & not_ready) or eager_names))
             self._eager_error = (
@@ -158,7 +156,7 @@ class SessionMcp:
             return None
 
         async def execute(
-            tool_call_id: str, arguments: dict, signal=None, on_update=None
+            tool_call_id: str, arguments: Mapping[str, JSONValue], signal=None, on_update=None
         ) -> AgentToolResult:
             del tool_call_id, signal, on_update
             return await self._execute_proxy(arguments)
@@ -201,9 +199,7 @@ class SessionMcp:
         its result from the caller's loop."""
         if not self._loop.is_running():
             raise StaleRegistryError("MCP registry is stale after session shutdown")
-        return await asyncio.wrap_future(
-            asyncio.run_coroutine_threadsafe(coroutine, self._loop)
-        )
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coroutine, self._loop))
 
     async def _execute_proxy(self, arguments: Mapping[str, JSONValue]) -> AgentToolResult:
         if self._eager_error is not None and "connect" not in arguments:
@@ -214,11 +210,13 @@ class SessionMcp:
             # (issue #25 recheck P1).
             error = self._eager_error
             self._eager_error = None
-            return _text(_truncate(
-                f"MCP eager-server startup failed at session open ({error}). "
-                "Other operations now proceed; connect(<server>) retries a "
-                "failed server."
-            ))
+            return _text(
+                _truncate(
+                    f"MCP eager-server startup failed at session open ({error}). "
+                    "Other operations now proceed; connect(<server>) retries a "
+                    "failed server."
+                )
+            )
         if "search" in arguments:
             query = arguments["search"]
             if not isinstance(query, str):
@@ -243,9 +241,7 @@ class SessionMcp:
                 if self._registry.server_allowed(server.name)
                 and self._registry.cache.read(server) is None
             ]
-            lines.extend(
-                f'{name}: no metadata yet — call connect("{name}")' for name in cold
-            )
+            lines.extend(f'{name}: no metadata yet — call connect("{name}")' for name in cold)
             if not lines:
                 return _text(f'No tools matching "{query}"')
             return _text("\n\n".join(lines))
@@ -292,9 +288,9 @@ def _text(message: str) -> AgentToolResult:
 
 def _tool_result(result: ToolCallResult) -> AgentToolResult:
     texts = [
-        item["text"]
+        text
         for item in result.content
-        if item.get("type") == "text" and isinstance(item.get("text"), str)
+        if item.get("type") == "text" and isinstance(text := item.get("text"), str)
     ]
     return _text(_truncate("\n".join(texts) or "MCP tool returned no text content."))
 
@@ -303,10 +299,7 @@ def _truncate(value: str) -> str:
     encoded = value.encode()
     if len(encoded) <= _OUTPUT_LIMIT:
         return value
-    note = (
-        f"\n\n[truncated MCP output: original {len(encoded)} bytes; "
-        f"limit {_OUTPUT_LIMIT} bytes]"
-    )
+    note = f"\n\n[truncated MCP output: original {len(encoded)} bytes; limit {_OUTPUT_LIMIT} bytes]"
     budget = _OUTPUT_LIMIT - len(note.encode())
     return encoded[:budget].decode(errors="ignore") + note
 

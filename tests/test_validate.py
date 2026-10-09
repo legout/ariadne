@@ -175,6 +175,7 @@ def test_context_only_tree_and_graph_without_models(tmp_path):
     graph without models stays the structural failure it always was."""
     result = validate(tmp_path / "staging")
     assert result.ok and not result.errors
+    assert result.report is not None
     assert result.report.scope == "context-only (no semantic declarations)"
     outcomes = {check.name: check for check in result.report.checks}
     for name in ("structural", "compile", "conformance", "bind", "grain", "relationship_audit"):

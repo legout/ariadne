@@ -495,7 +495,7 @@ def collection_resource(source: str, catalog: str | None, schema: str) -> str:
     return f"ariadne://collection/{_resource_payload([source, catalog, schema])}"
 
 
-def parse_resource(uri: str) -> tuple[str, list]:
+def parse_resource(uri: object) -> tuple[str, list]:
     """Decode one canonical resource URI back to ``(kind, parts)`` — the
     identity consumers read instead of parsing display names. ``kind`` is
     ``table`` or ``collection``; ``parts`` is the identifier array

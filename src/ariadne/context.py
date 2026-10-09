@@ -43,6 +43,7 @@ import re
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
@@ -1058,7 +1059,7 @@ def _table_body(
         for line in lines
         if line.startswith("- ")
     ]
-    authored_chunks = [
+    authored_chunks: list[tuple[str | None, list[str]]] = [
         (heading, lines) for heading, lines in chunks if heading not in _CORE_SECTIONS
     ]
     has_authored = any(line.strip() for _heading, lines in authored_chunks for line in lines)
@@ -1140,7 +1141,7 @@ def _table_body(
             for name, stats in observations["columns"].items()
         ],
     ]
-    core = [
+    core: list[tuple[str | None, list[str]]] = [
         (
             SCHEMA_SECTION,
             [
@@ -1244,7 +1245,7 @@ def build_table_page(
         and old_schema == columns
         and {k: v for k, v in old_observations.items() if k != "observed_at"} == facts
     )
-    observed_at = old_observed_at if reuse_timestamp else now
+    observed_at = old_observed_at if reuse_timestamp and old_observed_at is not None else now
     observations = {"observed_at": observed_at, **facts}
     citation = {
         "id": f"catalog-{asset['source']}-{asset['schema']}-{asset['table']}",
@@ -2041,7 +2042,7 @@ def confirmation_lookup(confirmations: list[dict] | None) -> dict[tuple[str, obj
     (context-layer relative, the resolver's own citation form) + mapping id →
     the recorded human confirmation entry."""
     return {
-        (entry.get("page"), entry.get("mapping")): entry
+        (cast(str, entry.get("page")), entry.get("mapping")): entry
         for entry in confirmations or []
         if isinstance(entry, dict)
     }
@@ -2109,6 +2110,7 @@ def _mapping_views(
         history: list[dict] | None = None
         entry = confirmations.get((page, mapping.get("id"))) if confirmations else None
         if _confirmation_matches(entry, meta, mapping, evidence):
+            assert entry is not None
             if any(view["freshness"]["state"] == "stale" for view in evidence):
                 # a stale mapping cannot supply confirmed guidance without
                 # revalidation: the human confirmation is disclosed as history

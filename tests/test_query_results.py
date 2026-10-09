@@ -268,8 +268,8 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         staging = tmp_path / "staging"
         rt = make_runtime(served, staging, max_rows=2)
         spy = _SpyConnection(rt._execution.con)
-        rt._execution.con = spy
-        rt.con = spy
+        monkeypatch.setattr(rt._execution, "con", spy)
+        monkeypatch.setattr(rt, "con", spy)
         with pytest.raises(QueryResultError) as raised:
             asyncio.run(
                 rt.define_metric(
@@ -342,8 +342,8 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
     elif case == "nested_output_column_refuses_before_materialization":
         rt = make_runtime(served, tmp_path / "staging")
         spy = _SpyConnection(rt._execution.con)
-        rt._execution.con = spy
-        rt.con = spy
+        monkeypatch.setattr(rt._execution, "con", spy)
+        monkeypatch.setattr(rt, "con", spy)
         with pytest.raises(QueryResultError) as raised:
             asyncio.run(
                 rt.define_metric(
@@ -974,7 +974,7 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         spy = _InterruptedConnection(con)
         with pytest.raises(execution.DeadlineExhausted):
             with budget.guard(spy):
-                rt._execution.con = spy
+                monkeypatch.setattr(rt._execution, "con", spy)
                 try:
                     rt._execution.fetch_bounded("SELECT grp FROM groups3", rt._limits, budget)
                 finally:

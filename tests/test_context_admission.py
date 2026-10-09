@@ -26,6 +26,7 @@ import io
 import json
 import os
 import sys
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -243,7 +244,7 @@ def context_only_candidate(
 
 
 def admit(
-    project: Path, review: dict, *, confirm: bool = True, confirm_mapping: list[str] = ()
+    project: Path, review: dict, *, confirm: bool = True, confirm_mapping: Sequence[str] = ()
 ) -> int:
     argv = [
         "--project",

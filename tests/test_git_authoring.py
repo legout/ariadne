@@ -308,7 +308,7 @@ def approved(api: AuthoringProject, project: Path, started: dict) -> None:
     """The operator's approval of the candidate's exact resolved source identity
     (the G3 human step): the profile/audit connection opens only after this."""
     resolved, digest = candidate_sources(project, started["candidate_revision"])
-    assert resolved is not None
+    assert resolved is not None and digest is not None
     api.approve_sources(started["proposal"], started["candidate_revision"], digest)
 
 
@@ -878,6 +878,7 @@ def test_cli_validate_and_review_the_git_proposal(tmp_path, capsys):
     assert authoring_cli(["start", "--project", str(project)]) == 0
     started = json.loads(capsys.readouterr().out)
     resolved, digest = candidate_sources(project, started["candidate_revision"])
+    assert resolved is not None and digest is not None
     assert (
         authoring_cli(
             [

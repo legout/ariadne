@@ -455,6 +455,7 @@ def test_imported_base_establishes_the_first_snapshot_through_the_normal_human_s
     # operator approval of the candidate's exact resolved identity (G3 seam)
     resolved, digest = candidate_sources(project, imported["revision"])
     assert resolved is not None
+    assert digest is not None
     api.approve_sources(proposal, imported["revision"], digest)
 
     # validate finalizes the deterministic artifacts and validates the EXACT
@@ -495,6 +496,7 @@ def test_imported_base_establishes_the_first_snapshot_through_the_normal_human_s
         == 0
     )
     current = admission.load_current(project)
+    assert current is not None
     assert current["commit"] == review["revision"]
 
     # the admitted snapshot serves the governed metric through the managed
@@ -603,7 +605,10 @@ def test_import_is_exposed_only_through_the_human_command_adapter(tmp_path, caps
     """Issue #39/plan §2: ``import-legacy`` exists ONLY on the human CLI — the
     agent-facing :class:`AuthoringProject` surface (the MCP/native Agent tool
     contract) never grows an import entry point."""
-    commands = build_parser()._subparsers._group_actions[0].choices  # noqa: SLF001
+    parser = build_parser()
+    assert parser._subparsers is not None
+    commands = parser._subparsers._group_actions[0].choices  # noqa: SLF001
+    assert commands is not None
     assert "import-legacy" in commands
     assert "enrich-legacy" in commands  # K6 (issue #46): the same human-only seam
     api = AuthoringProject(tmp_path)
@@ -662,6 +667,7 @@ def test_explicit_enrichment_preserves_legacy_meaning_links_and_pending_evidence
     # resolved identity — the same G3 human step refresh needs
     resolved, digest = candidate_sources(project, revision)
     assert resolved is not None
+    assert digest is not None
     api.approve_sources(proposal, revision, digest)
     tracked_before = set(run_git(project, "ls-files").split())
 
@@ -758,6 +764,7 @@ def test_enrichment_keeps_legacy_schema_explanations_through_refresh(tmp_path, c
     proposal, revision = imported["proposal"], imported["revision"]
     api = AuthoringProject(project)
     resolved, digest = candidate_sources(project, revision)
+    assert digest is not None
     api.approve_sources(proposal, revision, digest)
 
     enriched = enrich_via_cli(project, proposal, revision, "context_layer/tables/events.md", capsys)
@@ -836,6 +843,7 @@ def test_enrichment_refuses_ambiguous_bindings_and_binds_only_explicitly(tmp_pat
     proposal, revision = imported["proposal"], imported["revision"]
     api = AuthoringProject(project)
     resolved, digest = candidate_sources(project, revision)
+    assert digest is not None
     api.approve_sources(proposal, revision, digest)
 
     # the bare legacy spelling matches BOTH approved assets: refusal, not a guess
@@ -939,6 +947,7 @@ def test_enrichment_refuses_unknown_assets_non_table_pages_and_unapproved_identi
     )
     api = AuthoringProject(project)
     resolved, digest = candidate_sources(project, revision)
+    assert digest is not None
     api.approve_sources(proposal, revision, digest)
 
     # an explicit asset outside the approved identity: refused with the
@@ -1006,6 +1015,7 @@ def test_author_git_mode_drafts_into_an_unadmitted_proposal(tmp_path, capsys):
     api = AuthoringProject(project)
     resolved, digest = candidate_sources(project, envelope["revision"])
     assert resolved is not None
+    assert digest is not None
     api.approve_sources(envelope["proposal"], envelope["revision"], digest)
     validated = api.validate_proposal(envelope["proposal"], envelope["revision"])
     assert validated["ok"] is True, validated["errors"]
@@ -1059,6 +1069,7 @@ def test_author_git_mode_after_an_existing_artifact_base(tmp_path):
     api = AuthoringProject(project)
     resolved, digest = candidate_sources(project, envelope["revision"])
     assert resolved is not None
+    assert digest is not None
     api.approve_sources(envelope["proposal"], envelope["revision"], digest)
     validated = api.validate_proposal(envelope["proposal"], envelope["revision"])
     assert validated["ok"] is True, validated["errors"]

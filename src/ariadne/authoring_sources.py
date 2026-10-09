@@ -37,6 +37,7 @@ import stat
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
@@ -179,7 +180,7 @@ def propose_sources(
     if not isinstance(existing, list):
         raise ValueError(f"proposal {proposal}: candidate ariadne.yaml 'sources' is not a list")
     taken = {entry.get("name") for entry in existing if isinstance(entry, dict)}
-    clashes = sorted(entry["name"] for entry in entries if entry["name"] in taken)
+    clashes = sorted(cast(str, entry["name"]) for entry in entries if entry["name"] in taken)
     if clashes:
         raise ValueError(
             f"source name(s) {clashes} already exist in the candidate registry — a "
@@ -359,6 +360,7 @@ def inputs(
     resolved, digest = candidate_sources(project, revision)
     profile = None
     if resolved is not None:
+        assert digest is not None
         approval = _approved_identity(project, digest, proposal, revision)
         profile = profiler.profile(
             registry=identity_registry(approval["sources"]), sample_rows=sample_rows

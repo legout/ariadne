@@ -32,7 +32,7 @@ operations outside the agent (spec §5).
 """
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from ariadne.authoring import AuthoringProject
@@ -73,12 +73,12 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
     # Each wrapper mirrors the service's own signature; every revision,
     # bound and staging rule stays the service's (spec: not reimplemented).
     async def start_proposal(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(api.start_proposal(arguments.get("base_revision")))
 
     async def read_artifact(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         identity: dict = {"kind": arguments["kind"]}
         if arguments.get("name") is not None:
@@ -90,7 +90,7 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         )
 
     async def edit_proposal(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(
             api.edit_proposal(
@@ -101,7 +101,7 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         )
 
     async def propose_sources(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(
             api.propose_sources(
@@ -112,7 +112,7 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         )
 
     async def inputs(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(
             api.inputs(
@@ -124,25 +124,21 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         )
 
     async def upload_document(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(
-            api.upload_document(
-                arguments["name"], arguments["content"].encode("utf-8")
-            )
+            api.upload_document(arguments["name"], arguments["content"].encode("utf-8"))
         )
 
     async def validate_proposal(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(
-            api.validate_proposal(
-                arguments["proposal"], arguments["expected_revision"]
-            )
+            api.validate_proposal(arguments["proposal"], arguments["expected_revision"])
         )
 
     async def refresh_schema(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(
             api.refresh_schema(
@@ -153,7 +149,7 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         )
 
     async def inspect_mapping(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(
             api.inspect_mapping(
@@ -165,7 +161,7 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         )
 
     async def resolve_term(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(
             api.resolve_term(
@@ -174,14 +170,12 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         )
 
     async def review_proposal(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
-        return _payload(
-            api.review_proposal(arguments["proposal"], part=arguments.get("part", 1))
-        )
+        return _payload(api.review_proposal(arguments["proposal"], part=arguments.get("part", 1)))
 
     async def read_skill_reference_tool(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         reference = arguments["reference"]
         return _payload(

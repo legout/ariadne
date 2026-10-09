@@ -229,7 +229,7 @@ def _lstat(path: Path) -> os.stat_result | None:
         return None
 
 
-def _refuse_symlinked_component(root: Path, rel: Path) -> None:
+def _refuse_symlinked_component(root: Path, rel: Path | PurePosixPath) -> None:
     """Refuse before any write when a component of an operator-state path is a
     symlink (a pre-planted link must never redirect state or artifact writes)."""
     path = root
@@ -893,14 +893,6 @@ def _read_blob(project: Path, revision: str, rel: str) -> bytes | None:
     return _git(["show", f"{revision}:{rel}"], project, text=False).stdout
 
 
-def _blob_equals(project: Path, revision: str, rel: str, content: str) -> bool:
-    """True when ``rel`` at ``revision`` already holds exactly ``content`` (the
-    identical-edit no-op check, spec §4: repeating an identical edit against
-    its still-current revision must not create another distinct candidate)."""
-    blob = _read_blob(project, revision, rel)
-    return blob is not None and blob == content.encode("utf-8")
-
-
 def _safe_write(worktree: Path, rel: str, content: str) -> None:
     """Write one artifact body inside the proposal worktree, refusing a
     symlinked parent or target first (a planted link must never redirect an
@@ -980,7 +972,8 @@ def edit_proposal(
                 f"edit expected {expected_revision} — re-read the artifact and retry "
                 "with the current candidate revision; nothing was written"
             )
-        if _blob_equals(project, current, rel, content):
+        base_content = _read_blob(project, current, rel)
+        if base_content is not None and base_content == content.encode("utf-8"):
             return {
                 "proposal": proposal,
                 "revision": current,
@@ -989,7 +982,7 @@ def edit_proposal(
             }  # identical edit: no commit, candidate unchanged
         if not core_generated:
             _refuse_forged_claims(
-                rel, content, _read_blob(project, current, rel)
+                rel, content, base_content
             )  # spec §4: system-owned claims, content half
         _require_git_identity(project)
         _refuse_untracked_new_artifact(project, worktree_root, rel, current)

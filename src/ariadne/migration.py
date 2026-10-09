@@ -487,6 +487,7 @@ def enrich_legacy(
             f"proposal {proposal} declares no source entries in its candidate "
             f"registry at {current[:12]} — there is no approved identity to bind to"
         )
+    assert digest is not None
     approval = authoring_sources._approved_identity(project, digest, proposal, current)
     owned = execution.DuckDBExecution(authoring_sources.identity_registry(approval["sources"]))
     try:

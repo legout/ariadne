@@ -116,7 +116,7 @@ def approved(api: AuthoringProject, project: Path, started: dict) -> str:
     """The operator's approval of the candidate's exact resolved source identity
     (the G3 human step): refresh opens only this identity afterwards."""
     resolved, digest = candidate_sources(project, started["candidate_revision"])
-    assert resolved is not None
+    assert resolved is not None and digest is not None
     api.approve_sources(started["proposal"], started["candidate_revision"], digest)
     return digest
 

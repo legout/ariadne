@@ -22,6 +22,7 @@ admission or Promotion tool.
 """
 
 import json
+from collections.abc import Mapping
 
 from ariadne.query import QueryRuntime
 from tau_agent.messages import TextContent
@@ -50,18 +51,18 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
     # the ariadneai MCP facade uses (spec rev 4 §8.12: fresh consuming agents
     # discover the ad-hoc path through the facade itself).
     async def list_metrics(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(await runtime.list_metrics())
 
     async def search_context(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         limit = arguments.get("limit", 10)
         return _payload(await runtime.search_context(arguments["query"], limit))
 
     async def get_metric(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(
             await runtime.get_metric(
@@ -70,17 +71,17 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
         )
 
     async def list_datasets(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(await runtime.list_datasets())
 
     async def define_metric(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(await runtime.define_metric(arguments["definition"]))
 
     async def resolve_term(
-        tool_call_id: str, arguments: dict, signal=None, on_update=None
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
         return _payload(
             await runtime.resolve_term(arguments["request"], part=arguments.get("part", 1))

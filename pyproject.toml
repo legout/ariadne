@@ -71,6 +71,13 @@ addopts = "-q"
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
+exclude = ["build", "**/.venv", "examples/trace-data/data/docs"]
+# The separately installed Agent has its own optional dependency environment.
+executionEnvironments = [
+    { root = "ariadne-agent/src", extraPaths = ["src", "ariadne-agent/src", "ariadne-agent/.venv/lib/python3.12/site-packages"] },
+    { root = "ariadne-agent/tests", extraPaths = [".", "src", "ariadne-agent/src", "ariadne-agent/.venv/lib/python3.12/site-packages"] },
+    { root = ".", extraPaths = ["src"] },
+]
 
 [tool.ruff]
 line-length = 100

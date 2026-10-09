@@ -73,6 +73,7 @@ from typing import Any
 
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+from sqlglot import expressions as exp
 from sqlglot.optimizer.scope import Scope, build_scope  # pyright: ignore[reportMissingImports]
 
 # Issue #19 (ADR-0015, spec 2026-09-29-0007): the answer-example store is a
@@ -280,13 +281,9 @@ class QueryRuntime:
             if admission_record is None:
                 raise RuntimeError(f"no governed metrics found under {models}")
             self._context_only = True  # a managed catalog-less admission serves discovery
-        seen: list[dict] = []
-        for entry in self._metrics.values():
-            if not any(entry["model"] is candidate for candidate in seen):
-                seen.append(entry["model"])
         try:
-            for model in seen:
-                render(model)
+            for entry in self._metrics.values():
+                render(entry["model"])
         except Exception as exc:
             raise RuntimeError(f"served OSI models under {models} do not compile: {exc}") from exc
 
@@ -1401,6 +1398,7 @@ def _qualified_source_refs(source: object) -> list[str | None]:
             if isinstance(origin, Scope):  # a CTE/derived alias: resolve through
                 refs.extend(collect(origin))
             else:
+                assert isinstance(table, exp.Table)
                 refs.append(".".join(part.name for part in table.parts))
         for subquery in node.subqueries:  # predicate/scalar subquery reads
             subquery_scope = build_scope(subquery)

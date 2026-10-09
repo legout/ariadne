@@ -143,7 +143,7 @@ def mapping_project(tmp_path: Path, *, sample_permission: bool = False) -> Path:
         CURRENCY_MAP_ROWS,
         ["from_ccy", "symbol"],
     )
-    registry = {
+    registry: dict = {
         "sources": [
             {"name": "orders", "type": "parquet", "path": "data/orders/orders.parquet"},
             {"name": "storemeta", "type": "parquet", "path": "data/storemeta/prefix_map.parquet"},
@@ -782,7 +782,7 @@ def measured_hypothesis(tmp_path: Path):
     return project, api, started, candidate, measured, edited
 
 
-def _evidence_block(page_text: str) -> dict:
+def _evidence_block(page_text: str) -> dict | None:
     return _frontmatter(page_text).get("ariadne_evidence")
 
 
@@ -811,6 +811,7 @@ def test_validation_attaches_verified_summaries_and_receipts_survive_saves(tmp_p
 
     page = api.read_artifact(started["proposal"], REFERENCE_EDIT)
     block = _evidence_block(page["content"])
+    assert block is not None
     assert set(block) == {"local-to-global-prefix"}
     [summary] = block["local-to-global-prefix"]
     receipt = measured["receipt"]

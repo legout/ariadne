@@ -812,11 +812,7 @@ def _fsync_path(path: Path) -> None:
     Opened read-only — ``fsync(2)`` flushes the data/directory entries
     regardless — and any ``OSError`` PROPAGATES so the transition fails closed
     before the prior proposal copy is removed (issue #15 review P1)."""
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    proposals._fsync_path(path)
 
 
 def _fsync_tree(root: Path) -> None:
@@ -1320,7 +1316,7 @@ class AuthoringProject:
         boundary, and the candidate's Seed Notes evidence — bounded, with
         stable digests, from the recorded candidate revision."""
         return authoring_sources.inputs(
-            self.project, proposal, documents=documents, part=part, sample_rows=sample_rows
+            self.project, proposal, documents=list(documents), part=part, sample_rows=sample_rows
         )
 
     def upload_document(self, name: str, data: bytes, *, max_bytes: int = MAX_UPLOAD_BYTES) -> dict:
@@ -1408,7 +1404,7 @@ class AuthoringProject:
     # --------------- K3 (issue #43): bounded mapping inspection + receipts
 
     def inspect_mapping(
-        self, proposal: str, expected_revision: str, candidate: dict, limits: dict | None = None
+        self, proposal: str, expected_revision: str, candidate: object, limits: object = None
     ) -> dict:
         """Measure one structured mapping-inspection candidate (plan §2
         ``inspect_mapping``, spec 0010 §7): a discriminated JSON object of
@@ -1679,6 +1675,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
         resolved_sources, source_digest = authoring_sources.candidate_sources(project, current)
         approval = None
         if resolved_sources is not None:
+            assert source_digest is not None
             approval = authoring_sources._approved_identity(
                 project, source_digest, proposal, current
             )
@@ -1696,7 +1693,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 proposals._validation_path(project, proposal, current),
                 idempotent=True,
             )
-        repair = dict(record.get("repair") or {"attempts": 0, "status": "open"})
+        repair: dict = dict(record.get("repair") or {"attempts": 0, "status": "open"})
         if repair["attempts"] >= MAX_ROUNDS or repair["status"] == "review_needed":
             raise ValueError(
                 f"proposal {proposal} exhausted its {MAX_ROUNDS} bounded validation "
@@ -2383,6 +2380,7 @@ def refresh_schema(
             f"proposal {proposal} declares no source entries in its candidate "
             f"registry at {current[:12]} — there is nothing to refresh"
         )
+    assert digest is not None
     approval = authoring_sources._approved_identity(project, digest, proposal, current)
     owned = execution.DuckDBExecution(authoring_sources.identity_registry(approval["sources"]))
     try:
@@ -3044,6 +3042,7 @@ def _measure(
     examples: list[dict] = []
 
     if family == "lookup":
+        assert lookup is not None  # validate_inspection_candidate requires this family's asset.
         # the explicit approved lookup: missing keys, duplicates, ambiguity and
         # multiplicity are REPORTED — a many-valued lookup never collapses
         key_columns = [b["column"] for b in lookup["key_fields"]]
@@ -3129,7 +3128,7 @@ def _measure(
         if family == "prefix":
             separator = candidate["separator"]
             key_arity = 0
-            lookup_index: dict[tuple, list] = {}
+            prefix_index: dict[tuple, list] = {}
             if prefix_lookup:
                 key_arity = len(prefix_lookup["key_fields"])
                 key_columns = [b["column"] for b in prefix_lookup["key_fields"]]
@@ -3141,10 +3140,10 @@ def _measure(
                 for row in samples[prefix_lookup["asset"]]:
                     if any(row[c] is None for c in key_columns) or row[prefix_column] is None:
                         continue
-                    lookup_index.setdefault(tuple(row[c] for c in key_columns), []).append(
+                    prefix_index.setdefault(tuple(row[c] for c in key_columns), []).append(
                         row[prefix_column]
                     )
-                repeated = [len(v) for v in lookup_index.values() if len(v) > 1]
+                repeated = [len(v) for v in prefix_index.values() if len(v) > 1]
                 measurement["multiplicity"] = {
                     "lookup_duplicate_keys": len(repeated),
                     "lookup_max_rows_per_key": max(repeated, default=1),
@@ -3152,7 +3151,7 @@ def _measure(
             left_pairs: list[tuple[dict, tuple]] = []
             for row, components in zip(tested_left, left_tuples, strict=True):
                 if prefix_lookup:
-                    values = lookup_index.get(tuple(components[:key_arity]))
+                    values = prefix_index.get(tuple(components[:key_arity]))
                     if not values:
                         measurement["unknown_lookup_count"] += 1
                         continue
@@ -3257,7 +3256,7 @@ def _measure(
             for row, value in left_pairs:
                 if len(examples) >= example_budget:
                     break
-                entry = {"matched": value in right_values}
+                entry: dict = {"matched": value in right_values}
                 if family == "prefix":
                     entry["components"] = {
                         column: _jsonable(row[column]) for column in left_columns
@@ -3416,6 +3415,7 @@ def inspect_mapping(
             f"proposal {proposal} declares no source entries in its candidate "
             f"registry at {current[:12]} — there is nothing to inspect"
         )
+    assert digest is not None
     approval = authoring_sources._approved_identity(project, digest, proposal, current)
     effective = effective_inspection_limits(project_inspection_limits(project), limits)
     budget = execution.DeadlineBudget(effective["execution_seconds"])
@@ -3530,7 +3530,9 @@ def inspect_mapping(
             # invalidates immediately)
             "lookup_schema_digest": _asset_schema_digest(
                 tables.get(
-                    (normalized.get("prefix_lookup") or normalized.get("lookup") or {}).get("asset")
+                    (normalized.get("prefix_lookup") or normalized.get("lookup") or {})["asset"]
+                    if normalized.get("prefix_lookup") or normalized.get("lookup")
+                    else ""
                 )
             ),
         },
@@ -3899,6 +3901,7 @@ def _finalize_mapping_evidence(
                 if error is not None:
                     errors.append(f"{rel}: mapping {mapping.get('id')!r} — {error}")
                     continue
+                assert summary is not None
                 summaries.append(summary)
                 # K4 fix pass (finding 1, spec 0010 §§8–9): an ASSERTED claim
                 # contradicted by its own verified receipts (honest mismatches,

@@ -394,7 +394,7 @@ def _parse_parameters(raw: Any) -> dict[str, tuple[str, Any]]:
     return bound
 
 
-def _bound_literal(kind: str, value: Any) -> exp.Expression:
+def _bound_literal(kind: str, value: Any) -> exp.Expr:
     """One typed parameter value as a bound AST node — string quotes double
     inside literals, dates cast explicitly; nothing is ever SQL text."""
     if kind == "string":
@@ -406,7 +406,7 @@ def _bound_literal(kind: str, value: Any) -> exp.Expression:
     return exp.Cast(this=exp.Literal.string(value), to=exp.DataType.build("DATE"))
 
 
-def _direct_literal(raw: Any, context: str) -> exp.Expression:
+def _direct_literal(raw: Any, context: str) -> exp.Expr:
     if isinstance(raw, str):
         return exp.Literal.string(raw)
     if isinstance(raw, bool):
@@ -419,8 +419,8 @@ def _direct_literal(raw: Any, context: str) -> exp.Expression:
 
 
 def _predicate_ast(
-    column: exp.Expression, predicate: _Predicate, parameters: dict[str, tuple[str, Any]]
-) -> exp.Expression:
+    column: exp.Expr, predicate: _Predicate, parameters: dict[str, tuple[str, Any]]
+) -> exp.Expr:
     """``<column> <op> <bound literal>`` as a planner-built AST — the value
     binds as a literal node (quotes doubled for strings), so a payload naming a
     second statement can neither execute nor broaden the predicate."""
@@ -601,12 +601,12 @@ def _lookback_groups(window: WindowDecl) -> int | None:
     return None  # cumulative
 
 
-def _date_literal(value: date) -> exp.Expression:
+def _date_literal(value: date) -> exp.Expr:
     """One ISO date as a bound CAST literal — never SQL text."""
     return exp.Cast(this=exp.Literal.string(value.isoformat()), to=exp.DataType.build("DATE"))
 
 
-def _fill_literal(value: Any) -> exp.Expression:
+def _fill_literal(value: Any) -> exp.Expr:
     """One declared fill value as a bound literal (output projection only)."""
     if isinstance(value, bool):
         return exp.Boolean(this=value)
@@ -715,7 +715,7 @@ class _DimKey:
         except for time keys whose group expression is a truncation)."""
         return self.members[dataset] if self.outputs is None else self.outputs[dataset]
 
-    def group_expression(self, column: exp.Expression) -> exp.Expression:
+    def group_expression(self, column: exp.Expr) -> exp.Expr:
         """The branch group expression over the native member column."""
         if self.grain is None:
             return column
@@ -1126,7 +1126,7 @@ def _plain_predicates(
     dataset: str,
     row_preds: Sequence[tuple[_Predicate, _DimKey]],
     parameters: dict[str, tuple[str, Any]],
-) -> list[exp.Expression]:
+) -> list[exp.Expr]:
     """Row predicates for a no-lookup branch, lowered UNQUALIFIED against the
     branch dataset's own field declarations — they pre-filter the branch
     source, so the single-dataset renderer (not planner-owned to extend)
@@ -1135,7 +1135,7 @@ def _plain_predicates(
         name: _strip_qualifiers(_parse(sql, f"field {name!r} of dataset '{dataset}'"))
         for name, sql in graph.datasets[dataset].expressions.items()
     }
-    out: list[exp.Expression] = []
+    out: list[exp.Expr] = []
     for predicate, key in row_preds:
         member = key.members[dataset]
         tree = field_asts.get(member)
@@ -1153,7 +1153,7 @@ def _time_fetch_predicate(
     dataset: str,
     time_key: _DimKey,
     bounds: tuple[date | None, date | None],
-) -> exp.Expression | None:
+) -> exp.Expr | None:
     """The half-open fetch range on this branch's NATIVE time member, lowered
     unqualified against the branch dataset's own field declarations (lookback
     already folded into the start bound by the caller)."""
@@ -1264,7 +1264,7 @@ class _PostStage:
     fills: dict[str, Any]  # metric -> explicit output fill (never a denominator)
 
 
-def _post_expression(sql: str, context: str) -> exp.Expression:
+def _post_expression(sql: str, context: str) -> exp.Expr:
     """One declared post-aggregate expression over aligned metric columns,
     with every division guarded: a zero or missing denominator yields NULL,
     never an error or an infinity (spec rev 1 "Query and result contract")."""
@@ -1280,7 +1280,7 @@ def _post_expression(sql: str, context: str) -> exp.Expression:
     return tree
 
 
-def _window_expression(name: str, window: WindowDecl, stage: _PostStage) -> exp.Expression:
+def _window_expression(name: str, window: WindowDecl, stage: _PostStage) -> exp.Expr:
     """The declared window form over the metric's own aligned column: ordered
     by the conformed time key and partitioned by the non-time dimensions, so a
     window never leaks across dimension groups."""
@@ -1328,7 +1328,7 @@ def _window_expression(name: str, window: WindowDecl, stage: _PostStage) -> exp.
 
 
 def _layer(
-    tree: exp.Expression, columns: list[str], additions: Sequence[tuple[str, exp.Expression]]
+    tree: exp.Expr, columns: list[str], additions: Sequence[tuple[str, exp.Expr]]
 ) -> tuple[exp.Select, list[str]]:
     """One projection layer above ``tree``: carries ``columns``, computes each
     addition over the INPUT columns (a replaced column keeps its position, a
@@ -2384,7 +2384,7 @@ def _zone_offsets(zone: ZoneInfo) -> tuple[int, ...]:
     return tuple(sorted(found))
 
 
-def _record_ts_expression(column: exp.Expression, field: str, zone: ZoneInfo) -> exp.Expression:
+def _record_ts_expression(column: exp.Expr, field: str, zone: ZoneInfo) -> exp.Expr:
     """The guarded per-row normalization of the declared timestamp field: a
     CASE that keeps NULL as NULL and otherwise yields the wall time's UTC
     instant, raising the fixed marker (never the source value) for malformed,
@@ -2404,7 +2404,7 @@ def _record_ts_expression(column: exp.Expression, field: str, zone: ZoneInfo) ->
     fmt = exp.Literal.string(_RECORD_TIMESTAMP_FORMAT)
     where = f"field '{field[:64]}'"  # a known catalog name, bounded regardless
 
-    def marker(reason: str) -> exp.Expression:
+    def marker(reason: str) -> exp.Expr:
         return exp.Anonymous(
             this="error",
             expressions=[
@@ -2415,28 +2415,28 @@ def _record_ts_expression(column: exp.Expression, field: str, zone: ZoneInfo) ->
             ],
         )
 
-    def wall() -> exp.Expression:
+    def wall() -> exp.Expr:
         return exp.Anonymous(this="try_strptime", expressions=[column.copy(), fmt.copy()])
 
-    def instant() -> exp.Expression:  # wall time -> instant in the declared zone
+    def instant() -> exp.Expr:  # wall time -> instant in the declared zone
         return exp.Anonymous(
             this="timezone",
             expressions=[exp.Literal.string(zone_name), wall()],
         )
 
-    def utc() -> exp.Expression:  # instant -> naive UTC wall clock (order basis)
+    def utc() -> exp.Expr:  # instant -> naive UTC wall clock (order basis)
         return exp.Anonymous(
             this="timezone",
             expressions=[exp.Literal.string("UTC"), instant()],
         )
 
-    def back(expr: exp.Expression) -> exp.Expression:  # instant -> zone wall clock
+    def back(expr: exp.Expr) -> exp.Expr:  # instant -> zone wall clock
         return exp.Anonymous(
             this="timezone",
             expressions=[exp.Literal.string(zone_name), expr],
         )
 
-    def candidate(offset_seconds: int) -> exp.Expression:
+    def candidate(offset_seconds: int) -> exp.Expr:
         # the parsed wall time minus the offset as an instant, taken back to
         # the zone's wall clock (evaluated only after the shape/parse checks)
         shifted = exp.Sub(
@@ -2757,7 +2757,7 @@ def plan_records(
         and classify_output_type(column_types[field]) != "unsupported"
     ]
 
-    def col(name: str) -> exp.Expression:
+    def col(name: str) -> exp.Expr:
         return exp.column(exp.to_identifier(name, quoted=True))
 
     # fix pass 1, finding 2 + fix pass 2: helper identities are allocated
@@ -2771,7 +2771,7 @@ def plan_records(
     base_alias = _allocate_helper(_RECORD_BASE, taken)
     topn_alias = _allocate_helper(_RECORD_TOPN, taken)
 
-    def order_key(name: str) -> exp.Expression:
+    def order_key(name: str) -> exp.Expr:
         # ordering on the declared timestamp field uses its normalized instant
         # (ts_helper is allocated exactly when a timestamp is declared)
         helper = ts_helper if name == timestamp_field else None
@@ -2785,7 +2785,7 @@ def plan_records(
         keys += [ordered(field, "asc") for field in tie_fields]
         return exp.Order(expressions=keys)
 
-    def predicate_ast(field: str, op: str, value: Any) -> exp.Expression:
+    def predicate_ast(field: str, op: str, value: Any) -> exp.Expr:
         column = col(field)
         context = f"filter on {field!r}"
         if op == "is_null":

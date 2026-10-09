@@ -231,7 +231,8 @@ def _metric_levels(metric_sqls: dict[str, str]) -> tuple[dict[str, int], dict[st
         name: _strip_qualifiers(_parse(sql, f"metric {name!r}"))
         for name, sql in metric_sqls.items()
     }
-    deps = {name: _metric_references(tree, set(metric_sqls)) for name, tree in parsed.items()}
+    metric_names = set(metric_sqls)
+    deps = {name: _metric_references(tree, metric_names) for name, tree in parsed.items()}
     levels: dict[str, int] = {}
 
     def visit(name: str, stack: list[str]) -> int:
@@ -323,9 +324,10 @@ def render(
             f"unknown metric {metric!r}; available metrics: {', '.join(sorted(metric_sqls))}"
         )
     levels, deps = _metric_levels(metric_sqls)
-    wanted = _closure(metric, deps) if metric is not None else set(metric_sqls)
+    metric_names = set(metric_sqls)
+    wanted = _closure(metric, deps) if metric is not None else metric_names
     carried = set(carry or ())
-    unknown = sorted(carried - set(metric_sqls))
+    unknown = sorted(carried - metric_names)
     if unknown:
         raise RenderError(
             f"unknown carried metric(s) {unknown}; available: {', '.join(sorted(metric_sqls))}"
@@ -335,7 +337,7 @@ def render(
         raise RenderError(f"carried metric(s) {stray} are not part of the rendered set")
     parsed = {
         name: _resolve_fields(
-            _strip_qualifiers(_parse(sql, f"metric {name!r}")), field_exprs, set(metric_sqls)
+            _strip_qualifiers(_parse(sql, f"metric {name!r}")), field_exprs, metric_names
         )
         for name, sql in metric_sqls.items()
     }
