@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Security fix: declared-grain SQL injection in validation** — a staged model's
+  `primary_key` entries were interpolated raw into the executed grain-audit
+  statement (`validate.py` Assertion 1), so agent-authored YAML could run
+  arbitrary DuckDB SQL (e.g. `COPY ... TO`) during `validate_proposal`/
+  `ariadne-validate`, before any human review. Key entries must now parse as
+  plain column references and are re-rendered by sqlglot; the assembled audit
+  statement is proven single before execution. Regression test included.
+- **Grain guard re-checks live data on every `get_metric`** — the per-process
+  memo meant an ETL reload introducing join fan-out under a long-lived
+  `ariadne-serve` session was never caught until restart.
+- **No implicit demo-database fallback** — `ariadne`/`ariadne-serve` without
+  `--sources`, `--db` or an ambient `ariadne.yaml` now refuse explicitly
+  instead of silently querying `examples/retail-demo/data/demo.db`.
+- **Cleanup** — removed the dead `proposals.stage_ad_hoc` wrapper (superseded
+  by the reserve/stage/release split) and an unused authoring helper;
+  repo-wide `ruff format` pass.
+
 ## 0.1.0 - 2026-09-17
 
 First release: the governed-metrics MVP for autonomous agents.

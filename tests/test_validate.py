@@ -282,6 +282,34 @@ def test_fanned_source_fails_assertion_2_with_divergence(tmp_path):
         assert pattern in message  # ADR-0006 rubric patterns named in remediation
 
 
+def test_injection_in_declared_grain_never_reaches_the_audit_connection(tmp_path):
+    """A staged model's primary_key is AGENT-AUTHORED text reviewed only AFTER
+    validation: a key entry carrying SQL (statement break-out + COPY) must be
+    refused as a grain declaration error BEFORE the audit connection runs —
+    never interpolated into the Assertion 1 statement (no file may appear)."""
+    root = build_trap(tmp_path / "trap")
+    staging = tmp_path / "staging"
+    target = tmp_path / "pk-injection.txt"
+    wrapped = "(SELECT * FROM demo.main.orders)"
+    payload = (
+        f"order_id FROM {wrapped}) _d) FROM {wrapped} _t; "
+        f"COPY (SELECT 'PWNED') TO '{target}' (HEADER);--"
+    )
+    _write_model(
+        staging,
+        "evil.yml",
+        ORDERS_YML.replace(
+            "        primary_key: [order_id]\n",
+            f'        primary_key: ["{payload}"]\n',
+        ),
+    )
+    result = validate(staging, db_path=root / "trap.db")
+    assert not result.ok
+    grain_errors = [error for error in result.errors if "primary_key" in error]
+    assert grain_errors, f"expected a primary_key refusal, got: {result.errors}"
+    assert not target.exists(), "the injected COPY statement executed"
+
+
 def test_undeclared_grain_fails_the_audit(tmp_path):
     """ADR-0006 rule of single declared grain: a model with NO declared
     primary_key has no verifiable grain and must FAIL the audit — never pass by

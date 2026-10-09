@@ -1182,8 +1182,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--db",
         default=None,
-        help="SQLite database to attach read-only (default: examples/retail-demo/data/demo.db when "
-        "no --sources/ariadne.yaml applies)",
+        help="SQLite database to attach read-only (required unless --sources or an "
+        "ambient ariadne.yaml applies)",
     )
     parser.add_argument(
         "--sources",
@@ -1238,10 +1238,13 @@ def main(argv: list[str] | None = None) -> int:
     managed = (project / ".ariadne").exists()
 
     # Explicit --db/--sources always win over the ambient ./ariadne.yaml
-    # (shared resolution, ADR-0010); the legacy default fills in only when
-    # --db is not given (unused by the runtime whenever a registry applies).
+    # (shared resolution, ADR-0010). The runtime is built LAZILY per request,
+    # so a source-less project (e.g. an authoring-only server before any
+    # Promotion) still serves; when a query request DOES build the legacy
+    # runtime without any configured source, it refuses explicitly — the
+    # server never guesses a database to query.
     sources_path = default_registry_path(args.sources, args.db)
-    db = args.db or "examples/retail-demo/data/demo.db"
+    db = args.db
 
     def _new_runtime(budget=None) -> QueryRuntime:
         if managed:
@@ -1249,6 +1252,12 @@ def main(argv: list[str] | None = None) -> int:
             # itself (never the pinned snapshot's inert copy).
             runtime = QueryRuntime.open_project(project, deadline_budget=budget)
         else:
+            if sources_path is None and db is None:
+                raise ValueError(
+                    "no source configured: pass --sources REGISTRY or --db SQLITE, or "
+                    "declare sources in ariadne.yaml under --project — the server "
+                    "never guesses a database to query"
+                )
             runtime = QueryRuntime(
                 args.semantic,
                 args.context,

@@ -1261,8 +1261,7 @@ class AuthoringProject:
         if not isinstance(identity, dict) or identity.get("kind") not in _LAYER_EDITORS:
             got = identity.get("kind") if isinstance(identity, dict) else identity
             raise ValueError(
-                "an artifact identity is a typed object with kind one of "
-                f"{EDIT_KINDS}, got {got!r}"
+                f"an artifact identity is a typed object with kind one of {EDIT_KINDS}, got {got!r}"
             )
         rel = _LAYER_EDITORS[identity["kind"]].resolve_identity(identity)
         return proposals.read_artifact(self.project, proposal, rel, part=part)
@@ -1283,9 +1282,7 @@ class AuthoringProject:
                 f"propose_sources operation), got kind {got!r}"
             )
         rel, content = _LAYER_EDITORS[edit["kind"]].resolve_edit(edit)
-        return proposals.edit_proposal(
-            self.project, proposal, expected_revision, rel, content
-        )
+        return proposals.edit_proposal(self.project, proposal, expected_revision, rel, content)
 
     # ------------------- G3 (issue #35): sources, approval, measured inputs
 
@@ -1298,9 +1295,7 @@ class AuthoringProject:
         of the candidate's full RESOLVED identity (paths resolved against the
         host project root) plus the precise resolved locations. Inert data:
         nothing is opened, and the candidate cannot grant itself approval."""
-        return authoring_sources.propose_sources(
-            self.project, proposal, expected_revision, sources
-        )
+        return authoring_sources.propose_sources(self.project, proposal, expected_revision, sources)
 
     def approve_sources(self, proposal: str, revision: str, source_digest: str) -> dict:
         """HUMAN-ONLY (the CLI command; never an MCP/Agent tool): record the
@@ -1308,9 +1303,7 @@ class AuthoringProject:
         proposal's current candidate revision, outside Git artifacts under
         ``.ariadne/source-approvals.json`` — without editing the
         already-committed candidate."""
-        return authoring_sources.approve_sources(
-            self.project, proposal, revision, source_digest
-        )
+        return authoring_sources.approve_sources(self.project, proposal, revision, source_digest)
 
     def inputs(
         self,
@@ -1330,9 +1323,7 @@ class AuthoringProject:
             self.project, proposal, documents=documents, part=part, sample_rows=sample_rows
         )
 
-    def upload_document(
-        self, name: str, data: bytes, *, max_bytes: int = MAX_UPLOAD_BYTES
-    ) -> dict:
+    def upload_document(self, name: str, data: bytes, *, max_bytes: int = MAX_UPLOAD_BYTES) -> dict:
         """The existing bounded upload contract, under the operator input
         area of the fixed project (never a Git artifact): retain the original
         bytes and return the stable identity ``{resource, digest}``."""
@@ -1376,9 +1367,7 @@ class AuthoringProject:
         flags. Refresh is never admission (K4 owns that)."""
         return refresh_schema(self.project, proposal, expected_revision, assets)
 
-    def resolve_term(
-        self, proposal: str, request: str | dict, *, part: int = 1
-    ) -> dict:
+    def resolve_term(self, proposal: str, request: str | dict, *, part: int = 1) -> dict:
         """Resolve one shared business term or exact ``{resource, column}``
         field lookup against an EXPLICITLY selected proposal's current
         candidate revision (plan §2 ``resolve_term`` row, spec 0010 §6):
@@ -1436,10 +1425,7 @@ class AuthoringProject:
         edit, approval or admission. Aggregate counts are the default; raw
         identifier examples need the operator's explicit sample permission.
         """
-        return inspect_mapping(
-            self.project, proposal, expected_revision, candidate, limits=limits
-        )
-
+        return inspect_mapping(self.project, proposal, expected_revision, candidate, limits=limits)
 
 
 # ------------------------------------- slice 5 (issue #36/G4): validation/review
@@ -1459,9 +1445,7 @@ def _cited_resources(meta: dict) -> list[str]:
     resources: list[str] = []
     for source in meta.get("sources") or []:
         resource = (
-            source.get("resource")
-            if isinstance(source, dict) and "resource" in source
-            else source
+            source.get("resource") if isinstance(source, dict) and "resource" in source else source
         )
         if isinstance(resource, str) and resource and resource not in resources:
             resources.append(resource)
@@ -1523,8 +1507,7 @@ def _verified_citations(
             # diagnostic in the report — never an exception that escapes
             # validate_proposal with the whole report (spec §4)
             errors.append(
-                f"{rel}: frontmatter is not valid YAML — its citations cannot "
-                f"be verified: {exc}"
+                f"{rel}: frontmatter is not valid YAML — its citations cannot be verified: {exc}"
             )
             continue
         for resource in _cited_resources(meta):
@@ -1544,8 +1527,7 @@ def _verified_citations(
                     _kind, parts = parse_resource(resource)
                 except ValueError as exc:
                     errors.append(
-                        f"{rel}: cited catalog resource {resource!r} is not canonical: "
-                        f"{exc}"
+                        f"{rel}: cited catalog resource {resource!r} is not canonical: {exc}"
                     )
                     continue
                 if parts[0] not in source_names:
@@ -1694,9 +1676,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
         # source identity must carry the operator's approval. The finalize
         # pass touches only context_layer bytes, so the input revision's
         # registry identity IS the final revision's identity.
-        resolved_sources, source_digest = authoring_sources.candidate_sources(
-            project, current
-        )
+        resolved_sources, source_digest = authoring_sources.candidate_sources(project, current)
         approval = None
         if resolved_sources is not None:
             approval = authoring_sources._approved_identity(
@@ -1743,8 +1723,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
         )
         context.finalize_candidate(worktree_root)
         final = (
-            proposals.commit_generated(project, record, message=FINALIZE_COMMIT_MESSAGE)
-            or current
+            proposals.commit_generated(project, record, message=FINALIZE_COMMIT_MESSAGE) or current
         )
         with tempfile.TemporaryDirectory(prefix="ariadne-candidate-") as tmp:
             root = Path(tmp)
@@ -1820,9 +1799,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             # not_applicable outcome carries its reason), never the performed
             # set a current validator identity binds.
             performed = [
-                check.name
-                for check in checks
-                if check.outcome not in ("not-run", "not_applicable")
+                check.name for check in checks if check.outcome not in ("not-run", "not_applicable")
             ]
             artifact_digest = candidate_scope_digest(tree)
             report_view = (
@@ -1853,9 +1830,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             "commit": final,
             "source_digest": source_digest,
             "documents": sorted(
-                f"{c['resource']}:{c['digest']}"
-                for c in citations
-                if c["kind"] == "document"
+                f"{c['resource']}:{c['digest']}" for c in citations if c["kind"] == "document"
             ),
         }
         previous = record.get("validation") or {}
@@ -2155,19 +2130,14 @@ def _review_candidate(
         tree = Path(tmp) / "bundle"
         tree.mkdir()
         rels = _materialize(project, proposal, current, tree)
-        resolved_sources, source_digest = authoring_sources.candidate_sources(
-            project, current
-        )
+        resolved_sources, source_digest = authoring_sources.candidate_sources(project, current)
         bodies = []
         for rel in rels:
             data = (tree / Path(*PurePosixPath(rel).parts)).read_bytes()
             bodies.append(_review_body(rel, data, part=part))
         source_names = {entry["name"] for entry in resolved_sources or []}
         citations, _citation_errors = _verified_citations(tree, project, source_names)
-        approved = (
-            authoring_sources._load_approvals(project).get(source_digest or "")
-            is not None
-        )
+        approved = authoring_sources._load_approvals(project).get(source_digest or "") is not None
         artifact_digest = candidate_scope_digest(tree)
         # The stored report binds the exact candidate commit or is absent:
         # a candidate that moved past its validation, a changed source
@@ -2177,13 +2147,9 @@ def _review_candidate(
         stale_reasons: list[str] = []
         if report is not None:
             if report.get("source_digest") != source_digest:
-                stale_reasons.append(
-                    "the resolved source identity changed since validation"
-                )
+                stale_reasons.append("the resolved source identity changed since validation")
             if not _document_digests_current(project, report.get("citations") or []):
-                stale_reasons.append(
-                    "cited document evidence changed since validation"
-                )
+                stale_reasons.append("cited document evidence changed since validation")
             if report.get("artifact_digest") != artifact_digest:
                 stale_reasons.append(
                     "the candidate's artifact bytes differ from the validated digest"
@@ -2319,9 +2285,12 @@ def _resource_pages(project: Path, revision: str) -> tuple[dict[str, dict], set[
     pages: dict[str, dict] = {}
     paths: set[str] = set()
     for rel in tracked.split("\n"):
-        if not (
-            rel.startswith("context_layer/tables/") or rel.startswith("context_layer/datasets/")
-        ) or PurePosixPath(rel).name in proposals._GENERATED_FILES:
+        if (
+            not (
+                rel.startswith("context_layer/tables/") or rel.startswith("context_layer/datasets/")
+            )
+            or PurePosixPath(rel).name in proposals._GENERATED_FILES
+        ):
             continue
         blob = proposals._read_blob(project, revision, rel)
         if blob is None:  # pragma: no cover - ls-tree paths always resolve
@@ -2468,8 +2437,10 @@ def refresh_schema(
         )
         columns = _schema_columns(table, declared)
         page = existing.get(resource)
-        path = page["path"] if page else (
-            f"context_layer/tables/{generated_page_filename(resource, asset['source'])}"
+        path = (
+            page["path"]
+            if page
+            else (f"context_layer/tables/{generated_page_filename(resource, asset['source'])}")
         )
         text, flags = build_table_page(
             asset={
@@ -2499,8 +2470,12 @@ def refresh_schema(
             collection["source"], collection["catalog"], collection["schema"]
         )
         page = existing.get(resource)
-        path = page["path"] if page else (
-            f"context_layer/datasets/{generated_page_filename(resource, collection['source'])}"
+        path = (
+            page["path"]
+            if page
+            else (
+                f"context_layer/datasets/{generated_page_filename(resource, collection['source'])}"
+            )
         )
         # Overview membership is the collection's EXISTING represented pages
         # PLUS the requested updates (issue #41): a narrower refresh never
@@ -2540,9 +2515,7 @@ def refresh_schema(
                 if isinstance(carried_page["meta"], dict)
                 else None
             )
-            carried_schema = (
-                carried_meta.get("schema") if isinstance(carried_meta, dict) else None
-            )
+            carried_schema = carried_meta.get("schema") if isinstance(carried_meta, dict) else None
             carried.append(
                 (
                     parts[3],
@@ -2848,10 +2821,6 @@ def _jsonable(value):
     return profiler._jsonable(value)
 
 
-def _example_rows(rows: list[dict], columns: list[str], limit: int) -> list[dict]:
-    return [{column: _jsonable(row[column]) for column in columns} for row in rows[:limit]]
-
-
 def _shape_summary(rows: list[dict], column: str) -> dict:
     """The bounded AGGREGATE identifier-shape summary of one requested binding
     (K3 fix pass, finding 7, spec 0010 §7 "identifier-shape summaries"): nulls,
@@ -3126,12 +3095,8 @@ def _measure(
                 examples.append(
                     {
                         "keys": {column: _jsonable(row[column]) for column in left_columns},
-                        "fact_values": {
-                            column: _jsonable(row[column]) for column in right_columns
-                        },
-                        "lookup_values": [
-                            list(map(_jsonable, value)) for value in (values or [])
-                        ],
+                        "fact_values": {column: _jsonable(row[column]) for column in right_columns},
+                        "lookup_values": [list(map(_jsonable, value)) for value in (values or [])],
                         "outcome": outcome,
                     }
                 )
@@ -3176,9 +3141,9 @@ def _measure(
                 for row in samples[prefix_lookup["asset"]]:
                     if any(row[c] is None for c in key_columns) or row[prefix_column] is None:
                         continue
-                    lookup_index.setdefault(
-                        tuple(row[c] for c in key_columns), []
-                    ).append(row[prefix_column])
+                    lookup_index.setdefault(tuple(row[c] for c in key_columns), []).append(
+                        row[prefix_column]
+                    )
                 repeated = [len(v) for v in lookup_index.values() if len(v) > 1]
                 measurement["multiplicity"] = {
                     "lookup_duplicate_keys": len(repeated),
@@ -3271,13 +3236,10 @@ def _measure(
                 )
                 if paired:
                     limitations.append(
-                        f"paired comparison over {paired} unambiguously keyed sampled "
-                        "record(s)"
+                        f"paired comparison over {paired} unambiguously keyed sampled record(s)"
                     )
                 else:
-                    limitations.append(
-                        "no sampled record pair could be compared unambiguously"
-                    )
+                    limitations.append("no sampled record pair could be compared unambiguously")
             else:
                 measurement["comparison_basis"] = "independently-paired"
                 measurement["mismatch_count"] = mismatches
@@ -3302,9 +3264,7 @@ def _measure(
                     }
                     entry["constructed"] = value[0]
                     targets = [
-                        r[right_columns[0]]
-                        for r in tested_right
-                        if (r[right_columns[0]],) == value
+                        r[right_columns[0]] for r in tested_right if (r[right_columns[0]],) == value
                     ]
                     entry["target"] = _jsonable(targets[0]) if targets else None
                 else:
@@ -3322,12 +3282,9 @@ def _measure(
     # K3 fix pass (finding 4): a truncated lookup sample forbids the 'full'
     # designation even when every fact row was tested — and the truncation is
     # disclosed, because keys beyond the sample are unknown lookups.
-    lookup_full = (
-        lookup_counts is None
-        or (
-            lookup_counts["eligible"] is not None
-            and lookup_counts["tested"] >= lookup_counts["eligible"]
-        )
+    lookup_full = lookup_counts is None or (
+        lookup_counts["eligible"] is not None
+        and lookup_counts["tested"] >= lookup_counts["eligible"]
     )
     measurement["designation"] = designation = "full" if (fact_full and lookup_full) else "sampled"
     if designation == "sampled":
@@ -3361,6 +3318,7 @@ def _measure(
         measurement["examples"] = examples
     return measurement
 
+
 def _asset_schema_digest(table: dict | None) -> str | None:
     """The digest of one dependency asset's FULL schema identity (K3 fix
     pass, finding 6): every catalog column's (name, type) at measurement
@@ -3369,9 +3327,7 @@ def _asset_schema_digest(table: dict | None) -> str | None:
     change on it invalidates the receipt immediately."""
     if not table:
         return None
-    return _canonical_digest(
-        [(column["name"], column["type"]) for column in table["columns"]]
-    )
+    return _canonical_digest([(column["name"], column["type"]) for column in table["columns"]])
 
 
 def _cited_policy_digest(worktree: Path, resource: str) -> str | None:
@@ -3461,9 +3417,7 @@ def inspect_mapping(
             f"registry at {current[:12]} — there is nothing to inspect"
         )
     approval = authoring_sources._approved_identity(project, digest, proposal, current)
-    effective = effective_inspection_limits(
-        project_inspection_limits(project), limits
-    )
+    effective = effective_inspection_limits(project_inspection_limits(project), limits)
     budget = execution.DeadlineBudget(effective["execution_seconds"])
     owned = execution.DuckDBExecution(
         authoring_sources.identity_registry(approval["sources"]), budget=budget
@@ -3576,9 +3530,7 @@ def inspect_mapping(
             # invalidates immediately)
             "lookup_schema_digest": _asset_schema_digest(
                 tables.get(
-                    (normalized.get("prefix_lookup") or normalized.get("lookup") or {}).get(
-                        "asset"
-                    )
+                    (normalized.get("prefix_lookup") or normalized.get("lookup") or {}).get("asset")
                 )
             ),
         },
@@ -3641,8 +3593,7 @@ def _current_asset_columns(catalog: list[dict]) -> dict[str, list[dict]]:
     for entry in catalog:
         for table in entry["tables"]:
             columns[table["resource"]] = [
-                {"name": column["name"], "type": column["type"]}
-                for column in table["columns"]
+                {"name": column["name"], "type": column["type"]} for column in table["columns"]
             ]
     return columns
 
@@ -3749,11 +3700,7 @@ def _verify_receipt(
             )
         recorded = [(column["name"], column["type"]) for column in asset["columns"]]
         wanted = {name for name, _type in recorded}
-        now = [
-            (column["name"], column["type"])
-            for column in current
-            if column["name"] in wanted
-        ]
+        now = [(column["name"], column["type"]) for column in current if column["name"] in wanted]
         if recorded != now:
             return None, (
                 f"receipt {receipt_id!r} depends on asset {asset['resource']!r} whose "
@@ -3777,11 +3724,7 @@ def _verify_receipt(
     if max_age_hours is not None:
         observed = receipt.get("observed_at")
         try:
-            observed_at = (
-                datetime.fromisoformat(observed)
-                if isinstance(observed, str)
-                else None
-            )
+            observed_at = datetime.fromisoformat(observed) if isinstance(observed, str) else None
             if observed_at is None:
                 raise ValueError(observed)
             age = datetime.now(UTC) - observed_at
@@ -3889,9 +3832,7 @@ def _finalize_mapping_evidence(
         return revision, []
     asset_columns: dict[str, list[dict]] = {}
     if approval is not None:
-        owned = execution.DuckDBExecution(
-            authoring_sources.identity_registry(approval["sources"])
-        )
+        owned = execution.DuckDBExecution(authoring_sources.identity_registry(approval["sources"]))
         try:
             asset_columns = _current_asset_columns(owned.catalog)
         finally:
@@ -3933,9 +3874,8 @@ def _finalize_mapping_evidence(
             endpoints: dict | None = {}
             for key in ("from", "to"):
                 representation = representations.get(mapping.get(key))
-                if (
-                    not isinstance(representation, dict)
-                    or not isinstance(representation.get("fields"), list)
+                if not isinstance(representation, dict) or not isinstance(
+                    representation.get("fields"), list
                 ):
                     endpoints = None
                     break
@@ -3957,9 +3897,7 @@ def _finalize_mapping_evidence(
                     max_age_hours=max_age_hours,
                 )
                 if error is not None:
-                    errors.append(
-                        f"{rel}: mapping {mapping.get('id')!r} — {error}"
-                    )
+                    errors.append(f"{rel}: mapping {mapping.get('id')!r} — {error}")
                     continue
                 summaries.append(summary)
                 # K4 fix pass (finding 1, spec 0010 §§8–9): an ASSERTED claim
@@ -3989,7 +3927,8 @@ def _finalize_mapping_evidence(
     if rewrites:
         for rel, text in rewrites.items():
             proposals._safe_write(worktree, rel, text)
-        final = _commit_core_pages(
-            project, record, sorted(rewrites), EVIDENCE_COMMIT_MESSAGE
-        ) or revision
+        final = (
+            _commit_core_pages(project, record, sorted(rewrites), EVIDENCE_COMMIT_MESSAGE)
+            or revision
+        )
     return final, errors

@@ -65,9 +65,7 @@ def isolated_git_config(monkeypatch):
 
 def run_git(cwd: Path, *argv: str) -> str:
     """Real git for test-side scaffolding (the seam under test never sees it)."""
-    proc = subprocess.run(
-        ["git", *argv], cwd=cwd, capture_output=True, text=True, check=False
-    )
+    proc = subprocess.run(["git", *argv], cwd=cwd, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, f"git {argv} failed: {proc.stderr}"
     return proc.stdout
 
@@ -79,9 +77,7 @@ def scaffold_artifacts(project: Path) -> None:
     (project / "data").mkdir(exist_ok=True)
     (project / "data" / "seed_notes.md").write_text(SEED_NOTES, encoding="utf-8")
     (project / "semantic_layer" / "models").mkdir(parents=True, exist_ok=True)
-    (project / "semantic_layer" / "models" / "events.yml").write_text(
-        MODEL_YML, encoding="utf-8"
-    )
+    (project / "semantic_layer" / "models" / "events.yml").write_text(MODEL_YML, encoding="utf-8")
 
 
 def git_project(tmp_path: Path, *, commit: bool = True) -> Path:
@@ -178,9 +174,7 @@ def test_cli_start_read_edit_on_a_fresh_initial_artifact_repository(tmp_path, ca
 
     # the initial artifact revision committed EXACTLY the allowed scope
     root_commit = run_git(project, "rev-list", "--max-parents=0", "HEAD").strip().splitlines()[-1]
-    committed = set(
-        run_git(project, "show", "--name-only", "--format=", root_commit).split()
-    )
+    committed = set(run_git(project, "show", "--name-only", "--format=", root_commit).split())
     assert committed == {"ariadne.yaml", "data/seed_notes.md", "semantic_layer/models/events.yml"}
     assert "TODO.txt" not in run_git(project, "ls-files")
 
@@ -223,10 +217,9 @@ def test_cli_start_read_edit_on_a_fresh_initial_artifact_repository(tmp_path, ca
     assert read["content"] == "# v2\n" and read["revision"] == edited["revision"]
 
     # the edit commit names ONLY the artifact — never the unrelated TODO.txt
-    assert (
-        set(run_git(project, "show", "--name-only", "--format=", edited["revision"]).split())
-        == {"data/seed_notes.md"}
-    )
+    assert set(
+        run_git(project, "show", "--name-only", "--format=", edited["revision"]).split()
+    ) == {"data/seed_notes.md"}
 
 
 def test_cli_edit_reads_stdin_and_keeps_the_one_json_error_contract(tmp_path, capsys, monkeypatch):
@@ -321,9 +314,7 @@ def test_identical_edit_at_the_current_revision_is_a_noop(tmp_path):
     assert first["changed"] is True
     again = api.edit_proposal(started["proposal"], first["revision"], edit)
     assert again["changed"] is False and again["revision"] == first["revision"]
-    count = run_git(
-        project, "rev-list", "--count", f"ariadne/proposal/{started['proposal']}"
-    )
+    count = run_git(project, "rev-list", "--count", f"ariadne/proposal/{started['proposal']}")
     assert count.strip() == "2"  # base + exactly one edit commit
 
 
@@ -340,10 +331,9 @@ def test_edits_stage_exactly_the_named_artifact_never_unrelated_files(tmp_path):
         started["candidate_revision"],
         {"kind": "graph", "content": "metric_governance:\n  version: 1\n"},
     )
-    assert (
-        set(run_git(project, "show", "--name-only", "--format=", edited["revision"]).split())
-        == {"semantic_layer/graph.yml"}
-    )
+    assert set(
+        run_git(project, "show", "--name-only", "--format=", edited["revision"]).split()
+    ) == {"semantic_layer/graph.yml"}
     assert (worktree / "scratch.txt").exists()  # untouched, still untracked
     assert "scratch.txt" in dirty(project, started["proposal"])
 
@@ -886,7 +876,7 @@ def _current_candidate(project: Path, proposal: str) -> str:
     return branch_of(project, proposal)
 
 
-# ------------------------------- Query routes ad-hoc staging through stage_ad_hoc
+# ------------------------------- Query routes ad-hoc staging through reserve/stage_reserved
 
 
 @pytest.fixture(scope="module")
@@ -907,7 +897,9 @@ def served(tmp_path_factory):
     return root, db
 
 
-def test_query_routes_ad_hoc_staging_through_the_shared_stage_ad_hoc(tmp_path, served, monkeypatch):
+def test_query_routes_ad_hoc_staging_through_the_shared_reserve_stage(
+    tmp_path, served, monkeypatch
+):
     """Plan §2 proof: Query stages the compiled ad-hoc definition through
     the shared ad-hoc staging owner in ariadne.proposals (patched target) —
     the reservation-based seam spec 0014 §5 added (issue #56/S1), still not a

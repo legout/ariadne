@@ -16,7 +16,9 @@ Query (:mod:`ariadne.query`) share ONE implementation:
   (``validation/<id>/<commit>.json`` — operator-owned, never committed) plus
   the shared pre-write content boundary (bounds + credential classes) the
   legacy bundle submission also uses;
-- :func:`stage_ad_hoc`, the existing compiled ad-hoc staging/label operation
+- :func:`reserve_ad_hoc`/:func:`stage_reserved_ad_hoc`/:func:`release_reserved`,
+  the compiled ad-hoc staging/label operation (reserve, preflight, write — a
+  refusal releases the claim and stages nothing)
   moved INTACT out of the Query runtime (issue #34/G2) so Query stages ad-hoc
   definitions through this shared module without importing Authoring and
   without touching any Git proposal store (spec §2: staged ad-hoc definitions
@@ -321,8 +323,7 @@ def _load_record(project: Path, proposal: str) -> dict:
     required = {"id", "project", "base_revision", "candidate_revision", "branch"}
     if not isinstance(record, dict) or not required <= set(record):
         raise ValueError(
-            f"{path}: malformed proposal record — this needs human resolution, not an "
-            "agent reset"
+            f"{path}: malformed proposal record — this needs human resolution, not an agent reset"
         )
     if record["id"] != proposal or record["project"] != str(project):
         raise ValueError(
@@ -344,9 +345,7 @@ def check_edit_keys(payload: dict, allowed: frozenset[str]) -> None:
         raise ValueError(f"an edit/identity must be a JSON object, got {type(payload).__name__}")
     missing = sorted(allowed - set(payload))
     if missing:
-        raise ValueError(
-            f"the {payload.get('kind')!r} edit is missing required field(s) {missing}"
-        )
+        raise ValueError(f"the {payload.get('kind')!r} edit is missing required field(s) {missing}")
     extra = sorted(set(payload) - allowed)
     if extra:
         raise ValueError(
@@ -508,9 +507,7 @@ def _refuse_forged_claims(rel: str, content: str, base_content: bytes | None) ->
     if PurePosixPath(rel).parts[:2] == ("context_layer", "references"):
         system_keys = _SYSTEM_CLAIM_KEYS - {"ariadne"}  # the authored extension (K2)
     forged = sorted(
-        key
-        for key in system_keys & claims.keys()
-        if key not in base or base[key] != claims[key]
+        key for key in system_keys & claims.keys() if key not in base or base[key] != claims[key]
     )
     # REMOVING a system-owned claim the base carried is the same forgery:
     # silently dropping the generated facts (issue #41 — a page whose
@@ -854,9 +851,7 @@ def start_proposal(project: str | Path, *, base_revision: str | None = None) -> 
     }
 
 
-def read_artifact(
-    project: str | Path, proposal: str, rel: str, *, part: int = 1
-) -> dict:
+def read_artifact(project: str | Path, proposal: str, rel: str, *, part: int = 1) -> dict:
     """Read ONE artifact of the proposal's CURRENT candidate revision —
     inherited from the base when never edited — in bounded parts (a part is
     ``complete`` only when it IS the whole artifact). Reading is pinned to the
@@ -930,9 +925,7 @@ def _safe_write(worktree: Path, rel: str, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def _refuse_untracked_new_artifact(
-    project: Path, worktree: Path, rel: str, candidate: str
-) -> None:
+def _refuse_untracked_new_artifact(project: Path, worktree: Path, rel: str, candidate: str) -> None:
     """An edit target that exists in the worktree but is NOT part of the
     recorded candidate revision is an interrupted creation's draft (the
     coherence gate tolerates untracked files) — refuse for human resolution
@@ -1202,20 +1195,6 @@ def _write_claimed(candidate: Path, payload: bytes) -> Path:
     with os.fdopen(fd, "wb") as fh:
         fh.write(payload)
     return candidate
-
-
-def stage_ad_hoc(
-    staging_dir: str | Path, name: str, envelope: dict, params: dict
-) -> tuple[Path, Path]:
-    """Stage the COMPILED ad-hoc definition (ADR-0005/spec §6, moved intact
-    from the Query runtime): the ephemeral OSI model under
-    ``staging/semantic_layer/models/adhoc/`` plus the minimal ``status: draft``
-    OKF page under ``staging/context_layer/metrics/`` so ``search_context``
-    can discover it — ungoverned, awaiting human promotion, never a Git
-    proposal and never an admitted artifact. Query calls exactly this shared
-    operation; its legacy staging store and review meaning are unchanged."""
-    reserved = reserve_ad_hoc(staging_dir, name)
-    return stage_reserved_ad_hoc(reserved, envelope, params)
 
 
 def reserve_ad_hoc(staging_dir: str | Path, name: str) -> tuple[Path, Path]:

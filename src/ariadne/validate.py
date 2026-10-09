@@ -299,10 +299,47 @@ def _assertion_1(
     compiled dataset source. Remediation: Pattern 1 (pivot) or Pattern 2 (child
     grain fallback)."""
     wrapped = _wrap_source(source)
-    keys = ", ".join(pk)
-    total, distinct = con.execute(
+    # pk entries are AGENT-AUTHORED text (spec §7 review happens only after
+    # validation): each must parse as exactly one PLAIN column reference and is
+    # re-rendered by sqlglot — never interpolated raw into the executed audit
+    # statement (the relationship_target_audit discipline, fix pass F1).
+    rendered_keys: list[str] = []
+    for key in pk:
+        try:
+            parsed_key = sqlglot.parse_one(key)
+        except Exception as exc:
+            return (
+                f"grain audit failed for model '{model}' dataset '{dataset}': declared "
+                f"primary_key entry {key!r} is not a field reference ({type(exc).__name__}: "
+                f"{exc}) — declare field names, not expressions"
+            )
+        if not isinstance(parsed_key, _exp.Column):
+            return (
+                f"grain audit failed for model '{model}' dataset '{dataset}': declared "
+                f"primary_key entry {key!r} is not a plain field reference — declare "
+                "field names, not expressions"
+            )
+        rendered_keys.append(parsed_key.sql(dialect="duckdb"))
+    keys = ", ".join(rendered_keys)
+    audit_sql = (
         f"SELECT COUNT(*), (SELECT COUNT(*) FROM (SELECT DISTINCT {keys} FROM {wrapped}) _d) "
-        f"FROM {wrapped} _t"  # nosemgrep — read-only attach; source is the staged authored file
+        f"FROM {wrapped} _t"
+    )
+    try:
+        statements = sqlglot.parse(audit_sql)
+    except Exception as exc:
+        return (
+            f"grain audit failed for model '{model}' dataset '{dataset}': the assembled "
+            f"audit statement did not parse ({type(exc).__name__}: {exc}) — refusing"
+        )
+    if len(statements) != 1 or statements[0] is None:
+        return (
+            f"grain audit failed for model '{model}' dataset '{dataset}': the assembled "
+            "audit statement is not exactly one statement — refusing "
+            "(no-unvalidated-execution invariant, spec §6)"
+        )
+    total, distinct = con.execute(
+        statements[0].sql(dialect="duckdb")  # nosemgrep — sqlglot re-rendered, proven single
     ).fetchone() or (0, 0)
     if total == distinct:
         return None
@@ -468,6 +505,7 @@ def _consumed_files(staging_dir: Path) -> list[tuple[str, Path, bytes]]:
     digest binds all of them (spec rev 1, "digest-bound validation report").
     Bytes are captured at first read so the digest can only ever attest the
     bytes validation started from; drift is detected before the report."""
+
     def _read(relative: str, path: Path) -> tuple[str, Path, bytes]:
         return relative, path, path.read_bytes()
 
@@ -523,9 +561,7 @@ def served_tree_files(
     context = Path(context_dir)
     if context.is_dir():
         for path in sorted(p for p in context.rglob("*.md") if p.name not in _BOOKKEEPING_NAMES):
-            files.append(
-                (f"context_layer/{path.relative_to(context)}", path, path.read_bytes())
-            )
+            files.append((f"context_layer/{path.relative_to(context)}", path, path.read_bytes()))
     return files
 
 
@@ -562,15 +598,11 @@ def candidate_scope_files(staging: str | Path) -> list[tuple[str, Path, bytes]]:
     models = staging / "semantic_layer" / "models"
     if models.is_dir():
         for path in sorted(list(models.glob("*.yml")) + list(models.glob("*.yaml"))):
-            files.append(
-                (f"semantic_layer/models/{path.name}", path, path.read_bytes())
-            )
+            files.append((f"semantic_layer/models/{path.name}", path, path.read_bytes()))
     context = staging / "context_layer"
     if context.is_dir():
         for path in sorted(p for p in context.rglob("*.md") if p.is_file()):
-            files.append(
-                (f"context_layer/{path.relative_to(context)}", path, path.read_bytes())
-            )
+            files.append((f"context_layer/{path.relative_to(context)}", path, path.read_bytes()))
     return files
 
 
@@ -626,9 +658,10 @@ def _compile_graph(graph: SemanticGraph) -> tuple[list[tuple[str, str]], list[st
             for name, node in sorted(graph.metrics.items()):
                 if node.model != model_name or name in assigned or not node.deps:
                     continue
-                if all(dep in assigned for dep in node.deps) and len(
-                    {assigned[dep] for dep in node.deps}
-                ) == 1:
+                if (
+                    all(dep in assigned for dep in node.deps)
+                    and len({assigned[dep] for dep in node.deps}) == 1
+                ):
                     assigned[name] = assigned[node.deps[0]]
                     changed = True
         skipped.extend(
@@ -671,9 +704,7 @@ def _compile_graph(graph: SemanticGraph) -> tuple[list[tuple[str, str]], list[st
             label = f"model '{model_name}' dataset '{entry.get('name')}'"
             sub = {
                 "version": envelope.get("version"),
-                "semantic_model": [
-                    {"name": model_name, "datasets": [entry], "metrics": []}
-                ],
+                "semantic_model": [{"name": model_name, "datasets": [entry], "metrics": []}],
             }
             errors.extend(_schema_errors(sub, require_metrics=False))
             for field_spec in entry.get("fields") or []:
@@ -756,8 +787,7 @@ def validate(
     # structural refusal (mf F8: declared intent, no inventory), and a lone
     # graph.yml without models stays the failure it always was.
     context_only = (
-        not models_dir.is_dir()
-        and not (staging / "semantic_layer" / "graph.yml").is_file()
+        not models_dir.is_dir() and not (staging / "semantic_layer" / "graph.yml").is_file()
     )
     if context_only:
         reason = (
@@ -784,9 +814,7 @@ def validate(
                     CheckOutcome(
                         "grain",
                         "not_applicable",
-                        reason
-                        + "; an unknown physical table Grain never relaxes "
-                        "semantic Grain",
+                        reason + "; an unknown physical table Grain never relaxes semantic Grain",
                     ),
                     CheckOutcome("relationship_audit", "not_applicable", reason),
                 ),
@@ -834,9 +862,12 @@ def validate(
             )
 
     bind_outcome = grain_outcome = "not-run"
-    relationship_outcome, relationship_detail = "not-run", (
-        "compile-only validation performs no live relationship audit; the planner "
-        "rechecks participating relationships per request (ariadne.planner.plan_query)"
+    relationship_outcome, relationship_detail = (
+        "not-run",
+        (
+            "compile-only validation performs no live relationship audit; the planner "
+            "rechecks participating relationships per request (ariadne.planner.plan_query)"
+        ),
     )
     if graph is not None and not errors and live:
         # bind check + audit only what compiles; one audit connection for both
@@ -865,9 +896,7 @@ def validate(
     # The digest may only attest bytes that were actually validated: a file
     # that changed while validation ran voids the report instead of being
     # hashed in after the fact (the grain audit rereads the models late).
-    drifted = sorted(
-        relative for relative, path, data in files if path.read_bytes() != data
-    )
+    drifted = sorted(relative for relative, path, data in files if path.read_bytes() != data)
     if drifted:
         errors.append(
             f"semantic layer file(s) changed during validation: {', '.join(drifted)} "
@@ -944,10 +973,7 @@ def main(argv: list[str] | None = None) -> int:
         if result.report:  # the digest-bound scope label (spec rev 1: a
             # compile-only report is visibly partial, never a full pass)
             print(scope)
-            print(
-                f"digest: {result.report.digest} "
-                f"(validator {result.report.validator_version})"
-            )
+            print(f"digest: {result.report.digest} (validator {result.report.validator_version})")
         return 0
     for error in result.errors:
         print(f"error: {error}", file=sys.stderr)

@@ -43,7 +43,8 @@ model under ``staging/semantic_layer/models/adhoc/`` plus a minimal OKF draft
 under ``staging/context_layer/metrics/`` so ``search_context`` can discover it
 (numeric suffix on name collision, never overwrite); promotion stays human
 (ADR-0003). Query stages ad-hoc definitions through the shared
-:func:`ariadne.proposals.stage_ad_hoc` operation without importing the Authoring
+``ariadne.proposals.reserve_ad_hoc``/``stage_reserved_ad_hoc`` operations without
+importing the Authoring
 workflow (spec 2026-10-02-0009 §2).
 
 Routing contract (spec rev 4 §8.12): fresh consuming agents discover the ad-hoc
@@ -126,8 +127,6 @@ from ariadne.planner import (  # pyright: ignore[reportMissingImports] — drift
     plan_records,
 )
 
-# (the pyright ignore below: the analyzer may bind `ariadne` to a copy predating
-# this lane's render module — see ADR-0008; runtime and uvx pyright resolve it)
 # (the pyright ignore below: the analyzer may bind `ariadne` to a copy predating
 # this lane's render module — see ADR-0008; runtime and uvx pyright resolve it)
 from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift
@@ -330,11 +329,6 @@ class QueryRuntime:
             # Bare table names in agent-authored ad-hoc sources resolve against the attach.
             self.con.execute("USE demo.main")
         self.staging_dir = Path(staging_dir)
-        # Governed-path grain-guard memo: the served envelopes are loaded once here
-        # and never re-read, so one passing check per metric holds for the runtime's
-        # lifetime (ponytail: one COUNT scan per join key, paid once per process;
-        # re-key by model file mtime if served models ever hot-reload).
-        self._grain_checked: set[str] = set()
         # Issue #53 (spec 0013 §4): the exact-identity map of the ALREADY-BUILT
         # execution catalog — qualified table name → canonical resource — built
         # lazily once and reused by every data_signals attachment. No new catalog
@@ -566,11 +560,11 @@ class QueryRuntime:
             # Grain guard on the model's dataset source (spec rev 5 §13): a fan-out
             # baked into a served model would aggregate at joined-row grain
             # (Datus-ai/Datus-agent#1426) — identical rejection contract to
-            # define_metric. Memoized per metric (see __init__).
-            if name not in self._grain_checked:
-                (dataset,) = self._metrics[name]["model"]["semantic_model"][0].get("datasets") or []
-                check_grain_preserving(self.con, dataset["source"])
-                self._grain_checked.add(name)
+            # define_metric. Runs against LIVE data on every call: an ETL reload
+            # can introduce fan-out under a long-lived session, so no per-process
+            # memo — a few COUNT scans per query are cheap at this scale.
+            (dataset,) = self._metrics[name]["model"]["semantic_model"][0].get("datasets") or []
+            check_grain_preserving(self.con, dataset["source"])
             # sql is the render compile step's output and nothing else (spec §6).
             bounded = self._collect(sql, budget)
         if budget.expired():  # no complete answer after expiry (spec 0014 §6)

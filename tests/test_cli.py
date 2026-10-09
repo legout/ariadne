@@ -353,6 +353,28 @@ def test_explicit_invalid_served_root_errors(served, tmp_path, capsys):
     assert "context_layer" in error["message"] and "semantic_layer/models" in error["message"]
 
 
+def test_no_source_configured_refuses_instead_of_guessing_a_database(
+    served, tmp_path, monkeypatch, capsys
+):
+    """A promoted root without --db/--sources/ariadne.yaml is an explicit
+    error — the CLI never guesses a database to query (the historical silent
+    demo.db default would have answered governed questions from the wrong
+    data)."""
+    root, _db = served
+    scratch = tmp_path / "scratch"  # no ariadne.yaml here
+    scratch.mkdir()
+    monkeypatch.chdir(scratch)
+
+    code = cli(["list-metrics", "--served", str(root)])
+
+    assert code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    error = error_payload(captured.err)
+    assert "no source configured" in error["message"]
+    assert "--sources" in error["message"] and "--db" in error["message"]
+
+
 def test_empty_explicit_served_root_errors_instead_of_falling_back(tmp_path, monkeypatch, capsys):
     project = tmp_path / "project"
     served = project / "served"

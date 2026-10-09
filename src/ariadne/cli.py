@@ -146,8 +146,8 @@ def build_parser() -> _Parser:
         "--db",
         default=None,
         help="SQLite database to attach read-only (mutually exclusive with --sources; "
-        "default: examples/retail-demo/data/demo.db when no --sources/ariadne.yaml "
-        "applies)",
+        "required when no --sources/ariadne.yaml applies — the runtime never "
+        "guesses a database)",
     )
     group.add_argument(
         "--project",
@@ -322,20 +322,25 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         )
     else:
         sources_path = default_registry_path(args.sources, args.db)
+        if sources_path is None and not args.db:
+            raise ValueError(
+                "no source configured: pass --sources REGISTRY or --db SQLITE, or "
+                "declare sources in ./ariadne.yaml — the runtime never guesses a "
+                "database to query"
+            )
         # Issue #56/S1 (plan 0014 §2): legacy use reads the FIXED host CWD's
         # operator ``query:`` ceilings — an explicit --sources stays source
         # identity only, never a second implicit limit root. The same ONE
         # request budget bounds this construction and its operation.
+        limits = query_results.load_host_query_limits(Path.cwd())
         runtime = QueryRuntime(
             root / "semantic_layer",
             root / "context_layer",
-            args.db or "examples/retail-demo/data/demo.db",
+            args.db,
             staging_dir="staging" if args.staging is None else args.staging,
             sources=sources_path,
-            query_limits=query_results.load_host_query_limits(Path.cwd()),
-            deadline_budget=DeadlineBudget(
-                query_results.load_host_query_limits(Path.cwd())["execution_seconds"]
-            ),
+            query_limits=limits,
+            deadline_budget=DeadlineBudget(limits["execution_seconds"]),
         )
     if args.command == "list-metrics":
         result = asyncio.run(runtime.list_metrics())
