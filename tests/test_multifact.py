@@ -1326,9 +1326,7 @@ def test_f3_audit_and_join_share_one_resolved_target_key(tmp_path):
     datasets["events"]["fields"].append(
         {
             "name": "owner_match",
-            "expression": {
-                "dialects": [{"dialect": "ANSI_SQL", "expression": "owner_id % 10"}]
-            },
+            "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "owner_id % 10"}]},
         }
     )
     datasets["owners"]["source"] = (
@@ -1337,15 +1335,11 @@ def test_f3_audit_and_join_share_one_resolved_target_key(tmp_path):
     datasets["owners"]["fields"] += [
         {
             "name": "owner_ref",
-            "expression": {
-                "dialects": [{"dialect": "ANSI_SQL", "expression": "owner_id % 10"}]
-            },
+            "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "owner_id % 10"}]},
         },
         {
             "name": "owner_key",
-            "expression": {
-                "dialects": [{"dialect": "ANSI_SQL", "expression": "owner_ref + 0"}]
-            },
+            "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "owner_ref + 0"}]},
         },
     ]
     relationship = model["relationships"][0]
@@ -1364,26 +1358,24 @@ def test_f3_audit_and_join_share_one_resolved_target_key(tmp_path):
 # another dimension — the joined branch must expose the key under the name the
 # alignment references, for both branch kinds. Hand-derived per order: NA/100,
 # NA/200, EMEA/400 with equal order and line sums.
-CONFORMED_ALIAS_YML = (
-    DOMAIN_YML.replace(
-        "          - name: region\n"
-        "            expression:\n"
-        "              dialects:\n"
-        "                - dialect: ANSI_SQL\n"
-        "                  expression: region\n"
-        "            dimension: {}\n"
-        "          - name: line_amount\n",
-        "          - name: sales_region\n"
-        "            expression:\n"
-        "              dialects:\n"
-        "                - dialect: ANSI_SQL\n"
-        "                  expression: region\n"
-        "            dimension: {}\n"
-        "          - name: line_amount\n",
-    ).replace(
-        "          - dataset: order_lines\n            field: region\n",
-        "          - dataset: order_lines\n            field: sales_region\n",
-    )
+CONFORMED_ALIAS_YML = DOMAIN_YML.replace(
+    "          - name: region\n"
+    "            expression:\n"
+    "              dialects:\n"
+    "                - dialect: ANSI_SQL\n"
+    "                  expression: region\n"
+    "            dimension: {}\n"
+    "          - name: line_amount\n",
+    "          - name: sales_region\n"
+    "            expression:\n"
+    "              dialects:\n"
+    "                - dialect: ANSI_SQL\n"
+    "                  expression: region\n"
+    "            dimension: {}\n"
+    "          - name: line_amount\n",
+).replace(
+    "          - dataset: order_lines\n            field: region\n",
+    "          - dataset: order_lines\n            field: sales_region\n",
 )
 
 
@@ -1408,7 +1400,9 @@ def test_f4_conformed_key_aligns_with_lookup_dimensions(tmp_path):
 
 # F5: a base metric requested together with a same-fact derived metric built on
 # it — the branch must expose BOTH outputs (total 700, double 1400).
-DERIVED_YML = DOMAIN_YML + """\
+DERIVED_YML = (
+    DOMAIN_YML
+    + """\
       - name: double_total
         description: Derived twice the orders total (same fact)
         expression:
@@ -1416,6 +1410,7 @@ DERIVED_YML = DOMAIN_YML + """\
             - dialect: ANSI_SQL
               expression: orders_total * 2
 """
+)
 
 
 def test_f5_base_and_same_fact_derived_metric_both_return(tmp_path):
@@ -1802,9 +1797,7 @@ def test_t3_segment_with_metric_predicate_refuses(tmp_path):
                 "segments": [
                     {
                         "name": "big_orders",
-                        "filters": [
-                            {"field": "orders_total", "op": ">", "value": 300}
-                        ],
+                        "filters": [{"field": "orders_total", "op": ">", "value": 300}],
                     }
                 ],
             },
@@ -1824,9 +1817,7 @@ def test_t3_segment_with_metric_predicate_refuses(tmp_path):
                 "segments": [
                     {
                         "name": "lines_over",
-                        "filters": [
-                            {"field": "lines_total", "op": ">", "value": 100}
-                        ],
+                        "filters": [{"field": "lines_total", "op": ">", "value": 100}],
                     }
                 ],
             },
@@ -1982,9 +1973,7 @@ def test_t3_row_filters_do_not_persist_into_subsequent_requests(tmp_path):
     assert con.execute(filtered.sql).fetchall() == [("NA", 300.0)]
 
     # the SAME graph, no filters: EMEA must be back
-    plain = plan_query(
-        graph, {"metrics": ["orders_total"], "dimensions": ["region"]}, con
-    )
+    plain = plan_query(graph, {"metrics": ["orders_total"], "dimensions": ["region"]}, con)
     assert sorted(con.execute(plain.sql).fetchall()) == [
         ("EMEA", 400.0),
         ("NA", 300.0),
@@ -2066,9 +2055,11 @@ def test_t3_detail_aggregate_field_refuses_before_execution(tmp_path):
     with pytest.raises(PlannerError) as mixed:
         plan_detail(graph, {"dataset": "orders", "fields": ["order_id", "collapsed"]}, con)
     assert mixed.value.code == "detail_field_aggregate"
-    assert sorted(con.execute(
-        plan_detail(graph, {"dataset": "orders", "fields": ["order_id"]}, con).sql
-    ).fetchall()) == [(1,), (2,), (3,)]
+    assert sorted(
+        con.execute(
+            plan_detail(graph, {"dataset": "orders", "fields": ["order_id"]}, con).sql
+        ).fetchall()
+    ) == [(1,), (2,), (3,)]
 
 
 def test_t3_detail_nonaggregating_analytic_field_projects_one_row_per_key(tmp_path):
@@ -2103,18 +2094,18 @@ def test_t3_detail_nonaggregating_analytic_field_projects_one_row_per_key(tmp_pa
     graph = load_graph(staging / "semantic_layer")
     con = _duck_connection(registry)
 
-    plan = plan_detail(
-        graph, {"dataset": "orders", "fields": ["order_id", "previous_amount"]}, con
-    )
+    plan = plan_detail(graph, {"dataset": "orders", "fields": ["order_id", "previous_amount"]}, con)
     # hand-derived: orders 1,2,3 carry amounts 100,200,400 → LAG yields NULL,100,200
     assert sorted(
         (row[0], row[1]) if row[1] is None else row for row in con.execute(plan.sql).fetchall()
     ) == [(1, None), (2, 100.0), (3, 200.0)]
 
-    for index, bad in enumerate((
-        "SUM(amount) OVER (ORDER BY order_id)",
-        "LAG(SUM(amount)) OVER (ORDER BY order_id)",
-    )):
+    for index, bad in enumerate(
+        (
+            "SUM(amount) OVER (ORDER BY order_id)",
+            "LAG(SUM(amount)) OVER (ORDER BY order_id)",
+        )
+    ):
         evil = yaml.safe_load(DOMAIN_YML)
         for model in evil["semantic_model"]:
             for dataset in model["datasets"]:
@@ -2132,9 +2123,7 @@ def test_t3_detail_nonaggregating_analytic_field_projects_one_row_per_key(tmp_pa
             / "semantic_layer"
         )
         with pytest.raises(PlannerError) as refused:
-            plan_detail(
-                bad_graph, {"dataset": "orders", "fields": ["previous_amount"]}, con
-            )
+            plan_detail(bad_graph, {"dataset": "orders", "fields": ["previous_amount"]}, con)
         assert refused.value.code == "detail_field_aggregate"
 
 
@@ -2360,9 +2349,7 @@ def test_t4_differently_named_dates_align_monthly_with_ratio_and_fill(tmp_path):
     assert plan.time_dimension == "business_date"
     assert plan.time_grain == "month"
     assert sorted(branch.dataset for branch in plan.branches) == ["dated_lines", "dated_orders"]
-    rows = {
-        _month(month): tuple(values) for month, *values in con.execute(plan.sql).fetchall()
-    }
+    rows = {_month(month): tuple(values) for month, *values in con.execute(plan.sql).fetchall()}
     assert rows == {
         "2026-01": (300.0, 300.0, 1.0),
         "2026-02": (400.0, 250.0, 1.6),
@@ -2884,11 +2871,7 @@ def _t5_bundle(
         },
     ]
     if lines_page is not None:
-        content = (
-            _t5_metric_page("lines_total")
-            if lines_page == "default"
-            else lines_page
-        )
+        content = _t5_metric_page("lines_total") if lines_page == "default" else lines_page
         files.append({"path": "context_layer/metrics/lines_total.md", "content": content})
     return {"files": files}
 
@@ -2929,9 +2912,7 @@ def _t5_runtime(project: Path):
     )
 
 
-def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mcp(
-    tmp_path, capsys
-):
+def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mcp(tmp_path, capsys):
     # Spec rev 1 acceptance 1/AC6-local at the public seam: the hand-derived
     # trap values (NA 300/300, EMEA 400/400) come back governed through the
     # runtime, the local JSON CLI, and the MCP tool — one implementation.
@@ -3228,8 +3209,7 @@ def test_t5_citation_escape_outside_the_policy_directory_refuses_admission(tmp_p
     view = authoring.submit_bundle(submission, project=project)
     assert view["status"] == "invalid", view
     assert any(
-        "does not resolve inside context_layer/policies/" in error
-        for error in view["errors"]
+        "does not resolve inside context_layer/policies/" in error for error in view["errors"]
     ), view["errors"]
 
 

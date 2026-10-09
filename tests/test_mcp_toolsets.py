@@ -157,9 +157,7 @@ def test_stdio_toolsets_share_core_and_exclude_human_operations(tmp_path, toolse
                 await session.initialize()
                 tools = {tool.name: tool for tool in (await session.list_tools()).tools}
                 probes = sorted((QUERY_TOOLS | AUTHORING_TOOLS) - expected)[:2]
-                refused = {
-                    name: await session.call_tool(name, {}) for name in probes
-                }
+                refused = {name: await session.call_tool(name, {}) for name in probes}
                 return {"tools": tools, "refused": refused}
 
     out = asyncio.run(run())

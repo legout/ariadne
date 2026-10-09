@@ -336,9 +336,7 @@ def _spelling_matches(spelling: str, catalog: list[dict]) -> list[dict]:
         return [table for table in tables if table["name"] == pieces[0]]
     if len(pieces) == 2:
         return [
-            table
-            for table in tables
-            if table["source"] == pieces[0] and table["name"] == pieces[1]
+            table for table in tables if table["source"] == pieces[0] and table["name"] == pieces[1]
         ]
     return [
         table
@@ -490,17 +488,13 @@ def enrich_legacy(
             f"registry at {current[:12]} — there is no approved identity to bind to"
         )
     approval = authoring_sources._approved_identity(project, digest, proposal, current)
-    owned = execution.DuckDBExecution(
-        authoring_sources.identity_registry(approval["sources"])
-    )
+    owned = execution.DuckDBExecution(authoring_sources.identity_registry(approval["sources"]))
     try:
         catalog = owned.catalog
     finally:
         owned.close()
     tables = [table for entry in catalog for table in entry["tables"]]
-    available = ", ".join(
-        sorted(f"{t['source']}.{t.get('schema')}.{t['name']}" for t in tables)
-    )
+    available = ", ".join(sorted(f"{t['source']}.{t.get('schema')}.{t['name']}" for t in tables))
 
     if asset is not None:
         requested = authoring._catalog_asset(asset)
@@ -606,9 +600,7 @@ def enrich_legacy(
             f"{page}: the enrichment may only bind the canonical resource — any "
             "other change is refused; nothing was written"
         )
-    out = proposals.edit_proposal(
-        project, proposal, current, page, new_text, core_generated=True
-    )
+    out = proposals.edit_proposal(project, proposal, current, page, new_text, core_generated=True)
     return {
         "project": str(project),
         "proposal": proposal,
@@ -623,7 +615,7 @@ def enrich_legacy(
         "next_steps": [
             "ariadne-authoring refresh-schema --project "
             f"{project} --proposal {proposal} --expected-revision {out['revision']} "
-            '--file <asset list json> to generate the schema facts of the bound asset',
+            "--file <asset list json> to generate the schema facts of the bound asset",
             "ariadne-authoring validate, review and ariadne-admit --confirm remain the "
             "normal human admission steps",
         ],

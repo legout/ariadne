@@ -86,9 +86,7 @@ def isolated_git_config(monkeypatch):
 
 
 def run_git(cwd: Path, *argv: str) -> str:
-    proc = subprocess.run(
-        ["git", *argv], cwd=cwd, capture_output=True, text=True, check=False
-    )
+    proc = subprocess.run(["git", *argv], cwd=cwd, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, f"git {argv} failed: {proc.stderr}"
     return proc.stdout
 
@@ -121,8 +119,14 @@ def mapping_project(tmp_path: Path, *, sample_permission: bool = False) -> Path:
     write_parquet(
         project / "data" / "orders" / "orders.parquet",
         ORDERS_ROWS,
-        ["store_id", "local_order_number", "global_order_number", "region", "currency",
-         "currency_symbol"],
+        [
+            "store_id",
+            "local_order_number",
+            "global_order_number",
+            "region",
+            "currency",
+            "currency_symbol",
+        ],
     )
     write_parquet(
         project / "data" / "storemeta" / "prefix_map.parquet",
@@ -158,7 +162,7 @@ def mapping_project(tmp_path: Path, *, sample_permission: bool = False) -> Path:
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
     run_git(project, "add", "--", "ariadne.yaml", "data/seed_notes.md")
-    run_git(project, "commit", "-q", "-m " "human: initial artifacts")
+    run_git(project, "commit", "-q", "-m human: initial artifacts")
     return project
 
 
@@ -336,9 +340,7 @@ def lookup_candidate() -> dict:
             "key_fields": [{"resource": refdata, "column": "from_ccy"}],
             "value_fields": [{"resource": refdata, "column": "symbol"}],
         },
-        "scope": [
-            {"resource": orders, "column": "region", "op": "in", "value": ["EU", "US"]}
-        ],
+        "scope": [{"resource": orders, "column": "region", "op": "in", "value": ["EU", "US"]}],
     }
 
 
@@ -407,9 +409,7 @@ def test_the_three_families_report_honest_shape_evidence(tmp_path, candidate, ex
         )
     else:
         request = lookup_candidate()
-    result = api.inspect_mapping(
-        started["proposal"], started["candidate_revision"], request
-    )
+    result = api.inspect_mapping(started["proposal"], started["candidate_revision"], request)
     receipt = result["receipt"]
     assert receipt["family"] == request["family"]
     assert receipt["comparison_basis"] == expected["basis"]
@@ -485,9 +485,7 @@ def test_stale_revision_and_unapproved_or_unknown_participation_refuse(tmp_path)
     api2 = AuthoringProject(project2)
     started2 = api2.start_proposal()
     with pytest.raises(ValueError, match="NO operator approval"):
-        api2.inspect_mapping(
-            started2["proposal"], started2["candidate_revision"], candidate
-        )
+        api2.inspect_mapping(started2["proposal"], started2["candidate_revision"], candidate)
     # a participating source outside the approved registry identity
     decoy = table_resource("decoy", None, "decoy", "orders")
     with pytest.raises(ValueError, match="not an approved registry identity"):
@@ -508,9 +506,7 @@ def test_stale_revision_and_unapproved_or_unknown_participation_refuse(tmp_path)
             started["candidate_revision"],
             {
                 "family": "equality",
-                "left": [
-                    {"resource": resource("orders", "orders"), "column": "store_id"}
-                ],
+                "left": [{"resource": resource("orders", "orders"), "column": "store_id"}],
                 "right": [{"resource": missing, "column": "store_id"}],
             },
         )
@@ -527,7 +523,9 @@ def test_requests_may_only_lower_the_operator_ceilings(tmp_path):
     project, api, started = approved_project(tmp_path / "perm", sample_permission=True)
     candidate = prefix_candidate()
     ok = api.inspect_mapping(
-        started["proposal"], started["candidate_revision"], candidate,
+        started["proposal"],
+        started["candidate_revision"],
+        candidate,
         limits={"sample_rows": 2},
     )
     assert ok["receipt"]["sample_rows"] == 2  # lowering is fine
@@ -576,7 +574,9 @@ def test_raw_examples_need_explicit_operator_sample_permission(tmp_path):
         )
     granted, api2, started2 = approved_project(tmp_path / "granted", sample_permission=True)
     result = api2.inspect_mapping(
-        started2["proposal"], started2["candidate_revision"], prefix_candidate(),
+        started2["proposal"],
+        started2["candidate_revision"],
+        prefix_candidate(),
         limits={"examples": 2, "sample_rows": 2},
     )
     examples = result["receipt"]["examples"]
@@ -607,8 +607,7 @@ def test_structural_ceilings_of_one_candidate_refuse_up_front():
                 "left": binding,
                 "right": binding,
                 "scope": [
-                    {"resource": assets[0], "column": "c", "op": "eq", "value": i}
-                    for i in range(9)
+                    {"resource": assets[0], "column": "c", "op": "eq", "value": i} for i in range(9)
                 ],
             }
         )
@@ -647,9 +646,7 @@ def test_deadline_exhaustion_refuses_deterministically_without_a_receipt(tmp_pat
 
     monkeypatch.setattr(execution, "_deadline_clock", jumped_clock)
     with pytest.raises(ValueError, match="deadline"):
-        api.inspect_mapping(
-            started["proposal"], started["candidate_revision"], prefix_candidate()
-        )
+        api.inspect_mapping(started["proposal"], started["candidate_revision"], prefix_candidate())
     evidence_dir = project / ".ariadne" / "evidence" / started["proposal"]
     assert not evidence_dir.exists() or not any(evidence_dir.iterdir())
 
@@ -764,6 +761,7 @@ def reference_page(
     )
     return f"---\n{front}\n---\n\n{body}\n"
 
+
 REFERENCE_EDIT = {"kind": "page", "section": "references", "name": "order-number"}
 
 
@@ -772,9 +770,7 @@ def measured_hypothesis(tmp_path: Path):
     its retained receipt, and the Reference page citing that receipt."""
     project, api, started = approved_project(tmp_path)
     candidate = prefix_candidate()
-    measured = api.inspect_mapping(
-        started["proposal"], started["candidate_revision"], candidate
-    )
+    measured = api.inspect_mapping(started["proposal"], started["candidate_revision"], candidate)
     edited = api.edit_proposal(
         started["proposal"],
         started["candidate_revision"],
@@ -804,9 +800,7 @@ def test_validation_attaches_verified_summaries_and_receipts_survive_saves(tmp_p
     project, api, started, candidate, measured, edited = measured_hypothesis(tmp_path)
 
     validated = api.validate_proposal(started["proposal"], edited["revision"])
-    outcomes = {
-        check["name"]: check["outcome"] for check in validated["report"]["checks"]
-    }
+    outcomes = {check["name"]: check["outcome"] for check in validated["report"]["checks"]}
     assert outcomes["mapping_evidence"] == "passed"
     assert outcomes["page_contract"] == "passed"
     # K4 (issue #44): no semantic models exist — the candidate is context-only,
@@ -840,9 +834,7 @@ def test_validation_attaches_verified_summaries_and_receipts_survive_saves(tmp_p
         {"kind": "seed_notes", "content": notes["content"] + "\nLater note.\n"},
     )
     again = api.validate_proposal(started["proposal"], saved["revision"])
-    outcomes = {
-        check["name"]: check["outcome"] for check in again["report"]["checks"]
-    }
+    outcomes = {check["name"]: check["outcome"] for check in again["report"]["checks"]}
     assert outcomes["mapping_evidence"] == "passed"
     page = api.read_artifact(started["proposal"], REFERENCE_EDIT)
     assert _evidence_block(page["content"]) == block  # unchanged, still verified
@@ -869,13 +861,9 @@ def test_changed_declaration_invalidates_the_receipt_and_drops_the_summary(tmp_p
         {**REFERENCE_EDIT, "content": f"---\n{front}\n---{body}"},
     )
     failed = api.validate_proposal(started["proposal"], revised["revision"])
-    outcomes = {
-        check["name"]: check["outcome"] for check in failed["report"]["checks"]
-    }
+    outcomes = {check["name"]: check["outcome"] for check in failed["report"]["checks"]}
     assert outcomes["mapping_evidence"] == "failed"
-    assert any(
-        "measures a different declaration" in error for error in failed["errors"]
-    )
+    assert any("measures a different declaration" in error for error in failed["errors"])
     page = api.read_artifact(started["proposal"], REFERENCE_EDIT)
     assert _evidence_block(page["content"]) is None  # the stale summary is gone
 
@@ -902,8 +890,14 @@ def test_changed_measured_input_invalidates_the_receipt(tmp_path):
     write_parquet(
         project / "data" / "orders" / "orders.parquet",
         rows,
-        ["store_id", "local_order_number", "global_order_number", "region", "currency",
-         "currency_symbol"],
+        [
+            "store_id",
+            "local_order_number",
+            "global_order_number",
+            "region",
+            "currency",
+            "currency_symbol",
+        ],
     )
     # a fresh validation round (an unrelated save) re-verifies the receipt
     # against the CURRENT dependency identities
@@ -914,9 +908,7 @@ def test_changed_measured_input_invalidates_the_receipt(tmp_path):
         {"kind": "seed_notes", "content": notes["content"] + "\nSchema changed.\n"},
     )
     failed = api.validate_proposal(started["proposal"], saved["revision"])
-    outcomes = {
-        check["name"]: check["outcome"] for check in failed["report"]["checks"]
-    }
+    outcomes = {check["name"]: check["outcome"] for check in failed["report"]["checks"]}
     assert outcomes["mapping_evidence"] == "failed"
     assert any("measured columns changed" in error for error in failed["errors"])
 
@@ -937,8 +929,7 @@ def test_allowlisted_ids_and_authored_counts_are_never_proof(tmp_path):
     )
     failed = api.validate_proposal(started["proposal"], edited["revision"])
     assert any(
-        "does not resolve in the project's evidence records" in error
-        for error in failed["errors"]
+        "does not resolve in the project's evidence records" in error for error in failed["errors"]
     )
 
     # a real measurement whose STORED record is then tampered with
@@ -950,9 +941,7 @@ def test_allowlisted_ids_and_authored_counts_are_never_proof(tmp_path):
     stored["counts"]["tested_left"] = 999  # a forged count
     path.write_text(json.dumps(stored), encoding="utf-8")
     failed = api2.validate_proposal(started2["proposal"], edited2["revision"])
-    assert any(
-        "integrity check failed" in error for error in failed["errors"]
-    )
+    assert any("integrity check failed" in error for error in failed["errors"])
 
     # an authored evidence block never enters the candidate at all
     project3, api3, started3, candidate3, measured3, edited3 = measured_hypothesis(
@@ -1007,7 +996,9 @@ def test_cli_inspect_mapping_roundtrip_matches_the_core(tmp_path, capsys):
     out = json.loads(capsys.readouterr().out)
     receipt = out["receipt"]
     twin = api.inspect_mapping(
-        started["proposal"], started["candidate_revision"], prefix_candidate(),
+        started["proposal"],
+        started["candidate_revision"],
+        prefix_candidate(),
         limits={"sample_rows": 3},
     )
     assert out["receipt_id"] == receipt["receipt_id"]
@@ -1154,9 +1145,7 @@ def test_pairing_and_scope_must_bind_participating_measured_assets(tmp_path):
             started["candidate_revision"],
             {
                 **base,
-                "scope": [
-                    {"resource": orders, "column": "no_such_column", "op": "eq", "value": 1}
-                ],
+                "scope": [{"resource": orders, "column": "no_such_column", "op": "eq", "value": 1}],
             },
         )
     with pytest.raises(ValueError, match="not present in the catalog asset"):
@@ -1307,8 +1296,7 @@ def test_retargeted_representation_invalidates_the_receipt_summary(tmp_path):
         for error in failed["errors"]
     )
     assert (
-        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"])
-        is None
+        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"]) is None
     )
 
 
@@ -1335,8 +1323,7 @@ def test_unmeasured_required_scope_invalidates_the_receipt_summary(tmp_path):
     assert outcomes["mapping_evidence"] == "failed"
     assert any("required scope" in error for error in failed["errors"])
     assert (
-        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"])
-        is None
+        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"]) is None
     )
 
 
@@ -1371,8 +1358,7 @@ def test_aged_receipt_beyond_the_operator_budget_loses_its_summary(tmp_path):
     assert outcomes["mapping_evidence"] == "failed"
     assert any("age budget" in error for error in failed["errors"])
     assert (
-        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"])
-        is None
+        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"]) is None
     )
 
 
@@ -1444,8 +1430,7 @@ def test_changed_cited_policy_page_invalidates_the_receipt(tmp_path):
     assert outcomes["mapping_evidence"] == "failed"
     assert any("cited Policy/OSI" in error for error in failed["errors"])
     assert (
-        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"])
-        is None
+        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"]) is None
     )
 
 
@@ -1472,8 +1457,7 @@ def test_changed_lookup_asset_schema_invalidates_the_receipt(tmp_path):
     assert outcomes["mapping_evidence"] == "failed"
     assert any("lookup asset" in error for error in failed["errors"])
     assert (
-        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"])
-        is None
+        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"]) is None
     )
 
 

@@ -61,9 +61,7 @@ def isolated_git_config(monkeypatch):
 
 
 def run_git(cwd: Path, *argv: str) -> str:
-    proc = subprocess.run(
-        ["git", *argv], cwd=cwd, capture_output=True, text=True, check=False
-    )
+    proc = subprocess.run(["git", *argv], cwd=cwd, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, f"git {argv} failed: {proc.stderr}"
     return proc.stdout
 
@@ -109,9 +107,7 @@ def git_project(tmp_path: Path) -> Path:
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
-    run_git(
-        project, "add", "--", "ariadne.yaml", "data/seed_notes.md"
-    )
+    run_git(project, "add", "--", "ariadne.yaml", "data/seed_notes.md")
     run_git(project, "commit", "-q", "-m", "human: initial artifacts")
     return project
 
@@ -141,12 +137,9 @@ def sqlite_lake_project(tmp_path: Path) -> Path:
     db = project / "lake.db"
     con = sqlite3.connect(db)
     try:
+        con.execute("CREATE TABLE customers (id INTEGER NOT NULL, name TEXT, note TEXT)")
         con.execute(
-            "CREATE TABLE customers (id INTEGER NOT NULL, name TEXT, note TEXT)"
-        )
-        con.execute(
-            "CREATE TABLE orders (order_id INTEGER NOT NULL, customer_id INTEGER, "
-            "memo TEXT)"
+            "CREATE TABLE orders (order_id INTEGER NOT NULL, customer_id INTEGER, memo TEXT)"
         )
         con.execute("CREATE TABLE audit (event TEXT)")
         con.executemany(
@@ -162,10 +155,7 @@ def sqlite_lake_project(tmp_path: Path) -> Path:
     finally:
         con.close()
     (project / "ariadne.yaml").write_text(
-        "sources:\n"
-        "  - name: lake\n"
-        "    type: sqlite\n"
-        "    path: lake.db\n",
+        "sources:\n  - name: lake\n    type: sqlite\n    path: lake.db\n",
         encoding="utf-8",
     )
     (project / "data").mkdir(exist_ok=True)
@@ -173,9 +163,7 @@ def sqlite_lake_project(tmp_path: Path) -> Path:
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
-    run_git(
-        project, "add", "--", "ariadne.yaml", "data/seed_notes.md"
-    )
+    run_git(project, "add", "--", "ariadne.yaml", "data/seed_notes.md")
     run_git(project, "commit", "-q", "-m", "human: initial artifacts")
     return project
 
@@ -262,9 +250,7 @@ def test_refresh_keeps_same_named_assets_distinct_and_preserves_only_unchanged_m
     assert len(by_kind["dataset"]) == 2  # one Dataset Overview per collection
     # the overview links exactly the represented tables, not every source
     sales_overview = next(p for p in by_kind["dataset"] if "sales" in p["path"])
-    overview_text = run_git(
-        project, "show", f"{first['revision']}:{sales_overview['path']}"
-    )
+    overview_text = run_git(project, "show", f"{first['revision']}:{sales_overview['path']}")
     assert "orders" in overview_text and "support" not in overview_text
 
     # author meaning for two sales columns, then change the source underneath
@@ -272,18 +258,27 @@ def test_refresh_keeps_same_named_assets_distinct_and_preserves_only_unchanged_m
         proposal,
         {"kind": "page", "section": "tables", "name": Path(pages[sales_resource]).stem},
     )
-    authored = page["content"].replace(
-        "`order_id` — unknown (not yet authored)",
-        "`order_id` — business key of a sale",
-    ).replace(
-        "`amount` — unknown (not yet authored)",
-        "`amount` — net amount of the sale in source currency",
+    authored = (
+        page["content"]
+        .replace(
+            "`order_id` — unknown (not yet authored)",
+            "`order_id` — business key of a sale",
+        )
+        .replace(
+            "`amount` — unknown (not yet authored)",
+            "`amount` — net amount of the sale in source currency",
+        )
     )
     assert authored != page["content"]  # the placeholders were found and replaced
     edited = api.edit_proposal(
-        proposal, first["revision"], {"kind": "page", "section": "tables",
-                                      "name": Path(pages[sales_resource]).stem,
-                                      "content": authored}
+        proposal,
+        first["revision"],
+        {
+            "kind": "page",
+            "section": "tables",
+            "name": Path(pages[sales_resource]).stem,
+            "content": authored,
+        },
     )
     assert edited["changed"] is True
 
@@ -402,9 +397,7 @@ def test_canonical_resource_scheme_is_deterministic_and_credential_free():
 # ------------------------------------------- [3] approval, bounds and refusals
 
 
-def test_refresh_reads_only_the_approved_identity_and_refuses_unknown_assets(
-    tmp_path, monkeypatch
-):
+def test_refresh_reads_only_the_approved_identity_and_refuses_unknown_assets(tmp_path, monkeypatch):
     """Issue #41 [5]/[6]: without the operator's approval nothing is opened;
     approved, an unknown asset and malformed/empty requests are explicit
     errors listing what the approved identity actually holds."""
@@ -445,8 +438,11 @@ def test_refresh_reads_only_the_approved_identity_and_refuses_unknown_assets(
             [{**SALES_ASSET, "table": "nope"}],
         )
     assert opened and all(
-        set(paths) == {str(project / "data" / "sales" / "orders.parquet"),
-                       str(project / "data" / "support" / "orders.parquet")}
+        set(paths)
+        == {
+            str(project / "data" / "sales" / "orders.parquet"),
+            str(project / "data" / "support" / "orders.parquet"),
+        }
         for paths in opened
     )
 
@@ -475,8 +471,12 @@ def test_authored_edits_cannot_forge_generated_facts_or_overwrite_collisions(tmp
         api.edit_proposal(
             proposal,
             first["revision"],
-            {"kind": "page", "section": "tables", "name": name,
-             "content": _render_page(forged_resource, _body)},
+            {
+                "kind": "page",
+                "section": "tables",
+                "name": name,
+                "content": _render_page(forged_resource, _body),
+            },
         )
     forged_schema = dict(meta)
     ariadne = dict(meta["ariadne"])
@@ -486,8 +486,12 @@ def test_authored_edits_cannot_forge_generated_facts_or_overwrite_collisions(tmp
         api.edit_proposal(
             proposal,
             first["revision"],
-            {"kind": "page", "section": "tables", "name": name,
-             "content": _render_page(forged_schema, _body)},
+            {
+                "kind": "page",
+                "section": "tables",
+                "name": name,
+                "content": _render_page(forged_schema, _body),
+            },
         )
     stripped = dict(meta)
     del stripped["ariadne"]  # silently dropping the generated facts is the same forgery
@@ -495,20 +499,26 @@ def test_authored_edits_cannot_forge_generated_facts_or_overwrite_collisions(tmp
         api.edit_proposal(
             proposal,
             first["revision"],
-            {"kind": "page", "section": "tables", "name": name,
-             "content": _render_page(stripped, _body)},
+            {
+                "kind": "page",
+                "section": "tables",
+                "name": name,
+                "content": _render_page(stripped, _body),
+            },
         )
 
     # a plain authored page claims the canonical filename of ANOTHER asset:
     # refresh refuses the collision instead of overwriting it
-    support_name = PurePosixPath(
-        generated_filename(table_resource(SUPPORT_ASSET), "support")
-    ).stem
+    support_name = PurePosixPath(generated_filename(table_resource(SUPPORT_ASSET), "support")).stem
     squatter = api.edit_proposal(
         proposal,
         first["revision"],
-        {"kind": "page", "section": "tables", "name": support_name,
-         "content": "# somebody else's page\n"},
+        {
+            "kind": "page",
+            "section": "tables",
+            "name": support_name,
+            "content": "# somebody else's page\n",
+        },
     )
     assert squatter["changed"] is True
     with pytest.raises(ValueError, match="collision"):
@@ -539,24 +549,36 @@ def test_cli_refresh_schema_roundtrip(tmp_path, capsys):
     request = tmp_path / "assets.json"
     request.write_text(json.dumps([SALES_ASSET, SUPPORT_ASSET]), encoding="utf-8")
 
-    code = authoring_cli([
-        "refresh-schema",
-        "--proposal", started["proposal"],
-        "--expected-revision", started["candidate_revision"],
-        "--file", str(request),
-        "--project", str(project),
-    ])
+    code = authoring_cli(
+        [
+            "refresh-schema",
+            "--proposal",
+            started["proposal"],
+            "--expected-revision",
+            started["candidate_revision"],
+            "--file",
+            str(request),
+            "--project",
+            str(project),
+        ]
+    )
     assert code == 0
     first = json.loads(capsys.readouterr().out)
     assert first["changed"] is True and len(first["pages"]) == 4
 
-    code = authoring_cli([
-        "refresh-schema",
-        "--proposal", started["proposal"],
-        "--expected-revision", first["revision"],
-        "--file", str(request),
-        "--project", str(project),
-    ])
+    code = authoring_cli(
+        [
+            "refresh-schema",
+            "--proposal",
+            started["proposal"],
+            "--expected-revision",
+            first["revision"],
+            "--file",
+            str(request),
+            "--project",
+            str(project),
+        ]
+    )
     assert code == 0
     second = json.loads(capsys.readouterr().out)
     assert second["changed"] is False and second["revision"] == first["revision"]
@@ -650,8 +672,12 @@ def test_generated_body_sections_cannot_be_forged_or_dropped(tmp_path):
         api.edit_proposal(
             proposal,
             first["revision"],
-            {"kind": "page", "section": "tables", "name": name,
-             "content": _render_page(meta, forged_row)},
+            {
+                "kind": "page",
+                "section": "tables",
+                "name": name,
+                "content": _render_page(meta, forged_row),
+            },
         )
     # REMOVING a core-owned body section must refuse too
     start = body.index("# Schema")
@@ -660,8 +686,12 @@ def test_generated_body_sections_cannot_be_forged_or_dropped(tmp_path):
         api.edit_proposal(
             proposal,
             first["revision"],
-            {"kind": "page", "section": "tables", "name": name,
-             "content": _render_page(meta, body[:start] + body[end:])},
+            {
+                "kind": "page",
+                "section": "tables",
+                "name": name,
+                "content": _render_page(meta, body[:start] + body[end:]),
+            },
         )
     # dropping the frontmatter entirely is no bypass: the base still carries
     # the system-owned claims (and its generated body) the edit must inherit
@@ -685,8 +715,12 @@ def test_generated_body_sections_cannot_be_forged_or_dropped(tmp_path):
     edited = api.edit_proposal(
         proposal,
         first["revision"],
-        {"kind": "page", "section": "tables", "name": name,
-         "content": _render_page(meta, authored)},
+        {
+            "kind": "page",
+            "section": "tables",
+            "name": name,
+            "content": _render_page(meta, authored),
+        },
     )
     assert edited["changed"] is True
 
@@ -741,9 +775,9 @@ def test_narrower_refresh_keeps_still_represented_table_links(tmp_path):
     assert "[orders](" in second_text
     assert "audit" not in second_text  # never refreshed: never asserted documented
     overview = next(
-        page for page in second["pages"] if page["resource"] == collection_resource_of(
-            LAKE_CUSTOMERS
-        )
+        page
+        for page in second["pages"]
+        if page["resource"] == collection_resource_of(LAKE_CUSTOMERS)
     )
     assert overview["changes"] == {"added": [], "removed": []}  # no false removal flag
 
@@ -777,8 +811,7 @@ def test_multiline_column_meaning_moves_to_history_completely():
     )
     authored = v1.replace(
         "- `amount` — unknown (not yet authored)",
-        "- `amount` — net amount of the sale.\n"
-        "  Includes returns; the gross figure is derived.",
+        "- `amount` — net amount of the sale.\n  Includes returns; the gross figure is derived.",
     )
     assert authored != v1  # the placeholder was found and replaced
 

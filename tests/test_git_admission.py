@@ -392,9 +392,7 @@ def test_admission_refuses_partial_mismatched_or_unapproved_evidence(tmp_path, c
     evidence_path.write_text(original, encoding="utf-8")  # restore between tamperings
 
     # changed resolved source identity since validation
-    _tamper_validation(
-        project, proposal, revision, lambda doc: doc.update(source_digest="1" * 64)
-    )
+    _tamper_validation(project, proposal, revision, lambda doc: doc.update(source_digest="1" * 64))
     refuse("source identity")
     evidence_path.write_text(original, encoding="utf-8")
 
@@ -437,9 +435,7 @@ def test_failed_snapshot_or_record_activation_preserves_the_previous_admission(
         first["commit"],
         _policy_edit("Second candidate body."),
     )
-    second_validated = api.validate_proposal(
-        first_review["proposal"], second_edit["revision"]
-    )
+    second_validated = api.validate_proposal(first_review["proposal"], second_edit["revision"])
     assert second_validated["ok"] is True
     second_review = api.review_proposal(first_review["proposal"])
     assert second_review["revision"] == second_validated["revision"]
@@ -450,9 +446,7 @@ def test_failed_snapshot_or_record_activation_preserves_the_previous_admission(
 
     monkeypatch.setattr(admission_module, "_materialize_snapshot", snapshot_boom)
     assert admit(project, second_review) == 1
-    assert "simulated snapshot failure" in json.loads(capsys.readouterr().err)["error"][
-        "message"
-    ]
+    assert "simulated snapshot failure" in json.loads(capsys.readouterr().err)["error"]["message"]
     assert read_current(project) == first  # previous descriptor + answers intact
     assert QueryRuntime.open_project(project) is not None
     monkeypatch.undo()
@@ -464,9 +458,7 @@ def test_failed_snapshot_or_record_activation_preserves_the_previous_admission(
 
     monkeypatch.setattr(admission_module, "_publish_current", publish_boom)
     assert admit(project, second_review) == 1
-    assert "simulated activation failure" in json.loads(capsys.readouterr().err)["error"][
-        "message"
-    ]
+    assert "simulated activation failure" in json.loads(capsys.readouterr().err)["error"]["message"]
     assert read_current(project) == first
     runtime = QueryRuntime.open_project(project)
     answer = asyncio.run(runtime.get_metric("event_count"))
@@ -625,9 +617,7 @@ def test_an_advanced_admitted_baseline_requires_explicit_reconciliation(tmp_path
     # A activates first (its policy edit becomes the served baseline)
     assert admit(project, a_review) == 0
     admitted_commit = read_current(project)["commit"]
-    b_validated = api.validate_proposal(
-        b_started["proposal"], b_started["candidate_revision"]
-    )
+    b_validated = api.validate_proposal(b_started["proposal"], b_started["candidate_revision"])
     assert b_validated["ok"] is True
     b_review = api.review_proposal(b_started["proposal"])
 
@@ -660,8 +650,7 @@ def test_an_advanced_admitted_baseline_requires_explicit_reconciliation(tmp_path
     )
     assert "ancestry" in json.loads(capsys.readouterr().err)["error"]["message"]
     assert (
-        record_of(project, b_started["proposal"])["candidate_revision"]
-        == b_validated["revision"]
+        record_of(project, b_started["proposal"])["candidate_revision"] == b_validated["revision"]
     )
 
     # the human merges the admitted baseline in by hand (no automatic merge)
@@ -784,10 +773,7 @@ def test_sessions_pin_one_admission_and_legacy_promotion_never_mutates_a_snapsho
     second_edit = api.edit_proposal(
         first_review["proposal"], first["commit"], _policy_edit("Second admitted body.")
     )
-    assert (
-        api.validate_proposal(first_review["proposal"], second_edit["revision"])["ok"]
-        is True
-    )
+    assert api.validate_proposal(first_review["proposal"], second_edit["revision"])["ok"] is True
     second_review = api.review_proposal(first_review["proposal"])
     assert admit(project, second_review) == 0
     second = read_current(project)
@@ -826,9 +812,7 @@ def test_sessions_pin_one_admission_and_legacy_promotion_never_mutates_a_snapsho
     assert "Second admitted body." in "".join(unchanged["context"]["policies"])
 
 
-def test_cli_project_flag_serves_the_managed_route_and_refuses_without_admission(
-    tmp_path, capsys
-):
+def test_cli_project_flag_serves_the_managed_route_and_refuses_without_admission(tmp_path, capsys):
     """The local ``ariadne`` CLI reaches the managed factory through --project:
     the same pinned answers as QueryRuntime.open_project, and the explicit
     no-admission error (one JSON error object) before it."""
@@ -1404,9 +1388,10 @@ def test_post_rename_publication_failure_preserves_the_serving_admission(
     # failure BEFORE the rename: nothing is published; the first admission serves
     monkeypatch.setattr(proposals, "_fsync_path", flaky_fsync(descriptor_dir, 1))
     assert admit(project, second_review) == 1
-    assert "simulated directory fsync failure" in json.loads(capsys.readouterr().err)[
-        "error"
-    ]["message"]
+    assert (
+        "simulated directory fsync failure"
+        in json.loads(capsys.readouterr().err)["error"]["message"]
+    )
     assert read_current(project) == first
 
     # failure AFTER the atomic rename (the real post-rename boundary): the
@@ -1433,9 +1418,10 @@ def test_post_rename_publication_failure_preserves_the_serving_admission(
     fresh_dir = (fresh / admission_module.CURRENT_REL).parent
     monkeypatch.setattr(proposals, "_fsync_path", flaky_fsync(fresh_dir, 2))
     assert admit(fresh, fresh_review) == 1
-    assert "simulated directory fsync failure" in json.loads(capsys.readouterr().err)[
-        "error"
-    ]["message"]
+    assert (
+        "simulated directory fsync failure"
+        in json.loads(capsys.readouterr().err)["error"]["message"]
+    )
     assert not (fresh / admission_module.CURRENT_REL).exists()
     with pytest.raises(ValueError, match="no valid admission"):
         QueryRuntime.open_project(fresh)

@@ -150,9 +150,7 @@ def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def effective_inspection_limits(
-    ceilings: dict, request_limits: object
-) -> dict:
+def effective_inspection_limits(ceilings: dict, request_limits: object) -> dict:
     """The effective limits of one inspection request: the operator ceilings
     possibly lowered by the request (plan §2: requests can lower limits,
     never raise them). ``examples`` additionally requires the operator's

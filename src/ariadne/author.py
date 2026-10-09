@@ -720,9 +720,7 @@ def author_to_proposal(
         # computed BEFORE the temporary dir goes away: the drafts' spec §7
         # review_needed marker rides the envelope (the CLI cannot re-read them)
         review_required = _needs_human_review(staged)
-        evidence = (
-            _preserve_review_evidence(draft, project_path) if review_required else None
-        )
+        evidence = _preserve_review_evidence(draft, project_path) if review_required else None
         from ariadne import migration  # function-level: ariadne.authoring imports this module
 
         try:
@@ -807,8 +805,7 @@ def main(argv: list[str] | None = None) -> int:
                 "error: drafted files carry status: review_needed — human review "
                 "required; the imported proposal stays unadmitted"
                 + (
-                    "; this run's review-needed evidence is preserved at "
-                    f"{location}"
+                    f"; this run's review-needed evidence is preserved at {location}"
                     if location
                     else ""
                 ),

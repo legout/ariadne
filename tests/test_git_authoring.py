@@ -220,9 +220,7 @@ def isolated_git_config(monkeypatch):
 
 def run_git(cwd: Path, *argv: str) -> str:
     """Real git for test-side scaffolding (the seam under test never sees it)."""
-    proc = subprocess.run(
-        ["git", *argv], cwd=cwd, capture_output=True, text=True, check=False
-    )
+    proc = subprocess.run(["git", *argv], cwd=cwd, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, f"git {argv} failed: {proc.stderr}"
     return proc.stdout
 
@@ -352,9 +350,7 @@ def test_page_only_edit_validates_inherited_dependencies_and_exact_final_commit(
     assert result["revision"] != edited["revision"]
     assert result["revision"] == branch_of(project, started["proposal"])
     generated = commit_paths(project, result["revision"])
-    assert any(
-        line.endswith("context_layer/computations/event_count.md") for line in generated
-    )
+    assert any(line.endswith("context_layer/computations/event_count.md") for line in generated)
     assert any(line.endswith("index.md") for line in generated)
 
     # inherited dependencies were checked against the approved live source:
@@ -499,9 +495,7 @@ def test_repair_state_persists_across_failures_retries_restarts_and_rebases(tmp_
         result = api.validate_proposal(started["proposal"], edited["revision"])
         assert result["ok"] is False
         assert result["attempts"] == round_number
-        assert result["repair_status"] == (
-            "review_needed" if round_number == 3 else "open"
-        )
+        assert result["repair_status"] == ("review_needed" if round_number == 3 else "open")
         revisions.append(result["revision"])
 
     # the no-op retry of the last failed validation is idempotent: same errors,
@@ -811,9 +805,7 @@ def test_review_bodies_arrive_in_bounded_parts(tmp_path):
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    long_policy = POLICY_PAGE.replace(
-        "The rule body.", "policy line " * 4000
-    )
+    long_policy = POLICY_PAGE.replace("The rule body.", "policy line " * 4000)
     api.edit_proposal(
         started["proposal"],
         started["candidate_revision"],
@@ -868,12 +860,8 @@ def test_review_parts_retrieve_every_artifacts_later_bodies(tmp_path):
     assert {entry["resource"] for entry in second["files"]} == {
         entry["resource"] for entry in first["files"]
     }
-    registry1 = next(
-        entry for entry in first["files"] if entry["resource"] == "ariadne.yaml"
-    )
-    registry2 = next(
-        entry for entry in second["files"] if entry["resource"] == "ariadne.yaml"
-    )
+    registry1 = next(entry for entry in first["files"] if entry["resource"] == "ariadne.yaml")
+    registry2 = next(entry for entry in second["files"] if entry["resource"] == "ariadne.yaml")
     assert registry2["exhausted"] is True and registry2["text"] == ""
     assert registry2["parts"] == 1 and registry2["digest"] == registry1["digest"]
     assert all(entry["exhausted"] is (entry["parts"] < 2) for entry in second["files"])
@@ -1031,9 +1019,7 @@ def test_an_unparseable_draft_model_is_a_recoverable_validation_error(tmp_path):
     ],
     ids=["malformed-page-frontmatter", "non-mapping-model"],
 )
-def test_malformed_drafts_return_a_stored_failed_validation_never_a_crash(
-    tmp_path, edit, why
-):
+def test_malformed_drafts_return_a_stored_failed_validation_never_a_crash(tmp_path, edit, why):
     """Review fix (G4, spec §4): the edit seam accepts invalid DRAFT content,
     so malformed page frontmatter and a non-mapping semantic_model entry are
     recoverable validation FAILURES — validate_proposal RETURNS the failed
@@ -1055,19 +1041,13 @@ def test_malformed_drafts_return_a_stored_failed_validation_never_a_crash(
         assert outcomes["page_contract"] == "failed"
         assert outcomes["citations"] == "failed"  # the parse failure is a diagnostic
     else:
-        assert any(
-            "semantic_model entry is not a mapping" in error for error in result["errors"]
-        )
+        assert any("semantic_model entry is not a mapping" in error for error in result["errors"])
         assert outcomes["structural"] == "failed"
     # the failed report is STORED for the exact final revision (repair
     # accounting counted it — never an escaped exception instead of evidence)
     stored = json.loads(
         (
-            project
-            / ".ariadne"
-            / "validation"
-            / started["proposal"]
-            / f"{result['revision']}.json"
+            project / ".ariadne" / "validation" / started["proposal"] / f"{result['revision']}.json"
         ).read_text(encoding="utf-8")
     )
     assert stored["ok"] is False and stored["repair"]["attempts"] == 1

@@ -1053,9 +1053,7 @@ def test_asserted_claim_contradicted_by_its_own_cited_receipt_refuses(tmp_path, 
 
     result = api.validate_proposal(candidate["proposal"], candidate["revision"])
     assert result["ok"] is False
-    assert any(
-        "counterevidence" in error and "contradicted" in error for error in result["errors"]
-    )
+    assert any("counterevidence" in error and "contradicted" in error for error in result["errors"])
     outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
     assert outcomes["mapping_evidence"] == "failed"
 
@@ -1067,9 +1065,7 @@ def test_asserted_claim_contradicted_by_its_own_cited_receipt_refuses(tmp_path, 
     assert assertion["claim"] == "asserted"
     assert assertion["confirmable"] is False
     assert "counterevidence" in assertion["confirmation_note"]
-    assert admit(
-        project, review, confirm=False, confirm_mapping=["order-number:contradicted"]
-    ) == 1
+    assert admit(project, review, confirm=False, confirm_mapping=["order-number:contradicted"]) == 1
     message = json.loads(capsys.readouterr().err)["error"]["message"]
     assert "not eligible" in message and "counterevidence" in message
 
@@ -1143,9 +1139,7 @@ def test_retargeted_representation_meaning_lapses_prior_confirmation(tmp_path, c
     runtime = QueryRuntime.open_project(project)
     served = asyncio.run(runtime.resolve_term("order number"))
     assert (
-        mapping_view(served, "local-order-number", "global-order-concatenation")[
-            "confirmation"
-        ]
+        mapping_view(served, "local-order-number", "global-order-concatenation")["confirmation"]
         == "unconfirmed"
     )
 

@@ -264,9 +264,7 @@ def _write_index(directory: Path, *, staged: bool) -> None:
     Staged pages label their honest state (draft or closed history — never a
     self-declared stable); served pages label the system-written status."""
     lines = ["# Answer Examples", ""]
-    for page in sorted(
-        p for p in directory.glob("*.md") if p.name not in ("index.md", "log.md")
-    ):
+    for page in sorted(p for p in directory.glob("*.md") if p.name not in ("index.md", "log.md")):
         meta = _frontmatter(page) or {}
         question = " ".join(str(meta.get("question") or page.stem).split())
         if staged:
@@ -306,9 +304,7 @@ def _refresh_bundle(directory: Path, example_id: str, record: dict) -> None:
     log.write_text("\n".join(entries) + "\n", encoding="utf-8")
 
 
-def _guard_staging(
-    directory: Path, served_root: Path, examples_root: Path | None = None
-) -> None:
+def _guard_staging(directory: Path, served_root: Path, examples_root: Path | None = None) -> None:
     """Staged examples live under the selected staging root and never in or
     through the served root (ADR-0015): a symlinked or overlapping example
     directory — or a symlinked bundle bookkeeping file — is refused before
@@ -334,9 +330,7 @@ def _guard_staging(
     if examples_root is not None and resolved.is_relative_to(
         (Path(examples_root) / EXAMPLES_DIR).resolve()
     ):
-        raise ValueError(
-            f"staging example directory overlaps the example store root: {resolved}"
-        )
+        raise ValueError(f"staging example directory overlaps the example store root: {resolved}")
     for name in ("index.md", "log.md"):
         if (directory / name).is_symlink():
             raise ValueError(f"staged bundle file {name!r} is a symlink — refusing to write")

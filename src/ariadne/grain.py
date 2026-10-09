@@ -62,8 +62,10 @@ class TargetKeyAudit:
 def _audit_statement(source: str, keys: tuple[str, ...]) -> str:
     """Assemble the one-scan audit SELECT from compiler-rendered key
     expressions (fix pass F1: nothing here interpolates raw field text)."""
-    wrapped = f"({source})" if re.match(r"(?is)\s*(select|with)\b", source) else (
-        f"(SELECT * FROM {source})"
+    wrapped = (
+        f"({source})"
+        if re.match(r"(?is)\s*(select|with)\b", source)
+        else (f"(SELECT * FROM {source})")
     )
     key_list = ", ".join(keys)
     complete = " AND ".join(f"{key} IS NOT NULL" for key in keys)

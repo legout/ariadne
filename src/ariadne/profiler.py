@@ -263,9 +263,7 @@ def _profile_table(
         entry = {
             "type": type_name,
             "null_count": row_count - non_null,
-            "null_ratio": (float(null_percentage) / 100.0)
-            if null_percentage is not None
-            else 0.0,
+            "null_ratio": (float(null_percentage) / 100.0) if null_percentage is not None else 0.0,
             "distinct_count": distinct,
             "unique_ratio": (distinct / row_count) if row_count else 0.0,
             "approx_unique": s["approx_unique"],
@@ -329,9 +327,7 @@ def _fk_candidates(
             target_col = min(target_pks, key=lambda c: (c != "id", c != name))
             if target_table == table and target_col == name:
                 continue  # a column referencing itself is its own PK, not an FK
-            target_type = [
-                (c, t) for c, t in target["cols"] or [] if c == target_col
-            ]
+            target_type = [(c, t) for c, t in target["cols"] or [] if c == target_col]
             if not target_type:
                 continue
             target_is_numeric = _numeric(type_name) and _numeric(target_type[0][1])

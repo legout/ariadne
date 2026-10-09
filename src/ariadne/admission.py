@@ -231,9 +231,7 @@ def _publish_current(project: Path, record: dict) -> Path:
     path = project / CURRENT_REL
     path.parent.mkdir(parents=True, exist_ok=True)
     entry = proposals._lstat(path)
-    previous = (
-        path.read_bytes() if entry is not None and stat.S_ISREG(entry.st_mode) else None
-    )
+    previous = path.read_bytes() if entry is not None and stat.S_ISREG(entry.st_mode) else None
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(record, fh, sort_keys=True)
@@ -320,15 +318,12 @@ def _verified_evidence(project: Path, proposal: str, revision: str, review: dict
     # reason: a bare not_applicable outcome is an unexplained partial report,
     # never a complete one.
     partial = [
-        name
-        for name in REQUIRED_CHECKS
-        if outcomes.get(name) not in ("passed", "not_applicable")
+        name for name in REQUIRED_CHECKS if outcomes.get(name) not in ("passed", "not_applicable")
     ]
     unexplained = [
         name
         for name in REQUIRED_CHECKS
-        if outcomes.get(name) == "not_applicable"
-        and not (by_name.get(name) or {}).get("detail")
+        if outcomes.get(name) == "not_applicable" and not (by_name.get(name) or {}).get("detail")
     ]
     failed = sorted(name for name, outcome in outcomes.items() if outcome == "failed")
     if partial or failed or unexplained:
@@ -337,9 +332,7 @@ def _verified_evidence(project: Path, proposal: str, revision: str, review: dict
             f"failed checks: {', '.join(failed)}" if failed else ""
         )
         detail += (", " if detail and unexplained else "") + (
-            "not_applicable without a reason: " + ", ".join(unexplained)
-            if unexplained
-            else ""
+            "not_applicable without a reason: " + ", ".join(unexplained) if unexplained else ""
         )
         raise ValueError(
             f"the validation report of {revision[:12]} is partial ({detail}) — a "
@@ -450,8 +443,7 @@ def _parse_selection(selection: str) -> tuple[str, str]:
     reference, sep, mapping = selection.partition(":")
     if not sep or not reference.strip() or not mapping.strip():
         raise ValueError(
-            f"a --confirm-mapping selection is '<reference-slug>:<mapping-id>', got "
-            f"{selection!r}"
+            f"a --confirm-mapping selection is '<reference-slug>:<mapping-id>', got {selection!r}"
         )
     return reference.strip(), mapping.strip()
 
@@ -564,8 +556,7 @@ def _retained_confirmations(
             (
                 entry
                 for entry in assertions
-                if entry["page"] == record.get("page")
-                and entry["mapping"] == record.get("mapping")
+                if entry["page"] == record.get("page") and entry["mapping"] == record.get("mapping")
             ),
             None,
         )
@@ -583,9 +574,7 @@ def _retained_confirmations(
             receipt
             for receipt in (current or {}).get("receipts") or []
             if isinstance(receipt, dict)
-            and context.evidence_freshness(
-                receipt.get("observed_at"), max_age_hours
-            )["state"]
+            and context.evidence_freshness(receipt.get("observed_at"), max_age_hours)["state"]
             == "stale"
         ]
         if (
@@ -603,9 +592,7 @@ def _retained_confirmations(
             retained.append(entry)
         else:
             if current is None:
-                reason = (
-                    "the assertion is no longer among the reviewed revision's mappings"
-                )
+                reason = "the assertion is no longer among the reviewed revision's mappings"
             elif expired:
                 reason = (
                     "the prior verified evidence aged past the operator's "
@@ -836,9 +823,7 @@ def admit_revision(
                     "artifact_digest": evidence["artifact_digest"],
                     "source_digest": evidence["source_digest"],
                     "validated_at": evidence["validated_at"],
-                    "evidence": str(
-                        proposals._validation_path(project, proposal, revision)
-                    ),
+                    "evidence": str(proposals._validation_path(project, proposal, revision)),
                 },
                 "confirmed": {
                     "by": confirmed_by,
@@ -925,9 +910,7 @@ def _interrupted_core_transition(project: Path, record: dict, new: str) -> bool:
     return True
 
 
-def reconcile(
-    project: str | Path, proposal: str, expected_revision: str, revision: str
-) -> dict:
+def reconcile(project: str | Path, proposal: str, expected_revision: str, revision: str) -> dict:
     """HUMAN-ONLY (``ariadne-authoring reconcile``): record the CLEAN new HEAD
     a human created in the proposal worktree by a local rebase/merge, after the
     admitted baseline advanced past the proposal's branch. Requires the current
@@ -948,9 +931,7 @@ def reconcile(
                 f"the worktree of proposal {proposal} is missing ({worktree})"
                 + proposals._HUMAN_RESOLUTION
             )
-        branch = proposals._git(
-            ["rev-parse", "--abbrev-ref", "HEAD"], worktree
-        ).stdout.strip()
+        branch = proposals._git(["rev-parse", "--abbrev-ref", "HEAD"], worktree).stdout.strip()
         if branch != record["branch"]:
             raise ValueError(
                 f"proposal {proposal}'s worktree is on branch {branch!r}, not its "
@@ -990,8 +971,7 @@ def reconcile(
             raise ValueError(
                 f"the branch of proposal {proposal} sits on a core-authored commit "
                 "its record never saw — an interrupted core transition, and "
-                "reconcile records intentional human rebases only"
-                + proposals._HUMAN_RESOLUTION
+                "reconcile records intentional human rebases only" + proposals._HUMAN_RESOLUTION
             )
         baseline = load_current(project)
         admitted = baseline["commit"] if baseline is not None else None

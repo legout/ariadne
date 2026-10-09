@@ -68,9 +68,7 @@ TIME_GRAINS = ("day", "week", "month", "quarter", "year")
 # declared POST-aggregate stage over the aligned output — never inside a fact
 # branch. ``size`` is whole groups for ``rolling`` and grain periods for
 # ``value_window`` (a RANGE frame over the time axis).
-WINDOW_KINDS = frozenset(
-    {"rolling", "cumulative", "prior_period", "ranking", "value_window"}
-)
+WINDOW_KINDS = frozenset({"rolling", "cumulative", "prior_period", "ranking", "value_window"})
 _WINDOW_KEYS = frozenset({"kind", "size", "function", "direction"})
 _WINDOW_FUNCTIONS = frozenset({"sum", "avg", "min", "max", "count"})
 _SIZED_KINDS = frozenset({"rolling", "value_window"})
@@ -209,9 +207,7 @@ def load_graph(semantic_dir: str | Path) -> SemanticGraph:
                 )
             relationships = model.get("relationships")
             if relationships is not None and not isinstance(relationships, list):
-                raise GraphError(
-                    f"{where}: relationships must be a list of edge declarations"
-                )
+                raise GraphError(f"{where}: relationships must be a list of edge declarations")
             for entry in relationships or []:
                 raw_relationships.append((entry, where))
             if conformed is not None and not isinstance(conformed, list):
@@ -321,8 +317,7 @@ def _load_datasets(model: dict, model_name: str, file: str, datasets: dict[str, 
                 )
             if field_name in fields:
                 raise GraphError(
-                    f"{file} model '{model_name}' dataset '{name}': duplicate field "
-                    f"'{field_name}'"
+                    f"{file} model '{model_name}' dataset '{name}': duplicate field '{field_name}'"
                 )
             fields.append(field_name)
             try:
@@ -381,9 +376,7 @@ def _parse_window(raw: Any, where: str) -> WindowDecl | None:
     if kind != "ranking" and "direction" in raw:
         raise GraphError(f"{where}: only a ranking window declares 'direction'")
     if direction not in ("asc", "desc"):
-        raise GraphError(
-            f"{where}: window 'direction' must be 'asc' or 'desc', got {direction!r}"
-        )
+        raise GraphError(f"{where}: window 'direction' must be 'asc' or 'desc', got {direction!r}")
     return WindowDecl(kind=kind, size=size, function=function, direction=direction)
 
 
@@ -647,9 +640,7 @@ def _resolve_relationships(
             # isinstance first: an unhashable value must fail as GraphError, not
             # as a TypeError from the dict lookup
             if not isinstance(dataset, str) or dataset not in datasets:
-                raise GraphError(
-                    f"{where} relationship '{name}': unknown {key} {dataset!r}"
-                )
+                raise GraphError(f"{where} relationship '{name}': unknown {key} {dataset!r}")
             endpoints.append(dataset)
         from_dataset, to_dataset = endpoints
         keys: list[tuple[str, list | None, str]] = [
@@ -675,8 +666,7 @@ def _resolve_relationships(
             field_lists.append(fields)
         if len(field_lists[0]) != len(field_lists[1]):
             raise GraphError(
-                f"{where} relationship '{name}': from_fields and to_fields must have "
-                "equal length"
+                f"{where} relationship '{name}': from_fields and to_fields must have equal length"
             )
         edge = RelationshipEdge(
             name=name,
@@ -806,10 +796,15 @@ def _resolve_conformed(
         time_roles: set[bool] = set()
         native_grains: dict[str, str] = {}
         for member in members_raw:
-            if not isinstance(member, dict) or set(member) - _MEMBER_KEYS or not {
-                "dataset",
-                "field",
-            } <= set(member):
+            if (
+                not isinstance(member, dict)
+                or set(member) - _MEMBER_KEYS
+                or not {
+                    "dataset",
+                    "field",
+                }
+                <= set(member)
+            ):
                 raise GraphError(
                     f"{where} conformed dimension '{name}': each member is "
                     f"'dataset' + 'field' plus optional 'native_grain'; allowed: "

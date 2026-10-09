@@ -75,9 +75,7 @@ def isolated_git_config(monkeypatch):
 
 def run_git(cwd: Path, *argv: str) -> str:
     """Real git for test-side scaffolding (the seam under test never sees it)."""
-    proc = subprocess.run(
-        ["git", *argv], cwd=cwd, capture_output=True, text=True, check=False
-    )
+    proc = subprocess.run(["git", *argv], cwd=cwd, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, f"git {argv} failed: {proc.stderr}"
     return proc.stdout
 
@@ -265,12 +263,7 @@ SERVED_PAGES = {
 }
 
 SEED_NOTES = "# Seed notes\n\nAll events count.\n"
-LEGACY_REGISTRY = (
-    "sources:\n"
-    "  - name: events\n"
-    "    type: parquet\n"
-    "    path: data/events.parquet\n"
-)
+LEGACY_REGISTRY = "sources:\n  - name: events\n    type: parquet\n    path: data/events.parquet\n"
 
 # The outstanding LEGACY pending work that must survive byte-for-byte: a
 # harness-led bundle proposal (its bundle-state.json even records the OLD
@@ -356,9 +349,7 @@ def import_via_cli(project: Path, from_root: Path, capsys) -> dict:
     """The HUMAN command adapter surface: one JSON envelope on stdout (any
     earlier fixture output is flushed away first)."""
     capsys.readouterr()  # flush fixture noise (the scaffold's own report)
-    rc = authoring_cli(
-        ["import-legacy", "--project", str(project), "--from-root", str(from_root)]
-    )
+    rc = authoring_cli(["import-legacy", "--project", str(project), "--from-root", str(from_root)])
     assert rc == 0
     return json.loads(capsys.readouterr().out)
 
@@ -406,8 +397,7 @@ def test_legacy_import_preserves_pending_evidence_and_requires_review_before_adm
     assert expected <= tracked
     # generated bookkeeping and pending stores are never committed
     assert not any(
-        path.endswith(("index.md", "log.md")) or "/computations/" in path
-        for path in tracked
+        path.endswith(("index.md", "log.md")) or "/computations/" in path for path in tracked
     )
     assert not any(path.startswith(("staging/", ".ariadne/")) for path in tracked)
     assert "data/events.parquet" not in tracked  # inputs are never artifacts
@@ -529,9 +519,7 @@ def test_import_into_an_existing_artifact_base_applies_edits_through_the_layer_s
     (legacy / "data").mkdir()
     (legacy / "semantic_layer" / "models").mkdir(parents=True)
     for rel, content in {
-        "data/seed_notes.md": (project / "data" / "seed_notes.md").read_text(
-            encoding="utf-8"
-        ),
+        "data/seed_notes.md": (project / "data" / "seed_notes.md").read_text(encoding="utf-8"),
         "context_layer/tables/events.md": TABLES_PAGE,  # identical: no-op
         "context_layer/references/joins/events--events.md": REFERENCE_PAGE,
         "context_layer/metrics/event_count.md": METRIC_PAGE,
@@ -605,9 +593,7 @@ def test_import_refuses_trust_claims_the_base_does_not_carry(tmp_path, capsys):
         forged, encoding="utf-8"
     )
     capsys.readouterr()
-    rc = authoring_cli(
-        ["import-legacy", "--project", str(project), "--from-root", str(legacy)]
-    )
+    rc = authoring_cli(["import-legacy", "--project", str(project), "--from-root", str(legacy)])
     assert rc == 1
     err = capsys.readouterr().err
     assert "system-owned trust claim" in err and "verified" in err
@@ -656,9 +642,7 @@ def enrich_via_cli(
 EVENTS_ASSET = {"source": "events", "catalog": None, "schema": "events", "table": "events"}
 
 
-def test_explicit_enrichment_preserves_legacy_meaning_links_and_pending_evidence(
-    tmp_path, capsys
-):
+def test_explicit_enrichment_preserves_legacy_meaning_links_and_pending_evidence(tmp_path, capsys):
     """Issue #46 [1]/[2], AC10, spec 0010 §4/§9 + §10 AC2: after the human
     legacy import, the HUMAN-ONLY explicit enrichment binds ONE legacy
     unqualified table page to its EXPLICITLY identified canonical resource
@@ -681,9 +665,7 @@ def test_explicit_enrichment_preserves_legacy_meaning_links_and_pending_evidence
     api.approve_sources(proposal, revision, digest)
     tracked_before = set(run_git(project, "ls-files").split())
 
-    enriched = enrich_via_cli(
-        project, proposal, revision, "context_layer/tables/events.md", capsys
-    )
+    enriched = enrich_via_cli(project, proposal, revision, "context_layer/tables/events.md", capsys)
 
     # the envelope: the canonical binding, never admission or refresh
     assert enriched["admitted"] is False
@@ -766,8 +748,7 @@ def test_enrichment_keeps_legacy_schema_explanations_through_refresh(tmp_path, c
     # the legacy owner's authored explanations, under refresh-owned headings
     tables_page = project / "context_layer" / "tables" / "events.md"
     tables_page.write_text(
-        tables_page.read_text(encoding="utf-8")
-        + "# Schema\n\n"
+        tables_page.read_text(encoding="utf-8") + "# Schema\n\n"
         "- `label` — customer-visible label; preserve leading zeros.\n\n"
         "## Observations\n\n"
         "Owner explanation with [rule](../policies/all-events-count.md).\n",
@@ -779,9 +760,7 @@ def test_enrichment_keeps_legacy_schema_explanations_through_refresh(tmp_path, c
     resolved, digest = candidate_sources(project, revision)
     api.approve_sources(proposal, revision, digest)
 
-    enriched = enrich_via_cli(
-        project, proposal, revision, "context_layer/tables/events.md", capsys
-    )
+    enriched = enrich_via_cli(project, proposal, revision, "context_layer/tables/events.md", capsys)
     refreshed = api.refresh_schema(proposal, enriched["revision"], [EVENTS_ASSET])
     blobs = dict(proposals.scope_blobs(project, refreshed["revision"]))
     page = blobs["context_layer/tables/events.md"].decode("utf-8")
@@ -805,9 +784,7 @@ def test_enrichment_keeps_legacy_schema_explanations_through_refresh(tmp_path, c
     assert again["changed"] is False
     assert again["revision"] == refreshed["revision"]
     assert (
-        dict(proposals.scope_blobs(project, again["revision"]))[
-            "context_layer/tables/events.md"
-        ]
+        dict(proposals.scope_blobs(project, again["revision"]))["context_layer/tables/events.md"]
         == blobs["context_layer/tables/events.md"]
     )
 
@@ -820,9 +797,7 @@ def test_enrichment_refuses_ambiguous_bindings_and_binds_only_explicitly(tmp_pat
     binds unambiguously, keeps the old filename and never rebinds silently."""
     project = tmp_path / "twins"
     project.mkdir()
-    write_parquet(
-        project / "data" / "sales" / "orders.parquet", [(1, 10)], ["order_id", "amount"]
-    )
+    write_parquet(project / "data" / "sales" / "orders.parquet", [(1, 10)], ["order_id", "amount"])
     write_parquet(
         project / "data" / "support" / "orders.parquet", [(1, 1)], ["ticket_id", "order_ref"]
     )
@@ -993,9 +968,7 @@ def fake_complete(responses: list[str]):
 
 GIT_AUTHOR_BUNDLE = json.dumps(
     {
-        "files": [
-            {"path": rel, "content": content} for rel, content in SERVED_PAGES.items()
-        ]
+        "files": [{"path": rel, "content": content} for rel, content in SERVED_PAGES.items()]
         + [{"path": "semantic_layer/models/events.yml", "content": SERVED_MODEL_YML}]
     }
 )
@@ -1107,9 +1080,7 @@ def test_exhausted_git_author_run_preserves_review_evidence_durably(tmp_path):
             sources_path=project / "ariadne.yaml",
             complete=complete,
         )
-    evidence = sorted(
-        (project / "staging" / "author-review-needed").glob("*/REVIEW_NEEDED.md")
-    )
+    evidence = sorted((project / "staging" / "author-review-needed").glob("*/REVIEW_NEEDED.md"))
     assert evidence, "the exhausted run's evidence must exist after the failed import"
     text = evidence[-1].read_text(encoding="utf-8")
     assert "review_needed" in text and "JSON file contract" in text
@@ -1138,9 +1109,7 @@ def test_git_author_envelope_names_preserved_review_evidence(tmp_path):
     assert marked.is_file() and "review_needed" in marked.read_text(encoding="utf-8")
 
 
-def test_git_author_cli_names_the_preserved_review_evidence_location(
-    tmp_path, monkeypatch, capsys
-):
+def test_git_author_cli_names_the_preserved_review_evidence_location(tmp_path, monkeypatch, capsys):
     """G7 fix pass F2 (CLI surface): ``ariadne-author --git`` with an
     exhausted run reports the failure cleanly and names the durable
     review-needed location in its output instead of a bare traceback."""
@@ -1161,9 +1130,9 @@ def test_git_author_cli_names_the_preserved_review_evidence_location(
     err = capsys.readouterr().err
     assert err.startswith("error: no legacy artifacts found")  # the truthful cause
     assert "author-review-needed" in err  # the durable location is named
-    assert sorted(
-        (project / "staging" / "author-review-needed").glob("*/REVIEW_NEEDED.md")
-    ), "durable evidence exists after the failed run"
+    assert sorted((project / "staging" / "author-review-needed").glob("*/REVIEW_NEEDED.md")), (
+        "durable evidence exists after the failed run"
+    )
 
 
 def test_how_to_document_maps_legacy_routes_to_the_new_workflow():

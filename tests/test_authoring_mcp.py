@@ -268,9 +268,7 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
                     "authoring_upload_document",
                     {
                         "name": "big.md",
-                        "content_b64": base64.b64encode(
-                            b"x" * (MAX_UPLOAD_BYTES + 1)
-                        ).decode(),
+                        "content_b64": base64.b64encode(b"x" * (MAX_UPLOAD_BYTES + 1)).decode(),
                     },
                 )
         # a session launched AFTER the project became Git-managed pins the
@@ -415,9 +413,7 @@ def test_stdio_refresh_schema_matches_core_and_noops_on_identical_retry(tmp_path
     # the identical retry over stdio is the deterministic no-op
     assert out["second"]["changed"] is False
     assert out["second"]["revision"] == first["revision"]
-    retried = next(
-        page for page in out["second"]["pages"] if page["resource"] == table["resource"]
-    )
+    retried = next(page for page in out["second"]["pages"] if page["resource"] == table["resource"])
     assert retried["changes"] == {"added": [], "removed": [], "type_changed": []}
 
 
@@ -573,9 +569,20 @@ def test_http_opt_in_requires_token_and_loopback(tmp_path):
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
     env.pop(HTTP_TOKEN_ENV, None)
     proc = subprocess.Popen(  # noqa: S603 — the repo's own server, fixed argv
-        [sys.executable, "-m", "ariadne.serve", "--project", str(project),
-         "--http", "--http-port", str(port)],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        [
+            sys.executable,
+            "-m",
+            "ariadne.serve",
+            "--project",
+            str(project),
+            "--http",
+            "--http-port",
+            str(port),
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
     out, err = proc.communicate(timeout=60)
     assert proc.returncode == 1
@@ -585,11 +592,22 @@ def test_http_opt_in_requires_token_and_loopback(tmp_path):
 
     # a non-loopback bind is refused: local-only mode, never a public interface
     proc = subprocess.Popen(  # noqa: S603 — the repo's own server, fixed argv
-        [sys.executable, "-m", "ariadne.serve", "--project", str(project),
-         "--http", "--http-port", str(_free_port()), "--http-host", "0.0.0.0"],
-        env={**os.environ, HTTP_TOKEN_ENV: HTTP_TOKEN,
-             "PYTHONPATH": str(REPO_ROOT / "src")},
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        [
+            sys.executable,
+            "-m",
+            "ariadne.serve",
+            "--project",
+            str(project),
+            "--http",
+            "--http-port",
+            str(_free_port()),
+            "--http-host",
+            "0.0.0.0",
+        ],
+        env={**os.environ, HTTP_TOKEN_ENV: HTTP_TOKEN, "PYTHONPATH": str(REPO_ROOT / "src")},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
     out, err = proc.communicate(timeout=60)
     assert proc.returncode == 1
@@ -637,13 +655,14 @@ def test_http_bearer_gate_refuses_every_request_before_dispatch(tmp_path):
             ]
             for label, kw in cases:
                 body = upload if "dispatch" in label else initialize
-                headers = {"Content-Type": "application/json",
-                           "Accept": "application/json, text/event-stream", **kw["headers"]}
+                headers = {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    **kw["headers"],
+                }
                 response = await client.post(url, json=body, headers=headers)
                 results.append((label, response))
-            response = await client.get(
-                url, headers={"Accept": "text/event-stream"}
-            )
+            response = await client.get(url, headers={"Accept": "text/event-stream"})
             results.append(("GET stream without token", response))
         return results
 
@@ -722,8 +741,7 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
             out["inputs"] = _payload(
                 await session.call_tool(
                     "authoring_inputs",
-                    {"proposal": proposal, "documents": ["revision-notes.md"],
-                     "sample_rows": 1},
+                    {"proposal": proposal, "documents": ["revision-notes.md"], "sample_rows": 1},
                 )
             )
             out["inputs_twin"] = api.inputs(

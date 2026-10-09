@@ -267,8 +267,7 @@ def test_missing_optional_computation_never_warns_or_fails(tmp_path, monkeypatch
     root = tmp_path / "context_layer"
     _write(
         "metrics/margin.md",
-        "---\ntype: metric\nsources:\n  - {id: p, resource: policies/p.md}\n---\n\n"
-        "# Margin\n",
+        "---\ntype: metric\nsources:\n  - {id: p, resource: policies/p.md}\n---\n\n# Margin\n",
         tmp_path,
     )
     _write("policies/p.md", "---\ntype: policy\n---\n\n# P\n", tmp_path)

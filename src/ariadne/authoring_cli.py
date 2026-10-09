@@ -332,9 +332,7 @@ def build_parser() -> _Parser:
     )
     read_cmd.add_argument("--name", default=None, help="artifact name (model/page)")
     read_cmd.add_argument("--section", default=None, help="OKF page section (page)")
-    read_cmd.add_argument(
-        "--part", type=int, default=1, help="which bounded part (default: 1)"
-    )
+    read_cmd.add_argument("--part", type=int, default=1, help="which bounded part (default: 1)")
     read_cmd.add_argument(
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
@@ -396,8 +394,8 @@ def build_parser() -> _Parser:
     refresh_cmd.add_argument(
         "--file",
         required=True,
-        help='the explicit catalog asset list as JSON: either a bare list '
-        '[{source, catalog, schema, table}, ...] or the object form '
+        help="the explicit catalog asset list as JSON: either a bare list "
+        "[{source, catalog, schema, table}, ...] or the object form "
         '{"assets": [...]} ("-" reads stdin)',
     )
     refresh_cmd.add_argument(
@@ -570,7 +568,7 @@ def _read_asset_list(file: str) -> list[dict]:
     if not isinstance(data, list) or not data:
         raise UsageError(
             f"{file}: the asset list must be a non-empty JSON list of "
-            "{source, catalog, schema, table} objects (or {{\"assets\": [...]}})"
+            '{source, catalog, schema, table} objects (or {{"assets": [...]}})'
         )
     return data
 
@@ -610,9 +608,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "propose-sources":
             if args.proposal is not None:
                 if args.expected_revision is None:
-                    raise UsageError(
-                        "Git-mode propose-sources requires --expected-revision"
-                    )
+                    raise UsageError("Git-mode propose-sources requires --expected-revision")
                 result: Any = AuthoringProject(args.project).propose_sources(
                     args.proposal, args.expected_revision, _read_source_entries(args.file)
                 )
@@ -679,9 +675,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "reconcile":
             # HUMAN-ONLY (issue #37/G5): records a local rebase/merge; never an
             # MCP/Agent tool and never an automatic merge.
-            result = reconcile(
-                args.project, args.proposal, args.expected_revision, args.revision
-            )
+            result = reconcile(args.project, args.proposal, args.expected_revision, args.revision)
         elif args.command == "import-legacy":
             # HUMAN-ONLY (issue #39/G7): the explicit legacy-artifact migration —
             # never an MCP/Agent tool, never admission.

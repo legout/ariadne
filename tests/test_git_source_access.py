@@ -67,9 +67,7 @@ def connection_spy(monkeypatch):
 
 def run_git(cwd: Path, *argv: str) -> str:
     """Real git for test-side scaffolding (the seam under test never sees it)."""
-    proc = subprocess.run(
-        ["git", *argv], cwd=cwd, capture_output=True, text=True, check=False
-    )
+    proc = subprocess.run(["git", *argv], cwd=cwd, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, f"git {argv} failed: {proc.stderr}"
     return proc.stdout
 
@@ -246,9 +244,7 @@ def test_changed_source_entry_after_approval_cannot_grant_access(tmp_path, conne
     assert connection_spy[-1] == [str(events), str(other)]
 
 
-def test_proposed_widened_document_configuration_cannot_widen_input_roots(
-    tmp_path, connection_spy
-):
+def test_proposed_widened_document_configuration_cannot_widen_input_roots(tmp_path, connection_spy):
     """Issue #35 [5]: a document-root setting COMMITTED in the candidate is
     inert data. The operator's HOST project root carries the wider roots when
     the base is created, then narrows them in the working tree; the proposal
@@ -282,9 +278,9 @@ def test_proposed_widened_document_configuration_cannot_widen_input_roots(
         started["proposal"], started["candidate_revision"], [EVENTS_ENTRY]
     )
     # the candidate registry indeed carries the widened committed section
-    candidate_registry = proposals.read_artifact(
-        project, started["proposal"], "ariadne.yaml"
-    )["content"]
+    candidate_registry = proposals.read_artifact(project, started["proposal"], "ariadne.yaml")[
+        "content"
+    ]
     assert "data/extra" in candidate_registry
 
     # the operator NARROWS the host working configuration (uncommitted,
@@ -329,9 +325,7 @@ def test_git_approve_sources_binds_the_exact_candidate_and_digest(tmp_path):
         lambda: api.approve_sources(
             started["proposal"], proposed["revision"], "0" * 64
         ),  # wrong digest
-        lambda: api.approve_sources(
-            started["proposal"], proposed["revision"], "not-a-digest"
-        ),
+        lambda: api.approve_sources(started["proposal"], proposed["revision"], "not-a-digest"),
         lambda: api.approve_sources(
             "p-00000000000000-000000", proposed["revision"], proposed["source_digest"]
         ),
@@ -384,9 +378,7 @@ def test_git_propose_sources_refuses_duplicate_names_and_stale_revisions(tmp_pat
         started["proposal"], started["candidate_revision"], [EVENTS_ENTRY]
     )
     with pytest.raises(ValueError, match="never overwrites"):
-        api.propose_sources(
-            started["proposal"], proposed["revision"], [dict(EVENTS_ENTRY)]
-        )
+        api.propose_sources(started["proposal"], proposed["revision"], [dict(EVENTS_ENTRY)])
     with pytest.raises(ValueError, match="stale"):
         api.propose_sources(
             started["proposal"],
@@ -399,9 +391,7 @@ def test_git_propose_sources_refuses_duplicate_names_and_stale_revisions(tmp_pat
 # ------------------------------------- onboarding inputs + uploads outside Git
 
 
-def test_inputs_without_sources_and_uploads_never_become_git_artifacts(
-    tmp_path, connection_spy
-):
+def test_inputs_without_sources_and_uploads_never_become_git_artifacts(tmp_path, connection_spy):
     """AC5 onboarding: a candidate with no registry sources measures NOTHING
     (profile None, no error — a missing catalog never blocks the flow), uploads
     land in the operator input area with stable evidence digests, and neither
@@ -422,9 +412,10 @@ def test_inputs_without_sources_and_uploads_never_become_git_artifacts(
     assert measured["documents"][0]["digest"] == upload["digest"]
     assert measured["documents"][0]["complete"] is True
     # digests are stable across calls (same bytes, same digest)
-    assert api.inputs(started["proposal"], documents=["notes.md"])["documents"][0][
-        "digest"
-    ] == upload["digest"]
+    assert (
+        api.inputs(started["proposal"], documents=["notes.md"])["documents"][0]["digest"]
+        == upload["digest"]
+    )
     assert measured["seed_notes"] == empty["seed_notes"]
     # the operator input area is never staged or committed by any edit
     assert run_git(project, "ls-files", "--", "data/docs") == ""

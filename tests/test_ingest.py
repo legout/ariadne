@@ -220,9 +220,13 @@ def _reference_entry(**overrides) -> dict:
     """One gate-clean structured Reference entry: the order-number term with
     its allowlisted aliases/bindings/declaration (the allowlist shape the K2
     system prompt describes)."""
-    payload = base64.urlsafe_b64encode(
-        json.dumps(["orders", None, "orders", "orders"], separators=(",", ":")).encode()
-    ).decode().rstrip("=")
+    payload = (
+        base64.urlsafe_b64encode(
+            json.dumps(["orders", None, "orders", "orders"], separators=(",", ":")).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
     entry = page_entry(
         folder="references",
         name="order-number",
@@ -231,8 +235,7 @@ def _reference_entry(**overrides) -> dict:
         description="The shared order-number concept of the orders store.",
         tags=["reference", "term"],
         body=(
-            "# Order number\n\nThe store-scoped local number and the concatenated "
-            "global identity."
+            "# Order number\n\nThe store-scoped local number and the concatenated global identity."
         ),
     )
     entry["aliases"] = ["order number concept"]
@@ -311,10 +314,9 @@ def test_ingest_preserves_reference_bindings_without_fabricating_measurements(
     }
     # the resolver reads the staged page: the preserved declaration resolves
     from ariadne.context import resolve_term
+
     resolved = resolve_term([(staging / "context_layer", True)], "global order number")
-    assert [match["representation"] for match in resolved["matches"]] == [
-        "global-order-number"
-    ]
+    assert [match["representation"] for match in resolved["matches"]] == ["global-order-number"]
     assert resolved["matches"][0]["draft"] is True
 
     # a fabricated confirmation claim is REFUSED: the gate feeds it back and
@@ -430,9 +432,7 @@ def test_mapping_citing_the_input_document_stages_and_validates(tmp_path, monkey
     assert mapping["claim"] == "asserted" and mapping["source_ids"] == [digest]
 
 
-def test_ingestion_never_registers_mentioned_sources_and_keeps_its_own_store(
-    tmp_path, monkeypatch
-):
+def test_ingestion_never_registers_mentioned_sources_and_keeps_its_own_store(tmp_path, monkeypatch):
     """K6 (issue #46 [3], spec 0010 §3/§9 + §10 AC10 existing-check): a
     document that MENTIONS other data locations stages its typed pages with
     the ACTUAL input document's provenance — ingestion never registers,
@@ -461,9 +461,7 @@ def test_ingestion_never_registers_mentioned_sources_and_keeps_its_own_store(
             "(s3://corp/warehouse/sales); no schema was measured.\n"
         ),
     )
-    staging, staged, errors, _calls = run_ingest(
-        tmp_path, doc, [response(entry)], monkeypatch
-    )
+    staging, staged, errors, _calls = run_ingest(tmp_path, doc, [response(entry)], monkeypatch)
 
     assert errors == [] and staged
     # the staged page cites the ACTUAL input document — mechanically attached
@@ -481,9 +479,7 @@ def test_ingestion_never_registers_mentioned_sources_and_keeps_its_own_store(
         "sources:\n  - name: local\n    type: parquet\n    path: data/local.parquet\n"
     )
     staged_tree = sorted(
-        path.relative_to(staging).as_posix()
-        for path in staging.rglob("*")
-        if path.is_file()
+        path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file()
     )
     assert staged_tree == ["context_layer/tables/warehouse-sales.md"]
 

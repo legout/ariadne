@@ -165,9 +165,7 @@ def load_registry(path: str | Path = DEFAULT_PATH) -> Registry:
     except yaml.YAMLError as exc:
         raise ValueError(f"{registry_path}: not valid YAML: {exc}") from exc
     return Registry(
-        sources=validate_entries(
-            doc.get("sources"), registry_path, registry_path.parent.resolve()
-        ),
+        sources=validate_entries(doc.get("sources"), registry_path, registry_path.parent.resolve()),
         path=str(registry_path),
     )
 
@@ -389,6 +387,7 @@ def _redact(dsn: str) -> str:
     (user and host may surface; the password never does)."""
     return _DSN_PASSWORD_RE.sub(r"\1***\3", dsn)
 
+
 def _redact_all(message: str, secrets: list[str]) -> str:
     """Every known DSN redacted, plus a generic pass so no credentialed URL in
     a builder-raised error message ever carries a password."""
@@ -510,8 +509,7 @@ def parse_resource(uri: str) -> tuple[str, list]:
     kind, _, payload = uri[len(prefix) :].partition("/")
     if kind not in ("table", "collection") or not payload:
         raise ValueError(
-            f"resource {uri!r} must be ariadne://table/<payload> or "
-            "ariadne://collection/<payload>"
+            f"resource {uri!r} must be ariadne://table/<payload> or ariadne://collection/<payload>"
         )
     padded = payload + "=" * (-len(payload) % 4)
     try:

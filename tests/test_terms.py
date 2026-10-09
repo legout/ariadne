@@ -131,10 +131,7 @@ def orders_project(tmp_path: Path) -> Path:
         f"TO '{project / 'data' / 'orders.parquet'}' (FORMAT PARQUET)"
     ).close()
     (project / "ariadne.yaml").write_text(
-        "sources:\n"
-        "  - name: orders\n"
-        "    type: parquet\n"
-        "    path: data/orders.parquet\n",
+        "sources:\n  - name: orders\n    type: parquet\n    path: data/orders.parquet\n",
         encoding="utf-8",
     )
     (project / "data" / "seed_notes.md").write_text(
@@ -172,9 +169,7 @@ def orders_project(tmp_path: Path) -> Path:
                 }
             ],
         ),
-        "context_layer/skills/run-the-demo.md": _page(
-            "skill", "run the demo", "# run the demo\n"
-        ),
+        "context_layer/skills/run-the-demo.md": _page("skill", "run the demo", "# run the demo\n"),
     }
     for rel, content in pages.items():
         path = project / rel
@@ -190,9 +185,7 @@ def orders_project(tmp_path: Path) -> Path:
 
 
 def run_git(cwd: Path, *argv: str) -> str:
-    proc = subprocess.run(
-        ["git", *argv], cwd=cwd, capture_output=True, text=True, check=False
-    )
+    proc = subprocess.run(["git", *argv], cwd=cwd, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, f"git {argv} failed: {proc.stderr}"
     return proc.stdout
 
@@ -480,9 +473,7 @@ def test_reference_extension_requires_resolvable_structure():
     )
     assert any(
         "id must be a stable lowercase slug" in error
-        for error in _reference_errors(
-            _reference_with(mapping_overrides={"id": "Mapping One"})
-        )
+        for error in _reference_errors(_reference_with(mapping_overrides={"id": "Mapping One"}))
     )
     # duplicate representation IDs are malformed (IDs are stable, reused)
     page = yaml.safe_load(order_reference_page().split("---")[1])
@@ -492,9 +483,7 @@ def test_reference_extension_requires_resolvable_structure():
         "\n---\n\n# x\n"
     )
     duplicate = _reference_errors(duplicate_page)
-    assert any(
-        "duplicates representation id 'local-order-number'" in error for error in duplicate
-    )
+    assert any("duplicates representation id 'local-order-number'" in error for error in duplicate)
     # field bindings are exactly {resource, column} with canonical resources
     bad_binding = yaml.safe_load(order_reference_page().split("---")[1])
     bad_binding["ariadne"]["representations"][0]["fields"][0] = {
@@ -568,9 +557,10 @@ def test_non_string_mapping_endpoints_get_contract_diagnostics_not_crashes():
         ("to", None),
     ):
         errors = _reference_errors(_reference_with(mapping_overrides={key: endpoint}))
-        assert any(
-            f"{key} endpoint must be a representation id" in error for error in errors
-        ), (key, endpoint)
+        assert any(f"{key} endpoint must be a representation id" in error for error in errors), (
+            key,
+            endpoint,
+        )
 
 
 def test_git_validation_rejects_fabricated_confirmation_in_a_real_candidate(tmp_path):
@@ -593,9 +583,7 @@ def test_git_validation_rejects_fabricated_confirmation_in_a_real_candidate(tmp_
     )
     validated = api.validate_proposal(started["proposal"], edited["revision"])
     assert validated["ok"] is False
-    assert any(
-        "unsupported field(s) ['confirmed']" in error for error in validated["errors"]
-    )
+    assert any("unsupported field(s) ['confirmed']" in error for error in validated["errors"])
     assert any(
         check["name"] == "page_contract" and check["outcome"] == "failed"
         for check in validated["report"]["checks"]
@@ -617,9 +605,7 @@ def test_reference_extension_edits_are_authored_not_forged_claims(tmp_path):
     )
     assert edited["changed"] is True
     resolved = api.resolve_term(candidate["proposal"], "master order number")
-    assert [match["representation"] for match in resolved["matches"]] == [
-        "global-order-number"
-    ]
+    assert [match["representation"] for match in resolved["matches"]] == ["global-order-number"]
 
 
 # ------------------------------------- [3] resolver determinism and bounds
@@ -892,9 +878,7 @@ def test_mcp_resolve_term_routes_share_the_core(tmp_path):
         async with _launch(project, "authoring") as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                started = json.loads(
-                    _text(await session.call_tool("authoring_start_proposal", {}))
-                )
+                started = json.loads(_text(await session.call_tool("authoring_start_proposal", {})))
                 out["started"] = started
                 out["authoring"] = json.loads(
                     _text(
@@ -922,9 +906,7 @@ def test_mcp_resolve_term_routes_share_the_core(tmp_path):
     authoring = out["authoring"]
     assert authoring["candidate"] is True
     assert authoring["revision"] == out["started"]["candidate_revision"]
-    assert [match["representation"] for match in authoring["matches"]] == [
-        "global-order-number"
-    ]
+    assert [match["representation"] for match in authoring["matches"]] == ["global-order-number"]
     # each registration is its own surface: the other role's tool is refused
     assert out["analyst_refused"] is True
     assert out["authoring_refused"] is True

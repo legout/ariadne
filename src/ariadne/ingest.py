@@ -248,7 +248,7 @@ def _user_prompt(text: str, filename: str, citation_id: str) -> str:
     return (
         f"Source document: {filename} (already converted to markdown)\n"
         f"Document citation id: {citation_id} — this document stages as that "
-        'footnote id; a mapping citing the document itself uses the token '
+        "footnote id; a mapping citing the document itself uses the token "
         '"@document" in source_ids and ingestion binds it to this id.\n\n'
         f"<document>\n{text.strip()}\n</document>\n\n"
         "Distill it into typed OKF pages now. Return only the JSON object."

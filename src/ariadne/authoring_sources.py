@@ -153,9 +153,7 @@ def propose_sources(
     entries: list[dict] = []
     for entry in sources_entries:
         if not isinstance(entry, dict):
-            raise ValueError(
-                f"a typed source entry must be a mapping, got {type(entry).__name__}"
-            )
+            raise ValueError(f"a typed source entry must be a mapping, got {type(entry).__name__}")
         entries.append(dict(entry))
     # the shared registry rules (ADR-0010) validate the typed entries — shape,
     # types, credentials, duplicates — BEFORE anything is written
@@ -175,14 +173,11 @@ def propose_sources(
         doc = yaml.safe_load(blob.decode("utf-8")) or {}
         if not isinstance(doc, dict):
             raise ValueError(
-                f"proposal {proposal}: candidate ariadne.yaml at {current[:12]} "
-                "is not a mapping"
+                f"proposal {proposal}: candidate ariadne.yaml at {current[:12]} is not a mapping"
             )
     existing = doc.get("sources") or []
     if not isinstance(existing, list):
-        raise ValueError(
-            f"proposal {proposal}: candidate ariadne.yaml 'sources' is not a list"
-        )
+        raise ValueError(f"proposal {proposal}: candidate ariadne.yaml 'sources' is not a list")
     taken = {entry.get("name") for entry in existing if isinstance(entry, dict)}
     clashes = sorted(entry["name"] for entry in entries if entry["name"] in taken)
     if clashes:
@@ -204,9 +199,7 @@ def propose_sources(
     # so any later change — appended, edited or removed — is a mismatch.
     resolved_identity, digest = candidate_sources(project, edited["revision"])
     if resolved_identity is None:  # unreachable: the merge just added entries
-        raise ValueError(
-            f"proposal {proposal}: the registry edit committed no source entries"
-        )
+        raise ValueError(f"proposal {proposal}: the registry edit committed no source entries")
     return {
         "proposal": proposal,
         "revision": edited["revision"],
@@ -243,8 +236,7 @@ def _load_approvals(project: Path) -> dict:
         isinstance(key, str) and isinstance(value, dict) for key, value in doc.items()
     ):
         raise ValueError(
-            f"{path}: malformed source approvals — this needs human resolution, "
-            "not an agent reset"
+            f"{path}: malformed source approvals — this needs human resolution, not an agent reset"
         )
     return doc
 
@@ -265,9 +257,7 @@ def _store_approvals(project: Path, approvals: dict) -> None:
     proposals._fsync_path(path.parent)
 
 
-def approve_sources(
-    project: str | Path, proposal: str, revision: str, source_digest: str
-) -> dict:
+def approve_sources(project: str | Path, proposal: str, revision: str, source_digest: str) -> dict:
     """HUMAN-ONLY (never an MCP/Agent tool): record the operator's permission
     for the EXACT resolved source identity of the proposal's current candidate
     revision, under the operator-owned ``.ariadne/source-approvals.json``
@@ -279,9 +269,7 @@ def approve_sources(
     automatically."""
     project = Path(project).resolve()
     if not isinstance(source_digest, str) or not _HEX64_RE.fullmatch(source_digest):
-        raise ValueError(
-            "the source digest must be the 64-hex sha256 returned by propose-sources"
-        )
+        raise ValueError("the source digest must be the 64-hex sha256 returned by propose-sources")
     record = proposals._load_record(project, proposal)
     current = record["candidate_revision"]
     if revision != current:
