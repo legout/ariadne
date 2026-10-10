@@ -141,6 +141,14 @@ from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-m
     implicit_registry,
     load_registry,
 )
+
+# Issue #59 (spec 0014 §9): the static ad-hoc IO-authority boundary — one
+# transport-neutral core check the CLI, the Facade and the Analyst toolset all
+# inherit because they all call this runtime's define_metric.
+from ariadne.sql_authority import (  # pyright: ignore[reportMissingImports] — new-module drift
+    AdHocAuthority,
+    assert_ad_hoc_authority,
+)
 from ariadne.validate import (  # pyright: ignore[reportMissingImports] — drift
     _registry_identity,
     candidate_scope_digest,
@@ -325,6 +333,13 @@ class QueryRuntime:
         if not self._qualified:
             # Bare table names in agent-authored ad-hoc sources resolve against the attach.
             self.con.execute("USE demo.main")
+        # Issue #59 (spec 0014 §9): the ad-hoc IO-authority boundary's approved
+        # physical-relation set — the ALREADY-BUILT execution catalog plus
+        # DuckDB's own current catalog/schema (the legacy --db route's
+        # USE demo.main is what makes bare table names resolve; a registry
+        # route keeps its <source>.<table> form). Read once here, from trusted
+        # internal reads only, so an ad-hoc refusal never needs a DuckDB call.
+        self._ad_hoc_authority = AdHocAuthority.build(self.catalog, self.con)
         self.staging_dir = Path(staging_dir)
         # Issue #53 (spec 0013 §4): the exact-identity map of the ALREADY-BUILT
         # execution catalog — qualified table name → canonical resource — built
@@ -1216,10 +1231,29 @@ class QueryRuntime:
         so an output refusal after successful computation — including an
         MCP-envelope refusal — stages NOTHING and the definition is never
         auto-promoted (issue #56/S1).
+
+        Issue #59 (spec 0014 §9): the static IO-authority boundary runs FIRST,
+        on the whole nested ``source`` and ``expression`` trees, so an ad-hoc
+        definition can only read the registered catalog relations with the
+        reviewed analytics functions — no file/network/table-function read,
+        metadata catalog or indirect SQL function ever reaches the grain
+        guard, the compile gate, bind or execution.
         """
         params = _normalize_definition(definition)
         budget = self._claim_operation_budget()
         with self._phase(budget):
+            # Issue #59 (spec 0014 §9): the IO-authority boundary BEFORE the
+            # grain guard, compile, bind or any execution — the entire nested
+            # source AND expression trees may read only the registered catalog
+            # relations and call only the reviewed built-in analytics functions.
+            # A refusal is static (no DuckDB call at all): nothing staged,
+            # nothing executed.
+            assert_ad_hoc_authority(
+                params["source"], kind="source", authority=self._ad_hoc_authority
+            )
+            assert_ad_hoc_authority(
+                params["expression"], kind="expression", authority=self._ad_hoc_authority
+            )
             # Grain guard BEFORE envelope expansion/compile (spec rev 5 §13): a
             # source that fans out the fact grain is rejected outright — the
             # compiler would aggregate at joined-row grain
