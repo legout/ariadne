@@ -10,6 +10,31 @@
 | **Later Context/evidence extension** | Owner-approved [specification 0010, revision 1](2026-10-02-0010-context-layer-schema-and-identifiers.md), 2026-10-02: extends the page profile, generated schema facts and bounded measured inputs with typed equality/prefix/lookup inspection and automatic hypothesis capture in Git proposals. Applicable-page checks and context-only admission replace forced category/model presence only for this new scope; operator source/sample permissions, repair limits, core-owned measurement evidence and human-only exact-revision admission remain binding. |
 | **Later scoped amendment** | Owner-approved [modular-core/Git authoring design, revision 1](2026-10-02-0009-modular-core-git-authoring.md), 2026-10-02: for the new Git authoring route, supersedes complete-bundle resubmission, the one-active-proposal-per-project slot, mutable staging admission and blanket interface compatibility. Independent model/page edits, concurrent proposal worktrees and exact-revision local admission replace them. Source/document approval, measured evidence, bounded repair, validation, human review and attestation rules remain binding. This amendment does not authorize HTTP deployment or implementation. |
 
+## Scoped HTTP extension — owner-approved 2026-10-10
+
+The owner requested Compose-compatible HTTP binding and health/readiness only,
+then selected bearer protection for both probes and active-toolset readiness.
+This bounded extension authorizes implementation/tests/documentation, not
+publication or deployment. Loopback remains default; explicit
+`--http-container --http-host 0.0.0.0` permits a private container-network bind
+without publishing the Ariadne host port. Private external HTTPS and all source,
+project and human-admission boundaries remain binding. Host/Origin identities
+are explicitly configurable while SDK DNS-rebinding protection stays enabled.
+
+Acceptance: `/healthz` returns a minimal 200 liveness status; `/readyz` returns
+200 for Authoring without requiring a catalog, while Analyst/Combined require
+usable metric discovery through the shared QueryRuntime (including admission
+checks). Failures return neutral 503 without exception/project details. Both
+GET/HEAD routes require the existing bearer token, including on container binds.
+No metric calculation is used as a probe; lazy runtime setup may perform the
+existing bounded initialization of approved sources. Readiness does not attest
+all graph operations, current source connectivity or numerical correctness.
+Stdio and the MCP tool inventory remain unchanged. Default non-loopback refusal,
+container auth, allowed/rejected Host/Origin, not-ready query projects and a
+ready catalog receive focused checks (`new-test`); existing MCP journeys cover
+parity (`existing-check`). No new domain term or architectural decision is
+introduced; planning-contract v1, installed provenance unknown.
+
 ## Purpose and scope
 
 A user supplies dataset locations and domain evidence; an agent harness uses **its own model** to propose the source registry, Seed Notes, Semantic Layer (OSI), and Context Layer (OKF). Ariadne measures the data, converts documents, checks proposals, and holds them for human review. The harness may ask the owner questions where the evidence does not establish a business rule. Neither source access nor Promotion may be inferred from an agent assertion.

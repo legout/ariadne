@@ -212,17 +212,76 @@ token; the server runs for one project root. Source approval, admission,
 reconciliation, the legacy import/enrichment and Promotion are never exposed
 as tools.
 
-**Opt-in local-only HTTP (issue #18).** The same toolsets can be served over
-the Streamable HTTP transport instead — strictly opt-in and local-only
-(owner decision 2026-10-03): `ariadne-serve --project DIR --http` binds a
-loopback interface (`127.0.0.1`) at `/mcp` and requires a bearer token from
-the server environment (`ARIADNE_HTTP_TOKEN`) on every request; missing or
-wrong tokens are refused before any project data, MCP dispatch or staging
-write. The token is server-held only — never in `ariadne.yaml`, a tool
-response or a log — and stdio never needs one. This mode deliberately does
-not deploy or expose anything: a private-network HTTPS deployment requires
-the owner's separate approval, and the local-only bind refuses every
-non-loopback interface.
+**Opt-in HTTP (issue #18).** `ariadne-serve --project DIR --http` serves the
+same toolsets at `/mcp`, on loopback (`127.0.0.1`) by default. Every request,
+including health/readiness checks, requires `Authorization: Bearer <token>`
+from the server environment `ARIADNE_HTTP_TOKEN`. Missing/wrong tokens fail
+before dispatch; the token never belongs in `ariadne.yaml`, responses or logs.
+Stdio remains token-free and opens no HTTP listener.
+
+**Compose/container binding (owner-approved 2026-10-10).** Add
+`--http-container --http-host 0.0.0.0` to allow other containers to connect.
+Do **not** publish Ariadne's port with `ports:`; put the MCP client or HTTPS
+proxy on the same Compose network. External clients still require a private
+HTTPS route. This option is not deployment/exposure approval.
+
+The SDK's DNS-rebinding protection stays enabled. Explicitly add the service
+and proxy Host values using repeatable `--http-allowed-host` flags. For
+clients sending an Origin header, add its exact origin with
+`--http-allowed-origin`; requests without Origin need no origin entry.
+Do not use blanket wildcards. Example service fragment (use your own image
+with `ariadneai[mcp]` installed and your initialized project directory):
+
+```yaml
+services:
+  ariadne:
+    image: ${ARIADNE_IMAGE:?Set an Ariadne image}
+    command:
+      - ariadne-serve
+      - --project
+      - /project
+      - --http
+      - --http-container
+      - --http-host
+      - 0.0.0.0
+      - --http-allowed-host
+      - ariadne:8000
+      - --http-allowed-host
+      - mcp.example.org
+      - --http-allowed-origin
+      - https://mcp.example.org
+    environment:
+      ARIADNE_HTTP_TOKEN: ${ARIADNE_HTTP_TOKEN:?Set the server token}
+    volumes:
+      - ${ARIADNE_PROJECT_DIR:?Set the project directory}:/project
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import os, urllib.request;
+          r = urllib.request.Request('http://127.0.0.1:8000/readyz',
+          headers={'Authorization': 'Bearer ' + os.environ['ARIADNE_HTTP_TOKEN']});
+          urllib.request.urlopen(r, timeout=25).close()
+      interval: 30s
+      timeout: 30s
+      start_period: 30s
+      retries: 3
+```
+
+A client on that network uses `http://ariadne:8000/mcp` with the bearer token.
+A proxy forwards to the same address, preserves Authorization and MCP headers,
+and must support streaming. Configure the proxy's private HTTPS route separately.
+
+- `GET /healthz`: `200 {"status":"ok"}` when the HTTP process responds.
+- `GET /readyz`: `200 {"status":"ready"}` for Authoring without requiring a
+  catalog; Analyst/Combined require a usable metric catalog through the shared
+  runtime's discovery/admission checks. Failures return only
+  `503 {"status":"not_ready"}`, never exception details or project paths.
+- Both accept HEAD and require the same bearer token. Readiness does not
+  calculate metrics or test every source/graph operation. A lazy runtime may
+  perform its existing bounded source initialization on the first ready check.
 
 **Optional: MCP.** The base package is local-first and needs no server; MCP registers the
 same operations as tools when you want them. Install the extra into the same Python

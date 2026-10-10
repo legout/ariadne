@@ -10,6 +10,17 @@
 | **Decisions** | [ADR-0013](../adr/0013-harness-led-authoring-boundary.md); preserve ADR-0003's Promotion gate, ADR-0007's bundle structure with the scoped pending-attestation exception, ADR-0009's ordinary ingestion path, ADR-0012's local-first default. |
 | **Contract / provenance** | planning-contract v1; installed skill provenance unknown. |
 
+## Scoped execution update — 2026-10-10
+
+The owner approved the bounded Compose-bind and authenticated probes in
+[specification 0005's HTTP extension](../specs/2026-09-24-0005-harness-led-authoring.md#scoped-http-extension--owner-approved-2026-10-10).
+Owned surfaces: `src/ariadne/serve.py`, focused HTTP checks in
+`tests/test_authoring_mcp.py`, README and packaged MCP guidance. Direct parent
+implementation; new-test for the bind/probe/Host-Origin behavior, existing-check
+for MCP parity. No additional MCP feature, deployment, release or publication.
+This extends the historical loopback-only implementation; #18's actual remote
+HTTPS/source acceptance remains open and separately gated.
+
 ## Capture and prerequisites
 
 - Vocabulary: `CONTEXT.md` distinguishes human-owned Seed Notes, pending Computation, and independently Attested Computation.

@@ -908,7 +908,7 @@ def test_wrong_governed_route_fails_named(demo_db):
 
 def test_missing_caveat_fails_named(demo_db):
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
-    mutilated = re.sub(r"(?m)^- Pre-2024 EMEA rows.*\n", "", answer)
+    mutilated = re.sub(r"Pre-2024 EMEA[^\n]*", "", answer)
     assert mutilated != answer, "mutation must change the recorded answer"
     trace = _mutated(**{"scenarios.governed.final_answer": mutilated})
     with pytest.raises(AssertionError, match="caveat"):
@@ -934,7 +934,7 @@ def test_unqualified_emea_caveat_fails_named(demo_db):
     """Deleting only the time qualifier (pre-2024) while leaving EMEA and the
     conversion wording must still fail: the caveat is the TIME-BOUND conversion."""
     answer = load_trace()["scenarios"]["governed"]["final_answer"]
-    mutilated = answer.replace("Pre-2024 EMEA rows", "EMEA rows")
+    mutilated = answer.replace("Pre-2024 EMEA", "EMEA")
     assert mutilated != answer and "convert" in mutilated.lower() and "emea" in mutilated.lower()
     trace = _mutated(**{"scenarios.governed.final_answer": mutilated})
     with pytest.raises(AssertionError, match="caveat"):
@@ -1016,7 +1016,7 @@ def test_missing_lifecycle_caveat_fails_named(demo_db):
     """An answer relying on a consumed expired Policy but omitting the brief
     lifecycle caveat naming it must be rejected for the named reason."""
     answer = load_trace()["scenarios"]["stale_policy"]["final_answer"]
-    mutilated = re.sub(r"(?m)^- The billable-status list.*\n", "", answer)
+    mutilated = re.sub(r"These counts use[^\n]*", "", answer)
     assert mutilated != answer and not _LIFECYCLE_WORDS.search(mutilated.lower()), (
         "mutation must remove the lifecycle caveat (words and reliance naming)"
     )
@@ -1122,7 +1122,7 @@ def test_missing_data_caveat_fails_named(demo_db):
     EXPIRED, but omitting the brief caveat naming that report and its as-of
     scope, must be rejected for the named reason (spec 0013 §5, AC10)."""
     answer = load_trace()["scenarios"]["quality_report"]["final_answer"]
-    mutilated = re.sub(r"(?m)^- This answer relies on the orders table.*\n", "", answer)
+    mutilated = re.sub(r"(?m)^Source-quality caveat:.*\n", "", answer)
     assert mutilated != answer and "orders-completeness-2026-09" not in mutilated, (
         "mutation must remove the supplied-evidence caveat (report id and scope)"
     )

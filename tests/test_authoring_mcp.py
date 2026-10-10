@@ -537,11 +537,12 @@ def _launch_http(project: Path, *, token: str | None, extra_args: list[str] | No
 
 
 @contextlib.asynccontextmanager
-async def _http_exit(url: str, token: str | None):
+async def _http_exit(url: str, token: str | None, *, extra_headers: dict | None = None):
     """An SDK streamable-http client with one fixed bearer token (or none)."""
     import httpx
 
     headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
+    headers.update(extra_headers or {})
     async with httpx.AsyncClient(
         headers=headers, timeout=httpx.Timeout(60.0, read=120.0)
     ) as client:
@@ -613,6 +614,91 @@ def test_http_opt_in_requires_token_and_loopback(tmp_path):
     out, err = proc.communicate(timeout=60)
     assert proc.returncode == 1
     assert "local-only" in err or "loopback" in err
+
+
+@pytest.mark.parametrize(
+    "toolset,ready_status", [("authoring", 200), ("analyst", 503), ("combined", 503)]
+)
+def test_container_http_authenticated_health_and_readiness(tmp_path, toolset, ready_status):
+    """Compose bind is explicit; probes keep auth and distinguish empty query projects."""
+    import httpx
+
+    project = tmp_path / "private-empty-project"
+    project.mkdir()
+    # Managed projects start discovery/authoring before the first admission.
+    (project / ".ariadne").mkdir()
+
+    async def discover(url):
+        async with _http_exit(
+            url,
+            HTTP_TOKEN,
+            extra_headers={"Host": "ariadne:8000", "Origin": "https://mcp.example.org"},
+        ) as session:
+            await session.initialize()
+            return {tool.name for tool in (await session.list_tools()).tools}
+
+    with _launch_http(
+        project,
+        token=HTTP_TOKEN,
+        extra_args=[
+            "--http-container",
+            "--http-host",
+            "0.0.0.0",
+            "--toolset",
+            toolset,
+            "--http-allowed-host",
+            "ariadne:8000",
+            "--http-allowed-origin",
+            "https://mcp.example.org",
+        ],
+    ) as url:
+        tools = asyncio.run(discover(url))
+        assert ("get_metric" in tools) == (toolset != "authoring")
+        assert ("authoring_start_proposal" in tools) == (toolset != "analyst")
+        root = url.removesuffix("/mcp")
+        with httpx.Client() as client:
+            for headers, rejection in (
+                ({"Host": "unapproved.example.org"}, 421),
+                ({"Origin": "https://unapproved.example.org"}, 403),
+            ):
+                response = client.post(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {HTTP_TOKEN}",
+                        "Accept": "application/json, text/event-stream",
+                        **headers,
+                    },
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {},
+                            "clientInfo": {"name": "rejected-origin-probe", "version": "0"},
+                        },
+                    },
+                )
+                assert response.status_code == rejection
+            for endpoint, status, body in [
+                ("/healthz", 200, {"status": "ok"}),
+                (
+                    "/readyz",
+                    ready_status,
+                    {"status": "ready" if ready_status == 200 else "not_ready"},
+                ),
+            ]:
+                for headers in ({}, {"Authorization": "Bearer wrong"}):
+                    response = client.get(root + endpoint, headers=headers)
+                    assert response.status_code == 401
+                    assert response.json() == {"error": "unauthorized"}
+                response = client.get(
+                    root + endpoint, headers={"Authorization": f"Bearer {HTTP_TOKEN}"}
+                )
+                assert response.status_code == status
+                assert response.json() == body
+                assert str(project) not in response.text
+    assert not (project / "staging").exists()
 
 
 def test_http_bearer_gate_refuses_every_request_before_dispatch(tmp_path):
@@ -829,6 +915,15 @@ def test_http_legacy_promoted_project_keeps_serving_queries(tmp_path):
     )
 
     async def run(url: str) -> dict:
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            ready = await client.get(
+                url.removesuffix("/mcp") + "/readyz",
+                headers={"Authorization": f"Bearer {HTTP_TOKEN}"},
+            )
+            assert ready.status_code == 200
+            assert ready.json() == {"status": "ready"}
         async with _http_exit(url, HTTP_TOKEN) as session:
             await session.initialize()
             listed = _payload(await session.call_tool("list_metrics", {}))

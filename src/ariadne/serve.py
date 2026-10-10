@@ -77,15 +77,12 @@ authoring (AC5). A legacy (non-Git) project keeps the empty-project behavior:
 the authoring tools work before the first Promotion, and query tool calls
 surface the runtime's existing missing-served-model error.
 
-The opt-in LOCAL-ONLY Streamable HTTP transport (issue #18, owner decision
-2026-10-03): ``--http`` serves the SAME build_app registration over the SDK's
-``streamable_http_app()`` on a LOOPBACK interface only, with a bearer token
-read from the ``ARIADNE_HTTP_TOKEN`` server environment variable enforced on
-every HTTP request before any MCP dispatch, read or staging write — never in
-``ariadne.yaml``, a tool response or a log. Without ``--http`` nothing ever
-listens. Deployment/exposure (private HTTPS termination) stays behind the
-owner's separate approval (ADR-0013: a bearer token over OAuth; no identity
-system), which is why the HTTP bind is restricted to loopback here.
+The opt-in Streamable HTTP transport keeps loopback as the default.
+``--http-container --http-host 0.0.0.0`` explicitly permits a container-network
+bind (owner, 2026-10-10). Every HTTP request, including health/readiness probes,
+requires the server-held ``ARIADNE_HTTP_TOKEN`` bearer token. Without ``--http``
+nothing listens. Deployment and private HTTPS termination retain separate
+approval; a container bind must not be published directly to the host.
 
 Routing contract (spec rev 4 §8.12): fresh consuming agents discover the ad-hoc
 path through the facade itself — the tool descriptions carry the same routing
@@ -147,9 +144,7 @@ TOOLSETS = ("analyst", "authoring", "combined")
 # response or a log. Stdio never reads it.
 HTTP_TOKEN_ENV = "ARIADNE_HTTP_TOKEN"
 
-# Local-only mode (owner decision 2026-10-03): the HTTP listener binds a
-# loopback interface ONLY — a private-network HTTPS deployment needs the
-# owner's separate approval and is deliberately not reachable from here.
+# Loopback remains the default; only explicit container mode permits 0.0.0.0.
 HTTP_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # Issue #57/S2 (spec 0014 §3/§7 V4-12): the explicit nested input schema of the
@@ -1010,10 +1005,30 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             """
             return authoring_api.resolve_term(proposal, request, part=part)
 
+    from starlette.responses import JSONResponse
+
+    @app.custom_route("/healthz", methods=["GET", "HEAD"])
+    async def healthz(request):
+        return JSONResponse({"status": "ok"}, headers={"Cache-Control": "no-store"})
+
+    @app.custom_route("/readyz", methods=["GET", "HEAD"])
+    async def readyz(request):
+        if toolset != "authoring":
+            try:
+                # Catalog discovery reuses admission checks, not a metric/data query.
+                await _runtime().list_metrics()
+            except Exception:
+                return JSONResponse(
+                    {"status": "not_ready"},
+                    status_code=503,
+                    headers={"Cache-Control": "no-store"},
+                )
+        return JSONResponse({"status": "ready"}, headers={"Cache-Control": "no-store"})
+
     return app
 
 
-# ------------- the opt-in LOCAL-ONLY HTTP transport (issue #18) -----------
+# ----------------------- opt-in HTTP transport (issue #18) ----------------
 
 
 class BearerTokenGate:
@@ -1082,16 +1097,21 @@ def build_http_app(app, token: str):
     return BearerTokenGate(app.streamable_http_app(), token)
 
 
-def _serve_http(app, *, host: str, port: int) -> int:
-    """Serve the opt-in LOCAL-ONLY Streamable HTTP transport (issue #18): a
-    loopback bind, the server-environment bearer token, uvicorn (the MCP
-    SDK's own dependency — never a new one). Both gates run before any
-    listener is opened."""
-    if host not in HTTP_LOOPBACK_HOSTS:
+def _serve_http(
+    app,
+    *,
+    host: str,
+    port: int,
+    container: bool = False,
+    allowed_hosts: list[str] | None = None,
+    allowed_origins: list[str] | None = None,
+) -> int:
+    """Serve HTTP with explicit bind permission and a server-held bearer token."""
+    if host not in HTTP_LOOPBACK_HOSTS and not (container and host == "0.0.0.0"):
         print(
-            f"error: --http-host {host}: local-only mode binds a loopback "
-            "interface only (localhost/127.0.0.1/::1); a private-network HTTPS "
-            "deployment needs the owner's separate approval (issue #18)",
+            f"error: --http-host {host}: default mode binds a loopback interface "
+            "only; use --http-container --http-host 0.0.0.0 inside a private "
+            "container network, with no published Ariadne host port",
             file=sys.stderr,
         )
         return 1
@@ -1108,6 +1128,10 @@ def _serve_http(app, *, host: str, port: int) -> int:
 
     import uvicorn  # pyright: ignore[reportMissingImports] — [mcp] extra ships it
 
+    # Preserve SDK DNS-rebinding protection; explicitly allow proxy/service identities.
+    security = app.settings.transport_security
+    security.allowed_hosts.extend(allowed_hosts or [])
+    security.allowed_origins.extend(allowed_origins or [])
     server = uvicorn.Server(
         uvicorn.Config(
             build_http_app(app, token),
@@ -1202,7 +1226,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--http",
         action="store_true",
-        help="OPT-IN local-only Streamable HTTP transport (issue #18): serve the "
+        help="OPT-IN Streamable HTTP transport (issue #18): serve the "
         "same toolsets on a loopback interface at /mcp with a bearer token from "
         f"the {HTTP_TOKEN_ENV} server environment enforced on every request; "
         "without this flag nothing listens (stdio remains the transport)",
@@ -1211,11 +1235,32 @@ def main(argv: list[str] | None = None) -> int:
         "--http-host",
         default="127.0.0.1",
         help="loopback interface for --http (local-only mode: localhost, "
-        "127.0.0.1 or ::1 only — a private-network bind needs the owner's "
-        "separate approval)",
+        "127.0.0.1 or ::1; 0.0.0.0 requires --http-container)",
     )
-    parser.add_argument("--http-port", type=int, default=8000, help="loopback TCP port for --http")
+    parser.add_argument("--http-port", type=int, default=8000, help="TCP port for --http")
+    parser.add_argument(
+        "--http-container",
+        action="store_true",
+        help="allow 0.0.0.0 inside a private container network; do not publish "
+        "the Ariadne port to the host; external clients require private HTTPS",
+    )
+    parser.add_argument(
+        "--http-allowed-host",
+        action="append",
+        default=[],
+        help="additional accepted HTTP Host (repeatable, e.g. ariadne:8000 or mcp.example.org)",
+    )
+    parser.add_argument(
+        "--http-allowed-origin",
+        action="append",
+        default=[],
+        help="additional accepted Origin (repeatable, e.g. https://mcp.example.org)",
+    )
     args = parser.parse_args(argv)
+    if not args.http and (
+        args.http_container or args.http_allowed_host or args.http_allowed_origin
+    ):
+        parser.error("container/Host/Origin HTTP options require --http")
 
     # One project root anchors everything (issue #16: the server is launched
     # for one locally configured project): chdir so every existing
@@ -1359,7 +1404,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         raise
     if args.http:  # the OPT-IN local-only route (issue #18); stdio needs no token
-        return _serve_http(app, host=args.http_host, port=args.http_port)
+        return _serve_http(
+            app,
+            host=args.http_host,
+            port=args.http_port,
+            container=args.http_container,
+            allowed_hosts=args.http_allowed_host,
+            allowed_origins=args.http_allowed_origin,
+        )
     app.run()  # stdio transport
     return 0
 

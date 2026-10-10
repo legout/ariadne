@@ -459,10 +459,9 @@ project root (`--project`, fixed at launch). The authoring tools work in an
 empty project before the first admission; query tools then surface the
 managed route's missing-admission error until a human admits.
 
-**Opt-in local-only HTTP (issue #18).** The same server can instead expose
-the toolsets over the Streamable HTTP transport — strictly opt-in and
-local-only (owner decision 2026-10-03): `--http` (`--http-port`, default
-8000) binds a loopback interface (`127.0.0.1`) at `/mcp`, and every request
+**Opt-in HTTP (issue #18).** The same server can instead expose the toolsets
+over Streamable HTTP: `--http` (`--http-port`, default 8000) binds loopback
+(`127.0.0.1`) at `/mcp` by default, and every request
 — tool listing, reads, uploads, dispatch — must carry the bearer token from
 the server environment (`ARIADNE_HTTP_TOKEN`, never in `ariadne.yaml`, a
 tool response or a log):
@@ -476,11 +475,21 @@ A harness client connects with the SDK's streamable-http client against
 absent or wrong token is refused before any project data, MCP dispatch or
 staging write, and the token never authorizes source approval, admission or
 Promotion (still human-only server commands). Without `--http` nothing
-listens, and local stdio needs no token. This mode is deliberately
-local-only: exposing the transport on a private network behind HTTPS
-termination requires the owner's separate approval — the local-only bind
-refuses every non-loopback interface, and no deployment instructions are
-provided here.
+listens, and local stdio needs no token. The operator may explicitly use
+`--http-container --http-host 0.0.0.0` inside a private Compose network
+(owner-approved extension 2026-10-10); never publish Ariadne's container port.
+Add exact service/proxy Host values with repeatable `--http-allowed-host`
+flags and, for clients sending Origin, its origin with `--http-allowed-origin`.
+SDK DNS-rebinding protection remains enabled. Private external HTTPS deployment
+still requires separate approval.
+
+Authenticated `GET /healthz` reports HTTP liveness. `GET /readyz` reports
+Authoring readiness without a catalog; Analyst/Combined require usable metric
+catalog discovery/admission checks. Not-ready returns a neutral 503 without
+project details. These are HTTP endpoints, not new MCP tools. Readiness makes
+no metric query; lazy runtime initialization may open approved sources under
+existing bounds. Never interpret a probe as proof of source health or numerical
+correctness.
 
 Reference: [references/grain-rubric.md](references/grain-rubric.md) — the five
 ADR-0006 resolution patterns for multi-cardinality joins.
