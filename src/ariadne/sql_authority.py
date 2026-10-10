@@ -283,28 +283,33 @@ _SYNTAX_NODES = (exp.And, exp.Or, exp.Case, exp.Cast, exp.TryCast, exp.Extract, 
 # Statement/data-modification constructs refused ANYWHERE in a validated tree:
 # ``WITH t AS (INSERT ... RETURNING ...) SELECT`` is one statement that still
 # writes, and ``LOAD``/``INSTALL`` fall back to a generic Command node.
-_SIDE_EFFECT_NODES = (
-    exp.Delete,
-    exp.Copy,
-    exp.Insert,
-    exp.Update,
-    exp.Merge,
-    exp.DDL,
-    exp.Command,
-    exp.Transaction,
-    exp.Commit,
-    exp.Rollback,
-    exp.Set,
-    exp.Use,
-    exp.Pragma,
-    exp.Grant,
-    exp.Analyze,
-    exp.Attach,
-    exp.Detach,
-    exp.LoadData,
-    exp.Export,
-    exp.Cache,
-    exp.Refresh,
+# SQLGlot 25 lacks newer dedicated nodes; its generic Command still refuses them.
+_SIDE_EFFECT_NODES = tuple(
+    node_type
+    for name in (
+        "Delete",
+        "Copy",
+        "Insert",
+        "Update",
+        "Merge",
+        "DDL",
+        "Command",
+        "Transaction",
+        "Commit",
+        "Rollback",
+        "Set",
+        "Use",
+        "Pragma",
+        "Grant",
+        "Analyze",
+        "Attach",
+        "Detach",
+        "LoadData",
+        "Export",
+        "Cache",
+        "Refresh",
+    )
+    if isinstance(node_type := getattr(exp, name, None), type)
 )
 
 # The statement shapes an ad-hoc SOURCE may take (a bare table reference is
@@ -537,43 +542,28 @@ def _outermost_queries(tree: exp.Expr) -> list[exp.Expr]:
     return queries
 
 
-def _assert_scope_relations(
-    scope: Scope, *, kind: str, authority: AdHocAuthority, _seen: set[int] | None = None
-) -> None:
-    """Check one scope's own physical relations, then recurse into every
-    sub-scope (CTE, derived-table, table-function, set-operation and
-    predicate/scalar-subquery scopes) exactly once — sqlglot lists the SAME
-    derived scope under both ``derived_table_scopes`` and ``table_scopes``, so
-    the walk dedupes by identity. Physical relations come from
-    ``selected_sources`` with scope-aware discrimination (the same seam
-    ``QueryRuntime``'s dependency resolver uses): an entry whose origin is a
-    Scope is a CTE/derived-table ALIAS — never a physical relation, its own
-    defining scope is visited below — while every other entry is the physical
-    FROM-clause ``Table`` node DuckDB will resolve."""
-    seen = set() if _seen is None else _seen
-    if id(scope) in seen:
-        return
-    seen.add(id(scope))
-    for udtf in scope.udtfs:
-        raise ValueError(
-            f"the ad-hoc {kind} reads the table function "
-            f"{_bound_name(udtf.alias_or_name or '?')}(...) — table functions never enter "
-            f"ad-hoc execution; {AD_HOC_AUTHORITY_GUIDANCE}"
-        )
-    for _alias, entry in (scope.selected_sources or {}).items():
-        table, origin = entry
-        if isinstance(origin, Scope):  # a CTE/derived alias: resolve through
-            continue  # its own subquery scope, visited below
-        _authorize_relation(table, kind=kind, authority=authority)
-    for child in (
-        *scope.subquery_scopes,
-        *scope.derived_table_scopes,
-        *scope.cte_scopes,
-        *scope.table_scopes,
-        *scope.set_operation_scopes,
-        *scope.udtf_scopes,
-    ):
-        _assert_scope_relations(child, kind=kind, authority=authority, _seen=seen)
+def _assert_scope_relations(scope: Scope, *, kind: str, authority: AdHocAuthority) -> None:
+    """Check every nested scope through SQLGlot's version-stable traversal.
+
+    CTE/derived aliases resolve to their defining Scope; only physical Table
+    entries require catalog authorization. The traversal includes their
+    definitions, set operations and predicate/scalar subqueries."""
+    seen: set[int] = set()
+    for current in scope.traverse():
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        for udtf in current.udtfs:
+            raise ValueError(
+                f"the ad-hoc {kind} reads the table function "
+                f"{_bound_name(udtf.alias_or_name or '?')}(...) — table functions never enter "
+                f"ad-hoc execution; {AD_HOC_AUTHORITY_GUIDANCE}"
+            )
+        for _alias, entry in (current.selected_sources or {}).items():
+            table, origin = entry
+            if isinstance(origin, Scope):
+                continue
+            _authorize_relation(table, kind=kind, authority=authority)
 
 
 def _authorize_relation(table: exp.Expr, *, kind: str, authority: AdHocAuthority) -> None:
@@ -610,6 +600,9 @@ def _authorize_relation(table: exp.Expr, *, kind: str, authority: AdHocAuthority
     if len(parts) == 3:
         identity = (parts[0], parts[1], parts[2])
     elif len(parts) == 2:
+        # DuckDB accepts both schema.table and attached_catalog.table shorthand.
+        if authority.authorizes((parts[0], authority.default_schema, parts[1])):
+            return
         identity = (authority.default_catalog, parts[0], parts[1])
     else:
         identity = (authority.default_catalog, authority.default_schema, parts[0])

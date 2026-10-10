@@ -21,6 +21,7 @@ Expectations are derived independently of the implementation (issue #59):
 
 import asyncio
 import os
+import sqlite3
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -283,3 +284,34 @@ def test_sanctioned_definitions_stay_usable(name, source, expression, runtime):
     assert Path(result["staged_as"]).is_file() and Path(result["staged_context_as"]).is_file()
     Path(result["staged_as"]).unlink()
     Path(result["staged_context_as"]).unlink()
+
+
+def test_attached_catalog_shorthand_stays_usable(tmp_path):
+    """AC3: DuckDB's catalog.table shorthand retains the declared 2 + 3 = 5."""
+    database = tmp_path / "demo.db"
+    with sqlite3.connect(database) as con:
+        con.execute("CREATE TABLE vals (v INTEGER)")
+        con.execute("INSERT INTO vals VALUES (2), (3)")
+    models = tmp_path / "semantic_layer" / "models"
+    models.mkdir(parents=True)
+    (models / "probe.yml").write_text(_MODELS.replace("vals.vals", "demo.vals"), encoding="utf-8")
+    context = tmp_path / "context_layer"
+    context.mkdir()
+    runtime = QueryRuntime(models.parent, context, database, staging_dir=tmp_path / "staging")
+    try:
+        result = asyncio.run(
+            runtime.define_metric(
+                {
+                    "name": "attached_sum",
+                    "description": "catalog shorthand positive control",
+                    "source": "demo.vals",
+                    "expression": "SUM(v)",
+                    "dimensions": [],
+                }
+            )
+        )
+        assert result["governed"] is False
+        assert result["rows"] == [{"attached_sum": 5}]
+        assert Path(result["staged_as"]).is_file()
+    finally:
+        runtime.con.close()
