@@ -65,10 +65,7 @@ def project(tmp_path_factory):
     (root / "context_layer").mkdir()
     registry = root / "ariadne.yaml"
     registry.write_text(
-        "sources:\n"
-        f"  - name: vals\n"
-        "    type: csv\n"
-        f"    path: {root / 'data' / 'vals.csv'}\n",
+        f"sources:\n  - name: vals\n    type: csv\n    path: {root / 'data' / 'vals.csv'}\n",
         encoding="utf-8",
     )
     outside = root.parent / f"{root.name}-outside-project"

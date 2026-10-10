@@ -284,7 +284,11 @@ _SYNTAX_NODES = (exp.And, exp.Or, exp.Case, exp.Cast, exp.TryCast, exp.Extract, 
 # ``WITH t AS (INSERT ... RETURNING ...) SELECT`` is one statement that still
 # writes, and ``LOAD``/``INSTALL`` fall back to a generic Command node.
 _SIDE_EFFECT_NODES = (
-    exp.DML,
+    exp.Delete,
+    exp.Copy,
+    exp.Insert,
+    exp.Update,
+    exp.Merge,
     exp.DDL,
     exp.Command,
     exp.Transaction,
@@ -393,7 +397,7 @@ def assert_ad_hoc_authority(fragment: str, *, kind: str, authority: AdHocAuthori
         _assert_relations(tree, kind=kind, authority=authority)
 
 
-def _parse_fragment(fragment: str, *, kind: str) -> list[exp.Expression]:
+def _parse_fragment(fragment: str, *, kind: str) -> list[exp.Expr]:
     """Both dialect parses of one fragment: the generic dialect the compiler
     parses it with (that tree is what reaches execution as SQL) and the DuckDB
     dialect that interprets it. The source wrap mirrors
@@ -403,7 +407,7 @@ def _parse_fragment(fragment: str, *, kind: str) -> list[exp.Expression]:
     text = fragment.strip()
     if kind == "source" and not _SOURCE_PREFIX_RE.match(text):
         text = f"(SELECT * FROM {text})"
-    trees: list[exp.Expression] = []
+    trees: list[exp.Expr] = []
     for dialect in (None, "duckdb"):
         try:
             statements = sqlglot.parse(text, dialect=dialect)
@@ -433,7 +437,7 @@ def _first_line(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 
 
-def _assert_statement_shape(tree: exp.Expression, *, kind: str) -> None:
+def _assert_statement_shape(tree: exp.Expr, *, kind: str) -> None:
     """A source is one SELECT/WITH query; an expression is one expression — a
     statement-shaped ``expression`` (a bare SELECT) is not an expression."""
     if kind == "source":
@@ -451,11 +455,11 @@ def _assert_statement_shape(tree: exp.Expression, *, kind: str) -> None:
         )
 
 
-def _assert_no_side_effects(tree: exp.Expression, *, kind: str) -> None:
+def _assert_no_side_effects(tree: exp.Expr, *, kind: str) -> None:
     """No DML/DDL/command/transaction node anywhere in the tree — nested inside
     a CTE, a subquery or a function argument alike (issue #59 AC1: reject
     nested side-effect constructs before DuckDB)."""
-    for node in tree.find_all(exp.Expression):
+    for node in tree.walk():
         if isinstance(node, _SIDE_EFFECT_NODES):
             raise ValueError(
                 f"the ad-hoc {kind} carries a {type(node).__name__} construct; ad-hoc "
@@ -463,7 +467,7 @@ def _assert_no_side_effects(tree: exp.Expression, *, kind: str) -> None:
             )
 
 
-def _assert_functions(tree: exp.Expression, *, kind: str) -> None:
+def _assert_functions(tree: exp.Expr, *, kind: str) -> None:
     """Every function call must be a reviewed pure built-in analytics function,
     positively listed above — unknown names, schema-qualified calls and typed
     sqlglot nodes alike are refused (never a blacklist, never the DuckDB
@@ -487,7 +491,7 @@ def _assert_functions(tree: exp.Expression, *, kind: str) -> None:
             )
 
 
-def _reaches_dot(node: exp.Expression) -> bool:
+def _reaches_dot(node: exp.Expr) -> bool:
     """Whether a call is reached through a dotted chain (``duckdb.read_csv``):
     sqlglot keeps only the final name on the call node, so the qualification
     itself must be refused rather than trusted to be harmless."""
@@ -499,7 +503,7 @@ def _reaches_dot(node: exp.Expression) -> bool:
     return False
 
 
-def _assert_relations(tree: exp.Expression, *, kind: str, authority: AdHocAuthority) -> None:
+def _assert_relations(tree: exp.Expr, *, kind: str, authority: AdHocAuthority) -> None:
     """Every physical relation of every query scope in the tree must be an
     enumerated catalog relation. Scope-aware resolution (SQLGlot's own scope
     machinery, the same selected_sources seam
@@ -517,13 +521,13 @@ def _assert_relations(tree: exp.Expression, *, kind: str, authority: AdHocAuthor
         _assert_scope_relations(scope, kind=kind, authority=authority)
 
 
-def _outermost_queries(tree: exp.Expression) -> list[exp.Expression]:
+def _outermost_queries(tree: exp.Expr) -> list[exp.Expr]:
     """The query roots of a tree: the statement itself for a source, and every
     query NOT nested inside another one for an expression (its scalar
     subqueries). Nested queries are reached through their owning scope's CTE/
     derived/subquery scopes, where CTE names still resolve (a detached
     branch scope would misread a CTE reference as a physical table)."""
-    queries: list[exp.Expression] = []
+    queries: list[exp.Expr] = []
     for node in tree.find_all(*_QUERY_STATEMENTS):
         parent = node.parent
         while parent is not None and not isinstance(parent, _QUERY_STATEMENTS):
@@ -572,9 +576,14 @@ def _assert_scope_relations(
         _assert_scope_relations(child, kind=kind, authority=authority, _seen=seen)
 
 
-def _authorize_relation(table: exp.Table, *, kind: str, authority: AdHocAuthority) -> None:
+def _authorize_relation(table: exp.Expr, *, kind: str, authority: AdHocAuthority) -> None:
     """One physical FROM-clause reference must resolve to an enumerated catalog
     relation under DuckDB's own qualification rules."""
+    if not isinstance(table, exp.Table):
+        raise ValueError(
+            f"unsupported ad-hoc {kind} relation {type(table).__name__}; "
+            f"{AD_HOC_AUTHORITY_GUIDANCE}"
+        )
     if not isinstance(table.this, exp.Identifier):
         # a table FUNCTION in FROM (read_blob('...'), read_parquet('...'),
         # generate_series(...)): sqlglot keeps the call node in the table slot
