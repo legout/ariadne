@@ -2,9 +2,9 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Proposed, revision 2** — owner authorized the review-finding correction round on 2026-10-12; content approval remains pending |
+| **Status** | **Approved, revision 2** — Owner, pi session 2026-10-12: approved by the explicit implementation authorization for issues #62–#65 (together with ADR-0021 and the scoped spec-0001 usability amendment) |
 | **Origin** | Owner request 2026-10-12: usability gap table from the ktx comparison ("unified `ariadne search` across metrics, pages, terms, examples" instead of four commands) |
-| **Scope proposed** | Revision 2: grouped CLI/MCP/native discovery over a shared artifact-only seam, preserving native payload/ranking/boundedness and existing root/admission selectors; no eager execution-opening runtime. |
+| **Scope approved** | Revision 2: grouped CLI/MCP/native discovery over a shared artifact-only seam, preserving native payload/ranking/boundedness and existing root/admission selectors; no eager execution-opening runtime. |
 | **Existing contracts** | [ADR-0021](../adr/0021-usability-shell-composition.md) (shared composition, no autonomous authority), [spec 0001](2026-09-23-0001-local-artifact-runtime.md) (selectors and proposed scoped output amendment), [spec 0002](2026-09-23-0002-context-retrieval.md) (context search semantics), [spec 0007](2026-09-29-0007-answer-examples.md) (example retrieval), [spec 0010](2026-10-02-0010-context-layer-schema-and-identifiers.md) (term resolution/context-only admission), [spec 0015](2026-10-12-0015-context-page-browsing.md) (adapter conventions), [ADR-0020](../adr/0020-context-read-paths.md) |
 | **Contract** | planning-contract v1; installed skill provenance unknown |
 
@@ -71,5 +71,5 @@ The packaged skill points discovery before novel questions at `ariadne search` /
 
 - **Vocabulary:** no new canonical domain terms; the groups reuse Governed Metric, Context Layer page, Term Reference, Answer Example as defined in [CONTEXT.md](../../CONTEXT.md). "Discovery" names composition, not a new retrieval engine.
 - **Decisions:** the required shared artifact-only seam and no cross-kind ranking are recorded in [ADR-0021](../adr/0021-usability-shell-composition.md). The token filter only selects catalog entries; it is not a metric reranker. No retrieval evidence authorizes an embeddings/fusion escalation; the proposed human-output amendment is scoped in spec 0001.
-- **Behavior:** scope, non-goals and acceptance above; no approved source yet — owner review pending.
-- **Uncertainty:** dataset discovery remains out of v1; `list-datasets` stays separate. Artifact-only construction across transport startup is mandatory execution scope, not future optimization. Approval of revision 2 and the output amendment remains pending.
+- **Behavior:** scope, non-goals and acceptance above; approved as revision 2 (see Status).
+- **Uncertainty:** dataset discovery remains out of v1; `list-datasets` stays separate. Artifact-only construction across transport startup is mandatory execution scope, not future optimization. Approval of revision 2 and the output amendment is recorded in the Status row.

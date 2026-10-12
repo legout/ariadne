@@ -1,6 +1,6 @@
 # Usability shell: onboarding and discovery commands compose the gates, never bypass them
 
-Status: proposed, revision 2 (owner requested the review-finding correction round on 2026-10-12; acceptance of this decision and specifications 0016–0019 remains pending. Correction authority is not implementation, integration or release authority).
+Status: accepted, revision 2 (Owner accepted this decision on 2026-10-12 by explicitly authorizing implementation of issues #62–#65, together with specifications 0016–0019 and the scoped spec-0001 usability amendment. Implementation authority does not include target integration, push, release or publication).
 
 Ariadne's onboarding today is a sequence of separately documented commands (`ariadne-init`, source editing, `ariadne-author`, `ariadne-promote` or the Git proposal loop, `ariadne-skill install`), and discovery requires knowing four search commands. The 2026-10-12 ktx comparison showed this ceremony — not any missing governance — is the adoption gap. The risk in closing it is the obvious shortcut: let convenient commands quietly do what the gates exist to prevent.
 

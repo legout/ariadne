@@ -2,9 +2,9 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Proposed, revision 2** — owner authorized the review-finding correction round on 2026-10-12; content approval remains pending |
+| **Status** | **Approved, revision 2** — Owner, pi session 2026-10-12: approved by the explicit implementation authorization for issues #62–#65 (together with ADR-0021 and the scoped spec-0001 usability amendment) |
 | **Origin** | Owner request 2026-10-12: usability gap table from the ktx comparison ("`ariadne setup` wizard", "`setup --agents`"); `ariadne-skill install` already exists and is composed, not rebuilt |
-| **Scope proposed** | Revision 2: scaffold/resume, explicit Git prerequisite handoff, filename-only source suggestions and inert typed declarations, never source approval, real per-host skill wiring, authoring guidance and optional deliberately selected legacy authoring, plus the public PyPI-first quickstart. |
+| **Scope approved** | Revision 2: scaffold/resume, explicit Git prerequisite handoff, filename-only source suggestions and inert typed declarations, never source approval, real per-host skill wiring, authoring guidance and optional deliberately selected legacy authoring, plus the public PyPI-first quickstart. |
 | **Existing contracts** | [ADR-0021](../adr/0021-usability-shell-composition.md) (composition, TTY-gated human steps, no new authority), [spec 0009](2026-10-02-0009-modular-core-git-authoring.md) (Git proposal loop), [ADR-0016](../adr/0016-modular-core-git-authoring.md) (managed route), [ADR-0011](../adr/0011-context-carrying-answers-and-skill.md) (packaged skill), [spec 0016](2026-10-12-0016-project-status-command.md) (status), [CONTEXT.md](../../CONTEXT.md) (Source Approval is human) |
 | **Contract** | planning-contract v1; installed skill provenance unknown |
 
@@ -63,5 +63,5 @@ Update README's public quickstart from editable-install-first to `uv tool instal
 
 - **Vocabulary:** no new canonical domain terms; Setup is CLI chrome. The scan reuses Source Registry, Source Approval, Staging, Promotion, Git Review Admission as defined.
 - **Decisions:** shared composition, strict source-approval handoff, operator-only review delegation and no ambient costs are recorded in [ADR-0021](../adr/0021-usability-shell-composition.md). Managed-by-default applies only to new scaffolds; existing projects are not migrated. The new-command output exception is a proposed scoped amendment in spec 0001.
-- **Behavior:** scope, non-goals and acceptance above; no approved source yet — owner review pending.
-- **Uncertainty:** v1 automatically suggests only the listed file extensions; DuckLake and other registry types remain explicit operator declarations, not detector heuristics. Git prerequisites, source handoff, real host targets and public-doc coverage are specified above; approval of revision 2 remains pending.
+- **Behavior:** scope, non-goals and acceptance above; approved as revision 2 (see Status).
+- **Uncertainty:** v1 automatically suggests only the listed file extensions; DuckLake and other registry types remain explicit operator declarations, not detector heuristics. Git prerequisites, source handoff, real host targets and public-doc coverage are specified above; approval is recorded in the Status row.

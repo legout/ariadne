@@ -2,9 +2,9 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Proposed, revision 2** — owner authorized the review-finding correction round on 2026-10-12; content approval remains pending |
+| **Status** | **Approved, revision 2** — Owner, pi session 2026-10-12: approved by the explicit implementation authorization for issues #62–#65 (together with ADR-0021 and the scoped spec-0001 usability amendment) |
 | **Origin** | Owner request 2026-10-12: usability gap table from the ktx comparison ("interactive `ariadne review` walkthrough — wrap, not weaken, the human gate") |
-| **Scope proposed** | Revision 2: operator-only pre-admission review, inert mapping selection, final explicit confirmation and one unchanged admission call; legacy ordinary/bundle Promotion keeps its existing native final prompt. No source approvals, autonomous confirmations or rollback promises after mutation. |
+| **Scope approved** | Revision 2: operator-only pre-admission review, inert mapping selection, final explicit confirmation and one unchanged admission call; legacy ordinary/bundle Promotion keeps its existing native final prompt. No source approvals, autonomous confirmations or rollback promises after mutation. |
 | **Existing contracts** | [ADR-0021](../adr/0021-usability-shell-composition.md) (shared composition, terminal is not identity), [spec 0001](2026-09-23-0001-local-artifact-runtime.md) (selectors and proposed scoped output amendment), [ADR-0003](../adr/0003-staging-dir-review-gate.md) (staging gate), [spec 0009](2026-10-02-0009-modular-core-git-authoring.md) (review/admit sequence), [ADR-0016](../adr/0016-modular-core-git-authoring.md) (Git Review Admission), [spec 0010](2026-10-02-0010-context-layer-schema-and-identifiers.md) (mapping confirmation during the same admission) |
 | **Contract** | planning-contract v1; installed skill provenance unknown |
 
@@ -65,5 +65,5 @@ The packaged skill states: `ariadne review` is operator-only, like `ariadne-admi
 
 - **Vocabulary:** no new canonical domain terms; the walkthrough speaks in Promotion, Git Review Admission, Candidate Revision, review digest and mapping confirmation as defined in [CONTEXT.md](../../CONTEXT.md).
 - **Decisions:** human authority, shared seams and terminal-not-identity are recorded in [ADR-0021](../adr/0021-usability-shell-composition.md). No wrapper confirmation bypass is added; mapping choices precede the single native admission. Legacy keeps its native human prompt. The proposed output amendment is recorded in spec 0001.
-- **Behavior:** scope, non-goals and acceptance above; no approved source yet — owner review pending.
-- **Uncertainty:** plain-text rendering details are implementation latitude. The two legacy gates, pre-admission selectors, one-call mapping sequence and bounded interruption guarantee are explicit; no TTY-based human-authentication mechanism is claimed. Approval of revision 2 remains pending.
+- **Behavior:** scope, non-goals and acceptance above; approved as revision 2 (see Status).
+- **Uncertainty:** plain-text rendering details are implementation latitude. The two legacy gates, pre-admission selectors, one-call mapping sequence and bounded interruption guarantee are explicit; no TTY-based human-authentication mechanism is claimed. Approval is recorded in the Status row.

@@ -2,9 +2,9 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Proposed, revision 2** — owner authorized the review-finding correction round on 2026-10-12; content approval remains pending |
+| **Status** | **Approved, revision 2** — Owner, pi session 2026-10-12: approved by the explicit implementation authorization for issues #62–#65 (together with ADR-0021 and the scoped spec-0001 usability amendment) |
 | **Origin** | Owner request 2026-10-12: usability gap table from the ktx comparison ("`ariadne status` readiness"), packages `ariadne-data`/`ariadne-agent` confirmed on PyPI |
-| **Scope proposed** | Revision 2: one read-only `ariadne status` reporting project kind, declared sources, route-specific governance state, staging/proposal backlog, answer-example count, packaged-skill drift and ordered next steps. Explicit diagnostic resolution works before admission or a metric catalog, without altering query-command resolution. |
+| **Scope approved** | Revision 2: one read-only `ariadne status` reporting project kind, declared sources, route-specific governance state, staging/proposal backlog, answer-example count, packaged-skill drift and ordered next steps. Explicit diagnostic resolution works before admission or a metric catalog, without altering query-command resolution. |
 | **Existing contracts** | [ADR-0021](../adr/0021-usability-shell-composition.md) (shared seams, no autonomous authority), [spec 0001](2026-09-23-0001-local-artifact-runtime.md) (legacy selectors and proposed scoped human-output amendment), [spec 0009](2026-10-02-0009-modular-core-git-authoring.md) (admission state), [spec 0010](2026-10-02-0010-context-layer-schema-and-identifiers.md) (context-only admission), [ADR-0011](../adr/0011-context-carrying-answers-and-skill.md) (packaged skill). HTTP probes are not reused: their lazy runtime construction can open sources. |
 | **Contract** | planning-contract v1; installed skill provenance unknown |
 
@@ -64,5 +64,5 @@ The overall `ready` flag means **artifact prerequisites for governed metric quer
 
 - **Vocabulary:** no new canonical domain terms; the report reuses Project, Source Registry, Staging, Promotion, Git Review Admission, Answer Example as defined in [CONTEXT.md](../../CONTEXT.md). "Readiness" is report data, not a lifecycle state, and grants nothing.
 - **Decisions:** composition-only and no-authority constraints are recorded in [ADR-0021](../adr/0021-usability-shell-composition.md). Exit-code-as-data (0 with structured readiness) over exit-code-as-gate is a local UX choice; no separate ADR warranted.
-- **Behavior:** scope, non-goals and acceptance above; no approved source yet — owner review pending.
-- **Uncertainty:** diagnostic selection and the bounded meaning of readiness are explicit above. Exact JSON key layout is implementation latitude; the shared artifact/state seams and preservation of existing query contracts are prerequisites, not optional optimizations. Proposed revision 2 and spec 0001's scoped amendment still require owner approval.
+- **Behavior:** scope, non-goals and acceptance above; approved as revision 2 (see Status).
+- **Uncertainty:** diagnostic selection and the bounded meaning of readiness are explicit above. Exact JSON key layout is implementation latitude; the shared artifact/state seams and preservation of existing query contracts are prerequisites, not optional optimizations. Approval is recorded in the Status row; no material decision remains open for implementation.
