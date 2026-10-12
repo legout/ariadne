@@ -3,9 +3,9 @@ name: publish
 # Publish on every version change: pushing a v* tag builds both distributions
 # and uploads them to PyPI. The tag must equal the version in BOTH pyproject
 # files (checked below), so a version bump + tag is the one publishing path.
-# PyPI side: trusted publishing (OIDC) — no tokens in secrets. Requires the
-# one-time owner setup of two trusted publishers on PyPI pointing at this
-# repository + this workflow (see ADR-0018).
+# PyPI auth: account API token via the PYPI_API_TOKEN repo secret (owner
+# choice 2026-10-12, amending ADR-0018) — one token covers both
+# distributions; no PyPI-side project setup needed.
 
 on:
   push:
@@ -13,12 +13,11 @@ on:
       - "v*"
 
 permissions:
-  id-token: write # PyPI OIDC trusted publishing
+  contents: read # token publishing needs no OIDC
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    environment: pypi
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 pi-lens-ignore line-length
 
@@ -53,15 +52,12 @@ jobs:
             || { echo "test failures block publishing"; exit 1; }
 
       - name: Publish ariadneai (core)
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14 pi-lens-ignore line-length
-        with:
-          packages-dir: dist
-          verify-metadata: true
-          attestations: true
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish
 
       - name: Publish ariadneai-agent
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14 pi-lens-ignore line-length
-        with:
-          packages-dir: ariadne-agent/dist
-          verify-metadata: true
-          attestations: true
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish
+        working-directory: ariadne-agent

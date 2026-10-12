@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-10-12
+
+Second release: from the governed-metrics MVP to the full agent-facing platform.
+
+- **Own compile engine, AGPL exit** — the `datus-semantic-osi[metricflow]` stack is
+  gone; metric compilation is now an own SQLGlot-based engine (`ariadne/render.py`,
+  ADR-0008). Runtime dependencies are permissive (MIT/Apache) only, and the Python
+  floor is `>=3.12`.
+- **Ariadne Agent** — new companion distribution `ariadneai-agent` (ADR-0018):
+  installable Analyst conversation over native Ariadne tools (#23), authoring
+  sessions with human-only approval gates (#24), role-restricted stdio MCP
+  integration (#25), and automatic mapping-hypothesis capture with restart-readable
+  evidence (K5, #45).
+- **Harness-led authoring (bring your own agent)** — isolated Git proposals with
+  revision-checked complete artifact edits (#34), resolved-source approval and
+  measured inputs (#35), finalized effective-revision validation with bounded review
+  (#36), human-only Git Review Admission with pinned digest confirmation (#37), and
+  safe legacy import with transition guidance (#39).
+- **Three MCP toolset surfaces** — Analyst/Authoring/combined registrations over one
+  shared core, selected per entry point (#38); context page browsing via
+  `list_context_pages`/`read_context_page` (spec 0015, #60/#61).
+- **Multifact semantic layer** — normalized single validated OSI graph (#26), fact
+  branches aggregated before alignment (#27), scoped filters, typed parameters and
+  grain-safe detail (#28), aligned time/compute derived windows (#29), and local
+  graph bundles exposed via CLI/MCP (#30).
+- **Context layer** — qualified schema facts with deterministic explicit refresh
+  (K1, #41), extension-v1 references and scoped term resolution (K2, #42), typed
+  bounded identifier inspection (K3, #43), context-only admission (K4, #44),
+  explicit legacy enrichment and installed-candidate verification (K6, #46),
+  `context_signals` disclosure (#48) with freshness fix (#47), bounded record/result
+  queries (spec 0014, #56–#58), supplied-evidence caveats on answers (#54/#55), and
+  answer examples with operator-only review (#19–#21).
+- **Document ingestion** — proposal-first ingestion of PDF/Office/HTML data
+  dictionaries (ADR-0009) with symlink refusal and secret scanning.
+- **Source registry** — declarative multi-source registry with a shared connection
+  builder (ADR-0010): strict schema, DSN redaction, explicit argument precedence.
+- **Context-carrying answers + packaged agent skill** — unmodeled questions capture
+  reusable working context into a self-improving catalog; `ariadne-skill` packages it
+  (spec rev 10, ADR-0011).
+- **HTTP transport + deployment** — opt-in local-only bearer-token streamable-HTTP
+  (`ariadne-serve --http`, #18), container/Compose binding with `healthz`/`readyz`
+  probes, and Docker/Compose templates for external MCP projects.
 - **Security fix: declared-grain SQL injection in validation** — a staged model's
   `primary_key` entries were interpolated raw into the executed grain-audit
   statement (`validate.py` Assertion 1), so agent-authored YAML could run

@@ -25,8 +25,11 @@ unambiguous. Renaming only distribution metadata avoids breaking the
   install hints, READMEs, skill) use the new names; historical
   specifications/plans keep their original `ariadne-core` wording as history.
 - Publishing is tag-gated (`.github/workflows/publish.yml`): a `v*` tag that
-  equals both projects' versions builds and uploads both wheels via PyPI
-  trusted publishing (OIDC, no token secrets); core tests run on the built
-  wheel before upload. One-time owner setup: register the two trusted
-  publishers on PyPI for this repository/workflow and create the `pypi`
-  GitHub environment.
+  equals both projects' versions builds and uploads both wheels; core tests
+  run on the built wheel before upload. **Amended 2026-10-12 (owner choice):**
+  authentication uses a PyPI account API token via the `PYPI_API_TOKEN`
+  repo secret — one token covers both distributions and PyPI creates the
+  projects on first upload, so no PyPI-side registration is needed. This
+  replaces the originally decided trusted publishing (OIDC); the `pypi`
+  GitHub environment and trusted-publisher registrations are no longer
+  required.
