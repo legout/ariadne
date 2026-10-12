@@ -79,7 +79,9 @@ from ariadne.validate import validate
 
 ENV_PATH = Path(os.environ.get("ARIADNE_ENV", "/home/volker/coding/ariadne/.env"))
 MAX_ROUNDS = 3  # spec §5 hard cap on the validate/error loop
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+# The staging guard anchors at the caller's cwd (the operator's project
+# root): parents[2] would be site-packages for an installed wheel.
+_REPO_ROOT = Path.cwd().resolve()
 _SERVED_LAYERS = ("context_layer", "semantic_layer")  # only ever human-promoted (spec §6)
 
 # Assembled as string pieces so every source line stays under the lint limit.
