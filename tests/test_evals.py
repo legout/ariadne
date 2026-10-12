@@ -288,8 +288,9 @@ _MEAN_EXPR = "AVG(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount_
 
 # Seed-note rules 1+2 spelled out inline in a CTE — a different formulation than
 # the proposal's CASE-in-AVG; never the seeder, the generator, the facade, or an
-# observed run. Shared with tests/test_agent_trace.py so no second numeric
-# oracle for the ad-hoc mean exists anywhere. One statement returns both grains:
+# observed run. The one numeric oracle for the ad-hoc mean anywhere (its former
+# consumer, the recorded agent-trace check, was retired 2026-10-12 — real-world
+# checks run manually). One statement returns both grains:
 # one row per customer_id plus a NULL-keyed overall row.
 _ADHOC_MEAN_SQL = """
 WITH converted AS (

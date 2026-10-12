@@ -8,6 +8,7 @@
 | **Prerequisite** | Complete and accept the [local artifact runtime](2026-09-23-0001-local-artifact-runtime.md) CLI/skill work (#7–#9) before capturing the reference trace; numeric retrieval improvements in [context retrieval](2026-09-23-0002-context-retrieval.md) may land independently |
 | **Evidence** | [ktx/nao/OmniGraph comparison, recommendation 2](../research/2026-09-23-ariadne-ktx-nao-omnigraph-comparison.md); existing [`tests/evals/golden.json`](../../tests/evals/golden.json) and [`tests/test_evals.py`](../../tests/test_evals.py) |
 | **Contract** | planning-contract v1; installed skill provenance unknown |
+| **Retired** | Owner, Pi session 2026-10-12 — the recorded agent answer-trace evidence tier was removed: `tests/test_agent_trace.py` and `tests/evals/agent_trace.json` are deleted, and real-world checks of the packaged skill are performed manually by the owner instead of from a recorded session. The independent numeric oracles remain in [`tests/test_evals.py`](../../tests/test_evals.py); historical plans/research records keep their references. |
 
 ## Purpose and scope
 
