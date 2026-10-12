@@ -1,8 +1,7 @@
 <!-- pi-implementation-orchestrator:start -->
 ## Agent workflow
 
-- Every validation unit receives one test obligation: `new-test`, `existing-check`, or `no-new-test`; related tasks may share a validation unit. `new-test` means one focused test at the cheapest stable public seam with expected values derived independently of the implementation under test (spec, acceptance criteria, or another oracle); failing-test-first applies only to bug repros and behavior pinning before refactors. Prefer the cheapest stable check that satisfies the obligation — types/lint/build, then an existing focused check, then a new focused test.
-- Review is adaptive and orchestrator-owned: low-risk work uses parent diff inspection; normal-risk work gets one candidate review; high-risk or dependency-defining work gets immediate plus candidate review.
+- Follow the installed `orchestrate-implementation` skill for validation obligations (`new-test`, `existing-check`, `no-new-test`), review timing, committed-result handoffs, and patch-only recovery. Load it before dispatch; do not maintain a second execution procedure here.
 - Plans and tickets reference exact feature sources; this file defines stable repository-wide scope.
 - Scoped authority: glossaries own terminology; ADRs own accepted architectural constraints; specifications own behavior; plans/tickets own execution decomposition. No scope silently overrides another; reconcile owner decisions into the affected artifacts before dependent work proceeds.
 - Stop before implementation when authoritative sources conflict.
@@ -23,9 +22,10 @@
 
 - Read `project/agents/artifacts.md` for the project artifact mapping and load the `planning-contract` skill for artifact classification and planning handoffs; read `project/agents/issue-tracker.md` and `project/agents/domain.md` when their scope applies. Preserve established project conventions.
 - Use `shape-design` for unresolved behavior/design choices, `write-implementation-plan` for approved multi-step work, and `orchestrate-implementation` to execute approved work. Do not turn a trivial edit into a planning exercise.
-- Default orchestrated execution to `supervised`: builtin `worker` may implement and validate, but candidate assembly, integration, and publication retain explicit approval gates.
-- Route implementation to builtin `worker` and, when required by the selected policy, independent review to a fresh read-only builtin `reviewer` by default; confirm selected roles are executable before dispatch and record the resolved names in the run manifest. Explicit run/lane selections may instead use `herdr-pane` or `paseo`; record and preflight the selected backend.
-- Keep one writer per isolated worktree. Use `pi-subagents` for spawned-child lifecycle, `pi-intercom` for Herdr lane communication, and Paseo's supported tools/CLI for Paseo lanes. Named persistent peers remain read-only advisors.
+- Default orchestrated execution to `supervised`: prepare and review an isolated candidate, then pause before target integration. Explicit owner restrictions still bind; execution grants no integration or publication authority.
+- Use Pi for every child role. Follow the skill's host selection: explicit/configured host selection wins, otherwise use the verified current host (native `pi-subagents`, `herdr-pane`, Paseo’s Pi provider, or T3’s Pi driver). T3 children remain read-only without supported isolated workspace binding. Native Pi dispatch uses executable `worker`/read-only `reviewer` profiles, not external-runner aliases.
+- Use `${XDG_STATE_HOME:-$HOME/.local/state}/worktrees/` for new worktrees, with allocator-supported subdirectories. Preserve existing worktrees and allocator configuration; approve incompatible host settings separately before dispatch.
+- Follow the selected adapter's shared-root and exact model/thinking preflight; record the resolved host and roles in existing run state. Keep one writer per isolated registered worktree. Use host lifecycle controls; intercom is optional messaging, not workspace placement or lifecycle authority. Do not silently switch hosts or runtimes. Named persistent peers remain read-only advisors.
 - Use `systematic-debugging` for unexpected failures and `verification-before-completion` before success claims; match evidence to the exact change and report skipped checks.
 - Use `merge-worktree` for target integration and `make-release` for releases. Local integration does not authorize pushing; opening a PR does not authorize merging; release or publication requires its own approved plan.
 - Stop on conflicting authoritative sources, unclear ownership, failed required gates, or missing required tooling. Never silently switch execution modes to bypass a blocker.
