@@ -371,7 +371,9 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
     #43/K3 adds exactly one more — ``authoring_inspect_mapping`` (the bounded
     mapping inspection with authentic retained receipts); issue #57/S2 adds
     exactly one more — ``query_records`` (the bounded Ad-hoc Record Query over
-    one known catalog table, spec 0014 §3); never a
+    one known catalog table, spec 0014 §3); spec 0015/issue #60 adds exactly
+    two more — ``list_context_pages`` and ``read_context_page`` (the token-free
+    Context Layer page listing and path-addressed reading, ADR-0020); never a
     source-approval, Promotion, admission or example-review tool (ADR-0013/#20:
     review is human-only; the surfaces are tool-surface separation, spec §6)."""
     from ariadne.serve import build_app
@@ -382,6 +384,8 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
     assert {tool.name for tool in tools} == {
         "list_metrics",
         "search_context",
+        "list_context_pages",
+        "read_context_page",
         "get_metric",
         "list_datasets",
         "define_metric",

@@ -96,6 +96,8 @@ from ariadne import (  # pyright: ignore[reportMissingImports] — new-module re
 # deterministic OKF generation live in ariadne.context.
 from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
     data_signals,
+    list_pages,
+    read_page,
     resolve_term,
     search_pages,
 )
@@ -1388,6 +1390,35 @@ class QueryRuntime:
             # the resolved terms identify the admitted revision they came from
             result["admission"] = self._admission_view(self._managed)
         return result
+
+    async def list_context_pages(self) -> list[dict]:
+        """Enumerate every served and staged Context Layer page (spec 0015,
+        ADR-0020): metadata only — ``path``, ``draft``, ``title`` and the
+        advisory ``context_signals`` envelope — served before staged, then
+        path, deterministically. No bodies and no query tokens: the
+        token-free directory view for discovery and onboarding. Serves
+        pinned snapshot bytes on the managed route, so the pinned digest is
+        re-checked first exactly like ``search_context``."""
+        self._discard_request_budget()
+        if self._managed is not None:
+            self._recheck_pinned()
+        return list_pages([(self.context_dir, False), (self.staging_dir / "context_layer", True)])
+
+    async def read_context_page(self, path: str, draft: bool = False) -> dict:
+        """Read one exact Context Layer page by bundle-relative POSIX path
+        (spec 0015, ADR-0020): full ``content`` plus ``draft``, ``title``-free
+        metadata, and the advisory ``context_signals`` envelope. ``draft=false``
+        (the default) reads the served root and re-checks the pinned digest
+        on the managed route exactly like ``search_context``; ``draft=true``
+        reads the staged root's live bytes (a draft is by definition not
+        pinned). An absolute, root-escaping, non-markdown or unknown path
+        raises ``ValueError`` naming the rejected path — never a search
+        fallback, never an empty success."""
+        self._discard_request_budget()
+        if not draft and self._managed is not None:
+            self._recheck_pinned()
+        root = self.staging_dir / "context_layer" if draft else self.context_dir
+        return read_page(path, root, draft=draft)
 
 
 def _timestamp_refusal(exc: BaseException) -> QueryResultError | None:

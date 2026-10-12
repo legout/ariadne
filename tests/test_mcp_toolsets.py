@@ -60,6 +60,8 @@ QUERY_TOOLS = {
     "save_example",
     "search_examples",
     "resolve_term",  # K2 (issue #42): shared terminology resolution
+    "list_context_pages",  # spec 0015 (issue #60): token-free page listing
+    "read_context_page",  # spec 0015 (issue #60): path-addressed page reading
 }
 
 # The Authoring registration: the plan §2 Authoring call contract, exposed

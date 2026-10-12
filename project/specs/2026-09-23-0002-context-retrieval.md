@@ -9,6 +9,7 @@
 | **Evidence** | [Comparison and recommendation 4](../research/2026-09-23-ariadne-ktx-nao-omnigraph-comparison.md); [Lumio retrieval evaluation](https://github.com/legout/lumio-wiki/blob/93951f8/eval/README.md) and [section evidence](https://github.com/legout/lumio-wiki/blob/93951f8/packages/lumio-wiki/src/lumio_wiki/evidence.py); [second-brain disposable FTS5 index](https://github.com/legout/skills/blob/f89af46/skills/second-brain/scripts/sb.py) (patterns considered, not code dependencies) |
 | **Contract** | planning-contract v1; installed skill provenance unknown |
 | **Later terminology extension** | Owner-approved [specification 0010, revision 1](2026-10-02-0010-context-layer-schema-and-identifiers.md), 2026-10-02: adds structured References and a separate read-only term resolver, plus context-only Git discovery. It does not waive this specification's measured ranking gates, full-page/passage evidence, draft labeling or complete metric/Policy context requirements. |
+| **Later browsing extension** | Owner-approved [specification 0015](2026-10-12-0015-context-page-browsing.md), 2026-10-12: adds read-only token-free listing and path-addressed reading plus the skill's local read-only rule. Search semantics, ranking gates and this specification's contracts remain intact and unchanged. |
 
 ## Purpose and boundary
 

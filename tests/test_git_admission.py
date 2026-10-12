@@ -1316,9 +1316,10 @@ def test_reconcile_refuses_an_interrupted_commit_record_disagreement(tmp_path, m
 
 def test_search_context_and_list_metrics_refuse_tampered_snapshot_bytes(tmp_path):
     """Fix pass finding 6: EVERY public operation that serves pinned snapshot
-    bytes rechecks them — mid-session snapshot tampering makes search_context
-    and list_metrics refuse exactly like get_metric, and the refusal clears
-    once the bytes are restored."""
+    bytes rechecks them — mid-session snapshot tampering makes search_context,
+    list_metrics and the spec 0015 browsing operations (list_context_pages,
+    served read_context_page) refuse exactly like get_metric, and the refusal
+    clears once the bytes are restored."""
     from ariadne.planner import PlannerError
 
     project = complete_bundle_project(tmp_path)
@@ -1334,6 +1335,12 @@ def test_search_context_and_list_metrics_refuse_tampered_snapshot_bytes(tmp_path
     assert asyncio.run(runtime.search_context("rule"))  # serves pinned pages
     names = asyncio.run(runtime.list_metrics())
     assert any(isinstance(n, dict) and n["name"] == "event_count" for n in names)
+    # spec 0015 (issue #60): the browsing tools serve the same pinned bytes
+    listing = asyncio.run(runtime.list_context_pages())
+    served_paths = {entry["path"] for entry in listing if not entry["draft"]}
+    assert "policies/all-events-count.md" in served_paths
+    served_read = asyncio.run(runtime.read_context_page("policies/all-events-count.md"))
+    assert served_read["content"] == original and served_read["draft"] is False
 
     page.write_text(original + "<!-- hand edit -->\n", encoding="utf-8")
     with pytest.raises(PlannerError) as context_error:
@@ -1342,9 +1349,19 @@ def test_search_context_and_list_metrics_refuse_tampered_snapshot_bytes(tmp_path
     with pytest.raises(PlannerError) as metrics_error:
         asyncio.run(runtime.list_metrics())
     assert metrics_error.value.code == "admission_stale"
+    with pytest.raises(PlannerError) as listing_error:
+        asyncio.run(runtime.list_context_pages())
+    assert listing_error.value.code == "admission_stale"
+    with pytest.raises(PlannerError) as read_error:
+        asyncio.run(runtime.read_context_page("policies/all-events-count.md"))
+    assert read_error.value.code == "admission_stale"
 
     page.write_text(original, encoding="utf-8")
     assert asyncio.run(runtime.search_context("rule"))  # refusal cleared
+    assert (
+        asyncio.run(runtime.read_context_page("policies/all-events-count.md"))["content"]
+        == original
+    )
 
 
 def test_post_rename_publication_failure_preserves_the_serving_admission(

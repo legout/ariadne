@@ -42,7 +42,7 @@ import math
 import re
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -213,6 +213,76 @@ def search_pages(query: str, limit: int, roots: list[tuple[Path, bool]]) -> list
             )
     hits.sort(key=lambda hit: (-hit["score"], hit["path"]))
     return hits[:limit]
+
+
+def _page_title(meta: dict, text: str) -> str | None:
+    """A page's display title (spec 0015): declared frontmatter ``title``, else
+    the first ATX heading outside fenced code, else ``None`` — never invented."""
+    title = meta.get("title")
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    lines = text.split("\n")
+    for line, fenced in zip(lines, _fence_mask(lines)):
+        if not fenced and line.startswith("# "):
+            return line[2:].strip()
+    return None
+
+
+def list_pages(roots: list[tuple[Path, bool]]) -> list[dict]:
+    """Enumerate every OKF page under the roots (spec 0015): the token-free
+    directory view over the same roots :func:`search_pages` ranks — metadata
+    only (``path``, ``draft``, ``title`` and the advisory ``context_signals``
+    envelope), never page bodies. Roots are walked in the caller's order
+    (the Query surface passes served before staged), sorted by path within
+    each, so the listing is deterministic."""
+    now = _assessment_now()
+    pages: list[dict] = []
+    for root, draft in roots:
+        root = root.resolve()
+        for path in sorted(root.rglob("*.md")):
+            text = path.read_text(encoding="utf-8")
+            rel = path.relative_to(root).as_posix()
+            meta = _page_meta(text)
+            pages.append(
+                {
+                    "path": rel,
+                    "draft": draft,
+                    "title": _page_title(meta, text),
+                    "context_signals": _context_signals([_page_view(rel, meta, now)]),
+                }
+            )
+    return pages
+
+
+def read_page(path: str, root: Path, *, draft: bool) -> dict:
+    """Read one exact OKF page by bundle-relative POSIX path (spec 0015):
+    full ``content`` plus ``draft``, ``context_signals`` and the resolved
+    ``path``. Only an exact ``.md`` file directly under ``root`` reads — an
+    absolute, backslashed, root-escaping (``..`` or symlink), non-markdown
+    or unknown path raises ``ValueError`` naming the rejected path: never a
+    search fallback, never an empty success."""
+    if not isinstance(path, str) or not path or "\\" in path:
+        raise ValueError(f"unknown context page: {path!r}")
+    rel = PurePosixPath(path)
+    if (
+        rel.is_absolute()
+        or not path.endswith(".md")
+        or any(part in ("", ".", "..") for part in rel.parts)
+    ):
+        raise ValueError(f"unknown context page: {path!r}")
+    root = root.resolve()
+    candidate = (root.joinpath(*rel.parts)).resolve()
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        raise ValueError(f"unknown context page: {path!r}")
+    text = candidate.read_text(encoding="utf-8")
+    rel_str = candidate.relative_to(root).as_posix()
+    meta = _page_meta(text)
+    return {
+        "path": rel_str,
+        "draft": draft,
+        "content": text,
+        "context_signals": _context_signals([_page_view(rel_str, meta, _assessment_now())]),
+    }
 
 
 # --------------------------------------------------------- citation attachment

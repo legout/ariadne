@@ -315,6 +315,14 @@ value-attested`.
 
 ## Agent rules
 
+- **Read freely, write only staging.** On the project filesystem you may read
+  and grep `context_layer/` and `staging/` directly (ADR-0020): served pages
+  are immutable — the promotion gate owns them — so reads bypass no gate, but
+  every write stays under `staging/` (or typed proposal edits on the Git
+  route). Pages under `staging/` are drafts (`draft: true`), never verified
+  guidance. When you are not on the project filesystem (a remote agent over
+  the served tools), browse with `list_context_pages` and read with
+  `read_context_page(path, draft)` instead — same pages, same draft labeling.
 - **Staging never serves; proposals never admit.** Served artifacts arrive only
   by human promotion (a staged project) or human Git Review Admission of an
   exact reviewed, validated revision (a Git-managed project). Write only under

@@ -5,7 +5,10 @@ grain checks, read-only execution, context attachment, proposal staging and
 terminology resolution all live in ``ariadneai``; nothing is reimplemented
 here. The tool set is DELIMITED to Ariadne's baseline query operations plus
 ``resolve_term`` (issue #42/K2: shared terminology resolution over the pinned
-admitted context — read-only, no inspection/edit authority): the wider Query
+admitted context — read-only, no inspection/edit authority) and the two
+Context Layer browsing operations ``list_context_pages``/``read_context_page``
+(issue #60, spec 0015/ADR-0020: token-free listing and path-addressed reading
+of served and staged pages — read-only, draft-labeled): the wider Query
 surface that ariadneai's MCP registrations expose (query_metrics/
 query_detail, Answer Examples) does NOT silently expand this session's
 permissions (issue #38/G6 — registrations are tool-surface separation).
@@ -35,6 +38,8 @@ TOOL_NAMES = (
     "list_datasets",
     "define_metric",
     "resolve_term",  # K2 (issue #42): alongside the five baseline tools
+    "list_context_pages",  # spec 0015 (issue #60): token-free page listing
+    "read_context_page",  # spec 0015 (issue #60): path-addressed page reading
 )
 
 
@@ -87,6 +92,18 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
             await runtime.resolve_term(arguments["request"], part=arguments.get("part", 1))
         )
 
+    async def list_context_pages(
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
+    ) -> AgentToolResult:
+        return _payload(await runtime.list_context_pages())
+
+    async def read_context_page(
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
+    ) -> AgentToolResult:
+        return _payload(
+            await runtime.read_context_page(arguments["path"], draft=arguments.get("draft", False))
+        )
+
     executor: dict[str, ToolExecutor] = {
         "list_metrics": list_metrics,
         "search_context": search_context,
@@ -94,6 +111,8 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
         "list_datasets": list_datasets,
         "define_metric": define_metric,
         "resolve_term": resolve_term,
+        "list_context_pages": list_context_pages,
+        "read_context_page": read_context_page,
     }
     descriptions = {
         "list_metrics": (
@@ -172,6 +191,20 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
             "Read-only: a language alias never authorizes a join or "
             "a transform."
         ),
+        "list_context_pages": (
+            "List every Context Layer page — served and staged — without query "
+            "tokens: path, draft flag, title and each page's context_signals "
+            "advisory view, served before staged. Metadata only, never bodies. "
+            "The token-free discovery view for orientation and onboarding; "
+            "pair with read_context_page for full rule text."
+        ),
+        "read_context_page": (
+            "Read one exact Context Layer page by its bundle-relative POSIX path: "
+            "full content plus draft flag and context_signals. Follow "
+            "cross-references and known paths directly; staged drafts require "
+            "draft: true and are never verified guidance. An absolute, "
+            "escaping, non-markdown or unknown path is refused naming the path."
+        ),
     }
     schemas = {
         "list_metrics": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -240,6 +273,20 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
                 "part": {"type": "integer", "minimum": 1},
             },
             "required": ["request"],
+            "additionalProperties": False,
+        },
+        "list_context_pages": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        "read_context_page": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "minLength": 1},
+                "draft": {"type": "boolean"},
+            },
+            "required": ["path"],
             "additionalProperties": False,
         },
     }

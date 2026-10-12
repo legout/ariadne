@@ -26,7 +26,11 @@ The three registrations (spec §6, AC7):
   (issue #42: shared terminology resolution over the pinned admitted
   context; issue #44/K4 reports claim/confirmation status and AS-OF evidence
   freshness, and serves a context-only admitted snapshot — no metrics yet —
-  while metric tools surface the specific missing-catalog error).
+  while metric tools surface the specific missing-catalog error),
+  ``list_context_pages``/``read_context_page`` (issue #60, spec 0015 /
+  ADR-0020: token-free page listing and path-addressed reading of served
+  and staged Context Layer pages — read-only, draft-labeled, never a
+  governed-context source).
   No authoring operation.
 - **authoring** — the Git authoring contract with one stable prefix:
   ``authoring_start_proposal``, ``authoring_read_artifact``,
@@ -489,6 +493,28 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             marked draft: true (served pages are draft: false).
             """
             return await _runtime().search_context(query)
+
+        @app.tool()
+        async def list_context_pages() -> list[dict]:
+            """List every Context Layer page — served and staged — without query
+            tokens: path, draft flag, title and the advisory context_signals
+            envelope, served before staged. Metadata only (no bodies); pair with
+            read_context_page(path, draft) for the full rule text (spec 0015).
+            """
+            return await _runtime().list_context_pages()
+
+        @app.tool()
+        async def read_context_page(path: str, draft: bool = False) -> dict:
+            """Read one exact Context Layer page by its bundle-relative POSIX path:
+            full content plus draft flag and context_signals (spec 0015).
+
+            Args:
+                path: the exact relative .md path from list_context_pages or a
+                    search_context hit (e.g. policies/emea-currency-cutover.md).
+                draft: true reads the staged draft under staging/context_layer/
+                    instead of the served page (default false).
+            """
+            return await _runtime().read_context_page(path, draft=draft)
 
         @app.tool(structured_output=False)
         async def get_metric(

@@ -70,6 +70,8 @@ ANALYST_TOOLS = {
     "list_datasets",
     "define_metric",
     "resolve_term",  # K2 (issue #42): alongside the five baseline tools
+    "list_context_pages",  # spec 0015 (issue #60): token-free page listing
+    "read_context_page",  # spec 0015 (issue #60): path-addressed page reading
 }
 
 ANSWER_GOVERNED = """\
@@ -237,9 +239,7 @@ def test_governed_route_returns_values_with_full_context(project):
             turn(text=ANSWER_GOVERNED),
         ]
     )
-    session = open_session(
-        role="analyst", project=project, model="fake-analyst", provider=provider
-    )
+    session = open_session(role="analyst", project=project, model="fake-analyst", provider=provider)
     try:
         events = asyncio.run(drive(session, "gross margin by region?"))
     finally:
@@ -344,9 +344,7 @@ def test_unmodeled_route_stages_ungoverned_proposal(project):
             turn(text=ANSWER_UNMODELED),
         ]
     )
-    session = open_session(
-        role="analyst", project=project, model="fake-analyst", provider=provider
-    )
+    session = open_session(role="analyst", project=project, model="fake-analyst", provider=provider)
     try:
         events = asyncio.run(drive(session, "mean order amount per customer?"))
     finally:
@@ -414,9 +412,7 @@ def test_analyst_tool_surface_is_the_five_native_operations(project):
     (issue #42), packaged-skill guidance in the system, and no tau_coding
     module ever loaded by the in-process run."""
     provider = FakeProvider([turn(text="ok")])
-    session = open_session(
-        role="analyst", project=project, model="fake-analyst", provider=provider
-    )
+    session = open_session(role="analyst", project=project, model="fake-analyst", provider=provider)
     asyncio.run(drive(session, "hello"))
     model, system, _messages, tools = provider.calls[0]
     assert model == "fake-analyst"
@@ -472,9 +468,7 @@ ORDER_TERM_REFERENCE = (
 )
 
 
-def test_analyst_resolve_term_reports_alternatives_and_unconfirmed_claims(
-    project, tmp_path
-):
+def test_analyst_resolve_term_reports_alternatives_and_unconfirmed_claims(project, tmp_path):
     """K2 (issue #42): the native ``resolve_term`` tool drives the shared core
     resolver over the admitted context — the umbrella alias returns the
     local/global alternatives with their exact bindings and the mapping
@@ -490,7 +484,7 @@ def test_analyst_resolve_term_reports_alternatives_and_unconfirmed_claims(
             turn(calls=[("resolve_term", {"request": "order number"})]),
             turn(
                 text=(
-                    "\"order number\" is ambiguous on purpose (two documented "
+                    '"order number" is ambiguous on purpose (two documented '
                     "representations, references/order-number.md): the local "
                     "store-scoped number and the concatenated global identity. "
                     "Their mapping is an UNCONFIRMED hypothesis — not a rule to "
@@ -499,9 +493,7 @@ def test_analyst_resolve_term_reports_alternatives_and_unconfirmed_claims(
             ),
         ]
     )
-    session = open_session(
-        role="analyst", project=own, model="fake-analyst", provider=provider
-    )
+    session = open_session(role="analyst", project=own, model="fake-analyst", provider=provider)
     try:
         events = asyncio.run(drive(session, "what is an order number?"))
     finally:
@@ -551,9 +543,7 @@ def test_analyst_resolve_term_reports_alternatives_and_unconfirmed_claims(
 
 def test_one_active_run_per_session_and_lifecycle(project):
     provider = GatedProvider()
-    session = open_session(
-        role="analyst", project=project, model="fake-analyst", provider=provider
-    )
+    session = open_session(role="analyst", project=project, model="fake-analyst", provider=provider)
     assert session.role == "analyst" and session.role in ROLES
 
     async def scenario() -> list:
@@ -587,9 +577,7 @@ def test_missing_promoted_catalog_is_actionable_and_isolates_sessions(project, t
     empty.mkdir()
     shutil.copy(project / "demo.db", empty / "demo.db")
     with pytest.raises(RuntimeError) as excinfo:
-        open_session(
-            role="analyst", project=empty, model="fake-analyst", provider=FakeProvider([])
-        )
+        open_session(role="analyst", project=empty, model="fake-analyst", provider=FakeProvider([]))
     message = str(excinfo.value)
     assert "promote" in message and "staging" in message, (
         f"the missing-catalog error must name the human promotion step: {message!r}"
@@ -640,9 +628,7 @@ def test_analyst_managed_project_resolves_through_pinned_admission(tmp_path, mon
             turn(text="event_count is 3, governed from the pinned admission"),
         ]
     )
-    session = open_session(
-        role="analyst", project=project, model="fake-analyst", provider=provider
-    )
+    session = open_session(role="analyst", project=project, model="fake-analyst", provider=provider)
     try:
         events = asyncio.run(drive(session, "how many events are there?"))
     finally:
@@ -746,9 +732,7 @@ def test_analyst_serves_a_context_only_admitted_project(tmp_path, monkeypatch):
             ),
         ]
     )
-    session = open_session(
-        role="analyst", project=project, model="fake-analyst", provider=provider
-    )
+    session = open_session(role="analyst", project=project, model="fake-analyst", provider=provider)
     try:
         events = asyncio.run(drive(session, "what do we know about order numbers?"))
     finally:
@@ -866,9 +850,7 @@ def test_cancel_and_close_between_send_and_first_consumption_are_not_lost(projec
             turn(text="still here"),
         ]
     )
-    session = open_session(
-        role="analyst", project=project, model="fake-analyst", provider=provider
-    )
+    session = open_session(role="analyst", project=project, model="fake-analyst", provider=provider)
     stream = session.send("cancel before I start")
     session.cancel()  # BEFORE the host consumes the event iterator
 
