@@ -60,9 +60,11 @@ _LABEL = 18
 
 
 def _resolve_route(args: argparse.Namespace, cwd: Path) -> tuple[str, Path, Path | None]:
-    """Diagnostic route selection (spec 0016 Interface): ``(kind, logical
-    root, legacy artifact root)``. Never constructs the query runtime; zero
-    promoted legacy roots is ``kind "none"``, not an error."""
+    """Diagnostic route selection (spec 0016 Interface): ``("git_managed" |
+    "legacy", logical root, legacy artifact root)``. The final legacy kind
+    (legacy_staged vs none) is decided by the caller from the staged work.
+    Never constructs the query runtime; zero promoted legacy roots is
+    diagnostic data, not an error."""
     if args.project is not None:
         if args.served is not None:  # exactly the managed query route's conflict
             raise ValueError(
@@ -74,10 +76,14 @@ def _resolve_route(args: argparse.Namespace, cwd: Path) -> tuple[str, Path, Path
             raise ValueError(f"--project {args.project} is not an existing directory")
         return "git_managed", root.resolve(), None
     # A cwd .ariadne/ state directory (any shape) selects managed DIAGNOSTICS
-    # only — malformed state is reported as its own blocker below, never a
-    # fallback to root artifacts, and a plain .git alone is no marker.
+    # only WITH NO EXPLICIT ROUTE SELECTOR (spec 0016 Interface): explicit
+    # --served/--sources/--db declare the legacy route and are honored first,
+    # so an invalid --served in a managed cwd is an explicit error — never a
+    # silent switch to (or away from) the cwd admission. A plain .git alone
+    # is no marker either way.
+    explicit_legacy = args.served is not None or args.sources is not None or bool(args.db)
     state_dir = cwd / proposals.ARIADNE_STATE_DIR
-    if state_dir.exists() or state_dir.is_symlink():
+    if not explicit_legacy and (state_dir.exists() or state_dir.is_symlink()):
         return "git_managed", cwd.resolve(), None
     artifact: Path | None = None
     if args.served is not None:
@@ -96,7 +102,7 @@ def _resolve_route(args: argparse.Namespace, cwd: Path) -> tuple[str, Path, Path
                 "PATH to select one"
             )
         artifact = valid[0].resolve() if valid else None
-    return ("legacy_staged" if artifact is not None else "none"), cwd.resolve(), artifact
+    return "legacy", cwd.resolve(), artifact
 
 
 def _staging_dir(args: argparse.Namespace, logical_root: Path) -> Path:
@@ -255,7 +261,10 @@ def _managed_sources(root: Path, admitted: dict, approvals: dict | None) -> dict
 
 def _legacy_sources(args: argparse.Namespace, cwd: Path) -> dict:
     """--db/--sources/ambient registry as source configuration only (never
-    artifact roots); unreadable state is explicit, never a healthy empty."""
+    artifact roots); unreadable state is explicit, never a healthy empty —
+    including an ambient registry that cannot even be READ for discovery
+    (spec 0016 Failure: unreadable state is report data, other sections stay
+    visible)."""
     if args.db:
         return {
             "selection": "--db",
@@ -263,7 +272,11 @@ def _legacy_sources(args: argparse.Namespace, cwd: Path) -> dict:
             "entries": [{"name": "demo", "type": "sqlite", "read_only": True}],
             "readable": Path(args.db).is_file(),
         }
-    path = sources.default_registry_path(args.sources, None)
+    try:
+        path = sources.default_registry_path(args.sources, None)
+    except Exception as exc:  # unreadable ambient registry: explicit diagnostic
+        where = str(Path(args.sources)) if args.sources else str(cwd / sources.DEFAULT_PATH)
+        return {"selection": "invalid", "path": where, "error": str(exc), "readable": False}
     if path is None:
         return {"selection": "none", "path": None, "entries": [], "readable": False}
     try:
@@ -419,12 +432,25 @@ def build_report(args: argparse.Namespace) -> dict:
     """Assemble the five fixed sections plus the overall ready flag. Pure
     reads: no source connection, no compilation, no network, no writes."""
     cwd = Path.cwd()
-    kind, logical_root, artifact_root = _resolve_route(args, cwd)
+    route, logical_root, artifact_root = _resolve_route(args, cwd)
     staging = _staging_dir(args, logical_root)
+
+    staged = _legacy_staging(staging) if route == "legacy" else None
+    if route == "git_managed":
+        kind = "git_managed"
+    else:
+        assert staged is not None  # computed for the legacy route just above
+        # kind:none is only for a cwd with neither scaffold artifacts nor a
+        # promoted root (spec 0016 Interface/AC2): staged governed work —
+        # including review_needed markers — keeps the legacy project state
+        # and its review/authoring next steps.
+        kind = "legacy_staged" if (artifact_root is not None or staged["count"]) else "none"
 
     git = {"available": _git_available(), "repository_root": None, "commit_identity": None}
     repo_ok = identity_ok = False
-    if kind == "git_managed":
+    if kind == "git_managed" and git["available"]:
+        # AC7: the Git prerequisites are REPORT DATA — with git absent from
+        # PATH the probes are skipped (never a crash) and the report says so.
         git["repository_root"] = _repo_root(logical_root)
         repo_ok = (
             git["repository_root"] is not None
@@ -434,8 +460,16 @@ def build_report(args: argparse.Namespace) -> dict:
         git["commit_identity"] = identity_ok
     admitted = _managed_admission(logical_root) if kind == "git_managed" else None
     artifact_state = None
-    if kind == "legacy_staged" and artifact_root is not None:
-        artifact_state = "promoted" if _is_served_root(artifact_root) else "incomplete"
+    catalog = None
+    if kind == "legacy_staged":
+        if artifact_root is None:
+            artifact_state = "unpromoted"  # staged work exists, no served root yet
+        else:
+            artifact_state = "promoted" if _is_served_root(artifact_root) else "incomplete"
+            if artifact_state == "promoted":
+                # metadata read only — readiness needs READABLE catalog metadata,
+                # never compilation (spec 0016 ready-flag definition)
+                catalog = _catalog(artifact_root)
     if kind == "git_managed" and admitted is not None and admitted["state"] == "valid":
         # the resolved artifact root of a valid admission is the PINNED snapshot
         artifact_root = admitted["snapshot"]
@@ -463,7 +497,9 @@ def build_report(args: argparse.Namespace) -> dict:
     if kind == "git_managed":
         work_pending["proposals"] = pending
     else:
-        work_pending["staged_artifacts"] = _legacy_staging(staging)
+        work_pending["staged_artifacts"] = (
+            staged if staged is not None else _legacy_staging(staging)
+        )
 
     report = {
         "project": {
@@ -471,6 +507,7 @@ def build_report(args: argparse.Namespace) -> dict:
             "logical_root": str(logical_root),
             "artifact_root": str(artifact_root) if artifact_root else None,
             "artifact_state": artifact_state,
+            "catalog": catalog,
             "git": git,
             "admission": _admission_view(admitted),
         },
@@ -494,7 +531,9 @@ def build_report(args: argparse.Namespace) -> dict:
         staging,
         report["skill"]["targets"],
     )
-    ready, reason = _readiness(kind, artifact_root, artifact_state, admitted, sources_section)
+    ready, reason = _readiness(
+        kind, artifact_root, artifact_state, catalog, admitted, sources_section
+    )
     report["next_steps"] = steps
     report["ready"] = ready
     report["ready_reason"] = reason
@@ -519,7 +558,7 @@ def _admission_view(admitted: dict | None) -> dict:
 
 
 def _readiness(
-    kind, artifact_root, artifact_state, admitted, sources_section
+    kind, artifact_root, artifact_state, catalog, admitted, sources_section
 ) -> tuple[bool, str | None]:
     """The bounded ready flag: artifact prerequisites for governed metric
     querying only — never compilation, live source health or correctness."""
@@ -530,9 +569,21 @@ def _readiness(
         )
     if kind == "legacy_staged":
         if artifact_state != "promoted":
+            if artifact_root is None:
+                return False, (
+                    "no promoted artifact root (expected context_layer/ and "
+                    "semantic_layer/models/ in the working directory or ./served)"
+                )
             return False, (
                 f"the selected legacy artifact root lacks context_layer/ or "
                 f"semantic_layer/models/ ({artifact_root})"
+            )
+        if catalog is None or catalog["metrics"] < 1:
+            # the ready flag needs READABLE catalog metadata (spec 0016): an
+            # existing root with empty/unreadable layers is not a usable state
+            return False, (
+                f"the served catalog metadata under {artifact_root} is empty or "
+                "unreadable (no readable semantic models)"
             )
         if not sources_section.get("readable") or not sources_section.get("entries"):
             if sources_section.get("selection") == "--db":
@@ -770,6 +821,11 @@ def _render(report: dict) -> str:
     else:
         reason = f" — {admission['reason']}" if admission.get("reason") else ""
         lines.append(_row("admission:", f"{admission['state']}{reason}"))
+    catalog = project.get("catalog")
+    if catalog is not None:
+        lines.append(
+            _row("catalog:", f"{catalog['models']} model(s), {catalog['metrics']} metric(s)")
+        )
     lines.append("")
     lines.extend(_render_sources(report["sources"]))
     lines.append("")

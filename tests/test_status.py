@@ -497,3 +497,123 @@ def test_skill_targets_absent_optional_and_drifted_installed(tmp_path, capsys, m
     states = {(t["scope"], t["agent"]): t["state"] for t in report["skill"]["targets"]}
     assert states[("user", None)] == "drift"
     assert any(s.startswith("ariadne-skill install --scope user") for s in report["next_steps"])
+
+
+# ------------------------------------------- fix pass (review findings F1-F5)
+
+
+def test_explicit_legacy_selectors_win_over_automatic_managed_detection(
+    served, tmp_path, capsys, monkeypatch
+):
+    """F1 (Interface + AC6): a cwd .ariadne/ selects managed diagnostics ONLY
+    'with no explicit route selector' — explicit --served/--sources/--db
+    declare the legacy route and are honored first; an invalid --served is an
+    explicit error, never a silent cwd-admission report."""
+    project = admitted_project(tmp_path / "managed")  # cwd has .ariadne/ AND a
+    monkeypatch.chdir(project)  # complete bundle layout (a valid legacy root)
+    root, db = served
+    # no selector at all: the automatic managed diagnosis still applies
+    report = status_json(capsys)
+    assert report["project"]["kind"] == "git_managed"
+    # an invalid explicit --served is an explicit error, not the cwd admission
+    capsys.readouterr()
+    assert run_status("--served", str(tmp_path / "missing-root")) == 1
+    error = error_payload(capsys.readouterr().err)
+    assert "not an existing legacy artifact directory" in error["message"]
+    # a valid explicit --served selects the legacy route over the cwd .ariadne
+    report = status_json(capsys, "--served", str(root), "--db", str(db))
+    assert report["project"]["kind"] == "legacy_staged"
+    assert report["project"]["artifact_root"] == str(root)
+    # --db alone equally declares the legacy route (cwd itself is a valid root)
+    report = status_json(capsys, "--db", str(db))
+    assert report["project"]["kind"] == "legacy_staged"
+    assert report["project"]["artifact_root"] == str(project)
+
+
+def test_missing_git_is_report_data_with_an_actionable_step(tmp_path, capsys, monkeypatch):
+    """F2 (Report section 1, AC7): Git availability/repo-root/commit-identity
+    are report data — with git absent from PATH the report is still produced
+    (exit 0) with git unavailable and an actionable next step, never an exit-1
+    from the probe itself."""
+    project = admitted_project(tmp_path / "proj")  # built while git exists…
+    empty_bin = tmp_path / "empty-bin"  # …then git is removed from PATH
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+    report = status_json(capsys, "--project", str(project))
+    git = report["project"]["git"]
+    assert git["available"] is False
+    assert git["repository_root"] is None and git["commit_identity"] is None
+    assert report["ready"] is False
+    assert report["next_steps"] and "install Git" in report["next_steps"][0]
+    # the recorded admission cannot be verified without git: an explicit
+    # blocker, never a crash and never a fallback
+    admission = report["project"]["admission"]
+    assert admission["state"] == "invalid"
+    assert "git is not available" in admission["reason"]
+
+
+def test_legacy_ready_requires_readable_served_catalog_metadata(tmp_path, capsys):
+    """F3 (ready-flag definition): ready means 'selected served catalog
+    metadata and source configuration are readable' — an existing root with
+    EMPTY context_layer/ and semantic_layer/models/ and an existing db is NOT
+    ready, with the empty catalog reported while other sections stay visible."""
+    root = tmp_path / "served"
+    (root / "context_layer").mkdir(parents=True)
+    (root / "semantic_layer" / "models").mkdir(parents=True)
+    db = tmp_path / "demo.db"
+    db.write_bytes(b"")  # exists and is readable; status never connects
+    report = status_json(capsys, "--served", str(root), "--db", str(db))
+    assert report["project"]["kind"] == "legacy_staged"
+    assert report["project"]["artifact_state"] == "promoted"  # layout exists…
+    assert report["project"]["catalog"] == {"models": 0, "metrics": 0, "context_only": True}
+    assert report["ready"] is False  # …but the catalog metadata is empty
+    assert "catalog" in report["ready_reason"]
+    assert report["sources"]["readable"] is True  # other sections stay visible
+    assert report["work_pending"]["staged_artifacts"]["count"] == 0
+
+
+def test_staging_only_cwd_keeps_legacy_state_and_review_next_steps(tmp_path, capsys, monkeypatch):
+    """F4 (AC2 + Interface): kind:none is only for 'an empty cwd with no
+    scaffold/artifacts' — a cwd with staged work (review_needed included) is
+    the legacy project state and keeps its review/promotion next steps, never
+    the fresh-scaffold ariadne-init hint."""
+    workdir = tmp_path / "staging-only"
+    blocked = workdir / "staging" / "context_layer" / "policies"
+    blocked.mkdir(parents=True)
+    (blocked / "needs-human.md").write_text(
+        "---\nstatus: review_needed\n---\n# needs a human\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(workdir)
+    report = status_json(capsys)
+    assert report["project"]["kind"] == "legacy_staged"
+    assert report["project"]["artifact_root"] is None
+    assert report["project"]["artifact_state"] == "unpromoted"
+    assert report["ready"] is False and "no promoted artifact root" in report["ready_reason"]
+    assert report["work_pending"]["staged_artifacts"]["count"] == 1
+    assert "context_layer/policies/needs-human.md" in report["next_steps"][0]
+    assert not any("ariadne-init" in step for step in report["next_steps"])
+    # without the marker the same project is directed to human promotion
+    (blocked / "needs-human.md").write_text("---\nstatus: draft\n---\n# clean\n", encoding="utf-8")
+    report = status_json(capsys)
+    assert any("ariadne-promote" in step for step in report["next_steps"])
+    assert not any("review required" in step for step in report["next_steps"])
+
+
+def test_unreadable_ambient_registry_is_report_data_not_an_exit(tmp_path, capsys, monkeypatch):
+    """F5 (Failure behavior): a corrupt/unreadable state — here an ambient
+    ariadne.yaml whose discovery read fails with PermissionError — is reported
+    explicitly in the sources section while the other readable sections stay
+    visible and the command still produces its report (exit 0)."""
+    workdir = tmp_path / "unreadable-registry"
+    workdir.mkdir()
+    registry = workdir / "ariadne.yaml"
+    registry.write_text("sources:\n  - name: demo\n    type: sqlite\n    path: x.db\n")
+    registry.chmod(0)  # unreadable by the same (non-root) user running tests
+    monkeypatch.chdir(workdir)
+    report = status_json(capsys)  # must not exit nonzero
+    assert report["sources"]["selection"] == "invalid"
+    assert report["sources"]["path"].endswith("ariadne.yaml")
+    assert "Permission denied" in report["sources"]["error"]
+    assert report["ready"] is False
+    assert report["project"]["kind"] == "none"  # no scaffold artifacts anywhere else
+    assert report["skill"]["targets"]  # the other sections remain visible
