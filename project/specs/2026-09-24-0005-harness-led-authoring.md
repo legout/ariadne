@@ -35,6 +35,32 @@ ready catalog receive focused checks (`new-test`); existing MCP journeys cover
 parity (`existing-check`). No new domain term or architectural decision is
 introduced; planning-contract v1, installed provenance unknown.
 
+## Container packaging — owner-approved 2026-10-10
+
+The owner approved preparing a Dockerfile and Compose template for the existing
+MCP server with an externally managed data project. The image contains software,
+not the project, data or credentials; the build context excludes private/local
+artifacts. The default process runs non-root, with Compose UID/GID matched to the
+project owner and a writable temporary HOME. Git is included for proposals;
+optional PDF/Office converters are not included in this first image.
+
+Mount the standalone Git project read-write at the SAME absolute path on host
+and container so Git worktree pointers and approved source identities survive
+operator use on both sides. Do not silently relocate existing worktrees or
+approvals. Linked checkouts whose common Git directory is elsewhere need an
+additional same-path mount. Source paths outside the project need their own
+explicit mounts; credentials remain operator-supplied environment values.
+
+Default Compose publishes no ports; existing proxies/clients join its network.
+A separate opt-in loopback override may publish only `127.0.0.1:8000` for a
+host-side private HTTPS proxy such as Tailscale Serve. This narrows the earlier
+blanket host-port prohibition only to that loopback case; no public HTTP exposure
+is authorized. Authenticated readiness is included and role selection uses the
+existing toolsets. Validate configuration and one real disposable-container
+MCP/proposal/recreation journey with a synthetic external project (`new-test`).
+Preparation and local isolated validation do not authorize deployment, image
+publication, commit/push or closing #18's real remote acceptance.
+
 ## Purpose and scope
 
 A user supplies dataset locations and domain evidence; an agent harness uses **its own model** to propose the source registry, Seed Notes, Semantic Layer (OSI), and Context Layer (OKF). Ariadne measures the data, converts documents, checks proposals, and holds them for human review. The harness may ask the owner questions where the evidence does not establish a business rule. Neither source access nor Promotion may be inferred from an agent assertion.

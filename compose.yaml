@@ -1,0 +1,44 @@
+services:
+  ariadne:
+    build: .
+    image: ${ARIADNE_IMAGE:-ariadne-mcp:local}
+    user: "${ARIADNE_UID:-1000}:${ARIADNE_GID:-1000}"
+    working_dir: ${ARIADNE_PROJECT_DIR:?Set the absolute data-project directory}
+    command:
+      - --project
+      - ${ARIADNE_PROJECT_DIR:?Set the absolute data-project directory}
+      - --toolset
+      - ${ARIADNE_TOOLSET:-combined}
+      - --http
+      - --http-container
+      - --http-host
+      - 0.0.0.0
+      - --http-allowed-host
+      - ariadne:8000
+      - --http-allowed-host
+      - ${ARIADNE_MCP_HOST:-localhost}
+      - --http-allowed-origin
+      - ${ARIADNE_MCP_ORIGIN:-https://localhost}
+    environment:
+      ARIADNE_HTTP_TOKEN: ${ARIADNE_HTTP_TOKEN:?Set the server bearer token}
+    volumes:
+      - type: bind
+        source: ${ARIADNE_PROJECT_DIR:?Set the absolute data-project directory}
+        target: ${ARIADNE_PROJECT_DIR:?Set the absolute data-project directory}
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import os, urllib.request;
+          r = urllib.request.Request('http://127.0.0.1:8000/readyz',
+          headers={'Authorization':
+          'Bearer ' + os.environ['ARIADNE_HTTP_TOKEN']});
+          urllib.request.urlopen(r, timeout=25).close()
+      interval: 30s
+      timeout: 30s
+      start_period: 30s
+      retries: 3

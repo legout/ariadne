@@ -21,6 +21,18 @@ for MCP parity. No additional MCP feature, deployment, release or publication.
 This extends the historical loopback-only implementation; #18's actual remote
 HTTPS/source acceptance remains open and separately gated.
 
+## Container preparation update — 2026-10-10
+
+Source: [0005's approved packaging scope](../specs/2026-09-24-0005-harness-led-authoring.md#container-packaging--owner-approved-2026-10-10).
+Direct parent implementation of `Dockerfile`, `.dockerignore`, `compose.yaml`,
+`compose.loopback.yaml`, `.env.example` and the operator how-to/README link.
+One `new-test` unit: build an image and run a real, isolated network MCP client
+against a disposable same-path external Git project; assert bearer probes,
+non-root/matching ownership, host Git worktree usability, proposal persistence
+on container recreation and no admission. Default/loopback Compose resolution
+and existing HTTP/authoring checks are `existing-check`. No server/skill change,
+proxy deployment, image publication, release, commit or push is authorized.
+
 ## Capture and prerequisites
 
 - Vocabulary: `CONTEXT.md` distinguishes human-owned Seed Notes, pending Computation, and independently Attested Computation.

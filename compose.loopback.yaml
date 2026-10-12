@@ -1,0 +1,8 @@
+# Opt-in only: loopback port for a host-side private HTTPS proxy.
+services:
+  ariadne:
+    ports:
+      - target: 8000
+        published: "${ARIADNE_LOCAL_PORT:-8000}"
+        host_ip: 127.0.0.1
+        protocol: tcp

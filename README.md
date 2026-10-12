@@ -221,58 +221,24 @@ Stdio remains token-free and opens no HTTP listener.
 
 **Compose/container binding (owner-approved 2026-10-10).** Add
 `--http-container --http-host 0.0.0.0` to allow other containers to connect.
-Do **not** publish Ariadne's port with `ports:`; put the MCP client or HTTPS
-proxy on the same Compose network. External clients still require a private
-HTTPS route. This option is not deployment/exposure approval.
+The default Compose service publishes no ports; put the MCP client or HTTPS
+proxy on the same network. The separate loopback-only override is for a
+host-side private HTTPS proxy such as Tailscale Serve. External clients still
+require private HTTPS. This option is not deployment/exposure approval.
 
 The SDK's DNS-rebinding protection stays enabled. Explicitly add the service
 and proxy Host values using repeatable `--http-allowed-host` flags. For
 clients sending an Origin header, add its exact origin with
 `--http-allowed-origin`; requests without Origin need no origin entry.
-Do not use blanket wildcards. Example service fragment (use your own image
-with `ariadneai[mcp]` installed and your initialized project directory):
-
-```yaml
-services:
-  ariadne:
-    image: ${ARIADNE_IMAGE:?Set an Ariadne image}
-    command:
-      - ariadne-serve
-      - --project
-      - /project
-      - --http
-      - --http-container
-      - --http-host
-      - 0.0.0.0
-      - --http-allowed-host
-      - ariadne:8000
-      - --http-allowed-host
-      - mcp.example.org
-      - --http-allowed-origin
-      - https://mcp.example.org
-    environment:
-      ARIADNE_HTTP_TOKEN: ${ARIADNE_HTTP_TOKEN:?Set the server token}
-    volumes:
-      - ${ARIADNE_PROJECT_DIR:?Set the project directory}:/project
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - >-
-          import os, urllib.request;
-          r = urllib.request.Request('http://127.0.0.1:8000/readyz',
-          headers={'Authorization': 'Bearer ' + os.environ['ARIADNE_HTTP_TOKEN']});
-          urllib.request.urlopen(r, timeout=25).close()
-      interval: 30s
-      timeout: 30s
-      start_period: 30s
-      retries: 3
-```
-
-A client on that network uses `http://ariadne:8000/mcp` with the bearer token.
-A proxy forwards to the same address, preserves Authorization and MCP headers,
-and must support streaming. Configure the proxy's private HTTPS route separately.
+Do not use blanket wildcards. The repository includes a non-root
+[Dockerfile](Dockerfile), [Compose template](compose.yaml) and
+[loopback override](compose.loopback.yaml). See
+[Docker MCP with an external data project](docs/how-to/docker-mcp.md) for
+owner permissions, stable Git/source paths, networking and the smoke check.
+The project stays external and is mounted at the same absolute host/container
+path; the image does not contain project data or credentials. A network client
+uses `http://ariadne:8000/mcp` with the bearer token. A private HTTPS proxy
+must preserve Authorization/MCP headers and streaming; configure it separately.
 
 - `GET /healthz`: `200 {"status":"ok"}` when the HTTP process responds.
 - `GET /readyz`: `200 {"status":"ready"}` for Authoring without requiring a

@@ -1,0 +1,11 @@
+**
+!Dockerfile
+!pyproject.toml
+!README.md
+!src
+!src/ariadne
+!src/ariadne/*.py
+!src/ariadne/skill_assets
+!src/ariadne/skill_assets/SKILL.md
+!src/ariadne/skill_assets/references
+!src/ariadne/skill_assets/references/*.md
