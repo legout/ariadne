@@ -150,19 +150,35 @@ def _git_identity_ok(root: Path) -> bool:
 
 
 def _catalog(snapshot: Path) -> dict:
-    """Readable catalog metadata of a pinned snapshot: model/metric counts.
-    A context-only admission (no models/metrics) keeps its explicit state."""
+    """Readable catalog metadata of an artifact root: model/metric counts
+    plus an EXPLICIT readability state. A read/parse/shape failure of any
+    model file is a diagnostic (state "invalid" with the per-file reason) —
+    never a silent pass over corrupt metadata and never a crash (spec 0016
+    Failure: corrupt/unreadable state reports explicitly while the other
+    readable sections stay visible). A context-only catalog (no models or
+    no metrics) keeps its explicit state."""
     models = snapshot / "semantic_layer" / "models"
     files = sorted((*models.glob("*.yml"), *models.glob("*.yaml"))) if models.is_dir() else []
     metrics = 0
+    errors: list[str] = []
     for path in files:  # metadata only — no compile, no execution
         try:
             doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except (yaml.YAMLError, OSError):
-            continue
-        for model in doc.get("semantic_model") or []:
-            metrics += sum(1 for _ in model.get("metrics") or [])
-    return {"models": len(files), "metrics": metrics, "context_only": not files or not metrics}
+            if not isinstance(doc, dict):
+                raise ValueError("top level is not a mapping")
+            for model in doc.get("semantic_model") or []:
+                metrics += sum(1 for _ in model.get("metrics") or [])
+        except Exception as exc:  # one unreadable model never hides the rest
+            lines = str(exc).splitlines()
+            detail = lines[0].strip() if lines and lines[0].strip() else type(exc).__name__
+            errors.append(f"{path.name}: {detail}")
+    return {
+        "models": len(files),
+        "metrics": metrics,
+        "context_only": not files or not metrics,
+        "state": "invalid" if errors else "ok",
+        "errors": errors,
+    }
 
 
 def _managed_admission(root: Path) -> dict:
@@ -529,6 +545,8 @@ def build_report(args: argparse.Namespace) -> dict:
         sources_section,
         work_pending,
         staging,
+        catalog,
+        artifact_root,
         report["skill"]["targets"],
     )
     ready, reason = _readiness(
@@ -578,9 +596,17 @@ def _readiness(
                 f"the selected legacy artifact root lacks context_layer/ or "
                 f"semantic_layer/models/ ({artifact_root})"
             )
-        if catalog is None or catalog["metrics"] < 1:
-            # the ready flag needs READABLE catalog metadata (spec 0016): an
-            # existing root with empty/unreadable layers is not a usable state
+        if catalog is None or catalog["state"] == "invalid" or catalog["metrics"] < 1:
+            # the ready flag needs READABLE catalog metadata (spec 0016): a
+            # corrupt/unreadable model is an explicit invalid diagnostic; an
+            # existing root with empty layers is not a usable state either
+            if catalog is not None and catalog["errors"]:
+                shown = "; ".join(catalog["errors"][:3])
+                more = len(catalog["errors"]) - 3
+                return False, (
+                    f"the served catalog metadata under {artifact_root} is corrupt or "
+                    f"unreadable ({shown}{' +' + str(more) + ' more' if more > 0 else ''})"
+                )
             return False, (
                 f"the served catalog metadata under {artifact_root} is empty or "
                 "unreadable (no readable semantic models)"
@@ -621,6 +647,8 @@ def _next_steps(
     sources_section,
     work_pending,
     staging,
+    catalog,
+    artifact_root,
     skill_targets,
 ) -> list[str]:
     """Ordered EXACT commands for actual blockers only (never executed):
@@ -691,6 +719,27 @@ def _next_steps(
             "no promoted artifacts: expected context_layer/ and semantic_layer/models/ in the "
             "working directory or ./served — author and promote, or pass --served PATH"
         )
+    elif catalog is not None and (catalog["state"] == "invalid" or catalog["metrics"] < 1):
+        # the promoted root's catalog itself is the blocker (F3b: an actual
+        # authoring/repair blocker needs its next step, never an empty list)
+        if catalog["errors"]:
+            shown = ", ".join(error.split(":", 1)[0] for error in catalog["errors"][:3])
+            steps.append(
+                f"repair the corrupt served model file(s) {shown} under "
+                f"{artifact_root}/semantic_layer/models/ — served roots are promotion-written; "
+                f"fix the source bundle and re-run ariadne-promote --served {artifact_root}"
+            )
+        elif staged["count"]:
+            steps.append(
+                f"ariadne-promote --staging {staging} — promote the staged artifacts into "
+                f"the empty served catalog under {artifact_root}"
+            )
+        else:
+            steps.append(
+                f"author semantic models for the empty served catalog under {artifact_root} "
+                "(e.g. ariadne-authoring submit --project <dir> --file <bundle.json>), then "
+                "promote them with ariadne-promote"
+            )
     if not sources_section.get("readable") or not sources_section.get("entries"):
         if sources_section.get("selection") == "--db":
             steps.append(
@@ -823,8 +872,9 @@ def _render(report: dict) -> str:
         lines.append(_row("admission:", f"{admission['state']}{reason}"))
     catalog = project.get("catalog")
     if catalog is not None:
+        state = "" if catalog["state"] == "ok" else f" — {catalog['state']}"
         lines.append(
-            _row("catalog:", f"{catalog['models']} model(s), {catalog['metrics']} metric(s)")
+            _row("catalog:", f"{catalog['models']} model(s), {catalog['metrics']} metric(s){state}")
         )
     lines.append("")
     lines.extend(_render_sources(report["sources"]))

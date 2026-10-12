@@ -565,7 +565,9 @@ def test_legacy_ready_requires_readable_served_catalog_metadata(tmp_path, capsys
     report = status_json(capsys, "--served", str(root), "--db", str(db))
     assert report["project"]["kind"] == "legacy_staged"
     assert report["project"]["artifact_state"] == "promoted"  # layout exists…
-    assert report["project"]["catalog"] == {"models": 0, "metrics": 0, "context_only": True}
+    catalog = report["project"]["catalog"]
+    assert catalog["models"] == 0 and catalog["metrics"] == 0
+    assert catalog["context_only"] is True and catalog["state"] == "ok"
     assert report["ready"] is False  # …but the catalog metadata is empty
     assert "catalog" in report["ready_reason"]
     assert report["sources"]["readable"] is True  # other sections stay visible
@@ -617,3 +619,71 @@ def test_unreadable_ambient_registry_is_report_data_not_an_exit(tmp_path, capsys
     assert report["ready"] is False
     assert report["project"]["kind"] == "none"  # no scaffold artifacts anywhere else
     assert report["skill"]["targets"]  # the other sections remain visible
+
+
+# ------------------------------------------- fix pass 2 (delta findings F3a/F3b)
+
+
+def test_corrupt_served_catalog_metadata_is_an_explicit_diagnostic(tmp_path, capsys):
+    """F3a (spec 0016 ready flag + Failure behavior): corrupt catalog
+    metadata is an explicit catalog diagnostic and readiness can never stay
+    true over unreadable bytes — one valid model plus one malformed-YAML
+    model is NOT ready (no silent pass), and a scalar-text model still
+    produces its report (exit 0, never a crash)."""
+    from tests.test_serve import GOLDEN_OSI, seed_demo_db
+
+    root = tmp_path / "served"
+    models = root / "semantic_layer" / "models"
+    models.mkdir(parents=True)
+    (models / "orders.yml").write_text(GOLDEN_OSI, encoding="utf-8")  # a valid model
+    (models / "broken.yml").write_text("semantic_model: [unclosed\n", encoding="utf-8")
+    (root / "context_layer").mkdir()
+    db = seed_demo_db(tmp_path / "demo.db")
+    report = status_json(capsys, "--served", str(root), "--db", str(db))
+    catalog = report["project"]["catalog"]
+    assert catalog["state"] == "invalid"  # the malformed model is named…
+    assert any(error.startswith("broken.yml:") for error in catalog["errors"])
+    assert catalog["metrics"] >= 1  # …while the valid model still counts
+    assert report["ready"] is False  # never ready over unreadable metadata
+    assert "corrupt or unreadable" in report["ready_reason"]
+    assert "broken.yml" in report["ready_reason"]
+    assert report["sources"]["readable"] is True  # other sections stay visible
+    # a scalar-text model (parses to a non-mapping) is the same diagnostic,
+    # never an AttributeError crash: the report still exits 0
+    (models / "broken.yml").write_text("just a plain scalar document\n", encoding="utf-8")
+    report = status_json(capsys, "--served", str(root), "--db", str(db))
+    assert report["project"]["catalog"]["state"] == "invalid"
+    assert report["ready"] is False
+
+
+def test_catalog_blocker_gets_authoring_or_repair_next_steps(served, tmp_path, capsys):
+    """F3b (spec 0016 Report section 5): an actual blocker never reports an
+    empty next_steps list — the empty-catalog case carries authoring
+    guidance, the corrupt-catalog case repair guidance, and the human output
+    no longer claims 'none — no blockers'."""
+    empty = tmp_path / "empty-catalog"
+    (empty / "context_layer").mkdir(parents=True)
+    (empty / "semantic_layer" / "models").mkdir(parents=True)
+    db = tmp_path / "demo.db"
+    db.write_bytes(b"")
+    report = status_json(capsys, "--served", str(empty), "--db", str(db))
+    assert report["ready"] is False and "catalog" in report["ready_reason"]
+    assert report["next_steps"], "the catalog blocker needs a next step"
+    assert any("author semantic models" in step for step in report["next_steps"])
+    capsys.readouterr()
+    assert run_status("--served", str(empty), "--db", str(db)) == 0
+    human = capsys.readouterr().out
+    assert "none — no blockers" not in human  # the human view claims no such thing
+    # staged work plus an empty catalog points at promotion instead
+    (tmp_path / "staging" / "semantic_layer" / "models").mkdir(parents=True)
+    (tmp_path / "staging" / "semantic_layer" / "models" / "m.yml").write_text("version: 0.2\n")
+    report = status_json(
+        capsys, "--served", str(empty), "--db", str(db), "--staging", str(tmp_path / "staging")
+    )
+    assert any("ariadne-promote" in step for step in report["next_steps"])
+    # corrupt metadata points at repair of the named file
+    (empty / "semantic_layer" / "models" / "broken.yml").write_text(
+        "semantic_model: [unclosed\n", encoding="utf-8"
+    )
+    report = status_json(capsys, "--served", str(empty), "--db", str(db))
+    assert any("repair" in step and "broken.yml" in step for step in report["next_steps"])
