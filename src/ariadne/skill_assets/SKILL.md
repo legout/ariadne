@@ -33,6 +33,13 @@ Pick the route that matches the project — the two never mix:
 The numbered commands below show the legacy options; on a Git-managed project
 pass `--project .` instead. Never start a server just to answer a question.
 
+Before a novel question, start with `ariadne search "<text>"` (same route
+options; `--json` for the full grouped object), or the read-only `discover`
+tool. It groups metrics/pages/terms/examples without executing an answer or
+authorizing a join. Native per-kind commands below remain authoritative: keep
+full Context/Policy caveats, draft/history labels and `resolve-term --part`
+continuation; discovery changes no compile, admission or Promotion gate.
+
 1. **List governed metrics** — `ariadne list-metrics --sources ariadne.yaml`.
    Start every question here: if a governed metric answers it, query it
    governed.

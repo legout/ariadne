@@ -63,16 +63,15 @@ actively blocks the retired datus packages -> fail fast with the historical
 install hint.
 """
 
-import json
 import re
 import sys
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 from sqlglot import expressions as exp
 from sqlglot.optimizer.scope import Scope, build_scope  # pyright: ignore[reportMissingImports]
 
@@ -86,21 +85,17 @@ from sqlglot.optimizer.scope import Scope, build_scope  # pyright: ignore[report
 from ariadne import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     admission,  # issue #37/G5: pinned-snapshot resolution for open_project
     answer_examples,
-    authoring_inputs,  # K4 fix pass: the operator evidence age budget (host config)
     context,  # issue #48 fix: the assessment clock/assembly seams stay internal
     proposals,  # pyright: ignore[reportMissingImports] — drift
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: the analyzer binds `ariadne` to the venv's editable main checkout, which lacks this lane's new module; runtime/uvx resolve the worktree
 )
+from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
+    data_signals,
+)
 
 # Shared Context Layer (issue #33, ADR-0016): retrieval, citation attachment and
 # deterministic OKF generation live in ariadne.context.
-from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
-    data_signals,
-    list_pages,
-    read_page,
-    resolve_term,
-    search_pages,
-)
+from ariadne.discovery import MISSING_CATALOG, ROUTING_HINT, DiscoveryRuntime
 
 # Shared Execution (issue #33, ADR-0016): the DuckDB session, catalog, bind
 # operation, statement guard and result collection are execution-owned.
@@ -136,7 +131,6 @@ from ariadne.query_results import QueryResultError  # pyright: ignore[reportMiss
 from ariadne.render import render  # pyright: ignore[reportMissingImports]
 from ariadne.semantic_graph import (  # pyright: ignore[reportMissingImports] — drift
     SemanticGraph,
-    load_graph,
 )
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     Registry,
@@ -153,7 +147,6 @@ from ariadne.sql_authority import (  # pyright: ignore[reportMissingImports] —
 )
 from ariadne.validate import (  # pyright: ignore[reportMissingImports] — drift
     _registry_identity,
-    candidate_scope_digest,
     served_tree_digest,
 )
 
@@ -174,30 +167,6 @@ INSTALL_HINT = (
     "(uv pip install 'datus-semantic-osi[metricflow]' on Python 3.12)"
 )
 
-# Spec rev 4 §8.12: the explicit route for questions no governed metric answers.
-# Shared by list_metrics' trailing hint and the unknown-metric error so both
-# name the same two operations.
-ROUTING_HINT = (
-    "If no governed metric above answers your question, route it to the ad-hoc path: "
-    "call list_datasets() to see the queryable tables, then define_metric(definition) "
-    "to compute the answer (compiled, executed read-only, auto-staged for human promotion). "
-    "For bounded record selection over one known table (no aggregation, no staging), "
-    "call query_records(request) with {dataset, fields, order, limit?} — never raw SQL."
-)
-
-# K4 (issue #44, spec 0010 §6/§9): the SPECIFIC missing-catalog error every
-# metric operation keeps on a human-admitted CONTEXT-ONLY snapshot (schemas/
-# References, no metrics): discovery and terminology resolution serve the
-# admitted context, the metric surface refuses explicitly, and no absent
-# model ever triggers a fallback raw-SQL route. The legacy explicit-root
-# constructors keep their historical fail-fast startup errors instead.
-MISSING_CATALOG = (
-    "no governed metric catalog: the pinned admitted snapshot carries no semantic "
-    "models — metric operations are refused; discovery (search_context) and term "
-    "resolution (resolve_term) still serve the admitted context, and no absent "
-    "model ever triggers a raw-SQL fallback"
-)
-
 # MetricFlow's metric-name schema, enforced again at lowering time — reject up
 # front with an actionable message (lowercase snake_case, no double underscore).
 _SLUG_RE = re.compile(r"[a-z][a-z0-9_]*[a-z0-9]")
@@ -207,7 +176,7 @@ _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _IDENTIFIER_PATH_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 
-class QueryRuntime:
+class QueryRuntime(DiscoveryRuntime):
     """Governed + ad-hoc metric runtime: render-gate compile + execution-owned
     DuckDB execution. ``ariadne.runtime.AriadneRuntime`` and ``ariadne.serve.Facade``
     are aliases of exactly this class (spec 2026-10-02-0009 §2) — never a second
@@ -251,46 +220,8 @@ class QueryRuntime:
         if _DATUS_IMPORT_ERROR is not None:  # spec §7: fail fast with the hint
             raise RuntimeError(f"{INSTALL_HINT}: {_DATUS_IMPORT_ERROR}")
 
-        self.context_dir = Path(context_dir)
+        self._load_catalog(semantic_dir, context_dir, admission_record)
         models = Path(semantic_dir) / "models"
-        # K4 (issue #44, spec 0010 §6): a MANAGED context-only admitted snapshot
-        # (no semantic models — schemas/References only) constructs for
-        # discovery and term resolution; every metric operation then refuses
-        # with the SPECIFIC missing-catalog error. The legacy explicit-root
-        # constructors keep the historical fail-fast startup errors exactly.
-        self._context_only = False
-        if not models.is_dir():
-            if admission_record is None:
-                raise RuntimeError(
-                    f"no semantic models under {models} — promote staging/semantic_layer/ first"
-                )
-            self._context_only = True
-        # Envelope metadata read directly (no datus): per metric, its description,
-        # available dimensions (fields carrying a dimension flag — spec rev 4 §8.12)
-        # and the single-entry envelope render() compiles.
-        self._metrics: dict[str, Any] = {}
-        for path in sorted(models.glob("*.yml")) if models.is_dir() else []:
-            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            for model in doc.get("semantic_model") or []:
-                dimension_names = {
-                    field.get("name")
-                    for dataset in model.get("datasets") or []
-                    for field in dataset.get("fields") or []
-                    if isinstance(field.get("dimension"), dict) and field.get("name")
-                }
-                for metric in model.get("metrics") or []:
-                    name = metric.get("name")
-                    if not isinstance(name, str) or not name:
-                        continue
-                    self._metrics[name] = {
-                        "description": metric.get("description") or "",
-                        "dimensions": sorted(dimension_names),
-                        "model": {"version": doc.get("version"), "semantic_model": [model]},
-                    }
-        if not self._metrics:  # spec §7: nothing servable -> fail fast, not at query time
-            if admission_record is None:
-                raise RuntimeError(f"no governed metrics found under {models}")
-            self._context_only = True  # a managed catalog-less admission serves discovery
         try:
             for entry in self._metrics.values():
                 render(entry["model"])
@@ -348,41 +279,9 @@ class QueryRuntime:
         # lazily once and reused by every data_signals attachment. No new catalog
         # or source query ever runs for quality evidence.
         self._catalog_resources: dict[str, str] | None = None
-        # Issue #30: the admitted multi-fact graph. Admission is the human local
-        # Promotion of a validated bundle — the promotion-written admission record
-        # under the served semantic layer binds the post-Promotion served-tree
-        # digest; a graph without it (hand-placed, or plain staging promotion) is
-        # never governed. Production Git-review admission is a separate blocked
-        # workstream: this runtime has no code path that could label an unreviewed
-        # commit governed, and reports only the route it actually served. The
-        # bound identity (db/sources) is kept for the per-query staleness recheck.
-        self._graph: SemanticGraph | None = None
-        self._admission: dict | None = None
-        self._admission_reason: str | None = None
-        self._admission_db = db_path
-        self._admission_sources = sources
-        self._semantic_dir = Path(semantic_dir)
-        # The managed Git route (issue #37/G5): the session pins ONE coherent
-        # admitted revision — snapshot bytes, approved source identity and the
-        # logical project root that anchors the ORIGINAL project-owned staging
-        # and Answer Example stores (never the pinned artifact root).
-        self._managed = admission_record
-        self._project = Path(project_root).resolve() if project_root is not None else None
-        # Issue #37 fix pass: the Answer Example store stays anchored at the
-        # LOGICAL project root on the managed route (operator-reviewed stable
-        # examples under <project>/answer_examples stay discoverable), while
-        # citations and staleness keep resolving against the PINNED artifact
-        # root (context_dir.parent) — the legacy route keeps its single shared
-        # root (examples_root=None).
-        self._examples_root = self._project
-        if admission_record is not None:
-            self._load_managed_graph(self._semantic_dir)
-            if self._context_only and self._graph is None:
-                # the managed multi-fact refusal names the missing CATALOG on a
-                # context-only snapshot, not a broken admission
-                self._admission_reason = MISSING_CATALOG
-        else:
-            self._load_admission(Path(semantic_dir), db_path, sources)
+        self._init_artifacts(
+            semantic_dir, db_path, sources, staging_dir, admission_record, project_root
+        )
 
     @classmethod
     def open_project(
@@ -391,6 +290,7 @@ class QueryRuntime:
         *,
         staging_dir: str | Path | None = None,
         deadline_budget: DeadlineBudget | None = None,
+        discovery: DiscoveryRuntime | None = None,
     ) -> "QueryRuntime":
         """The managed-project factory (issue #37/G5, plan §2): resolve the
         pinned snapshot and its approved source configuration of a Git-managed
@@ -406,7 +306,16 @@ class QueryRuntime:
         the pinned artifact root. Each session pins one coherent admitted
         revision; a later session picks up a later admission."""
         root = Path(project).resolve()
-        record, snapshot = admission.resolve_admission(root)
+        if discovery is None:
+            record, snapshot = admission.resolve_admission(root)
+        else:
+            # Deferred adapters retain ONE admitted revision across discovery and queries.
+            if discovery._project != root or discovery._managed is None:
+                raise ValueError("discovery does not pin an admission for this project")
+            discovery._recheck_pinned()
+            record, snapshot = discovery._managed, discovery.context_dir.parent
+            if staging_dir is None:
+                staging_dir = discovery.staging_dir
         return cls(
             snapshot / "semantic_layer",
             snapshot / "context_layer",
@@ -422,28 +331,8 @@ class QueryRuntime:
         )
 
     async def list_metrics(self) -> list[dict | str]:
-        """Governed metrics with descriptions and available dimensions; the list
-        ends with the explicit routing hint to the ad-hoc path (spec rev 4 §8.12).
-        Serves pinned snapshot bytes (the envelope metadata), so the managed
-        route re-checks them first — mid-session tampering refuses here too
-        (issue #37 fix pass). A context-only admitted snapshot keeps the
-        SPECIFIC missing-catalog error (K4): an empty list would pose as a
-        served catalog over an admitted revision that carries none."""
-        self._discard_request_budget()  # fix pass 2, finding 1b (list_metrics)
-        if self._managed is not None:
-            self._recheck_pinned()
-        if self._context_only:
-            raise ValueError(MISSING_CATALOG)
-        entries: list[dict | str] = [
-            {
-                "name": name,
-                "description": meta["description"],
-                "dimensions": meta["dimensions"],
-            }
-            for name, meta in self._metrics.items()
-        ]
-        entries.append(ROUTING_HINT)
-        return entries
+        self._discard_request_budget()
+        return await super().list_metrics()
 
     async def list_datasets(self) -> list[dict]:
         """Every queryable table across all registry sources with its columns
@@ -715,107 +604,6 @@ class QueryRuntime:
             dependencies[name] = resolved
         return dependencies
 
-    def _load_managed_graph(self, semantic_dir: Path) -> None:
-        """The managed route's multi-fact gate (issue #37/G5): the pinned
-        Git-review admission IS the graph's admission — the legacy
-        promotion-written ``admission.json`` never exists inside a snapshot
-        (it is not admitted artifact scope), so ``query_metrics``/
-        ``query_detail`` serve only when the pinned snapshot itself carries a
-        loadable graph."""
-        if (semantic_dir / "graph.yml").is_file():
-            try:
-                self._graph = load_graph(semantic_dir)
-            except Exception as exc:  # fail fast: an admitted graph that cannot load
-                raise RuntimeError(
-                    f"the admitted graph under {semantic_dir} does not load: {exc}"
-                ) from exc
-            return
-        self._admission_reason = (
-            "the pinned snapshot carries no multi-fact graph (semantic_layer/graph.yml) "
-            "— query_metrics/query_detail stay refused; governed single-metric answers "
-            "serve from the pinned admitted revision"
-        )
-
-    def _recheck_pinned(self) -> None:
-        """Issue #37/G5: re-verify the session's bound snapshot bytes and
-        source identity on every governed answer — a hand-edited snapshot file
-        or a withdrawn source approval is a staleness refusal (the runtime
-        never serves mutated pinned bytes), exactly like the legacy admission
-        digest recheck."""
-        record = self._managed
-        assert record is not None  # only the managed route calls this
-        digest = candidate_scope_digest(self.context_dir.parent)
-        if digest != record["artifact_digest"]:
-            raise PlannerError(
-                "admission_stale",
-                "the pinned snapshot changed after admission "
-                f"(snapshot digest {digest[:12]}… != admitted "
-                f"{record['artifact_digest'][:12]}…) — the runtime never serves "
-                "hand-edited snapshot bytes; re-admit a reviewed/validated revision",
-            )
-        if self._project is not None and not admission.approval_present(
-            self._project, record["source_digest"]
-        ):
-            raise PlannerError(
-                "admission_stale",
-                "the admitted source identity no longer carries the operator's "
-                "approval — re-approve the exact resolved identity before serving",
-            )
-
-    def _load_admission(
-        self, semantic_dir: Path, db_path: str | Path | None, sources: str | Path | None
-    ) -> None:
-        """Resolve the served tree's multi-fact admission (issue #30). The
-        promotion-written ``semantic_layer/admission.json`` maps the exact
-        staged review digest to the POST-Promotion served-tree digest together
-        with the persisted technical validation scope; the graph serves only
-        while the CURRENT served bytes still match it. No record, a corrupt
-        record, changed served bytes, or a changed approved registry each leave
-        the runtime unadmitted — ``query_metrics``/``query_detail`` refuse with
-        that reason while the legacy single-metric path keeps its behavior
-        (spec rev 1 AC7)."""
-        record_path = semantic_dir / "admission.json"
-        if not record_path.is_file():
-            self._admission_reason = (
-                "the served tree carries no multi-fact admission record — admit the "
-                "graph by submitting the bundle, having a human review it, and running "
-                "the exact-digest ariadne-promote --digest (local route); an unadmitted "
-                "graph is never governed"
-            )
-            return
-        try:
-            record = json.loads(record_path.read_text(encoding="utf-8"))
-            if not isinstance(record, dict) or not record.get("served_digest"):
-                raise ValueError("not an admission record")
-        except ValueError as exc:
-            self._admission_reason = (
-                f"{record_path}: unreadable admission record ({exc}) — the multi-fact "
-                "query interface stays refused until a human re-promotes a validated "
-                "bundle"
-            )
-            return
-        current = served_tree_digest(semantic_dir, self.context_dir)
-        if current != record["served_digest"]:
-            self._admission_reason = (
-                "the served layers changed after admission "
-                f"(served digest {current[:12]}… != recorded {record['served_digest'][:12]}…) "
-                "— revalidate and re-promote before serving the graph as governed"
-            )
-            return
-        bound = (record.get("validation") or {}).get("registry_digest")
-        registry_digest, _label = _registry_identity(db_path, sources)
-        if bound is not None and registry_digest != bound:
-            self._admission_reason = (
-                "the approved source registry changed after admission — revalidate and "
-                "re-promote before serving the graph as governed"
-            )
-            return
-        try:
-            self._graph = load_graph(semantic_dir)
-        except Exception as exc:  # fail fast: an admitted tree that cannot load
-            raise RuntimeError(f"admitted graph under {semantic_dir} does not load: {exc}") from exc
-        self._admission = record
-
     def _admitted(self) -> tuple[SemanticGraph, dict]:
         """The admitted graph + record, or the structured refusal (spec rev 1
         "Failure and compatibility behavior": a stable error code, before any
@@ -862,30 +650,6 @@ class QueryRuntime:
                 "re-promote before serving the graph as governed",
             )
         return self._graph, self._admission
-
-    def _admission_view(self, record: dict) -> dict:
-        """The response's local admission provenance. The managed Git route
-        (issue #37/G5) reports the pinned revision/route evidence: route,
-        pinned commit, proposal, the human-confirmed review digest, the bound
-        artifact digest and the recorded validation scope."""
-        if record is self._managed:
-            return {
-                "route": record.get("route"),
-                "revision": record.get("commit"),
-                "proposal": record.get("proposal"),
-                "review_digest": record.get("review_digest"),
-                "artifact_digest": record.get("artifact_digest"),
-                "confirmed": record.get("confirmed"),
-                "validation": record.get("validation"),
-            }
-        return {
-            "route": record.get("route"),
-            "reviewed_digest": record.get("reviewed_digest"),
-            "served_digest": record.get("served_digest"),
-            "revision": record.get("revision"),
-            "validation": record.get("validation"),
-            "promoted": record.get("promoted"),
-        }
 
     async def query_metrics(self, request: dict) -> dict:
         """Governed multi-fact query (issue #30, spec rev 1 "Query and result
@@ -1192,24 +956,8 @@ class QueryRuntime:
     async def search_examples(
         self, query: str, limit: int = 10, include_history: bool = False
     ) -> list[dict]:
-        """Issue #19: ranked labeled example records (draft/stable identity,
-        staleness, question/interpretation, method summary, provenance, path)
-        from the current served and staging example roots — re-read on each
-        request, no query execution, no saved rows. On the managed route the
-        served example store is anchored at the LOGICAL project root (issue
-        #37 fix pass), while citation staleness checks the pinned artifact
-        root. ``search_context`` and governed ``get_metric.context`` are
-        unaffected: examples live outside ``context_layer/`` and never enter
-        them."""
-        self._discard_request_budget()  # fix pass 2, finding 1b (search_examples)
-        return answer_examples.search_examples(
-            self.context_dir.parent,
-            self.staging_dir,
-            query,
-            limit=limit,
-            include_history=include_history,
-            examples_root=self._examples_root,
-        )
+        self._discard_request_budget()
+        return await super().search_examples(query, limit=limit, include_history=include_history)
 
     def _metric_context(self, name: str, *, _now: datetime | None = None) -> dict:
         """The shared context implementation over this runtime's served context
@@ -1335,90 +1083,58 @@ class QueryRuntime:
             raise ValueError(f"{type(exc).__name__}: {exc}") from exc
 
     async def search_context(self, query: str, limit: int = 10) -> list[dict]:
-        """Search the served Context Layer and staged drafts for business rules
-        (spec 2026-09-23-0002; the shared ranking implementation and its
-        contract live in :func:`ariadne.context.search_pages`): deterministic
-        token-aware ranking over the served context dir plus the staged context
-        drafts, served hits ``draft: false`` and staged hits ``draft: true``.
-        Serves pinned snapshot bytes on the managed route, so the pinned digest
-        is re-checked first — mid-session tampering refuses here exactly like
-        ``get_metric`` (issue #37 fix pass)."""
-        self._discard_request_budget()  # fix pass 2, finding 1b (search_context)
-        if self._managed is not None:
-            self._recheck_pinned()
-        return search_pages(
-            query, limit, [(self.context_dir, False), (self.staging_dir / "context_layer", True)]
-        )
+        self._discard_request_budget()
+        return await super().search_context(query, limit=limit)
 
     async def resolve_term(self, request: str | dict, *, part: int = 1) -> dict:
-        """Resolve one shared business term or exact ``{resource, column}``
-        field lookup against the served context (spec 0010 §6, plan §2; the
-        shared read-only resolver lives in
-        :func:`ariadne.context.resolve_term`): bounded matching
-        concept/representation identities with their exact bindings, required
-        scope, ambiguity, unconfirmed claim status, freshness and actual
-        page/source citations. Resolves the PINNED admitted context only
-        (never staging drafts); the managed route re-checks the pinned bytes
-        first and carries the admission provenance alongside the matches. The
-        resolver applies no transform, rewrites no SQL and authorizes no join;
-        ``search_context`` keeps its lexical ranking and passage pointers
-        unchanged."""
-        self._discard_request_budget()  # fix pass 2, finding 1b (resolve_term)
-        if self._managed is not None:
-            self._recheck_pinned()
-        result = resolve_term(
-            [(self.context_dir, False)],
-            request,
-            part=part,
-            # K4 (issue #44): the admitted human mapping confirmations of the
-            # pinned revision ride the resolver — a mapping reports confirmed
-            # only while the recorded selection binds its exact effective
-            # assertion identity and unchanged verified evidence. K4 fix pass
-            # (finding 3): the operator's evidence age budget (the same
-            # inspection.receipt_max_age_hours host config the receipt gate
-            # uses) drives the explicit as_of/stale freshness states, and a
-            # matching confirmation over EXPIRED evidence is withheld as
-            # current guidance (needs-revalidation, history disclosed).
-            confirmations=(self._managed or {}).get("confirmed_mappings"),
-            evidence_max_age_hours=(
-                authoring_inputs.project_inspection_limits(self._project)["receipt_max_age_hours"]
-                if self._project is not None
-                else None
-            ),
-        )
-        if self._managed is not None:
-            # the resolved terms identify the admitted revision they came from
-            result["admission"] = self._admission_view(self._managed)
-        return result
+        self._discard_request_budget()
+        return await super().resolve_term(request, part=part)
 
     async def list_context_pages(self) -> list[dict]:
-        """Enumerate every served and staged Context Layer page (spec 0015,
-        ADR-0020): metadata only — ``path``, ``draft``, ``title`` and the
-        advisory ``context_signals`` envelope — served before staged, then
-        path, deterministically. No bodies and no query tokens: the
-        token-free directory view for discovery and onboarding. Serves
-        pinned snapshot bytes on the managed route, so the pinned digest is
-        re-checked first exactly like ``search_context``."""
         self._discard_request_budget()
-        if self._managed is not None:
-            self._recheck_pinned()
-        return list_pages([(self.context_dir, False), (self.staging_dir / "context_layer", True)])
+        return await super().list_context_pages()
 
     async def read_context_page(self, path: str, draft: bool = False) -> dict:
-        """Read one exact Context Layer page by bundle-relative POSIX path
-        (spec 0015, ADR-0020): full ``content`` plus ``draft``, ``title``-free
-        metadata, and the advisory ``context_signals`` envelope. ``draft=false``
-        (the default) reads the served root and re-checks the pinned digest
-        on the managed route exactly like ``search_context``; ``draft=true``
-        reads the staged root's live bytes (a draft is by definition not
-        pinned). An absolute, root-escaping, non-markdown or unknown path
-        raises ``ValueError`` naming the rejected path — never a search
-        fallback, never an empty success."""
         self._discard_request_budget()
-        if not draft and self._managed is not None:
-            self._recheck_pinned()
-        root = self.staging_dir / "context_layer" if draft else self.context_dir
-        return read_page(path, root, draft=draft)
+        return await super().read_context_page(path, draft=draft)
+
+
+class DeferredQueryRuntime:
+    """Adapter session: discovery is artifact-only; other tools open execution on demand."""
+
+    def __init__(
+        self,
+        factory: Callable[[], QueryRuntime],
+        discovery: DiscoveryRuntime | Callable[[], DiscoveryRuntime],
+    ):
+        self._factory = factory
+        self._discovery = discovery
+        self._runtime: QueryRuntime | None = None
+
+    def runtime(self) -> QueryRuntime:
+        if self._runtime is None:
+            self._runtime = self._factory()
+        return self._runtime
+
+    @property
+    def discovery(self) -> DiscoveryRuntime:
+        if callable(self._discovery):
+            self._discovery = self._discovery()
+        return self._discovery
+
+    @property
+    def _qualified(self) -> bool:
+        return self.discovery._qualified
+
+    async def discover(self, query: str, limit: int = 5) -> dict:
+        return await self.discovery.discover(query, limit=limit)
+
+    def __getattr__(self, name):
+        return getattr(self.runtime(), name)
+
+    def close(self) -> None:
+        if self._runtime is not None:
+            self._runtime.con.close()
 
 
 def _timestamp_refusal(exc: BaseException) -> QueryResultError | None:

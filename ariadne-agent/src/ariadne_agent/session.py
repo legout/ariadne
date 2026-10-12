@@ -18,7 +18,8 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from ariadne.query import QueryRuntime
+from ariadne.discovery import DiscoveryRuntime
+from ariadne.query import DeferredQueryRuntime, QueryRuntime
 from tau_agent.events import (
     AgentEndEvent,
     MessageEndEvent,
@@ -187,7 +188,10 @@ def _missing_served_catalog(exc: BaseException) -> bool:
     )
 
 
-def _open_runtime(project: Path) -> QueryRuntime:
+def _open_runtime(
+    project: Path, *, runtime_type: type[QueryRuntime] | type[DiscoveryRuntime] = QueryRuntime,
+    discovery: DiscoveryRuntime | None = None,
+) -> QueryRuntime | DiscoveryRuntime:
     """Build the session's runtime from the host-selected project root only.
 
     A MANAGED Git data project — one carrying Ariadne's operator state (the
@@ -198,9 +202,15 @@ def _open_runtime(project: Path) -> QueryRuntime:
     project with no valid admission instead of falling back to mutable
     files. An explicit legacy artifact-root project (no Ariadne state) keeps
     the legacy construction and its behavior exactly."""
-    if (project / ".ariadne").exists():
+    managed = (
+        discovery._managed is not None
+        if discovery is not None else (project / ".ariadne").exists()
+    )
+    if managed:
         try:
-            return QueryRuntime.open_project(project)
+            if discovery is not None:
+                return QueryRuntime.open_project(project, discovery=discovery)
+            return runtime_type.open_project(project)
         except Exception as exc:
             raise RuntimeError(
                 f"analyst session for {project} cannot query the managed Git "
@@ -216,7 +226,7 @@ def _open_runtime(project: Path) -> QueryRuntime:
             "host must configure the project before opening a session"
         )
     try:
-        return QueryRuntime(
+        return runtime_type(
             project / "semantic_layer",
             project / "context_layer",
             db,
@@ -249,7 +259,7 @@ class AgentSession:
         role: str,
         project: Path,
         model: str,
-        runtime: QueryRuntime | None = None,
+        runtime: DeferredQueryRuntime | None = None,
         harness: AgentHarness,
         mcp: SessionMcp | None = None,
     ) -> None:
@@ -352,7 +362,7 @@ class AgentSession:
         if self._mcp is not None:
             self._mcp.shutdown()
         if self._runtime is not None:  # Authoring sessions own no query runtime
-            self._runtime.con.close()
+            self._runtime.close()
 
 
 def _translate(event: object, pending_args: dict[str, dict]) -> list[AgentSessionEvent]:
@@ -384,9 +394,7 @@ def _translate(event: object, pending_args: dict[str, dict]) -> list[AgentSessio
     return []
 
 
-def _attach_mcp(
-    mcp_settings: McpSettings | None, role: str, tools: list
-) -> SessionMcp | None:
+def _attach_mcp(mcp_settings: McpSettings | None, role: str, tools: list) -> SessionMcp | None:
     """Attach this session's role-restricted MCP proxy after the native tools.
 
     No MCP settings means exactly the native surface; a role with an empty
@@ -442,10 +450,15 @@ def open_session(
                 tools=tools,
             )
         )
-        return AgentSession(
-            role=role, project=root, model=model, harness=harness, mcp=session_mcp
-        )
-    runtime = _open_runtime(root)
+        return AgentSession(role=role, project=root, model=model, harness=harness, mcp=session_mcp)
+    discovery = _open_runtime(root, runtime_type=DiscoveryRuntime)
+
+    def query_runtime() -> QueryRuntime:
+        runtime = _open_runtime(root, discovery=discovery)
+        assert isinstance(runtime, QueryRuntime)
+        return runtime
+
+    runtime = DeferredQueryRuntime(query_runtime, discovery)
     system = analyst_guidance() + _ANALYST_RULES
     tools = analyst_tools(runtime)
     session_mcp = _attach_mcp(mcp_settings, role, tools)

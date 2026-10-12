@@ -72,6 +72,7 @@ ANALYST_TOOLS = {
     "resolve_term",  # K2 (issue #42): alongside the five baseline tools
     "list_context_pages",  # spec 0015 (issue #60): token-free page listing
     "read_context_page",  # spec 0015 (issue #60): path-addressed page reading
+    "discover",  # spec 0018 (issue #64): grouped artifact-only discovery
 }
 
 ANSWER_GOVERNED = """\

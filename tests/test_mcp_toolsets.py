@@ -23,7 +23,6 @@ project serves Analyst/Combined queries from the pinned snapshot.
 import asyncio
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -62,6 +61,7 @@ QUERY_TOOLS = {
     "resolve_term",  # K2 (issue #42): shared terminology resolution
     "list_context_pages",  # spec 0015 (issue #60): token-free page listing
     "read_context_page",  # spec 0015 (issue #60): path-addressed page reading
+    "discover",  # spec 0018 (issue #64): grouped artifact-only discovery
 }
 
 # The Authoring registration: the plan §2 Authoring call contract, exposed
@@ -287,9 +287,9 @@ def test_stdio_legacy_project_broken_served_model_never_blocks_combined_authorin
     the human-seeded draft case fresh onboarding actually hits) — is
     query-only on the Combined registration: the session boots, the query
     tool surfaces the compile error per call, and authoring works in the
-    very same session. The pure Analyst registration keeps the historic
-    fail-fast exit on the same project: it has no authoring surface to
-    protect, so the startup error itself is the honest report."""
+    very same session. Spec 0018 revision 2 now requires BOTH query toolsets
+    to boot artifact-only: discover succeeds without rendering, while the
+    first query tool still returns the existing RuntimeError compile refusal."""
     project = complete_bundle_project(tmp_path / "broken")
     model = project / "semantic_layer" / "models" / "events.yml"
     model.write_text(
@@ -298,35 +298,45 @@ def test_stdio_legacy_project_broken_served_model_never_blocks_combined_authorin
     )
     assert not (project / ".ariadne").exists()  # the legacy route: mutable files
 
-    # the pure Analyst launch on the same project still fails fast: the
-    # server exits 1 with the compile error before any MCP traffic starts
-    proc = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "ariadne.serve",
-            "--project",
-            str(project),
-            "--toolset",
-            "analyst",
-        ],
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert proc.returncode == 1, proc.stderr
-    assert "do not compile" in proc.stderr, proc.stderr
+    from ariadne.query import QueryRuntime
 
-    # the Combined registration of the very same project boots: the compile
-    # error stays query-side (surfaced per tool call, never at startup) and
-    # authoring is not blocked by it in the same session
+    # The unchanged execution constructor is the compile-error identity oracle.
+    with pytest.raises(RuntimeError, match="served OSI models.*do not compile") as refusal:
+        QueryRuntime(
+            project / "semantic_layer",
+            project / "context_layer",
+            None,
+            sources=project / "ariadne.yaml",
+        )
+
+    # The CLI launch uses its cwd-relative default rather than this absolute path.
+    expected_refusal = str(refusal.value).replace(
+        str(project / "semantic_layer" / "models"), "semantic_layer/models"
+    )
+
+    async def analyst() -> dict:
+        async with _launch(project, "analyst") as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                discovery = await session.call_tool("discover", {"query": "event"})
+                first_query = await session.call_tool("list_metrics", {})
+                return {"discovery": discovery, "refused": first_query}
+
+    analyst_out = asyncio.run(analyst())
+    assert not analyst_out["discovery"].isError
+    analyst_groups = json.loads(_text(analyst_out["discovery"]))["groups"]
+    assert list(analyst_groups) == ["metrics", "pages", "terms", "examples"]
+    assert analyst_groups["metrics"]["items"][0]["name"] == "event_count"
+    assert analyst_out["refused"].isError
+    assert _text(analyst_out["refused"]) == f"Error executing tool list_metrics: {expected_refusal}"
+
+    # Combined keeps the original authoring assertions beside the same refusal.
     async def run() -> dict:
         out = {}
         async with _launch(project, "combined") as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
+                out["discovery"] = await session.call_tool("discover", {"query": "event"})
                 out["refused"] = await session.call_tool("list_metrics", {})
                 out["started"] = json.loads(
                     _text(await session.call_tool("authoring_start_proposal", {}))
@@ -338,6 +348,10 @@ def test_stdio_legacy_project_broken_served_model_never_blocks_combined_authorin
     assert out["refused"].isError
     assert "do not compile" in _text(out["refused"])
     assert set(out["started"]) == {"proposal", "base_revision", "candidate_revision"}
+    assert _text(out["refused"]) == f"Error executing tool list_metrics: {expected_refusal}"
+    assert not out["discovery"].isError
+    combined_groups = json.loads(_text(out["discovery"]))["groups"]
+    assert list(combined_groups) == ["metrics", "pages", "terms", "examples"]
 
 
 def test_stdio_admitted_project_serves_queries_and_keeps_authoring(tmp_path):

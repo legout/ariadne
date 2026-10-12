@@ -118,12 +118,16 @@ from ariadne import (
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: analyzer binds the venv copy lacking this lane's new module
 )
 from ariadne.authoring import AuthoringProject
+from ariadne.discovery import DiscoveryRuntime
 from ariadne.execution import DeadlineBudget  # pyright: ignore[reportMissingImports] — drift
 
 # The grain guidance constant lives in ariadne.grain; it stays importable from
 # this module for backward compatibility (tests import it from here).
 from ariadne.grain import GRAIN_GUIDANCE  # noqa: F401 — re-export
-from ariadne.query import QueryRuntime  # pyright: ignore[reportMissingImports] — drift
+from ariadne.query import (  # pyright: ignore[reportMissingImports] — drift
+    DeferredQueryRuntime,
+    QueryRuntime,
+)
 from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     default_registry_path,
@@ -137,7 +141,7 @@ Facade = QueryRuntime
 # surface is not available yet (spec 2026-09-24-0005: the promoted-models
 # requirement "cannot block startup of the authoring tools"; query calls
 # re-attempt construction).
-FacadeSource = QueryRuntime | Callable[[], QueryRuntime]
+FacadeSource = QueryRuntime | DeferredQueryRuntime | Callable[[], QueryRuntime]
 
 # The three registrations (spec §6): Query under its established names, the
 # authoring contract under one stable prefix, and their union.
@@ -452,6 +456,8 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             runtime, together with the one-time refusal-representability check
             on this transport)."""
             runtime = facade() if callable(facade) else facade
+            if isinstance(runtime, DeferredQueryRuntime):
+                runtime = runtime.runtime()
             if runtime._measure is None:
                 runtime._measure = _mcp_result_bytes
                 for form in query_results.refusal_forms():
@@ -475,6 +481,27 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 return query_results.DEFAULT_QUERY_LIMITS["mcp_response_bytes"]
 
         # --- the five query/ad-hoc tools (spec 2026-09-23-0001, unchanged) ---
+
+        @app.tool()
+        async def discover(query: str, limit: int = 5) -> dict:
+            """Discover metrics, pages, terms and examples without opening sources.
+
+            Four native groups, draft/history/freshness labels and bounded term
+            continuation; never executes an answer or authorizes a join.
+            """
+            if isinstance(facade, (QueryRuntime, DeferredQueryRuntime)):
+                discovery = facade
+            elif (Path(project) / ".ariadne").exists():
+                discovery = DiscoveryRuntime.open_project(project)
+            else:
+                discovery = DiscoveryRuntime(
+                    Path(project) / "semantic_layer",
+                    Path(project) / "context_layer",
+                    None,
+                    staging_dir=Path(project) / "staging",
+                    sources=default_registry_path(),
+                )
+            return await discovery.discover(query, limit=limit)
 
         @app.tool()
         async def list_metrics() -> list[dict | str]:
@@ -1324,7 +1351,10 @@ def main(argv: list[str] | None = None) -> int:
         if managed:
             # open_project reads the LOGICAL host project's ``query:`` ceilings
             # itself (never the pinned snapshot's inert copy).
-            runtime = QueryRuntime.open_project(project, deadline_budget=budget)
+            runtime = QueryRuntime.open_project(
+                project, deadline_budget=budget,
+                discovery=facade.discovery if isinstance(facade, DeferredQueryRuntime) else None,
+            )
         else:
             if sources_path is None and db is None:
                 raise ValueError(
@@ -1364,6 +1394,23 @@ def main(argv: list[str] | None = None) -> int:
             runtime._measure = _mcp_result_bytes
         return runtime
 
+    def _new_discovery() -> DiscoveryRuntime:
+        if managed:
+            return DiscoveryRuntime.open_project(project)
+        if sources_path is None and db is None:
+            raise ValueError(
+                "no source configured: pass --sources REGISTRY or --db SQLITE, or "
+                "declare sources in ariadne.yaml under --project — the server "
+                "never guesses a database to query"
+            )
+        return DiscoveryRuntime(
+            args.semantic, args.context, db, staging_dir=args.staging, sources=sources_path
+        )
+
+    def _deferred_runtime() -> QueryRuntime:
+        seconds = query_results.load_host_query_limits(Path.cwd())["execution_seconds"]
+        return _new_runtime(DeadlineBudget(seconds))
+
     facade: FacadeSource
     if args.toolset == "authoring":
         # No query operation is registered, so no runtime is ever built (spec
@@ -1376,7 +1423,12 @@ def main(argv: list[str] | None = None) -> int:
         facade = _no_runtime
     else:
         try:
-            facade = _new_runtime()
+            # Preserve the explicit historical install refusal without execution setup.
+            from ariadne.query import _DATUS_IMPORT_ERROR, INSTALL_HINT
+
+            if _DATUS_IMPORT_ERROR is not None:
+                raise RuntimeError(f"{INSTALL_HINT}: {_DATUS_IMPORT_ERROR}")
+            facade = DeferredQueryRuntime(_deferred_runtime, _new_discovery())
         except Exception as exc:  # fail fast before any MCP traffic
             # A query-only startup failure keeps the authoring surface alive.
             # On the Combined registration (issue #38 criterion 2) EVERY
@@ -1406,18 +1458,7 @@ def main(argv: list[str] | None = None) -> int:
                 # never masks it; spec 2026-09-23-0001 §7).
                 print(f"error: {exc}", file=sys.stderr)
                 return 1
-            memo: list[QueryRuntime] = []
-
-            def lazy_facade() -> QueryRuntime:
-                if not memo:
-                    # Fix pass 1, finding 1: the lazy factory constructs INSIDE a
-                    # tool call (a request lifecycle) — construction and that
-                    # request's first operation share ONE remaining-seconds budget.
-                    seconds = query_results.load_host_query_limits(Path.cwd())["execution_seconds"]
-                    memo.append(_new_runtime(DeadlineBudget(seconds)))
-                return memo[0]
-
-            facade = lazy_facade
+            facade = DeferredQueryRuntime(_deferred_runtime, _new_discovery)
     try:
         app = build_app(facade, toolset=args.toolset)  # project anchored by the chdir
     except ModuleNotFoundError as exc:  # the optional transport is not installed

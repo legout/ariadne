@@ -27,11 +27,12 @@ admission or Promotion tool.
 import json
 from collections.abc import Mapping
 
-from ariadne.query import QueryRuntime
+from ariadne.query import DeferredQueryRuntime, QueryRuntime
 from tau_agent.messages import TextContent
 from tau_agent.tools import AgentTool, AgentToolResult, ToolExecutor
 
 TOOL_NAMES = (
+    "discover",
     "list_metrics",
     "search_context",
     "get_metric",
@@ -48,13 +49,18 @@ def _payload(value: object) -> AgentToolResult:
     return AgentToolResult(content=[TextContent(text=json.dumps(value, default=str))])
 
 
-def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
+def analyst_tools(runtime: QueryRuntime | DeferredQueryRuntime) -> list[AgentTool]:
     """The Analyst tool set: Ariadne's five baseline query operations plus the
     K2 read-only term resolver (issue #42) — nothing else."""
 
     # Each wrapper mirrors the runtime's own signature and the routing language
     # the ariadne-data MCP facade uses (spec rev 4 §8.12: fresh consuming agents
     # discover the ad-hoc path through the facade itself).
+    async def discover(
+        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
+    ) -> AgentToolResult:
+        return _payload(await runtime.discover(arguments["query"], arguments.get("limit", 5)))
+
     async def list_metrics(
         tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
@@ -105,6 +111,7 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
         )
 
     executor: dict[str, ToolExecutor] = {
+        "discover": discover,
         "list_metrics": list_metrics,
         "search_context": search_context,
         "get_metric": get_metric,
@@ -115,6 +122,11 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
         "read_context_page": read_context_page,
     }
     descriptions = {
+        "discover": (
+            "Discover metrics, pages, terms and examples first for novel questions. "
+            "Read-only native groups with full draft/history/freshness labels and "
+            "bounded term continuation; never executes an answer or authorizes a join."
+        ),
         "list_metrics": (
             "Governed metrics with descriptions and available dimensions; the list "
             "ends with the explicit routing hint to the ad-hoc path. Start every "
@@ -207,6 +219,15 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
         ),
     }
     schemas = {
+        "discover": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "default": 5},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
         "list_metrics": {"type": "object", "properties": {}, "additionalProperties": False},
         "search_context": {
             "type": "object",

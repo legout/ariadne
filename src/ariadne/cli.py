@@ -63,6 +63,7 @@ from typing import Any, NoReturn
 from ariadne import (
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: analyzer binds the venv copy
 )
+from ariadne.discovery import DiscoveryRuntime
 from ariadne.execution import DeadlineBudget  # pyright: ignore[reportMissingImports] — drift
 from ariadne.planner import PlannerError
 from ariadne.query import QueryRuntime  # pyright: ignore[reportMissingImports] — drift
@@ -184,6 +185,13 @@ def build_parser() -> _Parser:
 
     sub.add_parser("list-metrics", parents=[common], help="list governed metrics")
     sub.add_parser("list-datasets", parents=[common], help="list queryable tables")
+
+    discover = sub.add_parser(
+        "search", parents=[common], help="discover metrics, pages, terms and examples (read-only)"
+    )
+    discover.add_argument("query")
+    discover.add_argument("--limit", type=int, default=5)
+    discover.add_argument("--json", action="store_true", help="emit one grouped report object")
 
     search = sub.add_parser("search-context", parents=[common], help="search OKF pages")
     search.add_argument("query")
@@ -341,6 +349,9 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         # (issue #40 finding 1); an explicit path still wins. ONE request
         # budget covers the managed construction AND its operation (fix pass
         # 1, finding 1): a CLI invocation can never spend ~2x the deadline.
+        if args.command == "search":
+            discovery = DiscoveryRuntime.open_project(args.project, staging_dir=args.staging)
+            return _print_discovery(discovery, args)
         limits = query_results.load_host_query_limits(args.project)
         runtime = QueryRuntime.open_project(
             args.project,
@@ -359,6 +370,15 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         # operator ``query:`` ceilings — an explicit --sources stays source
         # identity only, never a second implicit limit root. The same ONE
         # request budget bounds this construction and its operation.
+        if args.command == "search":
+            discovery = DiscoveryRuntime(
+                root / "semantic_layer",
+                root / "context_layer",
+                args.db,
+                staging_dir="staging" if args.staging is None else args.staging,
+                sources=sources_path,
+            )
+            return _print_discovery(discovery, args)
         limits = query_results.load_host_query_limits(Path.cwd())
         runtime = QueryRuntime(
             root / "semantic_layer",
@@ -407,6 +427,28 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         assert definition is not None  # _read_definition ran above
         result = asyncio.run(runtime.define_metric(definition))
     print(json.dumps(result, default=_json_default))
+    return 0
+
+
+def _print_discovery(runtime: DiscoveryRuntime, args: argparse.Namespace) -> int:
+    report = asyncio.run(runtime.discover(args.query, limit=args.limit))
+    if args.json:
+        print(json.dumps(report, default=_json_default))
+    else:
+        print("Discovery only — use --json for full native payloads; no answer is executed.")
+        for kind, group in report["groups"].items():
+            print(f"{kind.title()} — {group['status']}")
+            summary = group
+            if kind == "pages" and group["status"] == "available":
+                # Summarize passages without substituting them for the full rule bodies.
+                summary = {
+                    **group,
+                    "items": [
+                        {key: value for key, value in hit.items() if key != "content"}
+                        for hit in group["items"]
+                    ],
+                }
+            print(json.dumps(summary, default=_json_default, indent=2))
     return 0
 
 

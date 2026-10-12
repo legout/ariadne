@@ -386,6 +386,7 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
         "search_context",
         "list_context_pages",
         "read_context_page",
+        "discover",
         "get_metric",
         "list_datasets",
         "define_metric",
