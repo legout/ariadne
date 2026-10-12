@@ -973,7 +973,7 @@ def test_authoring_contract_teaches_local_first_query_guide():
     assert "--served examples/retail-demo" in user  # actual promoted-root location
     assert "--staging examples/retail-demo/staging --served examples/retail-demo" in user
     assert "--semantic examples/retail-demo/semantic_layer" in user
-    assert "Optional MCP" in user and "ariadneai[mcp]" in user  # accurate extra guidance
+    assert "Optional MCP" in user and "ariadne-data[mcp]" in user  # accurate extra guidance
 
 
 def test_author_stamps_lifecycle_frontmatter_and_never_indexes(tmp_path):

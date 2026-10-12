@@ -456,7 +456,7 @@ def _user_prompt(profile: dict, notes: str, catalog_lines: str) -> str:
         "  ariadne-authoring inspect-mapping --proposal ID --expected-revision REV \
 "
         "--file candidate.json\n"
-        "- Optional MCP transport (needs the extra installed: pip install 'ariadneai[mcp]'):\n"
+        "- Optional MCP transport (needs the extra installed: pip install 'ariadne-data[mcp]'):\n"
         "  python -m ariadne.serve --sources examples/retail-demo/ariadne.yaml "
         "--semantic examples/retail-demo/semantic_layer "
         "--context examples/retail-demo/context_layer "

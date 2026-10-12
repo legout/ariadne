@@ -33,7 +33,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ariadneai"
+name = "ariadne-data"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [

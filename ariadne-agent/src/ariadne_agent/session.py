@@ -177,7 +177,7 @@ AgentSessionEvent = AssistantText | ToolActivity | SessionError | RunCompleted
 
 def _missing_served_catalog(exc: BaseException) -> bool:
     """The runtime's promoted-catalog startup errors. The message text is owned
-    by ariadneai's query.py (QueryRuntime; formerly runtime.py).
+    by ariadne-data's query.py (QueryRuntime; formerly runtime.py).
     ariadne.serve holds the same predicate but is the optional server transport
     — importing it here would defeat this package's no-server guarantee, so the
     two substrings are restated."""

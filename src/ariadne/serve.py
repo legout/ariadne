@@ -1424,7 +1424,7 @@ def main(argv: list[str] | None = None) -> int:
         if _mcp_missing(exc):
             print(
                 f"error: {exc} — the MCP transport is an optional extra; "
-                "install it with: pip install 'ariadneai[mcp]'",
+                "install it with: pip install 'ariadne-data[mcp]'",
                 file=sys.stderr,
             )
             return 1

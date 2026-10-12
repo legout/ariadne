@@ -22,6 +22,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 pi-lens-ignore line-length
 
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5 pi-lens-ignore line-length
+        with:
+          enable-cache: false # no cache in the publishing job: a poisoned cache
+          # must not reach released artifacts
 
       - name: Verify tag matches both project versions
         run: |
@@ -35,10 +38,10 @@ jobs:
           test "$TAG" = "$CORE" || { echo "core $CORE != tag $TAG"; exit 1; }
           test "$TAG" = "$AGENT" || { echo "agent $AGENT != tag $TAG"; exit 1; }
 
-      - name: Build ariadneai (core)
+      - name: Build ariadne-data (core)
         run: uv build
 
-      - name: Build ariadneai-agent
+      - name: Build ariadne-agent
         working-directory: ariadne-agent
         run: uv build
 
@@ -51,12 +54,12 @@ jobs:
           .ci-venv/bin/python -m pytest -q \
             || { echo "test failures block publishing"; exit 1; }
 
-      - name: Publish ariadneai (core)
+      - name: Publish ariadne-data (core)
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: uv publish
 
-      - name: Publish ariadneai-agent
+      - name: Publish ariadne-agent
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: uv publish

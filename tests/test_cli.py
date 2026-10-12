@@ -531,7 +531,7 @@ def test_serve_main_hints_mcp_extra_when_mcp_absent(served, tmp_path):
         check=False,
     )
     assert proc.returncode == 1
-    assert "pip install 'ariadneai[mcp]'" in proc.stderr
+    assert "pip install 'ariadne-data[mcp]'" in proc.stderr
 
 
 def test_serve_main_does_not_mask_unrelated_missing_modules(served, tmp_path, monkeypatch):
@@ -561,7 +561,7 @@ def test_serve_main_startup_failure_not_masked_as_missing_mcp(tmp_path, monkeypa
     )
     assert code == 1
     err = capsys.readouterr().err
-    assert "pip install 'ariadneai[mcp]'" not in err  # the hint never masks startup failures
+    assert "pip install 'ariadne-data[mcp]'" not in err  # the hint never masks startup failures
     assert "error:" in err  # the runtime startup failure itself
 
 

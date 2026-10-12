@@ -3,7 +3,7 @@
 For an operator preparing a private HTTPS MCP service. This template packages
 Ariadne software, not your data project. It does not deploy a proxy or approve
 exposure. Build locally from this checkout; the image has Python, Git and
-`ariadneai[mcp]`, but no optional PDF/Office converters. Markdown/text inputs
+`ariadne-data[mcp]`, but no optional PDF/Office converters. Markdown/text inputs
 work; pre-convert other documents or separately prepare a `[documents]` image.
 
 ## Prepare the project and environment

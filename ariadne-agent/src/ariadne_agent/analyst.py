@@ -2,14 +2,14 @@
 
 Thin wrappers only (spec 2026-09-29-0006 session/role interface): compilation,
 grain checks, read-only execution, context attachment, proposal staging and
-terminology resolution all live in ``ariadneai``; nothing is reimplemented
+terminology resolution all live in ``ariadne-data``; nothing is reimplemented
 here. The tool set is DELIMITED to Ariadne's baseline query operations plus
 ``resolve_term`` (issue #42/K2: shared terminology resolution over the pinned
 admitted context — read-only, no inspection/edit authority) and the two
 Context Layer browsing operations ``list_context_pages``/``read_context_page``
 (issue #60, spec 0015/ADR-0020: token-free listing and path-addressed reading
 of served and staged pages — read-only, draft-labeled): the wider Query
-surface that ariadneai's MCP registrations expose (query_metrics/
+surface that ariadne-data's MCP registrations expose (query_metrics/
 query_detail, Answer Examples) does NOT silently expand this session's
 permissions (issue #38/G6 — registrations are tool-surface separation).
 Which runtime the session wraps — a managed Git project's pinned admission through
@@ -53,7 +53,7 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
     K2 read-only term resolver (issue #42) — nothing else."""
 
     # Each wrapper mirrors the runtime's own signature and the routing language
-    # the ariadneai MCP facade uses (spec rev 4 §8.12: fresh consuming agents
+    # the ariadne-data MCP facade uses (spec rev 4 §8.12: fresh consuming agents
     # discover the ad-hoc path through the facade itself).
     async def list_metrics(
         tool_call_id: str, arguments: Mapping, signal=None, on_update=None
@@ -165,7 +165,7 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
             "Bounded RECORD selection (the latest N raw rows of one table, no "
             "aggregation) is a separate operation this fixed toolset does not "
             "expose — report such questions unsupported rather than aggregating "
-            "records away; ariadneai's CLI/MCP facade serves it as query_records."
+            "records away; ariadne-data's CLI/MCP facade serves it as query_records."
         ),
         "define_metric": (
             "Define an ad-hoc metric for a question no governed metric answers: "
@@ -176,7 +176,7 @@ def analyst_tools(runtime: QueryRuntime) -> list[AgentTool]:
             "AGGREGATION tool: a bounded record request (the latest N raw rows of "
             "one table) is not a metric definition, and this fixed toolset has no "
             "record operation — report record questions unsupported instead of "
-            "silently aggregating them; ariadneai's CLI/MCP facade serves them as "
+            "silently aggregating them; ariadne-data's CLI/MCP facade serves them as "
             "query_records (governed: false, never staged)."
         ),
         "resolve_term": (

@@ -1,4 +1,4 @@
-# ariadneai-agent
+# ariadne-agent
 
 The installable Ariadne Agent backend: a fixed-role, in-memory conversation
 over **native Ariadne Python tools** — no CLI, no shell, no server, no raw SQL
@@ -9,16 +9,16 @@ configured **role-restricted stdio MCP** tools (issue #25).
 
 ## Install
 
-Depends on `ariadneai` (never the unrelated PyPI `ariadne` GraphQL project),
+Depends on `ariadne-data` (never the unrelated PyPI `ariadne` GraphQL project),
 the verified Tau release `tau-ai==0.4.6`, whose embeddable
 `tau_agent.AgentHarness` / `tau_ai.OpenAICompatibleProvider` import paths this
 package uses, and the owned `tau-mcp` embeddable stdio MCP core. The `tau-ai`
 wheel also installs `tau_coding`'s files, but this package never imports or
 invokes `tau_coding` at runtime (the `tau_mcp.proxy` module is likewise not
 imported here because it is the Tau-extension flavor), and never launches a
-server — installing `ariadneai` alone does not install the agent.
+server — installing `ariadne-data` alone does not install the agent.
 
-Local development resolves `ariadneai` from the repository checkout through
+Local development resolves `ariadne-data` from the repository checkout through
 `[tool.uv.sources]` in `pyproject.toml` (non-published tool configuration
 only; the published dependency metadata names the distribution); `tau-mcp`
 resolves the same way from its own repository checkout:
@@ -116,7 +116,7 @@ root, never the ambient working directory. The legacy → new mapping lives in
   reconciliation, legacy import/enrichment and Promotion are deliberately
   absent: human-only, outside the agent.
 - **Guidance**: the version-matched packaged `ariadne/skill_assets/SKILL.md`
-  from the installed `ariadneai`, plus a short native-tool mapping. No
+  from the installed `ariadne-data`, plus a short native-tool mapping. No
   global skill scans, no model-invocable skill scripts.
 - **Missing promoted catalog**: opening an Analyst session fails fast with an
   actionable error naming the human step — Promotion for a legacy project,

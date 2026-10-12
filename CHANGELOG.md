@@ -10,7 +10,7 @@ Second release: from the governed-metrics MVP to the full agent-facing platform.
   gone; metric compilation is now an own SQLGlot-based engine (`ariadne/render.py`,
   ADR-0008). Runtime dependencies are permissive (MIT/Apache) only, and the Python
   floor is `>=3.12`.
-- **Ariadne Agent** — new companion distribution `ariadneai-agent` (ADR-0018):
+- **Ariadne Agent** — new companion distribution `ariadne-agent` (ADR-0018):
   installable Analyst conversation over native Ariadne tools (#23), authoring
   sessions with human-only approval gates (#24), role-restricted stdio MCP
   integration (#25), and automatic mapping-hypothesis capture with restart-readable
@@ -60,6 +60,11 @@ Second release: from the governed-metrics MVP to the full agent-facing platform.
 - **Cleanup** — removed the dead `proposals.stage_ad_hoc` wrapper (superseded
   by the reserve/stage/release split) and an unused authoring helper;
   repo-wide `ruff format` pass.
+- **Packaging** — first PyPI release. The distributions are `ariadne-data`
+  (core) and `ariadne-agent`; `ariadneai` was rejected by PyPI's name-
+  similarity rule (the unrelated `ariadne-ai` project blocks it), so the
+  owner re-scoped the names (ADR-0018, amended). Publishing is tag-gated
+  via `publish.yml` with the core wheel tested before upload.
 
 ## 0.1.0 - 2026-09-17
 
