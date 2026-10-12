@@ -25,6 +25,11 @@ in the runtime:
                                                terminology resolution; the exact
                                                {resource, column} field form
                                                arrives through --file)
+    ariadne status [--json]                   (spec 0016: read-only project
+                                               readiness diagnostics — human-
+                                               first text, one JSON object with
+                                               --json; never constructs the
+                                               query runtime)
 
 Every successful invocation writes exactly one JSON value plus a newline to
 stdout and nothing else; temporal values serialize as ISO-8601 strings and
@@ -253,6 +258,18 @@ def build_parser() -> _Parser:
     resolve.add_argument(
         "--part", type=int, default=1, help="which bounded part of the matches (default 1)"
     )
+    status_cmd = sub.add_parser(
+        "status",
+        parents=[common],
+        help="read-only project readiness diagnostics (spec 0016: kind, sources, "
+        "governance state, backlog, skill drift, next steps — no source connection)",
+    )
+    status_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="emit exactly one structured report object instead of human text "
+        "(the spec-0001 usability amendment, this command only)",
+    )
     return parser
 
 
@@ -261,6 +278,16 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
     # runtime construction — which is where the read-only source connection
     # opens. Every earlier failure therefore precedes any connection, execution,
     # or staging.
+    if args.command == "status":
+        # spec 0016: status resolves its own DIAGNOSTIC route (a scaffold with
+        # no admission is a report, never the missing-admission error) and must
+        # never construct QueryRuntime — the lazy import keeps the query chain
+        # above untouched and the composition seam explicit (ADR-0021).
+        from ariadne import (
+            status as status_module,  # pyright: ignore[reportAttributeAccessIssue] — drift: this lane's new module
+        )
+
+        return status_module.run(args)
     if args.project is not None:
         # The managed Git route (issue #37/G5): the pinned admitted snapshot and
         # its approved source identity replace the explicit legacy roots; a
