@@ -7,6 +7,7 @@
 | **Scope approved** | Revision 2: scaffold/resume, explicit Git prerequisite handoff, filename-only source suggestions and inert typed declarations, never source approval, real per-host skill wiring, authoring guidance and optional deliberately selected legacy authoring, plus the public PyPI-first quickstart. |
 | **Existing contracts** | [ADR-0021](../adr/0021-usability-shell-composition.md) (composition, TTY-gated human steps, no new authority), [spec 0009](2026-10-02-0009-modular-core-git-authoring.md) (Git proposal loop), [ADR-0016](../adr/0016-modular-core-git-authoring.md) (managed route), [ADR-0011](../adr/0011-context-carrying-answers-and-skill.md) (packaged skill), [spec 0016](2026-10-12-0016-project-status-command.md) (status), [CONTEXT.md](../../CONTEXT.md) (Source Approval is human) |
 | **Contract** | planning-contract v1; installed skill provenance unknown |
+| **Approved source-hint extension** | Owner approved written revision 1 with “approved.” in the Pi conversation 2026-10-13, captured in [approved specification 0022](2026-10-13-0022-native-duckdb-sources.md): add the filename-only `*.duckdb` → `duckdb` suggestion. Only this scoped filename-hint addition is approved. Detection still opens no catalog or source data, binds no views and grants no approval; existing file hints, route preservation and human handoffs are unchanged. |
 
 ## Purpose and boundary
 

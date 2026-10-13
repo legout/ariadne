@@ -11,6 +11,8 @@
 
 ## Purpose and authority
 
+**Continuing product direction (Owner, Pi conversation 2026-10-13):** learning from explicitly confirmed questions, interpretations and methods is a lasting Ariadne focus, not a disposable demo feature. This specification remains the current learning contract. [SQL provenance extension 0023](./2026-10-13-0023-answer-example-sql-provenance.md) separately owns the future SQL-retention, opt-in SQL-retrieval and active-feedback extension: its complete written revision 1 was approved by the owner with “approved” in this Pi conversation on 2026-10-13; revision 2 captures the subsequent owner-requested #68 amendment for active feedback when no suitable reviewed, non-stale Example exists. Neither extension is implemented. External SQL-history import remains a [researched extension](../research/2026-10-13-ktx-gaps-after-usability.md), not approved behavior. Revision 1 below is unchanged; no silent collection, model training or raw-SQL replay is authorized.
+
 A domain expert who has just examined a successful Ariadne answer can explicitly request that its question, interpretation, method and observed answer be retained for similar future questions. The example is an aid to finding and checking a method, **not** a result cache, a Policy, a computation attestation, or a way to promote an ad-hoc metric. Domain expertise about what the question means and technical review of how the answer was produced are distinct.
 
 No example changes `get_metric`, `define_metric`, the Semantic Layer, or the served Context Layer. A current answer is always produced by the existing runtime from current data. Governed status belongs only to promoted Semantic Layer metrics; neither example review nor expert attestation confers it.

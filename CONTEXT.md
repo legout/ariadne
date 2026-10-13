@@ -100,6 +100,10 @@ _Avoid_: publish, deploy
 The route that serves a human-reviewed Git artifact revision only after validation of the exact revision, including local Git-backed authoring and the production review route. A commit or validator label alone does not mean review; this route is distinct from staged-artifact Promotion.
 _Avoid_: automatic promotion, validated commit
 
+**Verbatim Ingestion**:
+The intake of a source document whose converted wording is retained rather than model-distilled. Preservation does not confer human admission, business authority or independent correctness.
+_Avoid_: automatic approval, lossless binary conversion, policy extraction
+
 **Seed Notes**:
 The human-owned data dictionary (`data/seed_notes.md`) carrying business rules that statistics cannot derive; an input to the Authoring Agent alongside the statistical profile. It may be drafted by a harness from domain evidence, but its rules become authoritative only after human approval.
 _Avoid_: hints file
@@ -121,6 +125,10 @@ _Avoid_: draft, candidate file
 **Answer Example**:
 An explicitly submitted OKF record of a question, intended meaning, used query method and bounded historical answer. Review approves it as a reusable reference, not a governed definition or an answer cache.
 _Avoid_: query snippet, cached answer
+
+**SQL Provenance**:
+The historical SQL text retained from the submitted result of an Answer Example. It is evidence of what was submitted, not an executable reuse method or authenticated proof that a computation ran.
+_Avoid_: saved query, execution proof, query history
 
 ### Context Layer (OKF bundle)
 

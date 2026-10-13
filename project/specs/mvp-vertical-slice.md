@@ -2,6 +2,8 @@
 
 > **Consumption-interface notice (2026-09-23):** `2026-09-23-0001-local-artifact-runtime.md` supersedes this specification's MCP-first behavior in §§1, 3–5, 7–8. Unaffected MVP invariants remain authoritative.
 >
+> **Approved intake/source extensions (Owner, “approved.” in the Pi conversation 2026-10-13; both written revision-1 specs):** [specification 0021](2026-10-13-0021-verbatim-document-ingestion.md) adds optional Verbatim Ingestion alongside acceptance example 19's ordinary LLM-distilled path; [specification 0022](2026-10-13-0022-native-duckdb-sources.md) adds native local/remote DuckDB sources alongside acceptance example 20. Both written specifications are approved; their matching plans own execution decomposition. Unaffected conversion, shared builder, compile, source-approval and human-admission contracts remain binding; this notice does not approve unseen plans, source access, target integration or publication.
+>
 > **Additive context-consumer extension (owner, 2026-10-06):** [specification 0011](2026-10-06-0011-context-trust-signals.md) adds advisory `context_signals` and brief relevant lifecycle caveats to the existing context-carrying response/guidance contract. Full rule bodies, numeric/governed labels, ad-hoc `context: null` and the existing non-failing required-context fallback remain intact; this is not lifecycle-based query refusal or a producer/attestation-runtime change.
 
 | | |
