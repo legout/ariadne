@@ -150,10 +150,14 @@ def _q(identifier: str) -> str:
 
 
 def _sql_ref(ref: str) -> str:
-    """The builder's plain dotted ``ref`` as a SQL-qualified prefix: every
-    part quoted (a schema like ``sales-west`` is not a valid bare token), the
-    same identifier discipline as the table name itself."""
-    return ".".join(_q(part) for part in ref.split("."))
+    """The builder's plain dotted ``ref`` as a SQL-qualified prefix. The
+    builder emits ``<alias>.<schema>`` for attaches (schema-only for file
+    views); the alias is everything before the FIRST dot — a schema may
+    itself contain dots and is quoted as ONE identifier, so
+    ``warehouse.sales.west`` renders ``"warehouse"."sales.west"`` (the
+    table name is quoted separately by the caller)."""
+    alias, dot, schema = ref.partition(".")
+    return f"{_q(alias)}.{_q(schema)}" if dot else _q(ref)
 
 
 def _numeric(type_name: str) -> bool:

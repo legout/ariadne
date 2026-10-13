@@ -2656,10 +2656,14 @@ def _quote(identifier: str) -> str:
 
 
 def _sql_ref(ref: str) -> str:
-    """The catalog entry's plain dotted ``ref`` as a SQL-qualified prefix:
-    every part quoted with the same identifier discipline as the table name
-    (a schema like ``sales-west`` is not a valid bare token)."""
-    return ".".join(_quote(part) for part in ref.split("."))
+    """The catalog entry's plain dotted ``ref`` as a SQL-qualified prefix.
+    The builder emits ``<alias>.<schema>`` for attaches (schema-only for
+    file views); the alias is everything before the FIRST dot — a schema may
+    itself contain dots and is quoted as ONE identifier with the same
+    discipline as the table name (``warehouse.sales.west`` renders
+    ``"warehouse"."sales.west"``; the table is quoted by the caller)."""
+    alias, dot, schema = ref.partition(".")
+    return f"{_quote(alias)}.{_quote(schema)}" if dot else _quote(ref)
 
 
 def _scope_for(resource: str, scope: list[dict]) -> list[dict]:

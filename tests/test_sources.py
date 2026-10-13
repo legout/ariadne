@@ -257,6 +257,97 @@ def native_dash_schema_catalog(path: Path) -> Path:
     return path
 
 
+def native_dot_schema_catalog(path: Path) -> Path:
+    """A native catalog whose SCHEMA itself contains a dot (``sales.west``),
+    seeded with the spec's hand-specified fixture rows (mirrors NATIVE_ROWS)."""
+    con = duckdb.connect(str(path))
+    con.execute('CREATE SCHEMA "sales.west"')
+    con.execute(
+        'CREATE TABLE "sales.west"."orders" AS SELECT * FROM (VALUES '
+        "(1, 10.0, 'EMEA'), (2, 20.0, 'AMER'), (3, 30.0, 'EMEA')) "
+        "t(id, amount, region)"
+    )
+    con.close()
+    return path
+
+
+def test_native_dotted_schema_flows_through_profiler_and_inspection_seams(tmp_path):
+    """Parent-verified blocker (spec 0022 §3): a schema containing a dot
+    (``sales.west``) keeps its exact single-identifier identity through the
+    ordinary profiler seam (sampled and unsampled) and the authoring
+    inspection statements — ``warehouse.sales.west.orders`` renders as
+    "warehouse"."sales.west"."orders", never re-split into extra parts."""
+    from ariadne.authoring import (
+        _guarded,
+        inspection_count_statement,
+        inspection_sample_statement,
+    )
+    from ariadne.execution import DeadlineBudget
+
+    reg = write_registry(
+        tmp_path,
+        [{"name": "warehouse", "type": "duckdb", "path": "dot.duckdb"}],
+    )
+    native_dot_schema_catalog(tmp_path / "dot.duckdb")
+
+    con, catalog = build_connection(load_registry(reg))
+    try:
+        # exact dotted identity through the alias: one schema identifier
+        assert con.execute(
+            'SELECT COUNT(*), SUM(amount) FROM "warehouse"."sales.west"."orders"'
+        ).fetchone() == (3, 60.0)
+        assert con.execute(
+            'SELECT SUM(amount) FROM "warehouse"."sales.west"."orders" WHERE region = \'EMEA\''
+        ).fetchone() == (40.0,)
+        (entry,) = catalog
+        (table,) = entry["tables"]
+        assert parse_resource(table["resource"])[1] == [
+            "warehouse",
+            "warehouse",
+            "sales.west",
+            "orders",
+        ]
+
+        # authoring inspection over the REAL catalog entry: the sample/count
+        # statements bind and read the dotted schema (scope values as params)
+        scope = [
+            {
+                "resource": table["resource"],
+                "column": "region",
+                "op": "in",
+                "value": ["EMEA", "AMER"],
+            }
+        ]
+        sample_sql, params = inspection_sample_statement(table, ["id", "amount"], scope, 50)
+        assert 'FROM "warehouse"."sales.west"."orders"' in sample_sql
+        rows = _guarded(con, DeadlineBudget(30.0), sample_sql, params)
+        assert rows == [(1, 10.0), (2, 20.0), (3, 30.0)]  # ordered by bound columns
+        count_sql, count_params = inspection_count_statement(table, ["id", "amount"], scope)
+        assert 'FROM "warehouse"."sales.west"."orders"' in count_sql
+        assert _guarded(con, DeadlineBudget(30.0), count_sql, count_params)[0] == (
+            3,
+            0,
+        )  # eligible rows, null-bearing rows
+    finally:
+        con.close()
+
+    # the ordinary profiler seam, sampled and unsampled
+    for sample in (None, 3):
+        result = profile(sources_path=reg, sample_rows=sample)
+        (source,) = result["sources"]
+        assert source["name"] == "warehouse"
+        table = source["tables"]["orders"]
+        assert table["row_count"] == 3
+        assert table["columns"]["id"]["distinct_count"] == 3
+        assert table["columns"]["region"]["distinct_count"] == 2
+        assert (table["source"], table["catalog"], table["schema"], table["table"]) == (
+            "warehouse",
+            "warehouse",
+            "sales.west",
+            "orders",
+        )
+
+
 def test_native_schema_requiring_quoting_profiles_through_the_shared_seam(tmp_path):
     """Reviewer fix pass (spec 0022 §3 / issue #67): a native schema that needs
     SQL quoting (``sales-west``) flows through the ORDINARY profiler seam,
