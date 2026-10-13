@@ -168,12 +168,14 @@ def test_remote_duckdb_catalog_reads_backing_data(loopback):
 
     con, catalog = build_connection(load_registry(registry))
     try:
-        assert con.execute(
-            "SELECT id, amount, region FROM rail.main.orders ORDER BY id"
-        ).fetchall() == FIXTURE_ROWS
-        assert con.execute(
-            "SELECT COUNT(*), SUM(amount) FROM rail.main.orders"
-        ).fetchone() == (3, 60.0)
+        assert (
+            con.execute("SELECT id, amount, region FROM rail.main.orders ORDER BY id").fetchall()
+            == FIXTURE_ROWS
+        )
+        assert con.execute("SELECT COUNT(*), SUM(amount) FROM rail.main.orders").fetchone() == (
+            3,
+            60.0,
+        )
         assert con.execute(
             "SELECT SUM(amount) FROM rail.main.orders WHERE region = 'EMEA'"
         ).fetchone() == (40.0,)
