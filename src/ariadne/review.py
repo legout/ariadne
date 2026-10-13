@@ -187,6 +187,22 @@ def _legacy(staging: Path, served: Path, stdin: Any, interactive: bool) -> int:
         print(json.dumps(payload, indent=2))
         print("Review digest: " + payload["digest"])
         argv.extend(["--digest", payload["digest"]])
+        # Native no-op Promotion can rewrite admission records without a prompt.
+        if payload["status"] == "promoted":
+            bundle = authoring.bundle_staging_dir(staging)
+            pages, raw = promote._plan(bundle, served)
+            notes_src, notes_dst = bundle / "data/seed_notes.md", served / "data/seed_notes.md"
+            if (
+                not pages
+                and not raw
+                and notes_src.is_file()
+                and notes_dst.is_file()
+                and notes_src.read_bytes() == notes_dst.read_bytes()
+            ):
+                print("nothing to promote: served layers already match the reviewed bundle/")
+                print("For deliberate native record-heal semantics, run this raw human command:")
+                print(shlex.join(["ariadne-promote", *argv]))
+                return 0
     else:
         print("Ordinary merge-only Promotion — no bundle digest or validation record.")
         refused = promote._review_needed(staging)

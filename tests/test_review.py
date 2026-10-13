@@ -16,6 +16,7 @@ import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+HOST_HOME = Path.home()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -45,6 +46,7 @@ from tests.test_context_admission import (  # noqa: E402
     table_page,
 )
 from tests.test_git_authoring import branch_of  # noqa: E402
+from tests.test_multifact import _t5_admitted  # noqa: E402
 from tests.test_promote import make_staging  # noqa: E402
 
 
@@ -690,6 +692,49 @@ def test_bundle_review_matches_native_payload_and_digest_route(tmp_path, monkeyp
         assert authoring.review_bundle(project=project)["status"] == "promoted"
     else:
         assert calls == [] and governed(project) == before and not served.exists()
+
+
+def test_unchanged_promoted_graph_review_never_delegates_or_rewrites_admission(
+    tmp_path, monkeypatch, capsys
+):
+    # The existing SQLite fixture uses the full suite's installed DuckDB extension.
+    with monkeypatch.context() as fixture_env:
+        fixture_env.setenv("HOME", str(HOST_HOME))
+        project, _ = _t5_admitted(tmp_path)
+    staging, served = project / "staging", project / "served"
+    payload = authoring.review_bundle(project=project)
+    assert payload["status"] == "promoted"
+    admission_path = served / "semantic_layer/admission.json"
+    before = admission_path.read_bytes()
+    native = promote.main
+    calls = []
+
+    def record(argv):
+        calls.append(argv)
+        return native(argv)
+
+    monkeypatch.setattr(promote, "getuser", lambda: "walkthrough")
+    monkeypatch.setattr(promote, "main", record)
+    assert run_review("--staging", staging, "--served", served, monkeypatch=monkeypatch) == 0
+    assert admission_path.read_bytes() == before
+    assert calls == []
+    output = capsys.readouterr().out
+    assert "nothing to promote: served layers already match the reviewed bundle" in output
+    assert "record-heal" in output
+    assert (
+        shlex.join(
+            [
+                "ariadne-promote",
+                "--staging",
+                str(staging),
+                "--served",
+                str(served),
+                "--digest",
+                payload["digest"],
+            ]
+        )
+        in output
+    )
 
 
 def test_relocated_bundle_refuses_with_exact_operator_handoffs(tmp_path, monkeypatch, capsys):
