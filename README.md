@@ -372,6 +372,10 @@ literals before retention, and retrieval is opt-in. Reviewing submissions is an 
 command (`ariadne-example-review`), never an agent action; records without SQL provenance
 (legacy) stay searchable, reviewable and unrevised.
 
+**Version boundary:** SQL retention and `--include-sql` describe this repository
+candidate; the currently published 0.2.0 package does not include them (same
+boundary as `ariadne setup`/`status` above).
+
 ## Data sources
 
 One read-only connection unifies every source; the agent addresses them as

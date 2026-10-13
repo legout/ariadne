@@ -752,7 +752,9 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             """Stage one explicit answer example as a labeled draft under
             staging/answer_examples/ — an EXPLICIT user-confirmed submission only:
             present the bounded record (result excerpt/digest, method/arguments,
-            question/interpretation/parameters, sources, submitter attestation)
+            question/interpretation/parameters, the EXACT submitted result SQL
+            text — the sql_provenance the save will retain verbatim, so the user
+            can assess sensitive literals —, sources, submitter attestation)
             for user confirmation BEFORE calling this. Never a governed write, a
             promotion, or transcript harvesting; nothing about the example changes
             the served catalog. Same contract as ``ariadne save-example``.

@@ -448,8 +448,14 @@ def test_mcp_example_tools_parity_with_local_transport(served, tmp_path):
     app = build_app(local)
 
     # Registration seam: exactly the two example tools, never a review tool.
-    names = {tool.name for tool in asyncio.run(app.list_tools())}
+    tools = asyncio.run(app.list_tools())
+    names = {tool.name for tool in tools}
     assert {name for name in names if "example" in name} == {"save_example", "search_examples"}
+    # Spec 0023 §2: the save tool's confirmation guidance requires presenting
+    # the exact submitted SQL to the user BEFORE the save call.
+    save_guidance = next(tool.description for tool in tools if tool.name == "save_example")
+    assert save_guidance is not None
+    assert "EXACT submitted result SQL" in save_guidance and "BEFORE calling this" in save_guidance
 
     submission = {
         "question": "What is the gross margin ratio by region?",
