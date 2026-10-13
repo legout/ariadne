@@ -543,7 +543,8 @@ def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list
     tests assert — an omission anywhere fails the gate with the field named)."""
     rel = page.relative_to(staging).as_posix()
     try:
-        meta = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
+        text = page.read_text(encoding="utf-8")
+        meta = _load_frontmatter_meta(text)
     except yaml.YAMLError as exc:
         return [f"{rel}: frontmatter is not valid YAML: {exc}"]
     if not meta:
@@ -568,6 +569,21 @@ def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list
             errors.append(
                 f"{rel}: a declared table grain block requires primary_key and "
                 "cardinality_enforcement (an undeclared physical Grain stays unknown)"
+            )
+        # C1 (issue #69, spec 0024 §3): the optional authored selection of
+        # observed filter values — validated here so a malformed mapping or a
+        # duplicate declaration fails AUTHORING validation before human
+        # admission, never first as a refresh refusal. Absent/empty is the
+        # valid legacy form (no published values).
+        errors.extend(
+            f"{rel}: authored {OBSERVED_VALUE_COLUMNS_KEY} {error}"
+            for error in _selection_shape_errors(meta.get(OBSERVED_VALUE_COLUMNS_KEY))
+        )
+        front = _FRONTMATTER_RE.match(text)
+        if front:
+            errors.extend(
+                f"{rel}: authored {OBSERVED_VALUE_COLUMNS_KEY} {error}"
+                for error in _duplicate_selection_declarations(front.group(1))
             )
         # Spec 0013 §2 (issue #53): the optional authored ``ariadne_quality``
         # profile — validated here so malformed/unsupported declarations fail
@@ -1050,21 +1066,243 @@ def _schema_flags(old_schema: list[dict] | None, new_schema: list[dict]) -> dict
     }
 
 
-def _observation_facts(*, resource: str, profile: dict) -> dict:
+# ----------------- C1 (issue #69): selected observed filter values (spec
+# 0024 §3). The human owns the optional ``observed_value_columns`` selection
+# on a table page — an exact column -> catalog-type mapping that binds the
+# publication to one known field representation; the core owns the measured
+# ``value_evidence`` inside ``ariadne.observations`` and its rendering in the
+# core-owned Observations section. Selection alone is never Source Approval
+# or a sample grant, and it introduces no new permission, tool or engine.
+
+OBSERVED_VALUE_COLUMNS_KEY = "observed_value_columns"
+
+# The whole-value-evidence bound (spec 0024 §3): at most 8 KiB UTF-8 for the
+# COMPLETE successful ``value_evidence`` mapping, measured as compact JSON
+# with non-ASCII preserved — never a clipped literal or a partially retained
+# histogram.
+VALUE_EVIDENCE_MAX_BYTES = 8 * 1024
+
+# The supported EXACT filter-value representations (spec 0024 §3): native
+# text/enum labels, booleans, integers and FINITE native floating-point
+# values, exactly as the profile measured them — never trimmed, case-folded,
+# stringified nulls or numericated strings. Decimal, binary, temporal and
+# complex normalizations are not an exact typed filter-value contract and
+# stay unavailable (``unsupported_representation``), however the profiler
+# stringified them for its own statistics.
+_VALUE_EVIDENCE_TYPES = frozenset(
+    {
+        "VARCHAR",
+        "ENUM",
+        "BOOLEAN",
+        "TINYINT",
+        "SMALLINT",
+        "INTEGER",
+        "BIGINT",
+        "HUGEINT",
+        "UTINYINT",
+        "USMALLINT",
+        "UINTEGER",
+        "UBIGINT",
+        "FLOAT",
+        "REAL",
+        "DOUBLE",
+    }
+)
+
+
+def _duplicate_selection_declarations(front: str) -> list[str]:
+    """Duplicate ``observed_value_columns`` declarations in RAW frontmatter
+    YAML (spec 0024 §3): PyYAML collapses duplicate mapping keys last-wins, so
+    the node tree is inspected directly — a duplicated top-level key or a
+    duplicated column inside the selection is a validation error, never an
+    implicit last-wins selection. Duplicate declarations of unrelated keys
+    keep the existing safe_load behavior (not this contract)."""
+    try:
+        root = yaml.compose(front, Loader=yaml.SafeLoader)
+    except yaml.YAMLError:
+        return []  # unparseable frontmatter: the existing gates own that error
+    if not isinstance(root, yaml.MappingNode):
+        return []
+    errors: list[str] = []
+    declarations = 0
+    for key_node, value_node in root.value:
+        if not (
+            isinstance(key_node, yaml.ScalarNode) and key_node.value == OBSERVED_VALUE_COLUMNS_KEY
+        ):
+            continue
+        declarations += 1
+        if not isinstance(value_node, yaml.MappingNode):
+            continue  # a non-mapping selection: the shape check owns that error
+        seen: set[str] = set()
+        for column_node, _value in value_node.value:
+            if not isinstance(column_node, yaml.ScalarNode):
+                continue
+            column = str(column_node.value)
+            if column in seen:
+                errors.append(f"duplicate declaration of column {column!r}")
+            seen.add(column)
+    if declarations > 1:
+        errors.append("the top-level key is declared more than once")
+    return errors
+
+
+def _selection_shape_errors(selection: object) -> list[str]:
+    """Shape errors of the optional authored ``observed_value_columns``
+    mapping (spec 0024 §3): exact physical column name -> selected catalog
+    type, both non-empty strings. An absent or EMPTY mapping is the valid
+    legacy form (no published values); a malformed declaration is a
+    validation error, never an implicit selection of all columns."""
+    if selection is None:
+        return []
+    if not isinstance(selection, dict):
+        return [
+            f"{OBSERVED_VALUE_COLUMNS_KEY} must be a mapping of column name to "
+            "selected catalog type"
+        ]
+    errors: list[str] = []
+    for column, type_name in selection.items():
+        if not isinstance(column, str) or not column:
+            errors.append(f"column name {column!r} must be a non-empty string")
+        if not isinstance(type_name, str) or not type_name:
+            errors.append(
+                f"column {column!r}: the selected catalog type must be a non-empty string"
+            )
+    return errors
+
+
+def _authored_selection(existing_text: str | None, where: str) -> dict | None:
+    """The VALIDATED authored selection of one existing table page (spec 0024
+    §3) — the only input of measured value evidence. Absent/empty mapping
+    means no published values; a malformed or duplicate declaration refuses
+    the refresh BEFORE any page is built. A page without parseable frontmatter
+    regenerates as before: there is no selection to honor."""
+    if not existing_text:
+        return None
+    match = _FRONTMATTER_RE.match(existing_text)
+    if not match:
+        return None
+    errors = _duplicate_selection_declarations(match.group(1))
+    try:
+        meta = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError:
+        return None
+    selection = meta.get(OBSERVED_VALUE_COLUMNS_KEY) if isinstance(meta, dict) else None
+    errors.extend(_selection_shape_errors(selection))
+    if errors:
+        raise ValueError(
+            f"{where}: authored {OBSERVED_VALUE_COLUMNS_KEY} is not a valid selection "
+            f"({'; '.join(errors) or 'malformed declaration'}) — fix the page metadata; "
+            "nothing was written"
+        )
+    return selection or None
+
+
+def _value_sort_key(entry: dict) -> tuple:
+    """The deterministic evidence order (count descending, then the value
+    ascending with null first): a canonical presentation of the SAME measured
+    top values that keeps identical inputs byte-identical even when the
+    engine's equal-count ordering differs between runs."""
+    value = entry["value"]
+    if value is None:
+        return (-entry["count"], 0, "")
+    if isinstance(value, (bool, int, float)):
+        return (-entry["count"], 1, value)
+    return (-entry["count"], 2, value)
+
+
+def _compact_json_bytes(mapping: dict) -> int:
+    """The whole-value-evidence bound measure (spec 0024 §3): compact JSON,
+    UTF-8, non-ASCII preserved, non-finite numbers refused."""
+    return len(
+        json.dumps(mapping, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    )
+
+
+def _value_evidence(*, selection: dict, columns: list[dict], profile: dict, where: str) -> dict:
+    """Measured value evidence for the SELECTED columns only (spec 0024 §3):
+    values/counts come from the profile's existing top_values — no new lookup,
+    widened sampling, changed cardinality rule or histogram reconstruction; a
+    missing histogram is ``not_in_profile``, never an empty-domain claim, and
+    an invalid supplied measurement is an error, never a valid histogram.
+    ``permission_denied`` is part of the contract's reason vocabulary but has
+    no applicable permission gate on this V1 refresh path. The complete
+    mapping must fit :data:`VALUE_EVIDENCE_MAX_BYTES` compact-JSON UTF-8
+    bytes: over the bound EVERY selected column falls back to an unavailable/
+    ``too_large`` outcome (never a clipped or arbitrarily reduced histogram),
+    and a status-only mapping that still exceeds it refuses atomically."""
+    schema_types = {entry["column"]: entry["type"] for entry in columns}
+    profiled = profile.get("columns") or {}
+    evidence: dict = {}
+    for column, expected_type in selection.items():
+        current = schema_types.get(column)
+        if current is None:
+            evidence[column] = {"state": "unavailable", "reason": "column_missing"}
+            continue
+        if current != expected_type:  # the authored type binds the representation
+            evidence[column] = {"state": "unavailable", "reason": "type_changed"}
+            continue
+        if current.split("(", 1)[0].strip().upper() not in _VALUE_EVIDENCE_TYPES:
+            evidence[column] = {"state": "unavailable", "reason": "unsupported_representation"}
+            continue
+        top = (profiled.get(column) or {}).get("top_values")
+        if not isinstance(top, list) or not top:
+            evidence[column] = {"state": "unavailable", "reason": "not_in_profile"}
+            continue
+        if not all(
+            isinstance(entry, dict) and isinstance(entry.get("count"), int) and "value" in entry
+            for entry in top
+        ):
+            raise ValueError(
+                f"{where}: the profiled top_values of column {column!r} are a malformed "
+                "measurement — an invalid measurement is an error, never a valid "
+                "histogram; nothing was written"
+            )
+        if any(
+            isinstance(entry["value"], float) and not math.isfinite(entry["value"]) for entry in top
+        ):
+            # finite native floats only (spec 0024 §3): a non-finite value is
+            # not an exactly representable filter literal, and never a clipped one
+            evidence[column] = {"state": "unavailable", "reason": "unsupported_representation"}
+            continue
+        evidence[column] = {
+            "state": "observed",
+            "top_values": sorted(top, key=_value_sort_key),
+        }
+    if _compact_json_bytes(evidence) > VALUE_EVIDENCE_MAX_BYTES:
+        evidence = {column: {"state": "unavailable", "reason": "too_large"} for column in evidence}
+    if _compact_json_bytes(evidence) > VALUE_EVIDENCE_MAX_BYTES:
+        raise ValueError(
+            f"{where}: even the status-only value evidence of the current selection "
+            f"exceeds the {VALUE_EVIDENCE_MAX_BYTES}-byte compact-JSON bound — refresh "
+            "refuses rather than writing partial evidence; reduce the selection"
+        )
+    return evidence
+
+
+def _observation_facts(*, resource: str, profile: dict, value_evidence: dict | None = None) -> dict:
     """The core-generated observation facts WITHOUT the timestamp (the part
     compared for timestamp reuse): scope, counts, measured candidate keys and
-    citation identity — measurements, never declared constraints."""
+    citation identity — measurements, never declared constraints. C1 (issue
+    #69, spec 0024 §3): the selected value evidence rides the same facts and
+    the same timestamp-reuse comparison; it is present ONLY when a nonempty
+    validated selection exists, so selection-free refreshes keep the exact
+    legacy facts, bytes and no-op behavior."""
     columns = {
         name: {"null_count": stats["null_count"], "distinct_count": stats["distinct_count"]}
         for name, stats in (profile.get("columns") or {}).items()
     }
-    return {
+    facts = {
         "scope": "sampled" if profile.get("sampled") else "full",
         "row_count": profile.get("row_count"),
         "candidate_keys": sorted(profile.get("primary_key_candidates") or []),
         "columns": columns,
         "citation": resource,
     }
+    if value_evidence:
+        facts["value_evidence"] = value_evidence
+    return facts
 
 
 def _ensure_citation(existing_sources: list | None, citation: dict) -> list:
@@ -1211,6 +1449,25 @@ def _table_body(
             for name, stats in observations["columns"].items()
         ],
     ]
+    value_evidence = observations.get("value_evidence")
+    if value_evidence:
+        # C1 (issue #69, spec 0024 §3): the SAME selected measured facts,
+        # rendered as data inside the core-owned observation section — never
+        # an independently authored list or usage instructions. A measured
+        # null renders as the JSON literal null, never the string "NULL".
+        observation_lines.append(
+            "- value evidence (selected observed filter values — measured top "
+            "values, not a complete allowed-value domain):"
+        )
+        for name, entry in value_evidence.items():
+            if entry.get("state") == "observed":
+                rendered = ", ".join(
+                    f"{json.dumps(item['value'], ensure_ascii=False)} ({item['count']})"
+                    for item in entry["top_values"]
+                )
+                observation_lines.append(f"  - `{name}`: observed — {rendered}")
+            else:
+                observation_lines.append(f"  - `{name}`: unavailable ({entry['reason']})")
     core: list[tuple[str | None, list[str]]] = [
         (
             SCHEMA_SECTION,
@@ -1308,7 +1565,13 @@ def build_table_page(
         else None
     )
     flags = _schema_flags(old_schema, columns)
-    facts = _observation_facts(resource=resource, profile=profile)
+    selection = _authored_selection(existing_text, resource)
+    value_evidence = (
+        _value_evidence(selection=selection, columns=columns, profile=profile, where=resource)
+        if selection
+        else None
+    )
+    facts = _observation_facts(resource=resource, profile=profile, value_evidence=value_evidence)
     reuse_timestamp = (
         old_observed_at is not None
         and old_schema is not None

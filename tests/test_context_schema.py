@@ -957,3 +957,613 @@ def test_refresh_preserves_supplied_quality_profile_without_touching_core_facts(
         page.parent.mkdir(parents=True)
         page.write_text(v3, encoding="utf-8")
         assert _page_contract_errors(root, page, "table") == []
+
+
+# ------------- C1 (issue #69): selected observed filter values (spec 0024 §3)
+
+# One independently authored fixture family: a typed parquet table whose
+# literals ARE the expectations — region = EMEA, AMER, EMEA (histogram EMEA 2
+# / AMER 1 straight from those literals), status is the profiled-but-
+# unselected field, code keeps integer-looking STRINGS exact, note carries a
+# measured null beside two values, tier is constant (no histogram), and
+# observed_on is temporal (not an exact filter-value representation).
+REGIONS_SCHEMA = [
+    ("id", "BIGINT"),
+    ("region", "VARCHAR"),
+    ("status", "VARCHAR"),
+    ("code", "VARCHAR"),
+    ("note", "VARCHAR"),
+    ("tier", "VARCHAR"),
+    ("observed_on", "DATE"),
+]
+
+
+def regions_rows_v1() -> list[tuple]:
+    from datetime import date
+
+    return [
+        (1, "EMEA", "open", "007", None, "std", date(2026, 1, 1)),
+        (2, "AMER", "open", "008", "x", "std", date(2026, 1, 2)),
+        (3, "EMEA", "closed", "007", "y", "std", date(2026, 1, 1)),
+    ]
+
+
+def regions_rows_v2() -> list[tuple]:
+    """V2 changes ``code`` from VARCHAR to a true BIGINT between refreshes."""
+    from datetime import date
+
+    return [
+        (1, "EMEA", "open", 7, None, "std", date(2026, 1, 1)),
+        (2, "AMER", "open", 8, "x", "std", date(2026, 1, 2)),
+        (3, "EMEA", "closed", 7, "y", "std", date(2026, 1, 1)),
+    ]
+
+
+REGIONS_SCHEMA_V2 = [(name, "BIGINT" if name == "code" else kind) for name, kind in REGIONS_SCHEMA]
+
+
+_FIXTURE_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_FIXTURE_TYPE_RE = re.compile(r"[A-Z][A-Z0-9]*\Z")
+
+
+def write_typed_parquet(path: Path, schema: list[tuple[str, str]], rows: list[tuple]) -> Path:
+    """One parquet file with EXPLICIT column types (the shared write_parquet
+    helper stringifies row tuples, which would erase typed columns). The DDL
+    interpolates only allowlist-checked fixture identifiers/types — values
+    ride as bound parameters."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for name, kind in schema:
+        assert _FIXTURE_IDENTIFIER_RE.fullmatch(name), name
+        assert _FIXTURE_TYPE_RE.fullmatch(kind), kind
+    con = duckdb.connect()
+    con.execute(f"CREATE TABLE t ({', '.join(f'{name} {kind}' for name, kind in schema)})")
+    con.executemany(f"INSERT INTO t VALUES ({', '.join('?' for _ in schema)})", rows)
+    con.execute(f"COPY t TO '{path}' (FORMAT PARQUET)")
+    con.close()
+    return path
+
+
+def regions_project(
+    tmp_path: Path, rows: list[tuple], schema: list[tuple[str, str]] | None = None
+) -> Path:
+    """A one-source Git data project over the typed regions fixture."""
+    project = tmp_path / "proj"
+    project.mkdir(parents=True, exist_ok=True)
+    write_typed_parquet(
+        project / "data" / "regions" / "regions.parquet", schema or REGIONS_SCHEMA, rows
+    )
+    (project / "ariadne.yaml").write_text(
+        "sources:\n  - name: regions\n    type: parquet\n    path: data/regions/regions.parquet\n",
+        encoding="utf-8",
+    )
+    (project / "data").mkdir(exist_ok=True)
+    (project / "data" / "seed_notes.md").write_text(SEED_NOTES, encoding="utf-8")
+    run_git(project, "init", "-q")
+    run_git(project, "config", "user.name", "Ariadne Tests")
+    run_git(project, "config", "user.email", "tests@ariadne.local")
+    run_git(project, "add", "--", "ariadne.yaml", "data/seed_notes.md")
+    run_git(project, "commit", "-q", "-m", "human: initial artifacts")
+    return project
+
+
+REGIONS_ASSET = {"source": "regions", "catalog": None, "schema": "regions", "table": "regions"}
+
+
+def regions_page_name(result: dict) -> str:
+    return PurePosixPath(page_paths(result)[table_resource(REGIONS_ASSET)]).stem
+
+
+def read_full_page(api: AuthoringProject, proposal: str, name: str) -> str:
+    """The COMPLETE page text through the public read route (bounded parts
+    reassembled — a 200-column page spans several 20k-char parts)."""
+    chunk = api.read_artifact(proposal, {"kind": "page", "section": "tables", "name": name})
+    content, part = chunk["content"], chunk["part"]
+    while part < chunk["parts"]:
+        part += 1
+        chunk = api.read_artifact(
+            proposal, {"kind": "page", "section": "tables", "name": name}, part=part
+        )
+        content += chunk["content"]
+    return content
+
+
+def select_observed_values(
+    api: AuthoringProject, proposal: str, revision: str, name: str, selection
+) -> dict:
+    """Edit one table page's authored ``observed_value_columns`` through the
+    PUBLIC complete-page edit (spec 0024 §3: human-owned frontmatter, edited
+    with the expected candidate revision)."""
+    meta, body = _split_page(read_full_page(api, proposal, name))
+    if selection is None:
+        meta.pop("observed_value_columns", None)
+    else:
+        meta["observed_value_columns"] = selection
+    return api.edit_proposal(
+        proposal,
+        revision,
+        {
+            "kind": "page",
+            "section": "tables",
+            "name": name,
+            "content": _render_page(meta, body),
+        },
+    )
+
+
+def table_page(api: AuthoringProject, proposal: str, name: str) -> tuple[dict, dict, str]:
+    """(frontmatter meta, ariadne observations, page text) of one candidate
+    table page, read through the public read route."""
+    meta, _body = _split_page(read_full_page(api, proposal, name))
+    return meta, meta["ariadne"]["observations"], _body
+
+
+def started_regions_project(
+    tmp_path: Path,
+    rows: list[tuple] | None = None,
+    schema: list[tuple[str, str]] | None = None,
+):
+    """(project, api, proposal) with an approved first refresh already done."""
+    project = regions_project(tmp_path, rows or regions_rows_v1(), schema)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    first = api.refresh_schema(started["proposal"], started["candidate_revision"], [REGIONS_ASSET])
+    return project, api, first
+
+
+def test_selected_observed_values_public_route_emea_amer(tmp_path):
+    """C1's public route (spec 0024 §3 + §6 AC2): absent selection keeps the
+    legacy page shape; the normal selection edit -> refresh -> read route
+    publishes ONLY the selected measured values — the histogram EMEA 2 /
+    AMER 1 comes from the authored literals, never implementation output —
+    rendered as data in the core observation section; the unselected
+    ``status`` field never appears; the identical refresh is a byte/revision
+    no-op."""
+    _project, api, first = started_regions_project(tmp_path)
+    proposal = first["proposal"]
+    name = regions_page_name(first)
+
+    _meta, observations, page_text = table_page(api, proposal, name)
+    assert "value_evidence" not in observations  # absent selection: legacy shape
+    assert "value evidence" not in page_text
+
+    edited = select_observed_values(api, proposal, first["revision"], name, {"region": "VARCHAR"})
+    second = api.refresh_schema(proposal, edited["revision"], [REGIONS_ASSET])
+    assert second["changed"] is True
+    _meta, observations, page_text = table_page(api, proposal, name)
+    assert observations["value_evidence"] == {
+        "region": {
+            "state": "observed",
+            "top_values": [
+                {"value": "EMEA", "count": 2},
+                {"value": "AMER", "count": 1},
+            ],
+        }
+    }
+    assert '`region`: observed — "EMEA" (2), "AMER" (1)' in page_text
+    assert '"open"' not in page_text and '"closed"' not in page_text  # unselected field
+
+    third = api.refresh_schema(proposal, second["revision"], [REGIONS_ASSET])
+    assert third["changed"] is False
+    assert third["revision"] == second["revision"]  # identical inputs: no new revision
+    assert table_page(api, proposal, name)[2] == page_text  # and identical bytes
+
+
+@pytest.mark.parametrize(
+    "column,selected_type,expected",
+    [
+        (
+            "region",
+            "VARCHAR",
+            {
+                "state": "observed",
+                "top_values": [
+                    {"value": "EMEA", "count": 2},
+                    {"value": "AMER", "count": 1},
+                ],
+            },
+        ),
+        (  # integer-looking STRINGS stay exact strings
+            "code",
+            "VARCHAR",
+            {
+                "state": "observed",
+                "top_values": [
+                    {"value": "007", "count": 2},
+                    {"value": "008", "count": 1},
+                ],
+            },
+        ),
+        (  # a measured null stays null (never the string "NULL")
+            "note",
+            "VARCHAR",
+            {
+                "state": "observed",
+                "top_values": [
+                    {"value": None, "count": 1},
+                    {"value": "x", "count": 1},
+                    {"value": "y", "count": 1},
+                ],
+            },
+        ),
+        (
+            "id",
+            "BIGINT",
+            {
+                "state": "observed",
+                "top_values": [
+                    {"value": 1, "count": 1},
+                    {"value": 2, "count": 1},
+                    {"value": 3, "count": 1},
+                ],
+            },
+        ),
+        ("tier", "VARCHAR", {"state": "unavailable", "reason": "not_in_profile"}),
+        (
+            "observed_on",
+            "DATE",
+            {"state": "unavailable", "reason": "unsupported_representation"},
+        ),
+        ("region", "INTEGER", {"state": "unavailable", "reason": "type_changed"}),
+        ("ghost", "VARCHAR", {"state": "unavailable", "reason": "column_missing"}),
+    ],
+)
+def test_selected_column_evidence_states(column, selected_type, expected, tmp_path):
+    """The parametrized evidence family (spec 0024 §3, §6 AC3): each selected
+    column produces exactly its representation-driven outcome, and ONLY
+    selected columns appear in ``value_evidence``. Expectations derive from
+    the authored literals and the spec's supported/unavailable contract, not
+    from implementation output."""
+    _project, api, first = started_regions_project(tmp_path)
+    proposal = first["proposal"]
+    name = regions_page_name(first)
+    edited = select_observed_values(api, proposal, first["revision"], name, {column: selected_type})
+    api.refresh_schema(proposal, edited["revision"], [REGIONS_ASSET])
+    _meta, observations, page_text = table_page(api, proposal, name)
+    assert list(observations["value_evidence"]) == [column]  # only the selected column
+    assert observations["value_evidence"][column] == expected
+    if expected["state"] == "unavailable":
+        assert "top_values" not in observations["value_evidence"][column]
+    if column == "observed_on":
+        # the profiler's stringified dates never leak as filter literals
+        assert "2026-01-01" not in page_text and "2026-01-02" not in page_text
+    if column == "note":
+        assert '`note`: observed — null (1), "x" (1), "y" (1)' in page_text
+
+
+def test_type_change_rebinding_and_deselection_keep_history(tmp_path):
+    """Spec 0024 §3/§6 AC4: a type change loses usable values with a visible
+    reason while the human-owned selection is preserved for review; repeating
+    the refresh stays unavailable (the old type binding is never erased);
+    explicit rebinding restores evidence; deselection removes ACTIVE evidence
+    while historical candidate revisions keep their bytes and the schema
+    history survives."""
+    project, api, first = started_regions_project(tmp_path)
+    proposal = first["proposal"]
+    name = regions_page_name(first)
+    page_path = page_paths(first)[table_resource(REGIONS_ASSET)]
+
+    edited = select_observed_values(
+        api, proposal, first["revision"], name, {"region": "VARCHAR", "code": "VARCHAR"}
+    )
+    second = api.refresh_schema(proposal, edited["revision"], [REGIONS_ASSET])
+    _meta, observations, _text = table_page(api, proposal, name)
+    assert observations["value_evidence"]["code"]["top_values"] == [
+        {"value": "007", "count": 2},
+        {"value": "008", "count": 1},
+    ]
+
+    # the source changes code VARCHAR -> BIGINT underneath
+    write_typed_parquet(
+        project / "data" / "regions" / "regions.parquet",
+        REGIONS_SCHEMA_V2,
+        regions_rows_v2(),
+    )
+    third = api.refresh_schema(proposal, second["revision"], [REGIONS_ASSET])
+    meta, observations, page_text = table_page(api, proposal, name)
+    assert observations["value_evidence"]["code"] == {
+        "state": "unavailable",
+        "reason": "type_changed",
+    }
+    assert observations["value_evidence"]["region"]["state"] == "observed"  # untouched column
+    assert meta["observed_value_columns"] == {  # selection preserved for review
+        "region": "VARCHAR",
+        "code": "VARCHAR",
+    }
+    assert "type changed VARCHAR -> BIGINT" in page_text  # schema history intact
+
+    # a repeated refresh cannot erase the binding and reactivate old values
+    fourth = api.refresh_schema(proposal, third["revision"], [REGIONS_ASSET])
+    assert fourth["changed"] is False
+    assert table_page(api, proposal, name)[1]["value_evidence"]["code"]["reason"] == "type_changed"
+
+    # explicit rebinding to the new recorded type restores exact integer values
+    rebound = select_observed_values(
+        api, proposal, third["revision"], name, {"region": "VARCHAR", "code": "BIGINT"}
+    )
+    fifth = api.refresh_schema(proposal, rebound["revision"], [REGIONS_ASSET])
+    assert fifth["changed"] is True
+    assert table_page(api, proposal, name)[1]["value_evidence"]["code"] == {
+        "state": "observed",
+        "top_values": [
+            {"value": 7, "count": 2},
+            {"value": 8, "count": 1},
+        ],
+    }
+
+    # deselection (empty mapping) removes active evidence after refresh —
+    # never a scrub of historical candidate revisions or Git history
+    cleared = select_observed_values(api, proposal, fifth["revision"], name, {})
+    sixth = api.refresh_schema(proposal, cleared["revision"], [REGIONS_ASSET])
+    assert sixth["changed"] is True
+    _meta, observations, page_text = table_page(api, proposal, name)
+    assert "value_evidence" not in observations
+    assert "value evidence" not in page_text
+    assert "EMEA" in run_git(project, "show", f"{second['revision']}:{page_path}")
+
+
+def test_value_evidence_unit_seams_sampled_label_and_malformed_inputs():
+    """The producer unit seam (spec 0024 §3): a SAMPLED profile stays labeled
+    sampled beside its selected evidence; a malformed authored selection and a
+    malformed supplied measurement are errors, never implicit publications."""
+    from ariadne.context import build_table_page
+
+    asset = {
+        "source": "s",
+        "catalog": None,
+        "schema": "s",
+        "table": "t",
+        "resource": "ariadne://table/e30=",
+    }
+    columns = [
+        {
+            "column": "region",
+            "type": "VARCHAR",
+            "nullable": "unknown",
+            "default": "unknown",
+            "comment": "unknown",
+        }
+    ]
+    profile = {
+        "sampled": True,
+        "row_count": 3,
+        "primary_key_candidates": [],
+        "columns": {
+            "region": {
+                "null_count": 0,
+                "distinct_count": 2,
+                "top_values": [
+                    {"value": "EMEA", "count": 2},
+                    {"value": "AMER", "count": 1},
+                ],
+            }
+        },
+    }
+    existing = (
+        "---\n"
+        "type: table\n"
+        "title: s.s.t\n"
+        "description: table\n"
+        "tags: [table, schema]\n"
+        "observed_value_columns:\n"
+        "  region: VARCHAR\n"
+        "---\n\n"
+        "# s.s.t\n"
+    )
+    page, _flags = build_table_page(
+        asset=asset,
+        columns=columns,
+        profile=profile,
+        existing_text=existing,
+        now="2026-10-13T12:00:00+00:00",
+    )
+    assert "- scope: sampled" in page  # the sampled label survives evidence generation
+    assert '`region`: observed — "EMEA" (2), "AMER" (1)' in page
+
+    malformed_selection = existing.replace("  region: VARCHAR\n", "  [region]\n")
+    with pytest.raises(ValueError, match="not a valid selection"):
+        build_table_page(
+            asset=asset,
+            columns=columns,
+            profile=profile,
+            existing_text=malformed_selection,
+            now="2026-10-13T12:00:00+00:00",
+        )
+
+    malformed_profile = {
+        "sampled": False,
+        "row_count": 3,
+        "primary_key_candidates": [],
+        "columns": {
+            "region": {
+                "null_count": 0,
+                "distinct_count": 2,
+                "top_values": [{"value": "EMEA"}],
+            }
+        },
+    }
+    with pytest.raises(ValueError, match="malformed measurement"):
+        build_table_page(
+            asset=asset,
+            columns=columns,
+            profile=malformed_profile,
+            existing_text=existing,
+            now="2026-10-13T12:00:00+00:00",
+        )
+
+
+@pytest.mark.parametrize(
+    "raw_selection,expected_fragment",
+    [
+        ("  region: VARCHAR\n", None),  # the valid form passes the gate
+        ("  region: VARCHAR\n  region: BIGINT\n", "duplicate declaration"),
+        (
+            "  region: VARCHAR\nobserved_value_columns:\n  status: VARCHAR\n",
+            "declared more than once",
+        ),
+        ("  1: VARCHAR\n", "non-empty string"),
+        ("  region:\n", "non-empty string"),
+        ("  '': VARCHAR\n", "non-empty string"),
+        ("  [region]\n", "must be a mapping"),
+    ],
+)
+def test_selection_contract_gate(raw_selection, expected_fragment, tmp_path):
+    """The authoring validation boundary (spec 0024 §3): a malformed mapping
+    or duplicate declaration fails the shared page-contract gate before human
+    admission; the valid selection and the plain legacy page both pass."""
+    from ariadne.context import _page_contract_errors, build_table_page
+
+    asset = {
+        "source": "s",
+        "catalog": None,
+        "schema": "s",
+        "table": "t",
+        "resource": "ariadne://table/e30=",
+    }
+    columns = [
+        {
+            "column": "region",
+            "type": "VARCHAR",
+            "nullable": "unknown",
+            "default": "unknown",
+            "comment": "unknown",
+        }
+    ]
+    profile = {
+        "row_count": 3,
+        "primary_key_candidates": [],
+        "columns": {"region": {"null_count": 0, "distinct_count": 2}},
+    }
+    page, _flags = build_table_page(
+        asset=asset,
+        columns=columns,
+        profile=profile,
+        existing_text=None,
+        now="2026-10-13T12:00:00+00:00",
+    )
+    head, body = page.split("---\n\n", 1)
+    text = head + "observed_value_columns:\n" + raw_selection + "---\n\n" + body
+    root = tmp_path / "staging"
+    page_path = root / "context_layer" / "tables" / "t.md"
+    page_path.parent.mkdir(parents=True)
+    page_path.write_text(text, encoding="utf-8")
+    errors = _page_contract_errors(root, page_path, "table")
+    if expected_fragment is None:
+        assert errors == []
+    else:
+        assert any(expected_fragment in error for error in errors)
+
+
+def test_value_evidence_bound_fallback_never_clips(tmp_path):
+    """Spec 0024 §3/§6 AC5, fallback half: independently known long exact
+    strings (2x 4500 chars + JSON structure = well over the 8192 compact-JSON
+    UTF-8 byte bound) make the successful mapping exceed the bound — every
+    selected column falls back to unavailable/too_large and NO clipped or
+    partial literal is published."""
+    long_a, long_b = "A" * 4500, "B" * 4500
+    rows = [(1, long_a, "x"), (2, long_b, "y"), (3, long_a, "x")]
+    schema = [("id", "BIGINT"), ("region", "VARCHAR"), ("status", "VARCHAR")]
+    _project, api, first = started_regions_project(tmp_path, rows=rows, schema=schema)
+    proposal = first["proposal"]
+    name = regions_page_name(first)
+
+    edited = select_observed_values(api, proposal, first["revision"], name, {"region": "VARCHAR"})
+    second = api.refresh_schema(proposal, edited["revision"], [REGIONS_ASSET])
+    assert second["changed"] is True  # the fallback mapping fits: refresh succeeds
+    _meta, observations, page_text = table_page(api, proposal, name)
+    assert observations["value_evidence"] == {
+        "region": {"state": "unavailable", "reason": "too_large"}
+    }
+    assert long_a not in page_text and long_b not in page_text  # never published
+    assert long_a[:200] not in page_text  # never a clipped or partial literal
+    assert "top_values" not in str(observations["value_evidence"])
+
+
+def test_status_only_value_evidence_overflow_refuses_without_writes(tmp_path):
+    """Spec 0024 §3/§6 AC5, refusal half: when even the status-only mapping
+    exceeds the 8192-byte compact-JSON bound (200 selected columns; each
+    status-only entry is ~53 bytes, so ~10.6 KiB > 8 KiB by literal
+    arithmetic), the refresh refuses atomically — the candidate revision, the
+    page bytes and the tracked tree are unchanged."""
+    schema = [("id", "BIGINT")] + [(f"c{i:03d}", "VARCHAR") for i in range(200)]
+    rows = [(1, *("a" if i % 2 == 0 else "b" for i in range(200)))]
+    rows += [(2, *("b" if i % 2 == 0 else "a" for i in range(200)))]
+    rows += [(3, *("a" if i % 2 == 0 else "b" for i in range(200)))]
+    project, api, first = started_regions_project(tmp_path, rows=rows, schema=schema)
+    proposal = first["proposal"]
+    name = regions_page_name(first)
+    page_path = page_paths(first)[table_resource(REGIONS_ASSET)]
+    before_tree = run_git(project, "ls-tree", "-r", "--name-only", first["revision"])
+
+    selection = {f"c{i:03d}": "VARCHAR" for i in range(200)}
+    edited = select_observed_values(api, proposal, first["revision"], name, selection)
+    before_page = run_git(project, "show", f"{edited['revision']}:{page_path}")
+    with pytest.raises(ValueError, match="status-only value evidence"):
+        api.refresh_schema(proposal, edited["revision"], [REGIONS_ASSET])
+
+    # nothing was written: the revision, the page bytes and the tracked tree
+    # (table page, Dataset Overview, index trees) are all unchanged
+    record = json.loads((project / ".ariadne" / "proposals" / f"{proposal}.json").read_text())
+    assert record["candidate_revision"] == edited["revision"]
+    assert run_git(project, "show", f"{edited['revision']}:{page_path}") == before_page
+    assert run_git(project, "ls-tree", "-r", "--name-only", edited["revision"]) == before_tree
+
+
+def test_malformed_selection_and_stale_revision_refuse_without_writes(tmp_path):
+    """Spec 0024 §3: a malformed authored selection (a list, not a mapping)
+    refuses the refresh BEFORE any write, and the existing stale-revision
+    gate refuses identically — candidate revision, page bytes and tracked
+    tree unchanged in both cases."""
+    project, api, first = started_regions_project(tmp_path)
+    proposal = first["proposal"]
+    name = regions_page_name(first)
+    page_path = page_paths(first)[table_resource(REGIONS_ASSET)]
+
+    edited = select_observed_values(api, proposal, first["revision"], name, ["region"])
+    before_page = run_git(project, "show", f"{edited['revision']}:{page_path}")
+    before_tree = run_git(project, "ls-tree", "-r", "--name-only", edited["revision"])
+    with pytest.raises(ValueError, match="not a valid selection"):
+        api.refresh_schema(proposal, edited["revision"], [REGIONS_ASSET])
+    with pytest.raises(ValueError, match="stale revision"):
+        api.refresh_schema(proposal, "0" * 40, [REGIONS_ASSET])
+    record = json.loads(
+        (project / ".ariadne" / "proposals" / f"{proposal}.json").read_text(encoding="utf-8")
+    )
+    assert record["candidate_revision"] == edited["revision"]
+    assert run_git(project, "show", f"{edited['revision']}:{page_path}") == before_page
+    assert run_git(project, "ls-tree", "-r", "--name-only", edited["revision"]) == before_tree
+
+
+def test_generated_value_evidence_is_protected_at_the_edit_seam(tmp_path):
+    """Spec 0024 §3/§5: the measured values/counts are system-owned — an
+    authored replacement inside ``ariadne.observations.value_evidence`` is
+    refused at the edit seam like every other generated fact."""
+    _project, api, first = started_regions_project(tmp_path)
+    proposal = first["proposal"]
+    name = regions_page_name(first)
+    edited = select_observed_values(api, proposal, first["revision"], name, {"region": "VARCHAR"})
+    second = api.refresh_schema(proposal, edited["revision"], [REGIONS_ASSET])
+    meta, body = _split_page(read_full_page(api, proposal, name))
+
+    forged = dict(meta)
+    ariadne = dict(meta["ariadne"])
+    observations = dict(ariadne["observations"])
+    observations["value_evidence"] = {
+        "region": {
+            "state": "observed",
+            "top_values": [{"value": "FORGED", "count": 99}],
+        }
+    }
+    ariadne["observations"] = observations
+    forged["ariadne"] = ariadne
+    with pytest.raises(ValueError, match="system-owned"):
+        api.edit_proposal(
+            proposal,
+            second["revision"],
+            {
+                "kind": "page",
+                "section": "tables",
+                "name": name,
+                "content": _render_page(forged, body),
+            },
+        )

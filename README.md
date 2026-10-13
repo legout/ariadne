@@ -270,6 +270,56 @@ literal body text — nothing in it is adopted as Ariadne metadata or approval s
 currently published 0.2.0 package does not include it (same boundary as
 `ariadne setup`/`status` above).
 
+### Selected observed filter values on table pages
+
+A table page may carry the optional authored frontmatter mapping
+`observed_value_columns` — exact physical column name to its selected catalog
+type (the spelling the page's Schema section shows), e.g.
+
+```yaml
+observed_value_columns:
+  region: VARCHAR
+```
+
+Selection is the PUBLICATION choice only: it is not Source Approval, not a
+sample grant, and it cannot raise any operator limit. Edit it through the
+normal complete-page proposal edit with the expected candidate revision, then
+run the unchanged explicit refresh (`refresh_schema` with exactly
+`{source, catalog, schema, table}`). An absent or empty mapping publishes no
+values; a malformed mapping or duplicate declaration fails authoring
+validation (and the refresh refuses before any write), never an implicit
+selection of all columns. The skill is expected to show the exact columns and
+proposed disclosure to the owner and get explicit confirmation before
+preparing this metadata; the human later reviews the actual generated values
+with the whole candidate.
+
+The refresh reuses the existing per-table profile — no new lookup, widened
+sampling or changed cardinality rule — and extends the core-generated
+`ariadne.observations` with `value_evidence` for exactly the selected columns:
+native `top_values` with counts (text/enum labels, booleans, integers, finite
+floats — never trimmed, case-folded, stringified nulls or numericated
+strings), rendered as data inside the core-owned Observations section. A
+selected column without usable values reports `state: unavailable` with an
+identifiable reason (`not_in_profile`, `column_missing`, `type_changed`,
+`unsupported_representation` for decimal/binary/temporal/complex types, or
+`too_large`). The recorded type binds the selection: a changed or missing
+field loses its values without a rename guess, repeated refreshes stay
+unavailable until the owner explicitly rebinds or clears, and deselection
+removes active evidence after refresh without scrubbing historical
+revisions or Git history. Values are measured top values at the recorded
+time and scope — never a complete allowed-value domain or business
+constraint. The complete successful `value_evidence` mapping is bounded to
+8 KiB measured as compact JSON (UTF-8, non-ASCII preserved): over the bound
+every selected column falls back to `unavailable/too_large` — never a
+clipped literal or partial histogram — and a status-only mapping that still
+does not fit refuses the refresh atomically. `value_evidence` and its
+rendered section stay system-owned: proposals may change the authored
+selection, never the measured values/counts.
+
+**Version boundary:** selected observed filter values describe this
+repository candidate; the currently published 0.2.0 package does not include
+them (same boundary as `ariadne setup`/`status` above).
+
 **Optional: stdio MCP toolsets.** With the `mcp` extra installed (see below),
 the same local stdio server exposes the role toolsets over one core — pick the
 registration at launch: `python -m ariadne.serve --project DIR` (combined,
