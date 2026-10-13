@@ -768,7 +768,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
 
         @app.tool()
         async def search_examples(
-            query: str, limit: int = 10, include_history: bool = False
+            query: str, limit: int = 10, include_history: bool = False, include_sql: bool = False
         ) -> list[dict]:
             """Search saved answer examples as labeled references (draft/stable,
             staleness, provenance, path) — historical evidence to check a METHOD
@@ -782,9 +782,13 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 query: terms ranked against question/interpretation.
                 limit: maximum records returned.
                 include_history: include stale/superseded/rejected records, labeled.
+                include_sql: additionally return each hit's stored sql_provenance
+                    as provenance.sql — the EXACT submitted result SQL as
+                    historical evidence (null for legacy records without it);
+                    never executed, never a ranking input, never wider history.
             """
             return await _runtime().search_examples(
-                query, limit=limit, include_history=include_history
+                query, limit=limit, include_history=include_history, include_sql=include_sql
             )
 
         @app.tool()

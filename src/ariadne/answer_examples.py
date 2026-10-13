@@ -18,12 +18,18 @@ optional MCP adapter, issue #21) shares; the operator review command (issue
   identified draft. Submitter identity and attestation are recorded as
   self-declared evidence — a submission may never claim the system-owned
   verified/reviewed state. Validation precedes every write: a failed or
-  malformed submission stores nothing.
+  malformed submission stores nothing. Every successful save also derives
+  ``sql_provenance: {source: submitted_result.sql, text: <exact result.sql>}``
+  from the validated result envelope (spec 2026-10-13-0023): reserved against
+  caller override, never normalized, inside the same encoded record bound.
 - ``search_examples(...)`` re-reads the served and staging example roots on
   each request and returns ranked labeled hits (identity, staleness,
   question/interpretation, method summary, provenance, path). It never
-  executes a query and never returns saved rows. ``search_context`` and
-  governed ``get_metric.context`` are untouched by construction: examples live
+  executes a query and never returns saved rows. With ``include_sql=True``
+  each selected hit additionally carries the stored mapping as
+  ``provenance.sql`` (``null`` for legacy records without it); SQL is never a
+  search or ranking input. ``search_context`` and governed
+  ``get_metric.context`` are untouched by construction: examples live
   outside ``context_layer/``.
 """
 
@@ -45,6 +51,9 @@ import yaml
 EXAMPLES_DIR = "answer_examples"  # ADR-0015: the separate per-project OKF store
 MAX_EXCERPT_BYTES = 8 * 1024  # spec: the timestamped answer excerpt bound
 MAX_RECORD_BYTES = 64 * 1024  # spec: the whole encoded record bound
+# spec 2026-10-13-0023 §2: the fixed provenance descriptor — the submitted
+# result envelope's sql field, not a verified execution origin.
+SQL_PROVENANCE_SOURCE = "submitted_result.sql"
 # The only methods an example may record (spec: get_metric/define_metric
 # structured arguments — never standalone executable SQL).
 OPERATIONS = ("get_metric", "define_metric")
@@ -61,9 +70,11 @@ _OPERATION_ARGUMENTS = {
 _CITATION_KINDS = ("context_layer/metrics/", "context_layer/policies/")
 # Identity and review state are system-owned: a submission may not claim them
 # (spec: local identity is self-declared, never authenticated; review evidence
-# is written only by the operator review command, issue #20).
+# is written only by the operator review command, issue #20). sql_provenance
+# is likewise system-derived from the validated result envelope — a caller
+# may not supply its own (spec 0023 §2).
 _RESERVED_FIELDS = frozenset(
-    {"id", "status", "verified", "review", "stale", "superseded", "attested"}
+    {"id", "status", "verified", "review", "stale", "superseded", "attested", "sql_provenance"}
 )
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)\Z", re.DOTALL)
 _QUERY_TOKEN_RE = re.compile(r"[a-z0-9]+")  # same token rule as search_context
@@ -93,9 +104,12 @@ def _validate_result(result: Any) -> None:
     command or independently establish business truth (spec)."""
     if not isinstance(result, dict):
         raise ValueError("save-example requires the observed Ariadne 'result' envelope")
-    for key in ("metric", "sql"):
-        if not isinstance(result.get(key), str) or not result[key]:
-            raise ValueError(f"'result.{key}' must be a non-empty string")
+    if not isinstance(result.get("metric"), str) or not result["metric"]:
+        raise ValueError("'result.metric' must be a non-empty string")
+    # spec 0023 §2: valid retained SQL text is a non-whitespace string; the
+    # retained text itself is never normalized.
+    if not isinstance(result.get("sql"), str) or not result["sql"].strip():
+        raise ValueError("'result.sql' must be a non-whitespace string (the retained SQL)")
     if not isinstance(result.get("columns"), list) or not all(
         isinstance(column, str) for column in result["columns"]
     ):
@@ -176,6 +190,13 @@ def _normalize_submission(submission: Any, served_root: Path) -> dict:
             raise ValueError("'project' must be a non-empty string")
         record["project"] = project
     _validate_result(submission.get("result"))
+    # spec 0023 §2: provenance is DERIVED from the validated result envelope
+    # only — exact text, no trimming/normalization; the fixed descriptor never
+    # claims a verified execution origin.
+    record["sql_provenance"] = {
+        "source": SQL_PROVENANCE_SOURCE,
+        "text": submission["result"]["sql"],
+    }
     record["submitter"] = {
         "identity": _require_str(submission, "submitter"),
         "attestation": _require_str(submission, "attestation"),
@@ -386,6 +407,31 @@ def save_example(
     return {"id": staged.stem, "path": str(staged), "status": "draft"}
 
 
+def validated_sql_provenance(meta: dict, label: str) -> dict | None:
+    """The stored sql_provenance mapping (spec 0023 §§3–4). Absent means a
+    legacy record: no provenance was recorded, rendered as ``null``/accepted —
+    never a backfilled or excluded record. PRESENT but malformed (not a
+    mapping, a foreign source descriptor, whitespace-only text) is invalid
+    data: it fails the caller with an identifiable error instead of passing as
+    usable provenance or silently missing."""
+    if "sql_provenance" not in meta:
+        return None
+    raw = meta["sql_provenance"]
+    if not isinstance(raw, dict):
+        raise ValueError(f"{label} carries a malformed sql_provenance (not a mapping): {raw!r}")
+    if raw.get("source") != SQL_PROVENANCE_SOURCE:
+        raise ValueError(
+            f"{label} carries an unsupported sql_provenance.source "
+            f"{raw.get('source')!r} (only {SQL_PROVENANCE_SOURCE!r} is defined)"
+        )
+    text = raw.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(
+            f"{label} carries a malformed sql_provenance.text (a non-whitespace string is required)"
+        )
+    return {"source": SQL_PROVENANCE_SOURCE, "text": text}
+
+
 def _is_stale(meta: dict, served_root: Path) -> bool:
     """Dependency staleness against the recorded digests (spec): a cited served
     metric/Policy that is missing, unreadable, escaping the root or changed
@@ -416,6 +462,7 @@ def search_examples(
     query: str,
     limit: int = 10,
     include_history: bool = False,
+    include_sql: bool = False,
     *,
     examples_root: str | Path | None = None,
 ) -> list[dict]:
@@ -424,6 +471,12 @@ def search_examples(
     discoverable in this checkout (spec §interfaces). Approved non-stale
     records rank ahead of drafts; by default stale and closed (superseded/
     rejected) records stay history — ``include_history`` exposes them labeled.
+    SQL is never a search or ranking input; ``include_sql`` (spec 0023 §3)
+    only attaches each SELECTED hit's stored ``sql_provenance`` mapping as
+    ``provenance.sql`` (``null`` for legacy records without it) after ranking
+    and slicing — a malformed present mapping on a selected hit refuses the
+    whole retrieval with an identifiable error, and ``include_sql`` alone
+    never widens record eligibility (history stays behind ``include_history``).
     No query is ever executed and no saved row is returned. ``served_root`` is
     the CITATION root dependency staleness is checked against;
     ``examples_root`` optionally names a separate example-store root (issue
@@ -437,7 +490,7 @@ def search_examples(
         return []
     root = Path(served_root)
     examples = Path(examples_root) if examples_root is not None else root
-    ranked: list[tuple[int, int, str, dict]] = []
+    ranked: list[tuple[int, int, str, dict, dict]] = []
     for is_served, directory in (
         (True, examples / EXAMPLES_DIR),
         (False, Path(staging_dir) / EXAMPLES_DIR),
@@ -486,7 +539,14 @@ def search_examples(
                         },
                         "path": str(path),
                     },
+                    meta,
                 )
             )
     ranked.sort()
-    return [hit for _, _, _, hit in ranked][:limit]
+    selected = ranked[:limit]
+    if include_sql:
+        for *_, hit, meta in selected:
+            hit["provenance"]["sql"] = validated_sql_provenance(
+                meta, f"answer example {hit['id']!r}"
+            )
+    return [hit for *_, hit, _ in selected]

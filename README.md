@@ -360,12 +360,17 @@ MCP registers the same operations as tools when the `mcp` extra is installed.
 | `ariadne list-datasets` | See every table across all registered sources |
 | `ariadne query-records` | Bounded record selection from one known table — the latest N rows, no aggregation: explicit filters/order/timestamp contract, `governed: false`, never staged, truthful requested-top-N completeness, and all-or-nothing overflow refusals with narrowing guidance |
 | `ariadne define-metric` | Answer an unmodeled question: draft a metric (JSON via `--file` or stdin), pass the safety checks (ad-hoc SQL may read only registered catalog relations — file, network and table-function reads are refused before execution), run it read-only, label it `governed: false`, and auto-stage it as a proposal |
-| `ariadne search-examples QUERY` | Find explicitly saved answer examples — labeled references (draft/stable, staleness, provenance) for checking a method, never cached answers; never executes a query |
-| `ariadne save-example` | Save one answer example after the user explicitly confirms the bounded record (question, interpretation, method, result excerpt, self-declared attestation); stages a draft under `staging/answer_examples/` for operator review |
+| `ariadne search-examples QUERY` | Find explicitly saved answer examples — labeled references (draft/stable, staleness, provenance) for checking a method, never cached answers; never executes a query. Opt-in `--include-sql` adds each hit's `provenance.sql`: the exact submitted result SQL retained verbatim as historical evidence (`null` for legacy records without it); never executed, never a ranking input, and never wider history |
+| `ariadne save-example` | Save one answer example after the user explicitly confirms the bounded record (question, interpretation, method, result excerpt, the exact result SQL — stored verbatim as `sql_provenance`, self-declared attestation); stages a draft under `staging/answer_examples/` for operator review |
 
 Saved examples are references, not caches: a similar question still compares dates, filters,
-grain and cited policies, and the answer is always produced fresh by the runtime. Reviewing
-submissions is an operator command (`ariadne-example-review`), never an agent action.
+grain and cited policies, and the answer is always produced fresh by the runtime. Each saved
+record derives `sql_provenance` — the exact SQL text of the submitted result
+(`source: submitted_result.sql`) — as non-executable historical provenance inside the same
+64-KiB record bound; it is shown in the pre-save confirmation so the user can assess sensitive
+literals before retention, and retrieval is opt-in. Reviewing submissions is an operator
+command (`ariadne-example-review`), never an agent action; records without SQL provenance
+(legacy) stay searchable, reviewable and unrevised.
 
 ## Data sources
 

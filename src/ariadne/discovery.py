@@ -388,12 +388,15 @@ class DiscoveryRuntime:
         return entries
 
     async def search_examples(
-        self, query: str, limit: int = 10, include_history: bool = False
+        self, query: str, limit: int = 10, include_history: bool = False, include_sql: bool = False
     ) -> list[dict]:
         """Issue #19: ranked labeled example records (draft/stable identity,
         staleness, question/interpretation, method summary, provenance, path)
         from the current served and staging example roots — re-read on each
-        request, no query execution, no saved rows. On the managed route the
+        request, no query execution, no saved rows. ``include_sql`` (spec 0023
+        §3) attaches each selected hit's stored ``sql_provenance`` mapping as
+        ``provenance.sql`` (``null`` for legacy records); it never widens
+        record eligibility or ranking. On the managed route the
         served example store is anchored at the LOGICAL project root (issue
         #37 fix pass), while citation staleness checks the pinned artifact
         root. ``search_context`` and governed ``get_metric.context`` are
@@ -405,6 +408,7 @@ class DiscoveryRuntime:
             query,
             limit=limit,
             include_history=include_history,
+            include_sql=include_sql,
             examples_root=self._examples_root,
         )
 

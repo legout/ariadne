@@ -513,6 +513,15 @@ def _save_draft(served, staging, capsys, **overrides) -> dict:
     return json.loads(capsys.readouterr().out)
 
 
+def _save_draft_with_result_sql(served, staging, capsys, sql: str) -> dict:
+    """One staged draft whose result envelope carries an exact SQL literal
+    (the base helper forwards overrides top-level, so replace the envelope
+    directly here)."""
+    submission = _submission(dict(_SMALL_RESULT, sql=sql))
+    assert run_cli(served, staging, "save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+    return json.loads(capsys.readouterr().out)
+
+
 def _decision(saved: dict, staged: Path, **overrides) -> dict:
     decision = {
         "id": saved["id"],
@@ -1064,3 +1073,343 @@ def test_sql_only_method_rejected_real_arguments_accepted(served, tmp_path, caps
     saved = json.loads(capsys.readouterr().out)
     assert saved["status"] == "draft"
     assert Path(saved["path"]).parent == staging / "answer_examples"
+
+
+# --- SQL provenance (issue #68, spec 2026-10-13-0023) ------------------------
+#
+# Every expectation below is independent of the implementation: the spec's
+# fixed mapping {source: submitted_result.sql, text: <exact result.sql>}
+# asserted against input literals defined here (leading/trailing whitespace,
+# multiple lines, no terminal newline) — never a value read back from the
+# writer.
+
+_EXACT_SQL = " \nSELECT region, COUNT(*) AS n\nFROM orders\nGROUP BY region\t "
+_EXACT_PROVENANCE = {"source": "submitted_result.sql", "text": _EXACT_SQL}
+
+
+def test_exact_sql_provenance_through_save_search_review_without_execution(
+    served, tmp_path, capsys
+):
+    """Spec 0023 §5 AC1/AC3: the exact submitted SQL — leading/trailing
+    whitespace, multiple lines, no terminal newline — is retained verbatim
+    through save, opt-in search and operator review; default search adds no
+    SQL field and no ranking change; the structured method/result evidence
+    keeps its meaning; and nothing ever executes the saved text."""
+    root, db = served
+    staging = tmp_path / "staging"
+    db_before = db.read_bytes()
+
+    saved = _save_draft_with_result_sql(served, staging, capsys, _EXACT_SQL)
+    staged = Path(saved["path"])
+    page_text = staged.read_text(encoding="utf-8")
+    meta = yaml.safe_load(page_text.split("---", 2)[1])
+    assert meta["sql_provenance"] == _EXACT_PROVENANCE  # exact text, no normalization
+    assert meta["method"]["operation"] == "get_metric"  # structured method intact
+    assert "full structured-result digest" in page_text  # result digest intact
+
+    # Default search shape is unchanged: no SQL text, no availability field.
+    assert run_cli(served, staging, "search-examples", "gross margin region") == 0
+    default_hits = json.loads(capsys.readouterr().out)
+    mine = next(hit for hit in default_hits if hit["id"] == saved["id"])
+    assert "sql" not in mine["provenance"] and "sql" not in mine
+
+    # Opt-in returns exactly the spec mapping on the same hits, same ranking.
+    assert run_cli(served, staging, "search-examples", "gross margin region", "--include-sql") == 0
+    opt_in = json.loads(capsys.readouterr().out)
+    assert [hit["id"] for hit in opt_in] == [hit["id"] for hit in default_hits]
+    assert (
+        next(hit for hit in opt_in if hit["id"] == saved["id"])["provenance"]["sql"]
+        == _EXACT_PROVENANCE
+    )
+
+    # Operator approval preserves the exact text (spec §4) and serves it.
+    assert run_review(served, staging, saved["id"], _decision(saved, staged), tmp_path) == 0
+    capsys.readouterr()
+    served_page = root / "answer_examples" / f"{saved['id']}.md"
+    served_meta = yaml.safe_load(served_page.read_text(encoding="utf-8").split("---", 2)[1])
+    assert served_meta["status"] == "stable"
+    assert served_meta["sql_provenance"] == _EXACT_PROVENANCE  # review rewrote nothing
+    assert run_cli(served, staging, "search-examples", "gross margin region", "--include-sql") == 0
+    served_hits = json.loads(capsys.readouterr().out)
+    stable = next(hit for hit in served_hits if hit["id"] == saved["id"])
+    assert stable["status"] == "stable" and stable["provenance"]["sql"] == _EXACT_PROVENANCE
+
+    # Saving, searching and reviewing executed no saved statement: the demo
+    # database is byte-identical throughout.
+    assert db.read_bytes() == db_before
+
+
+def _legacy_page(question, interpretation, citations, **front):
+    """A hand-authored Example page independent of the new writer (spec 0023
+    §5 AC2: legacy input is NOT simulated by saving and removing a field)."""
+    meta = {
+        "type": "answer_example",
+        "question": question,
+        "interpretation": interpretation,
+        "method": {"operation": "get_metric", "arguments": {"name": "order_count"}},
+        "submitter": {
+            "identity": "expert:old-timer",
+            "attestation": "The saved interpretation states the business meaning I intended.",
+        },
+        "sources": citations,
+        "generated": "2025-01-01T00:00:00+00:00",
+    }
+    meta.update(front)
+    return meta
+
+
+def _page_text(meta):
+    """The save-side OKF page shape (frontmatter + heading + bounded answer
+    evidence), authored directly for legacy/malformed records."""
+    body = (
+        f"# {' '.join(str(meta['question']).split())}\n\n"
+        "Historical evidence only — never a cached answer; rerun the recorded "
+        "method on current data before reuse.\n\n"
+        "Captured answer excerpt (2025-01-01T00:00:00+00:00; full structured-result "
+        f"digest `{'0' * 64}`):\n\n"
+        '````json\n{"metric": "order_count", "governed": true, "columns": '
+        '["region"], "rows": []}\n````\n'
+    )
+    return f"---\n{yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)}---\n\n{body}"
+
+
+def test_legacy_examples_without_sql_remain_searchable_reviewable_opt_in_null(
+    served, tmp_path, capsys
+):
+    """Spec 0023 §5 AC2: independently authored legacy records without
+    sql_provenance stay searchable and reviewable; opt-in retrieval reports
+    provenance.sql null (not recorded, never backfilled); a stale record's SQL
+    needs BOTH include_history and include_sql (include-sql alone never
+    widens record eligibility)."""
+    root, _db = served
+    staging = tmp_path / "staging"
+    metric = root / "context_layer" / "metrics" / "gross_margin.md"
+    digest = hashlib.sha256(metric.read_bytes()).hexdigest()
+    served_root = root / "answer_examples"
+    served_root.mkdir(exist_ok=True)
+
+    legacy = _legacy_page(
+        "Legacy provenance probe without retained sql",
+        "order count benchmark predating sql provenance",
+        [{"path": "context_layer/metrics/gross_margin.md", "sha256": digest}],
+        status="stable",
+    )
+    (served_root / "legacy-provenance-probe.md").write_text(_page_text(legacy), encoding="utf-8")
+
+    # Legacy absence is valid, not an error: default finds it, opt-in reports
+    # provenance.sql as null.
+    assert run_cli(served, staging, "search-examples", "legacy provenance probe") == 0
+    hits = json.loads(capsys.readouterr().out)
+    assert (
+        "sql"
+        not in next(hit for hit in hits if hit["id"] == "legacy-provenance-probe")["provenance"]
+    )
+    assert (
+        run_cli(served, staging, "search-examples", "legacy provenance probe", "--include-sql") == 0
+    )
+    hits = json.loads(capsys.readouterr().out)
+    legacy_hit = next(hit for hit in hits if hit["id"] == "legacy-provenance-probe")
+    assert legacy_hit["provenance"]["sql"] is None
+
+    # A legacy STAGED draft (hand-authored, same absent field) still passes
+    # operator review — legacy absence is not a review failure (spec §4).
+    staged_dir = staging / "answer_examples"
+    staged_dir.mkdir(parents=True)
+    staged_page = staged_dir / "legacy-provenance-probe-staged.md"
+    staged_page.write_text(
+        _page_text(
+            _legacy_page(
+                "Legacy provenance probe staged for review",
+                "order count benchmark predating sql provenance, staged",
+                [{"path": "context_layer/metrics/gross_margin.md", "sha256": digest}],
+                status="draft",
+            )
+        ),
+        encoding="utf-8",
+    )
+    decision = {
+        "id": staged_page.stem,
+        "actor": "maintainer:reviewer",
+        "outcome": "approve",
+        "technical_review": "Legacy record without SQL provenance; method and citation checked.",
+        "staged_digest": hashlib.sha256(staged_page.read_bytes()).hexdigest(),
+    }
+    assert run_review(served, staging, staged_page.stem, decision, tmp_path) == 0
+    capsys.readouterr()
+    served_legacy = root / "answer_examples" / f"{staged_page.stem}.md"
+    served_meta = yaml.safe_load(served_legacy.read_text(encoding="utf-8").split("---", 2)[1])
+    assert served_meta["status"] == "stable" and "sql_provenance" not in served_meta
+    assert (
+        run_cli(served, staging, "search-examples", "legacy provenance probe", "--include-sql") == 0
+    )
+    hits = json.loads(capsys.readouterr().out)
+    assert next(hit for hit in hits if hit["id"] == staged_page.stem)["provenance"]["sql"] is None
+
+    # A STALE record that does carry SQL: include-sql alone never widens
+    # eligibility — only both options together expose its mapping.
+    stale = _legacy_page(
+        "Historic retention probe with outdated dependency",
+        "superseded benchmark wording",
+        [{"path": "context_layer/metrics/gross_margin.md", "sha256": "0" * 64}],
+        status="stable",
+        sql_provenance={"source": "submitted_result.sql", "text": "SELECT 1 FROM orders"},
+    )
+    (served_root / "historic-retention-probe.md").write_text(_page_text(stale), encoding="utf-8")
+    for extra in (None, "--include-sql"):
+        args = ["search-examples", "historic retention probe"] + ([extra] if extra else [])
+        assert run_cli(served, staging, *args) == 0
+        assert all(
+            hit["id"] != "historic-retention-probe" for hit in json.loads(capsys.readouterr().out)
+        )
+    assert (
+        run_cli(served, staging, "search-examples", "historic retention probe", "--include-history")
+        == 0
+    )
+    history = json.loads(capsys.readouterr().out)
+    hist_hit = next(hit for hit in history if hit["id"] == "historic-retention-probe")
+    assert hist_hit["stale"] is True and "sql" not in hist_hit["provenance"]
+    assert (
+        run_cli(
+            served,
+            staging,
+            "search-examples",
+            "historic retention probe",
+            "--include-history",
+            "--include-sql",
+        )
+        == 0
+    )
+    both = json.loads(capsys.readouterr().out)
+    both_hit = next(hit for hit in both if hit["id"] == "historic-retention-probe")
+    assert both_hit["provenance"]["sql"] == {
+        "source": "submitted_result.sql",
+        "text": "SELECT 1 FROM orders",
+    }
+
+
+@pytest.mark.parametrize(
+    ("example_id", "unique", "bad_provenance"),
+    [
+        ("probe-not-a-mapping", "mappingcase", "SELECT 1"),
+        (
+            "probe-foreign-source",
+            "sourcecase",
+            {"source": "handwritten notebook", "text": "SELECT 1"},
+        ),
+        ("probe-blank-text", "textcase", {"source": "submitted_result.sql", "text": " \n\t "}),
+    ],
+)
+def test_malformed_present_provenance_refuses_opt_in_search_and_review(
+    served, tmp_path, capsys, example_id, unique, bad_provenance
+):
+    """Spec 0023 §§3–4 (§5 AC3): a PRESENT but malformed sql_provenance is
+    invalid data, never silently missing — opt-in retrieval fails with an
+    identifiable error naming the record, operator approval fails closed
+    before any write, and default search keeps its existing behavior."""
+    root, _db = served
+    staging = tmp_path / "staging"
+    served_root = root / "answer_examples"
+    served_root.mkdir(exist_ok=True)
+    (served_root / f"{example_id}.md").write_text(
+        _page_text(
+            _legacy_page(
+                f"Malformed probe {unique} wording",
+                "invalid retained provenance probe",
+                [],
+                status="stable",
+                sql_provenance=bad_provenance,
+            )
+        ),
+        encoding="utf-8",
+    )
+    served_before = _served_examples(root)
+
+    # Default search: unchanged behavior — the hit still returns, no SQL.
+    assert run_cli(served, staging, "search-examples", f"malformed probe {unique}") == 0
+    hits = json.loads(capsys.readouterr().out)
+    mine = next(hit for hit in hits if hit["id"] == example_id)
+    assert "sql" not in mine["provenance"]
+
+    # Opt-in retrieval refuses the invalid mapping with an identifiable error.
+    assert (
+        run_cli(served, staging, "search-examples", f"malformed probe {unique}", "--include-sql")
+        == 1
+    )
+    error = error_payload(capsys.readouterr().err)
+    assert "sql_provenance" in error["message"]
+    assert example_id in error["message"]
+    assert _served_examples(root) == served_before  # refusal mutated nothing
+
+    # Operator approval of a staged record with the same malformed field fails
+    # closed before any write (spec §4).
+    staged_dir = staging / "answer_examples"
+    staged_dir.mkdir(parents=True)
+    staged_page = staged_dir / f"{example_id}-staged.md"
+    staged_page.write_text(
+        _page_text(
+            _legacy_page(
+                f"Malformed probe {unique} staged",
+                "invalid retained provenance probe",
+                [],
+                status="draft",
+                sql_provenance=bad_provenance,
+            )
+        ),
+        encoding="utf-8",
+    )
+    staged_bytes = staged_page.read_bytes()
+    decision = {
+        "id": staged_page.stem,
+        "actor": "maintainer:reviewer",
+        "outcome": "approve",
+        "technical_review": "Refused before write: malformed provenance.",
+        "staged_digest": hashlib.sha256(staged_bytes).hexdigest(),
+    }
+    assert run_review(served, staging, staged_page.stem, decision, tmp_path) == 1
+    assert "sql_provenance" in review_error(capsys)["message"]
+    assert staged_page.read_bytes() == staged_bytes  # refused before any write
+    assert _served_examples(root) == served_before  # nothing served
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        (
+            {"sql_provenance": {"source": "submitted_result.sql", "text": "SELECT 1"}},
+            "reserved",
+        ),
+        ({"result": dict(_SMALL_RESULT, sql=" \n\t ")}, "result.sql"),
+    ],
+)
+def test_reserved_provenance_and_whitespace_sql_refuse_saving(
+    served, tmp_path, capsys, overrides, expected
+):
+    """Spec 0023 §2: sql_provenance is reserved (derived only from the
+    validated result envelope) and valid retained SQL is a non-whitespace
+    string — both field failures refuse before any write."""
+    staging = tmp_path / "staging"
+    submission = _submission(_SMALL_RESULT)
+    submission.update(overrides)
+    code = run_cli(served, staging, "save-example", stdin=io.StringIO(json.dumps(submission)))
+    assert code == 1
+    assert expected in error_payload(capsys.readouterr().err)["message"]
+    assert not staging.exists() or not any(staging.rglob("*"))  # nothing staged
+
+
+def test_oversize_sql_refused_before_any_write(served, tmp_path, capsys):
+    """Spec 0023 §5 AC4: SQL shares the whole encoded 64-KiB record bound —
+    text that alone exceeds it refuses the save all-or-nothing before any
+    page/index/log write; nothing is truncated and the served tree is
+    byte-identical (the small excerpt keeps the 8-KiB bound out of play)."""
+    root, _db = served
+    staging = tmp_path / "staging"
+    served_before = _served_examples(root)
+    result = dict(_SMALL_RESULT, sql=f"-- {'x' * 70_000}")
+    code = run_cli(
+        served, staging, "save-example", stdin=io.StringIO(json.dumps(_submission(result)))
+    )
+    assert code == 1
+    error = error_payload(capsys.readouterr().err)
+    assert "65536" in error["message"]  # the record bound is named, never truncated
+    assert not staging.exists() or not any(staging.rglob("*"))  # no page/index/log write
+    assert _served_examples(root) == served_before

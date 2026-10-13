@@ -65,6 +65,7 @@ from ariadne.answer_examples import (
     _resolve_citation,
     _sha256_hex,
     _write_index,
+    validated_sql_provenance,
 )
 from ariadne.authoring import _fsync_path
 from ariadne.cli import _resolve_served_root
@@ -303,6 +304,13 @@ def _validate_staged_record(meta: dict, body: str, served_root: Path) -> None:
             f"the staged record's {operation!r} method is missing its structured "
             f"arguments (missing or non-string: {', '.join(missing)})"
         )
+    # spec 0023 §4: a PRESENT sql_provenance must be the exact result-derived
+    # mapping (fixed source, non-whitespace text) before any stable write — a
+    # malformed one refuses approval; an ABSENT one is a valid legacy record,
+    # never a review failure. The exact text is retained unchanged below (the
+    # digest already binds the reviewed bytes, SQL included); nothing is
+    # executed, backfilled or rewritten.
+    validated_sql_provenance(meta, "the staged record")
     evidence = _ANSWER_EVIDENCE_RE.search(body)
     if evidence is None:
         raise ValueError(

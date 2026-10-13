@@ -21,6 +21,8 @@ in the runtime:
     ariadne save-example [--file PATH]          (stdin when absent; issue #19 —
                                                explicit answer-example submission)
     ariadne search-examples QUERY [--limit N] [--include-history]
+                                               [--include-sql] (issue #68: opt-in "
+                                               "sql_provenance per hit, spec 0023)
     ariadne resolve-term [TERM] [--file PATH] [--part N]   (issue #42: shared
                                                terminology resolution; the exact
                                                {resource, column} field form
@@ -244,6 +246,13 @@ def build_parser() -> _Parser:
         action="store_true",
         help="include stale/superseded/rejected records as labeled history",
     )
+    examples.add_argument(
+        "--include-sql",
+        action="store_true",
+        help="include each hit's stored sql_provenance as provenance.sql — the exact "
+        "submitted result SQL as historical evidence (null for legacy records "
+        "without it); never executed, never a ranking input",
+    )
     resolve = sub.add_parser(
         "resolve-term",
         parents=[common],
@@ -446,7 +455,10 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
     elif args.command == "search-examples":
         result = asyncio.run(
             runtime.search_examples(
-                args.query, limit=args.limit, include_history=args.include_history
+                args.query,
+                limit=args.limit,
+                include_history=args.include_history,
+                include_sql=args.include_sql,
             )
         )
     elif args.command == "query-metrics":

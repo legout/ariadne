@@ -154,11 +154,53 @@ is never required, and never an answer:
   must never be cited as support for an answer; say what is unverified.
   Stale records (a cited Policy or metric changed) guide nothing without
   re-validation.
+- **SQL provenance is opt-in historical evidence.** `ariadne search-examples
+  QUERY --include-sql` adds each hit's `provenance.sql`: the exact SQL text
+  submitted with the saved result (`source: submitted_result.sql`), retained
+  verbatim — never executed, never compared against a fresh compile, and
+  `null` for legacy records that predate it ("not recorded", not an error).
+  The flag never widens which records are returned (history stays behind
+  `--include-history`) and never affects ranking. Because SQL is retained
+  byte-for-byte, include it when the user assesses what a save would keep;
+  sensitive literals in it are the user's call at confirmation time — no
+  automatic masking exists.
+
+## Active feedback and saving
+
+For answers produced through `get_metric`/`define_metric`, look up examples
+and check candidates against the current question: interpretation, method,
+parameters, grain and the served Policies. A suitable reviewed example is
+stable, non-stale, eligible for normal reuse and compatible on all of those —
+lexical similarity alone is never enough, and its method still requires
+current validation and FRESH execution.
+
+- **Reviewed match:** use it (validate, execute fresh) and ask NO unsolicited
+  save question. An explicit user save request still works in this case.
+- **No suitable reviewed example** — none found, only drafts, or only
+  unsuitable/stale ones: after the completed answer, present the bounded
+  submission (question, interpretation, parameters, method, result
+  excerpt/digest, cited sources, the exact result SQL, and the submitter's
+  self-declared business-meaning attestation) and ask ONCE:
+
+  > Passt die Interpretation und ist die Antwort für dich fachlich stimmig?
+  > Soll ich das gezeigte Beispiel speichern?
+
+Keep three outcomes strictly distinguishable: correct/useful AND save;
+correct/useful WITHOUT saving; or a correction of interpretation/answer.
+Only explicit confirmation of the shown record plus the attestation saves —
+correctness alone, ambiguous assent, silence or a correction stores nothing.
+After a correction, resolve it before presenting a revised submission for
+explicit confirmation; never repeatedly solicit a save for the same answer.
+A confirmed save creates an unreviewed draft, never an approval. User
+feedback is a self-declared business-meaning assessment, not independent
+numeric validation — no result is "verified" on the basis of it. "The shown
+example" means the displayed bounded record, not the conversation transcript.
 
 Saving is explicit and user-gated. After a successful answer, present the
 bounded record for the user to confirm BEFORE calling save: the original
 question, your interpretation, parameters (dates, filters, dimensions, grain),
-the method and its arguments, the true result excerpt/digest, cited sources,
+the method and its arguments, the true result excerpt/digest, the exact result
+SQL (stored verbatim as `sql_provenance`), cited sources,
 and the submitter's explicit self-declared business-meaning attestation. Only
 then `ariadne save-example --file record.json` (stdin when `--file` is
 absent). Never save silently, never harvest the transcript, and never run the

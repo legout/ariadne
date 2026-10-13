@@ -954,10 +954,12 @@ class QueryRuntime(DiscoveryRuntime):
         )
 
     async def search_examples(
-        self, query: str, limit: int = 10, include_history: bool = False
+        self, query: str, limit: int = 10, include_history: bool = False, include_sql: bool = False
     ) -> list[dict]:
         self._discard_request_budget()
-        return await super().search_examples(query, limit=limit, include_history=include_history)
+        return await super().search_examples(
+            query, limit=limit, include_history=include_history, include_sql=include_sql
+        )
 
     def _metric_context(self, name: str, *, _now: datetime | None = None) -> dict:
         """The shared context implementation over this runtime's served context

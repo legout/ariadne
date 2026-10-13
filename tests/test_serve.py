@@ -495,6 +495,26 @@ def test_mcp_example_tools_parity_with_local_transport(served, tmp_path):
     assert hits_mcp and hits_mcp[0]["id"] == saved_local["id"]
     assert hits_mcp[0]["status"] == "draft"
 
+    # Issue #68 (spec 0023 §3): opt-in SQL retrieval is transport-neutral too.
+    # Default MCP search adds no SQL field or availability marker; include_sql
+    # over MCP returns exactly what the local runtime returns, including the
+    # result-derived sql_provenance mapping.
+    assert all("sql" not in hit["provenance"] for hit in hits_mcp)
+    mcp_sql = _json(
+        asyncio.run(
+            app.call_tool("search_examples", {"query": "gross margin", "include_sql": True})
+        )
+    )
+    if isinstance(mcp_sql, dict):  # one hit arrives as one content block
+        mcp_sql = [mcp_sql]
+    local_sql = asyncio.run(other.search_examples("gross margin", include_sql=True))
+    assert mcp_sql == local_sql
+    assert mcp_sql[0]["id"] == saved["id"]
+    assert mcp_sql[0]["provenance"]["sql"] == {
+        "source": "submitted_result.sql",
+        "text": submission["result"]["sql"],
+    }
+
 
 # --- Ad-hoc query layer (spec revision 3, §8.8-8.11) -------------------------
 
