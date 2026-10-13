@@ -278,6 +278,19 @@ def build_parser() -> _Parser:
         help="emit exactly one structured report object instead of human text "
         "(the spec-0001 usability amendment, this command only)",
     )
+    setup_cmd = sub.add_parser(
+        "setup", help="operator onboarding wizard (human gates are handoffs)"
+    )
+    setup_cmd.add_argument(
+        "--legacy", action="store_true", help="new staged project, not a migration"
+    )
+    setup_cmd.add_argument("--project", default=".", help="directory to scaffold or resume")
+    setup_cmd.add_argument("--no-input", action="store_true", help="scaffold/detect/report only")
+    setup_cmd.add_argument(
+        "--agents", action="store_true", help="install the selected packaged skill"
+    )
+    setup_cmd.add_argument("--agent", choices=("universal", "pi", "claude", "hermes"))
+    setup_cmd.add_argument("--scope", choices=("project", "user"), default="project")
     return parser
 
 
@@ -286,6 +299,12 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
     # runtime construction — which is where the read-only source connection
     # opens. Every earlier failure therefore precedes any connection, execution,
     # or staging.
+    if args.command == "setup":
+        from ariadne import (
+            setup,  # pyright: ignore[reportAttributeAccessIssue] — new-module resolver drift
+        )
+
+        return setup.run(args, stdin)
     if args.command == "status":
         # spec 0016: status resolves its own DIAGNOSTIC route (a scaffold with
         # no admission is a report, never the missing-admission error) and must

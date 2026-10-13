@@ -420,6 +420,22 @@ value-attested`.
   from it, ask the owner where it does not establish a rule, and stop at
   `review` with the exact digest. A `review_needed` proposal or an interrupted
   transition needs human resolution, never an agent reset or replacement.
+- **Operator shells are not agent authority.** `ariadne setup` is operator-facing.
+  Agents may use `ariadne setup --no-input --project DIR` for scaffolding,
+  filename-only detection/reporting and explicitly selected skill installation
+  (`--agents --agent pi|claude|hermes|universal`, `--scope project|user`).
+  Never satisfy prompts or treat declaration confirmation as Source Approval;
+  hand off the printed exact approval command to the human. Setup itself never
+  approves, admits, promotes, reconciles or initializes/configures Git, even at
+  a terminal. `ariadne review` remains operator-only: never run it or answer its
+  human confirmations. Use `ariadne status` for offline diagnostic blockers,
+  not a query or readiness probe that opens sources.
+  Project-scoped installation copies to `.agents/skills/ariadne` under the
+  selected project; Pi/Claude/Hermes wiring respectively links/copies to
+  `.pi/skills/ariadne`, `.claude/skills/ariadne`, `.hermes/skills/ariadne`.
+  Universal is universal-only, never a claim of host activation; user scope
+  must be explicit. Check packaged hashes/drift for the chosen targets only;
+  missing optional host directories are not failed installs.
 - **No direct Git, shell or file mutation.** Artifact changes go only through
   the typed `ariadne-authoring` seams — never run `git commit`, `git branch`,
   `git checkout`, `git merge`, `git rebase`, `git push` or arbitrary shell

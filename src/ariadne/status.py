@@ -412,7 +412,7 @@ def _example_counts(examples_root: Path | None, staging: Path) -> dict:
 # ----------------------------------------------------------------- skill
 
 
-def _skill_targets() -> list[dict]:
+def _skill_targets(selection: set[tuple[str, str | None]] | None = None) -> list[dict]:
     """The packaged skill's per-target drift states (ariadne-skill status's
     own scan, as data): scope and agent target retained; an absent optional
     host target is 'absent', never a failed installed target."""
@@ -426,6 +426,8 @@ def _skill_targets() -> list[dict]:
         targets.append(("project", agent, Path(project).absolute()))
     views = []
     for scope, agent, path in targets:
+        if selection is not None and (scope, agent) not in selection:
+            continue
         if not path.exists() and not path.is_symlink():
             state = "absent"
         else:
@@ -444,9 +446,12 @@ def _skill_targets() -> list[dict]:
 # ------------------------------------------------------------- the report
 
 
-def build_report(args: argparse.Namespace) -> dict:
+def build_report(
+    args: argparse.Namespace, *, skill_targets: set[tuple[str, str | None]] | None = None
+) -> dict:
     """Assemble the five fixed sections plus the overall ready flag. Pure
-    reads: no source connection, no compilation, no network, no writes."""
+    reads: no source connection, no compilation, no network, no writes.
+    Setup may select (scope, agent) pairs; None preserves the status CLI's full scan."""
     cwd = Path.cwd()
     route, logical_root, artifact_root = _resolve_route(args, cwd)
     staging = _staging_dir(args, logical_root)
@@ -529,7 +534,7 @@ def build_report(args: argparse.Namespace) -> dict:
         },
         "sources": sources_section,
         "work_pending": work_pending,
-        "skill": {"targets": _skill_targets()},
+        "skill": {"targets": _skill_targets(skill_targets)},
         "next_steps": [],
         "ready": False,
         "ready_reason": None,

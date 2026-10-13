@@ -90,76 +90,119 @@ host-integrated tool registration.
 
 ## Quickstart
 
-Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/). Authoring uses an LLM —
-set `OPENAI_API_KEY` (plus `OPENAI_BASE_URL` / `OPENAI_MODEL` if not using OpenAI
-directly) in a `.env` file.
+Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/). Install the core CLI
+from PyPI — no server or conversational host required:
+
+```bash
+uv tool install ariadne-data
+# Optional conversational host (not required for the core CLI):
+uv tool install ariadne-agent
+```
+
+**Version boundary:** the currently published **0.2.0** does not include
+`ariadne setup` or `ariadne status`. The wizard walkthrough below describes this
+**unreleased candidate**, verified from an installed candidate wheel; it is not a
+claim that PyPI already ships these commands. With 0.2.0, scaffold using
+`ariadne-init --git my-project` and follow the explicit Git authoring commands below.
+After a separately authorized release, the PyPI install above will provide the wizard.
+
+### Operator setup (unreleased candidate)
+
+```bash
+ariadne setup --project my-project --agents --agent pi
+cd my-project
+# HUMAN: setup scaffolds files, NOT a Git repository. Prepare your own repository:
+git init
+git config user.name "Your Name"       # repository-local, never global
+git config user.email "you@example.org"
+# Put your data under data/; edit data/seed_notes.md with the owner:
+# domain, row grain, business rules, desired metrics; clarify unknown meanings.
+ariadne setup --project . --agents --agent pi
+```
+
+New projects default to Git-managed proposals; an existing route is preserved,
+never migrated. An ambiguous scaffold requires your route choice. Setup detects
+filenames only (`.db`, `.sqlite`, `.csv`, `.json`, `.parquet`), offers editable
+hints, and asks before declaring **inert** sources. Postgres declarations name a
+DSN environment variable (`connection_env`), never the credential value. Setup
+prints the exact source-approval command with the real proposal ID, revision and
+complete resolved digest, then pauses the source/authoring pipeline. **Only the
+human operator runs that command** — setup never approves, admits, promotes,
+reconciles, initializes Git or configures identity, even at a terminal.
+
+`--no-input` (also non-terminal input/output) scaffolds/detects/reports only; it
+never accepts a source list or runs authoring. `--agents` needs an explicit
+`--agent` non-interactively. Project scope is the default and installs inside
+`--project DIR`, even from another cwd. Choose `--agent pi`, `claude` or `hermes`
+for a canonical `.agents/skills/ariadne` copy plus the respective project host
+link `.pi/skills/ariadne`, `.claude/skills/ariadne` or `.hermes/skills/ariadne`.
+`--agent universal` is universal-only, not host activation. `--scope user` must be
+explicit. Detection, diagnostics and skill installation make no network calls.
+
+### From declarations to the first governed answer
+
+For managed projects, use your harness's own model with the packaged skill: no
+second LLM credential. If you skipped interactive declarations, write
+`sources.yaml` as a registry-shaped `sources:` list, then use the same existing
+commands setup composes:
+
+```bash
+ariadne-authoring start --project .     # returns ID and candidate revision REV
+ariadne-authoring propose-sources --project . --proposal ID --expected-revision REV --file sources.yaml
+# HUMAN: review the resolved sources, then run the exact command setup/the seam returned:
+ariadne-authoring approve-sources --project . --proposal ID --revision REV --source-digest DIGEST
+# Harness: measured inputs, seed-note/domain clarification, then typed artifact edits:
+ariadne-authoring inputs --project . --proposal ID
+ariadne-authoring edit --project . --proposal ID --expected-revision REV --file edit.json
+ariadne-authoring validate --project . --proposal ID --expected-revision REV
+ariadne-authoring review --project . --proposal ID
+# HUMAN: inspect the exact review, use its final revision and reviewed digest:
+ariadne-admit --project . --proposal ID --revision REV --reviewed-digest DIGEST --confirm
+ariadne list-metrics --project .
+ariadne get-metric YOUR_METRIC --project .   # a FRESH query of the pinned admitted snapshot
+```
+
+Use the returned revision after **each** edit/validation, not an old `REV`.
+If setup already created a pending proposal, reuse its ID/revision rather than
+starting a replacement. Validation/review are not admission. Setup's final status
+preserves blockers: a successful scaffold/skill install is not a query-ready catalog.
+`governed: true` means human-admitted/Promoted; `attestation: pending` is **not
+independently value-attested**. Keep the returned Context/Policy caveats with every number.
+The complete typed authoring sequence lives in
+[docs/how-to/git-authoring.md](docs/how-to/git-authoring.md) and
+[docs/how-to/context-knowledge.md](docs/how-to/context-knowledge.md).
+
+For the retained staged route, use `ariadne setup --legacy --project my-project`
+(candidate) or `ariadne-init my-project` (published 0.2.0). Propose sources with
+`ariadne-authoring propose-sources --project . --file sources.yaml`; the human
+runs the returned `ariadne-authoring approve-sources --project . --digest DIGEST`.
+Then either follow the harness-led staged loop below, or explicitly select the
+existing `ariadne-author --sources ariadne.yaml --notes data/seed_notes.md` run.
+That optional run profiles authorized sources and sends profiles/notes to the
+configured LLM (`OPENAI_API_KEY`, `OPENAI_MODEL`, optional `OPENAI_BASE_URL` in the
+environment or `ARIADNE_ENV` file); setup discloses this network/data egress before
+selection. It stages drafts only. A human reviews `staging/` and runs
+`ariadne-promote`, then `ariadne list-metrics --sources ariadne.yaml` and
+`ariadne get-metric YOUR_METRIC --sources ariadne.yaml`. Never promote unresolved
+`review_needed` artifacts. Existing legacy projects are never converted by setup;
+operator-only migration is documented in the Git authoring guide.
+
+### Source development (separate from the PyPI install)
+
+From the package checkout, not the data project:
 
 ```bash
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e .
 source .venv/bin/activate
-```
-
-**See it end-to-end** on a bundled example (seeds a demo shop, authors a catalog with a
-live LLM, pauses for your review, then queries a governed metric locally):
-
-```bash
+# Bundled end-to-end demo: live configured LLM, human review, then a fresh query:
 examples/retail-demo/demo.sh
 ```
 
-**Point it at your own data:**
-
-```bash
-ariadne-init my-project && cd my-project   # scaffold registry, seed notes (local-first)
-# edit ariadne.yaml (your sources) and data/seed_notes.md (your business rules)
-ariadne-author --sources ariadne.yaml --notes data/seed_notes.md
-# review staging/, then:
-ariadne-promote
-ariadne list-metrics --sources ariadne.yaml      # query locally — no server needed
-ariadne get-metric gross_margin --sources ariadne.yaml
-```
-
-Or run the same project Git-managed — isolated revision-checked proposals, exact-
-revision human admission, pinned snapshots (the full legacy → new mapping lives in
-[docs/how-to/git-authoring.md](docs/how-to/git-authoring.md)):
-
-```bash
-ariadne-init --git my-project && cd my-project && git init
-# declare sources, then (agent or you):
-ariadne-authoring start --project .
-ariadne-authoring propose-sources --proposal ID --expected-revision REV --file sources.yaml
-#    HUMAN: ariadne-authoring approve-sources --project . --proposal ID \
-#             --revision REV --source-digest DIGEST
-ariadne-authoring edit --proposal ID --expected-revision REV --file edit.json
-ariadne-authoring validate --proposal ID --expected-revision REV
-ariadne-authoring review --proposal ID
-#    HUMAN: ariadne-admit --project . --proposal ID --revision REV \
-#             --reviewed-digest DIGEST --confirm
-ariadne list-metrics --project .   # queries the pinned admitted snapshot
-```
-
-Already have a legacy staged project? The human import moves its served artifacts
-into an unadmitted Git proposal without touching pending staging work — never
-admission:
-
-```bash
-ariadne-init --git . && git init
-ariadne-authoring import-legacy --project . --from-root .   # HUMAN
-```
-
-Imported legacy table pages bind to their approved catalog assets with the
-human `ariadne-authoring enrich-legacy` (ambiguous same-named tables refuse
-rather than guess), and the explicit `refresh-schema` generates their physical
-schema facts. Context knowledge — physical schemas, shared terminology,
-identifier mappings and bounded mapping evidence with automatic hypothesis
-capture — has its own guide:
-[docs/how-to/context-knowledge.md](docs/how-to/context-knowledge.md).
-Aliases, observations and measurements never authorize joins or replace the
-compile gate and live audits.
-
-Installing the packaged skill (`ariadne-skill install --scope user`) teaches your agent
-the whole workflow — query governed metrics first, respect the staging boundary, report
-caveats with every number.
+For the candidate-wheel check: `uv build`, create a fresh venv with
+`uv venv --python 3.12 /tmp/ariadne-wheel-venv`, then
+`uv pip install --python /tmp/ariadne-wheel-venv/bin/python dist/ariadne_data-*.whl`.
+Exercise the walkthrough with those installed console scripts, not the editable install.
 
 ### Harness-led authoring — bring your own agent
 
