@@ -12,6 +12,7 @@ import hashlib
 import json
 import sys
 import zipfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -1900,3 +1901,413 @@ def test_reconcile_credential_in_approved_description_refuses_and_redacts(
     assert len(calls3) == 1  # body unchanged: not advisory-eligible, no egress
     assert token not in record3.diff
     assert "[redacted credential_assignment]" in record3.diff
+
+
+# --- (p) opt-in verbatim mode (spec 2026-10-13-0021, issue #66 V1) --------------
+
+# AC1 fixture: textual frontmatter of its own (with a tempting `status: stable`),
+# indented/trailing whitespace, a code block and NO final newline — hand-authored
+# in the spec's image, so every expected value below comes from this literal.
+VERBATIM_SOURCE = (
+    "---\n"
+    "title: Source-owned notes\n"
+    "status: stable\n"
+    "---\n"
+    "\n"
+    "  Indented lead-in with trailing spaces.   \n"
+    "\n"
+    "```python\n"
+    "rotation_code = 'placeholder'\n"
+    "```\n"
+    "\n"
+    "Final line without a trailing newline"
+)
+
+
+class _FixedClock:
+    """datetime replacement handing out one controllable instant — the retry
+    journey advances the generation clock between intakes to prove timestamps
+    are ignored, never rewritten."""
+
+    def __init__(self, start: datetime):
+        self.now_value = start
+
+    def now(self, _tz):
+        return self.now_value
+
+
+def test_verbatim_preserves_document_and_never_calls_model(tmp_path, monkeypatch):
+    """AC1: one native Markdown document becomes ONE draft Reference whose body
+    is the reader's text exactly (frontmatter, whitespace, code block, missing
+    final newline); the source's own `status: stable` never reaches the outer
+    metadata; neither a supplied callback nor the default boundary is invoked,
+    and no LLM configuration is needed."""
+    import ariadne.ingest as ingest_module
+
+    def supplied(_messages):
+        raise AssertionError("verbatim mode must never call a supplied completion callback")
+
+    def default_boom(_messages):
+        raise AssertionError("the default completion boundary must not be invoked")
+
+    monkeypatch.setattr(ingest_module, "_default_complete", default_boom)
+    doc = tmp_path / "field-notes.md"
+    doc.write_text(VERBATIM_SOURCE, encoding="utf-8")
+
+    staging = tmp_path / "staging"
+    staged, errors = ingest([doc], staging_dir=staging, complete=supplied, verbatim=True)
+
+    assert errors == []
+    assert staged == [staging / "context_layer" / "references" / "field-notes.md"]
+    page_text = staged[0].read_text(encoding="utf-8")
+    # exact preservation: everything after the wrapper delimiter is the fixture
+    # byte-for-byte — read back without any whitespace-stripping helper
+    assert page_text.split("\n---\n\n", 1)[1] == VERBATIM_SOURCE
+    front = front_of(staged[0])
+    assert front["type"] == "reference"
+    assert front["status"] == "draft"  # the source's `status: stable` stays body text
+    assert front["tags"] == ["ingest", "verbatim"]
+    assert front["generated"]["by"] == "ariadne-ingest:verbatim"
+    assert front["generated"]["at"]  # generation time present
+    assert front["sources"] == [
+        {
+            "id": hashlib.sha256(doc.read_bytes()).hexdigest()[:12],
+            "resource": str(doc.resolve()),
+            "title": doc.name,
+        }
+    ]
+    # filename-derived title/description; no adopted authority beyond the
+    # mechanical wrapper keys (no verification, grain or model claim)
+    assert front["title"] == "field-notes" and "field-notes.md" in front["description"]
+    assert set(front) == {"type", "status", "title", "description", "tags", "sources", "generated"}
+    # exactly one page exists, and nothing else was written
+    assert sorted(
+        path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file()
+    ) == ["context_layer/references/field-notes.md"]
+
+
+def test_verbatim_uses_existing_converter_output(tmp_path, monkeypatch):
+    """AC2: a supported non-native suffix dispatches through the existing
+    converter table; ONLY the converter seam is substituted (a known literal
+    with boundary whitespace) while dispatch, wrapper, gates and staging run
+    for real — the converter's text becomes the body exactly, no model call."""
+    converter_text = (
+        "\n  \n# Converted handbook\n\nParagraph retained from the converter.  \n(no final newline)"
+    )
+    calls = []
+
+    def fake_convert(path):
+        calls.append(path)
+        return converter_text
+
+    monkeypatch.setitem(_CONVERTERS, ".html", (fake_convert, _CONVERTERS[".html"][1]))
+
+    def boom(_messages):
+        raise AssertionError("verbatim mode must never call a model")
+
+    doc = tmp_path / "handbook.html"
+    doc.write_text("<html><body>raw bytes never read natively</body></html>", encoding="utf-8")
+    staged, errors = ingest([doc], staging_dir=tmp_path / "staging", complete=boom, verbatim=True)
+
+    assert errors == [] and calls == [doc]
+    assert staged == [tmp_path / "staging" / "context_layer" / "references" / "handbook.md"]
+    page_text = staged[0].read_text(encoding="utf-8")
+    # the converter's output is the body EXACTLY — boundary whitespace included
+    assert page_text.split("\n---\n\n", 1)[1] == converter_text
+    front = front_of(staged[0])
+    assert front["type"] == "reference" and front["status"] == "draft"
+    # provenance binds the actual document (digest of its bytes), not the text
+    assert front["sources"] == [
+        {
+            "id": hashlib.sha256(doc.read_bytes()).hexdigest()[:12],
+            "resource": str(doc.resolve()),
+            "title": doc.name,
+        }
+    ]
+
+
+def test_verbatim_retry_preserves_drafts_and_new_versions(tmp_path, monkeypatch):
+    """AC3 journey through the public entry: a true no-op retry (advanced
+    generation clock, unchanged bytes and mtime), then changed source bytes,
+    changed converter output, a distinct resolved location and a human edit —
+    each stages a NEW exclusive draft while every earlier draft survives
+    byte-identical (no-overwrite contract, no intake ledger)."""
+    import ariadne.ingest as ingest_module
+
+    clock = _FixedClock(datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC))
+    monkeypatch.setattr(ingest_module, "datetime", clock)
+    converted = {"text": "# Handbook v1\n\nUnchanged converted paragraph.\n"}
+    monkeypatch.setitem(
+        _CONVERTERS, ".html", (lambda _path: converted["text"], _CONVERTERS[".html"][1])
+    )
+
+    staging = tmp_path / "staging"
+    doc = tmp_path / "handbook.html"
+    doc.write_text("binary-ish v1", encoding="utf-8")
+
+    def run(entry=None):
+        return ingest([entry or doc], staging_dir=staging, verbatim=True)
+
+    def staged_files():
+        return sorted(
+            path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file()
+        )
+
+    # (1) first intake: exactly one draft at the slug path
+    staged, errors = run()
+    assert errors == [] and staged == [staging / "context_layer" / "references" / "handbook.md"]
+    draft1 = staged[0]
+    original_bytes = draft1.read_bytes()
+    original_mtime = draft1.stat().st_mtime_ns
+
+    # (2) retry at an ADVANCED clock, same source bytes and converted text: a
+    # true no-op — no new path, byte- and mtime-identical draft, the original
+    # generation time retained (the retry's timestamp never lands in the file)
+    clock.now_value = clock.now_value + timedelta(hours=2)
+    staged, errors = run()
+    assert errors == [] and staged == []
+    assert draft1.read_bytes() == original_bytes
+    assert draft1.stat().st_mtime_ns == original_mtime
+    assert front_of(draft1)["generated"]["at"] == "2026-01-01T12:00:00+00:00"
+    assert staged_files() == ["context_layer/references/handbook.md"]
+
+    # (3) changed source bytes: new digest -> a NEW draft, earlier one intact
+    doc.write_text("binary-ish v2", encoding="utf-8")
+    staged, errors = run()
+    assert errors == []
+    draft2 = staged[0]
+    assert draft2.name == "handbook-2.md" and draft2 != draft1
+    assert draft1.read_bytes() == original_bytes
+    assert front_of(draft2)["sources"][0]["id"] == hashlib.sha256(doc.read_bytes()).hexdigest()[:12]
+
+    # (4) changed converter output, source bytes restored: new body -> new draft
+    doc.write_text("binary-ish v1", encoding="utf-8")  # same digest as (1)/(2)
+    converted["text"] = "# Handbook v1 (re-converted)\n\nDifferent converter output.\n"
+    staged, errors = run()
+    assert errors == []
+    draft3 = staged[0]
+    assert draft3.name == "handbook-3.md"
+    assert draft3.read_text(encoding="utf-8").split("\n---\n\n", 1)[1] == converted["text"]
+    assert draft1.read_bytes() == original_bytes and draft2.is_file()
+
+    # (5) distinct resolved location, identical bytes and text: never conflated
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    twin = elsewhere / "handbook.html"
+    twin.write_text("binary-ish v1", encoding="utf-8")
+    staged, errors = run(twin)
+    assert errors == []
+    draft4 = staged[0]
+    assert draft4.name == "handbook-4.md"
+    assert front_of(draft4)["sources"][0]["resource"] == str(twin.resolve())
+    assert draft4.read_bytes() != draft1.read_bytes()  # only the binding differs
+
+    # (6) human edit to the original draft: edit retained, retry stages ANOTHER
+    # exclusive draft instead of overwriting or claiming a byte-identical no-op
+    doc.write_text("binary-ish v1", encoding="utf-8")
+    converted["text"] = "# Handbook v1\n\nUnchanged converted paragraph.\n"
+    draft1.write_text(
+        draft1.read_text(encoding="utf-8") + "\n(owner annotation)", encoding="utf-8"
+    )
+    staged, errors = run()
+    assert errors == []
+    draft5 = staged[0]
+    assert draft5.name == "handbook-5.md"
+    assert draft1.read_text(encoding="utf-8").endswith("(owner annotation)")
+    assert draft5.read_bytes() != draft1.read_bytes()
+
+    # staging holds only the five draft pages — no intake ledger, no bookkeeping
+    # (lexicographic order: 'handbook-2.md' sorts before 'handbook.md')
+    assert staged_files() == [
+        "context_layer/references/handbook-2.md",
+        "context_layer/references/handbook-3.md",
+        "context_layer/references/handbook-4.md",
+        "context_layer/references/handbook-5.md",
+        "context_layer/references/handbook.md",
+    ]
+
+
+_VERBATIM_TOKEN = "hunter2-rotation"
+
+
+def _verbatim_refusal(
+    case: str, tmp_path: Path, monkeypatch
+) -> tuple[Path, list[str | Path], list[str], list[str], Path | None]:
+    """Build one AC4 refusal scenario: (staging, docs, must_contain, must_not_echo,
+    must_stay_empty_dir). Every expectation reuses the existing error wording."""
+    staging = tmp_path / "staging"
+    if case == "unsupported":
+        docs: list[str | Path] = [make_doc(tmp_path, suffix=".pages")]
+        return staging, docs, ["[documents]", "uv pip install"], [], None
+    if case == "empty":
+        return staging, [make_doc(tmp_path, text="   \n\t \n")], ["empty"], [], None
+    if case == "converter-unavailable":
+        doc = make_doc(tmp_path, suffix=".pdf", text="unused")
+        monkeypatch.setitem(sys.modules, "liteparse", None)
+        monkeypatch.setitem(sys.modules, "liteparse.parser", None)
+        return staging, [doc], ["liteparse", "[documents]"], [], None
+    if case == "credential-body":
+        doc = make_doc(tmp_path, text=f"# ops\n\nrotation password: {_VERBATIM_TOKEN}\n")
+        return staging, [doc], ["credential_assignment"], [_VERBATIM_TOKEN], None
+    if case == "credential-wrapper":
+        # the credential flows into the WRAPPER through the filename itself
+        doc = tmp_path / "token=topsecret987x.md"
+        doc.write_text("# innocent body\n", encoding="utf-8")
+        return staging, [doc], ["credential_assignment"], ["topsecret987x"], None
+    if case == "staging-symlink":
+        doc = make_doc(tmp_path)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        staging.mkdir()
+        link = staging / "context_layer"
+        link.symlink_to(outside, target_is_directory=True)
+        return staging, [doc], ["symlink", str(link)], [], outside
+    # symlinked existing retry candidate: the staged draft is replaced by a
+    # symlink to a directory — reading through it would raise, so a clean
+    # symlink refusal proves the candidate check precedes any dedup read
+    doc = make_doc(tmp_path)
+    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
+    assert errors == [] and len(staged) == 1
+    attacker = tmp_path / "attacker"
+    attacker.mkdir()
+    staged[0].unlink()
+    staged[0].symlink_to(attacker)
+    return staging, [doc], ["symlink", str(staged[0])], [], attacker
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "unsupported",
+        "empty",
+        "converter-unavailable",
+        "credential-body",
+        "credential-wrapper",
+        "staging-symlink",
+        "symlinked-retry-candidate",
+    ],
+)
+def test_verbatim_refusals_leave_no_new_files(tmp_path, monkeypatch, case):
+    """AC4: every refusal path stages nothing — no new files anywhere, the
+    existing error classes are named (never a weaker assertion), credentials
+    are reported by pattern CLASS without the matched value, and a retry
+    lookup never reads through a symlinked candidate."""
+    staging, docs, must_contain, must_not_echo, must_stay_empty = _verbatim_refusal(
+        case, tmp_path, monkeypatch
+    )
+
+    def all_files():
+        return sorted(
+            path.relative_to(tmp_path).as_posix()
+            for path in tmp_path.rglob("*")
+            if path.is_file()
+        )
+
+    before = all_files()
+    staged, errors = ingest(docs, staging_dir=staging, verbatim=True)
+    assert staged == [], case
+    assert errors, case
+    joined = "\n".join(errors)
+    for needle in must_contain:
+        assert needle in joined, (case, needle, errors)
+    for secret in must_not_echo:
+        assert secret not in joined, case
+    assert all_files() == before, case  # no new files, no bookkeeping writes
+    if must_stay_empty is not None:
+        assert not list(must_stay_empty.iterdir()), case  # nothing written outside
+
+
+def test_verbatim_cli_retries_and_rejects_reconcile_before_work(
+    tmp_path, monkeypatch, capsys
+):
+    """AC5/AC7: the CLI no-op retry is exit 0 honestly reported as unchanged
+    (never 'no useful content'), --verbatim --reconcile is refused before any
+    converter/model work, and a mixed batch keeps exit 1 with the good draft."""
+    import ariadne.ingest as ingest_module
+
+    doc = make_doc(tmp_path)
+    staging = tmp_path / "staging"
+    assert main([str(doc), "--staging", str(staging), "--verbatim"]) == 0
+    first = capsys.readouterr()
+    assert "staged:" in first.out and "[reference]" in first.out
+    assert (staging / "context_layer" / "references" / "notes.md").is_file()
+
+    assert main([str(doc), "--staging", str(staging), "--verbatim"]) == 0
+    retry = capsys.readouterr()
+    assert "unchanged" in retry.out and "staged:" not in retry.out
+    assert retry.err == ""
+    assert len(list((staging / "context_layer" / "references").glob("*.md"))) == 1
+
+    # the invalid combination is refused before ANY work: neither the converter
+    # nor any model boundary may run
+    def model_boom(_messages):
+        raise AssertionError("model must not be called")
+
+    def convert_boom(_path):
+        raise AssertionError("converter must not run")
+
+    monkeypatch.setattr(ingest_module, "_default_complete", model_boom)
+    monkeypatch.setattr(ingest_module, "_convert", convert_boom)
+    with pytest.raises(SystemExit):
+        main(
+            [
+                str(doc),
+                "--verbatim",
+                "--reconcile",
+                "--served",
+                str(tmp_path / "served"),
+                "--staging",
+                str(staging),
+            ]
+        )
+    refusal = capsys.readouterr()
+    assert "--verbatim" in refusal.err and "--reconcile" in refusal.err
+
+    # mixed batch (AC7): the good document stages, the bad one errors, exit 1
+    monkeypatch.undo()  # restore the real converter for the batch leg
+    good = tmp_path / "good-notes.md"
+    good.write_text("# Good notes\n\nFine to preserve.\n", encoding="utf-8")
+    bad = make_doc(tmp_path, suffix=".pages")
+    assert main([str(good), str(bad), "--staging", str(tmp_path / "s2"), "--verbatim"]) == 1
+    batch = capsys.readouterr()
+    assert "staged:" in batch.out and "good-notes" in batch.out
+    assert "[documents]" in batch.err
+    assert (tmp_path / "s2" / "context_layer" / "references" / "good-notes.md").is_file()
+
+
+def test_verbatim_reference_is_discoverable_as_draft(tmp_path):
+    """AC6: the staged verbatim page is immediately discoverable through the
+    existing Context search/list/read seams with the draft label and original
+    content — and the intake itself creates no Policy, metric or served
+    artifact."""
+    from ariadne.context import list_pages, read_page, search_pages
+
+    doc = tmp_path / "glossary.md"
+    doc.write_text(
+        "# Glossary\n\nRenewal means reopening the contract for another term.\n", encoding="utf-8"
+    )
+    staging = tmp_path / "staging"
+    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
+    assert errors == [] and len(staged) == 1
+    context = staging / "context_layer"
+    roots = [(context, True)]
+
+    hits = search_pages("renewal reopening contract", limit=5, roots=roots)
+    assert [(hit["path"], hit["draft"]) for hit in hits] == [("references/glossary.md", True)]
+    assert "# Glossary" in hits[0]["content"]
+    assert "Renewal means reopening the contract for another term." in hits[0]["content"]
+
+    listing = list_pages(roots)
+    assert [(entry["path"], entry["draft"]) for entry in listing] == [
+        ("references/glossary.md", True)
+    ]
+
+    page = read_page("references/glossary.md", context, draft=True)
+    assert page["draft"] is True
+    assert page["content"] == staged[0].read_text(encoding="utf-8")
+
+    # no Policy/metric/verification/served artifact: staging holds exactly the
+    # one draft Reference
+    assert sorted(
+        path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file()
+    ) == ["context_layer/references/glossary.md"]

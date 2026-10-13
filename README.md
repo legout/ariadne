@@ -51,7 +51,8 @@ host-integrated tool registration.
   definition is automatically staged as a proposal — good ad-hoc answers become
   governed metrics through the same human review.
 - **Document ingestion.** Feed existing data dictionaries, PDFs, or Office documents in;
-  get typed, provenance-cited proposals out, staged for review.
+  get typed, provenance-cited proposals out, staged for review — or keep the source
+  wording itself, word-for-word, with `--verbatim` (see below).
 
 ### For everyone
 
@@ -236,6 +237,38 @@ root); PDF/Office/HTML conversion uses the optional `.[documents]` extra, and
 inputs are bounded (converted text arrives in parts). Metrics without an
 independent expected-value oracle are staged with `attestation: pending` —
 `governed: true` means Promoted, not independently value-attested.
+
+### Verbatim document preservation — `ariadne-ingest --verbatim`
+
+Ordinary ingestion *extracts*: an LLM distills each document into typed, classified
+proposals (policies, tables, joins). `--verbatim` *preserves*: each document stages
+as ONE draft Reference under `staging/context_layer/references/` whose body is the
+converter's Markdown output **word-for-word** — no model call, no summary, no
+reclassification. Use it when the original wording itself is the evidence you want
+to keep and review. "Verbatim" means the converted text exactly (layout and OCR
+fidelity are the converter's, not a promise); the document's own frontmatter stays
+literal body text — nothing in it is adopted as Ariadne metadata or approval state.
+
+- **Formats:** `.md`/`.txt` are read natively; PDF, Office, HTML and the other
+  supported formats need the optional `.[documents]` extra — a missing converter
+  or an unsupported format fails that document with the install hint.
+- **Draft authority:** the staged page is `status: draft`, tagged `ingest`/`verbatim`,
+  and carries the document's content digest, resolved path and filename as its
+  source binding. Intake verifies nothing and admits nothing: only the human
+  `ariadne-promote` gate moves it to served state, and no Policy, metric or
+  verification is created by the intake itself.
+- **Reconciliation unsupported:** `--verbatim --reconcile` is refused before any
+  conversion or staging — the two modes stay separate until a combined design
+  exists.
+- **Retries are safe:** re-running `--verbatim` on an unchanged document (same
+  bytes, same converted text, draft untouched) is an honest no-op reported as
+  unchanged — no extra file. Changed bytes, changed converter output, a different
+  file location, or a draft you edited yourself stage a NEW draft with a suffixed
+  name; existing drafts, staged or served, are never overwritten.
+
+**Version boundary:** `--verbatim` describes this repository candidate; the
+currently published 0.2.0 package does not include it (same boundary as
+`ariadne setup`/`status` above).
 
 **Optional: stdio MCP toolsets.** With the `mcp` extra installed (see below),
 the same local stdio server exposes the role toolsets over one core — pick the

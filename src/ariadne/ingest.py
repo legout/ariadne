@@ -40,13 +40,21 @@ patterns before staging, rejected naming the pattern CLASS, never the secret.
 Staging writes use the facade's atomic ``O_CREAT|O_EXCL`` claim — name
 collisions suffix ``-2``/``-3``/… instead of overwriting (spec §8.11 discipline).
 
+Verbatim mode (``--verbatim`` / ``verbatim=True``, spec 2026-10-13-0021) skips
+the model entirely: the converter's text is wrapped mechanically into ONE
+draft Reference under ``staging/context_layer/references/`` — body byte-exact
+(no ``.strip()``, no added terminal newline), the source's own frontmatter
+stays literal body text, and staging-local retries no-op while the draft is
+unchanged (generation time ignored); any change stages a NEW exclusive draft.
+
 Interfaces::
 
-    ingest(docs, staging_dir="staging", complete=None) -> (staged paths, errors)
+    ingest(docs, staging_dir="staging", complete=None, verbatim=False)
+        -> (staged paths, errors)
     reconcile_ingest(docs, *, served_root, staging_dir="staging", complete=None)
         -> (staged paths, errors, comparisons)   # opt-in, spec 2026-09-23-0004
-    ariadne-ingest <doc>... [--db DB]          # --db reserved: unwired for now
-    ariadne-ingest --reconcile --served ROOT <doc>...
+    ariadne-ingest <doc>... [--db DB] [--verbatim]   # --db reserved: unwired
+    ariadne-ingest --reconcile --served ROOT <doc>...  # never with --verbatim
 """
 
 from __future__ import annotations
@@ -545,22 +553,151 @@ def _ingest_one(doc: Path, *, staging: Path, complete, now: str) -> tuple[list[P
     ], []
 
 
+# --- opt-in verbatim mode (spec 2026-10-13-0021, issue #66): preserve, never distill ---
+
+_VERBATIM_BY = "ariadne-ingest:verbatim"  # generated.by stamp of the no-model mode
+_VERBATIM_FOLDER = "references"  # every verbatim document is one draft Reference
+
+
+def _verbatim_name(doc: Path) -> str | None:
+    """Safe page name derived mechanically from the filename (spec §2), or None
+    when the stem yields no slug or collides with promote-owned bookkeeping —
+    the same name discipline as distilled pages."""
+    slug = re.sub(r"[^a-z0-9_-]+", "-", doc.stem.lower()).strip("-_")
+    if _NAME_RE.fullmatch(slug) and slug not in ("index", "log"):
+        return slug
+    return None
+
+
+def _verbatim_page(doc: Path, name: str, text: str, source: dict, now: str) -> str:
+    """Render the one draft Reference wrapping the converted text verbatim:
+    the body keeps the reader/converter output EXACTLY — no ``.strip()`` and no
+    added terminal newline (unlike ``_assemble``) — so the source document's
+    own frontmatter stays literal body text, never adopted Ariadne metadata."""
+    front: dict = {
+        "type": "reference",
+        "status": "draft",
+        "title": doc.stem,
+        "description": f"Verbatim preservation of {doc.name} (unmodified converter output).",
+        "tags": ["ingest", "verbatim"],
+        "sources": [source],
+        "generated": {"by": _VERBATIM_BY, "at": now},
+    }
+    front_yaml = yaml.safe_dump(front, default_flow_style=False, sort_keys=False).strip()
+    return f"---\n{front_yaml}\n---\n\n{text}"
+
+
+def _verbatim_match(existing_text: str, page_text: str) -> bool:
+    """True when an existing staged page IS the draft ``page_text`` would write,
+    ignoring only the generation timestamp (spec §4): same verbatim stamp and
+    identical frontmatter and body — changed source bytes, changed converter
+    output, a different resolved location or a human edit all fail to match."""
+    meta, body = _split_page(existing_text)
+    ours, our_body = _split_page(page_text)
+    if not isinstance(meta, dict) or not isinstance(meta.get("generated"), dict):
+        return False
+    if meta["generated"].get("by") != _VERBATIM_BY:
+        return False  # only this mode's own drafts can no-op
+    meta["generated"] = ours["generated"] = {"by": _VERBATIM_BY}  # time-insensitive
+    return meta == ours and body == our_body
+
+
+def _verbatim_one(doc: Path, *, staging: Path, now: str) -> tuple[list[Path], list[str]]:
+    """Convert + mechanically wrap + gate + stage one document WITHOUT any
+    model call (spec 2026-10-13-0021). Returns (staged, errors); a retry of an
+    unchanged source whose unchanged draft is still present is a no-op."""
+    if not doc.is_file():
+        return [], [f"{doc}: no such document"]
+    try:
+        text = _convert(doc)
+    except _ConversionError as exc:
+        return [], [str(exc)]
+    if not text.strip():
+        return [], [
+            f"{doc}: converted text is empty (whitespace only) — refused instead of "
+            "staging an invalid Reference. Nothing was staged."
+        ]
+    name = _verbatim_name(doc)
+    if name is None:
+        return [], [
+            f"{doc}: filename yields no safe page name (empty slugs and the "
+            "promote-owned 'index'/'log' are refused). Nothing was staged."
+        ]
+    source = {
+        "id": hashlib.sha256(doc.read_bytes()).hexdigest()[:12],
+        "resource": str(doc.resolve()),
+        "title": doc.name,
+    }
+    page_text = _verbatim_page(doc, name, text, source, now)
+    # every gate BEFORE any staging read or write — a credential-bearing document
+    # never even reaches the retry lookup, and the page contract is the author's
+    # own per-type gate, never a second framework.
+    errors = _contract_errors([(_VERBATIM_FOLDER, name, page_text)])
+    if errors:
+        return [], errors
+    for label, pattern in _SECRET_PATTERNS:
+        if pattern.search(page_text):  # body AND rendered wrapper values
+            # the document is named with any credential match REDACTED from its
+            # own path: a secret-bearing filename must not echo back (the class
+            # names it); the matched body/wrapper value is never reproduced
+            return [], [
+                f"{_redact_credential_matches(str(doc))}: document or wrapper matches "
+                f"the {label} credential pattern — verbatim documents are never "
+                "altered to pass; remove the secret and re-run. Nothing was staged."
+            ]
+    # staging-local retry lookup (spec §4): identity is the resolved source
+    # location + content digest + converted text; each candidate's path is
+    # symlink-checked BEFORE the candidate is read, and a differing draft is
+    # never overwritten or misreported — the first free suffix stages anew.
+    suffix = 1
+    while True:
+        stem = name if suffix == 1 else f"{name}-{suffix}"
+        rel = f"{STAGING_SUBDIR}/{_VERBATIM_FOLDER}/{stem}.md"
+        offender = _symlink_under(staging, rel)
+        if offender is not None:
+            return [], [
+                f"{doc.name}: refusing to stage through a symlink: {offender} is a "
+                f"symlink under {staging}; remove it and re-run"
+            ]
+        candidate = staging / rel
+        if not candidate.is_file():
+            break
+        if _verbatim_match(candidate.read_text(encoding="utf-8"), page_text):
+            print(
+                f"ariadne-ingest: {doc.name}: verbatim draft already staged — unchanged",
+                flush=True,
+            )
+            return [], []
+        suffix += 1
+    return [_stage_atomic(staging / STAGING_SUBDIR / _VERBATIM_FOLDER, name, page_text)], []
+
+
 def ingest(
     docs: list[str | Path],
     *,
     staging_dir: str | Path = "staging",
     complete=None,
+    verbatim: bool = False,
 ) -> tuple[list[Path], list[str]]:
     """Ingest documents into staged OKF proposals; returns (staged paths, errors).
 
     ``complete(messages) -> str`` is the LLM call boundary (default: the same
-    OpenAI-compatible endpoint the author uses)."""
+    OpenAI-compatible endpoint the author uses). With ``verbatim=True`` no
+    completion boundary is resolved or called and no LLM configuration is
+    needed: each document stages as ONE draft Reference preserving the
+    converter's exact text (spec 2026-10-13-0021)."""
     staging = Path(staging_dir)
     _validate_staging(staging)  # spec §6: never the repo root or a served layer
-    complete = complete or _default_complete
     now = datetime.now(UTC).isoformat(timespec="seconds")
     staged: list[Path] = []
     errors: list[str] = []
+    if verbatim:
+        for doc in docs:
+            paths, doc_errors = _verbatim_one(Path(doc), staging=staging, now=now)
+            staged.extend(paths)
+            errors.extend(doc_errors)
+        return staged, errors
+    complete = complete or _default_complete
     for doc in docs:
         paths, doc_errors = _ingest_one(Path(doc), staging=staging, complete=complete, now=now)
         staged.extend(paths)
@@ -1093,7 +1230,20 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="served root holding context_layer/ (required with --reconcile)",
     )
+    parser.add_argument(
+        "--verbatim",
+        action="store_true",
+        help="opt-in (spec 2026-10-13-0021): preserve the converted document text "
+ "word-for-word in one draft Reference per document — no model call; "
+        "unchanged retries are reported as unchanged, changes stage new drafts",
+    )
     args = parser.parse_args(argv)
+    if args.verbatim and args.reconcile:
+        parser.error(
+            "--verbatim does not support --reconcile: verbatim stages untouched "
+            "draft References; a reconciliation combination needs its own design "
+            "(spec 2026-10-13-0021 §2)"
+        )
     if args.reconcile and not args.served:
         parser.error("--reconcile requires --served ROOT (a served root containing context_layer/)")
 
@@ -1104,11 +1254,12 @@ def main(argv: list[str] | None = None) -> int:
         for record in comparisons:
             _print_reconciliation(record)
     else:
-        staged, errors = ingest(args.docs, staging_dir=Path(args.staging))
+        staged, errors = ingest(args.docs, staging_dir=Path(args.staging), verbatim=args.verbatim)
     for path in staged:
         meta = yaml.safe_load(path.read_text(encoding="utf-8").split("---")[1]) or {}
         print(f"staged: {path} [{meta.get('type')}] {meta.get('description', '')}")
-    if not staged and not errors:
+    if not staged and not errors and not args.verbatim:
+        # verbatim no-ops already reported themselves as unchanged
         print("ingest: documents yielded no pages worth keeping; nothing staged")
     if errors:
         for error in errors:
