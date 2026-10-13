@@ -278,6 +278,18 @@ def build_parser() -> _Parser:
         help="emit exactly one structured report object instead of human text "
         "(the spec-0001 usability amendment, this command only)",
     )
+    review_cmd = sub.add_parser(
+        "review", help="operator-only review walkthrough (unchanged human gates)"
+    )
+    review_roots = review_cmd.add_mutually_exclusive_group()
+    review_roots.add_argument("--project", default=None, help="managed review before admission")
+    review_roots.add_argument(
+        "--served", default=None, help="legacy Promotion target, may be fresh"
+    )
+    review_cmd.add_argument("--proposal", default=None, help="one proposal; requires --project")
+    review_cmd.add_argument(
+        "--staging", default=None, help="legacy staging root (default: ./staging)"
+    )
     setup_cmd = sub.add_parser(
         "setup", help="operator onboarding wizard (human gates are handoffs)"
     )
@@ -299,6 +311,10 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
     # runtime construction — which is where the read-only source connection
     # opens. Every earlier failure therefore precedes any connection, execution,
     # or staging.
+    if args.command == "review":
+        from ariadne import review
+
+        return review.run(args, stdin)
     if args.command == "setup":
         from ariadne import (
             setup,  # pyright: ignore[reportAttributeAccessIssue] — new-module resolver drift

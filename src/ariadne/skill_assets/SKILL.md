@@ -411,7 +411,8 @@ value-attested`.
   admission.
 - **Both authoring gates stay human.** Never run
   `ariadne-authoring approve-sources`, `ariadne-admit`, `ariadne-promote`,
-  `ariadne-authoring reconcile`, `ariadne-authoring import-legacy` or
+  `ariadne review`, `ariadne-authoring reconcile`,
+  `ariadne-authoring import-legacy` or
   `ariadne-authoring enrich-legacy` — operator source approval, admission,
   Promotion, rebase recording and legacy migration (import and legacy-page
   binding) are human-only, and none can be inferred from an agent assertion,
@@ -427,8 +428,13 @@ value-attested`.
   Never satisfy prompts or treat declaration confirmation as Source Approval;
   hand off the printed exact approval command to the human. Setup itself never
   approves, admits, promotes, reconciles or initializes/configures Git, even at
-  a terminal. `ariadne review` remains operator-only: never run it or answer its
-  human confirmations. Use `ariadne status` for offline diagnostic blockers,
+  a terminal. `ariadne review` is operator-only: agents never run it or supply
+  its mapping selections or final human confirmations, even inside terminal
+  sessions. A terminal is a UX condition, not proof of human identity or agent
+  authority. Agents may use the read-only `ariadne-authoring review`, return
+  its exact payload/digest and STOP for the human instead. The walkthrough
+  wraps admission/Promotion; it never grants source approval or reconciliation
+  authority. Use `ariadne status` for offline diagnostic blockers,
   not a query or readiness probe that opens sources.
   Project-scoped installation copies to `.agents/skills/ariadne` under the
   selected project; Pi/Claude/Hermes wiring respectively links/copies to
@@ -484,9 +490,10 @@ checks and response contracts as the `ariadne-authoring` commands above. The
 answer-example tools ride the Analyst/Combined registrations with identical
 contracts to `ariadne save-example`/`search-examples` (same confirmation
 rules); example review stays operator-only. No registration ever exposes
-source approval, admission, reconciliation, the legacy migration or
-Promotion. Stdio is local and needs no token; the server runs for one
-project root (`--project`, fixed at launch). The authoring tools work in an
+source approval, admission, reconciliation, the legacy migration,
+Promotion or the operator-only `ariadne review` walkthrough. Stdio is local
+and needs no token; the server runs for one project root (`--project`, fixed
+at launch). The authoring tools work in an
 empty project before the first admission; query tools then surface the
 managed route's missing-admission error until a human admits.
 
