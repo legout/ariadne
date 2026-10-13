@@ -685,7 +685,7 @@ def test_core_generated_statements_are_guarded_read_only_and_parameterized():
     ]
     sql, params = inspection_sample_statement(table, ["store_id", "order_n"], scope, 50)
     assert sql == (
-        'SELECT "store_id", "order_n" FROM orders."ord""ers" '
+        'SELECT "store_id", "order_n" FROM "orders"."ord""ers" '
         'WHERE "region" IN (?, ?) AND "store_id" >= ? '
         'ORDER BY "store_id", "order_n" LIMIT ?'
     )
