@@ -1,6 +1,6 @@
 ---
 name: ariadne
-description: Work in an ariadne data project — query governed metrics with the local ariadne CLI (caveats attached), resolve shared terminology and identifier knowledge without ever gaining join authority from it, author context/semantic layers through Git proposals with ariadne-authoring (operator-approved sources, schema refresh, bounded mapping inspection, human-only admission) or the retained staging-to-promotion gate, hand off legacy migration to the human import/enrich commands, find labeled answer examples as method references (never cached answers), and draft ad-hoc metrics without ever bypassing the compile gate.
+description: Work in an ariadne data project — query governed metrics with the local ariadne CLI (caveats attached), resolve shared terminology and identifier knowledge without ever gaining join authority from it, consult the optional Context Routing Map and observed value evidence as guidance (never enums or validation), author context/semantic layers through Git proposals with ariadne-authoring (operator-approved sources, schema refresh, bounded mapping inspection, human-only admission) or the retained staging-to-promotion gate, hand off legacy migration to the human import/enrich commands, find labeled answer examples as method references (never cached answers), and draft ad-hoc metrics without ever bypassing the compile gate.
 ---
 
 # Ariadne data projects
@@ -39,6 +39,35 @@ tool. It groups metrics/pages/terms/examples without executing an answer or
 authorizing a join. Native per-kind commands below remain authoritative: keep
 full Context/Policy caveats, draft/history labels and `resolve-term --part`
 continuation; discovery changes no compile, admission or Promotion gate.
+
+**Optional Context Routing Map.** A project may carry a human-reviewed
+Reference at `context_layer/references/context-routing.md` that points
+question families to existing metric definitions, Policies and Term
+References. When present, consult it through the selected route (the
+admitted snapshot — never a proposal or mutable-root peek), then read the
+actual metric definition and the FULL applicable Policy pages: the map's
+summary is never the rule. Normal discovery and exact metric/term
+resolution stay authoritative. An absent map means existing navigation; a
+missing or ambiguous pointer is flagged and its target established through
+normal discovery — never guessed, never resolved through a weaker root or
+raw SQL. The map grants no permission to calculate, join or normalize, and
+never bypasses a failed required-Policy/read gate: that refusal stands.
+
+**Observed filter values.** A table's Schema Observations may carry
+`value_evidence` for columns the owner explicitly selected: measured top
+values with counts at the recorded scope and `observed_at`. They are
+selected, scoped, as-of observations — representation hints, never an
+allowed-value enum, business constraint or live validation. Establish the
+physical-to-model field binding first: a same-named dimension is not
+sufficient, and an OSI-bucketed/transformed dimension does not
+automatically share its raw field's value representation. A value missing
+from the saved top list is not invalid or absent today; absent,
+unavailable, unsupported or stale evidence never justifies rejecting a
+normal compiled filter, substituting a common value or guessing a
+normalization. Exact strings and null semantics stay as measured (a
+measured null is absence, never the string `"NULL"`). Actual filter
+binding and execution still use the normal model and compile/grain/
+read-only gates.
 
 1. **List governed metrics** — `ariadne list-metrics --sources ariadne.yaml`.
    Start every question here: if a governed metric answers it, query it
@@ -361,6 +390,63 @@ New metrics without an independent expected-value oracle are staged with
 the numbers independently. When serving such a metric after Promotion or
 admission, say `governed: true means Promoted/admitted, not independently
 value-attested`.
+
+## Skill-led business onboarding
+
+Targeted clarification through the existing proposal interfaces — no
+runtime wizard, no automatic interview per query. Use it when
+onboarding/authoring is requested or an actual unresolved meaning blocks a
+correct proposal; during ordinary analytics ask only the minimum question
+the current ambiguity needs.
+
+1. **Read before asking.** Read the selected project's Seed Notes and the
+   applicable admitted/selected-candidate definitions, Policies,
+   References and Context Routing Map first — never ask for knowledge
+   already recorded. Schema/profile evidence is read only through the
+   operator-approved route; missing source approval stays a human stop,
+   and business questions may use already supplied owner/document
+   evidence.
+2. **Ask only the missing material frontier, together:** row
+   meaning/grain, business date, period completeness/week conventions,
+   units/metric meaning, exclusion rules, status-code meaning — as
+   relevant. Distinguish supplied fact, proposed interpretation and
+   unknown. No assumed Monday/UTC/currency and no rule inferred from value
+   frequency.
+3. **Summarize, then get explicit owner selection.** Present the proposed
+   business interpretation and the precise value disclosure (exact
+   table/resource, columns, types, proposed content) together. Only the
+   owner's explicit selection precedes preparing `observed_value_columns`
+   metadata through the normal complete-page proposal edit; source
+   approval alone is not publication confirmation. Declined, ambiguous or
+   unresolved answers stay unknown: invent no Policy or metric meaning,
+   and never overwrite a conflicting admitted rule.
+4. **Write stable, source-linked artifacts.** Reuse the current Seed
+   Notes and relevant table/Reference/Policy edits, preserving unrelated
+   authored content, owner/document provenance and recorded unknowns; raw
+   measurements stay core-owned. The Context Routing Map is the ONE
+   stable ordinary Reference `context_layer/references/context-routing.md`
+   — a data-project guide, not a repository bounded-context map — created
+   or updated only when useful destinations or explicit gaps exist, from
+   actual owner/document evidence (never an inferred map): pointers and
+   ordinary links only, no copied formulas, SQL, Policy bodies or value
+   lists. A retry updates the same identity (no timestamped or suffixed
+   copies); a path already holding an unrelated Reference is a collision
+   for the owner to resolve, never an overwrite or rename. Never edit
+   generated indexes or logs. No second business dictionary, no transcript
+   harvest, no background memory service, no second model endpoint.
+5. **Validation is not admission.** Validate and review the exact
+   candidate, then stop for human Admission/Promotion. A user answer, a
+   selection confirmation or a passing check admits nothing and never
+   independently attests a number. A context-only proposal may honestly
+   document unknown meaning without inventing a metric; unresolved
+   meaning blocks only dependent assertions, not unrelated legitimate
+   context work.
+
+Onboarding adds no second post-answer save prompt: answer-example consent
+stays the single shown-record question from the existing feedback flow,
+and user feedback remains self-declared business assessment, never
+Independent Numerical Validation. Answer Examples stay in their own
+separate store, never inside the Context Routing Map or table measurements.
 
 ## Agent rules
 

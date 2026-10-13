@@ -306,9 +306,12 @@ identifiable reason (`not_in_profile`, `column_missing`, `type_changed`,
 field loses its values without a rename guess, repeated refreshes stay
 unavailable until the owner explicitly rebinds or clears, and deselection
 removes active evidence after refresh without scrubbing historical
-revisions or Git history. Values are measured top values at the recorded
-time and scope — never a complete allowed-value domain or business
-constraint. The complete successful `value_evidence` mapping is bounded to
+revisions or Git history — values already admitted stay retrievable in
+those old revisions, so deselecting is disclosure control, not erasure.
+Values are measured top values at the recorded time and scope (`observed_at`
+plus sampled/full scope are reported; neither proves live data unchanged) —
+never a complete allowed-value domain or business constraint. The complete
+successful `value_evidence` mapping is bounded to
 8 KiB measured as compact JSON (UTF-8, non-ASCII preserved): over the bound
 every selected column falls back to `unavailable/too_large` — never a
 clipped literal or partial histogram — and a status-only mapping that still
@@ -319,6 +322,48 @@ selection, never the measured values/counts.
 **Version boundary:** selected observed filter values describe this
 repository candidate; the currently published 0.2.0 package does not include
 them (same boundary as `ariadne setup`/`status` above).
+
+### Context routing maps and skill-led business onboarding
+
+A data project may carry an **optional Context Routing Map**: one ordinary,
+human-owned Reference at `context_layer/references/context-routing.md`
+that points question families (with a short business orientation) to
+existing metric definitions, Policies, Term References, physical tables or
+Dataset Overviews, plus explicit unresolved business questions. It holds
+pointers and ordinary links only — never copied formulas, SQL, Policy
+bodies or value lists; the target owns its definition. The bundled skill
+consults it through the selected route, then reads the actual definitions
+and the full applicable Policies. An absent map changes nothing (normal
+discovery); a missing or ambiguous pointer is flagged and resolved through
+normal discovery, never guessed and never weakened to a lower root, and a
+map never bypasses a required-Policy/read gate or grants any join or
+calculation authority.
+
+The map is authored through the normal Git proposal route, only when useful
+destinations or explicit gaps exist, source-linked from owner/document
+evidence — never inferred automatically. A retry updates the same stable
+page (no suffixed copies); if the path already holds an unrelated Reference,
+the owner resolves that collision. It is a data-project guide, not a
+repository bounded-context map, and admission is the existing human route —
+an agent-authored approval flag proves nothing.
+
+**Skill-led business onboarding** reuses the same proposal interfaces: the
+agent reads existing Seed Notes and admitted/selected-candidate knowledge
+first, then asks only the actually missing business meaning — row grain,
+date/period convention, units, definitions, exclusions, code meaning —
+with no defaults assumed from value frequency. It summarizes the proposed
+interpretation and the precise value disclosure, and obtains the owner's
+explicit selection before preparing any `observed_value_columns` metadata
+above; provenance and unknowns are preserved, ambiguous or declined answers
+invent no Policy or metric, and validation plus business confirmation never
+admit artifacts or independently attest numbers.
+
+**Version/install boundary:** routing maps and onboarding guidance describe
+this repository candidate; the currently published 0.2.0 package does not
+include them (same boundary as `ariadne setup`/`status` above). Merging this
+repository also never installs or refreshes an already-installed skill copy
+— updating installed skills is a separate, explicitly selected operator
+action.
 
 **Optional: stdio MCP toolsets.** With the `mcp` extra installed (see below),
 the same local stdio server exposes the role toolsets over one core — pick the
