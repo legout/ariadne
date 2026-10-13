@@ -1234,7 +1234,7 @@ def main(argv: list[str] | None = None) -> int:
         "--verbatim",
         action="store_true",
         help="opt-in (spec 2026-10-13-0021): preserve the converted document text "
- "word-for-word in one draft Reference per document — no model call; "
+        "word-for-word in one draft Reference per document — no model call; "
         "unchanged retries are reported as unchanged, changes stage new drafts",
     )
     args = parser.parse_args(argv)

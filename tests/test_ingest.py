@@ -2106,9 +2106,7 @@ def test_verbatim_retry_preserves_drafts_and_new_versions(tmp_path, monkeypatch)
     # exclusive draft instead of overwriting or claiming a byte-identical no-op
     doc.write_text("binary-ish v1", encoding="utf-8")
     converted["text"] = "# Handbook v1\n\nUnchanged converted paragraph.\n"
-    draft1.write_text(
-        draft1.read_text(encoding="utf-8") + "\n(owner annotation)", encoding="utf-8"
-    )
+    draft1.write_text(draft1.read_text(encoding="utf-8") + "\n(owner annotation)", encoding="utf-8")
     staged, errors = run()
     assert errors == []
     draft5 = staged[0]
@@ -2198,9 +2196,7 @@ def test_verbatim_refusals_leave_no_new_files(tmp_path, monkeypatch, case):
 
     def all_files():
         return sorted(
-            path.relative_to(tmp_path).as_posix()
-            for path in tmp_path.rglob("*")
-            if path.is_file()
+            path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*") if path.is_file()
         )
 
     before = all_files()
@@ -2217,9 +2213,7 @@ def test_verbatim_refusals_leave_no_new_files(tmp_path, monkeypatch, case):
         assert not list(must_stay_empty.iterdir()), case  # nothing written outside
 
 
-def test_verbatim_cli_retries_and_rejects_reconcile_before_work(
-    tmp_path, monkeypatch, capsys
-):
+def test_verbatim_cli_retries_and_rejects_reconcile_before_work(tmp_path, monkeypatch, capsys):
     """AC5/AC7: the CLI no-op retry is exit 0 honestly reported as unchanged
     (never 'no useful content'), --verbatim --reconcile is refused before any
     converter/model work, and a mixed batch keeps exit 1 with the good draft."""
