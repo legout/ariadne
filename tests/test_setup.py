@@ -504,6 +504,99 @@ def test_status_internal_skill_selection_preserves_default_and_scopes_steps(
     assert "project/pi:" in output and "user/hermes:" not in output
 
 
+def test_managed_scaffold_route_survives_empty_staging_before_proposals(tmp_path, capsys):
+    project = tmp_path / "managed"
+    assert init.main([str(project), "--git"]) == 0
+    assert not (project / ".ariadne").exists()
+    (project / "staging").mkdir()
+    originals = {
+        name: (project / name).read_bytes() for name in ("AGENTS.md", ".gitignore", "ariadne.yaml")
+    }
+    capsys.readouterr()
+    assert run_setup(project, "", "--no-input") == 0
+    output = capsys.readouterr().out
+    assert "Scaffold/resume: managed" in output and "git_managed" in output
+    assert "Proposal preparation paused" in output and "git init" in output
+    assert not (project / ".git").exists() and not records(project)
+    assert {name: (project / name).read_bytes() for name in originals} == originals
+    assert run_setup(project, "", "--legacy", "--no-input") == 1
+    assert "never migrates" in capsys.readouterr().err
+
+
+def test_completed_legacy_source_approval_allows_next_declaration_but_preserves_pending(
+    tmp_path, capsys
+):
+    project = tmp_path / "legacy"
+    assert init.main([str(project)]) == 0
+    intake = tmp_path / "first.yaml"
+    intake.write_text("sources:\n- name: first\n  type: csv\n  path: first.csv\n")
+    first = authoring.propose_sources(intake, project=project)
+    # The fixture's operator approves outside setup; setup's human-call guards remain active.
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "ariadne.authoring_cli",
+            "approve-sources",
+            "--project",
+            str(project),
+            "--digest",
+            first["digest"],
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    registry = (project / "ariadne.yaml").read_bytes()
+    stored = project / authoring.PROPOSAL_REL
+    assert stored.exists()  # approval intentionally retains this completed proposal
+    capsys.readouterr()
+    second = '{"name":"second","type":"csv","path":"second.csv"}\n\nyes\n'
+    assert run_setup(project, second) == 0
+    output = capsys.readouterr().out
+    pending = stored.read_bytes()
+    assert yaml.safe_load(pending)["sources"] == [
+        {"name": "second", "type": "csv", "path": str(project / "second.csv")}
+    ]
+    assert (project / "ariadne.yaml").read_bytes() == registry
+    assert "Source approval pending" in output and "Authoring paused" in output
+    assert run_setup(project, second) == 0
+    assert stored.read_bytes() == pending  # identical pending entries are not duplicated
+    third = '{"name":"third","type":"csv","path":"third.csv"}\n\nyes\n'
+    assert run_setup(project, third) == 1
+    assert "a source proposal is already pending" in capsys.readouterr().err
+    assert stored.read_bytes() == pending and (project / "ariadne.yaml").read_bytes() == registry
+
+
+def test_filename_detection_skips_custom_virtualenvs_without_opening_config_or_sources(
+    tmp_path, monkeypatch
+):
+    import ariadne.setup as setup  # pyright: ignore[reportMissingImports] — new-module resolver drift
+
+    project = tmp_path / "project"
+    (project / "data").mkdir(parents=True)
+    (project / "data/events.csv").write_text("id\n1\n")
+    virtualenvs = [project / "python-env", project / "data/custom-runtime"]
+    for venv in virtualenvs:
+        (venv / "lib/site-packages").mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("home = fixture Python\n")
+        (venv / "lib/site-packages/metadata.json").write_text('{"package":"not data"}')
+    real_scan = os.scandir
+
+    def metadata_only_scan(path):
+        assert not any(Path(path) == venv or venv in Path(path).parents for venv in virtualenvs)
+        return real_scan(path)
+
+    def no_content(*args, **kwargs):
+        pytest.fail("filename detection opened virtualenv config or source content")
+
+    monkeypatch.setattr(os, "scandir", metadata_only_scan)
+    monkeypatch.setattr(Path, "open", no_content)
+    assert setup.detect_files(project) == [
+        {"name": "events", "type": "csv", "path": "data/events.csv"}
+    ]
+
+
 def test_skill_and_release_docs_operator_rules_and_distribution():
     text = (skill.ASSETS / "SKILL.md").read_text()
     assert "ariadne setup --no-input" in text

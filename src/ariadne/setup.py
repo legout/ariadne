@@ -40,14 +40,16 @@ def _route(root: Path, legacy: bool, interactive: bool, stdin: Any) -> str | Non
     state = root / proposals.ARIADNE_STATE_DIR
     if state.exists() or state.is_symlink():
         route = "managed"
-    elif any((root / p).exists() for p in ("staging", "context_layer", "semantic_layer", "served")):
-        route = "legacy"
     else:
         agents = root / "AGENTS.md"
         text = agents.read_text(encoding="utf-8") if agents.is_file() else ""
         if "## Admission gate" in text:
             route = "managed"
         elif "## Promotion gate" in text:
+            route = "legacy"
+        elif any(
+            (root / p).exists() for p in ("staging", "context_layer", "semantic_layer", "served")
+        ):
             route = "legacy"
         elif any((root / p).exists() for p in ("ariadne.yaml", "data/seed_notes.md", "AGENTS.md")):
             if legacy:
@@ -78,6 +80,8 @@ def detect_files(root: Path) -> list[dict]:
     while pending:
         directory = pending.pop()
         try:
+            if (directory / "pyvenv.cfg").exists():
+                continue
             with os.scandir(directory) as children:
                 for child in children:
                     seen += 1
@@ -223,27 +227,27 @@ def _legacy_declare(root: Path, selected: list[dict]) -> None:
     existing = authoring_sources._resolved_entries(installed)
     additions = _new_entries(root, existing, selected) if selected else []
     stored = root / authoring.PROPOSAL_REL
+    digest = None
     if stored.exists():
         pending = sources.load_registry(stored)
         pending_entries = authoring_sources._resolved_entries(pending.sources)
-        remaining = _new_entries(root, pending_entries, additions) if additions else []
-        if remaining:
-            raise ValueError(
-                "a source proposal is already pending; resolve it before adding sources"
-            )
-        raw = authoring._entries(stored)
         # A previously approved legacy proposal stays on disk; it is not another blocker.
         if all(entry in existing for entry in pending_entries):
             print("Legacy source declarations already installed by the operator.")
+        else:
+            remaining = _new_entries(root, pending_entries, additions) if additions else []
+            if remaining:
+                raise ValueError(
+                    "a source proposal is already pending; resolve it before adding sources"
+                )
+            digest = authoring._digest(authoring._entries(stored))
+    if digest is None:
+        if not additions:
             return
-        digest = authoring._digest(raw)
-    elif additions:
         with tempfile.TemporaryDirectory(prefix="ariadne-setup-") as tmp:
             intake = Path(tmp) / "sources.yaml"
             intake.write_text(yaml.safe_dump({"sources": additions}), encoding="utf-8")
             digest = authoring.propose_sources(intake, project=root)["digest"]
-    else:
-        return
     print("Source approval pending. HUMAN ONLY — run exactly:")
     print(
         shlex.join(
