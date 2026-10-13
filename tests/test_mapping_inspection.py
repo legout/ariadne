@@ -1056,7 +1056,7 @@ def test_deadline_guard_interrupts_and_refuses_uncancellable_execution():
     at/after expiry into the explicit deadline refusal, cancels its watchdog
     (no background read keeps running), and a backend whose execution cannot
     be interrupted is an explicit refusal — never a fake passing check."""
-    import duckdb as _duckdb
+    import duckdb as _duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
     budget = execution.DeadlineBudget(0.05)
     expired = execution.DeadlineBudget(1e-9)
@@ -1566,3 +1566,19 @@ def test_source_setup_failure_closes_the_owned_connection(tmp_path, monkeypatch)
     assert created, "a connection was opened and must now be closed"
     with pytest.raises(Exception, match="Connection Error|already closed|Cannot call"):
         created[0].execute("SELECT 1")  # closed: no leaked session remains usable
+
+    # native case (spec 0022 AC5): a missing native database file is the same
+    # bounded-setup refusal — the failed ATTACH closes the owned connection
+    # and creates no database on the fly
+    native_registry = tmp_path / "native.yaml"
+    native_registry.write_text(
+        yaml.safe_dump(
+            {"sources": [{"name": "wh", "type": "duckdb", "path": "data/missing.duckdb"}]}
+        )
+    )
+    with pytest.raises(Exception, match="missing.duckdb|IO Error|does not exist"):
+        sources_module.build_connection(sources_module.load_registry(native_registry))
+    assert len(created) == 2
+    with pytest.raises(Exception, match="Connection Error|already closed|Cannot call"):
+        created[1].execute("SELECT 1")  # closed: no partial ready session survives
+    assert not (tmp_path / "data" / "missing.duckdb").exists()  # nothing was created

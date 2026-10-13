@@ -20,6 +20,7 @@ from ariadne import authoring, authoring_sources, init, proposals, skill, source
 _FILE_TYPES = {
     ".db": "sqlite",
     ".sqlite": "sqlite",
+    ".duckdb": "duckdb",
     ".csv": "csv",
     ".json": "json",
     ".parquet": "parquet",

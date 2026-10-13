@@ -11,6 +11,10 @@ over the unified connection.
 Types (``type:``):
 
 - ``sqlite``   — ``ATTACH path AS name (TYPE SQLITE, READ_ONLY)``
+- ``duckdb``   — ``ATTACH path AS name (READ_ONLY)`` — a native DuckDB database
+  (spec 0022): no scanner, catalog identity is the registered alias; remote
+  ``https://`` / ``s3://`` catalogs load ``httpfs`` first and attach READ_ONLY
+  only — a writable remote attach is an explicit refusal, never a fallback
 - ``csv`` / ``json`` / ``parquet`` — one view ``name.<table>`` over
   ``read_csv_auto`` / ``read_json_auto`` / ``read_parquet(path)``; globs become
   one view per registry entry (name it with ``table:``); remote ``https://`` /
@@ -62,6 +66,7 @@ _DSN_PASSWORD_RE = re.compile(r"(//[^\s/@:]*:)([^\s/@]+)(@)")
 
 SOURCE_TYPES = (
     "sqlite",
+    "duckdb",
     "csv",
     "json",
     "parquet",
@@ -70,7 +75,7 @@ SOURCE_TYPES = (
     "ducklake",
     "postgres",
 )
-ATTACH_TYPES = frozenset({"sqlite", "ducklake", "postgres"})
+ATTACH_TYPES = frozenset({"sqlite", "duckdb", "ducklake", "postgres"})
 FILE_TYPES = frozenset({"csv", "json", "parquet"})
 GLOB_CHARS = frozenset("*?[")
 REMOTE_PREFIXES = ("http://", "https://", "s3://", "s3a://", "s3n://")
@@ -278,6 +283,21 @@ def plan(registry: Registry, read_only: bool = True) -> tuple[list[str], list[st
         if src.type == "sqlite":
             statements.append(
                 f"ATTACH '{_noquotes(_path(src))}' AS {src.name} (TYPE SQLITE{suffix})"
+            )
+        elif src.type == "duckdb":
+            # Native attach (spec 0022): no scanner, and remote catalogs are
+            # READ_ONLY only — a writable remote build refuses before any
+            # connection is opened, never a fallback (spec 0022 §2).
+            if _is_remote(src.path) and not (src.read_only and read_only):
+                raise ValueError(
+                    f"source {src.name!r}: remote duckdb catalogs attach READ_ONLY "
+                    "only — a writable remote attach is an explicit refusal, not a "
+                    "fallback (spec 0022 §2)"
+                )
+            if _is_remote(src.path):
+                _want(loads, "httpfs")
+            statements.append(
+                f"ATTACH '{_noquotes(_path(src))}' AS {src.name}{' (READ_ONLY)' if suffix else ''}"
             )
         elif src.type == "ducklake":
             _want(loads, "ducklake")
@@ -546,16 +566,34 @@ def _catalog_entry(con: duckdb.DuckDBPyConnection, src: Source) -> dict:
     assets): each table entry additionally carries the explicit identity
     fields (``source``/``catalog``/``schema`` plus the canonical ``resource``;
     a file view's ``catalog`` is ``None``, not DuckDB's temp in-memory catalog
-    name) so consumers need never parse display names."""
-    rows = con.execute(
-        "SELECT table_catalog, table_schema, table_name, column_name, data_type "
-        "FROM information_schema.columns "
-        "WHERE (table_catalog = ? AND table_schema NOT IN "
-        "('information_schema', 'pg_catalog')) OR table_schema = ? "
-        "ORDER BY table_catalog, table_schema, table_name, ordinal_position",
-        [src.name, src.name],
-    ).fetchall()
+    name) so consumers need never parse display names.
+
+    Selection is by exact inventory identity (spec 0022 §3): an attached
+    source enumerates ONLY its own catalog (the attach alias), and a file-view
+    source ONLY its actual in-memory catalog/schema pair — a native schema
+    that merely shares another source's name never bleeds into that
+    inventory."""
     attached = src.type in ATTACH_TYPES
+    if attached:
+        rows = con.execute(
+            "SELECT table_catalog, table_schema, table_name, column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_catalog = ? AND table_schema NOT IN "
+            "('information_schema', 'pg_catalog') "
+            "ORDER BY table_catalog, table_schema, table_name, ordinal_position",
+            [src.name],
+        ).fetchall()
+    else:
+        row = con.execute("SELECT current_database()").fetchone()
+        assert row is not None  # current_database() always returns exactly one row
+        (database,) = row
+        rows = con.execute(
+            "SELECT table_catalog, table_schema, table_name, column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_catalog = ? AND table_schema = ? "
+            "ORDER BY table_catalog, table_schema, table_name, ordinal_position",
+            [database, src.name],
+        ).fetchall()
     tables: dict[tuple[str, str, str], dict] = {}
     for catalog, schema, table, column, data_type in rows:
         entry = tables.setdefault(
@@ -572,4 +610,31 @@ def _catalog_entry(con: duckdb.DuckDBPyConnection, src: Source) -> dict:
         entry["source"] = src.name
         entry["resource"] = table_resource(src.name, entry["catalog"], schema, table)
         table_list.append(entry)
+    if src.type == "duckdb":
+        _bind_native_views(con, src)  # required view binding inside bounded setup
     return {"name": src.name, "type": src.type, "tables": table_list}
+
+
+def _bind_native_views(con: duckdb.DuckDBPyConnection, src: Source) -> None:
+    """Bind every view of a native catalog inside the SAME bounded setup
+    (spec 0022 §2): information_schema reports a view's STORED columns without
+    binding it, so one cheap ``DESCRIBE`` per view (bind-only — no data scan,
+    no transitive dependency analysis) makes a missing backing file/URL fail
+    the setup here and close the connection, instead of returning a partial
+    ready session whose first query would fail later."""
+    views = con.execute(
+        "SELECT table_schema, table_name FROM information_schema.tables "
+        "WHERE table_catalog = ? AND table_type = 'VIEW' AND table_schema NOT IN "
+        "('information_schema', 'pg_catalog')",
+        [src.name],
+    ).fetchall()
+    for schema, view in views:
+        con.execute(
+            f"DESCRIBE {_qualified(src.name, schema, view)}"
+        ).fetchall()  # identifiers came from the catalog itself, quoted verbatim
+
+
+def _qualified(*identifiers: str) -> str:
+    """One dotted, double-quoted SQL reference (embedded quotes doubled) for
+    identifiers that came out of the catalog and must go back in verbatim."""
+    return ".".join('"' + part.replace('"', '""') + '"' for part in identifiers)

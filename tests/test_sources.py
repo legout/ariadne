@@ -33,6 +33,7 @@ from ariadne.sources import (  # noqa: E402
     default_registry_path,
     implicit_registry,
     load_registry,
+    parse_resource,
 )
 
 # ---------------------------------------------------------------- fixtures
@@ -64,6 +65,22 @@ def duck():
     con = duckdb.connect()
     yield con
     con.close()
+
+
+# Spec 0022's hand-specified fixture rows for native/remote catalog evidence —
+# inputs and arithmetic declared by the spec, never copied from query output.
+NATIVE_ROWS = [(1, 10.0, "EMEA"), (2, 20.0, "AMER"), (3, 30.0, "EMEA")]
+
+
+def native_orders_catalog(path: Path) -> Path:
+    """A real native DuckDB catalog: ``main.orders`` typed to the spec's
+    fixture rows plus one resolvable view over it."""
+    con = duckdb.connect(str(path))
+    con.execute("CREATE TABLE main.orders (id INTEGER, amount DOUBLE, region VARCHAR)")
+    con.executemany("INSERT INTO main.orders VALUES (?, ?, ?)", NATIVE_ROWS)
+    con.execute("CREATE VIEW main.emea_orders AS SELECT * FROM main.orders WHERE region = 'EMEA'")
+    con.close()
+    return path
 
 
 def delta_table(tmp_path: Path, name: str = "lake_orders") -> Path:
@@ -222,6 +239,132 @@ def test_delta_live(tmp_path):
         con.close()
 
 
+# -------------------------------------------------- live: native duckdb
+
+
+def test_native_duckdb_catalog_and_compiled_metric(tmp_path, monkeypatch):
+    """Spec 0022 AC1/AC3/AC7: a native catalog declared `type: duckdb` opens
+    through the shared builder under its registered alias (not the file's
+    basename); the table and its view are queryable; a default build refuses
+    writes and mutates nothing; relative paths resolve against the registry's
+    directory from an unrelated cwd; and the normal compiled Facade journey
+    returns the spec's 60.0 total as a governed metric."""
+    (tmp_path / "data").mkdir()
+    catalog_file = native_orders_catalog(tmp_path / "data" / "warehouse_export.duckdb")
+    reg = write_registry(
+        tmp_path, [{"name": "warehouse", "type": "duckdb", "path": "data/warehouse_export.duckdb"}]
+    )
+    before = catalog_file.read_bytes()
+
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")  # relative path must still resolve
+    con, catalog = build_connection(load_registry(reg))
+    try:
+        # alias identity: queries address the ALIAS, not the file basename
+        assert con.execute(
+            "SELECT COUNT(*), SUM(amount) FROM warehouse.main.orders"
+        ).fetchone() == (3, 60.0)
+        assert con.execute(
+            "SELECT SUM(amount) FROM warehouse.main.emea_orders WHERE region = 'EMEA'"
+        ).fetchone() == (40.0,)  # 10.0 + 30.0, the spec's EMEA rows
+        (entry,) = catalog
+        assert (entry["name"], entry["type"]) == ("warehouse", "duckdb")
+        tables = {t["name"]: t for t in entry["tables"]}
+        assert set(tables) == {"orders", "emea_orders"}
+        for table in tables.values():
+            assert table["catalog"] == "warehouse"  # the alias, not warehouse_export
+            assert table["schema"] == "main"
+            assert table["source"] == "warehouse"
+            assert [c["name"] for c in table["columns"]] == ["id", "amount", "region"]
+            assert parse_resource(table["resource"])[1] == [
+                "warehouse",
+                "warehouse",
+                "main",
+                table["name"],
+            ]
+        # a default build is read-only: writes to the attached file refuse
+        with pytest.raises(Exception, match="read-only|READ_ONLY|attached"):
+            con.execute("INSERT INTO warehouse.main.orders VALUES (4, 40.0, 'APAC')")
+        with pytest.raises(Exception, match="read-only|READ_ONLY|attached"):
+            con.execute("CREATE TABLE warehouse.main.evil (x INT)")
+    finally:
+        con.close()
+    assert catalog_file.read_bytes() == before  # no mutation of the attached file
+
+    # the normal compiled journey over the native relation (AC7)
+    (tmp_path / "semantic_layer" / "models").mkdir(parents=True)
+    (tmp_path / "semantic_layer" / "models" / "orders.yml").write_text(
+        MINIMAL_OSI.replace("demo.main.orders", "warehouse.main.orders"), encoding="utf-8"
+    )
+    facade = Facade(
+        tmp_path / "semantic_layer",
+        tmp_path / "context_layer",
+        catalog_file,
+        staging_dir=tmp_path / "staging",
+        sources=reg,
+    )
+    result = asyncio.run(facade.get_metric("total_amount"))
+    assert result["governed"] is True
+    assert result["rows"] == [{"total_amount": 60.0}]
+
+
+def test_native_catalog_schemas_do_not_bleed_into_file_sources(tmp_path):
+    """Spec 0022 AC2: same-named tables in distinct native schemas stay
+    distinct identities, and a native schema sharing a CSV source's name never
+    contaminates that source's inventory (or vice versa)."""
+    catalog_file = tmp_path / "dup.duckdb"
+    native = duckdb.connect(str(catalog_file))
+    native.execute("CREATE SCHEMA emea")
+    native.execute("CREATE SCHEMA raw")
+    native.execute("CREATE TABLE emea.orders (id INTEGER, amount DOUBLE)")
+    native.execute("INSERT INTO emea.orders VALUES (1, 10.0)")
+    native.execute("CREATE TABLE raw.orders (id INTEGER, label VARCHAR)")
+    native.execute("INSERT INTO raw.orders VALUES (1, 'x')")
+    native.close()
+    (tmp_path / "orders.csv").write_text("region,n\nEMEA,10.5\n", encoding="utf-8")
+    reg = write_registry(
+        tmp_path,
+        [
+            {"name": "warehouse", "type": "duckdb", "path": "dup.duckdb"},
+            {"name": "raw", "type": "csv", "path": "orders.csv"},
+        ],
+    )
+    con, catalog = build_connection(load_registry(reg))
+    try:
+        by_source = {e["name"]: e for e in catalog}
+        # native inventory: exactly the two declared native identities
+        native_identities = sorted(
+            (parse_resource(t["resource"])[1] for t in by_source["warehouse"]["tables"]),
+            key=lambda parts: parts[2],
+        )
+        assert native_identities == [
+            ["warehouse", "warehouse", "emea", "orders"],
+            ["warehouse", "warehouse", "raw", "orders"],
+        ]
+        by_schema = {t["schema"]: t for t in by_source["warehouse"]["tables"]}
+        assert [c["name"] for c in by_schema["emea"]["columns"]] == ["id", "amount"]
+        assert [c["name"] for c in by_schema["raw"]["columns"]] == ["id", "label"]
+        assert {t["ref"] for t in by_source["warehouse"]["tables"]} == {
+            "warehouse.emea",
+            "warehouse.raw",
+        }
+        # csv inventory: ONLY its own in-memory file view — the native `raw`
+        # schema (same name, different catalog) never bleeds in
+        (csv_table,) = by_source["raw"]["tables"]
+        assert parse_resource(csv_table["resource"])[1] == ["raw", None, "raw", "orders"]
+        assert csv_table["catalog"] is None and csv_table["source"] == "raw"
+        assert csv_table["ref"] == "raw"
+        assert {c["name"] for c in csv_table["columns"]} == {"region", "n"}
+        # every identity distinct; same-named relations stay queryable apart
+        resources = [t["resource"] for e in catalog for t in e["tables"]]
+        assert len(resources) == len(set(resources)) == 3
+        assert con.execute("SELECT amount FROM warehouse.emea.orders").fetchall() == [(10.0,)]
+        assert con.execute("SELECT label FROM warehouse.raw.orders").fetchall() == [("x",)]
+        assert con.execute("SELECT region FROM raw.orders").fetchall() == [("EMEA",)]
+    finally:
+        con.close()
+
+
 # --------------------------------- statement construction (mock duckdb.connect)
 
 
@@ -239,7 +382,7 @@ class RecordingConnection:
         if not sql.lstrip().upper().startswith("SELECT"):
             self.statements.append(sql)
             return None
-        return type("R", (), {"fetchall": lambda self: []})()
+        return type("R", (), {"fetchall": lambda self: [], "fetchone": lambda self: ("memory",)})()
 
     def close(self):
         pass
@@ -277,6 +420,96 @@ def test_ducklake_statements(recorded, tmp_path):
         "LOAD ducklake",
         "ATTACH 'ducklake:warehouse.ducklake' AS dl (TYPE DUCKLAKE, READ_ONLY)",
     ]
+
+
+def test_native_duckdb_local_statements(recorded, tmp_path):
+    """Spec 0022 AC3/AC4 (statement tier): a local native attach is one plain
+    ATTACH under the alias — no scanner, and NO httpfs load merely because the
+    type is native."""
+    reg = write_registry(tmp_path, [{"name": "wh", "type": "duckdb", "path": "data/wh.duckdb"}])
+    con, catalog = build_connection(load_registry(reg))
+    assert isinstance(con, RecordingConnection)
+    assert con.statements == [f"ATTACH '{tmp_path / 'data' / 'wh.duckdb'}' AS wh (READ_ONLY)"]
+    assert not any(s.startswith("LOAD") for s in con.statements)  # local needs no httpfs
+    assert catalog == [{"name": "wh", "type": "duckdb", "tables": []}]
+
+
+def test_remote_native_duckdb_statements_load_httpfs_once(recorded, tmp_path):
+    """Spec 0022 AC4: HTTPS/S3 native entries plan the deduplicated httpfs
+    load plus native READ_ONLY attaches — no scanner view, no file-reader
+    fallback."""
+    reg = write_registry(
+        tmp_path,
+        [
+            {"name": "rail", "type": "duckdb", "path": "https://example.com/rail.duckdb"},
+            {"name": "lake", "type": "duckdb", "path": "s3://operator-bucket/catalog.duckdb"},
+            {"name": "web", "type": "parquet", "path": "https://cdn.example.com/x.parquet"},
+        ],
+    )
+    con, _ = build_connection(load_registry(reg))
+    assert isinstance(con, RecordingConnection)
+    loads = [s for s in con.statements if s.startswith("LOAD")]
+    assert loads == ["LOAD httpfs"]  # deduplicated across native + file sources
+    assert con.statements[1:3] == [
+        "ATTACH 'https://example.com/rail.duckdb' AS rail (READ_ONLY)",
+        "ATTACH 's3://operator-bucket/catalog.duckdb' AS lake (READ_ONLY)",
+    ]
+    assert not any("read_parquet" in s or "CREATE VIEW" in s for s in con.statements[:3])
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {
+            "name": "rail",
+            "type": "duckdb",
+            "path": "https://example.com/rail.duckdb",
+            "read_only": False,
+        },
+        {
+            "name": "lake",
+            "type": "duckdb",
+            "path": "s3://operator-bucket/catalog.duckdb",
+            "read_only": False,
+        },
+    ],
+)
+def test_remote_native_writable_attach_refused_before_connection(recorded, tmp_path, entry):
+    """Spec 0022 §2/AC4: a remote entry requesting read_only: false refuses in
+    plan — before any connection opens; nothing is retried writable."""
+    reg = write_registry(tmp_path, [entry])
+    with pytest.raises(ValueError, match="READ_ONLY"):
+        build_connection(load_registry(reg))
+    assert recorded.statements == []  # refused before a single statement ran
+
+
+def test_remote_native_refuses_globally_writable_build(recorded, tmp_path):
+    """Spec 0022 §2: a read-only-marked remote catalog still refuses a global
+    writable build (build_connection(read_only=False)) — remote attaches are
+    never silently downgraded to writable."""
+    reg = write_registry(
+        tmp_path, [{"name": "rail", "type": "duckdb", "path": "https://example.com/rail.duckdb"}]
+    )
+    with pytest.raises(ValueError, match="READ_ONLY"):
+        build_connection(load_registry(reg), read_only=False)
+    assert recorded.statements == []
+
+
+def test_native_duckdb_glob_refused(tmp_path):
+    """Spec 0022 §2/AC3: globs are file-view-only — a native database glob is a
+    validation error, never a silently widened database selection."""
+    reg = write_registry(tmp_path, [{"name": "wh", "type": "duckdb", "path": "data/*.duckdb"}])
+    with pytest.raises(ValueError, match="glob"):
+        load_registry(reg)
+
+
+def test_native_duckdb_quote_bearing_path_refused(recorded, tmp_path):
+    """Spec 0022 AC3: a quote-bearing native path refuses at plan time (the
+    shared no-bind-parameter rule) — no connection, no statement."""
+    reg = write_registry(tmp_path, [{"name": "wh", "type": "duckdb", "path": "/data/it's.duckdb"}])
+    with pytest.raises(ValueError, match="quote character"):
+        build_connection(load_registry(reg))
+    assert recorded.statements == []
 
 
 def test_postgres_statements(recorded, monkeypatch, tmp_path):

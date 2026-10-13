@@ -377,18 +377,38 @@ sources:
   - name: shop
     type: sqlite
     path: data/shop.db
+  - name: warehouse
+    type: duckdb               # native DuckDB file, attached read-only
+    path: data/warehouse.duckdb
+  - name: rail
+    type: duckdb               # trusted operator view catalog (https:// or s3://)
+    path: https://example.com/rail_catalog.duckdb
   - name: events
     type: parquet
     path: data/events/*.parquet      # globs become one table
     table: events
-  - name: warehouse
+  - name: pg
     type: postgres
     connection_env: ARIADNE_PG_DSN   # credentials are env-var names, never inline
 ```
 
-Supported: **SQLite, CSV, JSON, Parquet, Delta Lake, Iceberg, DuckLake, PostgreSQL** —
-local files, `https://`, or `s3://`. Document ingestion (optional extra
-`.[documents]`) covers Markdown, text, PDF, Word, PowerPoint, Excel, and HTML.
+Supported: **SQLite, CSV, JSON, Parquet, Delta Lake, Iceberg, DuckLake, PostgreSQL,
+native DuckDB (`.duckdb`)** — local files, `https://`, or `s3://`. Document ingestion
+(optional extra `.[documents]`) covers Markdown, text, PDF, Word, PowerPoint, Excel, and HTML.
+
+**Native DuckDB catalogs** attach through the same read-only builder; the registered
+alias — never the file's basename — is the catalog identity. Remote catalogs always
+attach `READ_ONLY` (a writable remote attach is refused outright) and need the
+`httpfs` extension plus the operator's runtime credentials/CA configuration for both
+the catalog and every backing object its views read. Catalogs are a **trusted-source
+contract, not a sandbox**: you must ensure the catalog and its backing files/URLs are
+permitted under your access rules; views may read backing data at bind time and at
+query time; fully qualified URLs and absolute backing paths are the publisher's
+responsibility and are never repaired. `read_only` protects the catalog file from
+writes — it does not freeze remote data (no snapshot), does not isolate the
+filesystem/network, and does not make a view a governed metric: only the
+human-admitted Semantic Layer does that. This native-source support is current
+repository/candidate behavior, not part of a published release.
 
 ## How Ariadne compares
 

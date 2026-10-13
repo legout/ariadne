@@ -83,6 +83,20 @@ def write_parquet(path: Path, rows: int = 3) -> Path:
     return path
 
 
+def write_native_catalog(path: Path) -> Path:
+    """A real native DuckDB catalog (spec 0022's hand-specified rows: count 3,
+    total 60.0 — inputs declared by the spec, never copied query output)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(path))
+    con.execute("CREATE TABLE main.orders (id INTEGER, amount DOUBLE, region VARCHAR)")
+    con.executemany(
+        "INSERT INTO main.orders VALUES (?, ?, ?)",
+        [(1, 10.0, "EMEA"), (2, 20.0, "AMER"), (3, 30.0, "EMEA")],
+    )
+    con.close()
+    return path
+
+
 def git_project(tmp_path: Path) -> Path:
     """A real temporary Git data project with the human's initial artifact
     commit (commented registry template + Seed Notes). Repo-local identity."""
@@ -195,6 +209,38 @@ def test_committed_registry_cannot_open_source_until_operator_approval(
         assert source["tables"]["events"]["row_count"] == 3  # the HOST file
         assert result["revision"] == branch_of(project, started["proposal"])
     assert connection_spy == [[str(parquet)], [str(parquet)]]
+
+    # a NATIVE catalog entry is the same human gate (spec 0022 AC6): the
+    # proposal opens nothing until the operator approves the exact new identity
+    native_db = write_native_catalog(project / "data" / "warehouse.duckdb")
+    native_entry = {"name": "warehouse", "type": "duckdb", "path": "data/warehouse.duckdb"}
+    reproposed = api.propose_sources(a["proposal"], proposed_a["revision"], [native_entry])
+    assert reproposed["source_digest"] != proposed_a["source_digest"]
+    with pytest.raises(ValueError, match="NO operator approval"):
+        api.inputs(a["proposal"])
+    assert connection_spy == [[str(parquet)], [str(parquet)]]  # still nothing new
+
+    assert (
+        authoring_cli(
+            [
+                "approve-sources",
+                "--proposal",
+                a["proposal"],
+                "--revision",
+                reproposed["revision"],
+                "--source-digest",
+                reproposed["source_digest"],
+                "--project",
+                str(project),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    profile = api.inputs(a["proposal"])["profile"]["sources"]
+    assert [source["name"] for source in profile] == ["events", "warehouse"]
+    assert profile[1]["tables"]["orders"]["row_count"] == 3  # the native fixture rows
+    assert connection_spy[-1] == [str(parquet), str(native_db)]  # host identity only
 
 
 # ----------------------------------------------- [5]: changed source / widened config

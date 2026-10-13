@@ -277,6 +277,7 @@ def test_noninteractive_detects_filenames_never_accepts_sources_or_runs_author(
         "data/c.csv",
         "data/d.json",
         "data/e.parquet",
+        "data/f.duckdb",
         ".hidden/h.csv",
         "venv/v.csv",
         ".venv/v.csv",
@@ -290,7 +291,10 @@ def test_noninteractive_detects_filenames_never_accepts_sources_or_runs_author(
     real_open = Path.open
 
     def metadata_only(path, *args, **kwargs):
-        if path.suffix in (".db", ".sqlite", ".csv", ".parquet") or path.name == "d.json":
+        if (
+            path.suffix in (".db", ".sqlite", ".csv", ".parquet", ".duckdb")
+            or path.name == "d.json"
+        ):
             pytest.fail(f"source content opened: {path}")
         return real_open(path, *args, **kwargs)
 
@@ -299,7 +303,11 @@ def test_noninteractive_detects_filenames_never_accepts_sources_or_runs_author(
     flags = ("--no-input",) if no_input else ()
     assert run_setup(project, "accept\nyes\n", *flags, tty=tty) == 0
     output = capsys.readouterr().out
-    assert "Detected 5 file(s)" in output and "secret source contents" not in output
+    assert "Detected 6 file(s)" in output and "secret source contents" not in output
+    # the inert .duckdb hint is typed from the FILENAME only, and the existing
+    # .db/.sqlite hints keep their meanings (spec 0022 §5)
+    assert '"path": "data/f.duckdb"' in output and '"type": "duckdb"' in output
+    assert '"path": "data/a.db"' in output and '"type": "sqlite"' in output
     assert "Declarations skipped" in output and not records(project)
 
 

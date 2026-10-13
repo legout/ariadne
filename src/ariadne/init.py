@@ -234,9 +234,16 @@ ARIADNE_YAML = """\
 #     type: iceberg
 #     path: s3://bucket/warehouse/sales
 #     table: sales
-#   - name: warehouse
+#   - name: lake
 #     type: ducklake
 #     path: ducklake:warehouse.ducklake
+#   - name: warehouse
+#     type: duckdb              # native DuckDB database, attached read-only
+#     path: data/warehouse.duckdb
+#   - name: rail                # trusted operator view catalog over https/s3;
+#     type: duckdb              # remote catalogs attach READ_ONLY and need
+#     path: https://example.com/rail_catalog.duckdb   # the httpfs extension
+#     read_only: true
 #   - name: pg
 #     type: postgres
 #     connection_env: ARIADNE_PG_DSN   # the NAME of the env var holding the DSN
