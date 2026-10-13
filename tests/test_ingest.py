@@ -2305,3 +2305,124 @@ def test_verbatim_reference_is_discoverable_as_draft(tmp_path):
     assert sorted(
         path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file()
     ) == ["context_layer/references/glossary.md"]
+
+
+def test_verbatim_retry_counts_edited_draft_as_changed_not_unchanged(tmp_path, monkeypatch):
+    """F1 (spec §4): a candidate draft differing ANYWHERE beyond the generation
+    timestamp — an owner note under ``generated``, or edited blank lines between
+    frontmatter and body — counts as CHANGED: a new exclusive draft stages, the
+    edited draft is retained byte-identical, and the retry is never misreported
+    as an unchanged no-op."""
+    import ariadne.ingest as ingest_module
+
+    clock = _FixedClock(datetime(2026, 2, 1, 9, 0, 0, tzinfo=UTC))
+    monkeypatch.setattr(ingest_module, "datetime", clock)
+    staging = tmp_path / "staging"
+    doc = make_doc(tmp_path)  # notes.md
+
+    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
+    assert errors == [] and staged == [staging / "context_layer" / "references" / "notes.md"]
+    draft = staged[0]
+
+    # (a) an owner note under generated: differs only beyond generated.at —
+    # anchored on the wrapper's ``  at: `` line (spec §2's generated block),
+    # independent of YAML quoting of the timestamp value
+    lines = draft.read_text(encoding="utf-8").splitlines(keepends=True)
+    at_line = next(index for index, line in enumerate(lines) if line.startswith("  at: "))
+    lines.insert(at_line + 1, "  note: owner annotation\n")
+    edited = "".join(lines)
+    assert edited != draft.read_text(encoding="utf-8")  # the edit landed
+    draft.write_text(edited, encoding="utf-8")
+    clock.now_value = clock.now_value + timedelta(hours=1)
+    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
+    assert errors == []
+    assert staged == [staging / "context_layer" / "references" / "notes-2.md"]  # changed
+    assert draft.read_text(encoding="utf-8") == edited  # the human edit is retained
+
+    # (b) the owner removed the blank separator line before the body: also
+    # changed, never a parse-normalized false "unchanged"
+    staging2 = tmp_path / "staging-blank"
+    doc2 = tmp_path / "memo.md"
+    doc2.write_text("# Memo\n\nBody text.\n", encoding="utf-8")
+    staged, errors = ingest([doc2], staging_dir=staging2, verbatim=True)
+    assert errors == [] and len(staged) == 1
+    page = staged[0].read_text(encoding="utf-8")
+    trimmed = page.replace("\n---\n\n", "\n---\n", 1)
+    assert trimmed != page
+    staged[0].write_text(trimmed, encoding="utf-8")
+    staged, errors = ingest([doc2], staging_dir=staging2, verbatim=True)
+    assert errors == []
+    assert staged == [staging2 / "context_layer" / "references" / "memo-2.md"]
+    assert (staging2 / "context_layer" / "references" / "memo.md").read_text(
+        encoding="utf-8"
+    ) == trimmed  # untouched
+
+
+def test_verbatim_retry_finds_unchanged_draft_across_filename_gap(tmp_path, monkeypatch):
+    """F2 (spec §4): an unchanged verbatim draft is found ACROSS a filename gap
+    — with the unsuffixed slot freed (promotion/removal), the unchanged draft at
+    ``-2`` yields the honest unchanged no-op; no duplicate is staged into the
+    freed slot."""
+    import ariadne.ingest as ingest_module
+
+    clock = _FixedClock(datetime(2026, 3, 1, 8, 0, 0, tzinfo=UTC))
+    monkeypatch.setattr(ingest_module, "datetime", clock)
+    staging = tmp_path / "staging"
+    doc = tmp_path / "handbook.md"
+
+    # the newer revision occupies the unsuffixed slot first
+    doc.write_text("# Handbook v2\n\nNewer revision.\n", encoding="utf-8")
+    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
+    assert errors == [] and staged == [staging / "context_layer" / "references" / "handbook.md"]
+
+    # the older revision stages behind it at handbook-2.md
+    doc.write_text("# Handbook v1\n\nOriginal revision.\n", encoding="utf-8")
+    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
+    assert errors == [] and staged == [staging / "context_layer" / "references" / "handbook-2.md"]
+    older = staged[0]
+    older_bytes = older.read_bytes()
+
+    # the newer draft leaves staging (human promotion/removal) — a filename gap
+    (staging / "context_layer" / "references" / "handbook.md").unlink()
+
+    # retry of the UNCHANGED older revision is found across the gap: an honest
+    # no-op at an advanced clock; nothing is staged into the freed slot
+    clock.now_value = clock.now_value + timedelta(days=1)
+    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
+    assert errors == [] and staged == []
+    assert older.read_bytes() == older_bytes
+    assert sorted(p.name for p in (staging / "context_layer" / "references").iterdir()) == [
+        "handbook-2.md"
+    ]
+
+
+def test_verbatim_retry_treats_malformed_draft_as_nonmatching(tmp_path, monkeypatch):
+    """F3 (spec §4): a candidate draft with malformed frontmatter YAML is a
+    NONMATCHING candidate — never a traceback abort: it stays byte-identical, a
+    new exclusive draft stages, and later documents in the same batch still
+    process."""
+    import ariadne.ingest as ingest_module
+
+    clock = _FixedClock(datetime(2026, 4, 1, 10, 0, 0, tzinfo=UTC))
+    monkeypatch.setattr(ingest_module, "datetime", clock)
+    staging = tmp_path / "staging"
+    doc = make_doc(tmp_path)
+    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
+    assert errors == [] and staged == [staging / "context_layer" / "references" / "notes.md"]
+
+    broken = "---\ntype: reference\n  sources: [unclosed\n---\n\n# notes\n\nbroken by the owner\n"
+    staged[0].write_text(broken, encoding="utf-8")  # human corruption
+    clock.now_value = clock.now_value + timedelta(minutes=30)
+
+    good = tmp_path / "second-notes.md"
+    good.write_text("# Second\n\nAnother document in the same batch.\n", encoding="utf-8")
+    staged, errors = ingest([doc, good], staging_dir=staging, verbatim=True)  # must not raise
+
+    assert errors == []
+    assert staged == [
+        staging / "context_layer" / "references" / "notes-2.md",
+        staging / "context_layer" / "references" / "second-notes.md",
+    ]
+    assert (staging / "context_layer" / "references" / "notes.md").read_text(
+        encoding="utf-8"
+    ) == broken  # the corrupted draft is untouched

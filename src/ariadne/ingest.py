@@ -557,6 +557,11 @@ def _ingest_one(doc: Path, *, staging: Path, complete, now: str) -> tuple[list[P
 
 _VERBATIM_BY = "ariadne-ingest:verbatim"  # generated.by stamp of the no-model mode
 _VERBATIM_FOLDER = "references"  # every verbatim document is one draft Reference
+# The retry comparison masks ONLY the ``generated`` timestamp line (rendered by
+# _verbatim_page at exactly this two-space indent) inside the frontmatter block
+# — every other byte of a candidate must match, so any human edit counts as
+# changed (spec §4), including edits _split_page would normalize away.
+_AT_LINE_RE = re.compile(r"(?m)^  at: .*$")
 
 
 def _verbatim_name(doc: Path) -> str | None:
@@ -587,19 +592,26 @@ def _verbatim_page(doc: Path, name: str, text: str, source: dict, now: str) -> s
     return f"---\n{front_yaml}\n---\n\n{text}"
 
 
-def _verbatim_match(existing_text: str, page_text: str) -> bool:
-    """True when an existing staged page IS the draft ``page_text`` would write,
-    ignoring only the generation timestamp (spec §4): same verbatim stamp and
-    identical frontmatter and body — changed source bytes, changed converter
-    output, a different resolved location or a human edit all fail to match."""
-    meta, body = _split_page(existing_text)
-    ours, our_body = _split_page(page_text)
-    if not isinstance(meta, dict) or not isinstance(meta.get("generated"), dict):
-        return False
-    if meta["generated"].get("by") != _VERBATIM_BY:
-        return False  # only this mode's own drafts can no-op
-    meta["generated"] = ours["generated"] = {"by": _VERBATIM_BY}  # time-insensitive
-    return meta == ours and body == our_body
+def _mask_generation_time(text: str) -> str | None:
+    """The page text with ONLY the frontmatter ``generated`` timestamp value
+    blanked — every other byte (delimiters, blank lines, body) preserved — or
+    None when the text has no frontmatter block."""
+    match = _FRONTMATTER_RE.match(text)
+    if match is None:
+        return None
+    start, end = match.span(1)
+    return text[:start] + _AT_LINE_RE.sub("  at: @", text[start:end]) + text[end:]
+
+
+def _verbatim_unchanged(existing_text: str, page_text: str) -> bool:
+    """True only when the candidate draft is byte-identical to the page this
+    run would write, modulo the generation timestamp's value ALONE (spec §4):
+    an owner note under ``generated``, edited blank lines, reformatted YAML or
+    any body change counts as changed — never a false 'unchanged' no-op. Purely
+    textual, so unparseable candidate frontmatter cannot crash the comparison
+    (a malformed candidate is simply nonmatching)."""
+    masked = _mask_generation_time(existing_text)
+    return masked is not None and masked == _mask_generation_time(page_text)
 
 
 def _verbatim_one(doc: Path, *, staging: Path, now: str) -> tuple[list[Path], list[str]]:
@@ -646,30 +658,41 @@ def _verbatim_one(doc: Path, *, staging: Path, now: str) -> tuple[list[Path], li
                 "altered to pass; remove the secret and re-run. Nothing was staged."
             ]
     # staging-local retry lookup (spec §4): identity is the resolved source
-    # location + content digest + converted text; each candidate's path is
-    # symlink-checked BEFORE the candidate is read, and a differing draft is
-    # never overwritten or misreported — the first free suffix stages anew.
-    suffix = 1
-    while True:
-        stem = name if suffix == 1 else f"{name}-{suffix}"
-        rel = f"{STAGING_SUBDIR}/{_VERBATIM_FOLDER}/{stem}.md"
-        offender = _symlink_under(staging, rel)
-        if offender is not None:
+    # location + content digest + converted text. The WHOLE suffix family
+    # {name}.md, {name}-N.md is scanned ACROSS filename gaps (a draft freed by
+    # promotion/removal of an earlier slot never hides an unchanged one), and
+    # every candidate's path is symlink-checked BEFORE the candidate is read;
+    # a differing draft is never overwritten or misreported — the first free
+    # suffix stages anew.
+    directory = staging / STAGING_SUBDIR / _VERBATIM_FOLDER
+    offender = _symlink_under(staging, f"{STAGING_SUBDIR}/{_VERBATIM_FOLDER}/{name}.md")
+    if offender is not None:  # the shared context_layer/references components
+        return [], [
+            f"{doc.name}: refusing to stage through a symlink: {offender} is a "
+            f"symlink under {staging}; remove it and re-run"
+        ]
+    family = re.compile(rf"^{re.escape(name)}(?:-\d+)?\.md$")
+    existing = (
+        sorted(path for path in directory.iterdir() if family.fullmatch(path.name))
+        if directory.is_dir()
+        else []
+    )
+    for candidate in existing:
+        offender = _symlink_under(staging, f"{STAGING_SUBDIR}/{_VERBATIM_FOLDER}/{candidate.name}")
+        if offender is not None:  # per candidate, BEFORE any read through it
             return [], [
                 f"{doc.name}: refusing to stage through a symlink: {offender} is a "
                 f"symlink under {staging}; remove it and re-run"
             ]
-        candidate = staging / rel
         if not candidate.is_file():
-            break
-        if _verbatim_match(candidate.read_text(encoding="utf-8"), page_text):
+            continue
+        if _verbatim_unchanged(candidate.read_text(encoding="utf-8"), page_text):
             print(
                 f"ariadne-ingest: {doc.name}: verbatim draft already staged — unchanged",
                 flush=True,
             )
             return [], []
-        suffix += 1
-    return [_stage_atomic(staging / STAGING_SUBDIR / _VERBATIM_FOLDER, name, page_text)], []
+    return [_stage_atomic(directory, name, page_text)], []
 
 
 def ingest(
