@@ -2558,6 +2558,15 @@ def refresh_schema(
                 "with a different existing candidate page — a filename/resource "
                 "collision refuses rather than overwriting; resolve it by hand"
             )
+    # Fix F1 (parent-authorized, spec 0024 §3/§6 AC5): pre-flight EVERY
+    # generated page against the shared artifact bound BEFORE the first edit.
+    # The sequential edit seam checks one page at a time, so an over-limit
+    # later page would otherwise refuse only after earlier pages already
+    # advanced the candidate — a half-updated refresh. The check is the same
+    # one the edit seam itself runs, moved ahead of all writes; no partial
+    # state can remain.
+    for spec in specs:
+        proposals.check_artifact_content(f"generated page {spec['resource']!r}", spec["text"])
     revision = current
     pages: list[dict] = []
     changed_any = False

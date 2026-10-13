@@ -1015,10 +1015,16 @@ def write_typed_parquet(path: Path, schema: list[tuple[str, str]], rows: list[tu
     for name, kind in schema:
         assert _FIXTURE_IDENTIFIER_RE.fullmatch(name), name
         assert _FIXTURE_TYPE_RE.fullmatch(kind), kind
+    create = f"CREATE TABLE t ({', '.join(f'{name} {kind}' for name, kind in schema)})"
+    insert = f"INSERT INTO t VALUES ({', '.join('?' for _ in schema)})"
+    copy = f"COPY t TO '{path}' (FORMAT PARQUET)"
     con = duckdb.connect()
-    con.execute(f"CREATE TABLE t ({', '.join(f'{name} {kind}' for name, kind in schema)})")
-    con.executemany(f"INSERT INTO t VALUES ({', '.join('?' for _ in schema)})", rows)
-    con.execute(f"COPY t TO '{path}' (FORMAT PARQUET)")
+    # nosemgrep — allowlist-asserted fixture identifiers/types only (the
+    # repository discipline for DDL that parameters cannot carry); row values
+    # ride as bound parameters
+    con.execute(create)
+    con.executemany(insert, rows)
+    con.execute(copy)
     con.close()
     return path
 
@@ -1567,3 +1573,144 @@ def test_generated_value_evidence_is_protected_at_the_edit_seam(tmp_path):
                 "content": _render_page(forged, body),
             },
         )
+
+
+def test_artifact_bound_refusal_refreshes_nothing_atomically(tmp_path):
+    """Fix F1 (parent-authorized, spec 0024 §3/§6 AC5): when one refresh covers
+    two selected tables and the SECOND regenerated page would exceed the
+    existing 2,097,152-byte artifact bound (a ~2,096,865-byte existing page —
+    calibrated authored bulk — plus selected evidence), the refusal must be
+    ATOMIC: no page, candidate revision or tracked-tree byte moves. The
+    sequential edit seam checks one page at a time, so without the pre-flight
+    the first table's page is already written when the second refuses."""
+    OPS_ASSET = {"source": "ops", "catalog": None, "schema": "ops", "table": "orders"}
+    WIDE_ASSET = {"source": "wide", "catalog": None, "schema": "wide", "table": "wide"}
+    project = tmp_path / "proj"
+    project.mkdir(parents=True, exist_ok=True)
+    write_typed_parquet(
+        project / "data" / "ops" / "orders.parquet",
+        [("id", "BIGINT"), ("region", "VARCHAR")],
+        [(1, "EMEA"), (2, "AMER"), (3, "EMEA")],
+    )
+    write_typed_parquet(
+        project / "data" / "wide" / "wide.parquet",
+        [("id", "BIGINT"), ("region2", "VARCHAR"), ("status2", "VARCHAR"), ("code2", "VARCHAR")],
+        [(1, "EMEA", "open", "007"), (2, "AMER", "open", "008"), (3, "EMEA", "closed", "007")],
+    )
+    (project / "ariadne.yaml").write_text(
+        "sources:\n  - name: ops\n    type: parquet\n    path: data/ops/orders.parquet\n"
+        "  - name: wide\n    type: parquet\n    path: data/wide/wide.parquet\n",
+        encoding="utf-8",
+    )
+    (project / "data").mkdir(exist_ok=True)
+    (project / "data" / "seed_notes.md").write_text(SEED_NOTES, encoding="utf-8")
+    run_git(project, "init", "-q")
+    run_git(project, "config", "user.name", "Ariadne Tests")
+    run_git(project, "config", "user.email", "tests@ariadne.local")
+    run_git(project, "add", "--", "ariadne.yaml", "data/seed_notes.md")
+    run_git(project, "commit", "-q", "-m", "human: initial artifacts")
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    first = api.refresh_schema(
+        started["proposal"], started["candidate_revision"], [OPS_ASSET, WIDE_ASSET]
+    )
+    proposal = first["proposal"]
+    ops_path = next(
+        p["path"] for p in first["pages"] if p["kind"] == "table" and "ops" in p["path"]
+    )
+    wide_path = next(
+        p["path"] for p in first["pages"] if p["kind"] == "table" and "wide" in p["path"]
+    )
+    ops_name, wide_name = PurePosixPath(ops_path).stem, PurePosixPath(wide_path).stem
+
+    # the reviewer's probe shape: authored bulk brings the existing wide page
+    # within a few hundred bytes of the artifact bound, still under it
+    meta, body = _split_page(read_full_page(api, proposal, wide_name))
+    filled = body.rstrip("\n") + f"\n\n## Author notes\n\n{'n' * 2_094_000}\n"
+    rev = api.edit_proposal(
+        proposal,
+        first["revision"],
+        {
+            "kind": "page",
+            "section": "tables",
+            "name": wide_name,
+            "content": _render_page(meta, filled),
+        },
+    )["revision"]
+    wide_selection = {"region2": "VARCHAR", "status2": "VARCHAR", "code2": "VARCHAR"}
+    edited = select_observed_values(api, proposal, rev, wide_name, wide_selection)
+    edited = select_observed_values(
+        api, proposal, edited["revision"], ops_name, {"region": "VARCHAR"}
+    )
+    rev = edited["revision"]
+    wide_size = len(run_git(project, "show", f"{rev}:{wide_path}"))
+    assert 2_096_600 <= wide_size < 2_097_152  # under the bound, close enough to cross it
+
+    before_tree = run_git(project, "ls-tree", "-r", "--name-only", rev)
+    before_ops = run_git(project, "show", f"{rev}:{ops_path}")
+    before_wide = run_git(project, "show", f"{rev}:{wide_path}")
+    with pytest.raises(ValueError, match="2097152-byte bound"):
+        api.refresh_schema(proposal, rev, [OPS_ASSET, WIDE_ASSET])
+
+    # atomic refusal: the first table's page never moved either
+    record = json.loads(
+        (project / ".ariadne" / "proposals" / f"{proposal}.json").read_text(encoding="utf-8")
+    )
+    assert record["candidate_revision"] == rev
+    assert run_git(project, "show", f"{rev}:{ops_path}") == before_ops
+    assert run_git(project, "show", f"{rev}:{wide_path}") == before_wide
+    assert run_git(project, "ls-tree", "-r", "--name-only", rev) == before_tree
+
+
+def test_uhugeint_native_integer_values_stay_exact(tmp_path):
+    """Fix F2 (parent-authorized, spec 0024 §3/AC3): UHUGEINT belongs to the
+    native integer family — a selected native catalog column with the
+    hand-specified values 7, 8, 7 publishes exact INTEGER evidence 7:2, 8:1
+    (never floats; parquet cannot carry unsigned 128-bit, so the fixture is a
+    native DuckDB source, the only representation whose catalog type IS
+    UHUGEINT)."""
+    project = tmp_path / "proj"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "data").mkdir(exist_ok=True)
+    db = project / "data" / "flags.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE flags_t (id BIGINT NOT NULL, flags UHUGEINT)")
+    con.executemany("INSERT INTO flags_t VALUES (?, ?)", [(1, 7), (2, 8), (3, 7)])
+    con.close()
+    (project / "ariadne.yaml").write_text(
+        "sources:\n  - name: flagdb\n    type: duckdb\n    path: data/flags.duckdb\n",
+        encoding="utf-8",
+    )
+    (project / "data" / "seed_notes.md").write_text(SEED_NOTES, encoding="utf-8")
+    run_git(project, "init", "-q")
+    run_git(project, "config", "user.name", "Ariadne Tests")
+    run_git(project, "config", "user.email", "tests@ariadne.local")
+    run_git(project, "add", "--", "ariadne.yaml", "data/seed_notes.md")
+    run_git(project, "commit", "-q", "-m", "human: initial artifacts")
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    FLAG_ASSET = {"source": "flagdb", "catalog": "flagdb", "schema": "main", "table": "flags_t"}
+    first = api.refresh_schema(
+        proposal := started["proposal"], started["candidate_revision"], [FLAG_ASSET]
+    )
+    name = PurePosixPath(page_paths(first)[table_resource(FLAG_ASSET)]).stem
+
+    edited = select_observed_values(api, proposal, first["revision"], name, {"flags": "UHUGEINT"})
+    second = api.refresh_schema(proposal, edited["revision"], [FLAG_ASSET])
+    assert second["changed"] is True
+    _meta, observations, page_text = table_page(api, proposal, name)
+    assert observations["value_evidence"] == {
+        "flags": {
+            "state": "observed",
+            "top_values": [
+                {"value": 7, "count": 2},
+                {"value": 8, "count": 1},
+            ],
+        }
+    }
+    # exact native integers, never coerced floats
+    for entry in observations["value_evidence"]["flags"]["top_values"]:
+        assert isinstance(entry["value"], int) and not isinstance(entry["value"], bool)
+    assert "`flags`: observed — 7 (2), 8 (1)" in page_text

@@ -1103,6 +1103,7 @@ _VALUE_EVIDENCE_TYPES = frozenset(
         "USMALLINT",
         "UINTEGER",
         "UBIGINT",
+        "UHUGEINT",
         "FLOAT",
         "REAL",
         "DOUBLE",
