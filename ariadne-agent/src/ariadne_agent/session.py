@@ -189,7 +189,9 @@ def _missing_served_catalog(exc: BaseException) -> bool:
 
 
 def _open_runtime(
-    project: Path, *, runtime_type: type[QueryRuntime] | type[DiscoveryRuntime] = QueryRuntime,
+    project: Path,
+    *,
+    runtime_type: type[QueryRuntime] | type[DiscoveryRuntime] = QueryRuntime,
     discovery: DiscoveryRuntime | None = None,
 ) -> QueryRuntime | DiscoveryRuntime:
     """Build the session's runtime from the host-selected project root only.
@@ -203,8 +205,7 @@ def _open_runtime(
     files. An explicit legacy artifact-root project (no Ariadne state) keeps
     the legacy construction and its behavior exactly."""
     managed = (
-        discovery._managed is not None
-        if discovery is not None else (project / ".ariadne").exists()
+        discovery._managed is not None if discovery is not None else (project / ".ariadne").exists()
     )
     if managed:
         try:

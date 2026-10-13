@@ -1352,7 +1352,8 @@ def main(argv: list[str] | None = None) -> int:
             # open_project reads the LOGICAL host project's ``query:`` ceilings
             # itself (never the pinned snapshot's inert copy).
             runtime = QueryRuntime.open_project(
-                project, deadline_budget=budget,
+                project,
+                deadline_budget=budget,
                 discovery=facade.discovery if isinstance(facade, DeferredQueryRuntime) else None,
             )
         else:
