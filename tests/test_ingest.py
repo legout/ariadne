@@ -2426,3 +2426,53 @@ def test_verbatim_retry_treats_malformed_draft_as_nonmatching(tmp_path, monkeypa
     assert (staging / "context_layer" / "references" / "notes.md").read_text(
         encoding="utf-8"
     ) == broken  # the corrupted draft is untouched
+
+
+def test_verbatim_retry_counts_edits_on_the_timestamp_line_as_changed(tmp_path, monkeypatch):
+    """Owner-approved final exception (spec 0021 §4/AC3): ONLY the generation
+    timestamp's VALUE may be ignored. Any other byte on the ``  at: `` line —
+    an appended owner comment, a corrupted value — makes the candidate CHANGED:
+    a new exclusive draft stages, the edited candidate stays byte-identical,
+    and the retry is never misreported as unchanged."""
+    import ariadne.ingest as ingest_module
+
+    staging = tmp_path / "staging"
+    doc = make_doc(tmp_path)  # notes.md
+
+    def edit_at_line(page_name: str, new_line: str) -> str:
+        """Replace the named draft's ``  at: `` line with ``new_line``; returns
+        the edited page text (anchored on the spec §2 generated block's line)."""
+        page = staging / "context_layer" / "references" / page_name
+        lines = page.read_text(encoding="utf-8").splitlines(keepends=True)
+        at_line = next(index for index, line in enumerate(lines) if line.startswith("  at: "))
+        lines[at_line] = new_line + "\n"
+        edited = "".join(lines)
+        page.write_text(edited, encoding="utf-8")
+        return edited
+
+    # baseline draft at a fixed clock
+    clock = _FixedClock(datetime(2026, 5, 1, 7, 0, 0, tzinfo=UTC))
+    monkeypatch.setattr(ingest_module, "datetime", clock)
+    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
+    assert errors == [] and staged == [staging / "context_layer" / "references" / "notes.md"]
+
+    # (a) an owner comment appended after the timestamp value: the timestamp
+    # itself is unchanged, but the line is not the serialized stamp alone
+    edited = edit_at_line("notes.md", "  at: '2026-05-01T07:00:00+00:00' # owner annotation")
+    clock.now_value = clock.now_value + timedelta(hours=3)
+    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
+    assert errors == []
+    assert staged == [staging / "context_layer" / "references" / "notes-2.md"]  # changed
+    assert (staging / "context_layer" / "references" / "notes.md").read_text(
+        encoding="utf-8"
+    ) == edited  # candidate byte-identical
+
+    # (b) a corrupted timestamp value on the same line: also changed
+    corrupted = edit_at_line("notes-2.md", "  at: [unclosed")
+    clock.now_value = clock.now_value + timedelta(hours=3)
+    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
+    assert errors == []
+    assert staged == [staging / "context_layer" / "references" / "notes-3.md"]  # changed
+    assert (staging / "context_layer" / "references" / "notes-2.md").read_text(
+        encoding="utf-8"
+    ) == corrupted  # candidate byte-identical

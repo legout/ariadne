@@ -557,11 +557,15 @@ def _ingest_one(doc: Path, *, staging: Path, complete, now: str) -> tuple[list[P
 
 _VERBATIM_BY = "ariadne-ingest:verbatim"  # generated.by stamp of the no-model mode
 _VERBATIM_FOLDER = "references"  # every verbatim document is one draft Reference
-# The retry comparison masks ONLY the ``generated`` timestamp line (rendered by
-# _verbatim_page at exactly this two-space indent) inside the frontmatter block
-# — every other byte of a candidate must match, so any human edit counts as
-# changed (spec §4), including edits _split_page would normalize away.
-_AT_LINE_RE = re.compile(r"(?m)^  at: .*$")
+# The retry comparison masks ONLY the ``generated`` timestamp VALUE, and only
+# in the exact serialized line _verbatim_page writes it: two-space indent,
+# single-quoted UTC ISO-8601 seconds stamp (PyYAML always quotes that value —
+# verified deterministic). Any OTHER byte on that line — an appended comment,
+# a changed key/indentation, a corrupted or non-timestamp value — stays
+# unmasked and counts as changed (spec §4), as does every other byte of the
+# candidate; if the renderer ever changed form, retries fail SAFE toward
+# staging a new draft, never toward a false 'unchanged'.
+_AT_LINE_RE = re.compile(r"(?m)^  at: '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00'$")
 
 
 def _verbatim_name(doc: Path) -> str | None:
@@ -593,8 +597,9 @@ def _verbatim_page(doc: Path, name: str, text: str, source: dict, now: str) -> s
 
 
 def _mask_generation_time(text: str) -> str | None:
-    """The page text with ONLY the frontmatter ``generated`` timestamp value
-    blanked — every other byte (delimiters, blank lines, body) preserved — or
+    """The page text with ONLY the generation timestamp's exact serialized
+    line replaced by a constant — every other byte (the rest of an edited
+    ``  at: `` line included, delimiters, blank lines, body) preserved — or
     None when the text has no frontmatter block."""
     match = _FRONTMATTER_RE.match(text)
     if match is None:
