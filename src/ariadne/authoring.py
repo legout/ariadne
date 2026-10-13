@@ -2655,6 +2655,13 @@ def _quote(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def _sql_ref(ref: str) -> str:
+    """The catalog entry's plain dotted ``ref`` as a SQL-qualified prefix:
+    every part quoted with the same identifier discipline as the table name
+    (a schema like ``sales-west`` is not a valid bare token)."""
+    return ".".join(_quote(part) for part in ref.split("."))
+
+
 def _scope_for(resource: str, scope: list[dict]) -> list[dict]:
     return [predicate for predicate in scope if predicate["resource"] == resource]
 
@@ -2690,7 +2697,7 @@ def inspection_sample_statement(
     ordering = ", ".join(_quote(column) for column in columns)
     where, params = _scope_clause(scope)
     sql = (
-        f"SELECT {projection} FROM {table['ref']}.{_quote(table['name'])}{where} "
+        f"SELECT {projection} FROM {_sql_ref(table['ref'])}.{_quote(table['name'])}{where} "
         f"ORDER BY {ordering} LIMIT ?"
     )
     return sql, [*params, int(limit)]
@@ -2710,7 +2717,7 @@ def inspection_count_statement(
     sql = (
         f"SELECT COUNT(*) FILTER (WHERE {non_null}) AS eligible, "
         f"COUNT(*) FILTER (WHERE {any_null}) AS nulls "
-        f"FROM {table['ref']}.{_quote(table['name'])}{where}"
+        f"FROM {_sql_ref(table['ref'])}.{_quote(table['name'])}{where}"
     )
     return sql, params
 

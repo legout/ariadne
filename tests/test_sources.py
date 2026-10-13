@@ -27,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
+from ariadne.profiler import profile  # noqa: E402
 from ariadne.serve import Facade  # noqa: E402
 from ariadne.sources import (  # noqa: E402
     build_connection,
@@ -240,6 +241,55 @@ def test_delta_live(tmp_path):
 
 
 # -------------------------------------------------- live: native duckdb
+
+
+def native_dash_schema_catalog(path: Path) -> Path:
+    """A native catalog whose schema needs SQL quoting (``sales-west``),
+    seeded with the spec's hand-specified fixture rows (mirrors NATIVE_ROWS)."""
+    con = duckdb.connect(str(path))
+    con.execute('CREATE SCHEMA "sales-west"')
+    con.execute(
+        'CREATE TABLE "sales-west"."orders" AS SELECT * FROM (VALUES '
+        "(1, 10.0, 'EMEA'), (2, 20.0, 'AMER'), (3, 30.0, 'EMEA')) "
+        "t(id, amount, region)"
+    )
+    con.close()
+    return path
+
+
+def test_native_schema_requiring_quoting_profiles_through_the_shared_seam(tmp_path):
+    """Reviewer fix pass (spec 0022 §3 / issue #67): a native schema that needs
+    SQL quoting (``sales-west``) flows through the ORDINARY profiler seam,
+    sampled and unsampled, with the spec's fixture arithmetic — identities and
+    resources stay exact."""
+    reg = write_registry(
+        tmp_path,
+        [{"name": "warehouse", "type": "duckdb", "path": "sales.duckdb"}],
+    )
+    native_dash_schema_catalog(tmp_path / "sales.duckdb")
+    result = profile(sources_path=reg)
+    sampled_result = profile(sources_path=reg, sample_rows=3)
+    for result in (result, sampled_result):
+        (source,) = result["sources"]
+        assert source["name"] == "warehouse"
+        table = source["tables"]["orders"]
+        assert table["row_count"] == 3  # the three fixture rows
+        assert table["columns"]["id"]["distinct_count"] == 3  # ids 1, 2, 3
+        assert table["columns"]["region"]["distinct_count"] == 2  # EMEA, AMER
+        assert (table["source"], table["catalog"], table["schema"], table["table"]) == (
+            "warehouse",
+            "warehouse",
+            "sales-west",
+            "orders",
+        )
+        assert parse_resource(table["resource"])[1] == [
+            "warehouse",
+            "warehouse",
+            "sales-west",
+            "orders",
+        ]
+    sampled = sampled_result["sources"][0]["tables"]["orders"]
+    assert sampled["sampled"] is True and sampled["sample_limit"] == 3
 
 
 def test_native_duckdb_catalog_and_compiled_metric(tmp_path, monkeypatch):

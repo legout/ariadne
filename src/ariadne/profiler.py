@@ -149,6 +149,13 @@ def _q(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def _sql_ref(ref: str) -> str:
+    """The builder's plain dotted ``ref`` as a SQL-qualified prefix: every
+    part quoted (a schema like ``sales-west`` is not a valid bare token), the
+    same identifier discipline as the table name itself."""
+    return ".".join(_q(part) for part in ref.split("."))
+
+
 def _numeric(type_name: str) -> bool:
     return type_name.split("(")[0].upper() in _NUMERIC_TYPES
 
@@ -204,7 +211,7 @@ def _table_rel(con: duckdb.DuckDBPyConnection, ref: str, table: str, allowed: se
         raise ValueError(f"identifier not present in the catalog: {table!r}")
     # con.table() cannot bind schema-qualified views; a plain SELECT through
     # con.sql resolves identically for attaches and views (read-only relation).
-    return con.sql(f"SELECT * FROM {ref}.{_q(table)}")
+    return con.sql(f"SELECT * FROM {_sql_ref(ref)}.{_q(table)}")
 
 
 def _column_rel(rel, column: str, allowed: set[str]):
@@ -248,7 +255,7 @@ def _profile_table(
         ]
     )
 
-    cur = con.sql(f"SUMMARIZE {ref}.{_q(table)}")
+    cur = con.sql(f"SUMMARIZE {_sql_ref(ref)}.{_q(table)}")
     fields = [d[0] for d in cur.description]
     summarize = {row[0]: dict(zip(fields, row, strict=True)) for row in cur.fetchall()}
 
@@ -477,7 +484,7 @@ def profile(
                     name = _q(table["name"])
                     con.execute(
                         f"CREATE TABLE {schema}.{name} AS SELECT * FROM "
-                        f"{table['ref']}.{name} LIMIT {sample_rows}"
+                        f"{_sql_ref(table['ref'])}.{name} LIMIT {sample_rows}"
                     )
                     table["ref"] = schema
         sources = [_profile_source(con, entry, sample_rows=sample_rows) for entry in catalog]
