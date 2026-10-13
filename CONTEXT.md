@@ -108,6 +108,10 @@ _Avoid_: automatic approval, lossless binary conversion, policy extraction
 The human-owned data dictionary (`data/seed_notes.md`) carrying business rules that statistics cannot derive; an input to the Authoring Agent alongside the statistical profile. It may be drafted by a harness from domain evidence, but its rules become authoritative only after human approval.
 _Avoid_: hints file
 
+**Business Onboarding**:
+The targeted clarification of a data project's business meaning using existing owner knowledge and source evidence. Its captured interpretations remain proposals until human admission through the applicable route.
+_Avoid_: automatic business-rule approval, setup wizard
+
 ### Querying
 
 **Ad-hoc Metric**:
@@ -136,6 +140,10 @@ _Avoid_: saved query, execution proof, query history
 The project's version-controlled OKF Context Layer, containing the typed pages relevant to its documented sources and modeled meaning, with generated navigation and change history. It can describe sources before any metric is modeled.
 _Avoid_: knowledge base directory, docs folder
 
+**Context Routing Map**:
+A human-owned OKF Reference directing business questions to existing definitions, Policies and source evidence. It is a navigational guide, not a second definition catalog or authority to calculate.
+_Avoid_: executable router, second metric catalog, bounded-context map
+
 **Dataset Overview**:
 An OKF page describing an identified physical source or collection and its related tables. It is not a Semantic Layer dataset or a metric definition.
 _Avoid_: OSI dataset, semantic model
@@ -143,6 +151,10 @@ _Avoid_: OSI dataset, semantic model
 **Schema Observation**:
 An identified catalog description or measurement of a physical table's structure and statistics at a stated source version or time. Observations do not by themselves establish business meaning or permanent constraints.
 _Avoid_: declared business key, permanent guarantee
+
+**Observed Filter Values**:
+Bounded measurements of explicitly selected field values and their frequencies at a stated scope and time. They aid filter interpretation, not establish a complete allowed-value domain or current validity.
+_Avoid_: business enum, allowed-value constraint, live value validation
 
 **Term Reference**:
 An OKF Reference naming a shared business concept, its language aliases and its scoped field representations. A language alias is not proof that field values are interchangeable.
