@@ -164,6 +164,28 @@ def test_search_page_read_failure_is_local(artifacts, capsys, source_free, monke
     assert all(groups[k]["status"] == "available" for k in ("metrics", "terms", "examples"))
 
 
+def test_search_catalog_read_failure_is_local(artifacts, capsys, source_free, monkeypatch):
+    root, _ = artifacts
+    model = root / "semantic_layer" / "models" / "orders.yml"
+    original = Path.read_text
+
+    def fail_model(path, *args, **kwargs):
+        if path == model:
+            raise PermissionError("fixture denies model YAML")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_model)
+    groups = run_search(artifacts, capsys, "order number")["groups"]
+    assert list(groups) == ["metrics", "pages", "terms", "examples"]
+    assert groups["metrics"]["status"] == "unavailable"
+    assert str(model) in groups["metrics"]["reason"]
+    assert "fixture denies model YAML" in groups["metrics"]["reason"]
+    assert all(groups[k]["status"] == "available" for k in ("pages", "terms", "examples"))
+    assert groups["pages"]["items"]
+    assert len(groups["terms"]["result"]["matches"]) == 2
+    assert len(groups["examples"]["items"]) == 1
+
+
 def test_search_full_bounded_term_first_part(artifacts, capsys, source_free):
     root, _ = artifacts
     reference = (root / "context_layer" / "references" / "order-number.md").read_text()

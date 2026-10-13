@@ -58,7 +58,7 @@ class DiscoveryRuntime:
         admission_record: dict | None = None,
         project_root: str | Path | None = None,
     ):
-        self._load_catalog(semantic_dir, context_dir, admission_record)
+        self._load_catalog(semantic_dir, context_dir, admission_record, report_read_errors=True)
         self._qualified = sources is not None or registry is not None
         # Parse source identity only; never open the registered location.
         if registry is None:
@@ -72,7 +72,10 @@ class DiscoveryRuntime:
             semantic_dir, db_path, sources, staging_dir, admission_record, project_root
         )
 
-    def _load_catalog(self, semantic_dir, context_dir, admission_record):
+    def _load_catalog(
+        self, semantic_dir, context_dir, admission_record, *, report_read_errors=False
+    ):
+        self._catalog_error: str | None = None
         self.context_dir = Path(context_dir)
         models = Path(semantic_dir) / "models"
         # K4 (issue #44, spec 0010 §6): a MANAGED context-only admitted snapshot
@@ -92,24 +95,30 @@ class DiscoveryRuntime:
         # and the single-entry envelope render() compiles.
         self._metrics: dict[str, Any] = {}
         for path in sorted(models.glob("*.yml")) if models.is_dir() else []:
-            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            for model in doc.get("semantic_model") or []:
-                dimension_names = {
-                    field.get("name")
-                    for dataset in model.get("datasets") or []
-                    for field in dataset.get("fields") or []
-                    if isinstance(field.get("dimension"), dict) and field.get("name")
-                }
-                for metric in model.get("metrics") or []:
-                    name = metric.get("name")
-                    if not isinstance(name, str) or not name:
-                        continue
-                    self._metrics[name] = {
-                        "description": metric.get("description") or "",
-                        "dimensions": sorted(dimension_names),
-                        "model": {"version": doc.get("version"), "semantic_model": [model]},
+            try:
+                doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                for model in doc.get("semantic_model") or []:
+                    dimension_names = {
+                        field.get("name")
+                        for dataset in model.get("datasets") or []
+                        for field in dataset.get("fields") or []
+                        if isinstance(field.get("dimension"), dict) and field.get("name")
                     }
-        if not self._metrics:  # spec §7: nothing servable -> fail fast, not at query time
+                    for metric in model.get("metrics") or []:
+                        name = metric.get("name")
+                        if not isinstance(name, str) or not name:
+                            continue
+                        self._metrics[name] = {
+                            "description": metric.get("description") or "",
+                            "dimensions": sorted(dimension_names),
+                            "model": {"version": doc.get("version"), "semantic_model": [model]},
+                        }
+            except (OSError, yaml.YAMLError, ValueError, TypeError, AttributeError) as exc:
+                if not report_read_errors:
+                    raise  # QueryRuntime retains the native construction failure.
+                self._catalog_error = f"{path}: {type(exc).__name__}: {exc}"
+                break  # never return a partially read catalog as available
+        if not self._metrics and self._catalog_error is None:
             if admission_record is None:
                 raise RuntimeError(f"no governed metrics found under {models}")
             self._context_only = True  # a managed catalog-less admission serves discovery
@@ -145,6 +154,10 @@ class DiscoveryRuntime:
         # root (context_dir.parent) — the legacy route keeps its single shared
         # root (examples_root=None).
         self._examples_root = self._project
+        if self._catalog_error is not None:
+            # Avoid rereading broken models for graph metadata; managed consistency
+            # checks still run at admission resolution and before serving any group.
+            return
         if admission_record is not None:
             self._load_managed_graph(self._semantic_dir)
             if self._context_only and self._graph is None:
@@ -359,6 +372,8 @@ class DiscoveryRuntime:
         served catalog over an admitted revision that carries none."""
         if self._managed is not None:
             self._recheck_pinned()
+        if self._catalog_error is not None:
+            raise ValueError(self._catalog_error)
         if self._context_only:
             raise ValueError(MISSING_CATALOG)
         entries: list[dict | str] = [
