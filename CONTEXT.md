@@ -84,8 +84,12 @@ _Avoid_: approved change, served branch
 The exact effective artifact state of an Authoring Proposal, including inherited artifacts and explicit edits, evaluated and reviewed as a unit. It is not an admitted revision merely because validation succeeds.
 _Avoid_: admitted revision, validation label
 
+**Storage Profile**:
+A named, operator-configured access description shared by data sources using the same storage service and credential binding. It is distinct from a source declaration, a business dataset and Source Approval.
+_Avoid_: data source, semantic dataset, source approval
+
 **Source Approval**:
-The operator's explicit permission to open identified source locations. Artifact review, a source declaration and technical validation do not grant this permission.
+The operator's explicit permission to open identified source locations, including the effective storage endpoint where applicable. Artifact review, a source declaration and technical validation do not grant this permission.
 _Avoid_: source discovery, artifact admission
 
 **Staging**:

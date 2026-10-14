@@ -1,0 +1,9 @@
+# Named scoped S3 profiles retain one connection and explicit source authority
+
+Status: accepted design decision (owner, Pi conversation 2026-10-14: unique S3 paths across endpoints, process-environment values and the existing Lakehouse source types; selected “Design freigeben (Recommended)” for the complete in-chat design). The owner subsequently approved written specification 0025, revision 1, with “Schriftliche Fassung freigeben (Recommended)” in the same conversation. This ADR authorizes no implementation, source access, integration or publication.
+
+Use named, credential-free Storage Profiles in the existing project registry and create temporary scoped DuckDB secrets in the shared connection. Values come only from the executing process. Explicit non-intersecting S3 prefixes make credential selection deterministic without changing source aliases, inventing virtual paths or splitting the execution engine. Keep declaration identity available offline, and bind Source Approval and measured/validated/admitted provenance to the effective non-secret endpoint configuration; key rotation alone is not a new source location.
+
+Per-source environment references are viable but duplicate configuration across tables. Separate connections would complicate the existing unified compiler/execution path; global AWS settings cannot distinguish independent credential sets. The owner excluded duplicate S3 paths on different endpoints, so ambiguous scopes are refused rather than resolved by implicit precedence.
+
+[Specification 0025](../specs/2026-10-14-0025-named-s3-storage-profiles.md) owns the configuration, approval/evidence behavior, compatibility and acceptance criteria. This extends [ADR-0010](0010-declarative-source-registry.md) without another backend or approval lifecycle. [ADR-0022](0022-trusted-native-duckdb-catalogs.md)'s trusted backing-access boundary remains: secrets and read-only attachment are neither a sandbox nor metric governance.
