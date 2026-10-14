@@ -77,6 +77,7 @@ export LOCAL_S3_ENDPOINT_URL='https://s3.retail.example.org'
 export REMOTE_S3_ACCESS_KEY_ID='…'
 export REMOTE_S3_SECRET_ACCESS_KEY='…'
 export REMOTE_S3_ENDPOINT_URL='https://s3.analytics.example.org'
+export REMOTE_S3_REGION='us-east-1'     # supplies the declared region_env above
 ```
 
 An endpoint URL is absolute `http://`/`https://` with a host and optional
@@ -87,20 +88,24 @@ set them in the launcher's own environment before the server starts.
 
 A container only sees what its Compose service definition injects. Compose's
 `--env-file` flag performs **host-side variable interpolation** — it does
-*not* populate the container environment. Forward the profile variables with
-an operator-owned `env_file` entry or explicit `environment` mapping in your
-local override:
+*not* populate the container environment. Forward the profile variables
+with exactly ONE mechanism in your local override — an operator-owned
+`env_file` entry (shown active below), or explicit `environment` forwarding
+of host variables (keep it commented unless the `env_file` line is removed:
+with both active, the interpolated `environment` values override the file's,
+and unset host variables forward as empty strings):
 
 ```yaml
 services:
   ariadne:
     env_file:
       - /run/secrets/ariadne_storage.env   # operator-owned file, not Ariadne-managed
-    # or explicitly:
-    environment:
-      LOCAL_S3_ACCESS_KEY_ID: "${LOCAL_S3_ACCESS_KEY_ID}"
-      LOCAL_S3_SECRET_ACCESS_KEY: "${LOCAL_S3_SECRET_ACCESS_KEY}"
-      LOCAL_S3_ENDPOINT_URL: "${LOCAL_S3_ENDPOINT_URL}"
+    # Alternative (exclusive — remove env_file above first): forward the
+    # values from the host variables set in your shell:
+    # environment:
+    #   LOCAL_S3_ACCESS_KEY_ID: "${LOCAL_S3_ACCESS_KEY_ID}"
+    #   LOCAL_S3_SECRET_ACCESS_KEY: "${LOCAL_S3_SECRET_ACCESS_KEY}"
+    #   LOCAL_S3_ENDPOINT_URL: "${LOCAL_S3_ENDPOINT_URL}"
 ```
 
 Ariadne never loads these files itself; the operator owns what enters the

@@ -249,10 +249,10 @@ ARIADNE_YAML = """\
 #     type: delta
 #     path: data/lake/orders
 #   - name: iceberg_catalog
-#     type: iceberg
-#     path: s3://bucket/warehouse/sales        # with a storages: profile this
-#     storage: local                          # needs storage: local + scope
-#     table: sales                            # s3://retail/ covering bucket/
+#     type: iceberg                 # profile-based s3:// path must fall
+#     path: s3://retail/warehouse/sales   # inside local's scope s3://retail/
+#     storage: local
+#     table: sales
 #   - name: lake
 #     type: ducklake
 #     path: ducklake:warehouse.ducklake
