@@ -228,9 +228,9 @@ class S3Endpoint:
             f"REGION 'us-east-1')"
         )
 
-    def put_parquet(self, key: str, rows: list[tuple], columns: tuple[str, ...]) -> str:
-        """Write one parquet object through a RAW fixture connection (the
-        fixture authors its own data; the Ariadne builder is never involved)."""
+    def _put_rows(self, key: str, rows: list[tuple], columns: tuple[str, ...], fmt: str) -> str:
+        """Write one object through a RAW fixture connection (the fixture
+        authors its own data; the Ariadne builder is never involved)."""
         url = f"s3://{key}"
         values = ", ".join(str(row) for row in rows)
         con = duckdb.connect()
@@ -240,11 +240,22 @@ class S3Endpoint:
             # inputs, no caller data); DuckDB COPY takes no bind parameters.
             con.execute(
                 f"COPY (SELECT * FROM (VALUES {values}) t({', '.join(columns)})) "
-                f"TO '{url}' (FORMAT PARQUET)"
+                f"TO '{url}' (FORMAT {fmt})"
             )
         finally:
             con.close()
         return url
+
+    def put_parquet(self, key: str, rows: list[tuple], columns: tuple[str, ...]) -> str:
+        return self._put_rows(key, rows, columns, "PARQUET")
+
+    def put_csv(self, key: str, rows: list[tuple], columns: tuple[str, ...]) -> str:
+        """A small valid CSV object (the file-reader family fixture)."""
+        return self._put_rows(key, rows, columns, "CSV")
+
+    def put_json(self, key: str, rows: list[tuple], columns: tuple[str, ...]) -> str:
+        """A small valid JSON object (the file-reader family fixture)."""
+        return self._put_rows(key, rows, columns, "JSON")
 
     def put_bytes(self, key: str, data: bytes) -> str:
         """Upload arbitrary bytes (a native DuckDB catalog file) via SigV4."""

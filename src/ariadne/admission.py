@@ -1073,14 +1073,30 @@ def resolve_admission(project: str | Path) -> tuple[dict, Path]:
             "re-approve the exact resolved identity (ariadne-authoring approve-sources) "
             "before serving; the runtime never opens an unapproved identity"
         )
-    # The pinned effective storage binding must be internally consistent AND
-    # still be the binding the CURRENT environment resolves (spec 0025 §4):
-    # a hand-mutated stored binding with a claimed old digest refuses, and a
-    # host whose endpoint variables now point elsewhere never opens the
-    # unapproved endpoint under this admission — the environment check reads
-    # endpoint/region values only, never key/token values.
+    # The pinned effective storage binding must be COMPLETE, internally
+    # consistent AND still be the binding the CURRENT environment resolves
+    # (spec 0025 §§4/AC6): every profile the admitted sources reference must
+    # carry its binding (removing the block never falls back to environment
+    # re-resolution), a hand-mutated stored binding with a claimed old digest
+    # refuses, and a host whose endpoint variables now point elsewhere never
+    # opens the unapproved endpoint under this admission — the environment
+    # check reads endpoint/region values only, never key/token values.
     bindings = record.get("storage_bindings") or {}
-    if bindings:
+    referenced = {
+        entry["storage"]["name"]
+        for entry in record.get("sources") or []
+        if isinstance(entry.get("storage"), dict)
+        and isinstance(entry["storage"].get("name"), str)
+    }
+    if referenced:
+        if set(bindings) != referenced:
+            raise ValueError(
+                "the admitted record's pinned identity is incomplete: its sources "
+                f"reference storage profiles {sorted(referenced)} but the stored "
+                f"effective binding covers {sorted(bindings) or 'none'} (spec 0025 "
+                "§4/AC6) — a malformed or incomplete pinned identity never serves; "
+                "this needs human resolution and re-admission, never a fallback"
+            )
         declared = record.get("source_declaration_digest") or record["source_digest"]
         recomputed = authoring_sources.approval_digest(declared, bindings)
         if recomputed != record["source_digest"]:

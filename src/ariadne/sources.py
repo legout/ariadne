@@ -794,8 +794,11 @@ def build_connection(
             con.execute(f"LOAD {extension}")
         # spec 0025 §3: temporary explicit-provider secrets for the USED
         # profiles are created in this shared builder — before any source
-        # ATTACH/view binding, once per profile, never in public plans.
-        secrets.extend(_install_storage_secrets(con, registry))
+        # ATTACH/view binding, once per profile, never in public plans. The
+        # redaction list is filled IN PLACE, before any secret SQL executes,
+        # so a CREATE SECRET failure that echoes its statement is redacted
+        # too (AC4: values never reach a returned/chained error).
+        _install_storage_secrets(con, registry, secrets)
         for statement in statements:
             try:
                 con.execute(statement)  # nosemgrep — plan() output, validated-registry inputs only
@@ -845,18 +848,22 @@ def _sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _install_storage_secrets(con: duckdb.DuckDBPyConnection, registry: Registry) -> list[str]:
+def _install_storage_secrets(
+    con: duckdb.DuckDBPyConnection, registry: Registry, redactions: list[str] | None = None
+) -> list[str]:
     """Create one temporary ``TYPE S3, PROVIDER CONFIG`` secret per USED
     storage profile, inside this shared connection, before any source
     binding (spec 0025 §3). Endpoint/region come from the registry's FROZEN
     binding when the registry carries one (an approval's pinned effective
     identity) and from the environment otherwise; key/token values always
-    come from the environment. Returns every secret VALUE seen, for error
-    redaction — the SQL itself never leaves this function."""
+    come from the environment. Every secret VALUE is appended to
+    ``redactions`` (and returned) BEFORE its CREATE SECRET executes, so a
+    failing creation that echoes the statement is redacted — the SQL itself
+    never leaves this function."""
     used = used_profiles(registry)
     if not used:
         return []
-    values: list[str] = []
+    values: list[str] = redactions if redactions is not None else []
     created: set[str] = set()
     frozen = registry.bindings or {}
     for name in sorted(used):

@@ -52,6 +52,7 @@ from ariadne.authoring import (
     BUNDLE_DISCARD_NAME,
     _digest,
     _graph_citation_errors,
+    _refuse_changed_bindings,
     _registry_identity_payload,
     _tree_digest,
     bundle_lock,
@@ -417,6 +418,10 @@ def promote_bundle(
                 "the approved source registry changed after this proposal was "
                 "validated — re-validate (resubmit) before promoting; nothing was served"
             )
+        # spec 0025 §5/AC7: a validation measured under endpoint A never
+        # Promotes under endpoint B — the effective binding must still be the
+        # one this proposal was validated under.
+        _refuse_changed_bindings(project, state)
         refused = _review_needed(bundle)
         if refused:  # spec §6/§7: review_needed artifacts are not promotable
             raise ValueError(

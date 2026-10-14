@@ -36,9 +36,16 @@ from ariadne.authoring_sources import (  # noqa: E402
     candidate_sources,
     storage_bindings_from_identity,
 )
+from ariadne.promote import promote_bundle  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.sources import build_connection, load_registry  # noqa: E402
 from tests import s3_fixture as fx  # noqa: E402
+from tests.test_authoring import (  # noqa: E402 — legacy-route fixtures
+    bundle_submission,
+    scaffold_project,
+    write_parquet,
+    write_submission,
+)
 from tests.test_git_authoring import (  # noqa: E402
     METRIC_PAGE,
     MODEL_YML,
@@ -145,9 +152,16 @@ def test_two_profiles_route_distinct_signed_s3_data(tmp_path, monkeypatch):
         assert a.request_rejected("GET", f"{a.endpoint_url}/retail/orders/orders.parquet")
         assert b.request_rejected("GET", f"{b.endpoint_url}/analytics/metrics/metrics.parquet")
 
-        # the native DuckDB catalog rides storage A via SigV4 upload
+        # the native DuckDB catalog rides storage A via SigV4 upload; the
+        # CSV/JSON file-reader families ride A and B with their own fixtures
         catalog_url = a.put_bytes(
             "retail/catalogs/native.duckdb", fx.native_catalog_bytes(fx.ORACLE_A_ROWS)
+        )
+        csv_url = a.put_csv(
+            "retail/labels/labels.csv", [(1, "EMEA"), (2, "AMER")], ("order_id", "region")
+        )
+        json_url = b.put_json(
+            "analytics/events/events.json", fx.ORACLE_B_ROWS, ("id", "amount", "region")
         )
         fx.export_environment(a, b, monkeypatch)
         registry_path = registry_file(
@@ -173,6 +187,8 @@ def test_two_profiles_route_distinct_signed_s3_data(tmp_path, monkeypatch):
                         "storage": "local",
                         "path": catalog_url,
                     },
+                    {"name": "labels", "type": "csv", "storage": "local", "path": csv_url},
+                    {"name": "happenings", "type": "json", "storage": "remote", "path": json_url},
                 ],
             },
         )
@@ -194,8 +210,17 @@ def test_two_profiles_route_distinct_signed_s3_data(tmp_path, monkeypatch):
                 "SELECT count(*), sum(amount) FROM catalog.main.orders"
             ).fetchone()
             assert row == (fx.ORACLE_A["count"], fx.ORACLE_A["sum"])
+            # the CSV/JSON reader families route through their own profiles
+            row = con.execute(
+                "SELECT count(*), count(*) FILTER (WHERE region = 'EMEA') FROM labels.labels"
+            ).fetchone()
+            assert row == (2, 1)  # the CSV fixture's own two rows
+            row = con.execute(
+                "SELECT count(*), sum(amount) FROM happenings.events"
+            ).fetchone()
+            assert row == (fx.ORACLE_B["count"], fx.ORACLE_B["sum"])
             names = {entry["name"] for entry in catalog}
-            assert names == {"orders", "events", "catalog"}
+            assert names == {"orders", "events", "catalog", "labels", "happenings"}
         finally:
             con.close()
 
@@ -284,6 +309,75 @@ def test_secret_setup_failure_is_redacted_and_closes_connection(tmp_path, monkey
             build_connection(registry)
     finally:
         fx.stop_pair(a, b)
+
+
+# ---------------------------------------------- fix pass (finding 1, AC4)
+
+
+def test_secret_creation_failure_redacts_echoed_statement(tmp_path, monkeypatch):
+    """Fix finding 1 (spec 0025 §3/AC4): a failing CREATE SECRET whose error
+    echoes the full statement — including the key/token literals — is
+    redacted: the redaction values are collected BEFORE the secret SQL
+    executes, so neither the returned nor a chained error ever carries a
+    credential value. Deterministic injected failure on the real owned
+    connection; no network is needed (creation fails first)."""
+    import duckdb
+
+    registry_path = registry_file(
+        tmp_path,
+        {
+            "storages": {
+                "local": {
+                    "type": "s3",
+                    "access_key_id_env": "F1_KEY_ID",
+                    "secret_access_key_env": "F1_SECRET",
+                    "endpoint_url_env": "F1_ENDPOINT",
+                    "scopes": ["s3://retail/"],
+                }
+            },
+            "sources": [
+                {
+                    "name": "orders",
+                    "type": "parquet",
+                    "storage": "local",
+                    "path": "s3://retail/orders/orders.parquet",
+                }
+            ],
+        },
+    )
+    key_value, secret_value = "f1-synthetic-key", "f1's-synthetic-secret-with-quote"
+    monkeypatch.setenv("F1_KEY_ID", key_value)
+    monkeypatch.setenv("F1_SECRET", secret_value)
+    monkeypatch.setenv("F1_ENDPOINT", "http://127.0.0.1:9")
+
+    class EchoingFailure:
+        """Proxy over the REAL owned connection: LOAD passes through, the
+        first CREATE SECRET fails with an error that echoes its statement."""
+
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *args, **kwargs):
+            if "CREATE SECRET" in sql:
+                raise duckdb.IOException(f"Fake failure echoing statement: {sql}")
+            return self._real.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb.connect
+
+    def connect(*args, **kwargs):
+        return EchoingFailure(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(duckdb, "connect", connect)
+    registry = load_registry(registry_path)
+    with pytest.raises(Exception) as refused:
+        build_connection(registry)
+    message = str(refused.value)
+    assert "Fake failure echoing statement" in message  # the injected seam fired
+    assert "CREATE SECRET ariadne_local" in message  # the statement WAS echoed
+    fx.assert_no_secret_values(message, [key_value, secret_value])
 
 
 # ---------------------------------------------------- AC5/AC6 (live, Git)
@@ -434,6 +528,17 @@ def test_effective_endpoint_change_requires_new_approval_and_evidence(
         assert review_a["source_approved"] is True
         assert review_a["source_approval_state"] == "current"
 
+        # fix finding 6 (spec 0025 §4): offline review with the endpoint
+        # variable REMOVED reports the unresolved prerequisite explicitly —
+        # never a crash, and the stored validation is not presented as current
+        monkeypatch.delenv("ARIADE_S1_LOCAL_ENDPOINT", raising=False)
+        unresolved_review = api.review_proposal(started["proposal"])
+        assert unresolved_review["source_approval_state"] == "unresolved"
+        assert unresolved_review["source_approved"] is False
+        assert unresolved_review["validation_stale"] is True
+        assert any("unresolved" in reason for reason in unresolved_review["stale_reasons"])
+        monkeypatch.setenv("ARIADE_S1_LOCAL_ENDPOINT", a.endpoint_url)
+
         # a real mapping receipt measured against A's binding
         events_resource = ariadne.sources.table_resource("events", None, "events", "events")
         receipt = api.inspect_mapping(
@@ -518,6 +623,18 @@ def test_effective_endpoint_change_requires_new_approval_and_evidence(
         # re-admission under B; the pinned A admission cannot serve env-B
         review_b = api.review_proposal(started["proposal"])
         assert review_b["source_approval_state"] == "current"
+        # fix finding 3 (exact human authority, spec 0009 AC4 + spec 0025 §4):
+        # identical candidate bytes, different effective endpoint — the review
+        # digests differ, and A's reviewed digest can NEVER admit B
+        assert review_b["review_digest"] != review_a["review_digest"]
+        with pytest.raises(ValueError, match="review digest mismatch"):
+            admission_module.admit_revision(
+                project,
+                started["proposal"],
+                review_b["revision"],
+                review_a["review_digest"],
+                confirmed_by="human:test",
+            )
         with pytest.raises(ValueError, match="different effective storage binding"):
             QueryRuntime.open_project(project)
         admission_module.admit_revision(
@@ -538,6 +655,14 @@ def test_effective_endpoint_change_requires_new_approval_and_evidence(
         }
         (project / CURRENT).write_text(json.dumps(mutated), encoding="utf-8")
         with pytest.raises(ValueError, match="mutated binding"):
+            QueryRuntime.open_project(project)
+        # fix finding 2 (spec 0025 §4/AC6): REMOVING the bindings block from a
+        # profile-bearing admission is an incomplete pinned identity — it never
+        # falls back to environment re-resolution at reconstruction
+        stripped = dict(record_b)
+        stripped.pop("storage_bindings")
+        (project / CURRENT).write_text(json.dumps(stripped), encoding="utf-8")
+        with pytest.raises(ValueError, match="incomplete"):
             QueryRuntime.open_project(project)
         (project / CURRENT).write_text(json.dumps(record_b), encoding="utf-8")
 
@@ -579,3 +704,170 @@ def test_effective_endpoint_change_requires_new_approval_and_evidence(
         assert set(grants_final) == {approved_a["approval_digest"], approved_b["approval_digest"]}
     finally:
         fx.stop_pair(a, b)
+
+
+# ------------------------- fix pass (findings 4 and 5, spec 0025 §§4–5/AC6–7)
+
+
+def test_stale_schema_observations_refuse_under_a_changed_endpoint(
+    tmp_path, monkeypatch, builder_spy
+):
+    """Fix finding 4 (spec 0025 §4 measurement invalidation): schema/value
+    observations refreshed under endpoint A carry A's effective-approval
+    binding; after the endpoint changes to B (identical candidate bytes, B's
+    own grant) validation REFUSES on the stale measurement provenance until
+    the schema is refreshed under B. Real Git journey over the live fixture."""
+    fx.require_docker()
+    a, b = _endpoint_pair(tmp_path / "fixture")
+    try:
+        project = s3_git_project(tmp_path)
+        api = AuthoringProject(project)
+        _set_local(monkeypatch, a)
+        profiles = {
+            "local": {
+                "type": "s3",
+                "access_key_id_env": "ARIADE_S1_LOCAL_KEY_ID",
+                "secret_access_key_env": "ARIADE_S1_LOCAL_SECRET",
+                "endpoint_url_env": "ARIADE_S1_LOCAL_ENDPOINT",
+                "scopes": ["s3://retail/"],
+            }
+        }
+        started = api.start_proposal()
+        revision = started["candidate_revision"]
+        proposed = api.propose_sources(
+            started["proposal"],
+            revision,
+            [
+                {
+                    "name": "events",
+                    "type": "parquet",
+                    "storage": "local",
+                    "path": "s3://retail/orders/events.parquet",
+                }
+            ],
+            profiles,
+        )
+        approved_a = api.approve_sources(
+            started["proposal"], proposed["revision"], proposed["source_digest"]
+        )
+        edited = api.edit_proposal(
+            started["proposal"],
+            proposed["revision"],
+            {
+                "kind": "page",
+                "section": "policies",
+                "name": "all-events-count",
+                "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
+            },
+        )
+        # schema refreshed under A: the generated observations carry A's
+        # effective-approval binding
+        refreshed = api.refresh_schema(
+            started["proposal"],
+            edited["revision"],
+            [{"source": "events", "catalog": None, "schema": "events", "table": "events"}],
+        )
+        assert refreshed["changed"] is True
+        validated_a = api.validate_proposal(started["proposal"], refreshed["revision"])
+        assert validated_a["ok"] is True
+        assert validated_a["storage_bindings"]["local"]["endpoint"] == a.endpoint_url
+
+        # endpoint change A→B with B's own grant and IDENTICAL candidate bytes
+        _set_local(monkeypatch, b)
+        api.approve_sources(
+            started["proposal"], validated_a["revision"], proposed["source_digest"]
+        )
+        # approved_a binds the declaration under A — kept for the reader
+        assert approved_a["storage_bindings"]["local"]["endpoint"] == a.endpoint_url
+        stale = api.validate_proposal(started["proposal"], validated_a["revision"])
+        assert stale["ok"] is False
+        assert any(
+            "bound to a different effective storage identity" in error
+            and "refresh_schema" in error
+            for error in stale["errors"]
+        ), stale["errors"]
+
+        # a fresh refresh under B rebinding the measurements clears the refusal
+        refreshed_b = api.refresh_schema(
+            started["proposal"],
+            validated_a["revision"],
+            [{"source": "events", "catalog": None, "schema": "events", "table": "events"}],
+        )
+        validated_b = api.validate_proposal(started["proposal"], refreshed_b["revision"])
+        assert validated_b["ok"] is True, validated_b["errors"]
+        assert validated_b["storage_bindings"]["local"]["endpoint"] == b.endpoint_url
+    finally:
+        fx.stop_pair(a, b)
+
+
+def test_legacy_bundle_validation_binds_the_effective_endpoint(tmp_path, monkeypatch):
+    """Fix finding 5 (spec 0025 §5/AC7): the LEGACY staged-bundle route binds
+    its validation to the effective endpoint — a bundle validated under A
+    never retries idempotently, reviews or Promotes after the environment
+    resolves B, while the legacy human gates stay distinct (no approval store
+    involved). Real loopback S3 reads under A; the endpoint switch to B needs
+    no network (the binding gates refuse before any read)."""
+    from ariadne import authoring as legacy_authoring
+
+    fx.require_docker()
+    a = fx.S3Endpoint(tmp_path / "fixture", "retail", "legkey0001", "legsecret01", None).start()
+    try:
+        a.put_parquet(
+            "retail/orders/orders.parquet", [(1, "a"), (2, "b"), (3, "c")], ("id", "label")
+        )
+        project = scaffold_project(tmp_path)
+        write_parquet(project / "data" / "events.parquet")
+        monkeypatch.setenv("LEGACY_F5_KEY_ID", a.access_key)
+        monkeypatch.setenv("LEGACY_F5_SECRET", a.secret_key)
+        monkeypatch.setenv("LEGACY_F5_ENDPOINT", a.endpoint_url)
+        profiles = {
+            "local": {
+                "type": "s3",
+                "access_key_id_env": "LEGACY_F5_KEY_ID",
+                "secret_access_key_env": "LEGACY_F5_SECRET",
+                "endpoint_url_env": "LEGACY_F5_ENDPOINT",
+                "scopes": ["s3://retail/"],
+            }
+        }
+        intake = tmp_path / "intake.yaml"
+        intake.write_text(
+            yaml.safe_dump(
+                {
+                    "storages": profiles,
+                    "sources": [
+                        {"name": "events", "type": "parquet", "path": "data/events.parquet"},
+                        {
+                            "name": "orders",
+                            "type": "parquet",
+                            "storage": "local",
+                            "path": "s3://retail/orders/orders.parquet",
+                        },
+                    ],
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        installed = legacy_authoring.propose_sources(intake, project=project)
+        legacy_authoring.approve_sources(installed["digest"], project=project)
+
+        # validated under A: the audit really read both sources, S3 included
+        submission_file = write_submission(project, bundle_submission())
+        submitted = legacy_authoring.submit_bundle(submission_file, project=project)
+        assert submitted["status"] == "validated", submitted.get("errors")
+        digest = legacy_authoring.review_bundle(project=project)["digest"]
+
+        # the endpoint environment changes to B: identical retry, review and
+        # Promotion all refuse the A-measured validation (no idempotent reuse)
+        monkeypatch.setenv("LEGACY_F5_ENDPOINT", "http://127.0.0.1:9")
+        with pytest.raises(ValueError, match="effective storage binding changed"):
+            legacy_authoring.submit_bundle(submission_file, project=project)
+        with pytest.raises(ValueError, match="effective storage binding changed"):
+            legacy_authoring.review_bundle(project=project)
+        with pytest.raises(ValueError, match="effective storage binding changed"):
+            promote_bundle(
+                digest, staging_root=project / "staging", served_root=project, assume_yes=True
+            )
+        assert not any(project.glob("context_layer/metrics/*"))  # nothing was served
+    finally:
+        a.stop()

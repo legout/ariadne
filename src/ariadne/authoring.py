@@ -203,7 +203,9 @@ from ariadne.sources import (
     collection_resource,
     load_registry,
     parse_resource,
+    resolve_binding,
     table_resource,
+    used_profiles,
 )
 from ariadne.sources import validate_storages as _validate_storages
 from ariadne.validate import (
@@ -632,6 +634,40 @@ def _refuse_symlinked_staging(project: Path, rel: Path) -> None:
             )
 
 
+def _current_storage_bindings(project: Path) -> dict:
+    """The legacy route's CURRENT effective storage binding (spec 0025 §5,
+    AC7): the used profiles' endpoint/region values resolved from the
+    environment — non-secret reads only, no approval store, no Git gate.
+    A registry without sources or used profiles resolves to ``{}`` (the
+    existing empty-registry gates keep their own refusals); a used profile
+    with an unset endpoint/region variable raises the explicit prerequisite
+    error (the gates refuse naming it, never a silent empty binding)."""
+    doc = _registry_doc(project)
+    if not doc.get("sources"):
+        return {}
+    registry = load_registry(project / "ariadne.yaml")
+    used = used_profiles(registry)
+    if not used:
+        return {}
+    return {name: resolve_binding(profile).record() for name, profile in used.items()}
+
+
+def _refuse_changed_bindings(project: Path, state: dict) -> None:
+    """The legacy parity gate (spec 0025 §5/AC7): a bundle proposal validated
+    under one effective endpoint never retries idempotently, reviews or
+    Promotes under another — the recorded binding must still be the current
+    environment's. Legacy human gates stay distinct: no approval record is
+    created or consulted."""
+    current = _current_storage_bindings(project)
+    if current != (state.get("storage_bindings") or {}):
+        raise ValueError(
+            "the effective storage binding changed while this bundle proposal was "
+            "active (spec 0025 §5: it was validated under a different endpoint) — "
+            "re-profile and resubmit under the current binding; no agent retry, "
+            "review or promotion reuses the old validation"
+        )
+
+
 def _registry_sources(project: Path) -> list:
     """The APPROVED registry entries (the bundle's source identity), [] when the
     project has none; malformed config is an explicit error."""
@@ -1046,6 +1082,7 @@ def submit_bundle(
 
     sources = _registry_sources(project)
     sources_digest = _digest(_registry_identity_payload(project))
+    storage_bindings = _current_storage_bindings(project)
     submission = _submission_digest(files, documents, citations)
     # ONE interprocess lock per project: the state read, the staged swap, and
     # the state store are a single critical section, so two CLI processes with
@@ -1065,6 +1102,9 @@ def submit_bundle(
                     "active — the proposal is invalidated and needs human resolution; "
                     "no replacement was made"
                 )
+            # spec 0025 §5/AC7: even an IDENTICAL submission never reuses a
+            # validation taken under a different effective endpoint.
+            _refuse_changed_bindings(project, state)
             if submission == state["submission_digest"]:
                 view = _state_view(state)
                 if (project / BUNDLE_STAGING_REL).is_dir():
@@ -1188,6 +1228,7 @@ def submit_bundle(
             },
             "sources": sources,
             "sources_digest": sources_digest,
+            "storage_bindings": storage_bindings,
             "project": str(project.resolve()),
             "staging": str((project / BUNDLE_STAGING_REL).resolve()),
         }
@@ -1249,6 +1290,10 @@ def review_bundle(*, project: str | Path = ".", part: int = 1) -> dict:
                 "active — the proposal is invalidated and needs re-profiling and "
                 "resubmission; review is refused, nothing was written or served"
             )
+        # spec 0025 §5/AC7: review never presents a validation taken under a
+        # different effective endpoint as current — same refusal as submit and
+        # Promotion, before any body or status is returned.
+        _refuse_changed_bindings(project, state)
         bundle_dir = project / BUNDLE_STAGING_REL
         bodies = []
         for path in sorted(p for p in bundle_dir.rglob("*") if p.is_file()):
@@ -1714,6 +1759,36 @@ def _validate_view(evidence: dict, evidence_path: Path, *, idempotent: bool) -> 
     return view
 
 
+def _stale_schema_binding_errors(tree: Path, approval_digest: str | None) -> list[str]:
+    """spec 0025 §4 (measurement invalidation): every generated table page
+    whose measured observations carry a ``source_binding`` must carry the
+    CURRENT effective approval digest — schema and selected-value evidence
+    measured under a different endpoint is stale provenance and refuses
+    validation until the schema is refreshed under the current binding.
+    Pages without a measured binding make no endpoint claim."""
+    tables_dir = tree / "context_layer" / "tables"
+    if not tables_dir.is_dir() or approval_digest is None:
+        return []
+    errors: list[str] = []
+    for page in sorted(tables_dir.rglob("*.md")):
+        rel = f"context_layer/tables/{page.relative_to(tables_dir)}"
+        try:
+            meta = context._load_frontmatter_meta(page.read_text(encoding="utf-8"))
+        except yaml.YAMLError:
+            continue  # the page-contract gate owns malformed pages
+        ariadne_meta = meta.get("ariadne") if isinstance(meta, dict) else None
+        observations = ariadne_meta.get("observations") if isinstance(ariadne_meta, dict) else None
+        bound = observations.get("source_binding") if isinstance(observations, dict) else None
+        if isinstance(bound, str) and bound and bound != approval_digest:
+            errors.append(
+                f"{rel}: its measured schema/value observations are bound to a "
+                f"different effective storage identity ({bound[:12]}, the candidate "
+                f"now validates under {approval_digest[:12]}) — refresh_schema under "
+                "the current endpoint before validation (spec 0025 §4)"
+            )
+    return errors
+
+
 def validate_proposal(project: str | Path, proposal: str, expected_revision: str) -> dict:
     """Validate the proposal's effective candidate at its EXACT final revision
     (plan §2 ``validate_proposal``, spec §4): finalize the deterministic
@@ -1837,7 +1912,13 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             else:  # never open the audit connection for an unauthorized source
                 result = validate(tree)  # compile-only: the boundary error blocks
                 errors = [auth_error, *result.errors]
-            page_errors = _bundle_errors(tree) + _graph_citation_errors(tree)
+            page_errors = (
+                _bundle_errors(tree)
+                + _graph_citation_errors(tree)
+                + _stale_schema_binding_errors(
+                    tree, approval.get("approval_digest") if approval else None
+                )
+            )
             # K4 (issue #44): conflicting asserted claims refuse validation
             # alongside the receipt-verification gate
             claim_errors = _asserted_claim_errors(tree)
@@ -2237,8 +2318,19 @@ def _review_candidate(
         if report is not None:
             if report.get("source_digest") != source_digest:
                 stale_reasons.append("the resolved source identity changed since validation")
-            if (
-                approval["approval_digest"] is not None
+            if approval["state"] == "unresolved":
+                # spec 0025 §4: a required endpoint/region value is unset — the
+                # effective binding cannot be resolved offline, so prior
+                # validation is never presented as current (and review never
+                # crashes on the missing digest key)
+                stale_reasons.append(
+                    "the effective storage binding is unresolved (a required "
+                    "endpoint/region variable is unset, spec 0025 §4) — prior "
+                    "validation is not current; resolve the prerequisite and "
+                    "revalidate before admission"
+                )
+            elif (
+                approval.get("approval_digest") is not None
                 and report.get("approval_digest") not in (None, approval["approval_digest"])
             ):
                 stale_reasons.append(
@@ -2266,6 +2358,15 @@ def _review_candidate(
                     "changes": inventory,
                     "artifact_digest": artifact_digest,
                     "citations": citations,
+                    # spec 0025 §4 (exact human authority): the review digest
+                    # binds the candidate's EFFECTIVE source identity — the
+                    # declaration digest, the effective approval digest and
+                    # the complete storage bindings — so a reviewed digest
+                    # validated under endpoint A can never admit endpoint B
+                    # from identical candidate bytes.
+                    "source_digest": source_digest,
+                    "approval_digest": approval.get("approval_digest"),
+                    "storage_bindings": approval.get("storage_bindings") or {},
                     "mapping_assertions": [
                         {
                             "page": entry["page"],
