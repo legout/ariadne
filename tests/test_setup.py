@@ -614,19 +614,22 @@ def test_skill_and_release_docs_operator_rules_and_distribution():
         assert path in text
     assert "universal-only" in text
     readme = (Path(__file__).parents[1] / "README.md").read_text()
-    quickstart = readme.split("## Quickstart", 1)[1].split("### Harness-led", 1)[0]
+    assert "0.3.0" in readme  # current release, replaces the stale 0.2.0/unreleased boundary
+    assert "Source development" in readme  # checkout entry point stays discoverable
+    tutorial = (Path(__file__).parents[1] / "docs" / "tutorials" / "getting-started.md").read_text()
     for phrase in (
         "uv tool install ariadne-data",
-        "ariadne-agent",
-        "0.2.0",
-        "unreleased",
         "ariadne setup",
+        "--agent pi",
         "git config",
-        "approve-sources",
         "ariadne-admit",
         "get-metric",
-        "value-attested",
-        "--agent pi",
-        "Source development",
     ):
-        assert phrase in quickstart
+        assert phrase in tutorial  # operator onboarding path moved to the tutorial
+    how_to = (Path(__file__).parents[1] / "docs" / "how-to" / "git-authoring.md").read_text()
+    assert "approve-sources" in how_to  # the human-only gate stays in the procedure guide
+    cli = (Path(__file__).parents[1] / "docs" / "reference" / "cli.md").read_text()
+    assert "ariadne-agent" in cli  # conversational host stays an optional install
+    explanation = (Path(__file__).parents[1] / "docs" / "explanations"
+                   / "how-ariadne-works.md").read_text()
+    assert "independently attested" in explanation  # governed is not value-attested

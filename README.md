@@ -19,3 +19,19 @@ The documentation follows [Diátaxis](https://diataxis.fr/):
 - **[Explanation](docs/explanations/how-ariadne-works.md):** understand Ariadne's layers, governance gates, and authority boundaries.
 
 The [documentation index](docs/README.md) lists all guides and references for **Ariadne 0.3.0**.
+
+## Source development
+
+Work on Ariadne itself happens from the package checkout, not inside a data project:
+
+```bash
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -e .
+source .venv/bin/activate
+# Bundled end-to-end demo: live configured LLM, human review, then a fresh query:
+examples/retail-demo/demo.sh
+```
+
+For a candidate-wheel check, run `uv build`, install `dist/ariadne_data-*.whl`
+into a fresh virtual environment, and exercise the walkthrough with the
+installed console scripts rather than the editable install.
