@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-10-13
+
+Third release: usability, verbatim ingestion, trusted sources, and context routing.
+
+- **Usability & onboarding (#62–#65, specs 0016–0019, ADR-0021)** — read-only `status`
+  project readiness diagnostics with explicit legacy-selector handling and
+  corrupt-catalog detection (#62), a `setup` operator onboarding wizard that
+  preserves routes and completed source approvals (#63), artifact-only unified
+  discovery across analyst surfaces with isolated catalog read failures (#64),
+  and an operator-only human review walkthrough (#65).
+- **Verbatim ingestion (spec 0021, #66)** — opt-in verbatim document preservation,
+  with honest retry matching across gaps and malformed drafts and exact
+  serialized-timestamp masking.
+- **Sources (spec 0022, #67)** — native DuckDB catalogs and trusted remote view
+  catalogs, with dotted native schemas kept as one identifier and correct
+  quoting of catalog/schema parts in SQL references.
+- **SQL provenance (spec 0023, #68)** — every confirmed answer-example save
+  retains `result.sql`; search exposes it only with `include-sql`; MCP save
+  guidance shows the exact SQL before saving.
+- **Context routing (spec 0024, #69/#70)** — reviewed Context Routing Map with
+  type-bound selected observed filter values end to end and atomic
+  artifact-bound refusal, plus skill-led Business Onboarding guidance.
+
 ## 0.2.0 - 2026-10-12
 
 Second release: from the governed-metrics MVP to the full agent-facing platform.

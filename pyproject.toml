@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ariadne-data"
-version = "0.2.0"
+version = "0.3.0"
 description = "Governed metrics for autonomous agents: OKF context layer + OSI semantic layer behind one MCP facade"
 readme = "README.md"
 requires-python = ">=3.12"  # ADR-0008: the datus <3.13 cap left with datus
