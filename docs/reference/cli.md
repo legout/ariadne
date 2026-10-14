@@ -8,6 +8,8 @@ For a Git-managed project, use `--project DIR` on query commands. It selects the
 
 For a legacy staged project, use `--sources ariadne.yaml` or `--db PATH`; use `--served PATH` when the promoted artifacts are not unambiguously discoverable. These selectors are not interchangeable with `--project`.
 
+The registry file carries optional top-level blocks together: `storages:` (named S3 storage profiles — current development candidate, not published 0.3.0) alongside `sources:`. Every registry-reading command and the `ariadne-authoring propose-sources --file` input accept the same shape; see the [data source reference](data-sources.md#storage-profiles) and [Multiple S3 storages](../how-to/multiple-s3-storages.md) for the fields, environment delivery and human approval semantics.
+
 The common query selectors follow the subcommand:
 
 ```bash

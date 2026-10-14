@@ -279,7 +279,12 @@ proposal worktrees or `.ariadne/` state).
    --expected-revision REV --file proposal.yaml` appends validated typed
    entries (the same registry shape, no inline credentials) to the
    candidate's `ariadne.yaml` and returns the RESOLVED source-identity
-   digest. The proposal is inert data: no location is opened, profiled or
+   digest. The file may also carry optional named `storages:` S3 profile
+   declarations (development candidate): credential-free environment-
+   variable names plus explicit scopes, referenced by sources as
+   `storage: <name>`. Propose them like any other declaration; you never
+   read, set or verify the environment values, and human approval stays the
+   gate. The proposal is inert data: no location is opened, profiled or
    connected.
 3. **STOP — operator source approval.** Only a human runs
    `ariadne-authoring approve-sources --project . --proposal ID --revision

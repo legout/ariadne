@@ -14,7 +14,7 @@ Ariadne is a Python package with embedded DuckDB. Use it locally through the CLI
 The documentation follows [Diátaxis](https://diataxis.fr/):
 
 - **[Tutorial](docs/tutorials/getting-started.md):** create a project and reach a first governed query.
-- **[How-to guides](docs/README.md#how-to-guides):** complete specific tasks such as Git-backed authoring or private Docker MCP setup.
+- **[How-to guides](docs/README.md#how-to-guides):** complete specific tasks such as Git-backed authoring, private Docker MCP setup, or reading multiple S3 storages.
 - **[Reference](docs/README.md#reference):** look up CLI commands, data-source configuration, and migration mappings.
 - **[Explanation](docs/explanations/how-ariadne-works.md):** understand Ariadne's layers, governance gates, and authority boundaries.
 

@@ -9,6 +9,7 @@ This documentation targets Ariadne 0.3.0 and is organized by reader goal, follow
 ## How-to guides
 
 - [Git-backed authoring](how-to/git-authoring.md) — create and review proposals, admit a catalog, or move a legacy project to the Git route.
+- [Multiple S3 storages](how-to/multiple-s3-storages.md) — read two independently credentialed S3-compatible storages through named, credential-free profiles (development candidate).
 - [Context knowledge](how-to/context-knowledge.md) — refresh schema facts, resolve terms, inspect mappings, and author routing guidance.
 - [Docker MCP](how-to/docker-mcp.md) — run the optional containerized MCP service with an external project.
 

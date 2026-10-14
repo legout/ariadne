@@ -33,6 +33,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree
 from pathlib import Path
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -56,8 +57,16 @@ def _sigv4(
     key_id: str, secret: str, region: str, method: str, url: str, payload: bytes = b""
 ) -> tuple[int, bytes]:
     """One minimal AWS SigV4 request (UNSIGNED-PAYLOAD) — stdlib only, the
-    fixture's own client (never the code under test)."""
+    fixture's own client (never the code under test). The canonical request
+    signs method, path, the sorted canonical QUERY string and the standard
+    headers, so signed list/delete requests carry their query correctly."""
     u = urllib.parse.urlsplit(url)
+    # canonical query: pairs decoded from the raw URL, then URI-encoded once
+    pairs = urllib.parse.parse_qsl(u.query, keep_blank_values=True) if u.query else []
+    canonical_query = "&".join(
+        f"{urllib.parse.quote(k, safe='')}={urllib.parse.quote(v, safe='')}"
+        for k, v in sorted(pairs)
+    )
     now = datetime.datetime.now(datetime.UTC)
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
     date = now.strftime("%Y%m%d")
@@ -68,7 +77,14 @@ def _sigv4(
         f"{name}:{headers[name]}\n" for name in ("host", "x-amz-content-sha256", "x-amz-date")
     )
     canonical = "\n".join(
-        [method, urllib.parse.quote(u.path), "", canonical_headers, signed, "UNSIGNED-PAYLOAD"]
+        [
+            method,
+            urllib.parse.quote(u.path),
+            canonical_query,
+            canonical_headers,
+            signed,
+            "UNSIGNED-PAYLOAD",
+        ]
     )
     string_to_sign = "\n".join(
         [
@@ -265,6 +281,47 @@ class S3Endpoint:
         )
         assert status == 200, f"fixture PUT {key} failed ({status}): {body[:200]!r}"
         return f"s3://{key}"
+
+    def list_prefix(self, key_prefix: str) -> list[str]:
+        """Every object key under ``bucket/prefix/…`` (S3 ListObjectsV2, fixture
+        client): the remote-object inventory the Lakehouse checks compare
+        before/after a product session to prove no remote writes happened."""
+        bucket, _, prefix = key_prefix.partition("/")
+        keys: list[str] = []
+        token = ""
+        while True:
+            query = f"list-type=2&prefix={urllib.parse.quote(prefix, safe='')}"
+            if token:
+                query += f"&continuation-token={urllib.parse.quote(token, safe='')}"
+            status, body = _sigv4(
+                self.access_key, self.secret_key, "us-east-1", "GET",
+                f"{self.endpoint_url}/{bucket}?{query}",
+            )
+            assert status == 200, f"fixture LIST {key_prefix} failed ({status}): {body[:200]!r}"
+            root = xml.etree.ElementTree.fromstring(body)
+            strip = lambda tag: tag.rsplit("}", 1)[-1]  # noqa: E731 — s3 XML namespace
+            keys.extend(
+                f"{bucket}/{node.text}" for node in root.iter() if strip(node.tag) == "Key"
+            )
+            truncated = any(
+                strip(node.tag) == "IsTruncated" and (node.text or "").lower() == "true"
+                for node in root.iter()
+            )
+            if not truncated:
+                return sorted(keys)
+            token = next(
+                (node.text or "")
+                for node in root.iter()
+                if strip(node.tag) in ("NextContinuationToken", "NextMarker")
+            )
+
+    def delete_object(self, key: str) -> None:
+        """Delete one object (fixture-side removal of a required metadata/data
+        object, proving the reader actually requests it rather than caching)."""
+        status, body = _sigv4(
+            self.access_key, self.secret_key, "us-east-1", "DELETE", f"{self.endpoint_url}/{key}"
+        )
+        assert status in (200, 204), f"fixture DELETE {key} failed ({status}): {body[:200]!r}"
 
     def request_rejected(self, method: str, url: str) -> bool:
         """The fixture rejects WRONG credentials (proof the transport checks
