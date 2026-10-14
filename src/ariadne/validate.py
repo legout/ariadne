@@ -79,6 +79,7 @@ from ariadne.semantic_graph import (  # pyright: ignore[reportMissingImports] �
     load_graph,
 )
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
+    Registry,
     default_registry_path,
     load_registry,
 )
@@ -252,11 +253,17 @@ def _schema_errors(envelope: dict, require_metrics: bool = True) -> list[str]:
 
 
 def _audit_execution(
-    db_path: str | Path | None, sources_path: str | Path | None
+    db_path: str | Path | None,
+    sources_path: str | Path | None,
+    registry: Registry | None = None,
 ) -> DuckDBExecution:
     """The audit's DuckDB session, owned by the shared execution module
-    (ADR-0010/0016): a --sources registry connection when given, else the
-    legacy read-only attach of the single SQLite database as catalog ``demo``."""
+    (ADR-0010/0016): a pre-built approved registry object (the Git route's
+    frozen-binding identity, spec 0025 §4), a --sources registry connection
+    when given, else the legacy read-only attach of the single SQLite database
+    as catalog ``demo``."""
+    if registry is not None:
+        return DuckDBExecution(registry)
     if sources_path is not None:
         return DuckDBExecution(load_registry(sources_path))
     if db_path is None:
@@ -613,11 +620,26 @@ def candidate_scope_digest(staging: str | Path) -> str:
 
 
 def _registry_identity(
-    db_path: str | Path | None, sources_path: str | Path | None
+    db_path: str | Path | None,
+    sources_path: str | Path | None,
+    registry: Registry | None = None,
 ) -> tuple[str | None, str | None]:
     """``(digest, label)`` of the source identity the audit is bound to: the
-    registry file (ADR-0010), or the ``--db`` file standing in for the implicit
-    one-source registry. ``None`` when validation is compile-only."""
+    registry file (ADR-0010), the ``--db`` file standing in for the implicit
+    one-source registry, or a pre-built APPROVED registry object (the Git
+    route's frozen-binding identity, spec 0025 §4 — digested by its canonical
+    resolved identity, never file bytes). ``None`` when validation is
+    compile-only."""
+    if registry is not None:
+        from ariadne import authoring_sources  # function-local: module deps stay acyclic
+
+        resolved = authoring_sources._resolved_entries(
+            registry.sources, registry.storages or {}
+        )
+        return (
+            authoring_sources.resolved_digest(resolved),
+            "approved resolved identity",
+        )
     if sources_path is not None:
         path = Path(sources_path)
     elif db_path is not None:
@@ -769,13 +791,16 @@ def validate(
     staging_dir: str | Path,
     db_path: str | Path | None = None,
     sources_path: str | Path | None = None,
+    *,
+    registry: Registry | None = None,
 ) -> ValidationResult:
     """Normalize (issue #26), schema-check and render the staged OSI models
-    (ADR-0008); with ``db_path`` or ``sources_path`` (ADR-0010), additionally
-    EXPLAIN-bind the rendered SQL and run the ADR-0006 §5 grain audit over the
-    shared audit connection. The result carries a digest-bound
-    :class:`ValidationReport`; graph failures are structural and precede any
-    SELECT compilation."""
+    (ADR-0008); with ``db_path``, ``sources_path`` (ADR-0010) or a pre-built
+    ``registry`` (the Git route's approved frozen-binding identity, spec 0025
+    §4), additionally EXPLAIN-bind the rendered SQL and run the ADR-0006 §5
+    grain audit over the shared audit connection. The result carries a
+    digest-bound :class:`ValidationReport`; graph failures are structural and
+    precede any SELECT compilation."""
     staging = Path(staging_dir)
     models_dir = _models_dir(staging)
     # K4 (issue #44, spec 0010 §9): a candidate with NO semantic declarations
@@ -821,8 +846,8 @@ def validate(
             ),
         )
     files = _consumed_files(staging)
-    registry_digest, registry_label = _registry_identity(db_path, sources_path)
-    live = db_path is not None or sources_path is not None
+    registry_digest, registry_label = _registry_identity(db_path, sources_path, registry)
+    live = db_path is not None or sources_path is not None or registry is not None
 
     errors: list[str] = []
     structural_detail = ""
@@ -872,7 +897,7 @@ def validate(
     if graph is not None and not errors and live:
         # bind check + audit only what compiles; one audit connection for both
         # (the shared execution owner, ADR-0010/0016 — or the legacy demo attach).
-        execution = _audit_execution(db_path, sources_path)
+        execution = _audit_execution(db_path, sources_path, registry)
         con = execution.con
         try:
             bind_errors = _bind_check(rendered, con)

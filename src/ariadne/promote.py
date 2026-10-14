@@ -52,7 +52,7 @@ from ariadne.authoring import (
     BUNDLE_DISCARD_NAME,
     _digest,
     _graph_citation_errors,
-    _registry_sources,
+    _registry_identity_payload,
     _tree_digest,
     bundle_lock,
     bundle_staging_dir,
@@ -364,7 +364,12 @@ def promote_bundle(
                 f"no active bundle proposal state at {state_path} — ariadne-authoring "
                 "submit stages one first"
             )
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise ValueError(
+                f"{state_path}: malformed bundle proposal state ({exc}) — human resolution"
+            ) from None
         if not isinstance(state, dict) or not state.get("submission_digest"):
             raise ValueError(f"{state_path}: malformed bundle proposal state — human resolution")
         # The owner's fail-closed crash-recovery decision (issue #15): a
@@ -404,9 +409,10 @@ def promote_bundle(
                 f"{current} != reviewed {digest}) — re-review; nothing was served"
             )
         # The approved source identity must still be what the proposal was checked
-        # against (spec: a source change while a proposal is active invalidates it).
+        # against (spec: a source change while a proposal is active invalidates it;
+        # spec 0025 §5: storage profile declarations ride that identity).
         project = Path(str(state.get("project") or staging_root.parent))
-        if _digest(_registry_sources(project)) != state.get("sources_digest"):
+        if _digest(_registry_identity_payload(project)) != state.get("sources_digest"):
             raise ValueError(
                 "the approved source registry changed after this proposal was "
                 "validated — re-validate (resubmit) before promoting; nothing was served"

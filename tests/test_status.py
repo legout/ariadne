@@ -31,6 +31,7 @@ import shutil
 import socket
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
@@ -687,3 +688,87 @@ def test_catalog_blocker_gets_authoring_or_repair_next_steps(served, tmp_path, c
     )
     report = status_json(capsys, "--served", str(empty), "--db", str(db))
     assert any("repair" in step and "broken.yml" in step for step in report["next_steps"])
+
+
+# ------------- spec 0025 (S1): effective-approval labels without credentials
+
+
+def test_status_labels_effective_storage_approval_without_credential_reads(tmp_path, capsys):
+    """Spec 0025 §4: offline status distinguishes declaration history from the
+    CURRENT effective approval — a scaffold registry with used profiles reports
+    ``current``/``not-current``/``unresolved`` states by resolving only
+    endpoint/region values (never key/token reads), and a missing endpoint
+    value is a visible prerequisite, not a corrupt declaration."""
+    project = tmp_path / "scaffold"
+    (project / "data").mkdir(parents=True)
+    (project / "ariadne.yaml").write_text(
+        "storages:\n"
+        "  local:\n"
+        "    type: s3\n"
+        "    access_key_id_env: STATUS_S3_KEY_ID\n"
+        "    secret_access_key_env: STATUS_S3_SECRET\n"
+        "    endpoint_url_env: STATUS_S3_ENDPOINT\n"
+        "    scopes: [s3://retail/]\n"
+        "sources:\n"
+        "  - name: orders\n"
+        "    type: parquet\n"
+        "    storage: local\n"
+        "    path: s3://retail/orders/orders.parquet\n",
+        encoding="utf-8",
+    )
+
+    # missing endpoint value: a visible prerequisite (unresolved), never an error
+    monkeypatch_home = os.environ.copy()
+    for name in ("STATUS_S3_ENDPOINT", "STATUS_S3_KEY_ID", "STATUS_S3_SECRET"):
+        monkeypatch_home.pop(name, None)
+    with patch.dict(os.environ, monkeypatch_home, clear=True):
+        report = status_json(capsys, "--project", str(project))
+    scaffold = report["sources"]["scaffold"]
+    assert scaffold["effective_approval"] == "unresolved"
+    assert "STATUS_S3_ENDPOINT" in scaffold["prerequisite"]
+
+    # endpoint resolved but no grant: absent (no declaration history either)
+    with patch.dict(os.environ, {"STATUS_S3_ENDPOINT": "http://127.0.0.1:9000"}, clear=True):
+        report = status_json(capsys, "--project", str(project))
+    scaffold = report["sources"]["scaffold"]
+    assert scaffold["effective_approval"] == "absent"
+    assert scaffold["approval"] is False
+
+    # a CURRENT grant under the resolved binding flips the label
+    from ariadne.authoring_sources import (  # noqa: E402 — local for the grant
+        _resolved_entries,
+        approval_digest,
+        resolved_digest,
+    )
+    from ariadne.sources import load_registry  # noqa: E402
+
+    registry = load_registry(project / "ariadne.yaml")
+    resolved = _resolved_entries(registry.sources, registry.storages)
+    bindings = {
+        "local": {
+            "endpoint": "http://127.0.0.1:9000",
+            "region": "us-east-1",
+            "url_style": "path",
+            "scopes": ["s3://retail/"],
+        }
+    }
+    declaration = resolved_digest(resolved)
+    grant = approval_digest(declaration, bindings)
+    approvals = project / ".ariadne" / "source-approvals.json"
+    approvals.parent.mkdir(parents=True, exist_ok=True)
+    approvals.write_text(
+        json.dumps({grant: {"sources": resolved, "source_digest": declaration}}),
+        encoding="utf-8",
+    )
+    with patch.dict(os.environ, {"STATUS_S3_ENDPOINT": "http://127.0.0.1:9000"}, clear=True):
+        report = status_json(capsys, "--project", str(project))
+    scaffold = report["sources"]["scaffold"]
+    assert scaffold["effective_approval"] == "current"
+    assert scaffold["approval"] is True
+
+    # an endpoint CHANGE with only the old grant: not-current, never "approved"
+    with patch.dict(os.environ, {"STATUS_S3_ENDPOINT": "http://127.0.0.1:9001"}, clear=True):
+        report = status_json(capsys, "--project", str(project))
+    scaffold = report["sources"]["scaffold"]
+    assert scaffold["effective_approval"] == "not-current"
+    assert scaffold["approval"] is False

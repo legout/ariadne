@@ -1957,3 +1957,121 @@ def test_submit_normalizes_escaped_multiline_sources_to_block_scalars(tmp_path):
     doc = yaml.safe_load(staged)
     dataset = doc["semantic_model"][0]["datasets"][0]
     assert dataset["source"] == ("SELECT id, label\nFROM events.events\nWHERE id IS NOT NULL")
+
+
+# ------------------------------------------- spec 0025 (S1): legacy storages
+
+
+def test_legacy_proposal_carries_and_installs_storage_profiles(tmp_path):
+    """Spec 0025 §5, the retained LEGACY route's transfer boundary: a
+    registry-shaped intake carrying BOTH top-level blocks proposes inertly,
+    the digest binds entries PLUS the profile definitions, and the human-only
+    approval installs both blocks into ``ariadne.yaml`` — an identical
+    re-declaration is reused, a conflicting profile replacement refuses, and
+    unrelated project config survives (distinct legacy human gates intact)."""
+    project = scaffold_project(tmp_path)
+    write_parquet(project / "data" / "events.parquet")
+    profiles = {
+        "local": {
+            "type": "s3",
+            "access_key_id_env": "LEGACY_S3_KEY_ID",
+            "secret_access_key_env": "LEGACY_S3_SECRET",
+            "endpoint_url_env": "LEGACY_S3_ENDPOINT",
+            "scopes": ["s3://retail/"],
+        }
+    }
+    intake = tmp_path / "intake.yaml"
+    intake.write_text(
+        yaml.safe_dump(
+            {
+                "storages": profiles,
+                "sources": [
+                    {
+                        "name": "orders",
+                        "type": "parquet",
+                        "storage": "local",
+                        "path": "s3://retail/orders/orders.parquet",
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    result = authoring.propose_sources(intake, project=project)
+    assert result["storages"] == profiles
+    stored = yaml.safe_load(
+        (project / "staging" / "authoring" / "source-proposal.yaml").read_text()
+    )
+    assert stored["storages"] == profiles
+    # approval installs BOTH blocks (profiles in canonical form — an explicit
+    # url_style default); unrelated config (retention_days) survives
+    authoring.approve_sources(result["digest"], project=project)
+    installed = yaml.safe_load((project / "ariadne.yaml").read_text())
+    assert installed["retention_days"] == 90
+    canonical = {name: {**definition, "url_style": "path"} for name, definition in profiles.items()}
+    assert installed["storages"] == canonical
+    assert installed["sources"][0]["storage"] == "local"
+
+    # a conflicting second proposal under the same profile name refuses
+    conflicting = {**profiles, "local": {**profiles["local"], "scopes": ["s3://other/"]}}
+    second = tmp_path / "second.yaml"
+    second.write_text(
+        yaml.safe_dump(
+            {
+                "storages": conflicting,
+                "sources": [
+                    {
+                        "name": "more",
+                        "type": "parquet",
+                        "storage": "local",
+                        "path": "s3://other/x.parquet",
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    proposed = authoring.propose_sources(second, project=project)
+    with pytest.raises(ValueError, match="conflicting replacement"):
+        authoring.approve_sources(proposed["digest"], project=project)
+    assert (
+        yaml.safe_load((project / "ariadne.yaml").read_text())["storages"] == canonical
+    )
+
+
+def test_a_storages_change_invalidates_the_active_legacy_bundle(tmp_path):
+    """Spec 0025 §5, the staged-bundle Promotion transfer boundary: a bundle
+    proposal validated against a registry carrying a storage-profile block
+    refuses Promotion after the operator edits that block — the identity
+    digest binds BOTH blocks, never only the source references (an unused
+    profile is never resolved, so this stays offline)."""
+    project = approved_project(tmp_path)
+    write_parquet(project / "data" / "events.parquet")
+    profiles = {
+        "local": {
+            "type": "s3",
+            "access_key_id_env": "PROMOTE_S3_KEY_ID",
+            "secret_access_key_env": "PROMOTE_S3_SECRET",
+            "endpoint_url_env": "PROMOTE_S3_ENDPOINT",
+            "scopes": ["s3://retail/"],
+        }
+    }
+    registry = yaml.safe_load((project / "ariadne.yaml").read_text())
+    registry["storages"] = profiles
+    (project / "ariadne.yaml").write_text(yaml.safe_dump(registry, sort_keys=False))
+    submitted = authoring.submit_bundle(
+        write_submission(project, bundle_submission()), project=project
+    )
+    assert submitted["status"] == "validated", submitted.get("errors")
+    digest = authoring.review_bundle(project=project)["digest"]
+    # the operator edits the storages block: the active proposal is invalid
+    registry["storages"]["local"]["scopes"] = ["s3://other/"]
+    (project / "ariadne.yaml").write_text(yaml.safe_dump(registry, sort_keys=False))
+    with pytest.raises(ValueError, match="approved source registry changed"):
+        authoring.review_bundle(project=project)
+    with pytest.raises(ValueError, match="approved source registry changed"):
+        promote_bundle(
+            digest, staging_root=project / "staging", served_root=project, assume_yes=True
+        )

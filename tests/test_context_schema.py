@@ -1714,3 +1714,66 @@ def test_uhugeint_native_integer_values_stay_exact(tmp_path):
     for entry in observations["value_evidence"]["flags"]["top_values"]:
         assert isinstance(entry["value"], int) and not isinstance(entry["value"], bool)
     assert "`flags`: observed — 7 (2), 8 (1)" in page_text
+
+
+# ---------------- spec 0025 (S1): schema provenance binds the effective identity
+
+
+def test_observation_facts_carry_the_effective_source_binding():
+    """Spec 0025 §4: a profile-backed refresh's observation facts carry the
+    effective storage approval digest (endpoint provenance), so identical
+    candidate bytes cannot reuse old-endpoint schema evidence unnoticed —
+    while a profile-free page keeps its exact legacy facts and bytes."""
+    from ariadne.context import build_table_page
+
+    asset = {
+        "source": "sales",
+        "catalog": None,
+        "schema": "sales",
+        "table": "orders",
+        "resource": "ariadne://table/x",
+    }
+    columns = [
+        {
+            "column": "order_id",
+            "type": "INTEGER",
+            "nullable": False,
+            "default": None,
+            "comment": None,
+        }
+    ]
+    profile = {
+        "sampled": False,
+        "row_count": 2,
+        "primary_key_candidates": [],
+        "columns": {"order_id": {"null_count": 0, "distinct_count": 2}},
+    }
+    legacy = build_table_page(
+        asset=asset,
+        columns=columns,
+        profile=profile,
+        existing_text=None,
+        now="2026-10-14T00:00:00Z",
+    )
+    assert "source binding" not in legacy[0]
+    bound = build_table_page(
+        asset=asset,
+        columns=columns,
+        profile=profile,
+        existing_text=None,
+        now="2026-10-14T00:00:00Z",
+        source_binding="a" * 64,
+    )
+    assert "source binding: the effective storage approval " + "a" * 64 in bound[0]
+    # a bound refresh never reuses an UNBOUND page's timestamp (different
+    # facts), and vice versa — the binding rides the timestamp-reuse comparison
+    rebound = build_table_page(
+        asset=asset,
+        columns=columns,
+        profile=profile,
+        existing_text=bound[0],
+        now="2026-10-14T09:00:00Z",
+        source_binding="b" * 64,
+    )
+    assert "b" * 64 in rebound[0]
+    assert "2026-10-14T09:00:00Z" in rebound[0]  # changed binding => fresh timestamp

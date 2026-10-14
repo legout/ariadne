@@ -42,6 +42,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
+import yaml  # noqa: E402  # pyright: ignore[reportMissingImports] — analysis env
 from mcp import ClientSession  # noqa: E402  # pyright: ignore[reportMissingImports] — [mcp] extra
 from mcp.client.stdio import (  # noqa: E402  # pyright: ignore[reportMissingImports] — [mcp] extra
     StdioServerParameters,
@@ -969,3 +970,67 @@ def test_stdio_needs_no_token_even_when_http_env_is_set(tmp_path):
     assert "authoring_start_proposal" in tools
     with socket.socket() as sock:
         assert sock.connect_ex(("127.0.0.1", port)) != 0  # no listener materialized
+
+
+# --------------------------- spec 0025 (S1): storages forwarding over stdio
+
+
+def test_stdio_propose_sources_forwards_storage_profiles(tmp_path):
+    """Spec 0025 §5 adapter parity: the MCP tool accepts the optional
+    ``storages`` definitions beside the source entries and returns EXACTLY
+    what the shared AuthoringProject returns; the candidate registry carries
+    both top-level blocks and the resolved identity embeds the profile."""
+    project = complete_bundle_project(tmp_path / "proj")
+    profiles = {
+        "local": {
+            "type": "s3",
+            "access_key_id_env": "MCP_S3_KEY_ID",
+            "secret_access_key_env": "MCP_S3_SECRET",
+            "endpoint_url_env": "MCP_S3_ENDPOINT",
+            "scopes": ["s3://retail/"],
+        }
+    }
+    entries = [
+        {
+            "name": "orders",
+            "type": "parquet",
+            "storage": "local",
+            "path": "s3://retail/orders/orders.parquet",
+        }
+    ]
+
+    async def run() -> dict:
+        async with _launch(project) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                started = _payload(await session.call_tool("authoring_start_proposal", {}))
+                return _payload(
+                    await session.call_tool(
+                        "authoring_propose_sources",
+                        {
+                            "proposal": started["proposal"],
+                            "expected_revision": started["candidate_revision"],
+                            "sources": entries,
+                            "storages": profiles,
+                        },
+                    )
+                )
+
+    over_stdio = asyncio.run(run())
+    # the CLI twin in a SECOND proposal of the SAME project: the identical
+    # candidate registry base resolves to the identical identity (cross-project
+    # comparison would differ by the host-root-resolved existing paths)
+    twin_api = AuthoringProject(project)
+    twin_started = twin_api.start_proposal()
+    twin = twin_api.propose_sources(
+        twin_started["proposal"], twin_started["candidate_revision"], entries, profiles
+    )
+    assert over_stdio["source_digest"] == twin["source_digest"]
+    assert over_stdio["sources"] == twin["sources"]
+    doc = yaml.safe_load(
+        (
+            project / ".ariadne" / "worktrees" / over_stdio["proposal"] / "ariadne.yaml"
+        ).read_text()
+    )
+    assert doc["storages"]["local"]["access_key_id_env"] == "MCP_S3_KEY_ID"
+    assert doc["sources"][-1]["storage"] == "local"

@@ -249,6 +249,8 @@ def _managed_sources(root: Path, admitted: dict, approvals: dict | None) -> dict
             "entries": _entries_view(record.get("sources")),
             "identity_digest": record.get("source_digest"),
             "approval": True,  # resolve_admission verified approval_present
+            "effective_approval": "current",  # ...and the pinned binding's currency
+            "storage_bindings": record.get("storage_bindings") or {},
             "scaffold": None,
         }
     scaffold: dict | None = None
@@ -256,14 +258,22 @@ def _managed_sources(root: Path, admitted: dict, approvals: dict | None) -> dict
     if registry_path.is_file():
         try:
             registry = sources.load_registry(registry_path)
-            resolved = authoring_sources._resolved_entries(registry.sources)
+            resolved = authoring_sources._resolved_entries(
+                registry.sources, registry.storages
+            )
             digest = authoring_sources.resolved_digest(resolved)
+            state = authoring_sources.approval_state(root, resolved, digest)
             scaffold = {
                 "path": str(registry_path),
                 "entries": _entries_view(resolved),
                 "identity_digest": digest,
-                "approval": (digest in approvals) if approvals is not None else None,
+                "approval": state["approved"] if approvals is not None else None,
+                "effective_approval": state["state"] if approvals is not None else None,
             }
+            if state.get("storage_bindings"):
+                scaffold["storage_bindings"] = state["storage_bindings"]
+            if state["state"] == "unresolved":
+                scaffold["prerequisite"] = state.get("reason")
         except Exception as exc:
             scaffold = {"path": str(registry_path), "error": str(exc)}
     return {
@@ -299,7 +309,7 @@ def _legacy_sources(args: argparse.Namespace, cwd: Path) -> dict:
         registry = sources.load_registry(path)
     except Exception as exc:
         return {"selection": "invalid", "path": str(path), "error": str(exc), "readable": False}
-    resolved = authoring_sources._resolved_entries(registry.sources)
+    resolved = authoring_sources._resolved_entries(registry.sources, registry.storages)
     return {
         "selection": "registry",
         "path": str(path),
@@ -358,9 +368,16 @@ def _managed_proposals(root: Path, approvals: dict | None) -> list[dict]:
             resolved, digest = authoring_sources.candidate_sources(root, candidate)
             entry["source_digest"] = digest
             entry["sources_declared"] = bool(resolved)
+            state = authoring_sources.approval_state(root, resolved, digest)
             entry["approved"] = (
-                (digest in approvals) if (digest and approvals is not None) else None
+                state["approved"] if (digest and approvals is not None) else None
             )
+            if resolved and any(
+                isinstance(item.get("storage"), dict) for item in resolved
+            ):
+                entry["effective_approval"] = state["state"]
+                if state["state"] == "unresolved":
+                    entry["prerequisite"] = state.get("reason")
         except Exception as exc:
             entry["source_error"] = str(exc)
         pending.append(entry)

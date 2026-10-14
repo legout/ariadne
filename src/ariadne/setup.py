@@ -116,7 +116,9 @@ def detect_files(root: Path) -> list[dict]:
     return sorted(entries, key=lambda e: e["path"])
 
 
-def _select_entries(candidates: list[dict], root: Path, stdin: Any) -> list[dict]:
+def _select_entries(
+    candidates: list[dict], root: Path, stdin: Any, storages: dict | None = None
+) -> list[dict]:
     selected = []
     for candidate in candidates:
         answer = _ask(stdin, f"Hint {json.dumps(candidate)}: accept / skip / edited JSON object?")
@@ -125,7 +127,7 @@ def _select_entries(candidates: list[dict], root: Path, stdin: Any) -> list[dict
         # Do not echo malformed input: it may contain an inline credential.
         try:
             entry = candidate if answer == "accept" else json.loads(answer)
-            sources.validate_entries([entry], "setup declaration", root)
+            sources.validate_entries([entry], "setup declaration", root, storages=storages)
         except (ValueError, TypeError):
             raise ValueError(
                 "invalid declaration; use registry fields and environment-variable "
@@ -142,7 +144,7 @@ def _select_entries(candidates: list[dict], root: Path, stdin: Any) -> list[dict
             break
         try:
             entry = json.loads(answer)
-            sources.validate_entries([entry], "setup declaration", root)
+            sources.validate_entries([entry], "setup declaration", root, storages=storages)
         except (ValueError, TypeError):
             raise ValueError(
                 "invalid declaration; use environment-variable names, never "
@@ -156,15 +158,18 @@ def _select_entries(candidates: list[dict], root: Path, stdin: Any) -> list[dict
         )
         == "yes"
     ):
-        sources.validate_entries(selected, "setup declarations", root)
+        sources.validate_entries(selected, "setup declarations", root, storages=storages)
         return selected
     print("Declaration skipped; no detected source was accepted.")
     return []
 
 
-def _new_entries(root: Path, existing: list[dict], selected: list[dict]) -> list[dict]:
+def _new_entries(
+    root: Path, existing: list[dict], selected: list[dict], storages: dict | None = None
+) -> list[dict]:
     resolved = authoring_sources._resolved_entries(
-        sources.validate_entries(selected, "setup declarations", root)
+        sources.validate_entries(selected, "setup declarations", root, storages=storages),
+        storages,
     )
     by_name = {entry["name"]: entry for entry in existing}
     new = []
@@ -181,6 +186,32 @@ def _new_entries(root: Path, existing: list[dict], selected: list[dict]) -> list
     return new
 
 
+def _existing_storages(route: str, root: Path, report: dict) -> dict | None:
+    """Storage profiles already declared where new declarations land (spec
+    0025 §5): the managed route's first pending candidate registry, else the
+    installed legacy registry. Credential-free declarations only — no
+    environment reads, no opening; unreadable state declares nothing."""
+    if route == "managed":
+        pending = (report.get("work_pending") or {}).get("proposals") or []
+        for entry in pending:
+            revision = entry.get("candidate_revision") if isinstance(entry, dict) else None
+            if isinstance(revision, str):
+                try:
+                    identity = authoring_sources.candidate_identity(root, revision)
+                except Exception:
+                    return None
+                raw = (identity or {}).get("storages") or {}
+                return sources.validate_storages(raw, root) or None
+        return None
+    registry = sources.default_registry_path()
+    if not registry:
+        return None
+    try:
+        return sources.load_registry(registry).storages
+    except Exception:
+        return None
+
+
 def _managed_declare(root: Path, selected: list[dict], report: dict, stdin: Any) -> None:
     pending = report["work_pending"]["proposals"]
     if pending:
@@ -194,9 +225,15 @@ def _managed_declare(root: Path, selected: list[dict], report: dict, stdin: Any)
         started = authoring.AuthoringProject(root).start_proposal()
         pid, revision = started["proposal"], started["candidate_revision"]
     existing, digest = authoring_sources.candidate_sources(root, revision)
-    additions = _new_entries(root, existing or [], selected)
+    candidate_storages = (authoring_sources.candidate_identity(root, revision) or {}).get(
+        "storages"
+    )
+    existing_storages = sources.validate_storages(candidate_storages, root)
+    additions = _new_entries(root, existing or [], selected, existing_storages)
     if additions:
-        result = authoring.AuthoringProject(root).propose_sources(pid, revision, additions)
+        result = authoring.AuthoringProject(root).propose_sources(
+            pid, revision, additions, candidate_storages or None
+        )
         revision, digest = result["revision"], result["source_digest"]
     assert digest is not None  # a confirmed nonempty declaration always has a resolved identity
     print(f"Proposal: {pid}\nRevision: {revision}\nResolved source digest: {digest}")
@@ -224,14 +261,23 @@ def _managed_declare(root: Path, selected: list[dict], report: dict, stdin: Any)
 
 def _legacy_declare(root: Path, selected: list[dict]) -> None:
     registry = sources.default_registry_path()
-    installed = sources.load_registry(registry).sources if registry else []
-    existing = authoring_sources._resolved_entries(installed)
-    additions = _new_entries(root, existing, selected) if selected else []
+    registry_obj = sources.load_registry(registry) if registry else None
+    installed = registry_obj.sources if registry_obj else []
+    existing = authoring_sources._resolved_entries(
+        installed, registry_obj.storages if registry_obj else None
+    )
+    additions = (
+        _new_entries(
+            root, existing, selected, registry_obj.storages if registry_obj else None
+        )
+        if selected
+        else []
+    )
     stored = root / authoring.PROPOSAL_REL
     digest = None
     if stored.exists():
         pending = sources.load_registry(stored)
-        pending_entries = authoring_sources._resolved_entries(pending.sources)
+        pending_entries = authoring_sources._resolved_entries(pending.sources, pending.storages)
         # A previously approved legacy proposal stays on disk; it is not another blocker.
         if all(entry in existing for entry in pending_entries):
             print("Legacy source declarations already installed by the operator.")
@@ -247,7 +293,13 @@ def _legacy_declare(root: Path, selected: list[dict]) -> None:
             return
         with tempfile.TemporaryDirectory(prefix="ariadne-setup-") as tmp:
             intake = Path(tmp) / "sources.yaml"
-            intake.write_text(yaml.safe_dump({"sources": additions}), encoding="utf-8")
+            document: dict = {"sources": additions}
+            if registry_obj and registry_obj.storages:
+                document["storages"] = {
+                    name: profile.identity()
+                    for name, profile in registry_obj.storages.items()
+                }
+            intake.write_text(yaml.safe_dump(document), encoding="utf-8")
             digest = authoring.propose_sources(intake, project=root)["digest"]
     print("Source approval pending. HUMAN ONLY — run exactly:")
     print(
@@ -400,10 +452,11 @@ def run(args: argparse.Namespace, stdin: Any) -> int:
         )
         for entry in candidates:
             print(json.dumps(entry))
+        existing_storages = _existing_storages(route, root, report)
         try:
             selected = []
             if interactive and git_ok:
-                selected = _select_entries(candidates, root, stdin)
+                selected = _select_entries(candidates, root, stdin, storages=existing_storages)
                 if selected and route == "managed":
                     _managed_declare(root, selected, report, stdin)
             else:

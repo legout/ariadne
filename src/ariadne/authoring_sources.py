@@ -53,20 +53,59 @@ SOURCE_APPROVALS_REL = proposals.ARIADNE_STATE_DIR / "source-approvals.json"
 _HEX64_RE = re.compile(r"[0-9a-f]{64}")
 
 
-def resolved_digest(entries: list[dict]) -> str:
+def resolved_digest(entries: object) -> str:
     """sha256 over the canonical form of (resolved) source entries: identity
     is the exact content — whitespace and key order do not matter, any changed
-    entry (location, type, table, read-only) changes the digest. Shared with
-    the legacy route's entries digest."""
+    entry (location, type, table, read-only, complete referenced storage
+    profile definition) changes the digest. Shared with the legacy route's
+    entries digest."""
     canonical = json.dumps(entries, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _resolved_entries(validated: list[Source]) -> list[dict]:
+def approval_digest(source_digest: str, storage_bindings: dict | None) -> str:
+    """The EFFECTIVE source identity digest (spec 0025 §4): the declared
+    identity together with the used profiles' resolved non-secret bindings.
+    A registry without named profiles equals its existing source digest, so
+    old grants keep their exact key."""
+    if not storage_bindings:
+        return source_digest
+    payload = json.dumps(
+        {"source_digest": source_digest, "storage_bindings": storage_bindings},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def storage_bindings_from_identity(resolved: list[dict] | None) -> dict:
+    """Resolve the CURRENT effective non-secret bindings of a resolved
+    identity from the environment (spec 0025 §4): endpoint/region variable
+    values only — no key/token reads, no network. Used profiles only;
+    profile-free identities resolve to ``{}`` (no lookup at all)."""
+    bindings: dict[str, dict] = {}
+    for entry in resolved or []:
+        storage = entry.get("storage")
+        if not isinstance(storage, dict) or isinstance(storage.get("name"), str) is False:
+            continue
+        name = storage["name"]
+        if name in bindings:
+            continue
+        profile = sources.profile_from_identity(name, storage)
+        bindings[name] = sources.resolve_binding(profile).record()
+    return bindings
+
+
+def _resolved_entries(
+    validated: list[Source], storages: dict[str, sources.StorageProfile] | None = None
+) -> list[dict]:
     """The canonical resolved identity of each validated source: the ABSOLUTE
     resolved location (URI schemes untouched), plus the exact type/name/table
-    and read-only flag. This is what the digest binds, the approval records,
-    and the shared builder opens."""
+    and read-only flag — and, for a profile-based source, the COMPLETE
+    referenced profile definition (variable names and scopes, never resolved
+    values; spec 0025 §4) so the declaration identity is self-contained. This
+    is what the digest binds, the approval records, and the shared builder
+    opens."""
     entries: list[dict] = []
     for src in validated:
         entry: dict = {"name": src.name, "type": src.type, "read_only": src.read_only}
@@ -80,20 +119,29 @@ def _resolved_entries(validated: list[Source]) -> list[dict]:
             entry["connection_env"] = src.connection_env
         if src.table is not None:
             entry["table"] = src.table
+        if src.storage is not None:
+            profile = (storages or {}).get(src.storage)
+            if profile is None:
+                raise ValueError(
+                    f"source {src.name!r} references undeclared storage profile "
+                    f"{src.storage!r} — the registry must be validated first"
+                )
+            entry["storage"] = {"name": src.storage, **profile.identity()}
         entries.append(entry)
     return entries
 
 
-def candidate_sources(project: Path, revision: str) -> tuple[list[dict], str] | tuple[None, None]:
-    """The candidate registry's RESOLVED identity at ``revision``: entries are
-    read from the recorded candidate commit's ``ariadne.yaml`` blob (never a
-    mutable worktree), validated with the shared registry rules and resolved
-    against the HOST project root. Returns ``(None, None)`` when the candidate
-    declares no sources; malformed registries raise the registry validator's
-    explicit errors."""
+def candidate_identity(project: Path, revision: str) -> dict | None:
+    """The candidate registry's complete RESOLVED identity at ``revision``
+    (spec 0025 §4): entries are read from the recorded candidate commit's
+    ``ariadne.yaml`` blob (never a mutable worktree), validated with the
+    shared registry rules — including the ``storages:`` block — and resolved
+    against the HOST project root. Each profile-based entry carries its
+    complete referenced profile definition; the declaration digest binds
+    exactly that. Returns ``None`` when the candidate declares no sources."""
     blob = proposals._read_blob(project, revision, "ariadne.yaml")
     if blob is None:
-        return None, None
+        return None
     where = f"candidate ariadne.yaml at {revision[:12]}"
     try:
         doc = yaml.safe_load(blob.decode("utf-8")) or {}
@@ -102,18 +150,53 @@ def candidate_sources(project: Path, revision: str) -> tuple[list[dict], str] | 
     if not isinstance(doc, dict):
         raise ValueError(f"{where}: top level is not a mapping")
     if not doc.get("sources"):
+        return None
+    validated, storages = sources.validate_registry_doc(doc, where, project)
+    resolved = _resolved_entries(validated, storages)
+    return {
+        "sources": resolved,
+        "storages": {name: storages[name].identity() for name in sorted(storages)},
+        "source_digest": resolved_digest(resolved),
+    }
+
+
+def candidate_sources(project: Path, revision: str) -> tuple[list[dict], str] | tuple[None, None]:
+    """The candidate registry's RESOLVED identity at ``revision`` as the
+    historical ``(resolved_entries, digest)`` pair (a wrapper over
+    :func:`candidate_identity`)."""
+    identity = candidate_identity(project, revision)
+    if identity is None:
         return None, None
-    validated = sources.validate_entries(doc["sources"], where, project)
-    resolved = _resolved_entries(validated)
-    return resolved, resolved_digest(resolved)
+    return identity["sources"], identity["source_digest"]
 
 
-def identity_registry(resolved: list[dict]) -> Registry:
+def identity_registry(
+    resolved: list[dict], bindings: dict | None = None
+) -> Registry:
     """The operator-APPROVED resolved identity as a registry: DuckDB opens
     exactly these resolved locations — the approval is the permission, the
-    candidate's spelling of a path never reaches the builder."""
-    return Registry(
-        sources=[
+    candidate's spelling of a path never reaches the builder. Profile-based
+    entries carry their complete profile definitions, which reconstruct the
+    registry's ``storages``; ``bindings`` (the approval/admission record's
+    frozen effective identity, spec 0025 §4) pins each used profile's
+    endpoint/region so the connection opens exactly the checked binding."""
+    storages: dict[str, sources.StorageProfile] = {}
+    objects: list[Source] = []
+    for entry in resolved:
+        storage = entry.get("storage")
+        name = None
+        if isinstance(storage, dict):
+            name = storage.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError(
+                    "a resolved source identity carries a malformed storage "
+                    "declaration — this needs human resolution, never a silent reset"
+                )
+            if name not in storages:
+                storages[name] = sources.profile_from_identity(name, storage)
+        elif isinstance(storage, str):  # a bare reference (defensive)
+            name = storage
+        objects.append(
             Source(
                 name=entry["name"],
                 type=entry["type"],
@@ -121,10 +204,19 @@ def identity_registry(resolved: list[dict]) -> Registry:
                 connection_env=entry.get("connection_env"),
                 table=entry.get("table"),
                 read_only=entry.get("read_only", True),
+                storage=name,
             )
-            for entry in resolved
-        ],
+        )
+    frozen = {
+        name: sources.binding_from_record(name, record)
+        for name, record in (bindings or {}).items()
+        if name in storages
+    }
+    return Registry(
+        sources=objects,
         path=None,
+        storages=storages or None,
+        bindings=frozen or None,
     )
 
 
@@ -136,16 +228,21 @@ def propose_sources(
     proposal: str,
     expected_revision: str,
     sources_entries: list[dict] | tuple[dict, ...],
+    storages: dict | None = None,
 ) -> dict:
-    """Append validated typed source entries to the candidate's registry
+    """Append validated typed source entries — plus optional named storage
+    profile definitions (spec 0025 §5) — to the candidate's registry
     (``ariadne.yaml``) through the revision-checked edit seam and return the
     digest of the candidate's full RESOLVED identity plus its precise resolved
     locations — never opening anything (plan §2 ``propose_sources``). Entries
-    are credential-free data validated by the shared registry rules
-    (ADR-0010); a name already in the candidate registry is refused (append,
-    never overwrite). Relative paths are resolved against the HOST project
-    root for the identity; the committed registry keeps the caller's
-    spelling, and every later read re-resolves it against the same root.
+    and profiles are credential-free data validated by the shared registry
+    rules (ADR-0010, spec 0025 §2) — the WHOLE merged candidate is validated
+    before anything is committed. A name already in the candidate registry is
+    refused (append, never overwrite). New profiles append; an identical
+    existing profile is reused; a conflicting replacement refuses, leaving
+    the candidate untouched. An existing candidate profile may be referenced
+    without resending it. No environment value, source opening or approval
+    occurs during proposal creation (spec 0025 §5).
     ``approve_sources``/``inputs`` re-derive this digest from the committed
     blob, so any later registry change is an identity mismatch."""
     project = Path(project).resolve()
@@ -156,9 +253,9 @@ def propose_sources(
         if not isinstance(entry, dict):
             raise ValueError(f"a typed source entry must be a mapping, got {type(entry).__name__}")
         entries.append(dict(entry))
-    # the shared registry rules (ADR-0010) validate the typed entries — shape,
-    # types, credentials, duplicates — BEFORE anything is written
-    sources.validate_entries(entries, f"source proposal of proposal {proposal}", project)
+    new_profiles = sources.validate_storages(
+        storages, f"source proposal of proposal {proposal}"
+    )
     record = proposals._load_record(project, proposal)
     current = record["candidate_revision"]
     if expected_revision != current:
@@ -186,7 +283,24 @@ def propose_sources(
             f"source name(s) {clashes} already exist in the candidate registry — a "
             "source proposal appends, it never overwrites an existing entry"
         )
+    merged_storages = dict(doc.get("storages") or {})
+    for name, profile in new_profiles.items():
+        declared = merged_storages.get(name)
+        if declared is not None and declared != profile.identity():
+            raise ValueError(
+                f"storage profile {name!r} already exists in the candidate registry "
+                "with a DIFFERENT definition — a conflicting replacement is "
+                "refused; propose a new name or resend the identical definition "
+                "(spec 0025 §5); nothing was written"
+            )
+        merged_storages[name] = profile.identity()
     doc["sources"] = [*existing, *entries]
+    if merged_storages:
+        doc["storages"] = merged_storages
+    # The WHOLE merged candidate — existing entries plus the new ones plus
+    # the merged storages block — validates BEFORE the revision-checked edit
+    # commits anything (spec 0025 §5).
+    sources.validate_registry_doc(doc, f"source proposal of proposal {proposal}", project)
     edited = proposals.edit_proposal(
         project,
         proposal,
@@ -262,9 +376,18 @@ def approve_sources(project: str | Path, proposal: str, revision: str, source_di
     """HUMAN-ONLY (never an MCP/Agent tool): record the operator's permission
     for the EXACT resolved source identity of the proposal's current candidate
     revision, under the operator-owned ``.ariadne/source-approvals.json``
-    keyed by that identity — WITHOUT editing the already-committed candidate.
-    Requires the exact current candidate revision and the digest it resolves
-    to (a stale revision or a digest mismatch refuses before any write).
+    — WITHOUT editing the already-committed candidate.
+    Requires the exact current candidate revision and the declaration digest
+    it resolves to (a stale revision or a digest mismatch refuses before any
+    write). On the operator host this resolves the used profiles'
+    endpoint/region variables WITHOUT network calls or key/token reads (spec
+    0025 §4) and records the effective identity: grants are keyed by
+    ``approval_digest`` (declaration plus effective binding), so a later
+    endpoint change needs its own grant and the old endpoint's grant is
+    retained, never overwritten. A registry without named profiles keeps
+    its existing declaration-digest key exactly. Missing endpoint/region
+    values are a visible prerequisite — approval refuses naming the
+    variable, it never guesses an endpoint.
     Records are identity-keyed, so approving for a concurrent proposal never
     overwrites another identity's grant, and nothing is ever revoked
     automatically."""
@@ -285,16 +408,21 @@ def approve_sources(project: str | Path, proposal: str, revision: str, source_di
             f"proposal {proposal} declares no source entries in its candidate "
             f"registry at {current[:12]} — there is nothing to approve"
         )
+    assert digest is not None  # a nonempty resolved identity always digests
     if digest != source_digest:
         raise ValueError(
             f"source digest mismatch: the candidate registry at {current[:12]} "
             f"resolves to {digest}, not {source_digest} — approval binds the exact "
             "resolved identity; review the current digest and retry"
         )
+    bindings = storage_bindings_from_identity(resolved)
+    effective = approval_digest(digest, bindings)
     with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
         approvals = _load_approvals(project)
-        approvals[digest] = {
+        approvals[effective] = {
             "sources": resolved,
+            "source_digest": digest,
+            "storage_bindings": bindings,
             "proposal": proposal,
             "revision": current,
             "approved_at": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -302,6 +430,8 @@ def approve_sources(project: str | Path, proposal: str, revision: str, source_di
         _store_approvals(project, approvals)
     return {
         "source_digest": digest,
+        "approval_digest": effective,
+        "storage_bindings": bindings,
         "proposal": proposal,
         "revision": current,
         "sources": resolved,
@@ -309,21 +439,93 @@ def approve_sources(project: str | Path, proposal: str, revision: str, source_di
     }
 
 
-def _approved_identity(project: Path, digest: str, proposal: str, revision: str) -> dict:
-    """The operator's approval record for ``digest``, or an explicit error
-    naming the human step — a committed or changed registry entry never grants
-    access (spec §5, AC5)."""
-    approval = _load_approvals(project).get(digest)
+def _effective_grant(
+    project: Path,
+    resolved: list[dict] | None,
+    digest: str | None,
+    proposal: str,
+    revision: str,
+) -> dict:
+    """The operator grant for the candidate's CURRENT effective identity (spec
+    0025 §4): resolve the used profiles' non-secret bindings from the
+    environment (no key/token reads, no network), derive the effective
+    ``approval_digest``, and require the exact matching grant — a declaration
+    digest with only a HISTORICAL grant for a different endpoint never
+    authorizes the current one. The returned record carries the grant's FROZEN
+    bindings for reconstruction (never an environment re-resolved after the
+    check). A profile-free identity resolves to its existing declaration
+    digest, so old grants keep working unchanged."""
+    bindings = storage_bindings_from_identity(resolved)
+    effective = approval_digest(digest or "", bindings) if digest else digest
+    approval = _load_approvals(project).get(effective or "")
     if approval is None:
+        hint = (
+            f"re-approve the exact effective identity with ariadne-authoring "
+            f"approve-sources --proposal {proposal} --revision {revision} "
+            f"--source-digest {digest}"
+            if digest
+            else "approve the exact identity first"
+        )
         raise ValueError(
             f"the source registry of proposal {proposal} (candidate {revision[:12]}) "
-            f"resolves to source identity {digest} with NO operator approval — "
-            "source approval is a separate human decision (spec §5): approve the "
-            f"exact identity with ariadne-authoring approve-sources --proposal "
-            f"{proposal} --revision {revision} --source-digest {digest}; "
-            "nothing was opened"
+            f"resolves to source identity {digest} with effective storage binding "
+            f"{effective} and carries NO operator approval for that exact identity "
+            f"— source approval is a separate human decision (spec §5, spec 0025 "
+            f"§4): {hint}; nothing was opened"
         )
-    return approval
+    record = dict(approval)
+    record.setdefault("source_digest", digest)
+    record.setdefault("storage_bindings", bindings)
+    record["approval_digest"] = effective
+    return record
+
+
+def _approved_identity(project: Path, digest: str, proposal: str, revision: str) -> dict:
+    """The operator's approval record for ``digest`` (the historical seam),
+    effective-identity aware: when the candidate declares storage profiles
+    the grant must match the CURRENT effective binding (spec 0025 §4)."""
+    resolved, resolved_digest = candidate_sources(project, revision)
+    if resolved_digest is not None and resolved_digest != digest:
+        # the caller's digest is not what the revision resolves to; the
+        # effective-grant path below reports the precise mismatch
+        pass
+    return _effective_grant(project, resolved, digest, proposal, revision)
+
+
+def approval_state(project: Path, resolved: list[dict] | None, digest: str | None) -> dict:
+    """The OFFLINE effective-approval state of one resolved identity (spec
+    0025 §4): distinguishes declaration history from the current effective
+    approval WITHOUT key/token reads or network access. ``current``: the
+    environment's resolved binding carries a grant. ``not-current``: only a
+    different binding of the same declaration was ever approved.
+    ``unresolved``: a required endpoint/region value is unset — a visible
+    prerequisite, never a corrupt declaration."""
+    project = Path(project)
+    try:
+        bindings = storage_bindings_from_identity(resolved)
+    except ValueError as exc:
+        return {"state": "unresolved", "reason": str(exc), "approved": False}
+    effective = approval_digest(digest or "", bindings) if digest else None
+    approvals = _load_approvals(project)
+    if effective is not None and effective in approvals:
+        return {
+            "state": "current",
+            "approved": True,
+            "approval_digest": effective,
+            "storage_bindings": bindings,
+        }
+    historical = bool(
+        digest
+        and any(
+            record.get("source_digest") == digest for record in approvals.values()
+        )
+    )
+    return {
+        "state": "not-current" if historical else "absent",
+        "approved": False,
+        "approval_digest": effective,
+        "storage_bindings": bindings,
+    }
 
 
 # ----------------------------------------------------------- Git-mode inputs
@@ -361,9 +563,12 @@ def inputs(
     profile = None
     if resolved is not None:
         assert digest is not None
-        approval = _approved_identity(project, digest, proposal, revision)
+        approval = _effective_grant(project, resolved, digest, proposal, revision)
         profile = profiler.profile(
-            registry=identity_registry(approval["sources"]), sample_rows=sample_rows
+            registry=identity_registry(
+                approval["sources"], approval.get("storage_bindings")
+            ),
+            sample_rows=sample_rows,
         )
     seed_notes = None
     notes_blob = proposals._read_blob(project, revision, authoring_inputs.SEED_NOTES_REL.as_posix())
