@@ -17,6 +17,7 @@ import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack
 import yaml
 
 from ariadne import admission, author, authoring, authoring_sources, init, proposals, skill
+from ariadne.authoring import AuthoringProject
 from ariadne.cli import main as cli
 
 
@@ -614,19 +615,85 @@ def test_skill_and_release_docs_operator_rules_and_distribution():
         assert path in text
     assert "universal-only" in text
     readme = (Path(__file__).parents[1] / "README.md").read_text()
-    quickstart = readme.split("## Quickstart", 1)[1].split("### Harness-led", 1)[0]
+    assert "0.3.0" in readme  # current release, replaces the stale 0.2.0/unreleased boundary
+    assert "Source development" in readme  # checkout entry point stays discoverable
+    tutorial = (Path(__file__).parents[1] / "docs" / "tutorials" / "getting-started.md").read_text()
     for phrase in (
         "uv tool install ariadne-data",
-        "ariadne-agent",
-        "0.2.0",
-        "unreleased",
         "ariadne setup",
+        "--agent pi",
         "git config",
-        "approve-sources",
         "ariadne-admit",
         "get-metric",
-        "value-attested",
-        "--agent pi",
-        "Source development",
     ):
-        assert phrase in quickstart
+        assert phrase in tutorial  # operator onboarding path moved to the tutorial
+    how_to = (Path(__file__).parents[1] / "docs" / "how-to" / "git-authoring.md").read_text()
+    assert "approve-sources" in how_to  # the human-only gate stays in the procedure guide
+    cli = (Path(__file__).parents[1] / "docs" / "reference" / "cli.md").read_text()
+    assert "ariadne-agent" in cli  # conversational host stays an optional install
+    explanation = (Path(__file__).parents[1] / "docs" / "explanations"
+                   / "how-ariadne-works.md").read_text()
+    assert "independently attested" in explanation  # governed is not value-attested
+
+
+# ------------------ spec 0025 (S1): setup understands existing profiles
+
+
+def test_setup_declaration_references_an_existing_candidate_profile(tmp_path, capsys):
+    """Spec 0025 §5: setup's inert declaration validation understands
+    references to profiles ALREADY declared in the candidate registry — a
+    ``storage:`` reference to an existing definition proposes cleanly (no
+    wizard, no new credential tooling), and the approve handoff names the
+    declaration digest exactly as before."""
+    project = tmp_path / "managed"
+    init.main([str(project), "--git"])
+    (project / "data/events.parquet").write_bytes(b"not opened or parsed")
+    prepare_git(project)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    revision = started["candidate_revision"]
+    # the candidate already declares the profile (with its first source)
+    api.propose_sources(
+        started["proposal"],
+        revision,
+        [
+            {
+                "name": "orders",
+                "type": "parquet",
+                "storage": "local",
+                "path": "s3://retail/orders/orders.parquet",
+            }
+        ],
+        {
+            "local": {
+                "type": "s3",
+                "access_key_id_env": "SETUP_S3_KEY_ID",
+                "secret_access_key_env": "SETUP_S3_SECRET",
+                "endpoint_url_env": "SETUP_S3_ENDPOINT",
+                "scopes": ["s3://retail/"],
+            }
+        },
+    )
+    # a MANUAL setup declaration referencing the EXISTING profile validates
+    # against the candidate's storages and proposes through the managed seam
+    entry = json.dumps(
+        {
+            "name": "archive",
+            "type": "parquet",
+            "storage": "local",
+            "path": "s3://retail/archive/a.parquet",
+        }
+    )
+    capsys.readouterr()
+    assert run_setup(project, f"skip\n{entry}\n\nyes\n") == 0
+    output = capsys.readouterr().out
+    assert "Source approval pending" in output
+    assert "approve-sources" in output
+    (record,) = records(project)
+    candidate = subprocess.check_output(
+        ["git", "show", f"{record['candidate_revision']}:ariadne.yaml"], cwd=project, text=True
+    )
+    doc = yaml.safe_load(candidate)
+    assert doc["storages"]["local"]["access_key_id_env"] == "SETUP_S3_KEY_ID"
+    assert {source["name"] for source in doc["sources"]} == {"orders", "archive"}
+    assert all(source["storage"] == "local" for source in doc["sources"])

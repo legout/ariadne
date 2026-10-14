@@ -114,7 +114,12 @@ root, never the ambient working directory. The legacy → new mapping lives in
   labeled-hypothesis saves through `edit_proposal` (no per-save prompt) and
   restart-readable Git/evidence state. Source approval, admission,
   reconciliation, legacy import/enrichment and Promotion are deliberately
-  absent: human-only, outside the agent.
+  absent: human-only, outside the agent. `propose_sources` accepts optional
+  named `storages:` S3 profile declarations (candidate behavior of this
+  development checkout, not published 0.3.0): the agent proposes the
+  credential-free declarations and never reads or sets environment values —
+  the host process supplies them, and the human-only approval gate is
+  unchanged.
 - **Guidance**: the version-matched packaged `ariadne/skill_assets/SKILL.md`
   from the installed `ariadne-data`, plus a short native-tool mapping. No
   global skill scans, no model-invocable skill scripts.

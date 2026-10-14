@@ -84,6 +84,12 @@ have nothing admitted yet.
   (`propose_sources`) and report the exact resolved digest the service
   returns, then STOP for sources: the operator approves the exact digest
   outside this session. You have no tool that approves, and none exists.
+  The proposal may carry optional named `storages:` S3 profile declarations
+  (candidate behavior of this development checkout, not published
+  0.3.0): credential-free environment-variable names plus explicit scopes
+  referenced by sources as `storage: <name>`. Propose them as declarations
+  only — never read, set or verify any environment value, and the same
+  human-only approval remains the gate.
 - After the operator approves, read the measured inputs in bounded parts
   (`inputs`); where evidence does not establish a business rule, ask the
   owner or mark the uncertainty — never invent a rule.

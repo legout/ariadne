@@ -51,7 +51,13 @@ Local sources/documents outside the project need explicit additional mounts at
 their referenced absolute paths. Mount SQLite with its containing directory if
 journals/WAL sidecars are needed. Credentials such as `ARIADNE_PG_DSN` must be
 explicitly passed in a local Compose override's `environment`; an operator's
-host environment alone is **not** forwarded by the template. Source approvals
+host environment alone is **not** forwarded by the template. The same applies
+to named S3 storage-profile variables (current development candidate): Compose's
+`--env-file` performs host-side interpolation only — it does not populate the
+container environment. Inject them with an operator-owned `env_file` entry or
+explicit `environment` forwarding; Ariadne loads no environment file itself. See
+[Multiple S3 storages](multiple-s3-storages.md#docker-is-explicit-environment-injection).
+Source approvals
 and human Git Review Admission remain separate; neither happens on startup.
 If using DuckDB extensions requiring a download, provide the existing runtime's
 outbound access. This image does not bundle every source extension.

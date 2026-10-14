@@ -36,8 +36,12 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from ariadne.authoring import AuthoringProject
-from tau_agent.messages import TextContent
-from tau_agent.tools import AgentTool, AgentToolResult, ToolExecutor
+from tau_agent.messages import TextContent  # pyright: ignore[reportMissingImports] — agent env
+from tau_agent.tools import (  # pyright: ignore[reportMissingImports] — agent env
+    AgentTool,
+    AgentToolResult,
+    ToolExecutor,
+)
 
 from ariadne_agent.skills import read_skill_reference
 
@@ -108,6 +112,7 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
                 arguments["proposal"],
                 arguments["expected_revision"],
                 arguments["sources"],
+                arguments.get("storages"),
             )
         )
 
@@ -220,10 +225,14 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         ),
         "propose_sources": (
             "Append typed source-registry entries to the proposal's candidate "
-            "registry — inert DATA, nothing is opened. Returns the resolved "
-            "identity digest. STOP after proposing: the operator approves the "
-            "exact digest outside this session; you have no tool that "
-            "approves, and none exists."
+            "registry — inert DATA, nothing is opened. Optional named S3 "
+            "storage profiles (credential-free environment-variable "
+            "references and literal s3:// scopes, spec 0025) may be declared "
+            "alongside and referenced by entries through storage: <name>; an "
+            "existing candidate profile can be referenced without resending "
+            "it. Returns the resolved identity digest. STOP after proposing: "
+            "the operator approves the exact digest outside this session; "
+            "you have no tool that approves, and none exists."
         ),
         "inputs": (
             "The proposal's measured inputs, bounded: the profile of the "
@@ -340,9 +349,26 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
                             "type": {"type": "string"},
                             "path": {"type": "string"},
                             "connection_string": {"type": "string"},
+                            "storage": {
+                                "type": "string",
+                                "description": (
+                                    "optional named S3 storage profile reference "
+                                    "(a declared storages key, spec 0025)"
+                                ),
+                            },
                         },
                         "required": ["name", "type"],
                     },
+                },
+                "storages": {
+                    "type": "object",
+                    "description": (
+                        "optional named S3 storage profile declarations: "
+                        "environment-variable NAMES (access_key_id_env, "
+                        "secret_access_key_env, endpoint_url_env, optional "
+                        "region_env/session_token_env), url_style, literal "
+                        "s3:// scopes — never credential values"
+                    ),
                 },
             },
             "required": ["proposal", "expected_revision", "sources"],

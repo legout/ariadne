@@ -1147,16 +1147,23 @@ def test_git_author_cli_names_the_preserved_review_evidence_location(tmp_path, m
 
 
 def test_how_to_document_maps_legacy_routes_to_the_new_workflow():
-    """Issue #39 [5]: docs/how-to/git-authoring.md carries the exact legacy →
-    new mappings (runtime constructors, submit/repair/review, promotion vs
-    admission, the unchanged routes, split/combined MCP startup)."""
+    """Issue #39 [5]: the exact legacy → new mappings live in
+    docs/reference/git-authoring-migration.md (runtime constructors,
+    submit/repair chaining, promotion vs admission, the unchanged routes), the
+    how-to keeps the Git workflow commands, and the CLI reference keeps the
+    split/combined MCP startup. Locations follow the 0.3.0 Diátaxis docs
+    restructure; the pinned facts are unchanged."""
+    mapping = (REPO_ROOT / "docs" / "reference"
+               / "git-authoring-migration.md").read_text(encoding="utf-8")
+    assert "QueryRuntime.open_project" in mapping  # runtime constructors/factory
+    assert "ariadne-authoring submit" in mapping and "--base-digest" in mapping
+    assert "ariadne-promote" in mapping  # the unchanged legacy Promotion route
+    assert "ariadne-admit" in mapping  # promote full Git bundle -> human admit
+    assert "ariadne-ingest" in mapping  # unchanged standalone ingestion
+    assert "Answer Example" in mapping or "answer example" in mapping  # separate store
     doc = (REPO_ROOT / "docs" / "how-to" / "git-authoring.md").read_text(encoding="utf-8")
-    assert "QueryRuntime.open_project" in doc  # runtime constructors/factory
     assert "ariadne-authoring start" in doc and "ariadne-authoring edit" in doc
     assert "--expected-revision" in doc  # replaces --base-digest repair chaining
-    assert "ariadne-admit" in doc  # promote full Git bundle -> human admit
-    assert "ariadne-promote" in doc  # the unchanged legacy Promotion route
-    assert "ariadne-ingest" in doc  # unchanged standalone ingestion
-    assert "--toolset" in doc and "combined" in doc  # split vs combined startup
     assert "import-legacy" in doc  # the human import command
-    assert "Answer Example" in doc or "answer example" in doc  # separate store
+    cli = (REPO_ROOT / "docs" / "reference" / "cli.md").read_text(encoding="utf-8")
+    assert "--toolset" in cli and "combined" in cli  # split vs combined startup

@@ -1,0 +1,69 @@
+{
+  "format-version": 2,
+  "table-uuid": "7d5c0e88-64d4-4ccf-8a3b-1c2c5a9e5b11",
+  "location": "s3://analytics/iceberg/metrics",
+  "last-sequence-number": 0,
+  "last-updated-ms": 1792000000000,
+  "last-column-id": 3,
+  "schemas": [
+    {
+      "type": "struct",
+      "schema-id": 0,
+      "fields": [
+        {
+          "id": 1,
+          "name": "id",
+          "required": false,
+          "type": "int"
+        },
+        {
+          "id": 2,
+          "name": "amount",
+          "required": false,
+          "type": "int"
+        },
+        {
+          "id": 3,
+          "name": "region",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    }
+  ],
+  "current-schema-id": 0,
+  "partition-specs": [
+    {
+      "spec-id": 0,
+      "fields": []
+    }
+  ],
+  "default-spec-id": 0,
+  "last-partition-id": 0,
+  "default-sort-order-id": 0,
+  "sort-orders": [],
+  "properties": {},
+  "current-snapshot-id": 918273645,
+  "snapshots": [
+    {
+      "snapshot-id": 918273645,
+      "sequence-number": 0,
+      "timestamp-ms": 1792000000000,
+      "manifest-list": "s3://analytics/iceberg/metrics/metadata/manifest-list.avro",
+      "summary": {
+        "operation": "append",
+        "total-records": "2",
+        "added-records": "2",
+        "total-data-files": "1",
+        "added-data-files": "1",
+        "total-delete-files": "0",
+        "deleted-records": "0",
+        "deleted-data-files": "0",
+        "total-position-deletes": "0"
+      },
+      "schema-id": 0
+    }
+  ],
+  "snapshot-log": [],
+  "metadata-log": []
+}

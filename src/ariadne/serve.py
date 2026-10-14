@@ -436,7 +436,9 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
     from mcp.server.fastmcp.tools import (  # pyright: ignore[reportMissingImports] — [mcp] extra
         Tool,  # explicit tool registration (the query_records nested schema)
     )
-    from mcp.types import CallToolResult
+    from mcp.types import (  # pyright: ignore[reportMissingImports] — [mcp] extra
+        CallToolResult,
+    )
 
     app: FastMCP = FastMCP("ariadne")
 
@@ -891,10 +893,14 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
 
         @app.tool()
         async def authoring_propose_sources(
-            proposal: str, expected_revision: str, sources: list[dict]
+            proposal: str,
+            expected_revision: str,
+            sources: list[dict],
+            storages: dict | None = None,
         ) -> dict:
-            """Append typed source-registry entries to the candidate's registry
-            — inert DATA: nothing is opened or connected; the candidate cannot
+            """Append typed source-registry entries — plus optional named S3
+            storage profile definitions (spec 0025 §5) — to the candidate's
+            registry: inert DATA, nothing is opened; the candidate cannot
             grant itself approval. Returns {proposal, revision, changed,
             source_digest, sources} naming the precise resolved locations; the
             digest is what the operator approves OUTSIDE this surface. Same
@@ -904,10 +910,18 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 proposal: the proposal ID.
                 expected_revision: the CURRENT candidate revision.
                 sources: registry-shaped entries (name/type/path or
-                    connection_env); invalid shapes and inline credentials are
-                    rejected before anything is written.
+                    connection_env, optional storage: <profile name>);
+                    invalid shapes and inline credentials are rejected before
+                    anything is written.
+                storages: optional named storage-profile declarations
+                    (access_key_id_env/secret_access_key_env/
+                    endpoint_url_env names, url_style, literal s3:// scopes)
+                    an entry may reference; existing candidate profiles can be
+                    referenced without resending them.
             """
-            return authoring_api.propose_sources(proposal, expected_revision, sources)
+            return authoring_api.propose_sources(
+                proposal, expected_revision, sources, storages
+            )
 
         @app.tool()
         async def authoring_inputs(
@@ -1064,7 +1078,9 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             """
             return authoring_api.resolve_term(proposal, request, part=part)
 
-    from starlette.responses import JSONResponse
+    from starlette.responses import (  # pyright: ignore[reportMissingImports] — [mcp] extra
+        JSONResponse,
+    )
 
     @app.custom_route("/healthz", methods=["GET", "HEAD"])
     async def healthz(request):

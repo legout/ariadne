@@ -592,6 +592,13 @@ def _read_inspection_request(file: str) -> tuple[object, object]:
 def _read_source_entries(file: str) -> list[dict]:
     """The typed source entries of a registry-shaped intake document (the
     same shape the legacy route validates): its ``sources:`` list."""
+    return _read_source_intake(file)[0]
+
+
+def _read_source_intake(file: str) -> tuple[list[dict], dict | None]:
+    """The registry-shaped intake document's ``sources:`` list plus its
+    optional ``storages:`` block (spec 0025 §5 — the CLI's existing
+    registry-shaped input carries both top-level blocks)."""
     try:
         doc = yaml.safe_load(Path(file).read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as exc:
@@ -599,18 +606,22 @@ def _read_source_entries(file: str) -> list[dict]:
     entries = doc.get("sources") if isinstance(doc, dict) else None
     if not isinstance(entries, list) or not entries:
         raise UsageError(f"{file}: no 'sources:' entries — declare the proposed sources")
-    return entries
+    storages = doc.get("storages") if isinstance(doc, dict) else None
+    if storages is not None and not isinstance(storages, dict):
+        raise UsageError(f"{file}: 'storages:' is not a mapping")
+    return entries, storages
 
 
 def main(argv: list[str] | None = None) -> int:
     try:
         args = build_parser().parse_args(argv)
         if args.command == "propose-sources":
+            entries, storages = _read_source_intake(args.file)
             if args.proposal is not None:
                 if args.expected_revision is None:
                     raise UsageError("Git-mode propose-sources requires --expected-revision")
                 result: Any = AuthoringProject(args.project).propose_sources(
-                    args.proposal, args.expected_revision, _read_source_entries(args.file)
+                    args.proposal, args.expected_revision, entries, storages
                 )
             else:
                 result = propose_sources(args.file, project=args.project)

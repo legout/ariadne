@@ -48,6 +48,27 @@ export ARIADNE_FINANCE_DSN='postgresql://…'
 
 Inline connection strings and URL credentials are rejected. Relative paths resolve according to the registry/project route; URI paths such as `https://` or `s3://` are not treated as current-directory-relative paths.
 
+## Storage profiles
+
+> **Candidate feature** — named storage profiles are current development-candidate behavior, not published Ariadne 0.3.0. See [Multiple S3 storages](../how-to/multiple-s3-storages.md) for the task guide and delivery rules.
+
+An optional top-level `storages:` block maps profile names to S3 declarations. Values are **environment-variable names**: the executing host process supplies the values, and only the profiles referenced by sources are ever resolved or installed.
+
+| Field | Required | Default / contract |
+| --- | --- | --- |
+| `type` | yes | exactly `s3` |
+| `access_key_id_env` | yes | environment-variable name holding the access key ID |
+| `secret_access_key_env` | yes | environment-variable name holding the secret access key |
+| `endpoint_url_env` | yes | variable holding an absolute `http(s)://` endpoint URL (host + optional port, root path only; no userinfo/query/fragment) |
+| `region_env` | no | explicit `us-east-1` when omitted; if declared but unset/blank, setup refuses |
+| `session_token_env` | no | if declared but unset/blank, setup refuses; no automatic token refresh |
+| `url_style` | no | `path` (or `vhost`) |
+| `scopes` | yes | nonempty list of unique literal `s3://bucket/` or directory-prefix URIs ending in `/`; no globs, credentials, query or dot-segment navigation |
+
+A source selects a profile with `storage: <name>` — allowed for `csv`, `json`, `parquet`, `duckdb`, `delta`, `iceberg` and `ducklake` only (never SQLite/PostgreSQL). A profile-based `s3://` path must fall inside at least one scope of its selected profile, and used profiles must not declare intersecting scopes (equal or nested prefixes refuse). A profile-free direct S3 path that would fall under an installed profile's scope also refuses instead of silently inheriting its secret. A source with a local metadata/catalog path (for example a local DuckLake catalog or native DuckDB view catalog) may reference a profile for its remote backing data.
+
+Profile identity is deterministic and credential-free: source digests include the complete referenced profile declaration (names and scopes, never values), while approvals, evidence and admitted records additionally bind the resolved **effective** endpoint/region/URL-style/scopes — so a changed endpoint needs its own human approval and fresh evidence, while key rotation does not. Temporary scoped secrets are created only inside the connection being set up, never in public plans or stored artifacts. See the [how-to](../how-to/multiple-s3-storages.md) for environment delivery, rotation/restart behavior and the human gates.
+
 ## Remote and native DuckDB paths
 
 Remote-path support depends on the source type and DuckDB runtime configuration. Native DuckDB catalogs may use local files, HTTPS, or S3-compatible paths when the required extensions and runtime credentials are available. Remote catalogs are attached read-only.

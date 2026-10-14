@@ -200,11 +200,15 @@ from ariadne.semantic_graph import load_graph
 from ariadne.sources import (
     _URI_SCHEME_RE,
     _resolve_against,
+    binding_from_record,
     collection_resource,
     load_registry,
     parse_resource,
+    resolve_binding,
     table_resource,
+    used_profiles,
 )
+from ariadne.sources import validate_storages as _validate_storages
 from ariadne.validate import (
     VALIDATOR_VERSION,
     CheckOutcome,
@@ -220,28 +224,34 @@ PROPOSAL_REL = Path("staging") / "authoring" / "source-proposal.yaml"
 
 
 def propose_sources(file: str | Path, *, project: str | Path = ".") -> dict:
-    """Validate and store one inert source proposal; return its digest and the
-    precise proposed locations. Raises the registry validator's errors (naming
-    the offending entry) for any invalid or credential-carrying proposal.
-    Never opens a location. Relative paths are resolved against the project
-    root — the directory of the eventual ``ariadne.yaml`` — so a location means
-    the same thing when proposed, digested, and (after approval) profiled,
-    whatever directory the intake file arrived in."""
+    """Validate and store one inert source proposal — sources plus the
+    optional top-level ``storages:`` block of named S3 storage profiles (spec
+    0025 §5) — and return its digest and the precise proposed locations.
+    Raises the registry validator's errors (naming the offending entry) for
+    any invalid or credential-carrying proposal. Never opens a location.
+    Relative paths are resolved against the project root — the directory of
+    the eventual ``ariadne.yaml`` — so a location means the same thing when
+    proposed, digested, and (after approval) profiled, whatever directory the
+    intake file arrived in."""
     proposal_path = Path(file)
-    load_registry(proposal_path)  # reuse the ADR-0010 validation, verbatim
+    load_registry(proposal_path)  # reuse the ADR-0010 + spec 0025 validation, verbatim
     entries = _entries(proposal_path)
+    storages = _storages(proposal_path)
     base = Path(project).resolve()  # NOT the intake file's directory (spec §1)
     for entry in entries:
         if isinstance(entry.get("path"), str):
             entry["path"] = _resolve_against(base, entry["path"])
-    digest = _digest(entries)
+    digest = _digest(_identity_payload(entries, storages))
     stored = Path(project) / PROPOSAL_REL
     stored.parent.mkdir(parents=True, exist_ok=True)
-    stored.write_text(
-        yaml.safe_dump({"digest": digest, "sources": entries}, sort_keys=False),
-        encoding="utf-8",
-    )
-    return {"digest": digest, "proposal": str(stored), "sources": entries}
+    document: dict = {"digest": digest, "sources": entries}
+    if storages:
+        document["storages"] = storages
+    stored.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    result: dict = {"digest": digest, "proposal": str(stored), "sources": entries}
+    if storages:
+        result["storages"] = storages
+    return result
 
 
 def approve_sources(digest: str, *, project: str | Path = ".") -> dict:
@@ -255,7 +265,8 @@ def approve_sources(digest: str, *, project: str | Path = ".") -> dict:
         raise ValueError(f"no pending source proposal at {stored} — run propose-sources first")
     load_registry(stored)  # revalidate the stored entries before any install
     entries = _entries(stored)
-    current = _digest(entries)
+    storages = _storages(stored)
+    current = _digest(_identity_payload(entries, storages))
     if current != digest:
         raise ValueError(
             f"digest mismatch: approval is exact-content — the pending proposal "
@@ -281,6 +292,9 @@ def approve_sources(digest: str, *, project: str | Path = ".") -> dict:
             "appends, it never overwrites an existing entry"
         )
     doc["sources"] = [*existing, *entries]
+    merged_storages = _merge_storages(doc.get("storages") or {}, storages, registry_path)
+    if merged_storages:
+        doc["storages"] = merged_storages
     registry_path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
     return {"digest": digest, "registry": str(registry_path), "sources": entries}
 
@@ -296,7 +310,46 @@ def _entries(path: Path) -> list[dict]:
     return entries
 
 
-def _digest(entries: list[dict]) -> str:
+def _storages(path: Path) -> dict:
+    """The raw ``storages:`` block of a proposal document, verbatim ({} when
+    absent) — the profile definitions approval installs alongside entries."""
+    doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    storages = doc.get("storages") or {}
+    if not isinstance(storages, dict):
+        raise ValueError(f"{path}: 'storages' is not a mapping")
+    return storages
+
+
+def _identity_payload(entries: list[dict], storages: dict | None) -> list | dict:
+    """The legacy digest input: the raw entries unchanged (old proposals keep
+    their exact digests), or entries plus the storages block when profiles
+    are declared (spec 0025 §5 — hashing only a reference name would drop the
+    definitions)."""
+    if not storages:
+        return entries
+    return {"sources": entries, "storages": storages}
+
+
+def _merge_storages(existing: dict, incoming: dict | None, where: Path) -> dict:
+    """Merge a proposal's storage profiles into the registry's block: new
+    names append, an identical definition is reused, a conflicting
+    replacement refuses before anything is written (spec 0025 §5)."""
+    merged = dict(existing)
+    incoming_profiles = _validate_storages(incoming, where)
+    existing_profiles = _validate_storages(existing, where)
+    for name, profile in incoming_profiles.items():
+        current = existing_profiles.get(name)
+        if current is not None and current.identity() != profile.identity():
+            raise ValueError(
+                f"{where}: storage profile {name!r} already exists with a DIFFERENT "
+                "definition — a conflicting replacement is refused (spec 0025 §5); "
+                "nothing was installed"
+            )
+        merged[name] = profile.identity()
+    return merged
+
+
+def _digest(entries: object) -> str:
     """sha256 over the canonical form of the entries: identity is the exact
     proposed content (whitespace and key order do not matter). The canonical
     form is shared with the Git route's resolved-identity digest
@@ -582,19 +635,74 @@ def _refuse_symlinked_staging(project: Path, rel: Path) -> None:
             )
 
 
+def _current_storage_bindings(project: Path) -> dict:
+    """The legacy route's CURRENT effective storage binding (spec 0025 §5,
+    AC7): the used profiles' endpoint/region values resolved from the
+    environment — non-secret reads only, no approval store, no Git gate.
+    A registry without sources or used profiles resolves to ``{}`` (the
+    existing empty-registry gates keep their own refusals); a used profile
+    with an unset endpoint/region variable raises the explicit prerequisite
+    error (the gates refuse naming it, never a silent empty binding)."""
+    doc = _registry_doc(project)
+    if not doc.get("sources"):
+        return {}
+    registry = load_registry(project / "ariadne.yaml")
+    used = used_profiles(registry)
+    if not used:
+        return {}
+    return {name: resolve_binding(profile).record() for name, profile in used.items()}
+
+
+def _refuse_changed_bindings(project: Path, state: dict) -> None:
+    """The legacy parity gate (spec 0025 §5/AC7): a bundle proposal validated
+    under one effective endpoint never retries idempotently, reviews or
+    Promotes under another — the recorded binding must still be the current
+    environment's. Legacy human gates stay distinct: no approval record is
+    created or consulted."""
+    current = _current_storage_bindings(project)
+    if current != (state.get("storage_bindings") or {}):
+        raise ValueError(
+            "the effective storage binding changed while this bundle proposal was "
+            "active (spec 0025 §5: it was validated under a different endpoint) — "
+            "re-profile and resubmit under the current binding; no agent retry, "
+            "review or promotion reuses the old validation"
+        )
+
+
 def _registry_sources(project: Path) -> list:
     """The APPROVED registry entries (the bundle's source identity), [] when the
     project has none; malformed config is an explicit error."""
+    return _registry_doc(project).get("sources") or []
+
+
+def _registry_doc(project: Path) -> dict:
+    """The approved registry document — ``sources:`` plus the optional
+    ``storages:`` block (spec 0025 §5) — as one coherent unit; malformed
+    config is an explicit error."""
     registry_path = project / "ariadne.yaml"
     if not registry_path.is_file():
-        return []
+        return {}
     doc = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
     if not isinstance(doc, dict):
         raise ValueError(f"{registry_path}: top level is not a mapping")
     sources = doc.get("sources") or []
     if not isinstance(sources, list):
         raise ValueError(f"{registry_path}: 'sources' is not a list")
-    return sources
+    return doc
+
+
+def _registry_identity_payload(project: Path) -> list | dict:
+    """The bundle gates' digest input: the raw entries alone when no storage
+    profiles are declared (old proposals keep their exact digests), or the
+    entries PLUS the storages block — so a registry change to either block
+    invalidates an active bundle proposal (spec 0025 §5: never hash only a
+    reference name)."""
+    doc = _registry_doc(project)
+    entries = doc.get("sources") or []
+    storages = doc.get("storages") or {}
+    if not isinstance(storages, dict):
+        raise ValueError(f"{project / 'ariadne.yaml'}: 'storages' is not a mapping")
+    return _identity_payload(entries, storages)
 
 
 def _citation_record(reference: str, project: Path) -> dict:
@@ -974,7 +1082,8 @@ def submit_bundle(
     citations = [_citation_record(reference, project) for reference in documents]
 
     sources = _registry_sources(project)
-    sources_digest = _digest(sources)
+    sources_digest = _digest(_registry_identity_payload(project))
+    storage_bindings = _current_storage_bindings(project)
     submission = _submission_digest(files, documents, citations)
     # ONE interprocess lock per project: the state read, the staged swap, and
     # the state store are a single critical section, so two CLI processes with
@@ -994,6 +1103,9 @@ def submit_bundle(
                     "active — the proposal is invalidated and needs human resolution; "
                     "no replacement was made"
                 )
+            # spec 0025 §5/AC7: even an IDENTICAL submission never reuses a
+            # validation taken under a different effective endpoint.
+            _refuse_changed_bindings(project, state)
             if submission == state["submission_digest"]:
                 view = _state_view(state)
                 if (project / BUNDLE_STAGING_REL).is_dir():
@@ -1045,9 +1157,28 @@ def submit_bundle(
             # Source authorization comes BEFORE any bind/audit: nothing outside
             # the approved registry identities is ever opened or executed here.
             _authorize_dataset_sources(tmp, {str(entry.get("name")) for entry in sources})
-            registry_path = project / "ariadne.yaml"
+            # spec 0025 §§3–5/AC7 (fix blocker 2): the audit MEASURES under the
+            # binding captured for the state — the captured endpoint/region
+            # values are FROZEN into the audit registry, so an environment
+            # change between capture and validation can never make validation
+            # measure one endpoint while recording another. Legacy human gates
+            # stay distinct: no approval record is created or consulted.
+            audit_registry = None
+            if sources:
+                audit_registry = load_registry(project / "ariadne.yaml")
+                audit_registry.bindings = (
+                    {
+                        name: binding_from_record(name, record)
+                        for name, record in storage_bindings.items()
+                    }
+                    or None
+                )
             result = (
-                validate(tmp, sources_path=registry_path)
+                validate(
+                    tmp,
+                    sources_path=(project / "ariadne.yaml") if sources else None,
+                    registry=audit_registry,
+                )
                 if sources
                 else validate(tmp)  # compile-only: an empty project has no audit connection
             )
@@ -1117,6 +1248,7 @@ def submit_bundle(
             },
             "sources": sources,
             "sources_digest": sources_digest,
+            "storage_bindings": storage_bindings,
             "project": str(project.resolve()),
             "staging": str((project / BUNDLE_STAGING_REL).resolve()),
         }
@@ -1172,12 +1304,16 @@ def review_bundle(*, project: str | Path = ".", part: int = 1) -> dict:
         # is returned — so it can never describe a source-invalidated proposal
         # as validated (candidate review P2). Nothing is written: the original
         # staging and state stay untouched for the human.
-        if _digest(_registry_sources(project)) != state.get("sources_digest"):
+        if _digest(_registry_identity_payload(project)) != state.get("sources_digest"):
             raise ValueError(
                 "the approved source registry changed while this bundle proposal was "
                 "active — the proposal is invalidated and needs re-profiling and "
                 "resubmission; review is refused, nothing was written or served"
             )
+        # spec 0025 §5/AC7: review never presents a validation taken under a
+        # different effective endpoint as current — same refusal as submit and
+        # Promotion, before any body or status is returned.
+        _refuse_changed_bindings(project, state)
         bundle_dir = project / BUNDLE_STAGING_REL
         bodies = []
         for path in sorted(p for p in bundle_dir.rglob("*") if p.is_file()):
@@ -1283,15 +1419,22 @@ class AuthoringProject:
     # ------------------- G3 (issue #35): sources, approval, measured inputs
 
     def propose_sources(
-        self, proposal: str, expected_revision: str, sources: list[dict] | tuple[dict, ...]
+        self,
+        proposal: str,
+        expected_revision: str,
+        sources: list[dict] | tuple[dict, ...],
+        storages: dict | None = None,
     ) -> dict:
-        """Append validated typed source entries to the candidate's registry
+        """Append validated typed source entries — plus optional named storage
+        profile definitions (spec 0025 §5) — to the candidate's registry
         (``ariadne.yaml``) through the revision-checked edit seam and return
         ``{proposal, revision, changed, source_digest, sources}`` — the digest
         of the candidate's full RESOLVED identity (paths resolved against the
         host project root) plus the precise resolved locations. Inert data:
         nothing is opened, and the candidate cannot grant itself approval."""
-        return authoring_sources.propose_sources(self.project, proposal, expected_revision, sources)
+        return authoring_sources.propose_sources(
+            self.project, proposal, expected_revision, sources, storages
+        )
 
     def approve_sources(self, proposal: str, revision: str, source_digest: str) -> dict:
         """HUMAN-ONLY (the CLI command; never an MCP/Agent tool): record the
@@ -1623,6 +1766,8 @@ def _validate_view(evidence: dict, evidence_path: Path, *, idempotent: bool) -> 
         "artifact_digest": evidence["artifact_digest"],
         "artifact_files": list(evidence["artifact_files"]),
         "source_digest": evidence["source_digest"],
+        "approval_digest": evidence.get("approval_digest"),
+        "storage_bindings": dict(evidence.get("storage_bindings") or {}),
         "citations": list(evidence["citations"]),
         "report": evidence["report"],
         "performed_checks": list(evidence["performed_checks"]),
@@ -1632,6 +1777,36 @@ def _validate_view(evidence: dict, evidence_path: Path, *, idempotent: bool) -> 
     if idempotent:
         view["idempotent"] = True
     return view
+
+
+def _stale_schema_binding_errors(tree: Path, approval_digest: str | None) -> list[str]:
+    """spec 0025 §4 (measurement invalidation): every generated table page
+    whose measured observations carry a ``source_binding`` must carry the
+    CURRENT effective approval digest — schema and selected-value evidence
+    measured under a different endpoint is stale provenance and refuses
+    validation until the schema is refreshed under the current binding.
+    Pages without a measured binding make no endpoint claim."""
+    tables_dir = tree / "context_layer" / "tables"
+    if not tables_dir.is_dir() or approval_digest is None:
+        return []
+    errors: list[str] = []
+    for page in sorted(tables_dir.rglob("*.md")):
+        rel = f"context_layer/tables/{page.relative_to(tables_dir)}"
+        try:
+            meta = context._load_frontmatter_meta(page.read_text(encoding="utf-8"))
+        except yaml.YAMLError:
+            continue  # the page-contract gate owns malformed pages
+        ariadne_meta = meta.get("ariadne") if isinstance(meta, dict) else None
+        observations = ariadne_meta.get("observations") if isinstance(ariadne_meta, dict) else None
+        bound = observations.get("source_binding") if isinstance(observations, dict) else None
+        if isinstance(bound, str) and bound and bound != approval_digest:
+            errors.append(
+                f"{rel}: its measured schema/value observations are bound to a "
+                f"different effective storage identity ({bound[:12]}, the candidate "
+                f"now validates under {approval_digest[:12]}) — refresh_schema under "
+                "the current endpoint before validation (spec 0025 §4)"
+            )
+    return errors
 
 
 def validate_proposal(project: str | Path, proposal: str, expected_revision: str) -> dict:
@@ -1669,16 +1844,19 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 "retry with the current revision; nothing was written"
             )
         # The G3 seam BEFORE any finalize commit: the candidate's resolved
-        # source identity must carry the operator's approval. The finalize
-        # pass touches only context_layer bytes, so the input revision's
-        # registry identity IS the final revision's identity.
+        # source identity must carry the operator's approval — for its CURRENT
+        # effective storage binding (spec 0025 §4: endpoint changes need their
+        # own grant; a declaration digest with only a historical grant never
+        # authorizes). The finalize pass touches only context_layer bytes, so
+        # the input revision's registry identity IS the final revision's.
         resolved_sources, source_digest = authoring_sources.candidate_sources(project, current)
         approval = None
         if resolved_sources is not None:
             assert source_digest is not None
-            approval = authoring_sources._approved_identity(
-                project, source_digest, proposal, current
+            approval = authoring_sources._effective_grant(
+                project, resolved_sources, source_digest, proposal, current
             )
+        approval_digest_value = approval.get("approval_digest") if approval else None
         # Idempotent no-op retry: stored evidence for the EXACT current commit
         # with unchanged binding context returns as-is — nothing re-runs and
         # the bounded repair state is neither reset nor advanced.
@@ -1686,6 +1864,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
         if (
             stored is not None
             and stored.get("source_digest") == source_digest
+            and stored.get("approval_digest") == (approval_digest_value or source_digest)
             and _document_digests_current(project, stored.get("citations") or [])
         ):
             return _validate_view(
@@ -1728,15 +1907,17 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             tree.mkdir()
             rels = _materialize(project, proposal, final, tree)
             # The audit connection opens ONLY the operator-approved resolved
-            # identity (the G3 seam): one temp registry carrying exactly those
-            # resolved entries, outside the materialized tree.
-            sources_path = None
-            if approval is not None:
-                sources_path = root / "approved-registry.yaml"
-                sources_path.write_text(
-                    yaml.safe_dump({"sources": approval["sources"]}, sort_keys=False),
-                    encoding="utf-8",
+            # identity (the G3 seam) with the grant's FROZEN effective binding
+            # (spec 0025 §4): one registry object carrying exactly those
+            # resolved entries and pinned endpoints — never a re-resolved
+            # environment value after the check.
+            approved_registry = (
+                authoring_sources.identity_registry(
+                    approval["sources"], approval.get("storage_bindings")
                 )
+                if approval is not None
+                else None
+            )
             names = {entry["name"] for entry in (approval["sources"] if approval else [])}
             try:  # the source-access boundary BEFORE any bind/audit execution
                 _authorize_dataset_sources(tree, names)
@@ -1746,12 +1927,18 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 # audit connection; the structural gate reports the parse error
                 auth_error = str(exc)
             if auth_error is None:
-                result = validate(tree, sources_path=sources_path)
+                result = validate(tree, registry=approved_registry)
                 errors = list(result.errors)
             else:  # never open the audit connection for an unauthorized source
                 result = validate(tree)  # compile-only: the boundary error blocks
                 errors = [auth_error, *result.errors]
-            page_errors = _bundle_errors(tree) + _graph_citation_errors(tree)
+            page_errors = (
+                _bundle_errors(tree)
+                + _graph_citation_errors(tree)
+                + _stale_schema_binding_errors(
+                    tree, approval.get("approval_digest") if approval else None
+                )
+            )
             # K4 (issue #44): conflicting asserted claims refuse validation
             # alongside the receipt-verification gate
             claim_errors = _asserted_claim_errors(tree)
@@ -1821,11 +2008,14 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
         ok = not errors
         status = "validated" if ok else "invalid"
         # Bounded repair accounting: one round per CHANGED validation (a
-        # different commit or a changed binding context); an identical retry
+        # different commit or a changed binding context — the effective
+        # storage binding rides the key, so identical candidate bytes cannot
+        # reuse an old-endpoint validation, spec 0025 §4); an identical retry
         # of the same key consumes nothing.
         key = {
             "commit": final,
             "source_digest": source_digest,
+            "approval_digest": approval_digest_value or source_digest,
             "documents": sorted(
                 f"{c['resource']}:{c['digest']}" for c in citations if c["kind"] == "document"
             ),
@@ -1853,6 +2043,8 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 if approval is not None
                 else None
             ),
+            "approval_digest": approval_digest_value or source_digest,
+            "storage_bindings": (approval.get("storage_bindings") or {}) if approval else {},
             "citations": citations,
             "report": report_view,
             "performed_checks": performed,
@@ -2134,7 +2326,8 @@ def _review_candidate(
             bodies.append(_review_body(rel, data, part=part))
         source_names = {entry["name"] for entry in resolved_sources or []}
         citations, _citation_errors = _verified_citations(tree, project, source_names)
-        approved = authoring_sources._load_approvals(project).get(source_digest or "") is not None
+        approval = authoring_sources.approval_state(project, resolved_sources, source_digest)
+        approved = approval["approved"]
         artifact_digest = candidate_scope_digest(tree)
         # The stored report binds the exact candidate commit or is absent:
         # a candidate that moved past its validation, a changed source
@@ -2145,6 +2338,25 @@ def _review_candidate(
         if report is not None:
             if report.get("source_digest") != source_digest:
                 stale_reasons.append("the resolved source identity changed since validation")
+            if approval["state"] == "unresolved":
+                # spec 0025 §4: a required endpoint/region value is unset — the
+                # effective binding cannot be resolved offline, so prior
+                # validation is never presented as current (and review never
+                # crashes on the missing digest key)
+                stale_reasons.append(
+                    "the effective storage binding is unresolved (a required "
+                    "endpoint/region variable is unset, spec 0025 §4) — prior "
+                    "validation is not current; resolve the prerequisite and "
+                    "revalidate before admission"
+                )
+            elif (
+                approval.get("approval_digest") is not None
+                and report.get("approval_digest") not in (None, approval["approval_digest"])
+            ):
+                stale_reasons.append(
+                    "the effective storage binding changed since validation "
+                    "(spec 0025 §4) — revalidate against the current endpoint grant"
+                )
             if not _document_digests_current(project, report.get("citations") or []):
                 stale_reasons.append("cited document evidence changed since validation")
             if report.get("artifact_digest") != artifact_digest:
@@ -2166,6 +2378,15 @@ def _review_candidate(
                     "changes": inventory,
                     "artifact_digest": artifact_digest,
                     "citations": citations,
+                    # spec 0025 §4 (exact human authority): the review digest
+                    # binds the candidate's EFFECTIVE source identity — the
+                    # declaration digest, the effective approval digest and
+                    # the complete storage bindings — so a reviewed digest
+                    # validated under endpoint A can never admit endpoint B
+                    # from identical candidate bytes.
+                    "source_digest": source_digest,
+                    "approval_digest": approval.get("approval_digest"),
+                    "storage_bindings": approval.get("storage_bindings") or {},
                     "mapping_assertions": [
                         {
                             "page": entry["page"],
@@ -2199,6 +2420,8 @@ def _review_candidate(
             "sources": resolved_sources or [],
             "sources_digest": source_digest,
             "source_approved": approved,
+            "source_approval_state": approval["state"],
+            "storage_bindings": approval.get("storage_bindings") or {},
             "citations": citations,
             "report": None
             if report is None
@@ -2381,8 +2604,12 @@ def refresh_schema(
             f"registry at {current[:12]} — there is nothing to refresh"
         )
     assert digest is not None
-    approval = authoring_sources._approved_identity(project, digest, proposal, current)
-    owned = execution.DuckDBExecution(authoring_sources.identity_registry(approval["sources"]))
+    approval = authoring_sources._effective_grant(project, resolved, digest, proposal, current)
+    storage_bindings = approval.get("storage_bindings") or {}
+    binding_digest = approval.get("approval_digest") if storage_bindings else None
+    owned = execution.DuckDBExecution(
+        authoring_sources.identity_registry(approval["sources"], storage_bindings)
+    )
     try:
         con, catalog = owned.con, owned.catalog
         declared = _declared_columns(con, catalog)
@@ -2449,6 +2676,7 @@ def refresh_schema(
             profile=profiles[resource],
             existing_text=page["text"] if page else None,
             now=now,
+            source_binding=binding_digest,
         )
         specs.append(
             {
@@ -3436,11 +3664,14 @@ def inspect_mapping(
             f"registry at {current[:12]} — there is nothing to inspect"
         )
     assert digest is not None
-    approval = authoring_sources._approved_identity(project, digest, proposal, current)
+    approval = authoring_sources._effective_grant(project, resolved, digest, proposal, current)
     effective = effective_inspection_limits(project_inspection_limits(project), limits)
     budget = execution.DeadlineBudget(effective["execution_seconds"])
     owned = execution.DuckDBExecution(
-        authoring_sources.identity_registry(approval["sources"]), budget=budget
+        authoring_sources.identity_registry(
+            approval["sources"], approval.get("storage_bindings")
+        ),
+        budget=budget,
     )
     try:
         con, catalog = owned.con, owned.catalog
@@ -3535,6 +3766,8 @@ def inspect_mapping(
         "inspection_revision": current,
         "source_digest": digest,
         "source_identity": resolved,
+        "approval_digest": approval.get("approval_digest") or digest,
+        "storage_bindings": approval.get("storage_bindings") or {},
         "dependencies": {
             "assets": sorted(assets, key=lambda asset: asset["resource"]),
             "lookup": normalized.get("prefix_lookup") or normalized.get("lookup"),
@@ -3631,6 +3864,7 @@ def _verify_receipt(
     endpoints: dict | None = None,
     worktree: Path | None = None,
     max_age_hours: float | None = None,
+    storage_bindings: dict | None = None,
 ) -> tuple[dict | None, str | None]:
     """Verify ONE cited receipt against the project's evidence records and the
     current dependency identities (spec 0010 §§7–8): existence, integrity, the
@@ -3698,6 +3932,14 @@ def _verify_receipt(
             f"identity ({str(receipt.get('source_digest'))[:12]}, the candidate now "
             f"resolves to {str(source_digest)[:12]}) — changed inputs invalidate "
             "dependent evidence"
+        )
+    if storage_bindings is not None and (receipt.get("storage_bindings") or {}) != (
+        storage_bindings or {}
+    ):
+        return None, (
+            f"receipt {receipt_id!r} was measured against a different effective "
+            "storage binding (spec 0025 §4) — an endpoint change invalidates "
+            "dependent evidence; re-inspect against the current binding"
         )
     dependencies = receipt.get("dependencies") or {}
     lookup_asset = (dependencies.get("lookup") or {}).get("asset")
@@ -3917,6 +4159,7 @@ def _finalize_mapping_evidence(
                     endpoints=endpoints,
                     worktree=worktree,
                     max_age_hours=max_age_hours,
+                    storage_bindings=(approval or {}).get("storage_bindings"),
                 )
                 if error is not None:
                     errors.append(f"{rel}: mapping {mapping.get('id')!r} — {error}")

@@ -216,6 +216,24 @@ ARIADNE_YAML = """\
 # --sources explicitly. Each source is addressable as <name>.<table>.
 # Paths are relative to this file's directory; globs need an explicit table name.
 #
+# Named S3 storage profiles (development candidate, not published 0.3.0):
+# uncomment to read independently credentialed S3-compatible storages. The
+# profile names environment VARIABLES — the executing process supplies the
+# values; credentials never live in this file. Explicit non-overlapping
+# scopes select the credential; see docs/how-to/multiple-s3-storages.md.
+# Only the seven reader types (csv/json/parquet/duckdb/delta/iceberg/ducklake)
+# take storage:. Proposal, then human approve-sources, still gate every read.
+#
+# storages:
+#   local:
+#     type: s3
+#     access_key_id_env: LOCAL_S3_ACCESS_KEY_ID
+#     secret_access_key_env: LOCAL_S3_SECRET_ACCESS_KEY
+#     endpoint_url_env: LOCAL_S3_ENDPOINT_URL
+#     url_style: path
+#     scopes:
+#       - s3://retail/
+#
 # sources:
 #   - name: demo
 #     type: sqlite
@@ -231,8 +249,9 @@ ARIADNE_YAML = """\
 #     type: delta
 #     path: data/lake/orders
 #   - name: iceberg_catalog
-#     type: iceberg
-#     path: s3://bucket/warehouse/sales
+#     type: iceberg                 # profile-based s3:// path must fall
+#     path: s3://retail/warehouse/sales   # inside local's scope s3://retail/
+#     storage: local
 #     table: sales
 #   - name: lake
 #     type: ducklake

@@ -1282,7 +1282,13 @@ def _value_evidence(*, selection: dict, columns: list[dict], profile: dict, wher
     return evidence
 
 
-def _observation_facts(*, resource: str, profile: dict, value_evidence: dict | None = None) -> dict:
+def _observation_facts(
+    *,
+    resource: str,
+    profile: dict,
+    value_evidence: dict | None = None,
+    source_binding: str | None = None,
+) -> dict:
     """The core-generated observation facts WITHOUT the timestamp (the part
     compared for timestamp reuse): scope, counts, measured candidate keys and
     citation identity — measurements, never declared constraints. C1 (issue
@@ -1303,6 +1309,11 @@ def _observation_facts(*, resource: str, profile: dict, value_evidence: dict | N
     }
     if value_evidence:
         facts["value_evidence"] = value_evidence
+    if source_binding:
+        # spec 0025 §4: the effective storage approval the measurements were
+        # taken under — endpoint provenance for profile-backed sources only,
+        # so profile-free pages keep their exact legacy facts/bytes.
+        facts["source_binding"] = source_binding
     return facts
 
 
@@ -1450,6 +1461,11 @@ def _table_body(
             for name, stats in observations["columns"].items()
         ],
     ]
+    if observations.get("source_binding"):
+        observation_lines.append(
+            "- source binding: the effective storage approval "
+            f"{observations['source_binding']} these measurements were taken under"
+        )
     value_evidence = observations.get("value_evidence")
     if value_evidence:
         # C1 (issue #69, spec 0024 §3): the SAME selected measured facts,
@@ -1538,6 +1554,7 @@ def build_table_page(
     profile: dict,
     existing_text: str | None,
     now: str,
+    source_binding: str | None = None,
 ) -> tuple[str, dict]:
     """Generate one physical table page's complete bytes from the approved
     catalog/profile facts (spec 0010 §4, plan §2): frontmatter with the exact
@@ -1546,6 +1563,10 @@ def build_table_page(
     sections, removed/type-changed columns' meanings retained as history, and
     the observation timestamp REUSED when the schema and the measurements are
     unchanged (identical inputs produce identical bytes — a no-op refresh).
+    ``source_binding`` (spec 0025 §4) rides the observation facts for
+    profile-backed sources only: the effective approval digest the
+    measurements were taken under, so identical candidate bytes cannot reuse
+    old-endpoint schema/value evidence unnoticed.
     Returns ``(page text, change flags)``.
     """
     resource = asset["resource"]
@@ -1572,7 +1593,12 @@ def build_table_page(
         if selection
         else None
     )
-    facts = _observation_facts(resource=resource, profile=profile, value_evidence=value_evidence)
+    facts = _observation_facts(
+        resource=resource,
+        profile=profile,
+        value_evidence=value_evidence,
+        source_binding=source_binding,
+    )
     reuse_timestamp = (
         old_observed_at is not None
         and old_schema is not None
@@ -1930,7 +1956,13 @@ def validate_inspection_candidate(candidate: object) -> dict:
             f"the inspection candidate names {len(assets)} participating assets "
             f"({sorted(assets)}) — at most {MAX_PARTICIPATING_ASSETS} participate"
         )
-    normalized = json.loads(json.dumps(candidate, ensure_ascii=False))  # deep copy
+    try:
+        normalized = json.loads(json.dumps(candidate, ensure_ascii=False))  # deep copy
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"the inspection candidate is not serializable data ({exc}) — "
+            "an invalid candidate is an error, never a partial normalization"
+        ) from None
     normalized["scope"] = scope
     normalized["pairing"] = pairing
     return normalized

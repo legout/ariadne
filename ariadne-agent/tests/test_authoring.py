@@ -34,9 +34,11 @@ import json
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest
+import yaml  # pyright: ignore[reportMissingImports] — analysis env
 from tau_agent.messages import (
     AssistantMessage,
     TextContent,
@@ -1167,3 +1169,67 @@ def test_mapping_hypothesis_is_saved_without_prompt_and_reused_after_session_res
         "chat memory",  # restart reads Git/evidence state, never chat memory
     ):
         assert phrase in flat, f"the Authoring guidance must teach: {phrase!r}"
+
+
+# ------------------- spec 0025 (S1): storages forwarding through the tools
+
+
+def test_propose_sources_tool_forwards_storage_definitions(tmp_path):
+    """Spec 0025 §5 adapter parity: the native tool schema accepts the optional
+    ``storages`` definitions and forwards them to the AuthoringProject seam —
+    the candidate registry carries both blocks, the resolved identity embeds
+    the complete profile, and no approval capability appears."""
+    from ariadne_agent.authoring import authoring_tools
+
+    project = complete_bundle_project(tmp_path / "proj")
+    tools = {tool.name: tool for tool in authoring_tools(project)}
+    # the tool schema is tau_agent's recursive JSON value: read it as data
+    schema: Any = tools["propose_sources"].parameters or {}
+    properties: Any = schema.get("properties") or {}
+    assert "storages" in properties
+    items: Any = (properties.get("sources") or {}).get("items") or {}
+    assert "storage" in (items.get("properties") or {})
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    profiles = {
+        "local": {
+            "type": "s3",
+            "access_key_id_env": "AGENT_S3_KEY_ID",
+            "secret_access_key_env": "AGENT_S3_SECRET",
+            "endpoint_url_env": "AGENT_S3_ENDPOINT",
+            "scopes": ["s3://retail/"],
+        }
+    }
+    arguments = {
+        "proposal": started["proposal"],
+        "expected_revision": started["candidate_revision"],
+        "sources": [
+            {
+                "name": "orders",
+                "type": "parquet",
+                "storage": "local",
+                "path": "s3://retail/orders/orders.parquet",
+            }
+        ],
+        "storages": profiles,
+    }
+
+    async def call():
+        return await tools["propose_sources"].execute_fn("t0", arguments)
+
+    agent_result = asyncio.run(call())
+    block: Any = agent_result.content[0]
+    text = block.text
+    assert isinstance(text, str)  # the one verbatim JSON payload block
+    result = json.loads(text)
+    # the service seam re-derives the same registry identity for the proposal
+    assert len(result["source_digest"]) == 64
+    assert result["sources"][-1]["storage"]["name"] == "local"
+    assert result["sources"][-1]["storage"]["endpoint_url_env"] == "AGENT_S3_ENDPOINT"
+    doc = yaml.safe_load(
+        (
+            project / ".ariadne" / "worktrees" / started["proposal"] / "ariadne.yaml"
+        ).read_text()
+    )
+    assert doc["storages"]["local"]["endpoint_url_env"] == "AGENT_S3_ENDPOINT"
+    assert doc["sources"][-1]["storage"] == "local"

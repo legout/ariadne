@@ -382,12 +382,32 @@ def _verified_evidence(project: Path, proposal: str, revision: str, review: dict
             "source identity, never unchecked stored evidence; revalidate the exact "
             "revision, nothing was activated"
         )
+    # The COMPLETE effective storage binding must still be the validated one
+    # (spec 0025 §4): the used profiles' endpoint/region values are resolved
+    # here — non-secret identity reads only — and must match the binding the
+    # validation measured under, so evidence from endpoint A never activates
+    # a B-bound session while identical candidate bytes stay un-revalidated.
+    bindings = authoring_sources.storage_bindings_from_identity(resolved)
+    if (evidence.get("storage_bindings") or {}) != bindings:
+        raise ValueError(
+            f"the effective storage binding at {revision[:12]} changed since "
+            "validation (spec 0025 §4) — endpoint changes invalidate validation "
+            "reuse; revalidate against the current binding, nothing was activated"
+        )
+    effective = (
+        authoring_sources.approval_digest(source_digest, bindings)
+        if source_digest is not None
+        else None
+    )
     evidence = dict(evidence)
     evidence["source_identity"] = resolved or []
-    if source_digest not in authoring_sources._load_approvals(project):
+    evidence["storage_bindings"] = bindings
+    evidence["approval_digest"] = effective
+    if effective not in authoring_sources._load_approvals(project):
         raise ValueError(
-            f"the source identity of {revision[:12]} ({source_digest}) carries NO "
-            "operator approval — source approval is a separate human decision (spec §5): "
+            f"the source identity of {revision[:12]} ({effective}) carries NO "
+            "operator approval for its effective storage binding — source "
+            "approval is a separate human decision (spec §5, spec 0025 §4): "
             f"re-approve the exact identity with ariadne-authoring approve-sources; "
             "nothing was activated"
         )
@@ -811,7 +831,9 @@ def admit_revision(
                 "artifact_digest": evidence["artifact_digest"],
                 "artifact_files": list(evidence["artifact_files"]),
                 "review_digest": reviewed_digest,
-                "source_digest": evidence["source_digest"],
+                "source_digest": evidence.get("approval_digest") or evidence["source_digest"],
+                "source_declaration_digest": evidence["source_digest"],
+                "storage_bindings": evidence.get("storage_bindings") or {},
                 "sources": evidence["source_identity"] or [],
                 "validation": {
                     "commit": evidence["commit"],
@@ -822,6 +844,8 @@ def admit_revision(
                     "validator_identity": evidence["validator_identity"],
                     "artifact_digest": evidence["artifact_digest"],
                     "source_digest": evidence["source_digest"],
+                    "approval_digest": evidence.get("approval_digest"),
+                    "storage_bindings": evidence.get("storage_bindings") or {},
                     "validated_at": evidence["validated_at"],
                     "evidence": str(proposals._validation_path(project, proposal, revision)),
                 },
@@ -857,7 +881,11 @@ def admit_revision(
         "commit": revision,
         "reviewed_digest": reviewed_digest,
         "artifact_digest": evidence["artifact_digest"],
-        "source_digest": evidence["source_digest"],
+        # the ACTIVATED identity is the effective one the descriptor pins
+        # (spec 0025 §4): the declaration digest stays visible alongside it
+        "source_digest": evidence.get("approval_digest") or evidence["source_digest"],
+        "source_declaration_digest": evidence["source_digest"],
+        "storage_bindings": evidence.get("storage_bindings") or {},
         "snapshot": descriptor["snapshot"],
         "current": str(project / CURRENT_REL),
         "confirmed_by": confirmed_by,
@@ -1045,6 +1073,46 @@ def resolve_admission(project: str | Path) -> tuple[dict, Path]:
             "re-approve the exact resolved identity (ariadne-authoring approve-sources) "
             "before serving; the runtime never opens an unapproved identity"
         )
+    # The pinned effective storage binding must be COMPLETE, internally
+    # consistent AND still be the binding the CURRENT environment resolves
+    # (spec 0025 §§4/AC6): every profile the admitted sources reference must
+    # carry its binding (removing the block never falls back to environment
+    # re-resolution), a hand-mutated stored binding with a claimed old digest
+    # refuses, and a host whose endpoint variables now point elsewhere never
+    # opens the unapproved endpoint under this admission — the environment
+    # check reads endpoint/region values only, never key/token values.
+    bindings = record.get("storage_bindings") or {}
+    referenced = {
+        entry["storage"]["name"]
+        for entry in record.get("sources") or []
+        if isinstance(entry.get("storage"), dict)
+        and isinstance(entry["storage"].get("name"), str)
+    }
+    if referenced:
+        if set(bindings) != referenced:
+            raise ValueError(
+                "the admitted record's pinned identity is incomplete: its sources "
+                f"reference storage profiles {sorted(referenced)} but the stored "
+                f"effective binding covers {sorted(bindings) or 'none'} (spec 0025 "
+                "§4/AC6) — a malformed or incomplete pinned identity never serves; "
+                "this needs human resolution and re-admission, never a fallback"
+            )
+        declared = record.get("source_declaration_digest") or record["source_digest"]
+        recomputed = authoring_sources.approval_digest(declared, bindings)
+        if recomputed != record["source_digest"]:
+            raise ValueError(
+                "the admitted record's stored storage binding does not match its "
+                "claimed effective source digest — a mutated binding never serves; "
+                "this needs human resolution and re-admission, never a fallback"
+            )
+        current = authoring_sources.storage_bindings_from_identity(record.get("sources"))
+        if current != bindings:
+            raise ValueError(
+                "the environment resolves a different effective storage binding "
+                "than the admitted one (spec 0025 §4) — the pinned admission binds "
+                "its exact endpoint; approve and admit the current binding before "
+                "serving, never a silent endpoint switch"
+            )
     return record, snapshot
 
 
@@ -1056,16 +1124,18 @@ def approval_present(project: str | Path, source_digest: str) -> bool:
 
 def approved_registry(record: dict) -> Registry:
     """The operator-APPROVED resolved identity of an admitted record as the
-    runtime's source registry: DuckDB opens exactly these resolved locations —
-    the pinned snapshot's registry spelling and any snapshot-relative path
-    never reach the connection (spec §5, plan §2)."""
+    runtime's source registry: DuckDB opens exactly these resolved locations
+    — the pinned snapshot's registry spelling and any snapshot-relative path
+    never reach the connection (spec §5, plan §2). The record's FROZEN
+    effective storage bindings (spec 0025 §4) ride the registry so the
+    connection opens exactly the admitted endpoints."""
     entries = record.get("sources") or []
     if not entries:
         raise RuntimeError(
             "the admitted snapshot declares no approved source identity — there is "
             "nothing for a managed runtime to query"
         )
-    return authoring_sources.identity_registry(entries)
+    return authoring_sources.identity_registry(entries, record.get("storage_bindings"))
 
 
 # ------------------------------------------------------------ the ariadne-admit CLI
