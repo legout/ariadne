@@ -200,6 +200,7 @@ from ariadne.semantic_graph import load_graph
 from ariadne.sources import (
     _URI_SCHEME_RE,
     _resolve_against,
+    binding_from_record,
     collection_resource,
     load_registry,
     parse_resource,
@@ -1156,9 +1157,28 @@ def submit_bundle(
             # Source authorization comes BEFORE any bind/audit: nothing outside
             # the approved registry identities is ever opened or executed here.
             _authorize_dataset_sources(tmp, {str(entry.get("name")) for entry in sources})
-            registry_path = project / "ariadne.yaml"
+            # spec 0025 §§3–5/AC7 (fix blocker 2): the audit MEASURES under the
+            # binding captured for the state — the captured endpoint/region
+            # values are FROZEN into the audit registry, so an environment
+            # change between capture and validation can never make validation
+            # measure one endpoint while recording another. Legacy human gates
+            # stay distinct: no approval record is created or consulted.
+            audit_registry = None
+            if sources:
+                audit_registry = load_registry(project / "ariadne.yaml")
+                audit_registry.bindings = (
+                    {
+                        name: binding_from_record(name, record)
+                        for name, record in storage_bindings.items()
+                    }
+                    or None
+                )
             result = (
-                validate(tmp, sources_path=registry_path)
+                validate(
+                    tmp,
+                    sources_path=(project / "ariadne.yaml") if sources else None,
+                    registry=audit_registry,
+                )
                 if sources
                 else validate(tmp)  # compile-only: an empty project has no audit connection
             )

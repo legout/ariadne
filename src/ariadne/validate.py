@@ -628,9 +628,17 @@ def _registry_identity(
     registry file (ADR-0010), the ``--db`` file standing in for the implicit
     one-source registry, or a pre-built APPROVED registry object (the Git
     route's frozen-binding identity, spec 0025 §4 — digested by its canonical
-    resolved identity, never file bytes). ``None`` when validation is
-    compile-only."""
-    if registry is not None:
+    resolved identity, never file bytes). When BOTH a file and a registry
+    object are given (the legacy route's frozen-binding audit), the FILE
+    identity wins: the legacy graph admission's serving check (query.py /
+    discovery.py) compares the recorded validation digest against the
+    registry file's bytes, so freezing the audit binding must never change
+    the recorded digest's form. ``None`` when validation is compile-only."""
+    if sources_path is not None:
+        path = Path(sources_path)
+    elif db_path is not None:
+        path = Path(db_path)
+    elif registry is not None:
         from ariadne import authoring_sources  # function-local: module deps stay acyclic
 
         resolved = authoring_sources._resolved_entries(
@@ -640,10 +648,6 @@ def _registry_identity(
             authoring_sources.resolved_digest(resolved),
             "approved resolved identity",
         )
-    if sources_path is not None:
-        path = Path(sources_path)
-    elif db_path is not None:
-        path = Path(db_path)
     else:
         return None, None
     return hashlib.sha256(path.read_bytes()).hexdigest(), str(path)

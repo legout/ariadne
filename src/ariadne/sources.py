@@ -827,16 +827,22 @@ def _redact(dsn: str) -> str:
 
 
 def _redact_all(message: str, secrets: list[str]) -> str:
-    """Every known DSN or storage-profile key/token value redacted, plus a
-    generic pass so no credentialed URL in a builder-raised error message
-    ever carries a password (spec 0025 §3: report variable/profile identity,
-    never secret contents — including library errors that echo SQL)."""
+    """Every known DSN or storage-profile key/token value redacted — in RAW
+    form AND in the SQL-escaped form the engine actually echoes (a quote in a
+    secret is doubled inside the CREATE SECRET literal, so the escaped text
+    would otherwise remain recoverable) — plus a generic pass so no
+    credentialed URL in a builder-raised error message ever carries a
+    password (spec 0025 §3/AC4: report variable/profile identity, never
+    secret contents, including library errors that echo SQL)."""
     for dsn in secrets:
         message = (
             message.replace(dsn, _redact(dsn))
             if "://" in dsn and _DSN_PASSWORD_RE.search(dsn)
             else message.replace(dsn, "***")
         )
+        escaped = dsn.replace("'", "''")
+        if escaped != dsn:
+            message = message.replace(escaped, "***")
     return _DSN_PASSWORD_RE.sub(r"\1***\3", message)
 
 

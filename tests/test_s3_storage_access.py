@@ -43,7 +43,6 @@ from tests import s3_fixture as fx  # noqa: E402
 from tests.test_authoring import (  # noqa: E402 — legacy-route fixtures
     bundle_submission,
     scaffold_project,
-    write_parquet,
     write_submission,
 )
 from tests.test_git_authoring import (  # noqa: E402
@@ -160,6 +159,12 @@ def test_two_profiles_route_distinct_signed_s3_data(tmp_path, monkeypatch):
         csv_url = a.put_csv(
             "retail/labels/labels.csv", [(1, "EMEA"), (2, "AMER")], ("order_id", "region")
         )
+        # a native catalog whose VIEW reads S3 backing files — no credentials
+        # inside the catalog; the shared session's profile serves its reads
+        view_catalog_url = a.put_bytes(
+            "retail/catalogs/views.duckdb",
+            fx.native_view_catalog_bytes(a, "s3://retail/orders/orders.parquet"),
+        )
         json_url = b.put_json(
             "analytics/events/events.json", fx.ORACLE_B_ROWS, ("id", "amount", "region")
         )
@@ -189,6 +194,12 @@ def test_two_profiles_route_distinct_signed_s3_data(tmp_path, monkeypatch):
                     },
                     {"name": "labels", "type": "csv", "storage": "local", "path": csv_url},
                     {"name": "happenings", "type": "json", "storage": "remote", "path": json_url},
+                    {
+                        "name": "viewcat",
+                        "type": "duckdb",
+                        "storage": "local",
+                        "path": view_catalog_url,
+                    },
                 ],
             },
         )
@@ -215,12 +226,18 @@ def test_two_profiles_route_distinct_signed_s3_data(tmp_path, monkeypatch):
                 "SELECT count(*), count(*) FILTER (WHERE region = 'EMEA') FROM labels.labels"
             ).fetchone()
             assert row == (2, 1)  # the CSV fixture's own two rows
+            # the native catalog's VIEW reads its S3 backing file THROUGH the
+            # profile (blocker 3: the view's data reads must traverse it)
+            row = con.execute(
+                "SELECT count(*), sum(amount) FROM viewcat.main.backing_orders"
+            ).fetchone()
+            assert row == (fx.ORACLE_A["count"], fx.ORACLE_A["sum"])
             row = con.execute(
                 "SELECT count(*), sum(amount) FROM happenings.events"
             ).fetchone()
             assert row == (fx.ORACLE_B["count"], fx.ORACLE_B["sum"])
             names = {entry["name"] for entry in catalog}
-            assert names == {"orders", "events", "catalog", "labels", "happenings"}
+            assert names == {"orders", "events", "catalog", "labels", "happenings", "viewcat"}
         finally:
             con.close()
 
@@ -377,7 +394,11 @@ def test_secret_creation_failure_redacts_echoed_statement(tmp_path, monkeypatch)
     message = str(refused.value)
     assert "Fake failure echoing statement" in message  # the injected seam fired
     assert "CREATE SECRET ariadne_local" in message  # the statement WAS echoed
+    # no recoverable credential material (spec 0025 §3/AC4): neither the RAW
+    # value nor the SQL-DOUBLED-QUOTE form the echoed statement carries
     fx.assert_no_secret_values(message, [key_value, secret_value])
+    assert secret_value.replace("'", "''") not in message  # the escaped form too
+    assert key_value.replace("'", "''") not in message
 
 
 # ---------------------------------------------------- AC5/AC6 (live, Git)
@@ -801,25 +822,26 @@ def test_stale_schema_observations_refuse_under_a_changed_endpoint(
 
 
 def test_legacy_bundle_validation_binds_the_effective_endpoint(tmp_path, monkeypatch):
-    """Fix finding 5 (spec 0025 §5/AC7): the LEGACY staged-bundle route binds
-    its validation to the effective endpoint — a bundle validated under A
-    never retries idempotently, reviews or Promotes after the environment
-    resolves B, while the legacy human gates stay distinct (no approval store
-    involved). Real loopback S3 reads under A; the endpoint switch to B needs
-    no network (the binding gates refuse before any read)."""
+    """Fix finding 5 + blocker 2 (spec 0025 §§3-5/AC7): the LEGACY staged-bundle
+    route binds its validation to the effective endpoint — a bundle validated
+    under A never retries idempotently, reviews or Promotes after the
+    environment resolves B — and validation MEASURES under the binding it
+    records: an environment change between capture and audit cannot make the
+    audit pass on B's valid grain while the state records A's duplicate grain.
+    Real loopback S3 reads; the legacy human gates stay distinct."""
     from ariadne import authoring as legacy_authoring
+    from ariadne import validate as validate_module
 
     fx.require_docker()
     a = fx.S3Endpoint(tmp_path / "fixture", "retail", "legkey0001", "legsecret01", None).start()
+    b = None
     try:
-        a.put_parquet(
-            "retail/orders/orders.parquet", [(1, "a"), (2, "b"), (3, "c")], ("id", "label")
-        )
-        project = scaffold_project(tmp_path)
-        write_parquet(project / "data" / "events.parquet")
-        monkeypatch.setenv("LEGACY_F5_KEY_ID", a.access_key)
-        monkeypatch.setenv("LEGACY_F5_SECRET", a.secret_key)
-        monkeypatch.setenv("LEGACY_F5_ENDPOINT", a.endpoint_url)
+        b = fx.S3Endpoint(tmp_path / "fixture", "retailb", "legbkey001", "legbsecret1", None)
+        b.start()
+        unique_rows = [(1, "a"), (2, "b"), (3, "c")]
+        duplicate_rows = [(1, "a"), (1, "a-duplicate"), (2, "b")]  # violates pk id
+        a.put_parquet("retail/orders/events.parquet", unique_rows, ("id", "label"))
+        b.put_parquet("retail/orders/events.parquet", unique_rows, ("id", "label"))
         profiles = {
             "local": {
                 "type": "s3",
@@ -829,29 +851,39 @@ def test_legacy_bundle_validation_binds_the_effective_endpoint(tmp_path, monkeyp
                 "scopes": ["s3://retail/"],
             }
         }
-        intake = tmp_path / "intake.yaml"
-        intake.write_text(
-            yaml.safe_dump(
-                {
-                    "storages": profiles,
-                    "sources": [
-                        {"name": "events", "type": "parquet", "path": "data/events.parquet"},
-                        {
-                            "name": "orders",
-                            "type": "parquet",
-                            "storage": "local",
-                            "path": "s3://retail/orders/orders.parquet",
-                        },
-                    ],
-                },
-                sort_keys=False,
-            ),
-            encoding="utf-8",
-        )
-        installed = legacy_authoring.propose_sources(intake, project=project)
-        legacy_authoring.approve_sources(installed["digest"], project=project)
 
-        # validated under A: the audit really read both sources, S3 included
+        def install_registry(project: Path) -> None:
+            intake = project / "intake.yaml"
+            intake.write_text(
+                yaml.safe_dump(
+                    {
+                        "storages": profiles,
+                        "sources": [
+                            {
+                                "name": "events",
+                                "type": "parquet",
+                                "storage": "local",
+                                "path": "s3://retail/orders/events.parquet",
+                            }
+                        ],
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+            installed = legacy_authoring.propose_sources(intake, project=project)
+            legacy_authoring.approve_sources(installed["digest"], project=project)
+
+        def set_env(endpoint) -> None:
+            monkeypatch.setenv("LEGACY_F5_KEY_ID", endpoint.access_key)
+            monkeypatch.setenv("LEGACY_F5_SECRET", endpoint.secret_key)
+            monkeypatch.setenv("LEGACY_F5_ENDPOINT", endpoint.endpoint_url)
+
+        # [phase 1] validated under A: the audit really read the S3 source
+        set_env(a)
+        (tmp_path / "phase1").mkdir(parents=True, exist_ok=True)
+        project = scaffold_project(tmp_path / "phase1")
+        install_registry(project)
         submission_file = write_submission(project, bundle_submission())
         submitted = legacy_authoring.submit_bundle(submission_file, project=project)
         assert submitted["status"] == "validated", submitted.get("errors")
@@ -859,7 +891,7 @@ def test_legacy_bundle_validation_binds_the_effective_endpoint(tmp_path, monkeyp
 
         # the endpoint environment changes to B: identical retry, review and
         # Promotion all refuse the A-measured validation (no idempotent reuse)
-        monkeypatch.setenv("LEGACY_F5_ENDPOINT", "http://127.0.0.1:9")
+        set_env(b)
         with pytest.raises(ValueError, match="effective storage binding changed"):
             legacy_authoring.submit_bundle(submission_file, project=project)
         with pytest.raises(ValueError, match="effective storage binding changed"):
@@ -869,5 +901,44 @@ def test_legacy_bundle_validation_binds_the_effective_endpoint(tmp_path, monkeyp
                 digest, staging_root=project / "staging", served_root=project, assume_yes=True
             )
         assert not any(project.glob("context_layer/metrics/*"))  # nothing was served
+
+        # [phase 2] blocker 2: an environment change BETWEEN the state's
+        # binding capture and the audit — A now carries DUPLICATE grain, B
+        # valid grain. Validation must measure the RECORDED binding (A) and
+        # fail on A's duplicates; it can never pass by measuring B.
+        a.put_parquet("retail/orders/events.parquet", duplicate_rows, ("id", "label"))
+        b.put_parquet("retail/orders/events.parquet", unique_rows, ("id", "label"))
+        set_env(a)
+        (tmp_path / "phase2").mkdir(parents=True, exist_ok=True)
+        project2 = scaffold_project(tmp_path / "phase2")
+        install_registry(project2)
+
+        real_validate = validate_module.validate
+
+        def flip_env_then_validate(tree, *args, **kwargs):
+            monkeypatch.setenv("LEGACY_F5_ENDPOINT", b.endpoint_url)
+            return real_validate(tree, *args, **kwargs)
+
+        monkeypatch.setattr(validate_module, "validate", flip_env_then_validate)
+        try:
+            measured = legacy_authoring.submit_bundle(
+                write_submission(project2, bundle_submission()), project=project2
+            )
+        finally:
+            monkeypatch.setattr(validate_module, "validate", real_validate)
+            set_env(a)
+        assert measured["status"] == "invalid", measured.get("errors")
+        assert any(
+            "grain" in str(error).lower() and "events" in str(error)
+            for error in measured.get("errors") or []
+        ), measured.get("errors")
+        # nothing validated means nothing promotable under the recorded A
+        digest2 = legacy_authoring.review_bundle(project=project2)["digest"]
+        with pytest.raises(ValueError, match="'invalid'"):
+            promote_bundle(
+                digest2, staging_root=project2 / "staging", served_root=project2, assume_yes=True
+            )
     finally:
         a.stop()
+        if b is not None:
+            b.stop()

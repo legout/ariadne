@@ -314,6 +314,31 @@ def native_catalog_bytes(rows: list[tuple]) -> bytes:
     return data
 
 
+def native_view_catalog_bytes(endpoint: S3Endpoint, s3_parquet_url: str) -> bytes:
+    """A real native DuckDB catalog whose VIEW reads remote S3 backing files
+    (issue #71's native-catalog/backing-file journey): the view definition
+    references the s3:// parquet URL and embeds NO credentials. DuckDB binds
+    the view at creation, so the FIXTURE's own temporary secret serves that
+    bind-time metadata read (session-scoped — nothing is persisted in the
+    catalog); later, the shared session's named profile serves the attached
+    view's binding and data reads. Returned as bytes for ``put_bytes``."""
+    path = Path(os.environ.get("ARIADE_S3_FX_DIR", "/tmp")) / f"nativeview-{os.getpid()}.duckdb"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.unlink(missing_ok=True)
+    con = duckdb.connect(str(path))
+    try:
+        endpoint._fixture_secret(con)
+        con.execute(
+            "CREATE VIEW main.backing_orders AS SELECT * FROM "
+            f"read_parquet('{s3_parquet_url}')"
+        )
+    finally:
+        con.close()
+    data = path.read_bytes()
+    path.unlink(missing_ok=True)
+    return data
+
+
 def require_docker() -> None:
     """The live S3 checks are REQUIRED (spec 0025 §§7 AC2/AC5): a missing
     transport capability blocks the check — it is never silently skipped."""
