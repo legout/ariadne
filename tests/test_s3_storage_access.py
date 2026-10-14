@@ -21,6 +21,7 @@ import shutil
 import sys
 from pathlib import Path
 
+import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
@@ -830,13 +831,15 @@ def test_legacy_bundle_validation_binds_the_effective_endpoint(tmp_path, monkeyp
     audit pass on B's valid grain while the state records A's duplicate grain.
     Real loopback S3 reads; the legacy human gates stay distinct."""
     from ariadne import authoring as legacy_authoring
-    from ariadne import validate as validate_module
 
     fx.require_docker()
+    # BOTH endpoints share one credential set and one bucket name, so the SAME
+    # URI resolves on either endpoint: the grain oracle distinguishes WHICH
+    # endpoint validation measured, not merely whether some read failed.
     a = fx.S3Endpoint(tmp_path / "fixture", "retail", "legkey0001", "legsecret01", None).start()
     b = None
     try:
-        b = fx.S3Endpoint(tmp_path / "fixture", "retailb", "legbkey001", "legbsecret1", None)
+        b = fx.S3Endpoint(tmp_path / "fixture", "retail", "legkey0001", "legsecret01", None)
         b.start()
         unique_rows = [(1, "a"), (2, "b"), (3, "c")]
         duplicate_rows = [(1, "a"), (1, "a-duplicate"), (2, "b")]  # violates pk id
@@ -913,20 +916,38 @@ def test_legacy_bundle_validation_binds_the_effective_endpoint(tmp_path, monkeyp
         project2 = scaffold_project(tmp_path / "phase2")
         install_registry(project2)
 
-        real_validate = validate_module.validate
+        # B is readable with the very credentials the flip supplies: the same
+        # URI there serves the UNIQUE-grain rows, so a validation that wrongly
+        # re-resolves the environment would PASS on B instead of failing on
+        # A's duplicates (the discriminating oracle).
+        set_env(b)
+        probe = duckdb.connect()
+        try:
+            b._fixture_secret(probe)
+            assert probe.execute(
+                "SELECT count(*), sum(id) FROM read_parquet('s3://retail/orders/events.parquet')"
+            ).fetchone() == (3, 6)
+        finally:
+            probe.close()
+        set_env(a)
+
+        real_validate = legacy_authoring.validate  # the seam submit_bundle calls
+        calls: list[int] = []
 
         def flip_env_then_validate(tree, *args, **kwargs):
-            monkeypatch.setenv("LEGACY_F5_ENDPOINT", b.endpoint_url)
+            calls.append(1)
+            set_env(b)
             return real_validate(tree, *args, **kwargs)
 
-        monkeypatch.setattr(validate_module, "validate", flip_env_then_validate)
+        monkeypatch.setattr(legacy_authoring, "validate", flip_env_then_validate)
         try:
             measured = legacy_authoring.submit_bundle(
                 write_submission(project2, bundle_submission()), project=project2
             )
         finally:
-            monkeypatch.setattr(validate_module, "validate", real_validate)
+            monkeypatch.setattr(legacy_authoring, "validate", real_validate)
             set_env(a)
+        assert calls == [1], "the endpoint flip must run on the caller's validate seam"
         assert measured["status"] == "invalid", measured.get("errors")
         assert any(
             "grain" in str(error).lower() and "events" in str(error)
