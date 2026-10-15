@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ariadne-agent"
-version = "0.3.0"
+version = "0.3.1"
 description = "Installable Ariadne Agent backend: fixed-role conversations over native Ariadne tools"
 readme = "README.md"
 requires-python = ">=3.12"

@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-10-14
+
+Fourth release: named S3 storage profiles with environment-referenced
+credentials, Lakehouse qualification, and a Diátaxis documentation
+restructure.
+
+- **Named S3 storage profiles (spec 0025, ADR-0023, #71)** — declarative,
+  credential-free `storages:` profiles reference environment variables for
+  keys, endpoints, region, and session token; sources select a profile and
+  must stay inside its non-intersecting `s3://` scopes. The shared builder
+  installs temporary URI-scoped DuckDB secrets per connection (values never
+  in YAML, plans, or errors — including SQL-escaped forms), refuses
+  ambient-secret shadowing, and freezes the effective binding into source
+  approval, validation evidence, review/admission identity, and legacy
+  staging/Promotion: an endpoint change needs a new human grant and fresh
+  evidence, while key rotation alone does not. Profile-free registries and
+  old records keep their existing shape and digests.
+- **Lakehouse through named profiles (spec 0025 S2, #72)** — Delta, file-based
+  Iceberg, and DuckLake (local metadata catalog + remote S3 data, attached
+  `READ_ONLY`, no `DATA_PATH` override) qualified against two independently
+  credentialed endpoints through the same builder, with actual extension
+  versions asserted in the test suite.
+- **Onboarding for multiple storages (#72)** — a Diátaxis how-to with shell
+  and Docker examples, a commented scaffold template block, `.env.example`
+  entries, and agent guidance; examples are validated against the real
+  registry validator.
+- **Documentation restructure** — the README is now a short overview and the
+  guides follow Diátaxis under `docs/` (tutorial, how-to guides, reference,
+  explanation), with the legacy-to-Git mappings pinned in the reference
+  pages and the release quickstart folded into the tutorial.
 ## 0.3.0 - 2026-10-13
 
 Third release: usability, verbatim ingestion, trusted sources, and context routing.
