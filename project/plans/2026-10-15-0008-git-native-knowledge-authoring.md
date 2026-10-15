@@ -1,6 +1,13 @@
 # Implementation plan 0008: Git-native Knowledge Authoring
 
-**Revision/status:** 1 — proposed; no runtime execution has started.
+**Revision/status:** 1 — owner-approved for supervised execution.
+
+**Execution approval:** owner **“Ja. Freigabe”**, 2026-10-15, in response to
+“Gibst du Plan r1 zur Umsetzung im Supervised-Modus frei?”, presented at isolated
+plan commit `299f1f146e864177cc8e7158cbee3833dd17ab1a`. This approves C0–G5
+candidate preparation and proportional review, not target integration or
+publication. Preflight begins with C0; no runtime result is claimed by this
+approval record.
 
 **Goal:** deliver the Git-only authoring replacement and the bounded private
 KB-read-only consumer candidate specified in
@@ -17,10 +24,10 @@ approval-record commit. The underlying runtime baseline remains public
 `c3b68db233f8aa98a39380a0099ff2b800a70c55`; private base is
 `43facf97fc40497688b54546b511c5bd392396a6`.
 
-**Authority:** plan approval is outstanding. The owner's original request names
-supervised execution of approved work. After approval of this plan, recheck that
-execution authority and the orchestrator preflight before dispatch. Prepare
-isolated reviewed candidates only; no target integration, push, PR/issue
+**Authority:** the explicit execution approval above and original request
+authorize supervised execution of this approved plan. Recheck the orchestrator
+preflight before every dispatch. Prepare isolated reviewed candidates only;
+no target integration, push, PR/issue
 mutation, real KB migration/publication, deployment, or release is authorized.
 All ingest/export/publication checks below use disposable fixtures, not
 `/home/volker/coding/lumio/.wiki` or production stores. This plan does not create
@@ -430,11 +437,12 @@ publication, issue updates, deployment, push and release.
 
 ## Handoff and remaining gates
 
-Plan approval is the next gate; no worker, feature test, wheel build, test
-service, dependency installation, real legacy export, or publication has been
-started by writing it. Installed role/runtime capability, baseline checks,
-actual artifact hashes, private CI archive transport and live test-service
-availability are execution prerequisites to verify, not invented facts. Changes
+The plan/execution approval is recorded above. Writing and approving this plan
+did not itself run a worker, feature test, wheel build, test service, dependency
+installation, real legacy export, or publication. Installed role/runtime
+capability, baseline checks, actual artifact hashes, private CI archive transport
+and live test-service availability remain prerequisites to verify during
+execution, not invented facts. Changes
 to approved behavior/interfaces return to shaping; infrastructure or baseline
 failures go to the owner without switching hosts or weakening checks.
 
