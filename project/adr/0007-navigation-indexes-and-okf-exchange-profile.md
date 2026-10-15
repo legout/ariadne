@@ -22,7 +22,7 @@ Generic imports are permissive and reviewable rather than lossless: unknown meta
 
 At the OKF import boundary, an unknown non-empty `type`, arbitrary producer frontmatter key, or unresolved ordinary Markdown body link is not grounds to reject a foreign bundle. The importer returns a previewable proposal and records a dropped-metadata diagnostic or a broken-link warning; body links remain prose and are never promoted to canonical Relationships. The subsequent canonical Proposal Pipeline remains stricter: unresolved typed Relationships in a recognized `lumio` extension are validation errors. Profile 1 deliberately has no opaque extension sidecar, so unknown producer metadata is lossy after canonical publication; the diagnostic is the required disclosure rather than an implied preservation promise.
 
-The detailed Profile 1 mapping, diagnostics, structural rules, and rejected substitutions are recorded in `docs/research/okf-comparison.md`.
+The detailed Profile 1 mapping, diagnostics, structural rules, and rejected substitutions are recorded in `project/research/okf-comparison.md`.
 
 ## Considered Options
 

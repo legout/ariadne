@@ -1,7 +1,7 @@
 # 04 — Safe, usable agent workflows
 
 **Implemented.** Goal: satisfy
-[PRD-0006 AC3](../prd/0006-library-stabilization.md#ac3-safe-agent-workflows).
+[PRD-0006 AC3](../specs/0006-library-stabilization.md#ac3-safe-agent-workflows).
 Evidence: [B13–B18, B21, I01/I02/I04, C01/C04](../research/library-stabilization-audit.md#finding-registry).
 Architecture: [host-as-Distiller and optional packaging](../adr/0010-uv-workspace-and-progressive-packaging.md),
 [packaged contract](../adr/0017-portable-agent-skill-distribution-and-project-bootstrap.md),

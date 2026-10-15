@@ -2,7 +2,7 @@
 
 Experiment-only harness for **GitHub issue #153** — *Spike: evaluate AnyDoc as a
 local document-to-Markdown backend*. It implements the evaluation recommended by
-[`docs/research/anydoc-fit.md`](../../docs/research/anydoc-fit.md).
+[`project/research/anydoc-fit.md`](../../project/research/anydoc-fit.md).
 
 > **This is an experiment, not a product integration.** Nothing here is a
 > `lumio-wiki` dependency. `evaluate.py` imports `anydoc`, `markitdown`, and
@@ -30,7 +30,7 @@ local document-to-Markdown backend*. It implements the evaluation recommended by
 
 The `anydoc-fixtures/` filenames retain AnyDoc's `--errors` / `--skips` /
 `--recovers` suffixes, which document each hostile/malformed file's expected
-behaviour and drive the [failure-mode audit](../../docs/research/anydoc-fit.md#5-failure-mode-and-malformed-input-audit).
+behaviour and drive the [failure-mode audit](../../project/research/anydoc-fit.md#5-failure-mode-and-malformed-input-audit).
 
 Formats NOT exercised by a fixture are explicitly disclosed: **PPTM, DOCM, PPS,
 PPSM, XLSB, XLB** (container variants that share a parser with the tested

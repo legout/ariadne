@@ -3,9 +3,9 @@
 **Approved: owner sign-off 2026-09-15 after five independent review rounds;
 execution proceeds supervised per ADR-0027 — immediate review after M1, one
 final candidate review, integration and publication gates retained.** Goal: deliver
-[PRD-0007](../prd/0007-mcp-server.md) — a read-only MCP server that lets any
+[PRD-0007](../specs/0007-mcp-server.md) — a read-only MCP server that lets any
 MCP-capable host retrieve from a Knowledge Base with CLI-equivalent answers.
-Source specification: `docs/prd/0007-mcp-server.md` and
+Source specification: `project/specs/0007-mcp-server.md` and
 [ADR-0028](../adr/0028-read-only-mcp-distribution.md), owner-approved
 2026-09-15 (spec commit `661df78`, independently reviewed clean).
 Capture checkpoint: no new domain vocabulary; ADR-0028 is the only new

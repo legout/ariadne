@@ -1,6 +1,6 @@
 # Library stabilization audit evidence
 
-_Date: 2026-09-07. Audit revision: `9712f6fd51ac4381a6ca4fc513e2546355fba0d0`. Evidence only; behavior is owned by [PRD-0006](../prd/0006-library-stabilization.md), and execution is owned by `docs/plans/`._
+_Date: 2026-09-07. Audit revision: `9712f6fd51ac4381a6ca4fc513e2546355fba0d0`. Evidence only; behavior is owned by [PRD-0006](../specs/0006-library-stabilization.md), and execution is owned by `project/plans/`._
 
 ## Provenance
 

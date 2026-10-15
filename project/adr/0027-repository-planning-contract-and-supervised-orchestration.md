@@ -11,7 +11,7 @@ ADR-0003 chose an issue-only mattpocock workflow and rejected standing specifica
 
 ## Decision
 
-Use the repository's `planning-contract` as the single artifact and handoff model. `CONTEXT.md` owns vocabulary, ADRs own durable architectural constraints, `docs/prd/` owns behavior and acceptance, `docs/plans/` owns compact execution maps, and GitHub Issues own canonical task bodies only when tracker coordination is needed.
+Use the repository's `planning-contract` as the single artifact and handoff model. `CONTEXT.md` owns vocabulary, ADRs own durable architectural constraints, `project/specs/` owns behavior and acceptance, `project/plans/` owns compact execution maps, and GitHub Issues own canonical task bodies only when tracker coordination is needed.
 
 Plans use the smallest coherent vertical slices. Related tasks may share one validation unit and one obligation (`new-test`, `existing-check`, or `no-new-test`); assurance covers named reachable failures rather than repeating broad test matrices. Orchestrated execution defaults to supervised mode with one configured implementer, proportional independent review, one writer per worktree, and separate approval for candidate assembly, integration, and publication.
 

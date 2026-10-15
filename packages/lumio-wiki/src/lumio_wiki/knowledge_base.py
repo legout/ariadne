@@ -593,7 +593,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         Profile 1 public scope. The export serializer receives this
         already-authorized set and cannot widen it: a full export occurs only
         when the caller explicitly supplies every visibility class it intends
-        to export. See ADR-0007 and ``docs/research/okf-comparison.md``.
+        to export. See ADR-0007 and ``project/research/okf-comparison.md``.
         """
         return [page for page in self.pages if (page.visibility or "") == "public"]
 

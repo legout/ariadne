@@ -13,7 +13,7 @@ Read-only inspection covered only the two owner-confirmed repositories:
 
 This is **planning-contract v1 research evidence**, not approval to implement, migrate, remove, release, or edit the private app. Search absence proves only “no match in these two revisions and searched source sets,” never absence of unconfirmed external consumers. Dynamic imports, wildcard re-exports, string references, package metadata, and entry points were inspected explicitly; arbitrary reflection outside these repositories cannot be disproved.
 
-Authoritative inputs read: both `AGENTS.md`; both `CONTEXT.md`; public Core PRD; private platform PRD; Plan 05; PRD-0006; stabilization audit; ADR-0022; ADR-0025; and artifact/planning classification. Key authority: removal requires real consumer migration, and absence locally is insufficient (`docs/prd/0006-library-stabilization.md:11-14,30-38`); Plan 05 remains proposed/unapproved and explicitly blocks S1/S2 removals and S4 (`docs/plans/05-simplification-release.md:1-23`). ADR-0022 requires writer deletion but legacy marked-log recognition and collision protection (`docs/adr/0022-retire-activity-log-artifact.md:31-48,67-76`). ADR-0025 makes the private app a bounded-range wheel consumer and cross-repo migration participant (`docs/adr/0025-repository-split.md:29-57`).
+Authoritative inputs read: both `AGENTS.md`; both `CONTEXT.md`; public Core PRD; private platform PRD; Plan 05; PRD-0006; stabilization audit; ADR-0022; ADR-0025; and artifact/planning classification. Key authority: removal requires real consumer migration, and absence locally is insufficient (`project/specs/0006-library-stabilization.md:11-14,30-38`); Plan 05 remains proposed/unapproved and explicitly blocks S1/S2 removals and S4 (`project/plans/05-simplification-release.md:1-23`). ADR-0022 requires writer deletion but legacy marked-log recognition and collision protection (`project/adr/0022-retire-activity-log-artifact.md:31-48,67-76`). ADR-0025 makes the private app a bounded-range wheel consumer and cross-repo migration participant (`project/adr/0025-repository-split.md:29-57`).
 
 ## Accepted-baseline addendum
 
@@ -50,11 +50,11 @@ rg -n --glob '!uv.lock' --glob '!docs/**' --glob '!**/.wiki/**' --glob '!**/.wor
 
 ## Files Retrieved
 
-1. `docs/plans/05-simplification-release.md` (lines 1-224) — unapproved sequence, candidate list, gates, and stale S4 commands.
-2. `docs/prd/0006-library-stabilization.md` (lines 1-42) — approved behavior and external-consumer requirement.
-3. `docs/research/library-stabilization-audit.md` (lines 1-49) — B19-B21/C01-C04 evidence and limitations.
-4. `docs/adr/0022-retire-activity-log-artifact.md` (lines 1-76) — Activity Log retirement contract.
-5. `docs/adr/0025-repository-split.md` (lines 1-66) — ownership, dependency direction, and bounded ranges.
+1. `project/plans/05-simplification-release.md` (lines 1-224) — unapproved sequence, candidate list, gates, and stale S4 commands.
+2. `project/specs/0006-library-stabilization.md` (lines 1-42) — approved behavior and external-consumer requirement.
+3. `project/research/library-stabilization-audit.md` (lines 1-49) — B19-B21/C01-C04 evidence and limitations.
+4. `project/adr/0022-retire-activity-log-artifact.md` (lines 1-76) — Activity Log retirement contract.
+5. `project/adr/0025-repository-split.md` (lines 1-66) — ownership, dependency direction, and bounded ranges.
 6. `packages/lumio-wiki/src/lumio_wiki/__init__.py` (lines 1-391, 404-755) — broad root imports and `__all__`; candidate aliases/exports.
 7. `packages/lumio-wiki/src/lumio_wiki/knowledge_base.py` (lines 102-151, 445-470, 700-960, 2528-2610, 4696-4710, 5360-5430) — constants, parser/source definitions, duplicate index build, traversal APIs, Activity Log producers.
 8. `packages/lumio-wiki/src/lumio_wiki/location.py` (lines 134-405) — snapshot façade duplicating SDK traversal and canonical Location opening seam.
@@ -162,7 +162,7 @@ gates.
 ### Relevant verification commands
 
 Public focused commands are listed in the **Verify** blocks for Plan S1-S3
-(`docs/plans/05-simplification-release.md`). Public candidate certification
+(`project/plans/05-simplification-release.md`). Public candidate certification
 begins with:
 
 ```sh

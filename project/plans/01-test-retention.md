@@ -1,7 +1,7 @@
 # 01 — Implemented test retention and reduction
 
 **Implemented bounded reduction only; no production fixes.** Behavioral source:
-[PRD-0006 constraints](../prd/0006-library-stabilization.md#behavioral-constraints).
+[PRD-0006 constraints](../specs/0006-library-stabilization.md#behavioral-constraints).
 Evidence: the two complete final essential-journey reports (core/workflows)
 identified in the [audit provenance](../research/library-stabilization-audit.md#provenance).
 Earlier opposite golden-versus-semantic selections were not combined with these maps.
@@ -24,7 +24,7 @@ completed record is not a current execution template.
   only newly orphaned scaffolding/imports and stale deleted-section commentary.
   **Completion:** exact collection delta and unchanged survivor ASTs verified;
   focused serial and full four-worker runs pass, Ruff and diff checks clean.
-- [x] **Document the reduction and unexecuted plans.** Files: `docs/plans/README.md`
+- [x] **Document the reduction and unexecuted plans.** Files: `project/plans/README.md`
   and plans 01–05. Input → output: approved decisions/current audit/code → linked
   task map. **Obligation:** `no-new-test`; source paths, local links, task anchors,
   finding coverage and absence of unresolved placeholders checked. This lane

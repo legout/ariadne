@@ -1,13 +1,13 @@
 # 05 — Simplification and coordinated release
 
 **Proposed; no integrated completion is recorded and implementation is not approved by this revision.** Goal: satisfy
-[PRD-0006 AC4](../prd/0006-library-stabilization.md#ac4-simplification-and-coordinated-release)
+[PRD-0006 AC4](../specs/0006-library-stabilization.md#ac4-simplification-and-coordinated-release)
 without removing supported capabilities or blindly breaking external consumers.
 Evidence: [B19–B21 and C01–C04](../research/library-stabilization-audit.md#finding-registry)
 and the [public/private consumer API inventory](../research/plan-05-consumer-api-inventory.md).
 Architecture: [ADR-0022](../adr/0022-retire-activity-log-artifact.md),
 [ADR-0025](../adr/0025-repository-split.md),
-[Core PRD small seam](../prd/0002-core-sdk.md), and
+[Core PRD small seam](../specs/0002-core-sdk.md), and
 [progressive graph](../adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md).
 Python/uv, two public wheels; no mandatory dependencies or new generic engine.
 

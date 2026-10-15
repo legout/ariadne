@@ -2,7 +2,7 @@
 
 Experiment-only harness for **GitHub issue #146** — *Spike: evaluate myKG as a
 private corpus extractor feeding Lumio Ingest Proposals*. It implements the
-focused experiment recommended by [`docs/research/mykg-fit.md`](../../docs/research/mykg-fit.md).
+focused experiment recommended by [`project/research/mykg-fit.md`](../../project/research/mykg-fit.md).
 
 > **This is an experiment, not a product integration.** Nothing here is a
 > `lumio-wiki` dependency. The converter is a standalone, standard-library-only

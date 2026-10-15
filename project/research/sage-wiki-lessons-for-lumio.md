@@ -346,7 +346,7 @@ The research produced seven candidate lessons. The grill selected
 **claim-level source invalidation and retraction** as the first focused slice and
 deferred the other six. The resolved architecture is recorded in:
 
-- `docs/adr/0014-source-versions-and-page-level-invalidation.md` (accepted
+- `project/adr/0014-source-versions-and-page-level-invalidation.md` (accepted
   first in its claim-level form, later descoped to page-level invalidation
   with the claim-level design deferred to a backlog issue); and
 - [GitHub issue #129](https://github.com/legout/lumio/issues/129), the
@@ -375,10 +375,10 @@ decomposed.
 ### Lumio sources
 
 - `CONTEXT.md`
-- `docs/prd/0001-knowledge-agent-platform.md`
-- `docs/adr/0007-navigation-indexes-and-okf-exchange-profile.md`
-- `docs/adr/0010-uv-workspace-and-progressive-packaging.md`
-- `docs/adr/0011-derived-reference-graph-and-progressive-storage.md`
+- `project/specs/0001-knowledge-agent-platform.md`
+- `project/adr/0007-navigation-indexes-and-okf-exchange-profile.md`
+- `project/adr/0010-uv-workspace-and-progressive-packaging.md`
+- `project/adr/0011-derived-reference-graph-and-progressive-storage.md`
 - `docs/kb-format.md`
 - `packages/lumio-wiki/src/lumio_wiki/source_processor.py`
 - `packages/lumio-wiki/src/lumio_wiki/distiller.py`

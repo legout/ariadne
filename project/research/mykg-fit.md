@@ -85,7 +85,7 @@ Lumio's accepted decisions are explicit:
 - raw Knowledge Sources and private registry state do not enter Reader retrieval or public exports;
 - every mutation is proposal-first and validated before publication.
 
-See `CONTEXT.md`, `docs/prd/0001-knowledge-agent-platform.md`, `docs/adr/0011-derived-reference-graph-and-progressive-storage.md`, and `docs/adr/0014-source-versions-and-page-level-invalidation.md`.
+See `CONTEXT.md`, `project/specs/0001-knowledge-agent-platform.md`, `project/adr/0011-derived-reference-graph-and-progressive-storage.md`, and `project/adr/0014-source-versions-and-page-level-invalidation.md`.
 
 myKG produces LLM-extracted nodes and edges after schema review. Confidence and source files make those edges inspectable, but they do not make them reviewed Lumio Relationships. A `0.95` extraction score is not equivalent to Lumio lifecycle `approved`.
 

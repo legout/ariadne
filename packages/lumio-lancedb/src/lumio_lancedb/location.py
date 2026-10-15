@@ -9,7 +9,7 @@ search work uniformly:
   here — Lumio never hands its obstore client to LanceDB (ADR-0013). A remote
   connection uses ``read_consistency_interval=timedelta(0)`` for the strongest
   documented cross-process visibility (research:
-  ``docs/research/lancedb-s3-remote-storage.md``).
+  ``project/research/lancedb-s3-remote-storage.md``).
 * The small metadata sidecars beside the tables (source fingerprint,
   embedding-model identity) are read/written through the same object store, so
   a remote index carries its freshness and model identity with no managed local

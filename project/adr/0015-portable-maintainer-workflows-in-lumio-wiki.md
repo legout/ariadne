@@ -14,7 +14,7 @@ CLI verb, the packaged SKILL.md never mentions them, and importing them pulls
 in the whole application package just for an `AuthContext` role gate.
 
 At the same time, the Maintainer QA roadmap (PRD #83, prior art in
-`docs/research/llm-wiki-prior-art.md`) calls for a periodic **Dream Cycle**:
+`project/research/llm-wiki-prior-art.md`) calls for a periodic **Dream Cycle**:
 a composed maintenance pass that runs deterministic health and structural
 diagnostics, surfaces missing-link candidates, and stages one reviewable
 batch of repairs — the "reflection" loop a living Knowledge Base needs. No

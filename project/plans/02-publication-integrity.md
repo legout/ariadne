@@ -1,9 +1,9 @@
 # 02 — Publication and validation integrity
 
 **P1–P5 implemented.** Goal: satisfy
-[PRD-0006 AC1](../prd/0006-library-stabilization.md#ac1-publication-integrity)
+[PRD-0006 AC1](../specs/0006-library-stabilization.md#ac1-publication-integrity)
 while preserving proposal-first local maintenance. Evidence: [B01–B07](../research/library-stabilization-audit.md#finding-registry).
-Architecture: [Core PRD](../prd/0002-core-sdk.md),
+Architecture: [Core PRD](../specs/0002-core-sdk.md),
 [ontology](../adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md),
 and [source lifecycle](../adr/0014-source-versions-and-page-level-invalidation.md).
 Python/uv, filesystem Markdown and current msgspec records; no new mandatory

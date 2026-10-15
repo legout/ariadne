@@ -20,8 +20,8 @@ For the *why* and the vision, read the domain docs — this README documents
 > artifact; proposal-first is the shared seam.
 
 - [`CONTEXT.md`](CONTEXT.md) — ubiquitous language (glossary).
-- [`docs/prd/0002-core-sdk.md`](docs/prd/0002-core-sdk.md) — Core SDK PRD.
-- [`docs/adr/`](docs/adr/) — architectural decisions (ADR-0025 records the
+- [`project/specs/0002-core-sdk.md`](project/specs/0002-core-sdk.md) — Core SDK PRD.
+- [`project/adr/`](project/adr/) — architectural decisions (ADR-0025 records the
   repository split).
 - [`docs/kb-format.md`](docs/kb-format.md) — canonical Compiled Page frontmatter reference.
 - [`docs/quickstart.md`](docs/quickstart.md) — canonical onboarding journey
@@ -161,7 +161,7 @@ For the full field table, see **[`docs/kb-format.md`](docs/kb-format.md)**. A
 categorized Knowledge Base additionally carries a versioned root Control File
 (`lumio.yaml`) and marked reserved artifacts (Navigation Index `index.md`, Hot
 Index `hot.md`, Activity Log `log.md`); see
-[ADR-0008](docs/adr/0008-knowledge-base-control-file-and-published-artifacts.md).
+[ADR-0008](project/adr/0008-knowledge-base-control-file-and-published-artifacts.md).
 
 ## Development
 

@@ -18,7 +18,7 @@ by a converter, and the converter name flows into `SourceProvenance` as
 
 Issue #153 evaluated [Firecrawl AnyDoc](https://github.com/firecrawl/anydoc)
 (`firecrawl-anydoc`, imported as `anydoc`) as a local, model-free converter
-and produced [`docs/research/anydoc-fit.md`](../research/anydoc-fit.md). The
+and produced [`project/research/anydoc-fit.md`](../research/anydoc-fit.md). The
 spike's measured findings, not upstream marketing, drive this decision:
 
 - AnyDoc **strictly dominates MarkItDown on office formats** — broader coverage

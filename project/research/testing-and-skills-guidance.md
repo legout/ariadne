@@ -56,35 +56,35 @@ to lean assurance. The original observations below are updated accordingly._
 
 ### 4. ADRs on skills and agent workflows
 
-- **ADR-0012** (`docs/adr/0012-commit-agent-skills-to-repo-as-versioned-contract.md`):
+- **ADR-0012** (`project/adr/0012-commit-agent-skills-to-repo-as-versioned-contract.md`):
   skills are durable contracts, not orchestration artifacts; each skill is thin —
   "it delegates" to public `lumio_wiki` operations (lines 9-13, 40-47, 75). Skill
   write policy and role gates "remain enforceable in tests **without the web
   stack**" (lines 89-92) — small, framework-free tests are the established norm.
-- **ADR-0017** (`docs/adr/0017-portable-agent-skill-distribution-and-project-bootstrap.md`):
+- **ADR-0017** (`project/adr/0017-portable-agent-skill-distribution-and-project-bootstrap.md`):
   skill content is committed and released with the behavior it describes.
   Operationally critical repetition comes from one source where practical;
   otherwise one focused installed-wheel journey protects each executable or
   safety contract. Exhaustive wording parity is not required.
-- **ADR-0024** (`docs/adr/0024-graph-exchange-and-cli-skill-boundary.md`): the CLI
+- **ADR-0024** (`project/adr/0024-graph-exchange-and-cli-skill-boundary.md`): the CLI
   skill boundary exists because per-agent prose transforms were untestable and
   divergent. Focused semantic checks replace byte-identical gold-file mandates;
   the no-new-dependency decision remains.
-- **ADR-0010** (`docs/adr/0010-uv-workspace-and-progressive-packaging.md`): CI must
+- **ADR-0010** (`project/adr/0010-uv-workspace-and-progressive-packaging.md`): CI must
   build each wheel and test it in isolation, including "testing each optional
   ingestion extra independently" and the CLI + packaged skills "from the built
   wheel" (lines 169-179); the workspace exists to stay a "buildable, independently
   testable headless product" (line 192).
-- **ADR-0025** (`docs/adr/0025-repository-split.md`): the public repo carries the
+- **ADR-0025** (`project/adr/0025-repository-split.md`): the public repo carries the
   wiki-only test suite plus each package's own tests; application-level tests
   stayed private (lines 24-52) — test scope follows package boundaries.
 
 ### 5. Research-note conventions (what this file follows)
 
-Existing notes under `docs/research/` share a shape: a title, a metadata block
+Existing notes under `project/research/` share a shape: a title, a metadata block
 (`_Date: YYYY-MM-DD. Scope: …_`), then `## Findings` bullets citing primary
-sources — see `docs/research/lancedb-s3-remote-storage.md` (head) and
-`docs/research/anydoc-fit.md` (Tracking + Verdict sections linking a GitHub
+sources — see `project/research/lancedb-s3-remote-storage.md` (head) and
+`project/research/anydoc-fit.md` (Tracking + Verdict sections linking a GitHub
 issue). This note adopts that shape.
 
 ### 6. Relevant installed Hermes skills
@@ -107,7 +107,7 @@ Directly on-point for implementation/testing in this repo:
   smallness, verification of delegated work, and throwaway validation.
 
 Adjacent (named by AGENTS.md or repo workflow, present as skills): `github`
-(issue tracker is GitHub Issues per `docs/agents/issue-tracker.md`),
+(issue tracker is GitHub Issues per `project/agents/issue-tracker.md`),
 `grill-for-unknowns`, `evidence-driven-repo-simplification`, `brainstorming`.
 
 Note: the orchestrator block in AGENTS.md also references repo-side workflows

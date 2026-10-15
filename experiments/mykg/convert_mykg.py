@@ -2,7 +2,7 @@
 
 Standalone, standard-library only. This is NOT a ``lumio-wiki`` dependency and is
 deliberately kept out of the package graph (issue #146,
-``docs/research/mykg-fit.md``).
+``project/research/mykg-fit.md``).
 
 What it does
 ------------

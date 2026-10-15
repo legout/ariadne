@@ -1,9 +1,9 @@
 # 03 — Captured snapshots and useful retrieval
 
 **Implemented in `42fdc03`.** Goal: satisfy
-[PRD-0006 AC2](../prd/0006-library-stabilization.md#ac2-captured-snapshots-and-retrieval).
+[PRD-0006 AC2](../specs/0006-library-stabilization.md#ac2-captured-snapshots-and-retrieval).
 Evidence: [B08–B12, I03, C03](../research/library-stabilization-audit.md#finding-registry).
-Architecture: [Core PRD](../prd/0002-core-sdk.md),
+Architecture: [Core PRD](../specs/0002-core-sdk.md),
 [S3 snapshots](../adr/0013-s3-native-knowledge-base-locations.md), and
 [ontology/graph](../adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md).
 Use Python/uv, the existing source abstraction, MessagePack, optional LanceDB,

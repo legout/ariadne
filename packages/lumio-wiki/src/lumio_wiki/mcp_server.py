@@ -6,7 +6,7 @@ path or an ``s3://`` object-store URI — over MCP stdio through the official
 immutable Snapshot through :func:`lumio_wiki.location.open_knowledge_base`;
 tools are pure reads and never write Knowledge Base content.
 
-The v1 tool surface is the contract table in ``docs/plans/06-mcp-server.md``:
+The v1 tool surface is the contract table in ``project/plans/06-mcp-server.md``:
 ``search``, ``page``, ``related``, ``paths``, ``hot``, ``index``, ``health``,
 and ``status``. Retrieval tools project Snapshot/CLI behavior verbatim
 (``search_pages``, ``lookup_by_title``/``lookup_by_alias``, ``related_pages``,
