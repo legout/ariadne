@@ -514,7 +514,10 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert instance._measure is None  # not yet: direct construction has no transport
         app = build_app(instance, toolset="analyst")
         result = asyncio.run(app.call_tool("get_metric", {"name": "plain_total"}))
-        assert isinstance(result, list)  # the fitting answer's TextContent list
+        from mcp.types import CallToolResult  # pyright: ignore[reportMissingImports] — [mcp] extra
+
+        assert isinstance(result, CallToolResult) and not result.is_error
+        assert json.loads(result.content[0].text)["rows"] == [{"plain_total": 60.0}]
         assert instance._measure is _mcp_result_bytes  # installed at the seam
         factory_built = make_runtime(served, tmp_path / "s2")
         app2 = build_app(lambda: factory_built, toolset="analyst")
@@ -529,8 +532,8 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
     elif case == "framing_reserve_covers_worst_case_ids":
         import pydantic_core  # pyright: ignore[reportMissingImports] — the [mcp] extra ships it
         from mcp.types import (  # pyright: ignore[reportMissingImports] — the [mcp] extra
+            SERVER_INFO_META_KEY,
             CallToolResult,
-            JSONRPCMessage,
             JSONRPCResponse,
             TextContent,
         )
@@ -539,17 +542,17 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
 
         value = {"metric": "m", "rows": [{"a": 1}]}
         text = pydantic_core.to_json(value, fallback=str, indent=2).decode()
-        call_result = CallToolResult(content=[TextContent(type="text", text=text)], isError=False)
+        call_result = CallToolResult(content=[TextContent(type="text", text=text)], is_error=False)
 
         def wire(request_id):
-            message = JSONRPCMessage(
-                JSONRPCResponse(
-                    jsonrpc="2.0",
-                    id=request_id,
-                    result=call_result.model_dump(by_alias=True, mode="json", exclude_none=True),
-                )
-            )
-            return len(message.model_dump_json(by_alias=True, exclude_none=True).encode())
+            # the mcp 2.2.0 MODERN-wire form the measure models: the kernel
+            # dumps the result model exclude_none (resultType included), the
+            # modern sieve keeps it and stamps the serverInfo _meta, and the
+            # stdio/SSE writers serialize the response exclude_unset
+            result = call_result.model_dump(by_alias=True, mode="json", exclude_none=True)
+            result["_meta"] = {SERVER_INFO_META_KEY: {"name": "ariadne", "version": ""}}
+            response = JSONRPCResponse(jsonrpc="2.0", id=request_id, result=result)
+            return len(response.model_dump_json(by_alias=True, exclude_unset=True).encode())
 
         assert _mcp_result_bytes(value) == wire(_RESERVED_REQUEST_ID)
         # the reserve is a bounded worst case: a UUID-length quoted string id is
@@ -787,7 +790,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         actual = _wire_bytes(
             CallToolResult(
                 content=[TextContent(type="text", text=f"Error executing tool get_metric: {exc}")],
-                isError=True,
+                is_error=True,
             )
         )
         assert _mcp_error_envelope_bytes("get_metric", exc) == actual

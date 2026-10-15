@@ -104,6 +104,7 @@ Usage::
 
 import argparse
 import base64
+import functools
 import hmac
 import json
 import os
@@ -311,35 +312,44 @@ _RESERVED_REQUEST_ID = "00000000-0000-0000-0000-000000000000"
 
 def _wire_bytes(call_result) -> int:
     """The exact serialized size of the JSON-RPC message the installed MCP
-    SDK puts on the wire for one ``CallToolResult`` (mcp 1.30.0): the session
-    serializes ``JSONRPCResponse(result=call_result.model_dump(by_alias=True,
-    mode="json", exclude_none=True))`` through ``model_dump_json(by_alias=True,
-    exclude_none=True)`` — with the reserved worst-case framing id."""
+    SDK puts on the wire for one ``CallToolResult`` (mcp 2.2.0, verified
+    against captured stdio/HTTP frames): the kernel dumps the result model
+    ``call_result.model_dump(by_alias=True, mode="json", exclude_none=True)``
+    into ``JSONRPCResponse``, and the stdio/SSE writers serialize the response
+    through ``model_dump_json(by_alias=True, exclude_unset=True)``. The
+    negotiated protocol era shapes the result dict: the handshake wire (every
+    SDK ``initialize`` client) sieves away ``resultType`` and ``_meta``, while
+    the 2026-07-28 modern sieve keeps ``resultType`` and stamps the
+    ``serverInfo`` ``_meta`` (runner ``_serialize``/``_stamp_server_info``).
+    The measure models the MODERN form — strictly the larger of the two — so
+    a near-ceiling payload cannot overflow on either wire."""
     from mcp.types import (  # pyright: ignore[reportMissingImports] — the [mcp] extra
-        JSONRPCMessage,
+        SERVER_INFO_META_KEY,
         JSONRPCResponse,
     )
 
-    message = JSONRPCMessage(
-        JSONRPCResponse(
-            jsonrpc="2.0",
-            id=_RESERVED_REQUEST_ID,
-            result=call_result.model_dump(by_alias=True, mode="json", exclude_none=True),
-        )
+    result = call_result.model_dump(by_alias=True, mode="json", exclude_none=True)
+    # the modern-era stamp this server (MCPServer("ariadne"), version "") adds
+    result["_meta"] = {SERVER_INFO_META_KEY: {"name": "ariadne", "version": ""}}
+    response = JSONRPCResponse(
+        jsonrpc="2.0",
+        id=_RESERVED_REQUEST_ID,
+        result=result,
     )
-    return len(message.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8"))
+    return len(response.model_dump_json(by_alias=True, exclude_unset=True).encode("utf-8"))
 
 
 def _mcp_result_bytes(result: dict) -> int:
     """The exact serialized size of the tool-result envelope the installed
     MCP SDK would put on the wire for this dict (spec 0014 §4 guard 5 / plan
-    §1 blocking evidence): FastMCP converts a dict return to one TextContent
-    whose text is ``pydantic_core.to_json(result, fallback=str, indent=2)``
-    (mcp 1.30.0 ``_convert_to_content``), the lowlevel handler wraps it into
-    ``CallToolResult`` — so the envelope duplicates the response as ESCAPED
-    text inside the outer JSON, which is strictly larger than the inner dict.
-    Measured on the SDK's own models; never re-serialized differently after
-    preflight."""
+    §1 blocking evidence): MCPServer converts a dict return (its output model
+    is disabled on the measured tools) to one TextContent whose text is
+    ``pydantic_core.to_json(result, fallback=str, indent=2)`` (mcp 2.2.0
+    ``func_metadata._convert_to_content``, the retained 1.x conversion),
+    and the result handler wraps it into ``CallToolResult`` — so the
+    envelope duplicates the response as ESCAPED text inside the outer JSON,
+    which is strictly larger than the inner dict. Measured on the SDK's own
+    models; never re-serialized differently after preflight."""
     import pydantic_core  # pyright: ignore[reportMissingImports] — the [mcp] extra ships it
     from mcp.types import (  # pyright: ignore[reportMissingImports] — the [mcp] extra
         CallToolResult,
@@ -347,16 +357,16 @@ def _mcp_result_bytes(result: dict) -> int:
     )
 
     text = pydantic_core.to_json(result, fallback=str, indent=2).decode()
-    call_result = CallToolResult(content=[TextContent(type="text", text=text)], isError=False)
+    call_result = CallToolResult(content=[TextContent(type="text", text=text)], is_error=False)
     return _wire_bytes(call_result)
 
 
 def _mcp_refusal_result(exc: QueryResultError):
     """The structured MCP tool refusal (spec 0014 §5): ``isError: true`` with
     the bounded refusal as BOTH escaped text and structured content — never a
-    successful partial tool answer. FastMCP passes a returned ``CallToolResult``
-    through untouched (mcp 1.30.0 ``convert_result``), and the lowlevel
-    handler wraps it verbatim."""
+    successful partial tool answer. MCPServer passes a returned
+    ``CallToolResult`` through ``convert_result`` untouched (mcp 2.2.0), and
+    the result handler wraps it verbatim."""
     return _refusal_call_result(exc.refusal())
 
 
@@ -371,8 +381,8 @@ def _refusal_call_result(refusal: dict):
 
     return CallToolResult(
         content=[TextContent(type="text", text=json.dumps(refusal, indent=2))],
-        structuredContent=refusal,
-        isError=True,
+        structured_content=refusal,
+        is_error=True,
     )
 
 
@@ -383,13 +393,14 @@ def _refusal_envelope_bytes(refusal: dict) -> int:
 
 def _mcp_error_envelope_bytes(tool_name: str, exc: BaseException) -> int:
     """Wire bytes of the tool-error result the installed SDK ACTUALLY emits
-    for a raised exception (fix pass 2, finding 2c): mcp 1.30.0's lowlevel
-    ``_make_error_result`` returns ``ServerResult(CallToolResult(
-    content=[TextContent(text=str(ToolError))], isError=True))`` — NOT a
-    JSONRPCError — and the session serializes it through the same
-    ``JSONRPCResponse`` path as every result (probe-confirmed: 27 bytes
-    larger than the JSONRPCError model, so modeling the wrong form could
-    pass preflight then overflow near the ceiling)."""
+    for a raised exception (fix pass 2, finding 2c): for a ``ToolError`` mcp
+    2.2.0's result handler returns ``CallToolResult(content=[TextContent(
+    text=str(exc))], is_error=True)`` — NOT a JSONRPCError — and the tool
+    wrapper's message is ``Error executing tool {name}: {exc}``, serialized
+    through the same ``JSONRPCResponse`` path as every result. The adapter
+    re-raises fitting generic errors as ``ToolError(str(exc))`` because the
+    2.x wrapper DROPS the text of bare crashes; the modeled form is the
+    emitted one (probe-confirmed against captured frames)."""
     from mcp.types import (  # pyright: ignore[reportMissingImports] — the [mcp] extra
         CallToolResult,
         TextContent,
@@ -397,7 +408,7 @@ def _mcp_error_envelope_bytes(tool_name: str, exc: BaseException) -> int:
 
     call_result = CallToolResult(
         content=[TextContent(type="text", text=f"Error executing tool {tool_name}: {exc}")],
-        isError=True,
+        is_error=True,
     )
     return _wire_bytes(call_result)
 
@@ -430,17 +441,37 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
     content — never paths, worktrees or credentials."""
     if toolset not in TOOLSETS:
         raise ValueError(f"unknown toolset {toolset!r}; this build serves {TOOLSETS}")
-    from mcp.server.fastmcp import (  # pyright: ignore[reportMissingImports, reportAttributeAccessIssue]
-        FastMCP,  # mcp<2 (pinned) exports FastMCP; the 2.x shim renames it
+    from mcp.server.mcpserver import (  # pyright: ignore[reportMissingImports, reportAttributeAccessIssue]
+        MCPServer,  # mcp 2.x (spec 0026 §3): FastMCP became mcp.server.mcpserver.MCPServer
     )
-    from mcp.server.fastmcp.tools import (  # pyright: ignore[reportMissingImports] — [mcp] extra
+    from mcp.server.mcpserver.exceptions import (  # pyright: ignore[reportMissingImports] — [mcp] extra
+        ToolError,
+    )
+    from mcp.server.mcpserver.tools import (  # pyright: ignore[reportMissingImports] — [mcp] extra
         Tool,  # explicit tool registration (the query_records nested schema)
     )
     from mcp.types import (  # pyright: ignore[reportMissingImports] — [mcp] extra
         CallToolResult,
     )
 
-    app: FastMCP = FastMCP("ariadne")
+    app: MCPServer = MCPServer("ariadne")
+
+    def _tool_errors(fn):
+        """mcp 2.2.0's tool wrapper reports a BARE exception as a crash and
+        DROPS its text from the client-visible error result; re-raising it as
+        ToolError keeps the 1.x public semantics — the SDK's own verbatim
+        error path then reads ``Error executing tool <name>: <message>``.
+        Refusals are returned CallToolResult values, not exceptions, and pass
+        through untouched (spec 0026 §3: exact public tool/error semantics)."""
+
+        @functools.wraps(fn)
+        async def wrapped(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            except Exception as exc:
+                raise ToolError(str(exc)) from exc
+
+        return wrapped
 
     # ---------------------- the Query registration (analyst, combined) ------
 
@@ -485,6 +516,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         # --- the five query/ad-hoc tools (spec 2026-09-23-0001, unchanged) ---
 
         @app.tool()
+        @_tool_errors
         async def discover(query: str, limit: int = 5) -> dict:
             """Discover metrics, pages, terms and examples without opening sources.
 
@@ -506,6 +538,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return await discovery.discover(query, limit=limit)
 
         @app.tool()
+        @_tool_errors
         async def list_metrics() -> list[dict | str]:
             """List served governed metrics with descriptions and available dimensions.
 
@@ -515,6 +548,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return await _runtime().list_metrics()
 
         @app.tool()
+        @_tool_errors
         async def search_context(query: str) -> list[dict]:
             """Search the Context Layer (OKF pages) for business rules; ranked matches.
 
@@ -524,6 +558,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return await _runtime().search_context(query)
 
         @app.tool()
+        @_tool_errors
         async def list_context_pages() -> list[dict]:
             """List every Context Layer page — served and staged — without query
             tokens: path, draft flag, title and the advisory context_signals
@@ -533,6 +568,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return await _runtime().list_context_pages()
 
         @app.tool()
+        @_tool_errors
         async def read_context_page(path: str, draft: bool = False) -> dict:
             """Read one exact Context Layer page by its bundle-relative POSIX path:
             full content plus draft flag and context_signals (spec 0015).
@@ -546,6 +582,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return await _runtime().read_context_page(path, draft=draft)
 
         @app.tool(structured_output=False)
+        @_tool_errors
         async def get_metric(
             name: str, dimensions: list[str] | None = None, range: dict | None = None
         ) -> dict | CallToolResult:
@@ -576,6 +613,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 raise
 
         @app.tool()
+        @_tool_errors
         async def list_datasets() -> list[dict]:
             """List every table in the attached database with its columns and types.
 
@@ -587,6 +625,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return await _runtime().list_datasets()
 
         @app.tool(structured_output=False)
+        @_tool_errors
         async def define_metric(definition: dict) -> dict | CallToolResult:
             """Define an ad-hoc metric for a question no governed metric answers:
             compiled, executed read-only, auto-staged for human promotion.
@@ -624,6 +663,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 raise
 
         @app.tool(structured_output=False)
+        @_tool_errors
         async def query_metrics(request: dict) -> dict | CallToolResult:
             """Query one or more governed metrics TOGETHER over the admitted multi-fact
             graph: each fact aggregates at its own grain and the branches align on
@@ -660,6 +700,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 raise
 
         @app.tool(structured_output=False)
+        @_tool_errors
         async def query_detail(request: dict) -> dict | CallToolResult:
             """Project one declared root dataset's fields through safe
             many-to_one/one_to_one lookup paths — no aggregates, no fan-out: exactly
@@ -737,10 +778,10 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         # typing never coerces invalid numeric/boolean values or drops unknown
         # keys before the core's strict validation (spec 0014 §3).
         record_tool = Tool.from_function(
-            _query_records, name="query_records", structured_output=False
+            _tool_errors(_query_records), name="query_records", structured_output=False
         )
         record_tool.parameters = _QUERY_RECORDS_INPUT_SCHEMA
-        app._tool_manager._tools["query_records"] = record_tool  # mcp 1.30.0 manager seam
+        app._tool_manager._tools["query_records"] = record_tool  # mcp 2.2.0 manager seam
 
         # --- the two answer-example tools (issue #21, spec 2026-09-29-0007) ---
         # Thin adapters over the runtime's transport-neutral save/search (issue
@@ -750,6 +791,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         # deliberately NOT registered as a tool — review is human-only.
 
         @app.tool()
+        @_tool_errors
         async def save_example(submission: dict) -> dict:
             """Stage one explicit answer example as a labeled draft under
             staging/answer_examples/ — an EXPLICIT user-confirmed submission only:
@@ -771,6 +813,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return await _runtime().save_example(submission)
 
         @app.tool()
+        @_tool_errors
         async def search_examples(
             query: str, limit: int = 10, include_history: bool = False, include_sql: bool = False
         ) -> list[dict]:
@@ -796,6 +839,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             )
 
         @app.tool()
+        @_tool_errors
         async def resolve_term(request: str | dict, part: int = 1) -> dict:
             """Resolve one shared business term or an exact {resource, column}
             field lookup against the served (pinned admitted) context: bounded
@@ -827,6 +871,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         authoring_api = AuthoringProject(Path(project).resolve())
 
         @app.tool()
+        @_tool_errors
         async def authoring_start_proposal(base_revision: str | None = None) -> dict:
             """Start one isolated Git authoring proposal in the launch-selected
             project: a system-generated proposal ID with its branch and worktree,
@@ -843,6 +888,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return authoring_api.start_proposal(base_revision)
 
         @app.tool()
+        @_tool_errors
         async def authoring_read_artifact(
             proposal: str,
             kind: str,
@@ -871,6 +917,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return authoring_api.read_artifact(proposal, identity, part=part)
 
         @app.tool()
+        @_tool_errors
         async def authoring_edit_proposal(
             proposal: str, expected_revision: str, edit: dict
         ) -> dict:
@@ -892,6 +939,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return authoring_api.edit_proposal(proposal, expected_revision, edit)
 
         @app.tool()
+        @_tool_errors
         async def authoring_propose_sources(
             proposal: str,
             expected_revision: str,
@@ -922,6 +970,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return authoring_api.propose_sources(proposal, expected_revision, sources, storages)
 
         @app.tool()
+        @_tool_errors
         async def authoring_inputs(
             proposal: str,
             documents: list[str] | None = None,
@@ -950,6 +999,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             )
 
         @app.tool()
+        @_tool_errors
         async def authoring_upload_document(name: str, content_b64: str) -> dict:
             """Upload one bounded document (base64 bytes) into the project input
             area; its original bytes are retained under the name's stable identity
@@ -969,6 +1019,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return authoring_api.upload_document(name, data)
 
         @app.tool()
+        @_tool_errors
         async def authoring_validate_proposal(proposal: str, expected_revision: str) -> dict:
             """Validate the proposal's effective candidate at its EXACT final
             revision: finalize the deterministic generated artifacts, commit any
@@ -986,6 +1037,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return authoring_api.validate_proposal(proposal, expected_revision)
 
         @app.tool()
+        @_tool_errors
         async def authoring_refresh_schema(
             proposal: str, expected_revision: str, assets: list[dict]
         ) -> dict:
@@ -1011,6 +1063,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return authoring_api.refresh_schema(proposal, expected_revision, assets)
 
         @app.tool()
+        @_tool_errors
         async def authoring_review_proposal(proposal: str, part: int = 1) -> dict:
             """Read the proposal's candidate — read-only, NEVER a signoff
             (admission is the separate human-only ``ariadne-admit``): current and
@@ -1026,6 +1079,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             return authoring_api.review_proposal(proposal, part=part)
 
         @app.tool()
+        @_tool_errors
         async def authoring_inspect_mapping(
             proposal: str, expected_revision: str, candidate: dict, limits: dict | None = None
         ) -> dict:
@@ -1059,6 +1113,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             )
 
         @app.tool()
+        @_tool_errors
         async def authoring_resolve_term(proposal: str, request: str | dict, part: int = 1) -> dict:
             """Resolve one shared business term or an exact {resource, column}
             field lookup against the EXPLICITLY selected proposal's current
@@ -1105,7 +1160,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
 
 
 class BearerTokenGate:
-    """A minimal pure-ASGI bearer gate over the FastMCP streamable-http app.
+    """A minimal pure-ASGI bearer gate over the MCPServer streamable-http app.
 
     The installed MCP SDK's own request-auth seam on ``streamable_http_app()``
     (``TokenVerifier`` + ``RequireAuthMiddleware`` + scope/RFC 9728 metadata
@@ -1154,20 +1209,56 @@ class BearerTokenGate:
         await self._wrapped(scope, receive, send)
 
 
-def build_http_app(app, token: str):
-    """The opt-in HTTP adapter (issue #18): the SAME FastMCP app ``build_app``
+def build_http_app(
+    app,
+    token: str,
+    *,
+    host: str = "127.0.0.1",
+    allowed_hosts: list[str] | None = None,
+    allowed_origins: list[str] | None = None,
+):
+    """The opt-in HTTP adapter (issue #18): the SAME MCPServer app ``build_app``
     returned, served through the SDK's ``streamable_http_app()`` and wrapped in
     :class:`BearerTokenGate` — identical toolsets and contracts to stdio, one
-    server-configured project, no second business logic."""
+    server-configured project, no second business logic.
+
+    mcp 2.2.0 moved the transport seams out of mutable ``Settings`` into
+    ``streamable_http_app()`` arguments (spec 0026 §4): the body limit and the
+    DNS-rebinding protection — loopback defaults plus the launch's explicit
+    Host/Origin additions, never a disabled safeguard — are passed here."""
     # The HTTP body limit must not undercut the documented upload bound: the
     # tool-level 5 MiB refusal (identical to stdio, enforced before any
     # write) stays the effective bound only if a valid 5 MiB upload's base64
     # body can arrive — so the limit is the tool bound's base64 size plus
     # JSON-argument slack, nothing more.
+    from mcp.server.transport_security import (  # pyright: ignore[reportMissingImports] — [mcp] extra
+        TransportSecuritySettings,
+    )
+
     from ariadne.authoring_inputs import MAX_UPLOAD_BYTES
 
-    app.settings.max_request_body_size = MAX_UPLOAD_BYTES * 4 // 3 + 65_536
-    return BearerTokenGate(app.streamable_http_app(), token)
+    return BearerTokenGate(
+        app.streamable_http_app(
+            max_request_body_size=MAX_UPLOAD_BYTES * 4 // 3 + 65_536,
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=[
+                    "127.0.0.1:*",
+                    "localhost:*",
+                    "[::1]:*",
+                    *(allowed_hosts or []),
+                ],
+                allowed_origins=[
+                    "http://127.0.0.1:*",
+                    "http://localhost:*",
+                    "http://[::1]:*",
+                    *(allowed_origins or []),
+                ],
+            ),
+            host=host,
+        ),
+        token,
+    )
 
 
 def _serve_http(
@@ -1201,13 +1292,18 @@ def _serve_http(
 
     import uvicorn  # pyright: ignore[reportMissingImports] — [mcp] extra ships it
 
-    # Preserve SDK DNS-rebinding protection; explicitly allow proxy/service identities.
-    security = app.settings.transport_security
-    security.allowed_hosts.extend(allowed_hosts or [])
-    security.allowed_origins.extend(allowed_origins or [])
+    # SDK DNS-rebinding protection stays on with the loopback defaults; the
+    # launch's explicit Host/Origin additions ride through build_http_app's
+    # supported 2.2.0 seam (spec 0026 §4: never a disabled safeguard).
     server = uvicorn.Server(
         uvicorn.Config(
-            build_http_app(app, token),
+            build_http_app(
+                app,
+                token,
+                host=host,
+                allowed_hosts=allowed_hosts,
+                allowed_origins=allowed_origins,
+            ),
             host=host,
             port=port,
             # no access log: request lines never carry project data, and the

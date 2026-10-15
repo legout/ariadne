@@ -856,7 +856,9 @@ def test_mcp_resolve_term_routes_share_the_core(tmp_path):
     ``authoring_resolve_term`` resolves an explicitly selected proposal with
     the candidate identity visible (the Combined registration carries both —
     its exact toolset is asserted in tests/test_mcp_toolsets.py)."""
-    from mcp import ClientSession  # noqa: E402 — [mcp] extra
+    from mcp import (  # noqa: E402 — [mcp] extra  # pyright: ignore[reportMissingImports]
+        ClientSession,
+    )
 
     from tests.test_mcp_toolsets import (  # noqa: E402
         _launch,
@@ -874,7 +876,7 @@ def test_mcp_resolve_term_routes_share_the_core(tmp_path):
                     _text(await session.call_tool("resolve_term", {"request": "order number"}))
                 )
                 refused = await session.call_tool("authoring_resolve_term", {})
-                out["analyst_refused"] = refused.isError
+                out["analyst_refused"] = refused.is_error
         async with _launch(project, "authoring") as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
@@ -892,7 +894,7 @@ def test_mcp_resolve_term_routes_share_the_core(tmp_path):
                     )
                 )
                 refused = await session.call_tool("resolve_term", {})
-                out["authoring_refused"] = refused.isError
+                out["authoring_refused"] = refused.is_error
         return out
 
     out = asyncio.run(run())

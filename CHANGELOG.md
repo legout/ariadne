@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Core Python 3.14 and MCP 2.2.0 (spec 0026, #73)** — `ariadne-data` now
+  requires Python >=3.14 (the floor change ends 3.12/3.13 support; scoped
+  ADR-0008 amendment) and pins the optional `mcp` extra and development
+  environment to the official `mcp==2.2.0` SDK (with `mcp-types==2.2.0`),
+  the same resolved release as the pinned Lumio Wiki integration baseline.
+  The adapter serves the identical toolsets, schemas and error contracts on
+  `MCPServer` (stdio default; opt-in Streamable HTTP keeps the bearer gate,
+  loopback-only default with the explicit private-container exception, and
+  DNS-rebinding protection). Docker, CI and Ruff now target Python 3.14.
+  Ariadne Agent and Tau/tau-mcp are explicitly deferred: their files, pins
+  and compatibility with this Core remain unchanged and unverified until
+  that later work; the original complete #73 is not closed by this change.
+
 ## 0.3.1 - 2026-10-14
 
 Fourth release: named S3 storage profiles with environment-referenced

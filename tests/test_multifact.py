@@ -3009,9 +3009,12 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
     # the MCP tool is a thin adapter over the same runtime method
     app = build_app(runtime)
 
-    def _payload(blocks) -> Any:
-        if isinstance(blocks, tuple):
-            blocks = blocks[0]
+    def _payload(outcome) -> Any:
+        # mcp 2.x call_tool returns one CallToolResult; mcp<2 returned a
+        # (blocks, structured) tuple or a bare block list — handle both shapes
+        if isinstance(outcome, tuple):
+            outcome = outcome[0]
+        blocks = list(getattr(outcome, "content", outcome))
         parsed = [json.loads(block.text) for block in blocks]
         return parsed[0] if len(parsed) == 1 else parsed
 

@@ -133,7 +133,7 @@ def test_naive_malformed_and_absent_expiry_stay_unknown(tmp_path, monkeypatch):
 # --------------- the additive context_signals envelope (spec 0011 §§4–5) ----
 
 
-def _write(root_rel: str, text: str, tmp_path) -> "pathlib.Path":
+def _write(root_rel: str, text: str, tmp_path) -> pathlib.Path:
     page = tmp_path / "context_layer" / root_rel
     page.parent.mkdir(parents=True, exist_ok=True)
     page.write_text(text, encoding="utf-8")
