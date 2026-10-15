@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 amends: ADR-0007, ADR-0008, ADR-0010, ADR-0014, ADR-0015, ADR-0016, ADR-0019, ADR-0020, ADR-0021, ADR-0024, ADR-0026
 ---
 
@@ -9,8 +9,9 @@ Design direction approved by the owner in the 2026-10-15 Pi conversation for
 [issue #1](https://github.com/legout/lumio-wiki/issues/1), after choosing explicit
 local publication authorization, operator-confirmed Git export of pending
 proposals, and a temporarily KB-read-only private application. **Written revision
-1 is proposed for review; implementation and integration are not authorized by
-this ADR.** Behavior and acceptance belong to
+1 was approved with “Ja Freigabe” on 2026-10-15 after presentation of isolated
+design commit `81ed0f7c15c8295cf0799c88d08a570749ff5f73`.** This opens planning,
+not runtime implementation or integration. Behavior and acceptance belong to
 [specification 0008](../specs/2026-10-15-0008-git-native-knowledge-authoring.md).
 
 Git branches/worktrees and native diff/review become the only persistent
@@ -39,9 +40,10 @@ registry's subsequently latest version.
 
 ## Scoped amendments
 
-Upon written approval, this ADR replaces only the following target contracts;
-the legacy implementation remains governed by its existing operating guidance
-until the coordinated implementation is accepted:
+This accepted ADR replaces only the following target contracts. Linked
+amendments in the affected source records distinguish the target design from
+the legacy implementation, whose operating guidance remains until the
+coordinated replacement is accepted:
 
 - ADR-0007/0008/0010/0015/0016/0024/0026: staged import, maintenance, rename,
   migration, ingest, proposal persistence, and custom proposal publication become

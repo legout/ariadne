@@ -5,6 +5,10 @@ amends: ADR-0007
 
 # ADR-0026: OKF Exchange Profile 2 for OKF v0.2
 
+_Scoped amendment, owner-approved 2026-10-15: [ADR-0029](0029-git-native-knowledge-authoring.md)
+and specification 0008 r1 govern the Git-authoring replacement. Reviewable profile imports use Git authoring; pinned profile mapping, loss diagnostics, and passive computation metadata remain.
+The legacy implementation is not changed or deployed by this amendment._
+
 _Renumbered from the duplicate ADR-0015; the earlier Portable Maintainer Workflows decision retains ADR-0015 by commit chronology._
 
 ## Context

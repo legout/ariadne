@@ -26,6 +26,19 @@ Before implementation work, read:
 
 Contributions are licensed Apache-2.0 (see LICENSE).
 
+## Approved Git-authoring transition
+
+For issue #1 implementation, owner-approved
+[specification 0008 r1](project/specs/2026-10-15-0008-git-native-knowledge-authoring.md)
+and [ADR-0029](project/adr/0029-git-native-knowledge-authoring.md) replace the
+proposal-based target contract. Planning/execution and target integration retain
+their separate gates. The generated operating section below describes the
+legacy installed CLI and configured shared KB, not a requirement to keep
+proposal persistence in the replacement. Use disposable test KBs for new Git
+flows; do not migrate, edit, or publish the configured shared KB under this
+implementation task. Refresh generated operating guidance with the implemented
+replacement, never prematurely on the target branch.
+
 <!-- lumio-wiki-kb -->
 ## Lumio Knowledge Base
 

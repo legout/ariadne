@@ -1,13 +1,15 @@
 # Specification 0008: Git-native Knowledge Authoring
 
-**Written revision:** 1 — proposed for owner review.
+**Written revision:** 1 — owner-approved.
 
-**Approval:** the owner approved the complete six-part in-chat design on
-2026-10-15, including exact source references, explicit local Publication
-Admission, operator-confirmed legacy export, and a temporarily KB-read-only
-private application. Approval was explicitly for written elaboration, not
-runtime implementation. Written-spec approval, plan approval, supervised
-execution, target integration, and publication remain separate gates.
+**Approval:** on 2026-10-15 the owner replied **“Ja Freigabe”** to the explicit
+request to approve written specification 0008 r1 and ADR-0029, presented in
+isolated design commit `81ed0f7c15c8295cf0799c88d08a570749ff5f73`. This includes
+the complete Git-authoring design, exact source references, explicit local
+Publication Admission, operator-confirmed legacy export, and the temporarily
+KB-read-only private app with locally frozen baseline wheels. This approval
+opens implementation planning; plan approval, supervised execution, target
+integration, and publication retain their separate gates.
 
 **Sources:** [Lumio #1](https://github.com/legout/lumio-wiki/issues/1)
 (updated 2026-10-15T20:22:35Z),
@@ -426,17 +428,17 @@ actual environments; unavailable capability is disclosed, not called passing.
 - Vocabulary: `CONTEXT.md` captures Authoring Revision, Source Reference Manifest,
   Publication Review/Admission, and the legacy status of Ingest Proposal/Write
   Mode. Existing Evidence, Claim, and Source Version meanings remain.
-- Decisions: ADR-0029 owns why Git replaces proposals and why admission is
-  separate. It names the scoped amendments; written approval must reconcile
-  those scopes before implementation. Governing agent/skill operating examples
-  change alongside the implemented replacement, never in advance on main.
-- Behavior: this written revision owns AC1–AC7 and the interfaces above. The
-  complete in-chat design is approved; written r1 review is outstanding.
+- Decisions: accepted ADR-0029 owns why Git replaces proposals and why admission
+  is separate. Its scoped amendments are linked from affected source records;
+  governing agent/skill operating examples change alongside the implemented
+  replacement, never in advance on main.
+- Behavior: the owner-approved written revision 1 owns AC1–AC7 and the
+  interfaces above; approval reference is recorded in the header.
 - Uncertainty: no shared #76 interface is approved. Do not implement #2 against a
   guessed contract. The v1 manifest schema and semantic publication interface
-  above are proposed for written approval. Python symbol names/module layout
-  remain implementation choices; a material behavioral/interface change returns
-  to shaping before dependent workers consume it.
+  above are approved. Python symbol names/module layout remain implementation
+  choices; a material behavioral/interface change returns to shaping before
+  dependent workers consume it.
 - Planning-contract version 1, installed skill SHA-256
   `5adbbd63616169df00774d926e0daea2074b90c9cf213b508aea62e84942c200`;
   upstream installed catalog commit is unknown. Execution host, when authorized,

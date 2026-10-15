@@ -4,6 +4,10 @@ status: accepted
 
 # ADR-0014: Source Versions and Safe Page-Level Invalidation
 
+_Scoped amendment, owner-approved 2026-10-15: [ADR-0029](0029-git-native-knowledge-authoring.md)
+and specification 0008 r1 govern the Git-authoring replacement. Git source intent and exact references replace proposal-bound source transitions; private immutable history and page-level impact remain.
+The legacy implementation is not changed or deployed by this amendment._
+
 ## Context
 
 Lumio records page-level Sources and source hashes, but a Knowledge Source has

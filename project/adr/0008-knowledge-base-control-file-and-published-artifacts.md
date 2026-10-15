@@ -4,6 +4,10 @@ status: accepted
 
 # ADR-0008: Knowledge Base Control File and Portable Published Artifacts
 
+_Scoped amendment, owner-approved 2026-10-15: [ADR-0029](0029-git-native-knowledge-authoring.md)
+and specification 0008 r1 govern the Git-authoring replacement. Reviewed KB migration/publication uses Git revisions and separate admission; Control File and reserved-artifact constraints remain.
+The legacy implementation is not changed or deployed by this amendment._
+
 _Amended by ADR-0022: the Activity Log production contract is retired; Control File, Navigation Index, Hot Index, and legacy marked-`log.md` recognition decisions remain._
 
 ## Context

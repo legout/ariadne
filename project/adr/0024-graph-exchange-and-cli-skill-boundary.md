@@ -4,6 +4,10 @@ status: accepted
 
 # ADR-0024: Graph Exchange Exports and the CLI/Skill Boundary
 
+_Scoped amendment, owner-approved 2026-10-15: [ADR-0029](0029-git-native-knowledge-authoring.md)
+and specification 0008 r1 govern the Git-authoring replacement. Graph import writes reviewable Git changes instead of stored proposals; deterministic transforms and authorized exports remain.
+The legacy implementation is not changed or deployed by this amendment._
+
 ## Context
 
 The obsidian-wiki ecosystem (Ar9av, which parts of this project's agent

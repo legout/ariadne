@@ -108,10 +108,10 @@ _Avoid_: cache validity, sync state.
 
 ### Ingest and publish
 
-_Target vocabulary for the owner-approved 2026-10-15 Git-authoring design
-([ADR-0029](project/adr/0029-git-native-knowledge-authoring.md)); written
-specification 0008 revision 1 remains under review. Legacy terms below identify
-the existing proposal-based model during migration._
+_Target vocabulary for owner-approved specification 0008 revision 1 and
+[ADR-0029](project/adr/0029-git-native-knowledge-authoring.md), written approval
+“Ja Freigabe”, 2026-10-15. Legacy terms identify the proposal-based model during
+migration; approval does not assert that the replacement is deployed._
 
 **Source Version**:
 An immutable, content-hashed version of a privately identified Knowledge

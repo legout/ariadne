@@ -5,6 +5,10 @@ amends: ADR-0008, ADR-0011, ADR-0013, ADR-0014, ADR-0016
 
 # ADR-0021: Entity-Claim Ontology and Progressive Graph Materialization
 
+_Scoped amendment, owner-approved 2026-10-15: [ADR-0029](0029-git-native-knowledge-authoring.md)
+and specification 0008 r1 govern the Git-authoring replacement. Candidate assertions and entity mutations use Git revisions, not persisted proposals; Entity/Claim/Evidence and graph trust constraints remain.
+The legacy implementation is not changed or deployed by this amendment._
+
 ## Context
 
 Lumio's reviewed graph currently consists of typed `Relationship(target, type)`
