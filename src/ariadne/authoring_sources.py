@@ -170,9 +170,7 @@ def candidate_sources(project: Path, revision: str) -> tuple[list[dict], str] | 
     return identity["sources"], identity["source_digest"]
 
 
-def identity_registry(
-    resolved: list[dict], bindings: dict | None = None
-) -> Registry:
+def identity_registry(resolved: list[dict], bindings: dict | None = None) -> Registry:
     """The operator-APPROVED resolved identity as a registry: DuckDB opens
     exactly these resolved locations — the approval is the permission, the
     candidate's spelling of a path never reaches the builder. Profile-based
@@ -253,9 +251,7 @@ def propose_sources(
         if not isinstance(entry, dict):
             raise ValueError(f"a typed source entry must be a mapping, got {type(entry).__name__}")
         entries.append(dict(entry))
-    new_profiles = sources.validate_storages(
-        storages, f"source proposal of proposal {proposal}"
-    )
+    new_profiles = sources.validate_storages(storages, f"source proposal of proposal {proposal}")
     record = proposals._load_record(project, proposal)
     current = record["candidate_revision"]
     if expected_revision != current:
@@ -515,10 +511,7 @@ def approval_state(project: Path, resolved: list[dict] | None, digest: str | Non
             "storage_bindings": bindings,
         }
     historical = bool(
-        digest
-        and any(
-            record.get("source_digest") == digest for record in approvals.values()
-        )
+        digest and any(record.get("source_digest") == digest for record in approvals.values())
     )
     return {
         "state": "not-current" if historical else "absent",
@@ -565,9 +558,7 @@ def inputs(
         assert digest is not None
         approval = _effective_grant(project, resolved, digest, proposal, revision)
         profile = profiler.profile(
-            registry=identity_registry(
-                approval["sources"], approval.get("storage_bindings")
-            ),
+            registry=identity_registry(approval["sources"], approval.get("storage_bindings")),
             sample_rows=sample_rows,
         )
     seed_notes = None

@@ -631,8 +631,9 @@ def test_skill_and_release_docs_operator_rules_and_distribution():
     assert "approve-sources" in how_to  # the human-only gate stays in the procedure guide
     cli = (Path(__file__).parents[1] / "docs" / "reference" / "cli.md").read_text()
     assert "ariadne-agent" in cli  # conversational host stays an optional install
-    explanation = (Path(__file__).parents[1] / "docs" / "explanations"
-                   / "how-ariadne-works.md").read_text()
+    explanation = (
+        Path(__file__).parents[1] / "docs" / "explanations" / "how-ariadne-works.md"
+    ).read_text()
     assert "independently attested" in explanation  # governed is not value-attested
 
 

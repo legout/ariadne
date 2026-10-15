@@ -1085,8 +1085,7 @@ def resolve_admission(project: str | Path) -> tuple[dict, Path]:
     referenced = {
         entry["storage"]["name"]
         for entry in record.get("sources") or []
-        if isinstance(entry.get("storage"), dict)
-        and isinstance(entry["storage"].get("name"), str)
+        if isinstance(entry.get("storage"), dict) and isinstance(entry["storage"].get("name"), str)
     }
     if referenced:
         if set(bindings) != referenced:

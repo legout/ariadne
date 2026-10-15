@@ -267,9 +267,7 @@ def _legacy_declare(root: Path, selected: list[dict]) -> None:
         installed, registry_obj.storages if registry_obj else None
     )
     additions = (
-        _new_entries(
-            root, existing, selected, registry_obj.storages if registry_obj else None
-        )
+        _new_entries(root, existing, selected, registry_obj.storages if registry_obj else None)
         if selected
         else []
     )
@@ -296,8 +294,7 @@ def _legacy_declare(root: Path, selected: list[dict]) -> None:
             document: dict = {"sources": additions}
             if registry_obj and registry_obj.storages:
                 document["storages"] = {
-                    name: profile.identity()
-                    for name, profile in registry_obj.storages.items()
+                    name: profile.identity() for name, profile in registry_obj.storages.items()
                 }
             intake.write_text(yaml.safe_dump(document), encoding="utf-8")
             digest = authoring.propose_sources(intake, project=root)["digest"]

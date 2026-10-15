@@ -1166,13 +1166,10 @@ def submit_bundle(
             audit_registry = None
             if sources:
                 audit_registry = load_registry(project / "ariadne.yaml")
-                audit_registry.bindings = (
-                    {
-                        name: binding_from_record(name, record)
-                        for name, record in storage_bindings.items()
-                    }
-                    or None
-                )
+                audit_registry.bindings = {
+                    name: binding_from_record(name, record)
+                    for name, record in storage_bindings.items()
+                } or None
             result = (
                 validate(
                     tmp,
@@ -2349,10 +2346,9 @@ def _review_candidate(
                     "validation is not current; resolve the prerequisite and "
                     "revalidate before admission"
                 )
-            elif (
-                approval.get("approval_digest") is not None
-                and report.get("approval_digest") not in (None, approval["approval_digest"])
-            ):
+            elif approval.get("approval_digest") is not None and report.get(
+                "approval_digest"
+            ) not in (None, approval["approval_digest"]):
                 stale_reasons.append(
                     "the effective storage binding changed since validation "
                     "(spec 0025 §4) — revalidate against the current endpoint grant"
@@ -3668,9 +3664,7 @@ def inspect_mapping(
     effective = effective_inspection_limits(project_inspection_limits(project), limits)
     budget = execution.DeadlineBudget(effective["execution_seconds"])
     owned = execution.DuckDBExecution(
-        authoring_sources.identity_registry(
-            approval["sources"], approval.get("storage_bindings")
-        ),
+        authoring_sources.identity_registry(approval["sources"], approval.get("storage_bindings")),
         budget=budget,
     )
     try:

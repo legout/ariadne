@@ -1153,8 +1153,9 @@ def test_how_to_document_maps_legacy_routes_to_the_new_workflow():
     how-to keeps the Git workflow commands, and the CLI reference keeps the
     split/combined MCP startup. Locations follow the 0.3.0 Diátaxis docs
     restructure; the pinned facts are unchanged."""
-    mapping = (REPO_ROOT / "docs" / "reference"
-               / "git-authoring-migration.md").read_text(encoding="utf-8")
+    mapping = (REPO_ROOT / "docs" / "reference" / "git-authoring-migration.md").read_text(
+        encoding="utf-8"
+    )
     assert "QueryRuntime.open_project" in mapping  # runtime constructors/factory
     assert "ariadne-authoring submit" in mapping and "--base-digest" in mapping
     assert "ariadne-promote" in mapping  # the unchanged legacy Promotion route

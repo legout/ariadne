@@ -641,9 +641,7 @@ def _registry_identity(
     elif registry is not None:
         from ariadne import authoring_sources  # function-local: module deps stay acyclic
 
-        resolved = authoring_sources._resolved_entries(
-            registry.sources, registry.storages or {}
-        )
+        resolved = authoring_sources._resolved_entries(registry.sources, registry.storages or {})
         return (
             authoring_sources.resolved_digest(resolved),
             "approved resolved identity",

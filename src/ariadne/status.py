@@ -258,9 +258,7 @@ def _managed_sources(root: Path, admitted: dict, approvals: dict | None) -> dict
     if registry_path.is_file():
         try:
             registry = sources.load_registry(registry_path)
-            resolved = authoring_sources._resolved_entries(
-                registry.sources, registry.storages
-            )
+            resolved = authoring_sources._resolved_entries(registry.sources, registry.storages)
             digest = authoring_sources.resolved_digest(resolved)
             state = authoring_sources.approval_state(root, resolved, digest)
             scaffold = {
@@ -369,12 +367,8 @@ def _managed_proposals(root: Path, approvals: dict | None) -> list[dict]:
             entry["source_digest"] = digest
             entry["sources_declared"] = bool(resolved)
             state = authoring_sources.approval_state(root, resolved, digest)
-            entry["approved"] = (
-                state["approved"] if (digest and approvals is not None) else None
-            )
-            if resolved and any(
-                isinstance(item.get("storage"), dict) for item in resolved
-            ):
+            entry["approved"] = state["approved"] if (digest and approvals is not None) else None
+            if resolved and any(isinstance(item.get("storage"), dict) for item in resolved):
                 entry["effective_approval"] = state["state"]
                 if state["state"] == "unresolved":
                     entry["prerequisite"] = state.get("reason")

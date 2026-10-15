@@ -919,9 +919,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     an entry may reference; existing candidate profiles can be
                     referenced without resending them.
             """
-            return authoring_api.propose_sources(
-                proposal, expected_revision, sources, storages
-            )
+            return authoring_api.propose_sources(proposal, expected_revision, sources, storages)
 
         @app.tool()
         async def authoring_inputs(

@@ -2036,9 +2036,7 @@ def test_legacy_proposal_carries_and_installs_storage_profiles(tmp_path):
     proposed = authoring.propose_sources(second, project=project)
     with pytest.raises(ValueError, match="conflicting replacement"):
         authoring.approve_sources(proposed["digest"], project=project)
-    assert (
-        yaml.safe_load((project / "ariadne.yaml").read_text())["storages"] == canonical
-    )
+    assert yaml.safe_load((project / "ariadne.yaml").read_text())["storages"] == canonical
 
 
 def test_a_storages_change_invalidates_the_active_legacy_bundle(tmp_path):
