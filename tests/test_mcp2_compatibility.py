@@ -240,9 +240,7 @@ def test_actual_stdio_framing_success_refusal_and_generic_error(tmp_path, served
         assert _mcp_result_bytes(payload) >= len(raw.encode("utf-8"))  # int-id reserve
 
         # --- the same success with a UUID string id: +37 bytes on the wire --
-        raw_uuid, frame_uuid = ok_server.call_tool(
-            uuid_id, "get_metric", {"name": "plain_total"}
-        )
+        raw_uuid, frame_uuid = ok_server.call_tool(uuid_id, "get_metric", {"name": "plain_total"})
         assert len(raw_uuid.encode("utf-8")) - len(raw.encode("utf-8")) == 37
         assert len(raw_uuid.encode("utf-8")) == _frame_bytes(
             _captured_result_model(frame_uuid), uuid_id
@@ -259,9 +257,7 @@ def test_actual_stdio_framing_success_refusal_and_generic_error(tmp_path, served
         )
         uni_payload = json.loads(frame_uni["result"]["content"][0]["text"])
         assert {row["txt"] for row in uni_payload["rows"]} == {"é" * 5, "z" * 14}
-        assert len(raw_uni.encode("utf-8")) == _frame_bytes(
-            _captured_result_model(frame_uni), 2
-        )
+        assert len(raw_uni.encode("utf-8")) == _frame_bytes(_captured_result_model(frame_uni), 2)
         assert _mcp_result_bytes(uni_payload) >= len(raw_uni.encode("utf-8"))
 
         # --- structured refusal: isError + BOTH text and structured content --
@@ -289,9 +285,7 @@ def test_actual_stdio_framing_success_refusal_and_generic_error(tmp_path, served
         body = refusal["structuredContent"]
         assert body["error"]["code"] and body["result"]["status"] == "refused"
         assert json.loads(refusal["content"][0]["text"]) == body  # text is the same body
-        assert len(raw_ref.encode("utf-8")) == _frame_bytes(
-            _captured_result_model(frame_ref), 3
-        )
+        assert len(raw_ref.encode("utf-8")) == _frame_bytes(_captured_result_model(frame_ref), 3)
 
     with _StdioServer(broken, db) as err_server:
         err_server.initialize(0)
@@ -303,9 +297,7 @@ def test_actual_stdio_framing_success_refusal_and_generic_error(tmp_path, served
         # original message (mcp 2.2.0 alone would drop a bare exception's text)
         assert text.startswith("Error executing tool list_metrics: ")
         assert "do not compile" in text
-        assert len(raw_err.encode("utf-8")) == _frame_bytes(
-            _captured_result_model(frame_err), 4
-        )
+        assert len(raw_err.encode("utf-8")) == _frame_bytes(_captured_result_model(frame_err), 4)
 
 
 def test_lowered_envelope_refuses_without_staging_and_narrowed_retry_fits(tmp_path):
@@ -324,7 +316,6 @@ def test_lowered_envelope_refuses_without_staging_and_narrowed_retry_fits(tmp_pa
     from ariadne.serve import _mcp_result_bytes
 
     # widen the payload so the envelope clears the refusal floor with margin
-
 
     root, db = _project(tmp_path / "plain")
     con = sqlite3.connect(db)
