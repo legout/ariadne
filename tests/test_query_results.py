@@ -716,7 +716,10 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
             stdin=io.StringIO(""),
         )
         assert code == 0
-        assert json.loads(capsys.readouterr().out)["rows"] == [
+        # row order is not part of the contract (no ORDER BY in the compiled
+        # SQL) — compare order-independently, shape and values exactly
+        rows = json.loads(capsys.readouterr().out)["rows"]
+        assert sorted(rows, key=lambda row: row["label"]) == [
             {"label": "a", "event_count": 1},
             {"label": "b", "event_count": 1},
             {"label": "c", "event_count": 1},

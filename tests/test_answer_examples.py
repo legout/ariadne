@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
+import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +28,8 @@ def run_cli(project, *args, stdin=None):
     return cli([*args, "--project", str(root)], stdin=stdin)
 
 
-def _submission(result, **overrides):
+def _submission(result, /, **overrides):
+    result = overrides.pop("result", result)  # parametrized whole-result overrides
     submission = {
         "question": "What is the gross margin ratio by region?",
         "interpretation": "Margin as ratio of sums over billable orders.",

@@ -116,19 +116,23 @@ def admitted_project(tmp_path: Path) -> Path:
 # ------------------------------------------------------------------- [AC1]
 
 
-def test_empty_cwd_is_kind_none_not_ready_with_setup_hint_exit_zero(tmp_path, capsys, monkeypatch):
+def test_empty_cwd_is_not_ready_with_git_first_setup_steps_exit_zero(tmp_path, capsys, monkeypatch):
+    # Git-only status (spec 0027 §6): the report always describes the managed
+    # Git route; an empty cwd is an unmanaged, not-ready project whose setup
+    # guidance is the Git-first scaffold/proposal path — exit 0, report data
     empty = tmp_path / "empty"
     empty.mkdir()
     monkeypatch.chdir(empty)
     report = status_json(capsys)
-    assert report["project"]["kind"] == "none"
+    assert report["project"]["kind"] == "git_managed"
     assert report["ready"] is False and report["ready_reason"]
-    assert any("ariadne-init" in step for step in report["next_steps"])  # setup hint
+    assert any("git init" in step for step in report["next_steps"])
+    assert any("ariadne-authoring start" in step for step in report["next_steps"])
     # human output carries the same states
     capsys.readouterr()
     assert run_status() == 0
     human = capsys.readouterr().out
-    assert "none" in human and "Ready: no" in human and "ariadne-init" in human
+    assert "git_managed" in human and "Ready: no" in human and "git init" in human
 
 
 def test_explicit_managed_scaffold_without_admission_reports_instead_of_erroring(tmp_path, capsys):
@@ -279,7 +283,9 @@ def test_json_status_matches_human_states_for_admitted_project(tmp_path, capsys)
 # ------------------------------------------------------------------- [AC6]
 
 
-def test_git_directory_alone_is_not_managed(tmp_path, capsys, monkeypatch):
+def test_git_directory_alone_is_not_ready(tmp_path, capsys, monkeypatch):
+    # Git-only status: .git alone is a not-ready managed project (no scaffold,
+    # no admission) with honest report data — never an error exit
     import subprocess
 
     only_git = tmp_path / "only-git"
@@ -287,7 +293,8 @@ def test_git_directory_alone_is_not_managed(tmp_path, capsys, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=only_git, check=True)
     monkeypatch.chdir(only_git)
     report = status_json(capsys)
-    assert report["project"]["kind"] == "none"  # .git alone is no marker
+    assert report["project"]["kind"] == "git_managed"
+    assert report["project"]["admission"]["state"] == "none"
     assert report["ready"] is False
 
 
@@ -416,11 +423,13 @@ def test_unreadable_ambient_registry_is_report_data_not_an_exit(tmp_path, capsys
     registry.chmod(0)  # unreadable by the same (non-root) user running tests
     monkeypatch.chdir(workdir)
     report = status_json(capsys)  # must not exit nonzero
-    assert report["sources"]["selection"] == "invalid"
-    assert report["sources"]["path"].endswith("ariadne.yaml")
-    assert "Permission denied" in report["sources"]["error"]
+    # the unreadable registry is honest scaffold report data with its error
+    assert report["sources"]["selection"] == "scaffold"
+    scaffold = report["sources"]["scaffold"]
+    assert scaffold["path"].endswith("ariadne.yaml")
+    assert "Permission denied" in scaffold["error"]
     assert report["ready"] is False
-    assert report["project"]["kind"] == "none"  # no scaffold artifacts anywhere else
+    assert report["project"]["kind"] == "git_managed"
     assert report["skill"]["targets"]  # the other sections remain visible
 
 

@@ -448,7 +448,7 @@ def test_failure_after_native_activation_reports_current_without_retry(
     current = admission.load_current(project)
     assert current is not None and current["commit"] == payload["revision"]
     output = capsys.readouterr().out
-    assert "Current recorded activated revision: " + payload["revision"] in output
+    assert "Current admitted revision: " + payload["revision"] in output
     assert "do not assume rollback or retry" in output
     assert shlex.join(["ariadne", "status", "--project", str(project), "--json"]) in output
     assert "before delegation" not in output
@@ -520,10 +520,12 @@ def test_interface_rejects_route_conflicts_and_bypass_flags(monkeypatch, capsys,
     assert json.loads(capsys.readouterr().err)["error"]["message"]
 
 
-@pytest.mark.parametrize("tty,output_tty", [(False, True), (True, False)])
 def test_interrupted_post_admission_inspection_guides_status_without_pre_call_claim(
-    tmp_path, monkeypatch, capsys, tty, output_tty
+    tmp_path, monkeypatch, capsys
 ):
+    # interactive-only since spec 0027 §6: a non-interactive review is display
+    # only and never delegates admission, so the interrupted-inspection path
+    # is reachable only with both stdin and stdout attached to a terminal
     project, api, payload = admitted_candidate(tmp_path / "managed")
     native = admission.main
     read_current = admission.load_current
@@ -546,8 +548,8 @@ def test_interrupted_post_admission_inspection_guides_status_without_pre_call_cl
             "--proposal",
             payload["proposal"],
             answers="\nyes\n",
-            tty=tty,
-            output_tty=output_tty,
+            tty=True,
+            output_tty=True,
             monkeypatch=monkeypatch,
         )
         == 1
@@ -569,10 +571,15 @@ def test_operator_rule_reinstalled_for_selected_project_pi_only(tmp_path, monkey
     selected = status._skill_targets({("project", None), ("project", "pi")})
     assert len(selected) == 2 and all(t["state"] == "ok" for t in selected)
     installed = " ".join((tmp_path / ".pi/skills/ariadne/SKILL.md").read_text().split())
-    assert "`ariadne review` is operator-only: agents never run it" in installed
-    assert "even inside terminal sessions" in installed
+    # the current packaged rule: review is one of the never-run human-only
+    # commands; agents report the read-only authoring payload and stop
+    assert (
+        "Never run `ariadne-authoring approve-sources`, `ariadne-admit`, `ariadne review`"
+        in installed
+    )
+    assert "human-only" in installed
     assert "read-only `ariadne-authoring review`" in installed
-    assert "its exact payload/digest and STOP" in installed
+    assert "return its exact payload/digest, and stop for human Git Admission" in installed
     assert not (tmp_path / ".claude").exists() and not (tmp_path / ".hermes").exists()
 
 

@@ -28,7 +28,9 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
 from ariadne.profiler import profile  # noqa: E402
-from ariadne.serve import Facade  # noqa: E402
+
+# the private numerical-test seam (spec 0027 §6): plain-root Facade construction is retired
+from ariadne.query import _QueryRuntimeSession as Facade  # noqa: E402
 from ariadne.sources import (  # noqa: E402
     build_connection,
     default_registry_path,
@@ -441,7 +443,6 @@ def test_native_duckdb_catalog_and_compiled_metric(tmp_path, monkeypatch):
         tmp_path / "semantic_layer",
         tmp_path / "context_layer",
         catalog_file,
-        staging_dir=tmp_path / "staging",
         sources=reg,
     )
     result = asyncio.run(facade.get_metric("total_amount"))
@@ -994,7 +995,6 @@ def test_facade_over_sqlite_plus_parquet_registry(tmp_path, sqlite_db, duck):
         tmp_path / "semantic_layer",
         tmp_path / "context_layer",
         sqlite_db,
-        staging_dir=tmp_path / "staging",
         sources=reg,
     )
     # governed metric over the sqlite model, executed on the registry connection

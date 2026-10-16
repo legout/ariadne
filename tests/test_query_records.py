@@ -338,7 +338,9 @@ def test_query_records_contract(case, served, tmp_path):
         # truthful bounded provenance + the logical/executed distinction
         assert result["dataset"] == "fixture.main.events"
         assert result["resource"].startswith("ariadne://table/")
-        assert result["provenance"]["route"] == "legacy-local-sources"
+        # the private numerical seam's honest route label (the legacy
+        # plain-root route is retired; no Git snapshot identity exists here)
+        assert result["provenance"]["route"] == "internal-synthetic-session"
         assert result["provenance"]["admission"] is None
         assert "unversioned" in result["provenance"]["disclosure"]
         assert "LIMIT 2" in result["sql"]  # the logical top-N selection

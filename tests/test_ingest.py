@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
 from ariadne import admission as admission_module  # noqa: E402
+from ariadne import authoring_sources  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.ingest import (  # noqa: E402
     _CONVERTERS,
@@ -100,6 +101,12 @@ class GitIngestCase:
         self.proposal = self.started["proposal"]
         self.revision = self.started["candidate_revision"]
         self.worktree = worktree_of(self.project, self.proposal)
+        # The operator's G3 approval of the exact resolved registry identity
+        # (spec 0027 §5: source approval is a separate human decision recorded
+        # through the approve-sources seam; validate/admit requires the grant).
+        resolved, digest = authoring_sources.candidate_sources(self.project, self.revision)
+        assert resolved is not None and digest is not None
+        self.authoring.approve_sources(self.proposal, self.revision, digest)
 
     def ingest(self, docs: Sequence[str | Path], *, complete=None, verbatim: bool = False) -> dict:
         result = ingest(
@@ -974,15 +981,6 @@ def _case_for_snapshot(snapshot: Path) -> GitIngestCase:
     return _CASE_BY_SNAPSHOT[snapshot.resolve()]
 
 
-def _human_edit_admitted_page(snapshot: Path, rel: str, transform) -> Path:
-    case = _case_for_snapshot(snapshot)
-    section, filename = rel.split("/", 1)
-    name = filename.removesuffix(".md")
-    path = case.worktree / "context_layer" / rel
-    case.edit_page(section, name, transform(path.read_text(encoding="utf-8")))
-    return _admit_case(case)
-
-
 def _admit_case(case: GitIngestCase) -> Path:
     snapshot = case.admit()
     _CASE_BY_SNAPSHOT[snapshot.resolve()] = case
@@ -1278,6 +1276,51 @@ def _approved_policy_with_human_edit(tmp_path, *, annotation="(owner annotation)
     return served, doc, changed_entry
 
 
+def _approved_policy_with_operator_note(
+    tmp_path, *, annotation="(owner annotation)", description=None, advance_doc=True
+):
+    """The credential-carrying variant: the approved Policy's note/description
+    enters through the operator's own INITIAL bundle bytes. The typed edit seam
+    refuses credential-shaped artifact content (spec 0027 §4), so an approved
+    page with a stray secret only exists as the owner's committed page — the
+    real-world shape these egress/redaction cases test. ``advance_doc=False``
+    keeps the source snapshot unchanged for the metadata-only variants."""
+    doc = make_doc(tmp_path)
+    note = f" {annotation}" if annotation else ""
+    default_description = "CHURNED renewal rows are excluded from expansion totals."
+    page = (
+        "---\n"
+        "type: policy\n"
+        "status: draft\n"
+        "title: Churned ARR is not expansion\n"
+        f"description: {description or default_description}\n"
+        "tags: [policy, arr, ingest]\n"
+        "sources:\n"
+        f"  - id: {hashlib.sha256(doc.read_bytes()).hexdigest()[:12]}\n"
+        f"    resource: {doc.resolve()}\n"
+        f"    title: {doc.name}\n"
+        "---\n\n"
+        "# Churned ARR is not expansion\n\n"
+        f"CHURNED rows record lost ARR.{note}\n"
+    )
+    case = GitIngestCase(
+        tmp_path,
+        [doc],
+        initial_files={"context_layer/policies/churned-arr-not-expansion.md": page},
+    )
+    served = _admit_case(case)
+    changed_entry = page_entry(
+        body="# Churned ARR is not expansion\n\nCHURNED rows record lost ARR and never "
+        "count toward net new either."
+    )
+    if advance_doc:
+        doc.write_text(
+            "# Renewal notes v2\n\nCHURNED rows never count toward expansion nor net new ARR.\n",
+            encoding="utf-8",
+        )
+    return served, doc, changed_entry
+
+
 def test_reconcile_advisory_supported_quotes_for_changed_policy(tmp_path, monkeypatch):
     """Unit B eligibility + quote verification: ONLY a same-path matched approved
     POLICY with changed body gets the extra call; the provider receives the
@@ -1338,7 +1381,7 @@ def test_reconcile_advisory_refuses_credential_pattern_before_any_egress(tmp_pat
     """An approved Policy that appears to contain a credential is NEVER sent:
     no extra model call at all, the class (not the secret) is reported, and the
     deterministic diff + staging stand."""
-    served, doc, changed_entry = _approved_policy_with_human_edit(
+    served, doc, changed_entry = _approved_policy_with_operator_note(
         tmp_path, annotation="(api token: sk-a1B2c3D4e5F6g7H8i9J0k1 in a note)"
     )
     secret = "sk-a1B2c3D4e5F6g7H8i9J0k1"
@@ -1623,7 +1666,7 @@ def test_reconcile_credential_refusal_redacts_secret_from_diff_and_cli_output(
     tmp_path, monkeypatch, capsys
 ):
     secret = "sk-a1B2c3D4e5F6g7H8i9J0k1"
-    served, doc, changed_entry = _approved_policy_with_human_edit(
+    served, doc, changed_entry = _approved_policy_with_operator_note(
         tmp_path, annotation=f"(note: {secret} embedded)"
     )
     case = _case_for_snapshot(served)
@@ -1642,7 +1685,7 @@ def test_reconcile_credential_refusal_redacts_secret_from_diff_and_cli_output(
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
     base = tmp_path / "cli"
     base.mkdir()
-    served2, doc2, changed_entry2 = _approved_policy_with_human_edit(
+    served2, doc2, changed_entry2 = _approved_policy_with_operator_note(
         base, annotation=f"(note: {secret} embedded)"
     )
     case2 = _case_for_snapshot(served2)
@@ -1658,7 +1701,9 @@ def test_reconcile_credential_refusal_redacts_entire_pem_block_from_diff_and_cli
 ):
     pem_payload = "MIIEowIBAAKCAQEA7SYNTHETICnotAREALkeyPAYLOAD0123456789=="
     pem = f"-----BEGIN RSA PRIVATE KEY-----\n{pem_payload}\n-----END RSA PRIVATE KEY-----"
-    served, doc, changed_entry = _approved_policy_with_human_edit(tmp_path, annotation=f"({pem})")
+    served, doc, changed_entry = _approved_policy_with_operator_note(
+        tmp_path, annotation=f"({pem})"
+    )
     case = _case_for_snapshot(served)
     staged, errors, comparisons = _reconcile_candidate(
         case, [doc], complete=lambda _m: response(changed_entry)
@@ -1679,7 +1724,7 @@ def test_reconcile_credential_refusal_redacts_entire_pem_block_from_diff_and_cli
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
     base = tmp_path / "cli"
     base.mkdir()
-    served2, doc2, changed_entry2 = _approved_policy_with_human_edit(base, annotation=f"({pem})")
+    served2, doc2, changed_entry2 = _approved_policy_with_operator_note(base, annotation=f"({pem})")
     case2 = _case_for_snapshot(served2)
     monkeypatch.setattr(ingest_module, "_default_complete", lambda _m: response(changed_entry2))
     assert main([*_ingest_cli_args(case2, doc2), "--reconcile"]) == 0
@@ -1689,24 +1734,14 @@ def test_reconcile_credential_refusal_redacts_entire_pem_block_from_diff_and_cli
     assert (case2.worktree / "context_layer" / APPROVED).is_file()
 
 
-def _with_description_token(snapshot: Path, token_line: str) -> Path:
-    """Make and admit a Git edit to the Policy's source-authored metadata."""
-    return _human_edit_admitted_page(
-        snapshot,
-        APPROVED,
-        lambda content: content.replace(
-            "description: CHURNED renewal rows are excluded from expansion totals.",
-            f"description: {token_line}",
-        ),
-    )
-
-
 def test_reconcile_credential_in_approved_description_refuses_and_redacts(
     tmp_path, monkeypatch, capsys
 ):
     token = "hunter2-rotation"
-    served, doc, changed_entry = _approved_policy_with_human_edit(tmp_path)
-    served = _with_description_token(served, f"ops note (password = {token}) for renewals.")
+    description_line = f"ops note (password = {token}) for renewals."
+    served, doc, changed_entry = _approved_policy_with_operator_note(
+        tmp_path, description=description_line
+    )
     snapshot = _served_snapshot(served)
     calls: list[list[dict]] = []
 
@@ -1734,8 +1769,9 @@ def test_reconcile_credential_in_approved_description_refuses_and_redacts(
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
     base = tmp_path / "cli"
     base.mkdir()
-    served2, doc2, changed_entry2 = _approved_policy_with_human_edit(base)
-    served2 = _with_description_token(served2, f"ops note (password = {token}) for renewals.")
+    served2, doc2, changed_entry2 = _approved_policy_with_operator_note(
+        base, description=description_line
+    )
     case2 = _case_for_snapshot(served2)
     monkeypatch.setattr(ingest_module, "_default_complete", lambda _m: response(changed_entry2))
     assert main([*_ingest_cli_args(case2, doc2), "--reconcile"]) == 0
@@ -1745,8 +1781,9 @@ def test_reconcile_credential_in_approved_description_refuses_and_redacts(
 
     base3 = tmp_path / "c3"
     base3.mkdir()
-    served3, doc3 = _approved_state(base3, page_entry())
-    served3 = _with_description_token(served3, f"ops note (password = {token}) for renewals.")
+    served3, doc3, _unchanged_entry = _approved_policy_with_operator_note(
+        base3, annotation="", description=description_line, advance_doc=False
+    )
     case3 = _case_for_snapshot(served3)
     calls3: list[list[dict]] = []
 
@@ -1854,7 +1891,7 @@ def test_verbatim_uses_existing_converter_output(tmp_path, monkeypatch):
     calls = []
 
     def fake_convert(path):
-        calls.append(path)
+        calls.append((path, path.read_bytes()))  # bytes captured before cleanup
         return converter_text
 
     monkeypatch.setitem(_CONVERTERS, ".html", (fake_convert, _CONVERTERS[".html"][1]))
@@ -1867,7 +1904,14 @@ def test_verbatim_uses_existing_converter_output(tmp_path, monkeypatch):
     case = GitIngestCase(tmp_path, [doc])
     result = case.ingest([doc], complete=boom, verbatim=True)
 
-    assert result["errors"] == [] and calls == [doc]
+    # spec 0027 §5: conversion reads one bounded byte SNAPSHOT through a
+    # temporary scratch file (same bytes, cleaned up), never the original path
+    assert result["errors"] == []
+    assert len(calls) == 1
+    scratch, scratch_bytes = calls[0]
+    assert scratch.suffix == ".html" and scratch_bytes == doc.read_bytes()
+    assert scratch != doc
+    assert not scratch.exists()  # the temporary scratch file is cleaned up
     page = case.worktree / "context_layer/references/handbook.md"
     assert result["written"] == ["context_layer/references/handbook.md"]
     assert page.read_text(encoding="utf-8").split("\n---\n\n", 1)[1] == converter_text
@@ -2066,9 +2110,11 @@ def test_verbatim_reference_is_discoverable_as_unadmitted_candidate_draft(tmp_pa
     assert "# Glossary" in hits[0]["content"]
     assert "Renewal means reopening the contract for another term." in hits[0]["content"]
     listing = list_pages(roots)
-    assert [(entry["path"], entry["draft"]) for entry in listing] == [
-        ("references/glossary.md", True)
-    ]
+    listed = [(entry["path"], entry["draft"]) for entry in listing]
+    # the whole selected candidate is unadmitted: the verbatim draft is
+    # labeled like every inherited bundle page, never admitted content
+    assert ("references/glossary.md", True) in listed
+    assert all(draft is True for _path, draft in listed)
     page = read_page("references/glossary.md", context, draft=True)
     assert page["draft"] is True
     assert page["content"] == (case.worktree / result["written"][0]).read_text(encoding="utf-8")
@@ -2086,8 +2132,10 @@ def test_verbatim_retry_detects_authoring_edits_and_malformed_candidates(tmp_pat
     draft = case.worktree / first["written"][0]
     original = draft.read_text(encoding="utf-8")
     lines = original.splitlines(keepends=True)
-    at_line = next(index for index, line in enumerate(lines) if line.startswith("  at: "))
-    lines.insert(at_line + 1, "  note: owner annotation\n")
+    # a typed frontmatter edit OUTSIDE the system-owned ``generated`` block
+    # (spec 0027 §4: claims inherited unchanged are allowed, never authored)
+    gen_line = next(index for index, line in enumerate(lines) if line.startswith("generated:"))
+    lines.insert(gen_line, "note: owner annotation\n")
     edited = "".join(lines)
     case.edit_page("references", "notes", edited)
     clock.now_value += timedelta(hours=1)
@@ -2107,17 +2155,27 @@ def test_verbatim_retry_detects_authoring_edits_and_malformed_candidates(tmp_pat
     assert second_memo["written"] == ["context_layer/references/memo-2.md"]
     assert memo_page.read_text(encoding="utf-8") == trimmed
 
+    # a malformed candidate page can only enter through the operator's own
+    # initial bundle (the typed seam refuses claim-less malformed frontmatter);
+    # ingest must neither crash nor overwrite it, and the batch proceeds
     malformed = (
         "---\ntype: reference\n  sources: [unclosed\n---\n\n# notes\n\nbroken by the owner\n"
     )
-    case.edit_page("references", "notes", malformed)
     later = tmp_path / "second-notes.md"
     later.write_text("# Second\n\nAnother document in the same batch.\n", encoding="utf-8")
-    result = case.ingest([doc, later], verbatim=True)
+    broken_case = GitIngestCase(
+        tmp_path / "malformed-case",
+        [doc, later],
+        initial_files={"context_layer/references/notes.md": malformed},
+    )
+    result = broken_case.ingest([doc, later], verbatim=True)
     assert result["errors"] == []
-    assert result["written"] == ["context_layer/references/second-notes.md"]
-    assert result["unchanged"] == ["context_layer/references/notes-2.md"]
-    assert (case.worktree / "context_layer/references/notes.md").read_text(
+    assert result["unchanged"] == []
+    assert result["written"] == [
+        "context_layer/references/notes-2.md",
+        "context_layer/references/second-notes.md",
+    ]
+    assert (broken_case.worktree / "context_layer/references/notes.md").read_text(
         encoding="utf-8"
     ) == malformed
 
@@ -2129,26 +2187,57 @@ def test_verbatim_retry_detects_changes_on_timestamp_line(tmp_path, monkeypatch)
     clock = _FixedClock(datetime(2026, 5, 1, 7, 0, 0, tzinfo=UTC))
     monkeypatch.setattr(ingest_module, "datetime", clock)
     doc = make_doc(tmp_path)
-    case = GitIngestCase(tmp_path, [doc])
-    first = case.ingest([doc], verbatim=True)
-    page = case.worktree / first["written"][0]
-    lines = page.read_text(encoding="utf-8").splitlines(keepends=True)
-    at_line = next(index for index, line in enumerate(lines) if line.startswith("  at: "))
-    lines[at_line] = "  at: '2026-05-01T07:00:00+00:00' # owner annotation\n"
-    edited = "".join(lines)
-    case.edit_page("references", "notes", edited)
-    clock.now_value += timedelta(hours=3)
-    second = case.ingest([doc], verbatim=True)
-    assert second["written"] == ["context_layer/references/notes-2.md"]
-    assert page.read_text(encoding="utf-8") == edited
 
-    second_page = case.worktree / second["written"][0]
-    lines = second_page.read_text(encoding="utf-8").splitlines(keepends=True)
-    at_line = next(index for index, line in enumerate(lines) if line.startswith("  at: "))
-    lines[at_line] = "  at: [unclosed\n"
-    corrupted = "".join(lines)
-    case.edit_page("references", "notes-2", corrupted)
-    clock.now_value += timedelta(hours=3)
-    third = case.ingest([doc], verbatim=True)
-    assert third["written"] == ["context_layer/references/notes-3.md"]
-    assert (case.worktree / second["written"][0]).read_text(encoding="utf-8") == corrupted
+    def canonical_page(base: Path) -> str:
+        seed = GitIngestCase(base / "seed", [doc])
+        first = seed.ingest([doc], verbatim=True)
+        return (seed.worktree / first["written"][0]).read_text(encoding="utf-8")
+
+    def with_at_line(page_text: str, line: str) -> str:
+        lines = page_text.splitlines(keepends=True)
+        at_line = next(index for index, text in enumerate(lines) if text.startswith("  at: "))
+        lines[at_line] = line
+        return "".join(lines)
+
+    # a candidate page (operator-authored initial bundle) differing ONLY in
+    # the timestamp VALUE is the explicit no-op: the value is masked
+    older_value = with_at_line(canonical_page(tmp_path), "  at: '2026-04-30T07:00:00+00:00'\n")
+    same = GitIngestCase(
+        tmp_path / "value-only",
+        [doc],
+        initial_files={"context_layer/references/notes.md": older_value},
+    )
+    result = same.ingest([doc], verbatim=True)
+    assert result["written"] == [] and result["unchanged"] == ["context_layer/references/notes.md"]
+    assert (same.worktree / "context_layer/references/notes.md").read_text(
+        encoding="utf-8"
+    ) == older_value
+
+    # any OTHER byte on that line — an appended comment — stays a change
+    annotated = with_at_line(
+        canonical_page(tmp_path / "annotated"),
+        "  at: '2026-05-01T07:00:00+00:00' # owner annotation\n",
+    )
+    commented = GitIngestCase(
+        tmp_path / "annotated",
+        [doc],
+        initial_files={"context_layer/references/notes.md": annotated},
+    )
+    second = commented.ingest([doc], verbatim=True)
+    assert second["written"] == ["context_layer/references/notes-2.md"]
+    assert (commented.worktree / "context_layer/references/notes.md").read_text(
+        encoding="utf-8"
+    ) == annotated
+
+    # a corrupted timestamp line is a change too, never a false 'unchanged'
+    corrupted_page = with_at_line(canonical_page(tmp_path / "corrupted"), "  at: [unclosed\n")
+    corrupted = GitIngestCase(
+        tmp_path / "corrupted",
+        [doc],
+        initial_files={"context_layer/references/notes.md": corrupted_page},
+    )
+    third = corrupted.ingest([doc], verbatim=True)
+    assert third["written"] == ["context_layer/references/notes-2.md"]
+    assert (corrupted.worktree / "context_layer/references/notes.md").read_text(
+        encoding="utf-8"
+    ) == corrupted_page
