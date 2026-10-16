@@ -1,26 +1,32 @@
-"""A1 Analyst session over native Ariadne tools (issue #23, spec 2026-09-29-0006).
+"""A1 Analyst session over native Ariadne tools (issue #23, spec 2026-09-29-0006;
+migrated to the Git-only core, issue #73: sessions are admission-bound through
+the project factories — DiscoveryRuntime.open_project/QueryRuntime.open_project
+— following the core serve.py DeferredQueryRuntime pattern).
 
 Deterministic and offline: a scripted ``tau_ai.fake.FakeProvider`` drives the
-real ``tau_agent.AgentHarness`` loop, the real Analyst tool wrappers, and the
-real ``ariadne.runtime.AriadneRuntime`` over the retail-demo golden fixtures.
-Numbers use the SAME independent-SQL oracle as the root suite (imported from
+real ``tau_agent.AgentHarness`` loop, the real Analyst tool wrappers, and a
+real ADMITTED temporary Git data project built from the retail-demo golden
+models/pages (``tests/test_evals.py``/``tests/test_serve.py`` golden text) —
+the same fixtures the root suite's oracle uses. Numbers use the SAME
+independent-SQL oracle as the root suite (imported from
 ``tests/test_evals.py``); no second numeric oracle exists in this file.
 
 Real regressions named by the ticket:
 
 (a) ``get_metric`` returns numeric rows but loses Policy context — covered by
-    requiring the governed tool payload to carry the served metric page and
+    requiring the governed tool payload to carry the admitted metric page and
     the full bodies of every cited Policy, and the answer to state the caveats
     and cite only Policy paths the tool actually returned;
-(b) an unmodeled answer presents staged output as governed — covered by
-    requiring ``governed: false``, the staged proposal status, and citations
-    drawn from the actual ``search_context`` result in the unmodeled answer.
+(b) an unmodeled answer presents ad-hoc output as governed — covered by
+    requiring ``governed: false``, the not-saved persistence status, and
+    citations drawn from the actual ``search_context`` result in the unmodeled
+    answer.
 """
 
 import asyncio
 import json
+import os
 import re
-import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -46,19 +52,27 @@ if str(REPO_ROOT) not in sys.path:  # reuse the root suite's fixtures and oracle
     sys.path.insert(0, str(REPO_ROOT))
 
 from ariadne.skill import ASSETS  # noqa: E402
+from ariadne.sources import table_resource  # noqa: E402
 from tests.test_evals import (  # noqa: E402 — the shared oracle; no second one here
     _JOIN_SOURCE,
     _MEAN_EXPR,
     ADHOC_ENTRY,
+    CUSTOMERS_MODEL,
     TOLERANCE,
     independent_adhoc_means,
     independent_expected,
-    resolve_served,
 )
 from tests.test_git_admission import admit, admitted_ready  # noqa: E402 — the G5 human journey
-from tests.test_git_authoring import POLICY_PAGE, complete_bundle_project  # noqa: E402
+from tests.test_git_authoring import (  # noqa: E402 — the shared Git fixtures
+    POLICY_PAGE,
+    approved,
+    complete_bundle_project,
+    run_git,
+)
 from tests.test_seed import run_seed  # noqa: E402
 from tests.test_serve import (  # noqa: E402 — the recorded golden OKF pages
+    GOLDEN_OKF,
+    GOLDEN_OSI,
     GOLDEN_POLICY_EMEA,
     GOLDEN_POLICY_STATUS,
 )
@@ -76,31 +90,36 @@ ANALYST_TOOLS = {
 }
 
 ANSWER_GOVERNED = """\
-Governed answer (governed: true): gross margin by region from the served
-catalog. Caveats, from the served context actually returned: CANCELLED and
+Governed answer (governed: true): gross margin by region from the admitted
+catalog. Caveats, from the admitted context actually returned: CANCELLED and
 RETURNED orders are excluded from revenue, cost and order count
 (policies/order-status-billing.md), and pre-2024 EMEA orders are converted
 to USD with rate_to_usd before aggregating
-(policies/emea-currency-cutover.md); served metric page
+(policies/emea-currency-cutover.md); admitted metric page
 context_layer/metrics/gross_margin.md.
 """
 
 ADHOC_DEFINITION = {
     "name": ADHOC_ENTRY["metric"],
     "description": "Mean billable order amount per customer in USD",
-    "source": _JOIN_SOURCE,
+    # The admitted registry qualifies the sqlite relations (demo.main.*): the
+    # ad-hoc IO-authority boundary reads only registered catalog relations.
+    "source": _JOIN_SOURCE.replace("FROM orders o", "FROM demo.main.orders o").replace(
+        "LEFT JOIN currency_conversion_rate r", "LEFT JOIN demo.main.currency_conversion_rate r"
+    ),
     "expression": _MEAN_EXPR,
     "dimensions": ADHOC_ENTRY["dimensions"],
 }
 
 ANSWER_UNMODELED = """\
-No governed metric answers this, so I searched the served context first
+No governed metric answers this, so I searched the admitted context first
 (search_context), inspected the registered tables (list_datasets), and defined
 an ad-hoc metric through the compile gate (define_metric). Policy guidance
 actually returned by the search: CANCELLED and RETURNED orders are not revenue
-(policies/order-status-billing.md). governed: false — the result is a staged
-proposal under staging/semantic_layer/models/adhoc/ awaiting human promotion,
-not a served metric.
+(policies/order-status-billing.md). governed: false — the result is ephemeral
+(persistence: not_saved, nothing was written anywhere); retaining the
+definition is a separate human Git authoring step, and it is not a governed
+metric.
 """
 
 
@@ -165,22 +184,94 @@ class GatedProvider(FakeProvider):
 # --- the host-configured project (retail-demo golden set, oracle-shared) ------
 
 
+@pytest.fixture(autouse=True)
+def isolated_git_config(monkeypatch):
+    """Never touch the operator's global/system Git config (the root Git
+    suites' rule): repo-local identity only."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+
+
+def admitted_retail_project(root: Path, *, reference: str | None = None) -> Path:
+    """One real temporary ADMITTED Git data project carrying the retail-demo
+    golden bundle: the recorded reference orders/customers models, the golden
+    metric page citing both governing policies, and the deterministic seeded
+    demo.db as the registered ``demo`` sqlite source — then the full human Git
+    journey (commit the human-created initial artifact revision, start a
+    proposal, approve the exact resolved source identity, validate, review,
+    admit). ``reference`` optionally adds one more committed context page
+    (e.g. the structured order-number Term Reference) BEFORE the journey, so
+    it rides the admitted snapshot. The golden page text is extended with the
+    ADR-0007 bundle-contract frontmatter and cites the registered source
+    identity ``demo`` (the sqlite attach) instead of the retired bare table
+    names; body text — the actual oracle content — is untouched."""
+    from ariadne.authoring import AuthoringProject
+
+    project = root / "proj"
+    project.mkdir(parents=True, exist_ok=True)
+    run_seed(project / "data" / "demo.db")
+    (project / "ariadne.yaml").write_text(
+        "sources:\n  - name: demo\n    type: sqlite\n    path: data/demo.db\n",
+        encoding="utf-8",
+    )
+    (project / "data").mkdir(exist_ok=True)
+    (project / "data" / "seed_notes.md").write_text(
+        (REPO_ROOT / "examples" / "retail-demo" / "seed_notes.md").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    models = project / "semantic_layer" / "models"
+    models.mkdir(parents=True, exist_ok=True)
+    (models / "orders.yml").write_text(GOLDEN_OSI, encoding="utf-8")
+    (models / "customers.yml").write_text(CUSTOMERS_MODEL, encoding="utf-8")
+    metric_page = GOLDEN_OKF.replace(
+        "sources:\n  - orders\n  - currency_conversion_rate\n",
+        "sources:\n  - demo\n",
+    ).replace(
+        "type: metric\nstatus: draft\n",
+        "type: metric\nstatus: draft\ntitle: gross_margin\n"
+        "description: Ratio of sums, not an average of per-row margins\n"
+        "tags: [metric]\n",
+    )
+    pages = {
+        "context_layer/metrics/gross_margin.md": metric_page,
+        "context_layer/policies/order-status-billing.md": GOLDEN_POLICY_STATUS,
+        "context_layer/policies/emea-currency-cutover.md": GOLDEN_POLICY_EMEA,
+    }
+    if reference is not None:
+        pages["context_layer/references/order-number.md"] = reference
+    for rel, content in pages.items():
+        path = project / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    run_git(project, "init", "-q")
+    run_git(project, "config", "user.name", "Ariadne Tests")
+    run_git(project, "config", "user.email", "tests@ariadne.local")
+    scope = [
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "semantic_layer/models/orders.yml",
+        "semantic_layer/models/customers.yml",
+        *pages,
+    ]
+    run_git(project, "add", "--", *scope)
+    run_git(project, "commit", "-q", "-m", "human: complete retail bundle", "--", *scope)
+
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)  # the operator's approval, outside the agent
+    validated = api.validate_proposal(started["proposal"], started["candidate_revision"])
+    assert validated["ok"] is True, validated["errors"]
+    review = api.review_proposal(started["proposal"])
+    assert review["revision"] == validated["revision"]
+    assert admit(project, review) == 0  # the human Git Review Admission
+    return project
+
+
 @pytest.fixture(scope="module")
 def project(tmp_path_factory) -> Path:
-    """One configured project: served layers + the two golden Policy pages +
-    the deterministic demo.db, resolved exactly as the root eval suite does."""
-    root = resolve_served(tmp_path_factory.mktemp("a1-project"))
-    policies = root / "context_layer" / "policies"
-    policies.mkdir(parents=True, exist_ok=True)
-    for name, body in (
-        ("order-status-billing.md", GOLDEN_POLICY_STATUS),
-        ("emea-currency-cutover.md", GOLDEN_POLICY_EMEA),
-    ):
-        page = policies / name
-        if not page.exists():
-            page.write_text(body, encoding="utf-8")
-    run_seed(root / "demo.db")
-    return root
+    """One admitted project: the golden retail bundle with its seeded demo.db
+    source, admitted through the human Git journey."""
+    return admitted_retail_project(tmp_path_factory.mktemp("a1-project"))
 
 
 def _policy_paths(text: str) -> set[str]:
@@ -194,8 +285,7 @@ def _policy_paths(text: str) -> set[str]:
 SEED_NOTES_SOURCE = {"id": "seed-notes", "resource": "data/seed_notes.md"}
 GOLDEN_SOURCED_SEED_NOTES = {**SEED_NOTES_SOURCE, "title": "Seed notes"}
 _GOLDEN_METRIC_SOURCES = [
-    "orders",
-    "currency_conversion_rate",
+    "demo",  # the registered sqlite source the admitted page cites
     {"id": "order-status-billing", "resource": "policies/order-status-billing.md"},
     {"id": "emea-currency-cutover", "resource": "policies/emea-currency-cutover.md"},
 ]
@@ -219,7 +309,7 @@ def _unverified_page_view(path: str, *, status: str, sources: list) -> dict:
 
 
 def _golden_page_view(path: str) -> dict:
-    """The expected §4 view of one golden served page (issue #48): draft
+    """The expected §4 view of one golden authored page (issue #48): draft
     lifecycle preserved, unknown freshness, unverified tier, actual sources."""
     sources = (
         _GOLDEN_METRIC_SOURCES if path == "metrics/gross_margin.md" else [GOLDEN_SOURCED_SEED_NOTES]
@@ -227,12 +317,32 @@ def _golden_page_view(path: str) -> dict:
     return _unverified_page_view(path, status="draft", sources=sources)
 
 
+def _computation_page_view(metric: str, model: str) -> dict:
+    """The expected §4/§5 view of one finalize-generated computation page
+    (spec 0011 §5 item 3, spec 0027 §2): generated draft lifecycle, unknown
+    freshness, unverified tier, and the single OSI-model citation the core's
+    computation writer attaches — derived from the finalize contract, the
+    same independently written shape the root managed-admission suite
+    pins for its own fixture."""
+    return _unverified_page_view(
+        f"computations/{metric}.md",
+        status="draft",
+        sources=[
+            {
+                "id": f"model-{model}",
+                "resource": f"../../semantic_layer/models/{model}.yml",
+                "title": f"{model} OSI model",
+            }
+        ],
+    )
+
+
 # --- the ticket's scripted flows ----------------------------------------------
 
 
 def test_governed_route_returns_values_with_full_context(project):
     """Discovery -> get_metric: values match the independent-SQL oracle AND the
-    served Policy context survives the tool boundary into the answer."""
+    admitted Policy context survives the tool boundary into the answer."""
     provider = FakeProvider(
         [
             turn(calls=[("list_metrics", {})]),
@@ -255,7 +365,7 @@ def test_governed_route_returns_values_with_full_context(project):
     payload = json.loads(get.result)
     assert payload["governed"] is True and payload["metric"] == "gross_margin"
 
-    # Regression (a): numeric rows alone are not the contract — the served
+    # Regression (a): numeric rows alone are not the contract — the admitted
     # metric page and the FULL bodies of every cited Policy ride along.
     context = payload["context"]
     assert "policies/order-status-billing.md" in context["metric_page"]
@@ -278,6 +388,7 @@ def test_governed_route_returns_values_with_full_context(project):
         _golden_page_view("metrics/gross_margin.md"),
         _golden_page_view("policies/order-status-billing.md"),
         _golden_page_view("policies/emea-currency-cutover.md"),
+        _computation_page_view("gross_margin", "orders"),
     ]
     assert len(signals["pages"]) == len(expected_views)
     for view in expected_views:
@@ -285,7 +396,7 @@ def test_governed_route_returns_values_with_full_context(project):
     assert signals["warnings"] == []
 
     observed = {row["region"]: row["gross_margin"] for row in payload["rows"]}
-    expected = independent_expected(project / "demo.db", "gross_margin", ["region"])
+    expected = independent_expected(project / "data" / "demo.db", "gross_margin", ["region"])
     assert set(observed) == set(expected)
     for region, value in observed.items():
         assert abs(value - expected[region]) <= TOLERANCE, f"governed {region}: {value}"
@@ -293,7 +404,7 @@ def test_governed_route_returns_values_with_full_context(project):
     # Issue #54 (spec 0013 §4, plan 0013 §2) — the native get-metric
     # passthrough: the additive advisory ``data_signals`` view crosses the
     # tool boundary with its CLOSED key set and honest unknowns. Expectations
-    # derive from the contract, never from the tool: the golden served set
+    # derive from the contract, never from the tool: the golden admitted set
     # declares no ``ariadne_quality`` profile, so every identified dependency
     # keeps unknown coverage with NO report and NO warning invented for the
     # optional profile's absence, and nothing was elided.
@@ -333,10 +444,11 @@ def test_governed_route_returns_values_with_full_context(project):
     assert isinstance(events[-1], RunCompleted) and events[-1].stop_reason == "stop"
 
 
-def test_unmodeled_route_stages_ungoverned_proposal(project):
+def test_unmodeled_route_reports_ephemeral_ungoverned_result(project):
     """search_context -> list_datasets -> define_metric: the returned Policy
-    guidance is cited, the result stays `governed: false`, and the staged
-    proposal is reported as staged — never presented as governed."""
+    guidance is cited, the result stays `governed: false` with the honest
+    not-saved persistence status and nothing written — never presented as
+    governed."""
     provider = FakeProvider(
         [
             turn(calls=[("search_context", {"query": "mean order amount per customer"})]),
@@ -360,34 +472,42 @@ def test_unmodeled_route_stages_ungoverned_proposal(project):
     search, _datasets, define = activity
     assert search.is_error is False and define.is_error is False
 
-    # The search result carries the served Policy page (path + full body).
+    # The search result carries the admitted Policy page (path + full body).
     hits = json.loads(search.result)
     returned_paths = {hit["path"] for hit in hits}
     assert "policies/order-status-billing.md" in returned_paths
 
     # Issue #48 (spec 0011 §4): EVERY search hit carries the envelope of ITS
     # returned page — exactly one assessed page per hit, on the hit's own
-    # path — and §5 keeps the metadata-less golden pages warning-free.
+    # path — and §5 keeps the metadata-less golden pages warning-free. The
+    # full view is pinned for the AUTHORED golden pages (their frontmatter is
+    # the independent oracle); generated computation/index pages only owe the
+    # path binding and warning-free shape, never a hardcoded body.
     for hit in hits:
         hit_signals = hit["context_signals"]
         assert set(hit_signals) == {"pages", "warnings"}
-        assert hit_signals["pages"] == [_golden_page_view(hit["path"])]
+        assert [page["path"] for page in hit_signals["pages"]] == [hit["path"]]
         assert hit_signals["warnings"] == []
+    by_path = {hit["path"]: hit for hit in hits}
+    assert by_path["policies/order-status-billing.md"]["context_signals"]["pages"] == [
+        _golden_page_view("policies/order-status-billing.md")
+    ]
 
     payload = json.loads(define.result)
-    # Regression (b): staged output is labeled ungoverned, and really staged.
+    # Regression (b): ad-hoc output is labeled ungoverned, and really
+    # ephemeral — the not-saved persistence status, no staged paths, and no
+    # durable artifact anywhere in the project.
     assert payload["governed"] is False
-    staged_model = Path(payload["staged_as"])
-    staged_page = Path(payload["staged_context_as"])
-    assert staged_model.is_file() and "adhoc" in staged_model.parts
-    assert staged_page.is_file()
+    assert payload["persistence"] == {"status": "not_saved"}
+    assert "staged_as" not in payload and "staged_context_as" not in payload
+    assert not (project / "staging").exists()
 
     # Spec 0011 §4: an ad-hoc result legitimately carries no signals — its
     # ``context`` stays exactly the pre-envelope ``null``.
     assert payload["context"] is None
     assert "context_signals" not in payload
 
-    oracle = independent_adhoc_means(project / "demo.db")
+    oracle = independent_adhoc_means(project / "data" / "demo.db")
     observed = {row["customer_id"]: row[ADHOC_ENTRY["metric"]] for row in payload["rows"]}
     assert set(observed) == set(oracle["per_customer"])
     for customer_id, value in observed.items():
@@ -398,8 +518,9 @@ def test_unmodeled_route_stages_ungoverned_proposal(project):
     answer = next(event.text for event in events if isinstance(event, AssistantText))
     lowered = answer.lower()
     assert "governed: false" in lowered
-    assert "governed: true" not in lowered, "a staged proposal must never be presented as governed"
-    assert "staged" in lowered and "promotion" in lowered
+    assert "governed: true" not in lowered, "an ad-hoc result must never be presented as governed"
+    assert "not_saved" in lowered or "not saved" in lowered or "not-saved" in lowered
+    assert "staged" not in lowered and "promotion" not in lowered
     cited = _policy_paths(answer)
     assert cited and cited <= _policy_paths(search.result), (
         f"answer must cite Policy guidance the search actually returned: {sorted(cited)}"
@@ -431,6 +552,9 @@ def test_analyst_tool_surface_is_the_five_native_operations(project):
     ), "no tau_coding runtime module may be loaded"
 
 
+# The structured Term Reference riding the ADMITTED snapshot: two
+# representations bound to the registered demo orders table (canonical
+# resource URIs), one prefix-mapping HYPOTHESIS citing the seed notes.
 ORDER_TERM_REFERENCE = (
     "---\n"
     "type: reference\n"
@@ -447,14 +571,14 @@ ORDER_TERM_REFERENCE = (
     "    - id: local-order-number\n"
     "      aliases: [order number, local order number]\n"
     "      fields:\n"
-    "        - resource: ariadne://table/WyJvcmRlcnMiLG51bGwsIm9yZGVycyIsIm9yZGVycyJd\n"
-    "          column: local_order_number\n"
+    f"        - resource: {table_resource('demo', 'demo', 'main', 'orders')}\n"
+    "          column: order_id\n"
     "      scope: []\n"
     "    - id: global-order-number\n"
     "      aliases: [order number, global order number]\n"
     "      fields:\n"
-    "        - resource: ariadne://table/WyJvcmRlcnMiLG51bGwsIm9yZGVycyIsIm9yZGVycyJd\n"
-    "          column: global_order_number\n"
+    f"        - resource: {table_resource('demo', 'demo', 'main', 'orders')}\n"
+    "          column: customer_id\n"
     "      scope: []\n"
     "  mappings:\n"
     "    - id: local-to-global-prefix\n"
@@ -469,17 +593,14 @@ ORDER_TERM_REFERENCE = (
 )
 
 
-def test_analyst_resolve_term_reports_alternatives_and_unconfirmed_claims(project, tmp_path):
+def test_analyst_resolve_term_reports_alternatives_and_unconfirmed_claims(tmp_path):
     """K2 (issue #42): the native ``resolve_term`` tool drives the shared core
     resolver over the admitted context — the umbrella alias returns the
     local/global alternatives with their exact bindings and the mapping
     hypothesis stays UNCONFIRMED — and the answer reports the page citation,
-    never a join or transform authority."""
-    own = tmp_path / "served"
-    shutil.copytree(project, own)
-    references = own / "context_layer" / "references"
-    references.mkdir(parents=True)
-    (references / "order-number.md").write_text(ORDER_TERM_REFERENCE, encoding="utf-8")
+    never a join or transform authority. The reference page rides an ADMITTED
+    snapshot (a mutable-root page would be invisible to the pinned runtime)."""
+    own = admitted_retail_project(tmp_path, reference=ORDER_TERM_REFERENCE)
     provider = FakeProvider(
         [
             turn(calls=[("resolve_term", {"request": "order number"})]),
@@ -513,7 +634,7 @@ def test_analyst_resolve_term_reports_alternatives_and_unconfirmed_claims(projec
     ]
     assert payload["ambiguous"] is True and payload["total_matches"] == 2
     local = payload["matches"][0]
-    assert local["fields"][0]["column"] == "local_order_number"
+    assert local["fields"][0]["column"] == "order_id"  # the authored binding
     assert local["page"] == "references/order-number.md"
     assert not ({"sql", "transform", "join"} & set(local))
     [mapping] = local["mappings"]
@@ -573,20 +694,42 @@ def test_one_active_run_per_session_and_lifecycle(project):
     session.cancel()  # idempotent: cancelling an idle session is a no-op
 
 
-def test_missing_promoted_catalog_is_actionable_and_isolates_sessions(project, tmp_path):
+def test_missing_admission_is_actionable_and_isolates_sessions(project, tmp_path):
+    """An unadmitted project opens the session (discovery stays available)
+    but the FIRST query tool call surfaces the core's honest no-admission
+    refusal as session-local guidance naming the human Git Review Admission
+    step — never a mutable-root fallback, never "promote" — and the failed
+    query stays session-local: nothing global blocks a later admitted
+    session."""
     empty = tmp_path / "empty-project"
     empty.mkdir()
-    shutil.copy(project / "demo.db", empty / "demo.db")
-    with pytest.raises(RuntimeError) as excinfo:
-        open_session(role="analyst", project=empty, model="fake-analyst", provider=FakeProvider([]))
-    message = str(excinfo.value)
-    assert "promote" in message and "staging" in message, (
-        f"the missing-catalog error must name the human promotion step: {message!r}"
+    provider = FakeProvider(
+        [
+            turn(calls=[("get_metric", {"name": "gross_margin"})]),
+            turn(text="refused: needs human admission"),
+        ]
     )
-    assert "human" in message, "the error must not suggest an agent-side bypass"
+    session = open_session(role="analyst", project=empty, model="fake-analyst", provider=provider)
+    try:
+        events = asyncio.run(drive(session, "gross margin by region?"))
+    finally:
+        session.close()
 
-    # The failed open is session-local: nothing global blocks a later session
-    # (an Authoring session in A2 opens through the same per-session rule).
+    activity = [event for event in events if isinstance(event, ToolActivity)]
+    assert [event.tool for event in activity] == ["get_metric"]
+    refusal = activity[0]
+    assert refusal.is_error is True
+    message = refusal.result
+    assert "no valid admission" in message
+    assert "ariadne-admit" in message and "human" in message.lower(), (
+        f"the refusal must name the human admission step: {message!r}"
+    )
+    assert "promote" not in message.lower() and "staging" not in message.lower()
+    assert "never falls back" in message  # the core's honest no-fallback refusal
+
+    # The failed query is session-local: nothing global blocks a later
+    # session on an admitted project (an Authoring session in A2 opens
+    # through the same per-session rule).
     later = open_session(
         role="analyst",
         project=project,
@@ -782,10 +925,11 @@ def test_analyst_serves_a_context_only_admitted_project(tmp_path, monkeypatch):
 
 
 def test_analyst_managed_project_without_admission_is_actionable(tmp_path, monkeypatch):
-    """A managed Git project with proposals but NO admission refuses the
-    session open with the human-only admission step — never a fallback to the
-    mutable project files — while the error stays session-local (an Authoring
-    session on the same project opens fine)."""
+    """A managed Git project with proposals but NO admission opens the
+    Analyst session (discovery stays available) while its first query tool
+    call refuses with the human-only admission step — never a fallback to
+    the mutable project files — and the error stays session-local (an
+    Authoring session on the same project opens fine)."""
     import os
 
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
@@ -795,11 +939,22 @@ def test_analyst_managed_project_without_admission_is_actionable(tmp_path, monke
     project = complete_bundle_project(tmp_path / "proj")
     AuthoringProject(project).start_proposal()  # managed state, no admission
 
-    with pytest.raises(RuntimeError) as excinfo:
-        open_session(
-            role="analyst", project=project, model="fake-analyst", provider=FakeProvider([])
-        )
-    message = str(excinfo.value)
+    provider = FakeProvider(
+        [
+            turn(calls=[("get_metric", {"name": "event_count"})]),
+            turn(text="refused: admission is human-only"),
+        ]
+    )
+    session = open_session(role="analyst", project=project, model="fake-analyst", provider=provider)
+    try:
+        events = asyncio.run(drive(session, "how many events are there?"))
+    finally:
+        session.close()
+
+    activity = [event for event in events if isinstance(event, ToolActivity)]
+    assert [event.tool for event in activity] == ["get_metric"]
+    message = activity[0].result
+    assert activity[0].is_error is True
     assert "no valid admission" in message
     assert "ariadne-admit" in message and "human" in message.lower(), (
         f"the refusal must name the human admission step: {message!r}"

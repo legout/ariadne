@@ -33,6 +33,10 @@ are native tools here — call them directly, never through a command:
 - `ariadne get-metric`      -> `get_metric(name, dimensions?, range?)`
 - `ariadne list-datasets`   -> `list_datasets()`
 - `ariadne define-metric`   -> `define_metric(definition)`
+- `ariadne search`          -> `discover(query, limit?)` (grouped, read-only)
+- session-native (no CLI): `list_context_pages()` and
+  `read_context_page(path)` — token-free listing and path-addressed reading
+  of the admitted Context snapshot
 
 Every rule in the skill below applies unchanged; substitute the native tool
 for each CLI command it names.
@@ -60,7 +64,6 @@ revision-checked edits) — call them directly, never through a command:
 
 - `ariadne-authoring start`          -> `start_proposal(base_revision?)`
 - `ariadne-authoring propose-sources` -> `propose_sources(proposal, expected_revision, sources)`
-- upload a document                   -> `upload_document(name, content)`
 - `ariadne-authoring inputs`          -> `inputs(proposal, documents?, part?, sample_rows?)`
 - `ariadne-authoring read`            -> `read_artifact(proposal, kind, name?, section?, part?)`
 - `ariadne-authoring edit`            -> `edit_proposal(proposal, expected_revision, edit)`
@@ -71,6 +74,10 @@ revision-checked edits) — call them directly, never through a command:
 - `ariadne-authoring validate`        -> `validate_proposal(proposal, expected_revision)`
 - `ariadne-authoring review`          -> `review_proposal(proposal, part?)`
 - skill reference                     -> `read_skill_reference(reference)`
+
+Document originals have NO upload command: the operator places them inside
+the allowed input roots (or exact approved URIs) and `inputs` reads the
+referenced bytes — never upload, retain or fetch a document yourself.
 
 Every rule in the skill below applies unchanged; substitute the native tool
 for each CLI command it names.
@@ -98,9 +105,7 @@ def packaged_reference(reference: str) -> str:
     return read_skill_reference(reference)
 
 
-def read_skill_reference(
-    reference: str, trusted_roots: Sequence[str | Path] = ()
-) -> str:
+def read_skill_reference(reference: str, trusted_roots: Sequence[str | Path] = ()) -> str:
     """One bounded ``.md`` skill reference under the packaged skill or a
     host-declared trusted skill root (spec 2026-09-29-0006 Skills).
 

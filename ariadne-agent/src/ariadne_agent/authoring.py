@@ -3,11 +3,11 @@
 2026-10-02-0009 §3–4 lifecycle, ADR-0013/0016).
 
 Thin wrappers only: every proposal-shape check, revision check, digest
-contract, staging discipline, bounded read and review snapshot lives in
+contract, bounded read and review snapshot lives in
 ``ariadne-data``'s :class:`ariadne.authoring.AuthoringProject` (plan §2's
 Authoring call contract); nothing is reimplemented here. The native tools
 mirror that interface one-to-one — ``start_proposal``, ``read_artifact``,
-``edit_proposal``, ``propose_sources``, ``inputs``, ``upload_document``,
+``edit_proposal``, ``propose_sources``, ``inputs``,
 ``validate_proposal``, ``refresh_schema`` (issue #41: the explicit physical
 schema refresh), ``inspect_mapping`` (issue #43/K3: the bounded
 mapping-inspection operation with authentic retained receipts),
@@ -16,6 +16,9 @@ the explicitly selected proposal's candidate, with the candidate identity
 visible), ``review_proposal`` — replacing the legacy
 complete-bundle submission tools (the explicit G6 mapping: one proposal +
 per-artifact edits + validation/review, never a resubmitted whole bundle).
+Document originals are external operator-managed inputs (Git-only core,
+spec 0027 §5): they are placed by the operator inside the allowed input
+roots and referenced — never uploaded, never retained by the agent.
 Issue #45/K5 adds no tool: automatic hypothesis capture is the SAME loop —
 the guidance shipped with this surface reads existing References/hypotheses
 FIRST and saves labeled hypotheses through ``edit_proposal`` automatically
@@ -26,9 +29,10 @@ failures propagate with their verbatim message as tool errors — an
 unavailable source, a failed check, a stale revision, an interrupted
 transition or an unreviewed state surfaces to the model exactly as the
 service reports it; nothing here clears or overrides one.
-``approve_sources``, ``ariadne-admit`` and ``ariadne-promote`` are
-deliberately absent: source approval, admission and Promotion are human-only
-operations outside the agent (spec §5).
+``approve_sources`` and ``ariadne-admit`` are
+deliberately absent: source approval (the operator's
+``ariadne-authoring approve-sources`` seam) and Git Review Admission are
+human-only operations outside the agent (spec §5).
 """
 
 import json
@@ -51,7 +55,6 @@ TOOL_NAMES = (
     "edit_proposal",
     "propose_sources",
     "inputs",
-    "upload_document",
     "validate_proposal",
     "refresh_schema",
     "inspect_mapping",  # K3 (issue #43): bounded mapping inspection + receipts
@@ -74,8 +77,8 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
     and content."""
     api = AuthoringProject(project)
 
-    # Each wrapper mirrors the service's own signature; every revision,
-    # bound and staging rule stays the service's (spec: not reimplemented).
+    # Each wrapper mirrors the service's own signature; every revision and
+    # bound rule stays the service's (spec: not reimplemented).
     async def start_proposal(
         tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
@@ -126,13 +129,6 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
                 part=arguments.get("part", 1),
                 sample_rows=arguments.get("sample_rows"),
             )
-        )
-
-    async def upload_document(
-        tool_call_id: str, arguments: Mapping, signal=None, on_update=None
-    ) -> AgentToolResult:
-        return _payload(
-            api.upload_document(arguments["name"], arguments["content"].encode("utf-8"))
         )
 
     async def validate_proposal(
@@ -193,7 +189,6 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         "edit_proposal": edit_proposal,
         "propose_sources": propose_sources,
         "inputs": inputs,
-        "upload_document": upload_document,
         "validate_proposal": validate_proposal,
         "refresh_schema": refresh_schema,
         "inspect_mapping": inspect_mapping,
@@ -238,13 +233,9 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
             "The proposal's measured inputs, bounded: the profile of the "
             "operator-APPROVED resolved registry identity (an unapproved "
             "entry is an explicit error), converted document evidence for "
-            "referenced documents, and the candidate's Seed Notes — one "
-            "bounded part each."
-        ),
-        "upload_document": (
-            "Upload one bounded text document into the project input area; "
-            "returns its stable {resource, digest}. Large or binary documents "
-            "are operator-staged, never uploaded."
+            "referenced documents — external operator-managed originals placed "
+            "inside the allowed input roots, never uploaded through this "
+            "session — and the candidate's Seed Notes; one bounded part each."
         ),
         "validate_proposal": (
             "Validate the proposal's effective candidate at its EXACT final "
@@ -383,15 +374,6 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
                 "sample_rows": {"type": "integer", "minimum": 1},
             },
             "required": ["proposal"],
-            "additionalProperties": False,
-        },
-        "upload_document": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "content": {"type": "string"},
-            },
-            "required": ["name", "content"],
             "additionalProperties": False,
         },
         "validate_proposal": {

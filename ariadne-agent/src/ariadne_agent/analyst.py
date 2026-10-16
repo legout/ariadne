@@ -1,33 +1,35 @@
-"""Analyst role tools: QueryRuntime's public operations as native tools.
+"""Analyst role tools: the project-bound query runtime's public operations as
+native tools.
 
 Thin wrappers only (spec 2026-09-29-0006 session/role interface): compilation,
-grain checks, read-only execution, context attachment, proposal staging and
-terminology resolution all live in ``ariadne-data``; nothing is reimplemented
+grain checks, read-only execution, context attachment and terminology
+resolution all live in ``ariadne-data``; nothing is reimplemented
 here. The tool set is DELIMITED to Ariadne's baseline query operations plus
 ``resolve_term`` (issue #42/K2: shared terminology resolution over the pinned
 admitted context — read-only, no inspection/edit authority) and the two
 Context Layer browsing operations ``list_context_pages``/``read_context_page``
 (issue #60, spec 0015/ADR-0020: token-free listing and path-addressed reading
-of served and staged pages — read-only, draft-labeled): the wider Query
+of admitted pages — read-only): the wider Query
 surface that ariadne-data's MCP registrations expose (query_metrics/
 query_detail, Answer Examples) does NOT silently expand this session's
 permissions (issue #38/G6 — registrations are tool-surface separation).
-Which runtime the session wraps — a managed Git project's pinned admission through
-``QueryRuntime.open_project``, or an explicit legacy artifact root — is
-resolved once at session open by :func:`ariadne_agent.session._open_runtime`.
-Each tool's payload is the runtime's verbatim JSON envelope — values, served
-metric page, full Policy bodies and citations, staging paths, lifecycle
-``context_signals`` envelopes, and ``governed`` labels are never stripped or
-summarized. Runtime failures
+The session's runtime is the serve.py DeferredQueryRuntime pattern built by
+:func:`ariadne_agent.session._open_runtime` from the project factories:
+discovery serves artifact-only, the query factory resolves the FIRST real
+Git Review Admission, and before any admission every query tool surfaces the
+core's honest refusal. Each tool's payload is the runtime's verbatim JSON
+envelope — values, admitted metric page, full Policy bodies and citations,
+lifecycle ``context_signals`` envelopes, and ``governed`` labels are never
+stripped or summarized. Runtime failures
 propagate with their verbatim message and are reported to the model as tool
 errors. No CLI, no shell, no server, no raw SQL, no source-approval,
-admission or Promotion tool.
+admission or query tool.
 """
 
 import json
 from collections.abc import Mapping
 
-from ariadne.query import DeferredQueryRuntime, QueryRuntime
+from ariadne.query import DeferredQueryRuntime
 from tau_agent.messages import TextContent
 from tau_agent.tools import AgentTool, AgentToolResult, ToolExecutor
 
@@ -49,7 +51,7 @@ def _payload(value: object) -> AgentToolResult:
     return AgentToolResult(content=[TextContent(text=json.dumps(value, default=str))])
 
 
-def analyst_tools(runtime: QueryRuntime | DeferredQueryRuntime) -> list[AgentTool]:
+def analyst_tools(runtime: DeferredQueryRuntime) -> list[AgentTool]:
     """The Analyst tool set: Ariadne's five baseline query operations plus the
     K2 read-only term resolver (issue #42) — nothing else."""
 
@@ -106,9 +108,7 @@ def analyst_tools(runtime: QueryRuntime | DeferredQueryRuntime) -> list[AgentToo
     async def read_context_page(
         tool_call_id: str, arguments: Mapping, signal=None, on_update=None
     ) -> AgentToolResult:
-        return _payload(
-            await runtime.read_context_page(arguments["path"], draft=arguments.get("draft", False))
-        )
+        return _payload(await runtime.read_context_page(arguments["path"]))
 
     executor: dict[str, ToolExecutor] = {
         "discover": discover,
@@ -133,17 +133,17 @@ def analyst_tools(runtime: QueryRuntime | DeferredQueryRuntime) -> list[AgentToo
             "question here: if a governed metric answers it, query it governed."
         ),
         "search_context": (
-            "Search the Context Layer (OKF pages) for business rules; ranked "
-            "matches, each with its full page body. Search before any novel "
+            "Search the admitted Context Layer (OKF pages) for business rules; "
+            "ranked matches, each with its full page body — only pages from the "
+            "exact human-admitted Git snapshot are searched. Search before any novel "
             "question — the rule you are about to rediscover is probably already "
-            "a policy page. Includes auto-staged ad-hoc drafts, marked draft: true. "
-            "Each hit carries its page's context_signals advisory view (lifecycle "
-            "status, freshness, verification tier; a context_stale/context_deprecated "
-            "warning names that page)."
+            "a policy page. Each hit carries its page's context_signals advisory "
+            "view (lifecycle status, freshness, verification tier; a "
+            "context_stale/context_deprecated warning names that page)."
         ),
         "get_metric": (
             "Rows plus compiled SQL for a named governed metric — never raw SQL. "
-            "The response carries a context field: the full served OKF metric "
+            "The response carries a context field: the full admitted OKF metric "
             "page plus the full bodies of every policy it cites. Report those "
             "caveats and paths with every number. The context also carries a "
             "context_signals advisory envelope whose warnings — context_stale "
@@ -181,15 +181,17 @@ def analyst_tools(runtime: QueryRuntime | DeferredQueryRuntime) -> list[AgentToo
         ),
         "define_metric": (
             "Define an ad-hoc metric for a question no governed metric answers: "
-            "compiled, executed read-only, auto-staged for human promotion. The "
-            "definition runs through the same compile/grain gate; success returns "
-            "rows, the compiled SQL, governed: false, and the staging paths of "
-            "the auto-staged proposal. Joins must be grain-preserving. This is an "
+            "compiled, executed read-only, never saved. The definition runs "
+            "through the same compile/grain gate; success returns rows, the "
+            "compiled SQL, governed: false, and persistence status not_saved "
+            "(ad-hoc execution is ephemeral — retaining a definition is a "
+            "separate human Git authoring step, never automatic). Joins must "
+            "be grain-preserving. This is an "
             "AGGREGATION tool: a bounded record request (the latest N raw rows of "
             "one table) is not a metric definition, and this fixed toolset has no "
             "record operation — report record questions unsupported instead of "
             "silently aggregating them; ariadne-data's CLI/MCP facade serves them as "
-            "query_records (governed: false, never staged)."
+            "query_records (governed: false, never saved)."
         ),
         "resolve_term": (
             "Resolve a shared business term or an exact {resource, column} field "
@@ -204,18 +206,19 @@ def analyst_tools(runtime: QueryRuntime | DeferredQueryRuntime) -> list[AgentToo
             "a transform."
         ),
         "list_context_pages": (
-            "List every Context Layer page — served and staged — without query "
-            "tokens: path, draft flag, title and each page's context_signals "
-            "advisory view, served before staged. Metadata only, never bodies. "
-            "The token-free discovery view for orientation and onboarding; "
-            "pair with read_context_page for full rule text."
+            "List every Context Layer page of the admitted Git snapshot without "
+            "query tokens: path, title and each page's context_signals advisory "
+            "view. Metadata only, never bodies. The token-free discovery view "
+            "for orientation and onboarding; pair with read_context_page for "
+            "full rule text."
         ),
         "read_context_page": (
-            "Read one exact Context Layer page by its bundle-relative POSIX path: "
-            "full content plus draft flag and context_signals. Follow "
-            "cross-references and known paths directly; staged drafts require "
-            "draft: true and are never verified guidance. An absolute, "
-            "escaping, non-markdown or unknown path is refused naming the path."
+            "Read one exact Context Layer page of the admitted Git snapshot by "
+            "its bundle-relative POSIX path: full content plus context_signals. "
+            "Follow cross-references and known paths directly; only pages of "
+            "the exact human-admitted snapshot are readable — an unadmitted "
+            "candidate is Authoring territory. An absolute, escaping, "
+            "non-markdown or unknown path is refused naming the path."
         ),
     }
     schemas = {
@@ -305,7 +308,6 @@ def analyst_tools(runtime: QueryRuntime | DeferredQueryRuntime) -> list[AgentToo
             "type": "object",
             "properties": {
                 "path": {"type": "string", "minLength": 1},
-                "draft": {"type": "boolean"},
             },
             "required": ["path"],
             "additionalProperties": False,

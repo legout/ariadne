@@ -34,10 +34,12 @@ REPO_ROOT = AGENT_DIR.parent
 if str(REPO_ROOT) not in sys.path:  # reuse the agent suite's helpers/oracle
     sys.path.insert(0, str(REPO_ROOT))
 
-from test_analyst import ANALYST_TOOLS, drive, turn  # noqa: E402
-from tests.test_evals import resolve_served  # noqa: E402 — the root suite's golden project builder
-from tests.test_seed import run_seed  # noqa: E402
-from tests.test_serve import GOLDEN_POLICY_EMEA, GOLDEN_POLICY_STATUS  # noqa: E402
+from test_analyst import (  # noqa: E402
+    ANALYST_TOOLS,
+    admitted_retail_project,  # noqa: E402 — the shared admitted fixture
+    drive,
+    turn,
+)
 
 from tests.test_authoring import scaffold_project  # noqa: E402 — shared service fixture
 
@@ -145,20 +147,10 @@ if __name__ == "__main__":
 
 @pytest.fixture(scope="module")
 def project(tmp_path_factory) -> Path:
-    """One configured Analyst project, built exactly as the A1 suite's own
-    fixture (served layers + the two golden Policy pages + demo.db)."""
-    root = resolve_served(tmp_path_factory.mktemp("a3-project"))
-    policies = root / "context_layer" / "policies"
-    policies.mkdir(parents=True, exist_ok=True)
-    for name, body in (
-        ("order-status-billing.md", GOLDEN_POLICY_STATUS),
-        ("emea-currency-cutover.md", GOLDEN_POLICY_EMEA),
-    ):
-        page = policies / name
-        if not page.exists():
-            page.write_text(body, encoding="utf-8")
-    run_seed(root / "demo.db")
-    return root
+    """One ADMITTED Analyst project, built exactly as the A1 suite's own
+    fixture (the golden retail bundle admitted through the human Git
+    journey)."""
+    return admitted_retail_project(tmp_path_factory.mktemp("a3-project"))
 
 
 @pytest.fixture
@@ -568,9 +560,7 @@ def test_eager_start_timeout_names_the_stalled_server(mcp, project, monkeypatch)
     surfaced = activity[0]
     assert surfaced.is_error is False
     assert "eager" in surfaced.result.lower()
-    assert "demo" in surfaced.result, (
-        "the still-starting server is named in the surfaced error"
-    )
+    assert "demo" in surfaced.result, "the still-starting server is named in the surfaced error"
     assert "still starting: demo" in surfaced.result
 
 
