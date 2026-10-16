@@ -1,6 +1,16 @@
 # Implementation plan 0008: Git-native Knowledge Authoring
 
-**Revision/status:** 2 — retained public scope approved for supervised execution.
+**Revision/status:** 3 — owner-authorized bounded G1 follow-up; retained public
+behavior and the earlier execution scope are unchanged.
+
+**Follow-up authorization, 2026-10-16:** after G1's single correction and delta
+recheck ended with four reproduced blockers at `410e7ac`, the parent handed the
+result back rather than starting another automatic round. The owner now replied
+**“Ok. Starte die Umsetzung”** to the explicit proposal for an isolated,
+four-defect G1 follow-up on that commit using Pi/GPT-6 Luna `xhigh`, with focused
+regressions. This authorizes the G1-R unit below, not integration, push, a reset
+of the completed review budget, or reopening settled findings. The prior
+documentation-only integration at `e55e46d` is not runtime acceptance.
 
 **Scope amendment:** owner, 2026-10-16: “Wir wollen die lumio App vorerst nicht
 weiter berücksichtigen. Fokussiere dich nur auf lumio-Wiki und wenn nötig,
@@ -81,7 +91,10 @@ do not invent stolen-secret, malicious-admin, or generic-hardening scenarios.
 
 ## Order and requirement coverage
 
-`G1 → G2 → G3 → G4 → G5`.
+`G1 → owner-returned G1-R → G2 → G3 → G4 → G5`.
+G1-R is the explicit owner-directed disposition of the four residual G1 defects,
+not an automatic continuation/reset of the exhausted correction loop. G2 stays
+blocked until the combined G1 result is accepted.
 G1–G5 are sequential public candidate descendants. C0 is preserved as incomplete
 history only: no private continuation, cleanup, acceptance, or integration.
 Deliver a reviewed public candidate, paused before target integration.
@@ -89,6 +102,7 @@ Deliver a reviewed public candidate, paused before target integration.
 | Unit | Source / principal acceptance | Consumed → produced interface |
 | --- | --- | --- |
 | G1 | §2–4, local §5; AC1, AC2, AC3, AC4, AC7 | v1 Source Reference Manifest + existing page/registry contracts → complete local author/commit/review/admit/publish/read path |
+| G1-R | §2/3.3/4.2/5; AC1–AC4, AC7 as affected | frozen `410e7ac` + four owner-returned findings → repaired author preservation, plain reading, retry history and eligible-support disclosure |
 | G2 | §3.3/5; AC3, AC4, AC7 | reviewed G1 captured revision/receipt → S3/LanceDB activation, exact source inspection and historical rollback |
 | G3 | §1/6/7 producer table; AC1, AC4, AC7 | reviewed authoring/publication seams → all retained ingest/import/maintenance/entity-mutation workflows |
 | G4 | §7; AC5 plus no-proposal parts of AC1, AC4 | all migrated callers + original legacy format → explicit export + removal of live proposal lifecycle |
@@ -160,6 +174,55 @@ uv run pytest -q packages/lumio-wiki/tests/test_git_authoring.py packages/lumio-
 **Done:** one usable local vertical path and documented structured outputs;
 independent L contract review passes before G2/G3 consume it. Final command/API
 names must express the approved semantics; a material change returns to shaping.
+
+## G1-R — Owner-directed follow-up of four residual G1 defects
+
+**Authority/base:** the explicit owner authorization recorded above; isolated
+candidate from `410e7ac6da6eac886a04814b8813bb07e11690a9`. Preserve the original
+G1 and correction refs, reports and worktrees. Worker is Pi
+`openai-codex/gpt-6-luna` / `xhigh`; the selected Paseo host and shared-root
+allocator remain unchanged. No new vocabulary, architectural choice or behavior
+is introduced: specification 0008 r2/ADR-0029 still own the contract.
+
+**Owned surface:** `packages/lumio-wiki/src/lumio_wiki/{git_authoring,cli}.py`,
+`packages/lumio-wiki/tests/test_git_authoring.py` and only directly affected
+existing reader/CLI tests. Do not edit source-authority documents, unrelated
+helpers, packages, dependency files, private application or shared KB.
+
+- **R1 / spec §2:** an existing ignored or status-hidden untracked destination
+  remains byte-identical when ingest would overwrite it. Refuse before private
+  registration/writes; still permit genuinely absent new destinations and the
+  intended untracked Source Reference Manifest bootstrap.
+- **R2 / spec §5, AC7:** valid plain KB content at `versions/v1/overview.md`
+  remains readable/valid without being classified as a publication by directory
+  names alone. Real publication roots still resolve one active Snapshot and
+  fail closed on missing/corrupt pointers or referenced versions.
+- **R3 / spec §4.2/5:** inject failure of B's receipt bookkeeping after B's
+  pointer activation; admit C, explicitly roll back to A, then retry B's old
+  authorization. A remains active. An ambiguous activation flag is not proof of
+  never having activated; reconcile actual success before later transitions or
+  refuse ambiguous replay. Keep exact confirmation, expected-current, immutable
+  historical evidence, retention and completeness gates; no stronger power-loss
+  or hostile-editor guarantees, new proposal state or cross-backend transaction.
+- **R4 / spec §3.3:** retirement impact counts alternative support only when
+  declared on that Entity, active, and resolved to its exact registered version.
+  An unregistered/undeclared alternative must not produce `still-supported`;
+  preserve collected blocking diagnostics and valid-alternative behavior.
+
+**Validation / high risk / `new-test`:** one independently specified regression
+per distinct failure, parameterizing R1's ignored/status-hidden variants where
+useful. Observe the intended red on the frozen base before repair, then green.
+Reuse the existing v2 fixtures and actual Git/CLI/SDK seams; inject the real
+post-pointer I/O failure for R3 rather than manufacturing an activation flag.
+Run the existing G1 four-file focused command and affected checks serially;
+any full suite uses exactly `-n 4`. No dependencies, broad cleanup or live service.
+
+**Handoff:** one bounded implementation pass and one scoped acceptance check of
+these four changes/affected behavior, without reopening the other settled G1
+findings. The previous review/correction history remains intact. If a blocker
+survives or a material decision is needed, stop and return to the owner again;
+no further automatic repair/review cycle. Frozen committed result, parent
+verification and independent high-risk acceptance are required before G2.
 
 ## G2 — Complete optional backends and exact historical inspection
 
