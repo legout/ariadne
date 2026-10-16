@@ -4,6 +4,10 @@ status: accepted
 
 # ADR-0010: uv Workspace and Progressive Lumio Packaging
 
+_Scoped amendment, owner-approved 2026-10-15: [ADR-0029](0029-git-native-knowledge-authoring.md)
+and specification 0008 r1 govern the Git-authoring replacement. Git authoring replaces proposal persistence/pipeline ownership; package boundaries and optional dependencies remain.
+The legacy implementation is not changed or deployed by this amendment._
+
 _Activity Log ownership references are historical and superseded by ADR-0022; packaging and dependency decisions remain._
 
 ## Context

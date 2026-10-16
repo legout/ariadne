@@ -5,6 +5,10 @@ amends: ADR-0014
 
 # ADR-0020: Private Source Artifacts and authorized inspection
 
+_Scoped amendment, owner-approved 2026-10-15: [ADR-0029](0029-git-native-knowledge-authoring.md)
+and specification 0008 r1 govern the Git-authoring replacement. Exact reviewed source references replace publication-time latest-version lookup; private artifacts, historical inspection, and retention guarantees remain.
+The legacy implementation is not changed or deployed by this amendment._
+
 ## Context
 
 A Compiled Page records which Knowledge Sources support it, but managed

@@ -26,6 +26,23 @@ Before implementation work, read:
 
 Contributions are licensed Apache-2.0 (see LICENSE).
 
+## Approved Git-authoring transition
+
+For issue #1 implementation, owner-approved
+[specification 0008 r2](project/specs/2026-10-15-0008-git-native-knowledge-authoring.md)
+and [ADR-0029](project/adr/0029-git-native-knowledge-authoring.md) replace the
+proposal-based target contract. Planning/execution and target integration retain
+their separate gates. The generated operating section below describes the
+legacy installed CLI and configured shared KB, not a requirement to keep
+proposal persistence in the replacement. Use disposable test KBs for new Git
+flows; do not migrate, edit, or publish the configured shared KB under this
+implementation task. Refresh generated operating guidance with the implemented
+replacement, never prematurely on the target branch. Owner scope amendment
+2026-10-16 excludes the private app entirely: execute the public foundation
+only, with `lumio-lancedb` edits when actually necessary. The known private
+consumer incompatibility remains a later integration/release decision, not a
+private-work prerequisite for the isolated public candidate.
+
 <!-- lumio-wiki-kb -->
 ## Lumio Knowledge Base
 

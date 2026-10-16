@@ -5,6 +5,10 @@ amends: ADR-0013, ADR-0017
 
 # ADR-0019: Coding-agent setup and complete S3 publication
 
+_Scoped amendment, owner-approved 2026-10-15: [ADR-0029](0029-git-native-knowledge-authoring.md)
+and specification 0008 r1 govern the Git-authoring replacement. Publication consumes an explicitly admitted Git revision; complete immutable versions and conditional activation remain.
+The legacy implementation is not changed or deployed by this amendment._
+
 ## Context
 
 Lumio already has the pieces needed for an S3-native coding-agent workflow, but

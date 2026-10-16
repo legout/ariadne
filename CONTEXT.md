@@ -108,6 +108,11 @@ _Avoid_: cache validity, sync state.
 
 ### Ingest and publish
 
+_Target vocabulary for owner-approved specification 0008 revision 1 and
+[ADR-0029](project/adr/0029-git-native-knowledge-authoring.md), written approval
+“Ja Freigabe”, 2026-10-15. Legacy terms identify the proposal-based model during
+migration; approval does not assert that the replacement is deployed._
+
 **Source Version**:
 An immutable, content-hashed version of a privately identified Knowledge
 Source. A new Source Version extends the same source lineage; it is not
@@ -140,53 +145,83 @@ Evidence or imply claim-level source-span lineage.
 _Avoid_: citation, source retrieval, document preview.
 
 **Source Retirement**:
-An explicit Maintainer action that makes a Knowledge Source's current Source
-Version ineligible to support future published knowledge. A missing or
-unavailable source is only a retirement candidate.
+An explicit reviewed Maintainer decision that makes a Knowledge Source
+ineligible to support future admitted knowledge without changing historical
+Published Versions. A missing or unavailable source is only a retirement
+candidate.
 _Avoid_: source deletion, missing file.
 
 **Knowledge Source Registry**:
-Private ingest state giving each Knowledge Source a stable identity, its
-immutable content-hashed Source Versions, and retirement status. Excluded from
-Compiled Pages, exports, Reader retrieval, and canonical fingerprints.
+Private provenance history giving each Knowledge Source a stable identity and
+immutable content-hashed Source Versions with optional Source Artifact bindings.
+It is excluded from Compiled Pages, exports, Reader retrieval, and canonical
+fingerprints; it does not confer publication approval.
 _Avoid_: lineage database, source index, manifest.
 
-**Ingest Proposal**:
-A staged set of proposed Markdown changes or explicit Page Removals with
-provenance, affected pages, and a validation report. Reviewed and approved
-before publish.
-_Avoid_: change set, edit batch.
+**Authoring Revision**:
+An exact committed revision of authored Knowledge Base content and its source
+references, scoped to one Knowledge Base. It is reviewable input, not a
+Published Version or publication authorization.
+_Avoid_: proposal, published commit, latest branch.
+
+**Knowledge Base Namespace**:
+The stable identity of a Knowledge Base within which its Entity and Source
+identifiers are interpreted. It does not assert equivalence with another
+Knowledge Base or confer execution authority.
+_Avoid_: page title, storage location, ontology mapping.
+
+**Source Reference Manifest**:
+The authored record of a Knowledge Base's namespace, source lifecycle intent,
+and exact Source Version bindings for its Entities. It contains safe identities
+and digests, not raw source bytes, private storage locations, or credentials.
+_Avoid_: Source Binding Manifest, source registry, deployment configuration.
+
+**Publication Review**:
+The inspection of one exact Authoring Revision, its validation and impacts,
+source references, publication destination, and expected active Published
+Version. Reading it does not authorize publication.
+_Avoid_: passing validation, Git approval, publication authorization.
+
+**Publication Admission**:
+Explicit authorization to publish the exact state identified by a Publication
+Review. A commit, merge, page Lifecycle, or passing validation is not admission.
+_Avoid_: source approval, commit approval, proposal state.
+
+**Ingest Proposal (legacy)**:
+The former persisted set of proposed Markdown changes or explicit Page Removals
+with provenance, affected pages, and validation. Its unreviewed content remains
+unadmitted when exported to an Authoring Revision.
+_Avoid_: Authoring Revision, admission receipt.
 
 **Capture**:
-An explicit, consent-only action that turns a current coding-agent session or
-research result into one reviewable Ingest Proposal: an agent-authored
-declarative Compiled Page plus a Capture Manifest, bound to the session
-transcript/export bytes (or the manifest itself when no transcript is bound)
-under an explicit source identity. Preview-first — nothing is registered or
-staged before confirmation — and it never publishes and never runs in the
-background.
+An explicit, consent-only preparation of declarative Compiled Page knowledge and
+a private Capture Manifest bound to the original session/export or manifest
+bytes under an explicit source identity. It is preview-first, never publishes,
+and never runs in the background.
 _Avoid_: session recording, background logging, auto-ingest.
 
 **Capture Manifest**:
 The bounded, vendor-neutral YAML record identifying a capture's client,
 project, timestamp range, transcript/export location or SHA-256 digest,
 included artifact names, and explicit redaction labels. Private ingest
-provenance, stored under the ingest store — never published; only the
-reviewed Compiled Page knowledge is.
+provenance, retained privately — never published; only the reviewed Compiled
+Page knowledge is.
 _Avoid_: session metadata export, transcript header.
 
 **Page Removal**:
-An explicit, reviewed Ingest Proposal mutation that excludes a Compiled Page
-from the next Published Version and repairs invalid canonical Claims in
-the same proposal. It is never inferred from an omitted page.
+An explicit reviewed deletion of a Compiled Page from the next Published
+Version, together with necessary canonical reference repairs. It is not inferred
+from omission in a partial set of changes.
 _Avoid_: missing page, automatic deletion.
 
 **Published Version**:
-An immutable snapshot of the Knowledge Base produced by a publish action. Identifies a state readers and local agents can sync to.
+An immutable admitted snapshot of the Knowledge Base that Readers and local
+agents can resolve. It is distinct from an authored revision and its approval.
 _Avoid_: release, commit (too VCS-specific).
 
-**Write Mode**:
-How ingestion reaches the Knowledge Base. `proposal-first` (default: stage → review → publish) or `direct-write` (trusted: publish immediately, validation still runs).
+**Write Mode (legacy)**:
+The former `proposal-first` or `direct-write` choice for ingestion publication.
+Neither mode supplies the Publication Admission required by Git authoring.
 _Avoid_: edit mode, commit mode.
 
 ### Knowledge Base controls and published artifacts
@@ -218,15 +253,23 @@ The read-only cross-page QA report over a Knowledge Base: authoritative validati
 _Avoid_: check (too generic), semantic review.
 
 **Link Candidate**:
-A deterministic, non-canonical proposal for a MISSING authored Markdown link, emitted when a known Canonical Page Title or Alias appears as an unlinked body mention. Ranked by Discovery Graph impact (orphan repair, component join, fragile-connection strengthening); never enters the graph until a Maintainer publishes the repair proposal.
+A deterministic suggestion for a missing authored Markdown link, ranked by
+Discovery Graph impact. It is non-canonical and does not enter published graph
+topology until the authored repair is reviewed, admitted, and published.
 _Avoid_: inferred link, auto-link.
 
 **Dream Cycle**:
-The periodic Maintainer maintenance pass over a living Knowledge Base: a deterministic, model-free core for read-only reflection (validation, health, structural diagnostics for both scopes, ranked Link Candidates), plus an explicit opt-in semantic layer (`--semantic`, requiring the `[llm]` extra) for findings such as contradictions and staleness. Every repair or semantic finding only stages an ordinary reviewable Ingest Proposal.
+The periodic Maintainer reflection with a deterministic model-free core over
+validation, health, graph structure, and ranked Link Candidates, plus explicit
+opt-in semantic findings. Repairs are reviewable authoring changes, never
+automatic publication.
 _Avoid_: reflection loop, auto-fix, consolidation.
 
 **Source Drift**:
-A Maintainer-only, model-free, advisory Dream Cycle diagnostic that compares the private Knowledge Source Registry — and, when available, the active Published Version's Source Binding Manifest — against declared page provenance. It reports retired sources still declared or bound, and manifest entries superseded by the registry's current hash. It is never a gate, Reader warning, Claim lineage mechanism, or public artifact, and it never joins the manifest to the working copy by title.
+A Maintainer-only, model-free advisory comparison of declared source references,
+private Source Version history, and available historical publication bindings.
+It is never a publication gate or public artifact and never replaces exact
+admitted bindings, mutates Reader Evidence, or proves Claim lineage.
 _Avoid_: source staleness check, lineage audit, drift gate.
 
 ### Platform roles and guardrails
@@ -271,8 +314,8 @@ is not the Reader home.
 _Avoid_: graph homepage, mind map, knowledge graph app.
 
 **Workshop**:
-The Maintainer surface for ingest, validation, Ingest Proposal review, and
-publish decisions.
+The Maintainer surface for ingest, validation, knowledge-change review, and
+publication decisions.
 _Avoid_: admin panel, CMS, moderation queue.
 
 **Progressive Console**:

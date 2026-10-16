@@ -10,7 +10,7 @@ Stabilize the public `lumio-wiki` and `lumio-lancedb` libraries without removing
 
 - Preserve optional converters, providers, capture clients, S3, and LanceDB. Host-as-Distiller remains the default; providers remain opt-in.
 - Serialize cooperating local writers per Knowledge Base and restore prior state after handled failures. Crash atomicity, instant visibility to concurrent readers, and compliance by external editors are not promised.
-- Allow disjoint reviewed proposals to publish after intervening disjoint changes. Check affected-path and Control File preconditions, then validate the complete current candidate; do not use one whole-KB digest to reject all outstanding proposals.
+- For the legacy proposal route, allow disjoint reviewed proposals after intervening disjoint changes by checking affected-path/Control File preconditions and the complete candidate. For the Git-authoring replacement, owner-approved [ADR-0029](../adr/0029-git-native-knowledge-authoring.md) and [specification 0008 r1](2026-10-15-0008-git-native-knowledge-authoring.md) supersede that proposal-specific rule: reconcile with native Git, review the exact complete revision, and activate against the expected current version. No custom auto-merge or preservation of proposal state is required.
 - A breaking public API release requires actual consumer inventory and migration, including the separate private Lumio application. Absence of a caller in this repository is not proof that an exported API is dead.
 
 ## Acceptance criteria

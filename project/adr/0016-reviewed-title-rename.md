@@ -5,6 +5,10 @@ related: ADR-0011
 
 # ADR-0016: Reviewed Title-Rename with Atomic Reference Repair
 
+_Scoped amendment, owner-approved 2026-10-15: [ADR-0029](0029-git-native-knowledge-authoring.md)
+and specification 0008 r1 govern the Git-authoring replacement. Rename/repair becomes one Git change, not a proposal operation; stable Entity identity remains governed by ADR-0021.
+The legacy implementation is not changed or deployed by this amendment._
+
 ## Context
 
 Lumio's identity model is the **Canonical Page Title**: Relationships and

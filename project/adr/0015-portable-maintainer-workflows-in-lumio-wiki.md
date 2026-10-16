@@ -4,6 +4,10 @@ status: accepted
 
 # ADR-0015: Portable Maintainer Workflows in the lumio-wiki CLI
 
+_Scoped amendment, owner-approved 2026-10-15: [ADR-0029](0029-git-native-knowledge-authoring.md)
+and specification 0008 r1 govern the Git-authoring replacement. Explicit repair application edits a selected Git worktree; read-only reflection and non-canonical link semantics remain.
+The legacy implementation is not changed or deployed by this amendment._
+
 ## Context
 
 Issue #91 shipped `lint` and `cross-linker` as role-gated Agent Skills in the

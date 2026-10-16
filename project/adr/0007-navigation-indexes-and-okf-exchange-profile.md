@@ -4,6 +4,10 @@ status: accepted
 
 # ADR-0007: Native Navigation Indexes and a Pinned OKF Exchange Profile
 
+_Scoped amendment, owner-approved 2026-10-15: [ADR-0029](0029-git-native-knowledge-authoring.md)
+and specification 0008 r1 govern the Git-authoring replacement. Imports become Git edits, not stored proposals; pinned exchange semantics and diagnostics remain.
+The legacy implementation is not changed or deployed by this amendment._
+
 ## Context
 
 Lumio already uses portable, compiled Markdown as its canonical Knowledge Base and has stronger provenance, lifecycle, visibility, relationship, validation, and citation semantics than the draft Google Open Knowledge Format (OKF). Adopting OKF directly would weaken those invariants, while ignoring it would miss useful filesystem navigation and exchange conventions. The decision is difficult to reverse because it reserves paths inside every Knowledge Base and establishes a public interchange contract.
