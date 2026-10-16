@@ -30,6 +30,7 @@ from lumio_wiki.git_authoring import (
     GitAuthoringError,
     PublicationConflict,
     preview_publication,
+    preview_rollback,
     publish_revision,
     rollback_publication,
 )
@@ -446,13 +447,14 @@ def test_git_authoring_journey_publishes_exact_revision(tmp_path, capsys):
 
     # --- Retry of v1 must not reactivate over the advanced pointer. ---
     retry1 = publish_revision(
-        kb, revision, destination, revision, review_digest, source_registry=registry
+        kb, revision, destination, "none", review_digest, source_registry=registry
     )
-    assert retry1.activated is False
+    assert retry1.activated is True  # preserves the original successful admission fact
     assert PublishedFilesystemLocation(destination).read_pointer() == revision2
 
-    # --- Local rollback: explicit expected-current activation of history. ---
-    rollback_publication(destination, revision, expected_current=revision2)
+    # --- Local rollback: preview, confirmation, explicit baseline. ---
+    rollback_review = preview_rollback(destination, revision, expected_current=revision2)
+    rollback_publication(destination, revision, revision2, rollback_review.review_digest)
     assert PublishedFilesystemLocation(destination).read_pointer() == revision
     rolled = PublishedFilesystemLocation(destination).resolve()
     assert rolled.published_version == revision
@@ -462,7 +464,7 @@ def test_git_authoring_journey_publishes_exact_revision(tmp_path, capsys):
     )
     # A stale rollback fails closed and leaves the pointer untouched.
     with pytest.raises(PublicationConflict):
-        rollback_publication(destination, revision2, expected_current=revision2)
+        preview_rollback(destination, revision2, expected_current=revision2)
     assert PublishedFilesystemLocation(destination).read_pointer() == revision
 
 
@@ -1005,3 +1007,737 @@ def test_manifest_rejects_duplicate_keys_unknown_fields_and_malformed_values():
     reparsed = parse_source_reference_manifest(raw)
     assert reparsed.sources == manifest.sources
     assert reparsed.bindings == manifest.bindings
+
+
+# ---------------------------------------------------------------------------
+# Fix-pass regressions (reviewer findings 1–17, spec/plan 0008 r2). Wave 1
+# cases use the frozen 21ea036 API and are observed red before the repair;
+# expectations derive from the spec, not implementation output.
+# ---------------------------------------------------------------------------
+
+
+def _two_source_page(entity_id: str, title: str, source_ids: list[str]) -> str:
+    types_yaml = "  - press\n"
+    sources_yaml = "".join(f'  - id: "{s}"\n    title: "{s} source"\n' for s in source_ids)
+    return (
+        "---\n"
+        f'id: "{entity_id}"\n'
+        f'title: "{title}"\n'
+        f"entity_types:\n{types_yaml}"
+        'tags:\n  - "workshop"\n'
+        f'summary: "{title} summary."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        f"sources:\n{sources_yaml}"
+        "---\n\n"
+        f"# {title}\n\n## Overview\n\n{title} body.\n"
+    )
+
+
+def test_f12_repository_root_kb_publishes(tmp_path):
+    repo = _init_repo(tmp_path)
+    kb = repo  # the KB subtree IS the repository root
+    (kb / "lumio.yaml").write_text(CONTROL_V2)
+    (kb / "concepts").mkdir()
+    (kb / "concepts" / "hydraulic-press.md").write_text(
+        _entity_page(
+            "Hydraulic Press", "entity:hydraulic-press", ["press"], claims_yaml=_presses_claim()
+        )
+    )
+    (kb / "concepts" / "steel-blank.md").write_text(
+        _entity_page("Steel Blank", "entity:steel-blank", ["material"])
+    )
+    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        serialize_source_reference_manifest(SourceReferenceManifest(version=1, namespace=NAMESPACE))
+    )
+    revision = _commit(repo)
+    review = preview_publication(kb, revision, tmp_path / "dest", "none")
+    assert review.blocking_diagnostics == []
+    receipt = publish_revision(kb, revision, tmp_path / "dest", "none", review.review_digest)
+    assert receipt.activated is True
+    snapshot = PublishedFilesystemLocation(tmp_path / "dest").resolve()
+    assert {page.id for page in snapshot.pages} == {"entity:hydraulic-press", "entity:steel-blank"}
+
+
+def test_f1_ingest_preserves_uncommitted_author_edits(tmp_path):
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+
+    # The author has uncommitted edits at the destination the ingest would write.
+    dirty = kb / "concepts" / "hydraulic-press.md"
+    original = dirty.read_bytes()
+    dirty.write_text(original.decode() + "\nUncommitted author note.\n")
+
+    authored = (
+        _authored_ingest_page("operator-manual")
+        .replace('id: "entity:workbench-press"', 'id: "entity:hydraulic-press"')
+        .replace('title: "Workbench Press"', 'title: "Hydraulic Press"')
+    )
+    from lumio_wiki.git_authoring import ingest_into_worktree
+
+    with pytest.raises(GitAuthoringError, match="uncommitted"):
+        ingest_into_worktree(
+            kb,
+            A_BYTES,
+            "text/plain",
+            "manual.txt",
+            "operator-manual",
+            authored,
+            source_registry=registry,
+        )
+    assert "Uncommitted author note." in dirty.read_text()
+
+
+def test_f1_ingest_requires_a_git_worktree(tmp_path):
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    plain = tmp_path / "plain"
+    shutil.copytree(kb, plain)
+    registry = SourceRegistry(tmp_path / "registry")
+    from lumio_wiki.git_authoring import ingest_into_worktree
+
+    with pytest.raises(GitAuthoringError):
+        ingest_into_worktree(
+            plain,
+            A_BYTES,
+            "text/plain",
+            "manual.txt",
+            "operator-manual",
+            _authored_ingest_page("operator-manual"),
+            source_registry=registry,
+        )
+    assert not (plain / "concepts" / "workbench_press.md").exists()
+
+
+def test_f2_obsolete_branch_requires_git_reconciliation(tmp_path):
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    base = _commit(repo)
+    review = preview_publication(kb, base, tmp_path / "dest", "none")
+    publish_revision(kb, base, tmp_path / "dest", "none", review.review_digest)
+
+    (kb / "concepts" / "steel-blank.md").write_text(
+        _entity_page(
+            "Steel Blank",
+            "entity:steel-blank",
+            ["material"],
+            body_sections="## Overview\n\nB edit.\n",
+        )
+    )
+    revision_b = _commit(repo)
+    review_b = preview_publication(kb, revision_b, tmp_path / "dest", base)
+    publish_revision(kb, revision_b, tmp_path / "dest", base, review_b.review_digest)
+    _git(repo, "checkout", "-q", "-b", "side", base)
+    (kb / "concepts" / "hydraulic-press.md").write_text(
+        _entity_page(
+            "Hydraulic Press",
+            "entity:hydraulic-press",
+            ["press"],
+            claims_yaml=_presses_claim(),
+            body_sections="## Overview\n\nC edit.\n",
+        )
+    )
+    revision_c = _commit(repo)
+
+    # C diverged from the admitted B without Git reconciliation.
+    with pytest.raises(GitAuthoringError, match="reconcil"):
+        preview_publication(kb, revision_c, tmp_path / "dest", revision_b)
+    # A historical commit is not an ordinary successor either.
+    with pytest.raises(GitAuthoringError, match="reconcil"):
+        preview_publication(kb, base, tmp_path / "dest", revision_b)
+    # Reconciling C with B creates a commit that descends from the admitted
+    # revision and can proceed as an ordinary successor.
+    _git(repo, "merge", "-q", "--no-edit", revision_b)
+    reconciled = _git(repo, "rev-parse", "HEAD")
+    reconciled_review = preview_publication(kb, reconciled, tmp_path / "dest", revision_b)
+    assert publish_revision(
+        kb, reconciled, tmp_path / "dest", revision_b, reconciled_review.review_digest
+    ).activated
+
+
+def test_f3_sdk_requires_an_explicit_expected_current(tmp_path):
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    revision = _commit(repo)
+    with pytest.raises(GitAuthoringError, match="expected-current"):
+        preview_publication(kb, revision, tmp_path / "dest", None)
+
+
+def test_f4_required_retention_without_store_fails_closed(tmp_path, monkeypatch, capsys):
+    repo = _init_repo(tmp_path)
+    registry = SourceRegistry(tmp_path / "registry")
+    registry.register_version("operator-manual", A_BYTES)
+    pages = {"concepts/workbench_press.md": _authored_ingest_page("operator-manual")}
+    manifest = SourceReferenceManifest(
+        version=1,
+        namespace=NAMESPACE,
+        sources={"operator-manual": "active"},
+        bindings={"entity:workbench-press": {"operator-manual": A_DIGEST}},
+    )
+    kb = _write_kb(repo, manifest=manifest, pages=pages)
+    revision = _commit(repo)
+
+    from lumio_wiki.git_authoring import PublicationRetentionError, preview_publication
+
+    review = preview_publication(
+        kb,
+        revision,
+        tmp_path / "dest",
+        "none",
+        source_registry=registry,
+        retention_required=True,
+    )
+    digest = review.review_digest
+    with pytest.raises(PublicationRetentionError):
+        publish_revision(
+            kb,
+            revision,
+            tmp_path / "dest",
+            "none",
+            digest,
+            source_registry=registry,
+            retention_required=True,
+        )
+    assert not (tmp_path / "dest").exists()
+
+    monkeypatch.setenv("LUMIO_ARTIFACT_RETENTION", "required")
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    code = main(
+        [
+            "publish",
+            str(kb),
+            "--revision",
+            revision,
+            "--to",
+            str(tmp_path / "dest"),
+            "--expected-current",
+            "none",
+            "--confirm",
+            digest,
+            "--source-registry",
+            str(registry.root),
+        ]
+    )
+    assert code == 1
+    assert "retention" in capsys.readouterr().err.lower()
+    assert not (tmp_path / "dest").exists()
+
+
+def test_f5_managed_identity_cannot_disappear_manifest_only(tmp_path):
+    repo = _init_repo(tmp_path)
+    registry = SourceRegistry(tmp_path / "registry")
+    registry.register_version("operator-manual", A_BYTES)
+    pages = {"concepts/workbench_press.md": _authored_ingest_page("operator-manual")}
+    manifest = SourceReferenceManifest(
+        version=1,
+        namespace=NAMESPACE,
+        sources={"operator-manual": "active"},
+        bindings={"entity:workbench-press": {"operator-manual": A_DIGEST}},
+    )
+    kb = _write_kb(repo, manifest=manifest, pages=pages)
+    revision1 = _commit(repo)
+    review1 = preview_publication(
+        kb, revision1, tmp_path / "dest", "none", source_registry=registry
+    )
+    publish_revision(
+        kb, revision1, tmp_path / "dest", "none", review1.review_digest, source_registry=registry
+    )
+
+    # Manifest-only deletion: the page still cites the managed source, but the
+    # manifest drops the source entry and binding to evade the support gate.
+    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        serialize_source_reference_manifest(SourceReferenceManifest(version=1, namespace=NAMESPACE))
+    )
+    revision2 = _commit(repo)
+    review2 = preview_publication(
+        kb, revision2, tmp_path / "dest", revision1, source_registry=registry
+    )
+    assert any("disappear" in d or "retained" in d for d in review2.blocking_diagnostics), (
+        review2.blocking_diagnostics
+    )
+    with pytest.raises(GitAuthoringError, match="blocking diagnostics"):
+        publish_revision(
+            kb,
+            revision2,
+            tmp_path / "dest",
+            revision1,
+            review2.review_digest,
+            source_registry=registry,
+        )
+
+
+def test_f7_cli_reads_one_pointer_pinned_local_snapshot(tmp_path, capsys):
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    revision1 = _commit(repo)
+    review1 = preview_publication(kb, revision1, tmp_path / "dest", "none")
+    publish_revision(kb, revision1, tmp_path / "dest", "none", review1.review_digest)
+    (kb / "concepts" / "hydraulic-press.md").write_text(
+        _entity_page(
+            "Hydraulic Press",
+            "entity:hydraulic-press",
+            ["press"],
+            claims_yaml=_presses_claim(),
+            body_sections="## Overview\n\nSecond publication body.\n",
+        )
+    )
+    revision2 = _commit(repo)
+    review2 = preview_publication(kb, revision2, tmp_path / "dest", revision1)
+    publish_revision(kb, revision2, tmp_path / "dest", revision1, review2.review_digest)
+
+    code = main(["page", str(tmp_path / "dest"), "Hydraulic Press"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert out.count("path:") == 1, out
+    assert "Second publication body." in out
+    assert "Overview paragraph." not in out
+    assert revision2 in out  # the active immutable version's path
+
+    code = main(["validate", str(tmp_path / "dest")])
+    assert code == 0
+
+    pointer = tmp_path / "dest" / "current.json"
+    pointer.write_text("{corrupt")
+    code = main(["page", str(tmp_path / "dest"), "Hydraulic Press"])
+    assert code == 1
+
+    pointer.write_text(json.dumps({"version": "f" * 40}))
+    code = main(["page", str(tmp_path / "dest"), "Hydraulic Press"])
+    assert code == 1  # a missing version never falls back to recursive loading
+
+
+def test_f8_recovery_enforces_changed_policy_and_private_completeness(tmp_path):
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    revision = _commit(repo)
+    review = preview_publication(kb, revision, tmp_path / "dest", "none")
+    publish_revision(kb, revision, tmp_path / "dest", "none", review.review_digest)
+
+    def _simulate_interrupted_activation(destination: Path) -> None:
+        receipt_file = destination / ".lumio-publication" / "receipts" / f"{revision}.json"
+        receipt = json.loads(receipt_file.read_bytes())
+        receipt["activated"] = False
+        receipt_file.write_bytes(json.dumps(receipt).encode())
+        (destination / "current.json").unlink()
+
+    # A genuinely never-activated attempt against its bound baseline recovers.
+    _simulate_interrupted_activation(tmp_path / "dest")
+    recovered = publish_revision(kb, revision, tmp_path / "dest", "none", review.review_digest)
+    assert recovered.activated is True
+    assert PublishedFilesystemLocation(tmp_path / "dest").read_pointer() == revision
+
+    # A changed retention policy between admission and recovery refuses.
+    dest2 = tmp_path / "dest2"
+    review2 = preview_publication(kb, revision, dest2, "none")
+    publish_revision(kb, revision, dest2, "none", review2.review_digest)
+    _simulate_interrupted_activation(dest2)
+    with pytest.raises(ConfirmationRefused, match="retention"):
+        publish_revision(
+            kb, revision, dest2, "none", review2.review_digest, retention_required=True
+        )
+
+    # Missing sealed private bindings refuse the recovery.
+    dest3 = tmp_path / "dest3"
+    review3 = preview_publication(kb, revision, dest3, "none")
+    publish_revision(kb, revision, dest3, "none", review3.review_digest)
+    _simulate_interrupted_activation(dest3)
+    (dest3 / ".lumio-publication" / "bindings" / f"{revision}.json").unlink()
+    with pytest.raises(GitAuthoringError, match="sealed"):
+        publish_revision(kb, revision, dest3, "none", review3.review_digest)
+
+
+def test_f9_successful_retry_cannot_undo_a_later_rollback(tmp_path):
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    revision_a = _commit(repo)
+    review_a = preview_publication(kb, revision_a, tmp_path / "dest", "none")
+    publish_revision(kb, revision_a, tmp_path / "dest", "none", review_a.review_digest)
+
+    (kb / "concepts" / "steel-blank.md").write_text(
+        _entity_page(
+            "Steel Blank",
+            "entity:steel-blank",
+            ["material"],
+            body_sections="## Overview\n\nB body.\n",
+        )
+    )
+    revision_b = _commit(repo)
+    review_b = preview_publication(kb, revision_b, tmp_path / "dest", revision_a)
+    publish_revision(kb, revision_b, tmp_path / "dest", revision_a, review_b.review_digest)
+
+    (kb / "concepts" / "steel-blank.md").write_text(
+        _entity_page(
+            "Steel Blank",
+            "entity:steel-blank",
+            ["material"],
+            body_sections="## Overview\n\nC body.\n",
+        )
+    )
+    revision_c = _commit(repo)
+    review_c = preview_publication(kb, revision_c, tmp_path / "dest", revision_b)
+    publish_revision(kb, revision_c, tmp_path / "dest", revision_b, review_c.review_digest)
+
+    rollback_review = preview_rollback(tmp_path / "dest", revision_a, revision_c)
+    rollback_publication(tmp_path / "dest", revision_a, revision_c, rollback_review.review_digest)
+    assert PublishedFilesystemLocation(tmp_path / "dest").read_pointer() == revision_a
+
+    # Retrying the ALREADY SUCCESSFUL B confirmation — even though its old
+    # baseline A is active again — must not reactivate B.
+    retried = publish_revision(
+        kb, revision_b, tmp_path / "dest", revision_a, review_b.review_digest
+    )
+    assert retried.activated is True  # the immutable historical admission fact
+    assert PublishedFilesystemLocation(tmp_path / "dest").read_pointer() == revision_a
+
+
+def test_f10_rollback_verifies_sealed_binding_identity(tmp_path):
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    revision1 = _commit(repo)
+    review1 = preview_publication(kb, revision1, tmp_path / "dest", "none")
+    publish_revision(kb, revision1, tmp_path / "dest", "none", review1.review_digest)
+    (kb / "concepts" / "steel-blank.md").write_text(
+        _entity_page(
+            "Steel Blank",
+            "entity:steel-blank",
+            ["material"],
+            body_sections="## Overview\n\nv2 body.\n",
+        )
+    )
+    revision2 = _commit(repo)
+    review2 = preview_publication(kb, revision2, tmp_path / "dest", revision1)
+    publish_revision(kb, revision2, tmp_path / "dest", revision1, review2.review_digest)
+
+    # Preview is stateless; tampering after review must fail at confirmation.
+    rollback_review = preview_rollback(tmp_path / "dest", revision1, revision2)
+    sealed_dir = tmp_path / "dest" / ".lumio-publication" / "bindings"
+    (sealed_dir / f"{revision1}.json").write_bytes((sealed_dir / f"{revision2}.json").read_bytes())
+    with pytest.raises(GitAuthoringError):
+        rollback_publication(tmp_path / "dest", revision1, revision2, rollback_review.review_digest)
+
+
+def test_f11_cli_retry_reaches_the_idempotent_path(tmp_path, capsys):
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+    revision = _commit(repo)
+    argv = [
+        "publish",
+        str(kb),
+        "--revision",
+        revision,
+        "--to",
+        str(tmp_path / "dest"),
+        "--expected-current",
+        "none",
+        "--source-registry",
+        str(registry.root),
+    ]
+    code = main(argv)
+    assert code == 0
+    digest = _preview_digest(capsys.readouterr().out)
+    confirm_argv = [*argv, "--confirm", digest]
+    assert main(confirm_argv) == 0
+    pointer_before = (tmp_path / "dest" / "current.json").read_bytes()
+    manifest_before = (tmp_path / "dest" / "versions" / revision / "manifest.json").read_bytes()
+
+    # Repeating the EXACT successful invocation returns the existing receipt.
+    assert main(confirm_argv) == 0
+    assert "Admitted Published Version" in capsys.readouterr().out
+    assert (tmp_path / "dest" / "current.json").read_bytes() == pointer_before
+    assert (
+        tmp_path / "dest" / "versions" / revision / "manifest.json"
+    ).read_bytes() == manifest_before
+
+
+def test_f13_destination_inside_authoring_worktree_refused(tmp_path, capsys):
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+    revision = _commit(repo)
+    review = preview_publication(kb, revision, tmp_path / "outside", "none")
+    digest = review.review_digest
+
+    code = main(
+        [
+            "publish",
+            str(kb),
+            "--revision",
+            revision,
+            "--to",
+            str(kb),
+            "--expected-current",
+            "none",
+            "--confirm",
+            digest,
+            "--source-registry",
+            str(registry.root),
+        ]
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "outside" in err.lower() or "worktree" in err.lower()
+    assert not (kb / "versions").exists()
+    assert not (kb / "current.json").exists()
+
+    with pytest.raises(GitAuthoringError, match="worktree"):
+        publish_revision(kb, revision, repo / "nested-dest", "none", digest)
+
+
+def test_f14_tracked_private_selections_refused(tmp_path, capsys):
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    # An already-tracked private registry inside the authoring repository.
+    private = repo / "private"
+    private.mkdir()
+    seed = SourceRegistry(private)
+    seed.register_version("seed", b"seed")
+    (repo / "raws").mkdir()
+    (repo / "raws" / "manual.txt").write_bytes(A_BYTES)
+    private_store = repo / "private-store"
+    private_store.mkdir()
+    (private_store / "artifact.bin").write_bytes(b"private retained artifact")
+    _commit(repo)
+    registry_bytes = (private / "sources.json").read_bytes()
+
+    source_file = tmp_path / "manual.txt"
+    source_file.write_bytes(A_BYTES)
+    compiled = tmp_path / "press.md"
+    compiled.write_text(_authored_ingest_page("operator-manual"))
+    code = main(
+        [
+            "ingest",
+            str(kb),
+            str(repo / "raws" / "manual.txt"),
+            "--compiled-page",
+            str(compiled),
+            "--source-id",
+            "operator-manual",
+            "--source-registry",
+            str(private),
+        ]
+    )
+    assert code == 1
+    assert "tracked" in capsys.readouterr().err.lower()
+    assert (private / "sources.json").read_bytes() == registry_bytes
+    assert not (kb / "concepts" / "workbench_press.md").exists()
+
+    outside_registry = SourceRegistry(tmp_path / "outside-registry")
+    code = main(
+        [
+            "ingest",
+            str(kb),
+            str(repo / "raws" / "manual.txt"),
+            "--compiled-page",
+            str(compiled),
+            "--source-id",
+            "operator-manual",
+            "--source-registry",
+            str(outside_registry.root),
+        ]
+    )
+    assert code == 1
+    assert "tracked" in capsys.readouterr().err.lower()
+    assert not (kb / "concepts" / "workbench_press.md").exists()
+
+    revision = _git(repo, "rev-parse", "HEAD")
+    with pytest.raises(GitAuthoringError, match="tracked"):
+        preview_publication(
+            kb, revision, tmp_path / "dest", "none", source_registry=SourceRegistry(private)
+        )
+    from lumio_wiki.artifact_store import LocalDirectoryArtifactStore
+
+    with pytest.raises(GitAuthoringError, match="tracked"):
+        preview_publication(
+            kb,
+            revision,
+            tmp_path / "dest",
+            "none",
+            source_registry=outside_registry,
+            artifact_store=LocalDirectoryArtifactStore(private_store),
+        )
+
+
+def test_f15_source_impact_support_labels(tmp_path):
+    repo = _init_repo(tmp_path)
+    registry = SourceRegistry(tmp_path / "registry")
+    registry.register_version("source-s", b"S bytes")
+    registry.register_version("source-t", b"T bytes")
+    pages = {
+        "concepts/dual.md": _two_source_page(
+            "entity:dual-press", "Dual Press", ["source-s", "source-t"]
+        ),
+        "concepts/sole.md": _two_source_page("entity:sole-press", "Sole Press", ["source-s"]),
+    }
+    manifest = SourceReferenceManifest(
+        version=1,
+        namespace=NAMESPACE,
+        sources={"source-s": "active", "source-t": "active"},
+        bindings={
+            "entity:dual-press": {
+                "source-s": hashlib.sha256(b"S bytes").hexdigest(),
+                "source-t": hashlib.sha256(b"T bytes").hexdigest(),
+            },
+            "entity:sole-press": {"source-s": hashlib.sha256(b"S bytes").hexdigest()},
+        },
+    )
+    kb = _write_kb(repo, manifest=manifest, pages=pages)
+    revision1 = _commit(repo)
+    review1 = preview_publication(
+        kb, revision1, tmp_path / "dest", "none", source_registry=registry
+    )
+    publish_revision(
+        kb, revision1, tmp_path / "dest", "none", review1.review_digest, source_registry=registry
+    )
+
+    # Retire source-s and drop its bindings; source-t remains eligible.
+    manifest2 = SourceReferenceManifest(
+        version=1,
+        namespace=NAMESPACE,
+        sources={"source-s": "retired", "source-t": "active"},
+        bindings={
+            "entity:dual-press": {"source-t": hashlib.sha256(b"T bytes").hexdigest()},
+        },
+    )
+    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        serialize_source_reference_manifest(manifest2)
+    )
+    revision2 = _commit(repo)
+    review2 = preview_publication(
+        kb, revision2, tmp_path / "dest", revision1, source_registry=registry
+    )
+    by_entity = {(item.entity_id, item.source_id): item for item in review2.source_impact}
+    dual = by_entity[("entity:dual-press", "source-s")]
+    assert dual.support == "still-supported", review2.source_impact
+    sole = by_entity[("entity:sole-press", "source-s")]
+    assert sole.support == "sole-source-lost", review2.source_impact
+    assert not any(item.support == "replaced-exact-version" for item in review2.source_impact)
+
+
+def test_f16_publication_records_carry_provenance_and_inspection_metadata(tmp_path):
+    repo = _init_repo(tmp_path)
+    registry = SourceRegistry(tmp_path / "registry")
+    registry.register_version(
+        "operator-manual", A_BYTES, filename="manual.txt", content_type="text/plain"
+    )
+    pages = {"concepts/workbench_press.md": _authored_ingest_page("operator-manual")}
+    manifest = SourceReferenceManifest(
+        version=1,
+        namespace=NAMESPACE,
+        sources={"operator-manual": "active"},
+        bindings={"entity:workbench-press": {"operator-manual": A_DIGEST}},
+    )
+    kb = _write_kb(repo, manifest=manifest, pages=pages)
+    revision = _commit(repo)
+    review = preview_publication(kb, revision, tmp_path / "dest", "none", source_registry=registry)
+    publish_revision(
+        kb, revision, tmp_path / "dest", "none", review.review_digest, source_registry=registry
+    )
+
+    public_manifest = json.loads(
+        (tmp_path / "dest" / "versions" / revision / "manifest.json").read_bytes()
+    )
+    assert public_manifest["revision"] == revision
+    assert public_manifest["subtree"] == "kb"
+    assert (
+        public_manifest["source_reference_digest"]
+        == hashlib.sha256((kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()).hexdigest()
+    )
+    assert public_manifest["format_identity"] == "lumio-wiki/git-authoring/1"
+
+    sealed = _sealed(tmp_path / "dest", revision)
+    versions = {entry["source_id"]: entry for entry in sealed["source_versions"]}
+    assert versions["operator-manual"]["content_hash"] == A_DIGEST
+    assert versions["operator-manual"]["filename"] == "manual.txt"
+    assert versions["operator-manual"]["content_type"] == "text/plain"
+    assert versions["operator-manual"]["size"] == len(A_BYTES)
+
+
+def test_f17_preview_json_is_machine_readable(tmp_path, capsys):
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+    revision = _commit(repo)
+    code = main(
+        [
+            "publish",
+            str(kb),
+            "--revision",
+            revision,
+            "--to",
+            str(tmp_path / "dest"),
+            "--expected-current",
+            "none",
+            "--source-registry",
+            str(registry.root),
+            "--json",
+        ]
+    )
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert re.fullmatch(r"[0-9a-f]{64}", payload["review_digest"])
+    assert not (tmp_path / "dest").exists()
+
+
+def test_f6_rollback_requires_review_confirmation_and_current_baseline(tmp_path, capsys):
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    destination = tmp_path / "dest"
+
+    revision_a = _commit(repo)
+    review_a = preview_publication(kb, revision_a, destination, "none")
+    publish_revision(kb, revision_a, destination, "none", review_a.review_digest)
+    (kb / "concepts" / "steel-blank.md").write_text(
+        _entity_page(
+            "Steel Blank",
+            "entity:steel-blank",
+            ["material"],
+            body_sections="## Overview\n\nB body.\n",
+        )
+    )
+    revision_b = _commit(repo)
+    review_b_publication = preview_publication(kb, revision_b, destination, revision_a)
+    publish_revision(kb, revision_b, destination, revision_a, review_b_publication.review_digest)
+    (kb / "concepts" / "steel-blank.md").write_text(
+        _entity_page(
+            "Steel Blank",
+            "entity:steel-blank",
+            ["material"],
+            body_sections="## Overview\n\nC body.\n",
+        )
+    )
+    revision_c = _commit(repo)
+    review_c = preview_publication(kb, revision_c, destination, revision_b)
+    publish_revision(kb, revision_c, destination, revision_b, review_c.review_digest)
+
+    # Previewing the rollback is read-only and returns the exact confirmation.
+    rollback_args = [
+        "rollback",
+        str(destination),
+        "--version",
+        revision_a,
+        "--expected-current",
+        revision_c,
+    ]
+    assert main(rollback_args) == 0
+    digest_a = _preview_digest(capsys.readouterr().out)
+    assert PublishedFilesystemLocation(destination).read_pointer() == revision_c
+
+    # Another confirmed rollback advances the baseline. The stale review may
+    # not overwrite that newer current version.
+    review_b = preview_rollback(destination, revision_b, revision_c)
+    rollback_publication(destination, revision_b, revision_c, review_b.review_digest)
+    assert PublishedFilesystemLocation(destination).read_pointer() == revision_b
+    assert main([*rollback_args, "--confirm", digest_a]) == 1
+    assert "expected the active version" in capsys.readouterr().err.lower()
+    assert PublishedFilesystemLocation(destination).read_pointer() == revision_b
+
+    # Re-review against the exact new baseline, then explicitly confirm it.
+    fresh_args = [*rollback_args[:-1], revision_b]
+    assert main(fresh_args) == 0
+    digest = _preview_digest(capsys.readouterr().out)
+    assert PublishedFilesystemLocation(destination).read_pointer() == revision_b
+    assert main([*fresh_args, "--confirm", digest]) == 0
+    assert PublishedFilesystemLocation(destination).read_pointer() == revision_a

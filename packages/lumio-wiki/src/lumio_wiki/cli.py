@@ -365,10 +365,42 @@ def _kb_location_label(value: str | Path, kb: KnowledgeBase) -> str:
     return text if _is_object_store_uri(text) else str(kb.root)
 
 
+def _is_local_published_layout(path: str | Path) -> bool:
+    """Recognize the local immutable layout without capturing ordinary KBs."""
+    from lumio_wiki.location import CURRENT_POINTER_OBJECT
+
+    root = Path(path)
+    pointer = root / CURRENT_POINTER_OBJECT
+    if pointer.exists() or pointer.is_symlink():
+        return True
+    versions = root / "versions"
+    if not versions.is_dir():
+        return False
+    for version_dir in versions.iterdir():
+        if not (version_dir.is_dir() or version_dir.is_symlink()):
+            continue
+        try:
+            validate_published_version(version_dir.name)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
+def _open_local_published_snapshot(path: str | Path):
+    """Resolve one local Published Snapshot and surface corruption as CLI error."""
+    from lumio_wiki.location import PublishedFilesystemLocation
+
+    try:
+        return PublishedFilesystemLocation(path).resolve()
+    except KnowledgeBaseError as exc:
+        raise CliError(f"could not open published Knowledge Base at {path}: {exc}", 1) from exc
+
+
 def _open_read_snapshot(
     path: str | Path, *, published_version: str | None = None
 ) -> tuple[KnowledgeBase, str | None]:
-    """Open a local KB or one immutable S3 Snapshot for a read command."""
+    """Open a local KB or one immutable S3/local Published Snapshot."""
     value = str(path)
     if _is_object_store_uri(value):
         if published_version is not None:
@@ -380,6 +412,9 @@ def _open_read_snapshot(
         return snapshot.knowledge_base, snapshot.published_version
     if published_version is not None:
         raise CliError("--published-version is available only for an S3 Knowledge Base")
+    if _is_local_published_layout(path):
+        snapshot = _open_local_published_snapshot(path)
+        return snapshot.knowledge_base, snapshot.published_version
     kb, _report = _load_kb(path)
     return kb, None
 
@@ -394,6 +429,8 @@ def _validate_location(path: str | Path):
     value = str(path)
     if _is_object_store_uri(value):
         return _resolve_s3_snapshot(value).validation_report
+    if _is_local_published_layout(path):
+        return _open_local_published_snapshot(path).validation_report
     return validate(path)
 
 
@@ -2193,6 +2230,7 @@ def _cmd_ingest_git_authoring(
             authored_markdown,
             source_registry=registry,
             artifact_store=artifact_store,
+            raw_source_path=source_path,
         )
     except (GitAuthoringError, ManagedIngestError, SourceRegistryError) as exc:
         raise CliError(str(exc), exit_code=1) from exc
@@ -3117,29 +3155,29 @@ def _cmd_publish_revision(args: argparse.Namespace) -> int:
     registry = _git_source_registry(args)
     retention_required = _artifact_retention_required()
     artifact_store = _artifact_store_from_env() if retention_required else None
-    try:
-        review = preview_publication(
-            args.path,
-            args.revision,
-            args.to,
-            args.expected_current,
-            source_registry=registry,
-            artifact_store=artifact_store,
-            retention_required=retention_required,
-        )
-    except GitAuthoringError as exc:
-        raise CliError(f"publication review failed: {exc}", exit_code=1) from exc
     if not getattr(args, "confirm", None):
+        try:
+            review = preview_publication(
+                args.path,
+                args.revision,
+                args.to,
+                args.expected_current,
+                source_registry=registry,
+                artifact_store=artifact_store,
+                retention_required=retention_required,
+            )
+        except GitAuthoringError as exc:
+            raise CliError(f"publication review failed: {exc}", exit_code=1) from exc
         if getattr(args, "json", False):
             print(json.dumps(json.loads(msgspec.json.encode(review)), indent=2))
         else:
             _print_publication_review(review)
-        print()
-        print(f"Review digest: {review.review_digest}")
-        print(
-            "Reading this review does not authorize publication; authorize the "
-            "displayed state explicitly with --confirm " + review.review_digest
-        )
+            print()
+            print(f"Review digest: {review.review_digest}")
+            print(
+                "Reading this review does not authorize publication; authorize the "
+                "displayed state explicitly with --confirm " + review.review_digest
+            )
         return 0
     try:
         receipt = publish_revision(
@@ -3168,8 +3206,12 @@ def _cmd_publish_revision(args: argparse.Namespace) -> int:
 
 
 def _cmd_rollback(args: argparse.Namespace) -> int:
-    """Expected-current activation of a complete local Published Version."""
-    from lumio_wiki.git_authoring import GitAuthoringError, rollback_publication
+    """Preview or explicitly confirm one exact local Published Version rollback."""
+    from lumio_wiki.git_authoring import (
+        GitAuthoringError,
+        preview_rollback,
+        rollback_publication,
+    )
 
     retention_required = _artifact_retention_required()
     artifact_store = None
@@ -3183,18 +3225,52 @@ def _cmd_rollback(args: argparse.Namespace) -> int:
                 "activate ungated",
                 exit_code=1,
             )
+    expected_current = getattr(args, "expected_current", None)
+    if not getattr(args, "confirm", None):
+        try:
+            review = preview_rollback(
+                args.destination,
+                args.version,
+                expected_current,
+                retention_required=retention_required,
+            )
+        except GitAuthoringError as exc:
+            raise CliError(f"rollback review failed: {exc}", exit_code=1) from exc
+        if getattr(args, "json", False):
+            print(json.dumps(json.loads(msgspec.json.encode(review)), indent=2))
+        else:
+            print(f"Rollback Review for Published Version {review.version}")
+            print(f"  revision:       {review.revision}")
+            print(f"  fingerprint:    {review.fingerprint}")
+            print(f"  namespace:      {review.namespace}")
+            print(f"  destination:    {review.destination}")
+            print(f"  expected current: {review.expected_current}")
+            print(f"  observed current: {review.observed_current}")
+            print(f"  retention:      {review.retention}")
+            print(f"  canonical files: {review.canonical_files}")
+            print(f"  derived files:   {review.derived_files}")
+            print(f"Review digest: {review.review_digest}")
+            print(
+                "Reading this review does not authorize rollback; authorize the "
+                "displayed state explicitly with --confirm " + review.review_digest
+            )
+        return 0
     try:
         manifest = rollback_publication(
             args.destination,
             args.version,
-            getattr(args, "expected_current", None),
+            expected_current,
+            args.confirm,
             artifact_store=artifact_store,
             retention_required=retention_required,
         )
     except GitAuthoringError as exc:
         raise CliError(f"rollback refused: {exc}", exit_code=1) from exc
-    print(f"Rolled back to Published Version {manifest.version}")
-    print(f"  fingerprint: {manifest.fingerprint}")
+    if getattr(args, "json", False):
+        print(json.dumps(json.loads(msgspec.json.encode(manifest)), indent=2))
+    else:
+        print(f"Rolled back to Published Version {manifest.version}")
+        print(f"  fingerprint: {manifest.fingerprint}")
     return 0
 
 
@@ -6401,12 +6477,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rollback_parser.add_argument(
         "--expected-current",
-        default=None,
+        required=True,
         type=str,
         help=(
             "Active version expected before rolling back (compare-and-swap "
-            "guard); omit to CAS against the currently observed pointer."
+            "guard); name the exact version, or 'none' when no pointer exists."
         ),
+    )
+    rollback_parser.add_argument(
+        "--confirm",
+        default=None,
+        type=str,
+        help="Confirm the exact reviewed rollback digest; omit for read-only review.",
+    )
+    rollback_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print only the rollback review or result as JSON.",
     )
     rollback_parser.set_defaults(func=_cmd_rollback)
 

@@ -65,10 +65,12 @@ __all__ = [
     "PublicationRetentionError",
     "PublicationReview",
     "PublicationSourceImpact",
+    "RollbackReview",
     "WorktreeIngestResult",
     "capture_revision",
     "ingest_into_worktree",
     "preview_publication",
+    "preview_rollback",
     "publish_revision",
     "resolve_full_commit",
     "resolve_repository",
@@ -145,6 +147,21 @@ def _git(repo_root: Path, *args: str) -> bytes:
     return result.stdout
 
 
+def _git_exit(repo_root: Path, *args: str) -> int:
+    """Run one read-only Git plumbing command and return only its exit code."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), *args],
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:  # pragma: no cover - environment-dependent
+        raise GitAuthoringError(
+            "the Git executable is required for Git-native authoring but was not found"
+        ) from exc
+    return result.returncode
+
+
 def resolve_repository(kb_root: str | Path) -> tuple[Path, str]:
     """Return ``(repository_root, kb_subtree)`` for an authoring worktree.
 
@@ -165,6 +182,10 @@ def resolve_repository(kb_root: str | Path) -> tuple[Path, str]:
             f"Knowledge Base root {root} is outside its Git repository {toplevel}"
         )
     subtree = root.relative_to(toplevel.resolve()).as_posix()
+    if subtree == ".":
+        # A Knowledge Base selected at the repository root has an empty
+        # subtree: Git tree paths are already root-relative (finding 12).
+        subtree = ""
     return toplevel.resolve(), subtree
 
 
@@ -190,7 +211,7 @@ def resolve_full_commit(repo_root: str | Path, revision: str) -> str:
 
 def _tree_entries(repo_root: Path, revision: str, subtree: str) -> list[tuple[str, str, str]]:
     """Return ``(mode, type, kb_relative_path)`` for every tree entry, sorted."""
-    pathspec = f"{subtree}/" if subtree else ""
+    pathspec = f"{subtree}/" if subtree else "."
     raw = _git(repo_root, "ls-tree", "-r", "-z", revision, "--", pathspec)
     entries: list[tuple[str, str, str]] = []
     for record in raw.split(b"\0"):
@@ -320,6 +341,22 @@ def capture_revision(kb_root: str | Path, revision: str) -> CapturedRevision:
 # ---------------------------------------------------------------------------
 
 
+class SealedSourceVersion(msgspec.Struct, frozen=True):
+    """Exact registered Source Version inspection metadata, sealed privately.
+
+    Spec 0008 §3.3: historical binding metadata retains the exact version's
+    inspection facts — captured from the registry at publication time, never
+    resolved from later registry state (finding 16).
+    """
+
+    source_id: str
+    content_hash: str
+    filename: str | None = None
+    content_type: str | None = None
+    size: int | None = None
+    registered_at: str | None = None
+
+
 class SealedSourceReferences(msgspec.Struct, frozen=True):
     """Private provenance sealed per publication, outside public snapshots."""
 
@@ -331,6 +368,7 @@ class SealedSourceReferences(msgspec.Struct, frozen=True):
     sources: dict[str, str]
     bindings: dict[str, dict[str, str]]
     created_at: str
+    source_versions: list[SealedSourceVersion] = msgspec.field(default_factory=list)
 
 
 class PublicationReceipt(msgspec.Struct, frozen=True):
@@ -408,6 +446,90 @@ def _verify_written(path: Path, expected: bytes) -> None:
         raise GitAuthoringError(f"verification failed after writing {path}")
 
 
+def _sealed_source_versions(
+    captured: CapturedRevision, registry: SourceRegistry | None
+) -> list[SealedSourceVersion]:
+    """Capture each bound exact Source Version's inspection metadata (F16).
+
+    Resolved through the registry's EXACT version lookup at publication time
+    and sealed privately so historical inspection never consults later
+    registry state. Fail closed when a bound version cannot be resolved —
+    validation already refused that candidate, so this is unreachable for a
+    well-formed admission.
+    """
+    sealed_versions: dict[tuple[str, str], SealedSourceVersion] = {}
+    for entity_bindings in captured.manifest.bindings.values():
+        for source_id, digest in entity_bindings.items():
+            if (source_id, digest) in sealed_versions:
+                continue
+            version = registry.find_version(source_id, digest) if registry is not None else None
+            if version is None:
+                raise GitAuthoringError(
+                    f"bound Source Version {source_id} cannot be resolved for "
+                    f"sealing; select the shared registry explicitly"
+                )
+            sealed_versions[(source_id, digest)] = SealedSourceVersion(
+                source_id=source_id,
+                content_hash=version.content_hash,
+                filename=version.filename,
+                content_type=version.content_type,
+                size=version.size,
+                registered_at=version.created_at,
+            )
+    return [sealed_versions[key] for key in sorted(sealed_versions)]
+
+
+def _verify_sealed_state(destination: Path, receipt: PublicationReceipt) -> bytes:
+    """Load and verify the sealed private record against its receipt (F8/F10).
+
+    The sealed bytes must exist, decode, digest-match the receipt's recorded
+    ``source_references_digest``, and identify exactly the receipt's version,
+    revision, fingerprint, and Source Reference Manifest digest. A validly
+    encoded record for another version — or a tampered digest — fails closed.
+    """
+    path = _sealed_path(destination, receipt.version)
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError as exc:
+        raise GitAuthoringError(
+            f"the sealed source references for Published Version "
+            f"{receipt.version!r} are missing from {destination}: private "
+            f"binding completeness is required before activation or rollback, "
+            f"so this destination state needs explicit repair"
+        ) from exc
+    actual_digest = hashlib.sha256(raw).hexdigest()
+    if actual_digest != receipt.source_references_digest:
+        raise GitAuthoringError(
+            f"the sealed source references for {receipt.version!r} do not match "
+            f"the admission receipt's recorded digest; historical private "
+            f"provenance cannot be reinterpreted"
+        )
+    try:
+        sealed = msgspec.json.decode(raw, type=SealedSourceReferences)
+    except msgspec.DecodeError as exc:
+        raise GitAuthoringError(
+            f"the sealed source references for {receipt.version!r} are malformed: {exc}"
+        ) from exc
+    mismatches = [
+        detail
+        for detail, actual, expected in (
+            ("published version", sealed.published_version, receipt.version),
+            ("revision", sealed.revision, receipt.revision),
+            ("fingerprint", sealed.fingerprint, receipt.fingerprint),
+            ("source reference manifest digest", sealed.manifest_digest, receipt.manifest_digest),
+        )
+        if actual != expected
+    ]
+    if mismatches:
+        raise GitAuthoringError(
+            f"the sealed source references for {receipt.version!r} identify "
+            f"different {', '.join(mismatches)} than its admission receipt; "
+            f"refusing to activate or roll back over mismatched historical "
+            f"provenance"
+        )
+    return raw
+
+
 # ---------------------------------------------------------------------------
 # Publication Review (stateless) and its deterministic digest.
 # ---------------------------------------------------------------------------
@@ -451,6 +573,91 @@ class PublicationReview(msgspec.Struct, frozen=True):
     review_digest: str
 
 
+def _refuse_destination_inside_worktree(kb_root: Path, destination: Path) -> None:
+    """Refuse a publication destination inside the authoring Git worktree.
+
+    Spec 0008 §5: local activation happens outside the authoring worktree, and
+    adopting a plain filesystem Knowledge Base uses a separate destination —
+    never an in-place replacement or relabelling of its working tree. A
+    destination inside the repository would also mix immutable version copies,
+    pointers, receipts, and private bindings into the authored tree.
+    """
+    repo_root, _subtree = resolve_repository(kb_root)
+    resolved = destination.resolve()
+    if resolved == repo_root or resolved.is_relative_to(repo_root):
+        raise GitAuthoringError(
+            f"the publication destination must live OUTSIDE the authoring Git "
+            f"worktree ({repo_root}); {resolved} is inside it — publishing over "
+            f"the authoring Knowledge Base in place is not allowed, choose a "
+            f"separate destination directory"
+        )
+
+
+def _refuse_tracked_private_paths(repo_root: Path, label: str, *paths: Path | None) -> None:
+    """Refuse private selections that are Git-tracked in the authoring repository.
+
+    Spec 0008 §3.2: Git-tracked raw/registry paths are refused by managed
+    operations — a ``.gitignore`` alone is not the guarantee. Paths outside
+    this repository are not tracked here and stay allowed (explicit selection
+    outside the Knowledge Base subtree remains supported).
+    """
+    for path in paths:
+        if path is None:
+            continue
+        resolved = Path(path).resolve()
+        if resolved != repo_root and not resolved.is_relative_to(repo_root):
+            continue
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-files", "--", str(resolved)],
+            capture_output=True,
+            check=False,
+        )
+        if result.stdout.decode("utf-8", "replace").strip():
+            raise GitAuthoringError(
+                f"the selected private {label} is Git-tracked inside the "
+                f"authoring repository ({resolved}); raw/registry paths must "
+                f"stay out of Git — untrack it or select a location outside "
+                f"the repository"
+            )
+
+
+def _refuse_unsafe_worktree_mutation(
+    repo_root: Path,
+    kb_path: Path,
+    relative_paths: list[str],
+    *,
+    allow_untracked: frozenset[str] = frozenset(),
+) -> None:
+    """Refuse a mutation target that would overwrite uncommitted author work.
+
+    Spec 0008 §2: operations refuse a detached/unselected mutation target,
+    unresolved Git conflicts, and an operation that would overwrite unrelated
+    uncommitted edits — there is no implicit stash. Every affected path must be
+    clean in the worktree before the helper writes it (finding 1).
+    """
+    if _git_exit(repo_root, "symbolic-ref", "-q", "HEAD") != 0:
+        raise GitAuthoringError(
+            "refusing to mutate a detached HEAD; select a registered branch "
+            "worktree for the authoring operation"
+        )
+    conflicted = _git(repo_root, "diff", "--name-only", "--diff-filter=U").decode().strip()
+    if conflicted:
+        paths = ", ".join(conflicted.splitlines()[:5])
+        raise GitAuthoringError(
+            f"refusing to mutate a worktree with unresolved Git conflicts: {paths}"
+        )
+    for relative in relative_paths:
+        status = _git(repo_root, "status", "--porcelain", "--", str(kb_path / relative)).decode()
+        if relative in allow_untracked and status.startswith("??"):
+            continue
+        if status.strip():
+            raise GitAuthoringError(
+                f"uncommitted author changes exist at {relative!r}; the ingest "
+                f"would overwrite them — commit, stash, or remove them "
+                f"explicitly first (no implicit stash)"
+            )
+
+
 def _refuse_private_selection_inside_tree(kb_root: Path, *paths: Path | None) -> None:
     """Refuse a private registry/store selection inside the authoring subtree.
 
@@ -476,8 +683,18 @@ def _registry_root(registry: SourceRegistry | None) -> Path | None:
 
 
 def _normalize_expected(expected_current: str | None) -> str:
-    if expected_current is None:
-        return "(any)"
+    """Return the normalized explicit baseline; refuse an unchecked mode.
+
+    Spec 0008 §4.1: ``none`` explicitly means an absent current pointer, never
+    "ignore the current state". An omitted expectation is refused at the SDK
+    boundary so every admission is bound to one exact reviewed baseline
+    (finding 3) — there is no ``(any)`` mode.
+    """
+    if expected_current is None or not str(expected_current).strip():
+        raise GitAuthoringError(
+            "an explicit expected-current baseline is required: pass 'none' or "
+            "the exact active Published Version label"
+        )
     if expected_current == _EXPECTED_NONE:
         return _EXPECTED_NONE
     return validate_published_version(expected_current)
@@ -486,10 +703,8 @@ def _normalize_expected(expected_current: str | None) -> str:
 def _check_pointer_expectation(
     observed: str | None, expected_current: str | None, version: str
 ) -> None:
-    """Fail closed when the expected-current baseline cannot be advanced."""
+    """Fail closed when the explicit expected-current baseline cannot advance."""
     expected = _normalize_expected(expected_current)
-    if expected == "(any)":
-        return
     if expected == _EXPECTED_NONE:
         if observed is not None:
             raise PublicationConflict(
@@ -511,10 +726,34 @@ def _check_pointer_expectation(
         )
 
 
+def _eligible_candidate_support(
+    candidate: SourceReferenceManifest, entity_id: str, *, exclude: frozenset[str] = frozenset()
+) -> int:
+    """Count the Entity's eligible active support in the candidate manifest."""
+    return sum(
+        1
+        for source_id in candidate.bindings.get(entity_id, {})
+        if source_id not in exclude and candidate.sources.get(source_id) == "active"
+    )
+
+
 def _source_impact(
-    candidate: SourceReferenceManifest, admitted: SealedSourceReferences | None
+    candidate: SourceReferenceManifest,
+    admitted: SealedSourceReferences | None,
+    page_entities: set[str] | None = None,
 ) -> list[PublicationSourceImpact]:
-    """Compare admitted and candidate source references (spec 0008 §3.3)."""
+    """Compare admitted and candidate source references (spec 0008 §3.3).
+
+    Source-lifecycle changes are disclosed per source; every binding change
+    additionally discloses the affected Entity's support disposition computed
+    from the candidate's ELIGIBLE references: ``still-supported`` when another
+    eligible active binding remains, ``sole-source-lost`` when the entity loses
+    its last eligible support, and ``page-removed`` when the entity itself is
+    gone from the candidate (an explicit Page Removal). A digest change is a
+    ``replaced`` binding whose exact new version still supports the page —
+    distinct from a removed binding (finding 15).
+    """
+    page_entities = page_entities or set()
     impact: list[PublicationSourceImpact] = []
     if admitted is None:
         impact.extend(
@@ -575,12 +814,32 @@ def _source_impact(
         if before == after:
             continue
         entity_id, source_id = key
+        if after is None:
+            # A REMOVED binding (not a replacement): the disposition comes
+            # from the candidate's remaining eligible support (finding 15).
+            if entity_id not in page_entities:
+                support = "page-removed"
+            elif _eligible_candidate_support(candidate, entity_id, exclude=frozenset({source_id})):
+                support = "still-supported"
+            else:
+                support = "sole-source-lost"
+            impact.append(
+                PublicationSourceImpact(
+                    source_id=source_id,
+                    change="unbound",
+                    entity_id=entity_id,
+                    support=support,
+                )
+            )
+            continue
+        change = "bound" if before is None else "replaced"
+        support = "newly-supported" if before is None else "still-supported"
         impact.append(
             PublicationSourceImpact(
                 source_id=source_id,
-                change="bound" if before is None else "replaced",
+                change=change,
                 entity_id=entity_id,
-                support="newly-supported" if before is None else "replaced-exact-version",
+                support=support,
             )
         )
     return impact
@@ -675,6 +934,12 @@ def preview_publication(
         kb_path, _registry_root(source_registry), _local_store_root(artifact_store)
     )
     captured = capture_revision(kb_path, revision)
+    _refuse_tracked_private_paths(
+        captured.repo_root,
+        "source registry/store",
+        _registry_root(source_registry),
+        _local_store_root(artifact_store),
+    )
     review = _review_from_capture(
         captured,
         destination_path,
@@ -748,7 +1013,48 @@ def _review_from_capture(
                 f"publication: destination admits {admitted.namespace!r}, the "
                 f"candidate declares {manifest.namespace!r}"
             )
+        # Spec 0008 §2: a branch based on an obsolete admitted revision must
+        # be reconciled using Git before ordinary admission — only a descendant
+        # of the admitted native revision is an ordinary successor; deliberate
+        # historical rollback is the separate rollback operation (finding 2).
+        admitted_revision = admitted.revision
+        if not _FULL_COMMIT_PATTERN.match(admitted_revision):
+            raise GitAuthoringError(
+                f"the admitted Published Version {observed!r} does not record a "
+                f"native Git revision in its sealed provenance; explicit "
+                f"adoption or repair is required before an ordinary successor "
+                f"publication"
+            )
+        merge_base = (
+            _git(captured.repo_root, "merge-base", admitted_revision, captured.revision)
+            .decode()
+            .strip()
+        )
+        # The admitted commit is the merge base exactly when it is an ancestor
+        # of the candidate; divergence therefore requires Git reconciliation.
+        if merge_base != admitted_revision:
+            raise GitAuthoringError(
+                f"the candidate revision {captured.revision} is not a descendant "
+                f"of the admitted revision {admitted_revision}: a branch based "
+                f"on an obsolete admitted revision must be reconciled using Git "
+                f"(merge or rebase) before ordinary admission; deliberate "
+                f"historical rollback is the separate rollback operation"
+            )
         adoption = f"successor to admitted Published Version {observed!r}"
+        # Spec 0008 §3.1: once admitted as managed, a source entry is retained
+        # (possibly retired), never silently deleted to evade its support or
+        # retirement checks (finding 5).
+        disappeared = sorted(set(admitted.sources) - set(manifest.sources))
+        if disappeared:
+            blocking.append(
+                "managed source identit"
+                + ("y" if len(disappeared) == 1 else "ies")
+                + " disappeared from the Source Reference Manifest: "
+                + ", ".join(disappeared)
+                + "; once admitted as managed, a source is retained (possibly "
+                + "retired) — an explicit reviewed reclassification or Page "
+                + "Removal is required"
+            )
 
     derived = _derived_content(captured)
     source_refs = [
@@ -767,6 +1073,7 @@ def _review_from_capture(
             if source.id and source.id not in manifest.sources
         }
     )
+    page_entities = {page.id for page in captured.kb.pages if getattr(page, "id", None)}
     review = PublicationReview(
         validator_contract=VALIDATOR_CONTRACT_ID,
         kb_path=str(captured.kb_root),
@@ -779,7 +1086,7 @@ def _review_from_capture(
         manifest_digest=captured.manifest_digest,
         source_refs=source_refs,
         bindings=bindings,
-        source_impact=_source_impact(manifest, admitted),
+        source_impact=_source_impact(manifest, admitted, page_entities),
         page_mutations=_page_mutations(captured.content, active_manifest),
         blocking_diagnostics=sorted(blocking),
         public_only_sources=public_only,
@@ -836,25 +1143,35 @@ def publish_revision(
     _refuse_private_selection_inside_tree(
         kb_path, _registry_root(source_registry), _local_store_root(artifact_store)
     )
+    _refuse_destination_inside_worktree(kb_path, destination_path)
     captured = capture_revision(kb_path, revision)
+    _refuse_tracked_private_paths(
+        captured.repo_root,
+        "source registry/store",
+        _registry_root(source_registry),
+        _local_store_root(artifact_store),
+    )
     version = captured.revision
 
     # Idempotent fast path (spec 0008 §5): retrying an ALREADY attempted
     # identical publication — the admission receipt for this exact version
     # exists and the confirmation still matches its review digest — returns
-    # the existing verified receipt. Immutable version bytes are never
-    # rewritten, an advanced pointer is never reactivated, and a receipt
-    # whose activation never landed is completed only while the recorded
-    # expected baseline still holds exactly.
-    receipt_path = _receipt_path(destination_path, version)
-    if receipt_path.exists():
-        existing = _load_receipt(destination_path, version)
-        if confirm_digest == existing.review_digest:
-            _verify_receipt_identity(existing, captured, destination_path)
-            _verify_existing_version(
-                PublishedFilesystemLocation(destination_path), version, captured
-            )
-            return _reconcile_receipt_activation(destination_path, existing)
+    # the existing verified receipt AFTER re-enforcing the admission-bound
+    # policy and verifying the complete version and private-binding state
+    # (findings 8/9). Immutable version bytes are never rewritten, an
+    # advanced pointer is never reactivated, and a receipt whose activation
+    # never landed is completed only while the recorded expected baseline
+    # still holds exactly.
+    retried = _retry_admitted_publication(
+        destination_path,
+        captured,
+        expected_current,
+        confirm_digest,
+        retention_required,
+        artifact_store,
+    )
+    if retried is not None:
+        return retried
 
     review = _review_from_capture(
         captured,
@@ -875,7 +1192,15 @@ def publish_revision(
             "the reviewed revision has blocking diagnostics and can never be "
             "admitted: " + "; ".join(review.blocking_diagnostics[:5])
         )
-    if retention_required and artifact_store is not None:
+    # Required retention fails closed when it cannot be verified at all —
+    # including a missing Source Artifact Store configuration (finding 4).
+    if retention_required:
+        if artifact_store is None:
+            raise PublicationRetentionError(
+                "artifact retention is required but no Source Artifact Store is "
+                "configured; activation is refused until the exact bound "
+                "artifacts can be verified"
+            )
         _check_retention(artifact_store, captured.manifest)
 
     version = captured.revision
@@ -885,6 +1210,10 @@ def publish_revision(
         captured.fingerprint.digest,
         captured.content,
         derived_content=derived,
+        revision=captured.revision,
+        subtree=captured.subtree,
+        source_reference_digest=captured.manifest_digest,
+        format_identity=VALIDATOR_CONTRACT_ID,
     )
     sealed = SealedSourceReferences(
         published_version=version,
@@ -894,6 +1223,7 @@ def publish_revision(
         manifest_digest=captured.manifest_digest,
         sources=dict(captured.manifest.sources),
         bindings={k: dict(v) for k, v in captured.manifest.bindings.items()},
+        source_versions=_sealed_source_versions(captured, source_registry),
         created_at=_now(),
     )
     sealed_raw = msgspec.json.encode(sealed)
@@ -904,13 +1234,16 @@ def publish_revision(
         _check_pointer_expectation(observed, expected_current, version)
         version_dir = published_version_path(destination_path, version)
         receipt_path = _receipt_path(destination_path, version)
-        if receipt_path.exists():
-            # An identical, already-attempted publication reached the locked
-            # section first: never rewrite immutable version bytes.
-            receipt = _load_receipt(destination_path, version)
-            _verify_receipt_identity(receipt, captured, destination_path)
-            _verify_existing_version(location, version, captured)
-            return _reconcile_receipt_activation(destination_path, receipt)
+        locked_retry = _retry_admitted_publication(
+            destination_path,
+            captured,
+            expected_current,
+            confirm_digest,
+            retention_required,
+            artifact_store,
+        )
+        if locked_retry is not None:
+            return locked_retry
         if version_dir.exists():
             complete = (version_dir / "manifest.json").exists()
             if not complete:
@@ -980,7 +1313,9 @@ def _verify_receipt_identity(
     receipt: PublicationReceipt, captured: CapturedRevision, destination: Path
 ) -> None:
     if (
-        receipt.revision != captured.revision
+        receipt.version != captured.revision
+        or receipt.revision != captured.revision
+        or receipt.subtree != captured.subtree
         or receipt.fingerprint != captured.fingerprint.digest
         or receipt.manifest_digest != captured.manifest_digest
         or receipt.destination != str(destination)
@@ -993,14 +1328,72 @@ def _verify_receipt_identity(
 
 
 def _baseline_matches(expected: str, observed: str | None) -> bool:
-    """Whether the recorded expected baseline still holds exactly.
-
-    "(any)" never matches: completing an activation without an explicit
-    baseline could reactivate an old version over an advanced pointer.
-    """
+    """Whether the recorded explicit expected baseline still holds exactly."""
     if expected == _EXPECTED_NONE:
         return observed is None
-    return expected != "(any)" and observed == expected
+    return observed == expected
+
+
+def _retry_admitted_publication(
+    destination: Path,
+    captured: CapturedRevision,
+    expected_current: str | None,
+    confirm_digest: str,
+    retention_required: bool,
+    artifact_store: SourceArtifactStore | None,
+) -> PublicationReceipt | None:
+    """Return the verified receipt of an identical prior attempt, or ``None``.
+
+    A stored admission receipt whose review digest equals this confirmation
+    is an already-attempted identical publication (spec 0008 §5): the
+    admission-bound policy and validator contract are re-enforced, the
+    complete version and sealed private-binding state verified against the
+    receipt, required retention re-verified, and only a genuinely
+    never-activated receipt may complete against its exact recorded baseline
+    (findings 8 and 9). ``None`` means no matching prior attempt exists — the
+    ordinary preview/confirm path decides.
+    """
+    version = captured.revision
+    if not _receipt_path(destination, version).exists():
+        return None
+    receipt = _load_receipt(destination, version)
+    if confirm_digest != receipt.review_digest:
+        return None
+    _verify_receipt_identity(receipt, captured, destination)
+    if _normalize_expected(expected_current) != receipt.expected_current:
+        raise ConfirmationRefused(
+            "the stored admission receipt was bound to a different expected-current "
+            "baseline; review the current state and confirm again"
+        )
+    if receipt.validator_contract != VALIDATOR_CONTRACT_ID:
+        raise ConfirmationRefused(
+            "the stored admission receipt was bound to a different validator "
+            "contract; review the current state and confirm again"
+        )
+    current_retention = "required" if retention_required else "disabled"
+    if receipt.retention != current_retention:
+        raise ConfirmationRefused(
+            f"the stored admission receipt was bound to a {receipt.retention} "
+            f"retention policy but retention is now {current_retention}; the "
+            f"changed admission-bound policy requires a new review"
+        )
+    _verify_sealed_state(destination, receipt)
+    if retention_required:
+        if artifact_store is None:
+            raise PublicationRetentionError(
+                "artifact retention is required but no Source Artifact Store is "
+                "configured; recovering the recorded admission is refused until "
+                "the exact bound artifacts can be verified"
+            )
+        _check_retention(artifact_store, captured.manifest)
+    _manifest, verified_receipt, _sealed = _verify_version_complete(
+        destination, version, captured.fingerprint.digest
+    )
+    if verified_receipt != receipt:
+        raise GitAuthoringError(
+            f"the verified admission receipt for {version!r} changed during retry"
+        )
+    return _reconcile_receipt_activation(destination, receipt)
 
 
 def _reconcile_receipt_activation(
@@ -1008,24 +1401,27 @@ def _reconcile_receipt_activation(
 ) -> PublicationReceipt:
     """Complete or truthfully report an attempted publication's activation.
 
-    Retry semantics (spec 0008 §5): resolve the actual pointer and complete
-    the receipt. When the confirmed activation never landed and the recorded
-    expected baseline still holds exactly, the activation is completed now;
-    when the pointer already names this version the receipt is marked
-    activated; when another publication advanced the pointer, the receipt is
-    returned unactivated and the pointer is never rewrittEN.
+    Retry semantics (spec 0008 §5, findings 8/9): an ALREADY successful
+    admission is immutable historical evidence — the receipt is returned as
+    recorded and the pointer is never reactivated, even when its original
+    baseline version happens to be active again after a later rollback. Only
+    a genuinely never-activated receipt is completed, and only while its
+    exact recorded expected baseline still holds; the mutable current
+    activation state never rewrites the immutable admission fact.
     """
+    if receipt.activated:
+        return receipt
     with mutation_lock(destination):
         observed = PublishedFilesystemLocation(destination).read_pointer()
-        if observed == receipt.version:
+        activated = False
+        if observed == receipt.version or _baseline_matches(receipt.expected_current, observed):
+            if observed != receipt.version:
+                atomic_write_bytes(
+                    published_pointer_path(destination), _pointer_bytes(receipt.version)
+                )
             activated = True
-        elif _baseline_matches(receipt.expected_current, observed):
-            atomic_write_bytes(published_pointer_path(destination), _pointer_bytes(receipt.version))
-            activated = True
-        else:
-            activated = False
-        if receipt.activated != activated:
-            receipt = msgspec.structs.replace(receipt, activated=activated)
+        if activated:
+            receipt = msgspec.structs.replace(receipt, activated=True)
             raw = msgspec.json.encode(receipt)
             atomic_write_bytes(_receipt_path(destination, receipt.version), raw)
             _verify_written(_receipt_path(destination, receipt.version), raw)
@@ -1071,57 +1467,201 @@ def _write_version_directory(
 # ---------------------------------------------------------------------------
 
 
-def rollback_publication(
+class RollbackReview(msgspec.Struct, frozen=True):
+    """The stateless disclosure of one exact historical rollback (spec §5)."""
+
+    validator_contract: str
+    destination: str
+    version: str
+    revision: str
+    fingerprint: str
+    namespace: str
+    source_reference_manifest_digest: str
+    sealed_source_references_digest: str
+    canonical_files: int
+    derived_files: int
+    expected_current: str
+    observed_current: str | None
+    retention: str
+    review_digest: str
+
+
+def _verify_version_complete(
+    destination: Path, version: str, expected_fingerprint: str | None = None
+) -> tuple[Any, PublicationReceipt, SealedSourceReferences]:
+    """Verify one immutable version completely; return (manifest, receipt).
+
+    Shared by rollback review/confirmation and receipt recovery (findings
+    8/10): the manifest must decode and name the version, every canonical AND
+    derived file must match its manifest size/digest, the Reader seam must
+    resolve the pinned version, the admission receipt must exist and agree
+    with the manifest fingerprint, and the sealed private record must digest-
+    and identity-match that receipt.
+    """
+    location = PublishedFilesystemLocation(destination)
+    manifest = location.read_manifest(version)
+    if expected_fingerprint is not None and manifest.fingerprint != expected_fingerprint:
+        raise GitAuthoringError(
+            f"Published Version {version!r} has fingerprint {manifest.fingerprint!r} "
+            f"but {expected_fingerprint!r} was expected"
+        )
+    version_dir = published_version_path(destination, version)
+    for entry in [*manifest.files, *manifest.derived_files]:
+        path = version_dir / entry.path
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError as exc:
+            raise GitAuthoringError(
+                f"Published Version {version!r} is missing {entry.path!r}"
+            ) from exc
+        if len(raw) != entry.size or hashlib.sha256(raw).hexdigest() != entry.digest:
+            raise GitAuthoringError(
+                f"Published Version {version!r} file {entry.path!r} fails its "
+                f"manifest size/digest verification"
+            )
+    PublishedFilesystemLocation(destination, version=version).resolve()
+    receipt = _load_receipt(destination, version)
+    if (
+        receipt.version != version
+        or receipt.fingerprint != manifest.fingerprint
+        or receipt.revision != manifest.revision
+        or receipt.subtree != manifest.subtree
+        or receipt.manifest_digest != manifest.source_reference_digest
+        or receipt.validator_contract != manifest.format_identity
+    ):
+        raise GitAuthoringError(
+            f"the admission receipt for {version!r} does not agree with its "
+            f"published manifest; refusing over inconsistent records"
+        )
+    sealed = msgspec.json.decode(
+        _verify_sealed_state(destination, receipt), type=SealedSourceReferences
+    )
+    return manifest, receipt, sealed
+
+
+def _rollback_review(
+    destination: Path,
+    version: str,
+    expected_current: str | None,
+    *,
+    retention_required: bool,
+) -> RollbackReview:
+    """Build the rollback review (and its digest) from verified facts only."""
+    version = validate_published_version(version)
+    manifest, receipt, sealed = _verify_version_complete(destination, version)
+    expected = _normalize_expected(expected_current)
+    observed = PublishedFilesystemLocation(destination).read_pointer()
+    _check_pointer_expectation(observed, expected_current, version)
+    review = RollbackReview(
+        validator_contract=VALIDATOR_CONTRACT_ID,
+        destination=str(destination),
+        version=version,
+        revision=receipt.revision,
+        fingerprint=manifest.fingerprint,
+        namespace=sealed.namespace,
+        source_reference_manifest_digest=receipt.manifest_digest,
+        sealed_source_references_digest=receipt.source_references_digest,
+        canonical_files=len(manifest.files),
+        derived_files=len(manifest.derived_files),
+        expected_current=expected,
+        observed_current=observed,
+        retention="required" if retention_required else "disabled",
+        review_digest="",
+    )
+    payload = {
+        "validator_contract": review.validator_contract,
+        "destination": review.destination,
+        "version": review.version,
+        "revision": review.revision,
+        "fingerprint": review.fingerprint,
+        "namespace": review.namespace,
+        "source_reference_manifest_digest": review.source_reference_manifest_digest,
+        "sealed_source_references_digest": review.sealed_source_references_digest,
+        "canonical_files": review.canonical_files,
+        "derived_files": review.derived_files,
+        "expected_current": review.expected_current,
+        "retention": review.retention,
+    }
+    digest = hashlib.sha256(msgspec.json.encode(payload)).hexdigest()
+    return msgspec.structs.replace(review, review_digest=digest)
+
+
+def preview_rollback(
     destination: str | Path,
     version: str,
     expected_current: str | None = None,
     *,
+    retention_required: bool = False,
+) -> RollbackReview:
+    """Produce the stateless rollback review; mutate nothing (spec §5, F6).
+
+    Rollback is explicit review/confirmation plus expected-current
+    activation: the preview verifies the complete target version, its
+    admission receipt, and its sealed private provenance, discloses the
+    expected/observed baseline, and returns the deterministic review digest
+    whose explicit confirmation is the only path that may move the pointer.
+    """
+    return _rollback_review(
+        Path(destination).resolve(),
+        version,
+        expected_current,
+        retention_required=retention_required,
+    )
+
+
+def rollback_publication(
+    destination: str | Path,
+    version: str,
+    expected_current: str | None = None,
+    confirm_digest: str = "",
+    *,
     artifact_store: SourceArtifactStore | None = None,
     retention_required: bool = False,
 ) -> Any:
-    """CAS-activate an already complete immutable local Published Version.
+    """Confirm the reviewed rollback and expected-current-activate history.
 
-    Rollback is explicit review plus expected-current activation: the target
-    version is verified complete (manifest, every canonical AND derived
-    digest, and resolution through the Reader seam) and its historical sealed
-    source bindings are verified under the configured retention policy. The
-    target is never rebuilt or overwritten; a stale rollback fails closed and
-    leaves the active version unchanged (spec 0008 §5).
+    Spec 0008 §5, findings 6/10: the complete target (manifest, every
+    canonical AND derived digest, Reader-seam resolution, receipt, and
+    identity-verified sealed bindings) is re-verified before exactly one
+    expected-current pointer update. Required retention fails closed —
+    including a missing store. The target is never rebuilt or overwritten; a
+    stale or unconfirmed rollback leaves the active version unchanged.
     """
+    if not confirm_digest:
+        raise ConfirmationRefused(
+            "rollback requires explicit confirmation of the displayed rollback "
+            "review digest (--confirm); merely requesting the review never "
+            "activates historical knowledge"
+        )
     destination_path = Path(destination).resolve()
-    version = validate_published_version(version)
     with mutation_lock(destination_path):
-        location = PublishedFilesystemLocation(destination_path)
-        observed = location.read_pointer()
-        _check_pointer_expectation(observed, expected_current, version)
-        manifest = location.read_manifest(version)
-        version_dir = published_version_path(destination_path, version)
-        for entry in [*manifest.files, *manifest.derived_files]:
-            path = version_dir / entry.path
-            try:
-                raw = path.read_bytes()
-            except FileNotFoundError as exc:
-                raise GitAuthoringError(
-                    f"cannot roll back to {version!r}: {entry.path!r} is missing"
-                ) from exc
-            if len(raw) != entry.size or hashlib.sha256(raw).hexdigest() != entry.digest:
-                raise GitAuthoringError(
-                    f"cannot roll back to {version!r}: {entry.path!r} fails its "
-                    f"manifest size/digest verification"
+        review = _rollback_review(
+            destination_path, version, expected_current, retention_required=retention_required
+        )
+        if review.review_digest != confirm_digest:
+            raise ConfirmationRefused(
+                "the rollback confirmation no longer matches the recomputed "
+                "review (target, baseline, or records changed); review the "
+                "current state and confirm the new digest"
+            )
+        if retention_required:
+            if artifact_store is None:
+                raise PublicationRetentionError(
+                    "artifact retention is required but no Source Artifact Store "
+                    "is configured; rollback is refused until the exact bound "
+                    "artifacts can be verified"
                 )
-        PublishedFilesystemLocation(destination_path, version=version).resolve()
-        sealed = _load_sealed(destination_path, version)
-        if retention_required and artifact_store is not None:
+            _manifest, _receipt, sealed = _verify_version_complete(destination_path, review.version)
             for entity_bindings in sealed.bindings.values():
                 for source_id, digest in entity_bindings.items():
                     if not artifact_store.artifact_exists(source_id=source_id, content_hash=digest):
                         raise PublicationRetentionError(
                             f"artifact retention is required but the historical "
-                            f"binding {source_id} for {version!r} lacks a verified "
-                            f"artifact"
+                            f"binding {source_id} for {review.version!r} lacks "
+                            f"a verified artifact"
                         )
-        atomic_write_bytes(published_pointer_path(destination_path), _pointer_bytes(version))
-        return manifest
+        atomic_write_bytes(published_pointer_path(destination_path), _pointer_bytes(review.version))
+        return PublishedFilesystemLocation(destination_path).read_manifest(review.version)
 
 
 def _pointer_bytes(version: str) -> bytes:
@@ -1157,6 +1697,7 @@ def ingest_into_worktree(
     *,
     source_registry: SourceRegistry,
     artifact_store: SourceArtifactStore | None = None,
+    raw_source_path: str | Path | None = None,
 ) -> WorktreeIngestResult:
     """Register private provenance and write ordinary files into the worktree.
 
@@ -1167,9 +1708,10 @@ def ingest_into_worktree(
     resolution, and the Source Reference Manifest gains the exact
     ``(entity, source, digest)`` binding. Nothing is committed — authors
     invoke Git explicitly — and no proposal files are created. Every check
-    runs before the first byte is written, so a refused ingest preserves the
-    author's files exactly; a mid-write failure restores them through the
-    mutation backup.
+    worktree-safety and routing checks run before private registration or
+    authoring-file writes, so a refused target preserves the author's files;
+    a mid-write failure restores them through the mutation backup. The CLI
+    supplies ``raw_source_path`` so tracked raw inputs are refused too.
     """
     from lumio_wiki.ingest import (
         _authored_page_declares_source,
@@ -1186,8 +1728,16 @@ def ingest_into_worktree(
             "managed Git authoring requires adopting the Source Reference Manifest "
             "first (the legacy proposal route stays selected by its own callers)"
         )
+    repo_root, _subtree = resolve_repository(kb_path)
     _refuse_private_selection_inside_tree(
         kb_path, _registry_root(source_registry), _local_store_root(artifact_store)
+    )
+    _refuse_tracked_private_paths(
+        repo_root,
+        "raw input/source registry/store",
+        Path(raw_source_path) if raw_source_path is not None else None,
+        _registry_root(source_registry),
+        _local_store_root(artifact_store),
     )
     kb, report = load_knowledge_base(kb_path)
     if not report.is_valid:
@@ -1196,18 +1746,6 @@ def ingest_into_worktree(
             "to ingest over invalid authored content: " + str(report)
         )
     _authored_page_declares_source(authored_markdown, source_id)
-    version, registration = source_registry.register_version(
-        source_id, raw_bytes, filename=filename, content_type=content_type
-    )
-    if artifact_store is not None:
-        retain_artifact(
-            artifact_store,
-            source_registry,
-            source_id=source_id,
-            raw_bytes=raw_bytes,
-            content_type=content_type,
-            filename=filename,
-        )
     pages = _extract_page_records(authored_markdown, filename, kb)
     routing_issues = [
         issue for issue in _validate_page_routing(pages, kb) if issue.severity == "error"
@@ -1228,6 +1766,30 @@ def ingest_into_worktree(
         raise GitAuthoringError(
             "the authored page carries no Entity ID; managed Git authoring binds "
             "sources to stable Entities (the v2 Entity contract)"
+        )
+    mutation_paths = [
+        relative
+        for relative in affected_mutation_paths(pages, kb_path)
+        if relative != _CONTROL_BASENAME
+    ]
+    mutation_paths.append(SOURCE_REFERENCE_MANIFEST_BASENAME)
+    _refuse_unsafe_worktree_mutation(
+        repo_root,
+        kb_path,
+        mutation_paths,
+        allow_untracked=frozenset({SOURCE_REFERENCE_MANIFEST_BASENAME}),
+    )
+    version, registration = source_registry.register_version(
+        source_id, raw_bytes, filename=filename, content_type=content_type
+    )
+    if artifact_store is not None:
+        retain_artifact(
+            artifact_store,
+            source_registry,
+            source_id=source_id,
+            raw_bytes=raw_bytes,
+            content_type=content_type,
+            filename=filename,
         )
     updated_manifest = upsert_binding(manifest, entity_id, source_id, version.content_hash)
 
