@@ -105,10 +105,10 @@ def _launch(project: Path, toolset: str = "combined"):
 
 
 def _payload(result) -> Any:
-    """The tool's JSON payload (the CLI's one-JSON-value contract). FastMCP
-    emits one content block per element for list returns — reassemble the
-    list; a single block is the value itself. A string element arrives as raw
-    text, so a non-JSON block IS the string element."""
+    """The tool's JSON payload (the CLI's one-JSON-value contract). MCPServer
+    (mcp 2.x) emits one content block per element for list returns —
+    reassemble the list; a single block is the value itself. A string element
+    arrives as raw text, so a non-JSON block IS the string element."""
 
     def _element(text: str) -> Any:
         try:
@@ -183,9 +183,9 @@ def test_stdio_tool_boundary_authoring_without_approval_or_promotion(tmp_path):
     assert QUERY_TOOLS <= set(tools)
     assert not [name for name in tools if any(marker in name for marker in HUMAN_OPERATION_MARKERS)]
     for name, tool in tools.items():  # the project root is server-selected only
-        assert "project" not in tool.inputSchema.get("properties", {}), name
+        assert "project" not in tool.input_schema.get("properties", {}), name
         assert not {"token", "credential", "credentials", "password"} & set(
-            tool.inputSchema.get("properties", {})
+            tool.input_schema.get("properties", {})
         ), name
 
 
@@ -312,11 +312,11 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
 
     # nothing admitted by authoring or review: the managed route still refuses
     # queries, and no admission descriptor exists
-    assert out["queries"].isError and "no valid admission" in _text(out["queries"])
+    assert out["queries"].is_error and "no valid admission" in _text(out["queries"])
     assert not (project / ".ariadne" / "current.json").exists()
 
     # the upload bound holds over stdio: refused before any write
-    assert out["oversize"].isError and "over the" in _text(out["oversize"])
+    assert out["oversize"].is_error and "over the" in _text(out["oversize"])
     assert sorted(p.name for p in (project / "data" / "docs").iterdir()) == [
         "notes.md",
         "revision-notes.md",
@@ -540,14 +540,14 @@ def _launch_http(project: Path, *, token: str | None, extra_args: list[str] | No
 @contextlib.asynccontextmanager
 async def _http_exit(url: str, token: str | None, *, extra_headers: dict | None = None):
     """An SDK streamable-http client with one fixed bearer token (or none)."""
-    import httpx
+    import httpx2 as httpx  # pyright: ignore[reportMissingImports] — mcp 2.2.0 ships httpx2 (same client API)
 
     headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
     headers.update(extra_headers or {})
     async with httpx.AsyncClient(
         headers=headers, timeout=httpx.Timeout(60.0, read=120.0)
     ) as client:
-        async with streamable_http_client(url, http_client=client) as (read, write, _):
+        async with streamable_http_client(url, http_client=client) as (read, write):
             async with ClientSession(read, write) as session:
                 yield session
 
@@ -622,7 +622,7 @@ def test_http_opt_in_requires_token_and_loopback(tmp_path):
 )
 def test_container_http_authenticated_health_and_readiness(tmp_path, toolset, ready_status):
     """Compose bind is explicit; probes keep auth and distinguish empty query projects."""
-    import httpx
+    import httpx2 as httpx  # pyright: ignore[reportMissingImports] — mcp 2.2.0 ships httpx2 (same client API)
 
     project = tmp_path / "private-empty-project"
     project.mkdir()
@@ -707,7 +707,7 @@ def test_http_bearer_gate_refuses_every_request_before_dispatch(tmp_path):
     cannot list tools, read, upload, submit or dispatch — including in an
     empty project before any Promotion — and the failures disclose no
     project data (fixed 401 body, no path or tool names)."""
-    import httpx
+    import httpx2 as httpx  # pyright: ignore[reportMissingImports] — mcp 2.2.0 ships httpx2 (same client API)
 
     project = tmp_path / "empty"
     project.mkdir()
@@ -759,13 +759,16 @@ def test_http_bearer_gate_refuses_every_request_before_dispatch(tmp_path):
             async with _http_exit(url, None) as session:
                 await session.initialize()
                 await session.list_tools()
-        assert "401" in _describe(caught.value)
+        # mcp 2.2.0's client wraps the gate's 401 in a generic MCPError (the
+        # HTTP status no longer reaches the exception text); the raw probes
+        # above pin the exact 401 status and the fixed rejection body
+        assert "MCPError" in _describe(caught.value)
 
     async def sdk_wrong_token(url: str) -> None:
         with pytest.raises(BaseException) as caught:
             async with _http_exit(url, "wrong-token") as session:
                 await session.initialize()
-        assert "401" in _describe(caught.value)
+        assert "MCPError" in _describe(caught.value)
 
     with _launch_http(project, token=HTTP_TOKEN) as url:
         responses = asyncio.run(probe(url))
@@ -888,13 +891,13 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
     assert out["validated"]["ok"] is True and out["validated"]["errors"] == []
     assert out["review"] == api.review_proposal(out["started"]["proposal"])
     # the upload bound holds over HTTP: refused before any write
-    assert out["oversize"].isError and "over the" in _text(out["oversize"])
+    assert out["oversize"].is_error and "over the" in _text(out["oversize"])
     assert sorted(p.name for p in (project / "data" / "docs").iterdir()) == [
         "notes.md",
         "revision-notes.md",
     ]
     # nothing admitted: the managed route still refuses queries
-    assert out["queries"].isError and "no valid admission" in _text(out["queries"])
+    assert out["queries"].is_error and "no valid admission" in _text(out["queries"])
     assert not (project / ".ariadne" / "current.json").exists()
 
 
@@ -916,7 +919,7 @@ def test_http_legacy_promoted_project_keeps_serving_queries(tmp_path):
     )
 
     async def run(url: str) -> dict:
-        import httpx
+        import httpx2 as httpx  # pyright: ignore[reportMissingImports] — mcp 2.2.0 ships httpx2 (same client API)
 
         async with httpx.AsyncClient() as client:
             ready = await client.get(
@@ -1028,9 +1031,7 @@ def test_stdio_propose_sources_forwards_storage_profiles(tmp_path):
     assert over_stdio["source_digest"] == twin["source_digest"]
     assert over_stdio["sources"] == twin["sources"]
     doc = yaml.safe_load(
-        (
-            project / ".ariadne" / "worktrees" / over_stdio["proposal"] / "ariadne.yaml"
-        ).read_text()
+        (project / ".ariadne" / "worktrees" / over_stdio["proposal"] / "ariadne.yaml").read_text()
     )
     assert doc["storages"]["local"]["access_key_id_env"] == "MCP_S3_KEY_ID"
     assert doc["sources"][-1]["storage"] == "local"

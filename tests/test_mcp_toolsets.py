@@ -108,10 +108,11 @@ def _text(result) -> str:
 
 
 def _payload(result):
-    """The tool's JSON payload. FastMCP emits one content block per element
-    for list returns — reassemble the list (a string element arrives as raw
-    text, so a non-JSON block IS the string element); a single block is the
-    value itself. (The established tests/test_authoring_mcp.py convention.)"""
+    """The tool's JSON payload. MCPServer (mcp 2.x) emits one content block
+    per element for list returns — reassemble the list (a string element
+    arrives as raw text, so a non-JSON block IS the string element); a single
+    block is the value itself. (The established tests/test_authoring_mcp.py
+    convention.)"""
 
     def _element(text: str):
         try:
@@ -176,14 +177,14 @@ def test_stdio_toolsets_share_core_and_exclude_human_operations(tmp_path, toolse
     # project-bound: the launch fixed the project; no tool takes a root or a
     # credential argument (the same boundary the combined facade established)
     for name, tool in tools.items():
-        properties = set(tool.inputSchema.get("properties", {}))
+        properties = set(tool.input_schema.get("properties", {}))
         assert "project" not in properties, name
         assert not {"token", "credential", "credentials", "password"} & properties, name
 
     # a direct call to an unregistered name is refused by the server — an
     # indirect dispatcher cannot reach the other surface's operations
     for name, result in out["refused"].items():
-        assert result.isError, f"{toolset!r} accepted unregistered {name!r}"
+        assert result.is_error, f"{toolset!r} accepted unregistered {name!r}"
         assert "Unknown tool" in _text(result), name
 
 
@@ -272,7 +273,7 @@ def test_stdio_fresh_onboarding_authoring_unblocked_by_missing_admission(tmp_pat
     assert edited["revision"] != started["candidate_revision"]
 
     # queries refuse with the managed route's explicit missing-admission error
-    assert out["refused"].isError
+    assert out["refused"].is_error
     assert "no valid admission" in _text(out["refused"])
 
     # authoring on the SAME combined session is not blocked by that refusal
@@ -323,11 +324,11 @@ def test_stdio_legacy_project_broken_served_model_never_blocks_combined_authorin
                 return {"discovery": discovery, "refused": first_query}
 
     analyst_out = asyncio.run(analyst())
-    assert not analyst_out["discovery"].isError
+    assert not analyst_out["discovery"].is_error
     analyst_groups = json.loads(_text(analyst_out["discovery"]))["groups"]
     assert list(analyst_groups) == ["metrics", "pages", "terms", "examples"]
     assert analyst_groups["metrics"]["items"][0]["name"] == "event_count"
-    assert analyst_out["refused"].isError
+    assert analyst_out["refused"].is_error
     assert _text(analyst_out["refused"]) == f"Error executing tool list_metrics: {expected_refusal}"
 
     # Combined keeps the original authoring assertions beside the same refusal.
@@ -345,11 +346,11 @@ def test_stdio_legacy_project_broken_served_model_never_blocks_combined_authorin
 
     out = asyncio.run(run())
 
-    assert out["refused"].isError
+    assert out["refused"].is_error
     assert "do not compile" in _text(out["refused"])
     assert set(out["started"]) == {"proposal", "base_revision", "candidate_revision"}
     assert _text(out["refused"]) == f"Error executing tool list_metrics: {expected_refusal}"
-    assert not out["discovery"].isError
+    assert not out["discovery"].is_error
     combined_groups = json.loads(_text(out["discovery"]))["groups"]
     assert list(combined_groups) == ["metrics", "pages", "terms", "examples"]
 
@@ -459,8 +460,8 @@ def test_record_query_discovery(tmp_path):
 
     # the explicit nested request schema is discoverable (same registration
     # on both query surfaces)
-    schema = out["analyst"]["query_records"].inputSchema
-    assert schema == out["combined"]["query_records"].inputSchema
+    schema = out["analyst"]["query_records"].input_schema
+    assert schema == out["combined"]["query_records"].input_schema
     request_schema = schema["properties"]["request"]
     assert set(request_schema["properties"]) == {
         "dataset",
@@ -489,7 +490,7 @@ def test_record_query_discovery(tmp_path):
     # one bounded call over the admitted project (its pinned snapshot's
     # events fixture: three rows (1,'a'),(2,'b'),(3,'c'))
     called = out["called"]
-    assert not called.isError
+    assert not called.is_error
     payload = json.loads(_text(called))
     assert payload["governed"] is False  # a record answer, even on an admitted source
     assert payload["rows"] == [{"id": 1, "label": "a"}, {"id": 2, "label": "b"}]

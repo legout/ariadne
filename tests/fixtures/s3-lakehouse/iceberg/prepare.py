@@ -2,7 +2,7 @@
 
 Run from the repository root with the dev environment::
 
-    uv run --python 3.12 --extra dev python \
+    uv run --python 3.14 --extra dev python \
         tests/fixtures/s3-lakehouse/iceberg/prepare.py
 
 Everything is prepared OFFLINE (no S3 endpoint is contacted): DuckDB's own
@@ -42,6 +42,7 @@ SNAPSHOT_ID = 918273645  # arbitrary fixed snapshot id, part of the fixture byte
 
 
 # ------------------------------------------------------------- avro encoding
+
 
 def _zigzag(n: int) -> bytes:
     n = (n << 1) ^ (n >> 63) if n < 0 else n << 1

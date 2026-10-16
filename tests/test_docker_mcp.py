@@ -6,7 +6,7 @@ import secrets
 import subprocess
 from pathlib import Path
 
-import pytest
+import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = os.environ.get("ARIADNE_DOCKER_TEST_IMAGE")
@@ -15,7 +15,7 @@ CLIENT = """
 import asyncio, json, os, sys, urllib.request, urllib.error
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from httpx import AsyncClient
+from httpx2 import AsyncClient
 url = 'http://ariadne:8000'
 headers = {'Authorization': 'Bearer ' + os.environ['ARIADNE_HTTP_TOKEN']}
 if sys.argv[1] == 'probes':
@@ -33,13 +33,13 @@ if sys.argv[1] == 'probes':
 else:
     async def run():
         async with AsyncClient(headers=headers) as client:
-            async with streamable_http_client(url + '/mcp', http_client=client) as (r,w,_):
+            async with streamable_http_client(url + '/mcp', http_client=client) as (r,w):
                 async with ClientSession(r,w) as session:
                     await session.initialize()
                     if sys.argv[1] == 'tools':
                         return [t.name for t in (await session.list_tools()).tools]
                     result = await session.call_tool(sys.argv[1], json.loads(sys.argv[2]))
-                    assert not result.isError, result
+                    assert not result.is_error, result
                     return json.loads(result.content[0].text)
     print(json.dumps(asyncio.run(run())))
 """

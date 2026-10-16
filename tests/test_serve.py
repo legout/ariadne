@@ -419,14 +419,21 @@ def test_mcp_example_tools_parity_with_local_transport(served, tmp_path):
     example-review command is never registered as a tool (operator-only, #20)."""
     from ariadne.serve import build_app
 
-    def _json(result_blocks) -> Any:
-        """FastMCP (mcp<2) emits one text block per element for list returns
-        and wraps those in a (blocks, structured) tuple (see
-        tests/test_authoring_mcp._payload): one block IS the value, several
-        blocks are the list elements."""
+    def _json(result) -> Any:
+        """The tool's JSON payload from an in-process ``app.call_tool`` result
+        (mcp 2.2.0 returns one CallToolResult). MCPServer wraps non-dict
+        returns as ``{"result": [...]}`` in structuredContent and emits one
+        text block per element; one block IS the value, several blocks are
+        the list elements (see tests/test_authoring_mcp._payload)."""
 
-        if isinstance(result_blocks, tuple):
-            result_blocks = result_blocks[0]
+        if isinstance(result, tuple):  # the mcp<2 call_tool shape
+            result = result[0]
+
+        data = getattr(result, "structured_content", None)
+        if isinstance(data, dict) and set(data) == {"result"}:
+            return data["result"]
+        if data is not None:
+            return data
 
         def _element(block):
             try:
@@ -434,9 +441,10 @@ def test_mcp_example_tools_parity_with_local_transport(served, tmp_path):
             except ValueError:
                 return block.text
 
-        if len(result_blocks) == 1:
-            return _element(result_blocks[0])
-        return [_element(block) for block in result_blocks]
+        blocks = list(result.content)
+        if len(blocks) == 1:
+            return _element(blocks[0])
+        return [_element(block) for block in blocks]
 
     served_dir, db = served
     local = Facade(

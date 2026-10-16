@@ -1,6 +1,6 @@
 """AC8 installed-wheel self-check; run with the FRESH venv's Python, not uv run.
 
-Build/install separately: uv build; uv venv --python 3.12 /tmp/ariadne-wheel-venv;
+Build/install separately: uv build; uv venv --python 3.14 /tmp/ariadne-wheel-venv;
 uv pip install --python /tmp/ariadne-wheel-venv/bin/python dist/ariadne_data-*.whl;
 /tmp/ariadne-wheel-venv/bin/python tests/setup_wheel_walkthrough.py
 

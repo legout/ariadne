@@ -7,7 +7,7 @@ import socket
 import sys
 from pathlib import Path
 
-import pytest
+import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -51,7 +51,7 @@ def artifacts(tmp_path):
 
 @pytest.fixture
 def source_free(monkeypatch):
-    import duckdb
+    import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
     import ariadne.execution as execution
     import ariadne.query as query
@@ -302,11 +302,15 @@ def test_mcp_registration_startup_and_discover_are_source_free(
     )
     assert ("discover" in observed[0]) == (toolset != "authoring")
     if toolset != "authoring":
-        schema = observed[0]["discover"].inputSchema
+        schema = observed[0]["discover"].input_schema
         assert set(schema["properties"]) == {"query", "limit"}
         assert schema["required"] == ["query"]
         assert schema["properties"]["limit"]["default"] == 5
-        blocks = observed[1][0] if isinstance(observed[1], tuple) else observed[1]
+        # mcp 2.x call_tool returns one CallToolResult; mcp<2 returned a
+        # (blocks, structured) tuple or bare block list — handle both shapes
+        outcome = observed[1]
+        blocks = outcome[0] if isinstance(outcome, tuple) else outcome
+        blocks = list(getattr(blocks, "content", blocks))
         result = json.loads(blocks[0].text)
         native = DiscoveryRuntime(
             root / "semantic_layer",
@@ -374,10 +378,15 @@ def test_deferred_managed_query_keeps_startup_admission_and_refuses_tampering(
             # B changes only the admitted expression: the three fixture events now count twice.
             api = AuthoringProject(project)
             content = (project / "semantic_layer" / "models" / "events.yml").read_text()
-            second, _ = admitted_ready(api, project, {
-                "kind": "model", "name": "events",
-                "content": content.replace("COUNT(*)", "COUNT(*) * 2"),
-            })
+            second, _ = admitted_ready(
+                api,
+                project,
+                {
+                    "kind": "model",
+                    "name": "events",
+                    "content": content.replace("COUNT(*)", "COUNT(*) * 2"),
+                },
+            )
             assert admit_metric(project, second) == 0
             assert second["revision"] != first["revision"]
             later = QueryRuntime.open_project(project)

@@ -24,26 +24,44 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp import (  # pyright: ignore[reportMissingImports] — the [mcp] extra
+    ClientSession,
+    StdioServerParameters,
+)
+from mcp.client.stdio import (  # pyright: ignore[reportMissingImports] — the [mcp] extra
+    stdio_client,
+)
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = json.loads((REPO_ROOT / "tests" / "fixtures" / "expected_metrics.json").read_text())
+REPO_ROOT = Path(__file__).resolve().parents[2]  # examples/retail-demo/ → repo root
+FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "expected_metrics.json"
+
+
+def _fixture() -> dict:
+    """The hand-computed expectations, loaded lazily: a missing or corrupt
+    fixture must surface through main()'s FAIL report, never an import-time
+    traceback."""
+    try:
+        return json.loads(FIXTURE_PATH.read_text())
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"expected-metrics fixture unreadable ({FIXTURE_PATH}): {exc}") from exc
 
 
 def result_data(res) -> Any:
     """Unwrap a tool result to its payload.
 
-    FastMCP wraps non-dict returns as ``{"result": [...]}`` in structuredContent;
-    serve.py's bare ``dict`` tools carry no output schema, so their payload is
-    JSON in the first text content block.
+    MCPServer (mcp 2.x) wraps non-dict returns as ``{"result": [...]}`` in
+    structuredContent; serve.py's bare ``dict`` tools carry no output schema,
+    so their payload is JSON in the first text content block.
     """
-    data = res.structuredContent
+    data = res.structured_content
     if isinstance(data, dict) and set(data) == {"result"}:
         return data["result"]
     if data is not None:
         return data
-    return json.loads(res.content[0].text)
+    try:
+        return json.loads(res.content[0].text)
+    except ValueError as exc:
+        raise RuntimeError(f"tool result payload is not JSON: {exc}") from exc
 
 
 def error_text(res) -> str:
@@ -56,12 +74,13 @@ def rows_by_region(result: dict, column: str) -> dict:
 
 
 def assert_matches_fixture(result: dict, metric: str) -> None:
-    precision = FIXTURE["_meta"]["precision"][metric]
+    fixture = _fixture()
+    precision = fixture["_meta"]["precision"][metric]
     actual = {
         region: round(value, precision) if isinstance(precision, int) else int(value)
         for region, value in rows_by_region(result, metric).items()
     }
-    assert actual == FIXTURE[metric], f"{metric} mismatch: {actual} != {FIXTURE[metric]}"
+    assert actual == fixture[metric], f"{metric} mismatch: {actual} != {fixture[metric]}"
 
 
 def show_rows(result: dict) -> None:
@@ -125,7 +144,7 @@ async def run(args: argparse.Namespace) -> None:
             res = await session.call_tool(
                 "get_metric", {"name": "nonexistent", "dimensions": ["region"]}
             )
-            assert res.isError, "unknown metric must error, never execute"
+            assert res.is_error, "unknown metric must error, never execute"
             print("  " + error_text(res).replace("\n", "\n  "))
 
     print()

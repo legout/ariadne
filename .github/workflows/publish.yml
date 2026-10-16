@@ -47,7 +47,7 @@ jobs:
 
       - name: Run the core test suite on the built candidate
         run: |
-          uv venv .ci-venv
+          uv venv --python 3.14 .ci-venv
           WHEEL=$(ls dist | grep whl)
           uv pip install --python .ci-venv/bin/python \
             "./dist/$WHEEL[mcp,dev]"

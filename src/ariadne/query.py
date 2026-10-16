@@ -72,7 +72,7 @@ from pathlib import Path
 from typing import Any
 
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-from sqlglot import expressions as exp
+from sqlglot import expressions as exp  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 from sqlglot.optimizer.scope import Scope, build_scope  # pyright: ignore[reportMissingImports]
 
 # Issue #19 (ADR-0015, spec 2026-09-29-0007): the answer-example store is a
@@ -291,7 +291,7 @@ class QueryRuntime(DiscoveryRuntime):
         staging_dir: str | Path | None = None,
         deadline_budget: DeadlineBudget | None = None,
         discovery: DiscoveryRuntime | None = None,
-    ) -> "QueryRuntime":
+    ) -> QueryRuntime:
         """The managed-project factory (issue #37/G5, plan §2): resolve the
         pinned snapshot and its approved source configuration of a Git-managed
         data project and construct the runtime over them. EVERY query method

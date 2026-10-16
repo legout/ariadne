@@ -25,7 +25,7 @@ The [documentation index](docs/README.md) lists all guides and references for **
 Work on Ariadne itself happens from the package checkout, not inside a data project:
 
 ```bash
-uv venv --python 3.12 .venv
+uv venv --python 3.14 .venv
 uv pip install --python .venv/bin/python -e .
 source .venv/bin/activate
 # Bundled end-to-end demo: live configured LLM, human review, then a fresh query:

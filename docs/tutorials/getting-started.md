@@ -4,7 +4,7 @@ This tutorial takes a data owner from an empty project directory to a fresh quer
 
 ## Prerequisites
 
-- Python 3.12 or newer
+- Python 3.14 or newer (spec 0026: 3.12/3.13 support ended with the MCP 2.2.0 migration)
 - [uv](https://docs.astral.sh/uv/)
 - The data owner's agreement on source access, business definitions, and which metrics should be governed
 - Git for the default Git-managed authoring route
