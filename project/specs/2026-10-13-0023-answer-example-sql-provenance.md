@@ -1,6 +1,6 @@
 # Specification: Answer Example SQL provenance
 
-**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. Exact SQL retention, opt-in retrieval, consent and historical meaning remain, with Git candidate storage/common admission instead of the independent staging/Example-review path. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+**Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; the owner approved the complete written revision and these scoped amendments with “Schriftliche Fassung freigeben (Recommended)”. Exact SQL retention, opt-in retrieval, consent and historical meaning remain, with Git candidate storage/common admission instead of the independent staging/Example-review path. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
 
 | | |
 | :--- | :--- |

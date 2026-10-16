@@ -1,6 +1,6 @@
 # Bounded context reading: MCP browsing tools plus local read-only skill access
 
-**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. Read-only content/path/label bounds remain, but staging roots are replaced by explicit unadmitted Git candidate views; direct local reads do not establish admission. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+**Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; the owner approved the complete written revision and these scoped amendments with “Schriftliche Fassung freigeben (Recommended)”. Read-only content/path/label bounds remain, but staging roots are replaced by explicit unadmitted Git candidate views; direct local reads do not establish admission. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
 
 Status: accepted (owner, Pi conversation 2026-10-12: approved the two-tool MCP browsing design and the skill read-only rule for specification capture, then requested issue creation; implementation, project admission and release publication remain gated).
 

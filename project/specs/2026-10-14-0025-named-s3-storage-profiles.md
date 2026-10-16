@@ -1,6 +1,6 @@
 # Specification: Named S3 storage profiles
 
-**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. Named scoped profiles, secret isolation, effective-endpoint Source Approval, all retained formats and evidence/admission checks remain; only the former legacy-staging compatibility obligations retire. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+**Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; the owner approved the complete written revision and these scoped amendments with “Schriftliche Fassung freigeben (Recommended)”. Named scoped profiles, secret isolation, effective-endpoint Source Approval, all retained formats and evidence/admission checks remain; only the former legacy-staging compatibility obligations retire. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
 
 | | |
 | :--- | :--- |

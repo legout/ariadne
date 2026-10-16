@@ -1,6 +1,6 @@
 # Standalone proposal-first document ingestion
 
-**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. Standalone conversion/Verbatim/consent rules are retained, but derived artifacts go into an explicitly selected Git candidate and private originals remain operator-managed external inputs; no Core upload/retention store remains. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+**Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; the owner approved the complete written revision and these scoped amendments with “Schriftliche Fassung freigeben (Recommended)”. Standalone conversion/Verbatim/consent rules are retained, but derived artifacts go into an explicitly selected Git candidate and private originals remain operator-managed external inputs; no Core upload/retention store remains. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
 
 Status: accepted (owner, 2026-09-17 shape-design round for spec revision 8; inspired by the lumio-wiki Knowledge Base flow).
 

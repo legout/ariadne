@@ -1,6 +1,6 @@
 # Staging-dir review gate instead of PR flow (MVP)
 
-**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. The new-project-only Core slice retires the remaining staging/Promotion route in favor of common exact-revision Git Review Admission; no legacy migration or user-file deletion is authorized. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+**Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; the owner approved the complete written revision and these scoped amendments with “Schriftliche Fassung freigeben (Recommended)”. The new-project-only Core slice retires the remaining staging/Promotion route in favor of common exact-revision Git Review Admission; no legacy migration or user-file deletion is authorized. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
 
 Status: accepted (owner, 2026-09-14 shaping session; single-user real-document scope clarified by owner, 2026-09-23; production Git-review route approved by owner, 2026-09-30).
 

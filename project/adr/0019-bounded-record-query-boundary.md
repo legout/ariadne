@@ -1,6 +1,6 @@
 # Separate bounded record queries from admitted detail and metric authoring
 
-**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) retains catalog-bound ungoverned records and all complete-output safeguards, but retires public legacy serving and automatic ad-hoc metric staging. The bounded Core design is approved in chat; written review is pending, and unaffected original approval remains.
+**Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) retains catalog-bound ungoverned records and all complete-output safeguards, but retires public legacy serving and automatic ad-hoc metric staging. The bounded Core design is approved in chat; the owner approved the complete written revision and these amendments with “Schriftliche Fassung freigeben (Recommended)”; unaffected original approval remains.
 
 Status: accepted (owner, Pi conversation 2026-10-08: approved the revised record-query and shared-safeguard design for specification/ADR/vocabulary capture, then approved the written specification revision 1). The owner subsequently requested ticketization of the plan's revision-1 S1–S3 decomposition; implementation, project admission and release/deployment publication remain gated.
 

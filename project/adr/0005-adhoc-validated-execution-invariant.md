@@ -1,6 +1,6 @@
 # Ad-hoc metrics: from governed-only to no-unvalidated-execution
 
-**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved ephemeral ad-hoc direction; its written review is pending. Compiler/source/read-only/governance checks remain, but automatic staged proposals retire and explicit persistence uses existing Git Authoring. Original approval history remains; no implementation is authorized by this notice.
+**Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved ephemeral ad-hoc direction; the owner approved the complete written revision and these scoped amendments with “Schriftliche Fassung freigeben (Recommended)”. Compiler/source/read-only/governance checks remain, but automatic staged proposals retire and explicit persistence uses existing Git Authoring. Original approval history remains; no implementation is authorized by this notice.
 
 Status: accepted (owner, 2026-09-14 shape-design round for spec revision 3).
 

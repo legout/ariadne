@@ -2,8 +2,8 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Proposed written revision 1; bounded Core design approved in chat** |
-| **Approval** | Owner, Pi conversation 2026-10-16: selected ephemeral ad-hoc execution with explicit persistence only through existing Git Authoring; a separate OKF Example directory with common Git Review Admission; private external originals with exact references/digests in Git. Explicitly excluded legacy work: “Ignoriere legacy projekte. es gibt nur eines, was komplett neu initialsiert/angelegt wird”. Then selected “Core-Design freigeben (Recommended)” for the complete bounded design, including retirement of the persistent upload operation and the unapproved #76 gate. This written revision, its concrete interface details, glossary and scoped ADR amendments await written review. |
+| **Status** | **Approved, revision 1** |
+| **Approval** | Owner, Pi conversation 2026-10-16: selected ephemeral ad-hoc execution with explicit persistence only through existing Git Authoring; a separate OKF Example directory with common Git Review Admission; private external originals with exact references/digests in Git. Explicitly excluded legacy work: “Ignoriere legacy projekte. es gibt nur eines, was komplett neu initialsiert/angelegt wird”. Then selected “Core-Design freigeben (Recommended)” for the complete bounded design, including retirement of the persistent upload operation and the unapproved #76 gate. The owner subsequently selected “Schriftliche Fassung freigeben (Recommended)”, approving this complete written revision 1, its concrete interface details, glossary and scoped ADR amendments for implementation planning. |
 | **Scope** | `ariadne-data` standalone Git authoring, ephemeral ad-hoc execution, Git-backed Examples and document-derived artifacts, Git-first setup/discovery, retirement of Core staging/Promotion/legacy routes, Core CLI/MCP/packaged guidance/fixtures. |
 | **Intake** | [#74](https://github.com/legout/ariadne/issues/74), updated 2026-10-15T20:22:36Z; [#76](https://github.com/legout/ariadne/issues/76), updated 2026-10-15T20:23:30Z. The owner's new-project-only decision supersedes #74's legacy-migration acceptance example for this slice, not permission to delete or reinitialize anything. |
 | **Baseline** | Accepted isolated Core #73 candidate `76d9bea9d1129c31dda3cce363c787eb0f072e6a`, Python ≥3.14 / MCP 2.2.0 ([spec 0026](2026-10-15-0026-core-python314-mcp2.md)); target main remains separate. |
@@ -101,7 +101,7 @@ Lumio's approved component source `f4d1139d7a3381dde0f8d1741f5316ae6f9eadc0` (sp
 
 In particular, [ADR-0011](../adr/0011-context-carrying-answers-and-skill.md) and [spec 0011](2026-10-06-0011-context-trust-signals.md) currently permit unavailable required context to return `context: null`/`context_unavailable` without failing a query. This remains unchanged here. Rejecting an invalid candidate at validation is not a silent change to that runtime rule; #76 needs an explicit coordinated amendment before requiring a different failure path.
 
-This written revision proposes only the following scoped supersessions; original approval records and unaffected behavior remain intact:
+This approved revision makes only the following scoped supersessions; original approval records and unaffected behavior remain intact:
 
 | Owning sources | Scoped replacement |
 | --- | --- |
@@ -118,6 +118,6 @@ This written revision proposes only the following scoped supersessions; original
 
 - **Vocabulary:** the isolated glossary expands Authoring Proposal to explicit document-derived artifacts and Examples; Staging/Promotion/ad-hoc Proposal become historical route terms. Ad-hoc Metric remains ungoverned; admission does not become independent numerical validation. No joint #76 vocabulary is invented.
 - **Decision:** ADR-0024 records Git-only authored state versus dual stores/automatic Git drafts and private external originals versus Git blobs; it explicitly retires legacy compatibility by the owner's decision. Existing ADRs/specifications carry scoped amendment notices rather than rewritten approval history.
-- **Behavior:** the complete bounded in-chat design is approved; this concrete written revision and amendments await owner review. The original request supplies supervised execution direction, but no #74 writer starts before written specification/plan approval and current readiness verification.
+- **Behavior:** the complete bounded in-chat design and this concrete written revision 1 with its amendments are owner-approved; the written approval was “Schriftliche Fassung freigeben (Recommended)” on 2026-10-16. The original request supplies supervised execution direction, but no #74 writer starts before written specification/plan approval and current readiness verification.
 - **Uncertainty:** no remaining product choice is assumed for this bounded Core slice. Repository-wide caller mapping, removed-entry-point behavior, exact same-revision Example validation and private source availability need planning/verification. Shared #76 identity/binding/failure semantics remain unresolved and explicitly excluded. New-source/source-reset/deployment actions need their own authorization.
 - **Handoff:** planning-contract v1, installed provenance unknown; accepted #73 candidate is the base, not a merge into main. After written approval, prepare the smallest sequential plan with isolated Pi writers and independent validation. No new ticket, external ABI or duplicate proposal ledger is authorized by this capture.

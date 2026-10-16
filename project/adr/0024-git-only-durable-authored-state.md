@@ -1,6 +1,6 @@
 # Git-only durable authored state
 
-Status: proposed written decision; bounded Core design approved by the owner in the Pi conversation on 2026-10-16, written specification/ADR review pending.
+Status: accepted (owner, Pi conversation 2026-10-16: approved the bounded Core design, then the complete written spec 0027 revision 1, this ADR, glossary and scoped source amendments with “Schriftliche Fassung freigeben (Recommended)”). Implementation planning is authorized; execution still requires plan approval.
 
 Use the existing native Git branch/worktree and exact-revision human admission route for all durable authored Core artifacts, including document-derived pages and the separate Answer Example directory. Make ad-hoc execution ephemeral; an explicit persistence request uses existing Authoring edits rather than automatically manufacturing a Git draft for every question. The owner selected this over dual staged/Git stores and automatic Git persistence because querying should not leave a second change-management system or unsolicited durable artifacts.
 

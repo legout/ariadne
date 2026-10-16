@@ -1,6 +1,6 @@
 # Usability shell: onboarding and discovery commands compose the gates, never bypass them
 
-**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. Setup/status/discovery/review compose only the Git route, without a legacy/Promotion branch; source-free reporting, no implicit Git configuration and human authority remain. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+**Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; the owner approved the complete written revision and these scoped amendments with “Schriftliche Fassung freigeben (Recommended)”. Setup/status/discovery/review compose only the Git route, without a legacy/Promotion branch; source-free reporting, no implicit Git configuration and human authority remain. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
 
 Status: accepted, revision 2 (Owner accepted this decision on 2026-10-12 by explicitly authorizing implementation of issues #62–#65, together with specifications 0016–0019 and the scoped spec-0001 usability amendment. Implementation authority does not include target integration, push, release or publication).
 

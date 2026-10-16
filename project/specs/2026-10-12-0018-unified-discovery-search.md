@@ -1,6 +1,6 @@
 # Specification: Unified discovery search
 
-**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. Discovery remains artifact-only/source-free, using admitted state by default rather than staged drafts; any explicit candidate preview is unadmitted and cannot execute governed queries. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+**Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; the owner approved the complete written revision and these scoped amendments with “Schriftliche Fassung freigeben (Recommended)”. Discovery remains artifact-only/source-free, using admitted state by default rather than staged drafts; any explicit candidate preview is unadmitted and cannot execute governed queries. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
 
 | | |
 | :--- | :--- |

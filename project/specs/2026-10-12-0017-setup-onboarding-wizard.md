@@ -1,6 +1,6 @@
 # Specification: Setup onboarding wizard
 
-**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. Only Git-first scaffolding/handoffs remain; no legacy route, migration or automatic project reset is introduced. No implicit Git initialization/configuration, source access or human admission is permitted. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+**Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; the owner approved the complete written revision and these scoped amendments with “Schriftliche Fassung freigeben (Recommended)”. Only Git-first scaffolding/handoffs remain; no legacy route, migration or automatic project reset is introduced. No implicit Git initialization/configuration, source access or human admission is permitted. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
 
 | | |
 | :--- | :--- |
