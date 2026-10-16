@@ -1724,9 +1724,7 @@ def test_reconcile_credential_refusal_redacts_entire_pem_block_from_diff_and_cli
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
     base = tmp_path / "cli"
     base.mkdir()
-    served2, doc2, changed_entry2 = _approved_policy_with_operator_note(
-        base, annotation=f"({pem})"
-    )
+    served2, doc2, changed_entry2 = _approved_policy_with_operator_note(base, annotation=f"({pem})")
     case2 = _case_for_snapshot(served2)
     monkeypatch.setattr(ingest_module, "_default_complete", lambda _m: response(changed_entry2))
     assert main([*_ingest_cli_args(case2, doc2), "--reconcile"]) == 0
@@ -2177,9 +2175,9 @@ def test_verbatim_retry_detects_authoring_edits_and_malformed_candidates(tmp_pat
         "context_layer/references/notes-2.md",
         "context_layer/references/second-notes.md",
     ]
-    assert (
-        broken_case.worktree / "context_layer/references/notes.md"
-    ).read_text(encoding="utf-8") == malformed
+    assert (broken_case.worktree / "context_layer/references/notes.md").read_text(
+        encoding="utf-8"
+    ) == malformed
 
 
 def test_verbatim_retry_detects_changes_on_timestamp_line(tmp_path, monkeypatch):
@@ -2227,14 +2225,12 @@ def test_verbatim_retry_detects_changes_on_timestamp_line(tmp_path, monkeypatch)
     )
     second = commented.ingest([doc], verbatim=True)
     assert second["written"] == ["context_layer/references/notes-2.md"]
-    assert (
-        commented.worktree / "context_layer/references/notes.md"
-    ).read_text(encoding="utf-8") == annotated
+    assert (commented.worktree / "context_layer/references/notes.md").read_text(
+        encoding="utf-8"
+    ) == annotated
 
     # a corrupted timestamp line is a change too, never a false 'unchanged'
-    corrupted_page = with_at_line(
-        canonical_page(tmp_path / "corrupted"), "  at: [unclosed\n"
-    )
+    corrupted_page = with_at_line(canonical_page(tmp_path / "corrupted"), "  at: [unclosed\n")
     corrupted = GitIngestCase(
         tmp_path / "corrupted",
         [doc],
@@ -2242,6 +2238,6 @@ def test_verbatim_retry_detects_changes_on_timestamp_line(tmp_path, monkeypatch)
     )
     third = corrupted.ingest([doc], verbatim=True)
     assert third["written"] == ["context_layer/references/notes-2.md"]
-    assert (
-        corrupted.worktree / "context_layer/references/notes.md"
-    ).read_text(encoding="utf-8") == corrupted_page
+    assert (corrupted.worktree / "context_layer/references/notes.md").read_text(
+        encoding="utf-8"
+    ) == corrupted_page

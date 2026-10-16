@@ -28,6 +28,7 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
 from ariadne.profiler import profile  # noqa: E402
+
 # the private numerical-test seam (spec 0027 §6): plain-root Facade construction is retired
 from ariadne.query import _QueryRuntimeSession as Facade  # noqa: E402
 from ariadne.sources import (  # noqa: E402
