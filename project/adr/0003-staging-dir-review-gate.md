@@ -1,5 +1,7 @@
 # Staging-dir review gate instead of PR flow (MVP)
 
+**Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; the owner approved the complete written revision and these scoped amendments with “Schriftliche Fassung freigeben (Recommended)”. The new-project-only Core slice retires the remaining staging/Promotion route in favor of common exact-revision Git Review Admission; no legacy migration or user-file deletion is authorized. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+
 Status: accepted (owner, 2026-09-14 shaping session; single-user real-document scope clarified by owner, 2026-09-23; production Git-review route approved by owner, 2026-09-30).
 
 **Context-only scoped extension (owner, 2026-10-02):** [specification 0010](../specs/2026-10-02-0010-context-layer-schema-and-identifiers.md) permits human Git Review Admission of a context-only revision before the first metric, with full matching evidence for every applicable check. Admitting an investigative Reference does not confirm its mapping hypotheses; asserted mapping confirmation is separately exposed and bound to the exact reviewed revision. No agent admission or automatic legacy migration is introduced.

@@ -191,21 +191,16 @@ class QueryResultError(ValueError):
         *,
         exhausted: dict | None = None,
         observed: dict | None = None,
-        staging_status: str = "not_staged",
     ) -> None:
         super().__init__(message)
         self.code = code
         self.exhausted = dict(exhausted or {})
         self.observed = dict(observed or {})
-        self.staging_status = staging_status
 
-    def refusal(self, *, staging_status: str | None = None) -> dict:
+    def refusal(self) -> dict:
         """The transport-neutral structured refusal body (spec 0014 §5).
-        ``staging_status`` reports honestly (fix pass 2, finding 1a): the
-        default is accurate for every pre-write refusal; a post-staging
-        deadline exhaustion carries ``"staged"`` — mirroring the spec's
-        network-failure-after-staging stance instead of claiming nothing was
-        written."""
+        Result refusals never save an authored artifact.
+        """
         return {
             "error": {
                 "code": self.code,
@@ -215,7 +210,7 @@ class QueryResultError(ValueError):
             },
             "result": {"status": "refused", "complete": False, "returned_rows": 0},
             "rows": [],
-            "staging_status": staging_status if staging_status is not None else self.staging_status,
+            "persistence": {"status": "not_saved"},
         }
 
 
@@ -267,14 +262,11 @@ def type_unsupported_refusal(columns: list[str]) -> QueryResultError:
     )
 
 
-def deadline_refusal(
-    execution_seconds: float, *, staging_status: str = "not_staged"
-) -> QueryResultError:
+def deadline_refusal(execution_seconds: float) -> QueryResultError:
     return QueryResultError(
         EXECUTION_DEADLINE,
         _DEADLINE_MESSAGE.format(seconds=execution_seconds),
         exhausted={"execution_seconds": execution_seconds},
-        staging_status=staging_status,
     )
 
 

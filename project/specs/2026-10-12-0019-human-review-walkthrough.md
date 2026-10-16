@@ -1,5 +1,7 @@
 # Specification: Human review walkthrough
 
+**Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; the owner approved the complete written revision and these scoped amendments with “Schriftliche Fassung freigeben (Recommended)”. Common Git Review Admission replaces the legacy Promotion and separate Example-review branches; explicit human decisions and exact displayed revision/digest remain. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved, revision 2** — Owner, pi session 2026-10-12: approved by the explicit implementation authorization for issues #62–#65 (together with ADR-0021 and the scoped spec-0001 usability amendment) |

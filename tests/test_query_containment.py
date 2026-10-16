@@ -26,7 +26,9 @@ from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne.query import QueryRuntime  # pyright: ignore[reportMissingImports] — drift
+from ariadne.query import (
+    _QueryRuntimeSession as QueryRuntime,  # pyright: ignore[reportMissingImports] — internal fixture seam
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -85,14 +87,13 @@ def runtime(project):
     return QueryRuntime(
         root / "semantic_layer",
         root / "context_layer",
-        None,  # the registry route: no legacy --db attach
-        staging_dir=root / "staging",
+        None,
         sources=str(registry),
     )
 
 
-def _staged(runtime: QueryRuntime) -> set[str]:
-    staging = runtime.staging_dir
+def _staged(project_root: Path) -> set[str]:
+    staging = project_root / "staging"
     if not staging.exists():
         return set()
     return {str(path.relative_to(staging)) for path in staging.rglob("*") if path.is_file()}
@@ -236,7 +237,7 @@ def test_ad_hoc_io_authority_refuses_before_duckdb(case, runtime, project, pre_d
     catalogs — is refused by ValueError BEFORE any caller-derived DuckDB call,
     leaks no canary content (raw or hex), and stages nothing."""
     definition = _refusal_definitions(project)[case]
-    before = _staged(runtime)
+    before = _staged(project[0])
     expected = "may read only the registered catalog relations"
     with pytest.raises(ValueError, match=expected) as raised:
         asyncio.run(runtime.define_metric(dict(definition)))
@@ -248,7 +249,7 @@ def test_ad_hoc_io_authority_refuses_before_duckdb(case, runtime, project, pre_d
     # the refusal preceded grain/bind/collection and every DuckDB call
     assert pre_duckdb_spies.calls == []
     # nothing staged: no proposal model or draft context page appeared
-    assert _staged(runtime) == before
+    assert _staged(project[0]) == before
 
 
 @pytest.mark.parametrize(
@@ -264,9 +265,9 @@ def test_ad_hoc_io_authority_refuses_before_duckdb(case, runtime, project, pre_d
     ],
 )
 def test_sanctioned_definitions_stay_usable(name, source, expression, runtime):
-    """Issue #59 AC3: sanctioned SELECT, CTE and grain-safe-join definitions
-    over the declared relation still execute — 2 + 3 = 5 from the fixture, not
-    from implementation output — and stage their proposals as before."""
+    """Issue #59 AC3: sanctioned SELECT, CTE and grain-safe joins still
+    execute — 2 + 3 = 5 from the fixture, not implementation output — and are
+    not persisted."""
     result = asyncio.run(
         runtime.define_metric(
             {
@@ -281,9 +282,7 @@ def test_sanctioned_definitions_stay_usable(name, source, expression, runtime):
     assert result["governed"] is False
     (value,) = (row[name] for row in result["rows"])
     assert value == 5  # independent expectation: fixture values 2 and 3
-    assert Path(result["staged_as"]).is_file() and Path(result["staged_context_as"]).is_file()
-    Path(result["staged_as"]).unlink()
-    Path(result["staged_context_as"]).unlink()
+    assert result["persistence"] == {"status": "not_saved"}
 
 
 def test_attached_catalog_shorthand_stays_usable(tmp_path):
@@ -297,7 +296,7 @@ def test_attached_catalog_shorthand_stays_usable(tmp_path):
     (models / "probe.yml").write_text(_MODELS.replace("vals.vals", "demo.vals"), encoding="utf-8")
     context = tmp_path / "context_layer"
     context.mkdir()
-    runtime = QueryRuntime(models.parent, context, database, staging_dir=tmp_path / "staging")
+    runtime = QueryRuntime(models.parent, context, database)
     try:
         result = asyncio.run(
             runtime.define_metric(
@@ -312,6 +311,6 @@ def test_attached_catalog_shorthand_stays_usable(tmp_path):
         )
         assert result["governed"] is False
         assert result["rows"] == [{"attached_sum": 5}]
-        assert Path(result["staged_as"]).is_file()
+        assert result["persistence"] == {"status": "not_saved"}
     finally:
         runtime.con.close()

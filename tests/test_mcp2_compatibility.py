@@ -1,26 +1,8 @@
-"""The mcp 2.2.0 actual-wire framing check (spec 0026 §5 AC3, plan's
-``new-test`` obligation).
+"""MCP 2.2.0 actual-wire framing over a synthetic Git-admitted project.
 
-The oracle is the CAPTURED transport frame — raw JSON-RPC lines read from a
-real ``python -m ariadne.serve`` stdio process — plus spec 0014's approved
-bound semantics, never the adapter's own ``_wire_bytes`` helper as its own
-expected value: every assertion below reconstructs the SDK result model FROM
-the captured frame and requires the adapter's serialization chain to
-reproduce the frame's exact byte length, so any change in escaping, alias or
-field-inclusion policy (mcp 2.2.0 serializes the outer message
-``exclude_unset`` after the kernel dumped the result ``exclude_none`` — see
-``ServerRunner._dump_result`` and the stdio/SSE writers) breaks the
-accounting, not just the helper.
-
-Covered: success, structured refusal and generic tool-error frames; Unicode
-payloads; the supported request-ID reserve (a UUID string id is exactly 37
-bytes larger than the minimal integer id); and the lowered near-envelope
-ceiling where the inner dict fits but its MCP envelope does not (bounded
-``isError`` refusal, no staged artifact, fitting narrowed retry executes
-afresh with the full result). HTTP carries the same envelope (the streamable
-writer serializes messages with the identical call — asserted in the SDK
-source; the HTTP boundary behavior itself is pinned by
-tests/test_authoring_mcp.py and tests/test_docker_mcp.py).
+Captured JSON-RPC frames and spec 0014's bound semantics are independent
+oracles for serialization and response ceilings. The fixture uses only
+synthetic project and source data; HTTP boundary behavior is covered elsewhere.
 """
 
 import asyncio
@@ -32,88 +14,80 @@ import sys
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne.query import QueryRuntime  # noqa: E402
+from ariadne.admission import main as admit_main  # noqa: E402
+from ariadne.authoring import AuthoringProject  # noqa: E402
+from ariadne.query import _QueryRuntimeSession  # noqa: E402
 from ariadne.query_results import (  # noqa: E402
     cell_limit_refusal,
 )  # pyright: ignore[reportMissingImports] — drift
+from tests.test_git_authoring import (  # noqa: E402
+    approved,
+    complete_bundle_project,
+    run_git,
+)
 
 PROTOCOL_VERSION = "2025-06-18"
 
-# One served model over two tables: plain (10/20/30 -> plain_total == 60, the
-# hand-computed oracle) and uni (non-ASCII é*5 / z*14 cells for wire escaping).
-_MODELS = """version: 0.2.0.dev0
-semantic_model:
-  - name: plain
-    description: ungrouped probe
-    datasets:
-      - name: plain
-        source: plain
-        fields:
-          - name: val
-            expression: {dialects: [{dialect: ANSI_SQL, expression: val}]}
-    metrics:
-      - name: plain_total
-        description: sum of all val
-        expression: {dialects: [{dialect: ANSI_SQL, expression: "SUM(val)"}]}
-  - name: uniprobe
-    description: unicode-cell probe
-    datasets:
-      - name: uni
-        source: uni
-        fields:
-          - name: txt
-            expression: {dialects: [{dialect: ANSI_SQL, expression: txt}]}
-            dimension: {}
-    metrics:
-      - name: u
-        description: count by txt
-        expression: {dialects: [{dialect: ANSI_SQL, expression: "COUNT(*)"}]}
-"""
+
+def _admit_project(project: Path) -> None:
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    validated = api.validate_proposal(started["proposal"], started["candidate_revision"])
+    assert validated["ok"] is True, validated["errors"]
+    review = api.review_proposal(started["proposal"])
+    assert review["report"]["ok"] is True
+    assert (
+        admit_main(
+            [
+                "--project",
+                str(project),
+                "--proposal",
+                review["proposal"],
+                "--revision",
+                review["revision"],
+                "--reviewed-digest",
+                review["review_digest"],
+                "--confirm",
+            ]
+        )
+        == 0
+    )
 
 
-def _project(root: Path, *, lowered: dict | None = None) -> tuple[Path, Path]:
-    models = root / "semantic_layer" / "models"
-    models.mkdir(parents=True)
-    models.joinpath("probe.yml").write_text(_MODELS, encoding="utf-8")
-    (root / "context_layer").mkdir()
-    db = root / "probe.db"
-    con = sqlite3.connect(db)
-    con.execute("CREATE TABLE plain (val DOUBLE)")
-    con.executemany("INSERT INTO plain VALUES (?)", [(10.0,), (20.0,), (30.0,)])
-    con.execute("CREATE TABLE uni (id INTEGER, txt TEXT)")
-    con.executemany("INSERT INTO uni VALUES (?, ?)", [(1, "é" * 5), (2, "z" * 14)])
-    con.commit()
-    con.close()
-    if lowered is not None:
-        query = "\n".join(f"  {key}: {value}" for key, value in lowered.items())
-        (root / "ariadne.yaml").write_text(f"query:\n{query}\n", encoding="utf-8")
-    return root, db
+def _project(root: Path, *, row_count: int = 2, admit: bool = True) -> Path:
+    project = complete_bundle_project(root)
+    probe_db = project / "data" / "probe.db"
+    with sqlite3.connect(probe_db) as con:
+        con.execute("CREATE TABLE uni (id INTEGER, txt TEXT)")
+        rows = [(1, "é" * 5), (2, "z" * 14)]
+        rows.extend((i, f"payload-{i:02d}-" + "t" * 52) for i in range(3, row_count + 1))
+        con.executemany("INSERT INTO uni VALUES (?, ?)", rows)
+
+    registry_path = project / "ariadne.yaml"
+    registry = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
+    registry["sources"].append({"name": "probe", "type": "sqlite", "path": "data/probe.db"})
+    registry_path.write_text(yaml.safe_dump(registry, sort_keys=False), encoding="utf-8")
+    run_git(project, "add", "--", "ariadne.yaml")
+    run_git(project, "commit", "-q", "-m", "human: add synthetic MCP source", "--", "ariadne.yaml")
+    if admit:
+        _admit_project(project)
+    return project
 
 
 class _StdioServer:
     """A real ``ariadne.serve`` stdio subprocess driven by RAW JSON-RPC lines,
     so the frames asserted below are the bytes the SDK actually emits."""
 
-    def __init__(self, project: Path, db: Path):
+    def __init__(self, project: Path):
         self.proc = subprocess.Popen(  # noqa: S603 — the repo's own server, fixed argv
-            [
-                sys.executable,
-                "-m",
-                "ariadne.serve",
-                "--project",
-                str(project),
-                "--db",
-                str(db),
-                "--semantic",
-                "semantic_layer",
-                "--context",
-                "context_layer",
-            ],
+            [sys.executable, "-m", "ariadne.serve", "--project", str(project)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -209,38 +183,30 @@ def served(tmp_path):
     return _project(tmp_path / "served")
 
 
-def test_actual_stdio_framing_success_refusal_and_generic_error(tmp_path, served):
+def test_actual_stdio_framing_success_refusal_and_generic_error(served):
     """Success, structured-refusal and generic-error frames captured from a
     real server: each re-serializes through the adapter's accounting chain to
     the frame's exact byte length, the request-ID reserve holds on the wire,
     and the public payload/error semantics are unchanged."""
     from ariadne.serve import _RESERVED_REQUEST_ID, _mcp_result_bytes
 
-    project, db = served
-    # a SECOND project whose served model does not compile: the generic-error
-    # frame is the SDK's verbatim error path with the original message kept
-    # (the compile failure fires before any source is opened, so this db —
-    # whose schema merely exists — is never queried)
-    broken = _project(tmp_path / "broken")[0]
-    model = broken / "semantic_layer" / "models" / "probe.yml"
-    model.write_text(model.read_text(encoding="utf-8").replace("COUNT(*)", "COUNT("))
-
+    project = served
     uuid_id = "11111111-2222-3333-4444-555555555555"
-    with _StdioServer(project, db) as ok_server:
+    with _StdioServer(project) as ok_server:
         ok_server.initialize(0)
 
-        # --- success: the hand-computed 10+20+30 oracle rides the wire ------
-        raw, frame = ok_server.call_tool(1, "get_metric", {"name": "plain_total"})
+        # --- success: the admitted synthetic event count rides the wire ----
+        raw, frame = ok_server.call_tool(1, "get_metric", {"name": "event_count"})
         result = frame["result"]
         # the handshake wire: the modern resultType/_meta extras are sieved away
         assert result["isError"] is False and "resultType" not in result
         payload = json.loads(result["content"][0]["text"])
-        assert payload["rows"] == [{"plain_total": 60.0}]
+        assert payload["rows"] == [{"event_count": 3}]
         assert len(raw.encode("utf-8")) == _frame_bytes(_captured_result_model(frame), 1)
         assert _mcp_result_bytes(payload) >= len(raw.encode("utf-8"))  # int-id reserve
 
         # --- the same success with a UUID string id: +37 bytes on the wire --
-        raw_uuid, frame_uuid = ok_server.call_tool(uuid_id, "get_metric", {"name": "plain_total"})
+        raw_uuid, frame_uuid = ok_server.call_tool(uuid_id, "get_metric", {"name": "event_count"})
         assert len(raw_uuid.encode("utf-8")) - len(raw.encode("utf-8")) == 37
         assert len(raw_uuid.encode("utf-8")) == _frame_bytes(
             _captured_result_model(frame_uuid), uuid_id
@@ -253,10 +219,18 @@ def test_actual_stdio_framing_success_refusal_and_generic_error(tmp_path, served
 
         # --- unicode cells: escaping counted, never assumed ------------------
         raw_uni, frame_uni = ok_server.call_tool(
-            2, "get_metric", {"name": "u", "dimensions": ["txt"]}
+            2,
+            "query_records",
+            {
+                "request": {
+                    "dataset": "probe.uni",
+                    "fields": ["id", "txt"],
+                    "order": [{"field": "id"}],
+                }
+            },
         )
         uni_payload = json.loads(frame_uni["result"]["content"][0]["text"])
-        assert {row["txt"] for row in uni_payload["rows"]} == {"é" * 5, "z" * 14}
+        assert [row["txt"] for row in uni_payload["rows"]] == ["é" * 5, "z" * 14]
         assert len(raw_uni.encode("utf-8")) == _frame_bytes(_captured_result_model(frame_uni), 2)
         assert _mcp_result_bytes(uni_payload) >= len(raw_uni.encode("utf-8"))
 
@@ -269,7 +243,7 @@ def test_actual_stdio_framing_success_refusal_and_generic_error(tmp_path, served
             "query_records",
             {
                 "request": {
-                    "dataset": "uni",
+                    "dataset": "probe.uni",
                     "fields": ["id"],
                     "order": [{"field": "id"}],
                     "timestamp": {
@@ -287,28 +261,21 @@ def test_actual_stdio_framing_success_refusal_and_generic_error(tmp_path, served
         assert json.loads(refusal["content"][0]["text"]) == body  # text is the same body
         assert len(raw_ref.encode("utf-8")) == _frame_bytes(_captured_result_model(frame_ref), 3)
 
-    with _StdioServer(broken, db) as err_server:
+    with _StdioServer(project) as err_server:
         err_server.initialize(0)
-        raw_err, frame_err = err_server.call_tool(4, "list_metrics", {})
+        raw_err, frame_err = err_server.call_tool(4, "get_metric", {"name": "not_a_metric"})
         error = frame_err["result"]
         assert error["isError"] is True
         text = error["content"][0]["text"]
         # the 1.x public semantics: the SDK's verbatim error prefix PLUS the
         # original message (mcp 2.2.0 alone would drop a bare exception's text)
-        assert text.startswith("Error executing tool list_metrics: ")
-        assert "do not compile" in text
+        assert text.startswith("Error executing tool get_metric: ")
+        assert "unknown metric" in text
         assert len(raw_err.encode("utf-8")) == _frame_bytes(_captured_result_model(frame_err), 4)
 
 
-def test_lowered_envelope_refuses_without_staging_and_narrowed_retry_fits(tmp_path):
-    """The near-boundary case: the inner dict fits the core byte ceiling while
-    its actual MCP envelope does not — a bounded isError refusal (never a
-    partial success), nothing staged, and a fitting narrowed retry executes
-    afresh with the complete result. The lowered ceiling is chosen ABOVE the
-    refusal-representability floor (every refusal form must stay emittable —
-    a lower ceiling would make runtime construction itself refuse) and BELOW
-    the full answer's envelope."""
-    import sqlite3
+def test_lowered_envelope_refuses_without_writing_and_narrowed_retry_fits(tmp_path):
+    """A lowered ceiling refuses whole MCP envelopes without project writes."""
 
     from mcp.types import CallToolResult, TextContent  # pyright: ignore[reportMissingImports]
 
@@ -317,28 +284,21 @@ def test_lowered_envelope_refuses_without_staging_and_narrowed_retry_fits(tmp_pa
 
     # widen the payload so the envelope clears the refusal floor with margin
 
-    root, db = _project(tmp_path / "plain")
-    con = sqlite3.connect(db)
-    con.executemany(
-        "INSERT INTO uni VALUES (?, ?)",
-        [(i, f"payload-{i:02d}-" + "t" * 52) for i in range(3, 25)],
-    )
-    con.commit()
-    con.close()
+    root = _project(tmp_path / "plain", row_count=24, admit=False)
 
     full_request = {
         "request": {
-            "dataset": "uni",
+            "dataset": "probe.uni",
             "fields": ["id", "txt"],
             "order": [{"field": "id"}],
             "limit": 24,
         }
     }
-    fitting_core = QueryRuntime(
+    fitting_core = _QueryRuntimeSession(
         root / "semantic_layer",
         root / "context_layer",
-        db,
-        staging_dir=tmp_path / "core-staging",
+        None,
+        sources=str(root / "ariadne.yaml"),
         query_limits={"response_bytes": 65536},
     )
     inner = asyncio.run(fitting_core.query_records(full_request["request"]))
@@ -369,10 +329,25 @@ def test_lowered_envelope_refuses_without_staging_and_narrowed_retry_fits(tmp_pa
     ceiling = max(refusal_floor + 64, (inner_dict_bytes + inner_bytes) // 2)
     assert inner_dict_bytes <= ceiling < inner_bytes  # inner fits, envelope cannot
 
-    # the SAME project now carries the lowered host ceiling for the server
-    (root / "ariadne.yaml").write_text(f"query:\n  mcp_response_bytes: {ceiling}\n")
-    staging = root / "staging"
-    with _StdioServer(root, db) as server:
+    # Admit the exact project revision carrying the lowered host ceiling.
+    registry_path = root / "ariadne.yaml"
+    registry = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
+    registry["query"] = {"mcp_response_bytes": ceiling}
+    registry_path.write_text(yaml.safe_dump(registry, sort_keys=False), encoding="utf-8")
+    run_git(root, "add", "--", "ariadne.yaml")
+    run_git(
+        root,
+        "commit",
+        "-q",
+        "-m",
+        "human: lower synthetic response ceiling",
+        "--",
+        "ariadne.yaml",
+    )
+    _admit_project(root)
+    head_before = run_git(root, "rev-parse", "HEAD").strip()
+    status_before = run_git(root, "status", "--porcelain", "--untracked-files=all")
+    with _StdioServer(root) as server:
         server.initialize(0)
         raw_ref, frame_ref = server.call_tool(1, "query_records", full_request)
         assert frame_ref["result"]["isError"] is True
@@ -381,7 +356,7 @@ def test_lowered_envelope_refuses_without_staging_and_narrowed_retry_fits(tmp_pa
         assert body["result"] == {"status": "refused", "complete": False, "returned_rows": 0}
         assert len(raw_ref.encode("utf-8")) <= ceiling
 
-        # an output-refused ad-hoc definition stages NOTHING
+        # An output-refused ad-hoc definition leaves the project unchanged.
         raw_def, frame_def = server.call_tool(
             2,
             "define_metric",
@@ -389,7 +364,7 @@ def test_lowered_envelope_refuses_without_staging_and_narrowed_retry_fits(tmp_pa
                 "definition": {
                     "name": "envelope_probe",
                     "description": "d",
-                    "source": "uni",
+                    "source": "probe.uni",
                     "expression": "MAX(txt)",
                     "dimensions": ["txt"],
                 }
@@ -407,7 +382,7 @@ def test_lowered_envelope_refuses_without_staging_and_narrowed_retry_fits(tmp_pa
             "query_records",
             {
                 "request": {
-                    "dataset": "uni",
+                    "dataset": "probe.uni",
                     "fields": ["id"],
                     "order": [{"field": "id"}],
                     "limit": 1,
@@ -419,10 +394,8 @@ def test_lowered_envelope_refuses_without_staging_and_narrowed_retry_fits(tmp_pa
         assert fitted["rows"] == [{"id": 1}]
         assert fitted["result"]["complete"] is True
 
-    # refusal staged nothing: the staging skeleton (empty dirs the runtime
-    # pre-creates) may exist, but no staged artifact FILE (the established
-    # staged_files semantics of tests/test_query_results.py)
-    assert not [p for p in staging.rglob("*") if p.is_file()]
+    assert run_git(root, "rev-parse", "HEAD").strip() == head_before
+    assert run_git(root, "status", "--porcelain", "--untracked-files=all") == status_before
 
 
 def test_refusal_frames_stay_bounded_under_the_default_ceiling(served):
@@ -432,14 +405,14 @@ def test_refusal_frames_stay_bounded_under_the_default_ceiling(served):
     refusal body (never a partial success) is what rides the wire."""
     from ariadne.query_results import DEFAULT_QUERY_LIMITS
 
-    project, db = served
+    project = served
     ceiling = DEFAULT_QUERY_LIMITS["mcp_response_bytes"]
     assert cell_limit_refusal(16, ["col"]).refusal()["result"] == {
         "status": "refused",
         "complete": False,
         "returned_rows": 0,
     }
-    with _StdioServer(project, db) as server:
+    with _StdioServer(project) as server:
         server.initialize(0)
         for request_id, dataset in enumerate(
             ("no_such_table", "é" * 200, '"' + "x" * 300, "\\" + "y" * 300), start=1

@@ -2,9 +2,8 @@
 2026-09-23-0001 §4, ADR-0012).
 
 A thin adapter over :class:`ariadne.query.QueryRuntime` — this module owns
-argument parsing, promoted-root discovery, and the JSON wire contract only;
-all governed behavior (compilation, execution, context, grain, staging) stays
-in the runtime:
+argument parsing, project selection, and the JSON wire contract only; all
+query behavior (compilation, execution, context and grain) stays in the runtime:
 
     ariadne list-metrics
     ariadne list-datasets
@@ -17,7 +16,7 @@ in the runtime:
     ariadne query-records [--file PATH]        (bounded record selection over one
                                                known table, spec 0014 §3; stdin
                                                when absent; governed: false,
-                                               nothing staged)
+                                               no durable write)
     ariadne save-example [--file PATH]          (stdin when absent; issue #19 —
                                                explicit answer-example submission)
     ariadne search-examples QUERY [--limit N] [--include-history]
@@ -44,13 +43,10 @@ The optional MCP transport (``ariadne-serve`` and its fixed-toolset aliases
 these same QueryRuntime operations as tools; this local CLI needs no MCP
 installation and its behavior is unchanged by the toolset split.
 
-Promoted-root discovery (spec §5): an explicit ``--served PATH`` wins and must
-contain both ``context_layer/`` and ``semantic_layer/models/``; otherwise
-exactly two candidates are examined — the working directory, then ``./served``
-— and exactly one must be valid (zero -> actionable error naming both layouts,
-two -> ambiguity error demanding ``--served``; the CLI never guesses). Root
-selection fails before a source connection is opened, and a ``define-metric``
-payload is parsed before the runtime executes or stages anything (spec §9).
+Every public operation is bound to the current Git project (``--project DIR``,
+default ``.``). Governed queries require its exact valid human admission; no
+plain artifact-root or mutable-candidate fallback exists. Request payloads are
+parsed before the admitted runtime opens a source (spec §9).
 """
 
 import argparse
@@ -65,12 +61,11 @@ from typing import Any, NoReturn
 from ariadne import (
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: analyzer binds the venv copy
 )
-from ariadne.discovery import DiscoveryRuntime
+from ariadne.discovery import DiscoveryRuntime, _DiscoverySession
 from ariadne.execution import DeadlineBudget  # pyright: ignore[reportMissingImports] — drift
 from ariadne.planner import PlannerError
 from ariadne.query import QueryRuntime  # pyright: ignore[reportMissingImports] — drift
 from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift
-from ariadne.sources import default_registry_path
 
 
 class UsageError(ValueError):
@@ -96,43 +91,9 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"{type(value).__name__} is not JSON-serializable")
 
 
-def _is_served_root(path: Path) -> bool:
-    return (path / "context_layer").is_dir() and (path / "semantic_layer" / "models").is_dir()
-
-
-def _resolve_served_root(explicit: str | None) -> Path:
-    """Spec §5 root selection — runs before any source connection is opened."""
-    if explicit is not None:
-        if not explicit:
-            raise ValueError("--served must be a non-empty promoted-root path")
-        root = Path(explicit)
-        if not _is_served_root(root):
-            raise ValueError(
-                f"--served {explicit} is not a promoted root: expected both "
-                "context_layer/ and semantic_layer/models/ under it"
-            )
-        return root
-    cwd = Path.cwd()
-    candidates = [("the working directory", cwd), ("./served", cwd / "served")]
-    valid = [(label, path) for label, path in candidates if _is_served_root(path)]
-    if not valid:
-        raise ValueError(
-            "no promoted artifacts found: expected context_layer/ and "
-            "semantic_layer/models/ in the working directory or under ./served "
-            "(pass --served PATH to select a promoted root explicitly)"
-        )
-    if len(valid) == 2:
-        raise ValueError(
-            "ambiguous promoted roots: both the working directory and ./served "
-            "contain context_layer/ and semantic_layer/models/ — pass --served "
-            "PATH to select one"
-        )
-    return valid[0][1]
-
-
 def _read_definition(file: str | None, stdin: Any, what: str = "definition") -> dict:
     """One JSON object from --file PATH or stdin (spec §4). Parsed before the
-    runtime is constructed, so invalid JSON can execute and stage nothing
+    runtime is constructed, so malformed input prevents source opening or execution
     (spec §9)."""
     try:
         text = Path(file).read_text(encoding="utf-8") if file else stdin.read()
@@ -144,40 +105,10 @@ def _read_definition(file: str | None, stdin: Any, what: str = "definition") -> 
 
 def build_parser() -> _Parser:
     common = _Parser(add_help=False)
-    group = common.add_mutually_exclusive_group()
-    group.add_argument(
-        "--sources",
-        default=None,
-        help="source registry YAML (ADR-0010; takes precedence over the ambient ./ariadne.yaml)",
-    )
-    group.add_argument(
-        "--db",
-        default=None,
-        help="SQLite database to attach read-only (mutually exclusive with --sources; "
-        "required when no --sources/ariadne.yaml applies — the runtime never "
-        "guesses a database)",
-    )
-    group.add_argument(
+    common.add_argument(
         "--project",
-        default=None,
-        help="managed Git data project: query its pinned human-admitted snapshot and "
-        "approved source identity (issue #37/G5; mutually exclusive with --sources/--db "
-        "and --served — a project without a valid admission is an error, never a "
-        "fallback)",
-    )
-    common.add_argument(
-        "--served",
-        default=None,
-        help="promoted artifact root (must contain context_layer/ and "
-        "semantic_layer/models/; default: the working directory or ./served, "
-        "unambiguously)",
-    )
-    common.add_argument(
-        "--staging",
-        default=None,
-        help="staging root for auto-staged ad-hoc proposals (default: ./staging; an "
-        "omitted --staging on the managed --project route stages under "
-        "<project>/staging)",
+        default=".",
+        help="Git data project; governed calls use its exact human-admitted snapshot (default: .)",
     )
     parser = _Parser(
         prog="ariadne",
@@ -205,7 +136,7 @@ def build_parser() -> _Parser:
     get.add_argument("--start", help="range start on the primary date dimension")
     get.add_argument("--end", help="range end on the primary date dimension")
 
-    define = sub.add_parser("define-metric", parents=[common], help="define an ad-hoc metric")
+    define = sub.add_parser("define-metric", parents=[common], help="run an unsaved ad-hoc metric")
     define.add_argument("--file", help="JSON definition file (stdin when absent)")
 
     metrics = sub.add_parser(
@@ -235,6 +166,8 @@ def build_parser() -> _Parser:
         help="save an explicit answer-example draft (issue #19)",
     )
     save.add_argument("--file", help="JSON submission file (stdin when absent)")
+    save.add_argument("--proposal", help="existing Git authoring proposal ID")
+    save.add_argument("--expected-revision", help="current candidate revision for --proposal")
 
     examples = sub.add_parser(
         "search-examples", parents=[common], help="search saved answer examples"
@@ -250,9 +183,11 @@ def build_parser() -> _Parser:
         "--include-sql",
         action="store_true",
         help="include each hit's stored sql_provenance as provenance.sql — the exact "
-        "submitted result SQL as historical evidence (null for legacy records "
-        "without it); never executed, never a ranking input",
+        "submitted result SQL as historical evidence (null when the record has no "
+        "stored SQL); never executed, never a ranking input",
     )
+    examples.add_argument("--proposal", help="explicitly browse one Git authoring proposal")
+    examples.add_argument("--revision", help="recorded current candidate revision for --proposal")
     resolve = sub.add_parser(
         "resolve-term",
         parents=[common],
@@ -278,8 +213,10 @@ def build_parser() -> _Parser:
     status_cmd = sub.add_parser(
         "status",
         parents=[common],
-        help="read-only project readiness diagnostics (spec 0016: kind, sources, "
-        "governance state, backlog, skill drift, next steps — no source connection)",
+        help=(
+            "read-only Git project readiness, proposal and admission diagnostics — "
+            "no source connection"
+        ),
     )
     status_cmd.add_argument(
         "--json",
@@ -287,23 +224,13 @@ def build_parser() -> _Parser:
         help="emit exactly one structured report object instead of human text "
         "(the spec-0001 usability amendment, this command only)",
     )
-    review_cmd = sub.add_parser(
-        "review", help="operator-only review walkthrough (unchanged human gates)"
-    )
-    review_roots = review_cmd.add_mutually_exclusive_group()
-    review_roots.add_argument("--project", default=None, help="managed review before admission")
-    review_roots.add_argument(
-        "--served", default=None, help="legacy Promotion target, may be fresh"
-    )
-    review_cmd.add_argument("--proposal", default=None, help="one proposal; requires --project")
+    review_cmd = sub.add_parser("review", help="operator-only review walkthrough for Git proposals")
+    review_cmd.add_argument("--project", default=".", help="Git project root")
     review_cmd.add_argument(
-        "--staging", default=None, help="legacy staging root (default: ./staging)"
+        "--proposal", default=None, help="one proposal; default lists pending proposals"
     )
     setup_cmd = sub.add_parser(
         "setup", help="operator onboarding wizard (human gates are handoffs)"
-    )
-    setup_cmd.add_argument(
-        "--legacy", action="store_true", help="new staged project, not a migration"
     )
     setup_cmd.add_argument("--project", default=".", help="directory to scaffold or resume")
     setup_cmd.add_argument("--no-input", action="store_true", help="scaffold/detect/report only")
@@ -316,45 +243,43 @@ def build_parser() -> _Parser:
 
 
 def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
-    # Order (spec §9): root selection first, then input parsing, and only then
-    # runtime construction — which is where the read-only source connection
-    # opens. Every earlier failure therefore precedes any connection, execution,
-    # or staging.
+    # Parse selectors and payloads before constructing an admitted runtime, which
+    # is the only public path that opens a source connection.
     if args.command == "review":
         from ariadne import review
 
         return review.run(args, stdin)
     if args.command == "setup":
-        from ariadne import (
-            setup,  # pyright: ignore[reportAttributeAccessIssue] — new-module resolver drift
-        )
+        from ariadne import setup
 
         return setup.run(args, stdin)
     if args.command == "status":
-        # spec 0016: status resolves its own DIAGNOSTIC route (a scaffold with
-        # no admission is a report, never the missing-admission error) and must
-        # never construct QueryRuntime — the lazy import keeps the query chain
-        # above untouched and the composition seam explicit (ADR-0021).
-        from ariadne import (
-            status as status_module,  # pyright: ignore[reportAttributeAccessIssue] — drift: this lane's new module
-        )
+        from ariadne import status as status_module
 
         return status_module.run(args)
-    if args.project is not None:
-        # The managed Git route (issue #37/G5): the pinned admitted snapshot and
-        # its approved source identity replace the explicit legacy roots; a
-        # project without a valid admission is an explicit error, never a
-        # fallback to proposal worktrees or mutable project files.
-        if args.served is not None:
-            raise ValueError(
-                "--project (managed Git route) and --served (explicit legacy root) are "
-                "mutually exclusive — pass one artifact root, not both"
-            )
-        root = None
-    else:
-        root = _resolve_served_root(args.served)
+    if args.command == "save-example" and (args.proposal is None) != (
+        args.expected_revision is None
+    ):
+        raise ValueError("--proposal and --expected-revision are required together")
+    if args.command == "search-examples" and (args.proposal is None) != (args.revision is None):
+        raise ValueError("--proposal and --revision are required together")
+    if args.command == "search-examples" and args.proposal is not None:
+        from ariadne import answer_examples
+
+        result = answer_examples.search_candidate(
+            args.project,
+            args.query,
+            proposal=args.proposal,
+            revision=args.revision,
+            limit=args.limit,
+            include_history=args.include_history,
+            include_sql=args.include_sql,
+        )
+        print(json.dumps(result, default=_json_default))
+        return 0
+
     definition = None
-    if args.command in (  # parsed pre-runtime (spec §9)
+    if args.command in (
         "define-metric",
         "save-example",
         "query-metrics",
@@ -367,72 +292,24 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
             "submission" if args.command == "save-example" else "request",
         )
     resolve_request = None
-    if args.command == "resolve-term":  # adapter input, parsed pre-runtime
+    if args.command == "resolve-term":
         if args.file is not None:
             data = _read_definition(
-                args.file if args.file != "-" else None,
-                stdin,
-                "resolve-term request",
+                args.file if args.file != "-" else None, stdin, "resolve-term request"
             )
-            if isinstance(data, dict) and "term" in data:
-                resolve_request = data["term"]
-            else:
-                resolve_request = data
+            resolve_request = data["term"] if isinstance(data, dict) and "term" in data else data
         elif args.term is not None:
             resolve_request = args.term
         else:
             raise ValueError("resolve-term needs a TERM argument or --file with the request JSON")
-    if root is None:
-        if args.project is None:  # unreachable via the legacy-root detection, kept type-honest
-            raise ValueError(
-                "no project selected: pass --project DIR (managed) or --served PATH (legacy)"
-            )
-        # An omitted --staging (None) lets the managed factory apply its
-        # project-owned default <project>/staging — the CLI's CWD-relative
-        # legacy default must never pull staging outside the selected project
-        # (issue #40 finding 1); an explicit path still wins. ONE request
-        # budget covers the managed construction AND its operation (fix pass
-        # 1, finding 1): a CLI invocation can never spend ~2x the deadline.
-        if args.command == "search":
-            discovery = DiscoveryRuntime.open_project(args.project, staging_dir=args.staging)
-            return _print_discovery(discovery, args)
-        limits = query_results.load_host_query_limits(args.project)
-        runtime = QueryRuntime.open_project(
-            args.project,
-            staging_dir=args.staging,
-            deadline_budget=DeadlineBudget(limits["execution_seconds"]),
-        )
-    else:
-        sources_path = default_registry_path(args.sources, args.db)
-        if sources_path is None and not args.db:
-            raise ValueError(
-                "no source configured: pass --sources REGISTRY or --db SQLITE, or "
-                "declare sources in ./ariadne.yaml — the runtime never guesses a "
-                "database to query"
-            )
-        # Issue #56/S1 (plan 0014 §2): legacy use reads the FIXED host CWD's
-        # operator ``query:`` ceilings — an explicit --sources stays source
-        # identity only, never a second implicit limit root. The same ONE
-        # request budget bounds this construction and its operation.
-        if args.command == "search":
-            discovery = DiscoveryRuntime(
-                root / "semantic_layer",
-                root / "context_layer",
-                args.db,
-                staging_dir="staging" if args.staging is None else args.staging,
-                sources=sources_path,
-            )
-            return _print_discovery(discovery, args)
-        limits = query_results.load_host_query_limits(Path.cwd())
-        runtime = QueryRuntime(
-            root / "semantic_layer",
-            root / "context_layer",
-            args.db,
-            staging_dir="staging" if args.staging is None else args.staging,
-            sources=sources_path,
-            query_limits=limits,
-            deadline_budget=DeadlineBudget(limits["execution_seconds"]),
-        )
+
+    if args.command == "search":
+        return _print_discovery(DiscoveryRuntime.open_project(args.project), args)
+    limits = query_results.load_host_query_limits(args.project)
+    runtime = QueryRuntime.open_project(
+        args.project,
+        deadline_budget=DeadlineBudget(limits["execution_seconds"]),
+    )
     if args.command == "list-metrics":
         result = asyncio.run(runtime.list_metrics())
     elif args.command == "list-datasets":
@@ -440,7 +317,7 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
     elif args.command == "search-context":
         result = asyncio.run(runtime.search_context(args.query, limit=args.limit))
     elif args.command == "resolve-term":
-        assert resolve_request is not None  # parsed pre-runtime above
+        assert resolve_request is not None
         result = asyncio.run(runtime.resolve_term(resolve_request, part=args.part))
     elif args.command == "get-metric":
         time_range = {
@@ -450,8 +327,12 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         }
         result = asyncio.run(runtime.get_metric(args.name, args.dimension, time_range or None))
     elif args.command == "save-example":
-        assert definition is not None  # _read_definition ran above
-        result = asyncio.run(runtime.save_example(definition))
+        assert definition is not None
+        result = asyncio.run(
+            runtime.save_example(
+                definition, proposal=args.proposal, expected_revision=args.expected_revision
+            )
+        )
     elif args.command == "search-examples":
         result = asyncio.run(
             runtime.search_examples(
@@ -462,22 +343,22 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
             )
         )
     elif args.command == "query-metrics":
-        assert definition is not None  # _read_definition ran above
+        assert definition is not None
         result = asyncio.run(runtime.query_metrics(definition))
     elif args.command == "query-detail":
-        assert definition is not None  # _read_definition ran above
+        assert definition is not None
         result = asyncio.run(runtime.query_detail(definition))
     elif args.command == "query-records":
-        assert definition is not None  # _read_definition ran above
+        assert definition is not None
         result = asyncio.run(runtime.query_records(definition))
-    else:  # define-metric
-        assert definition is not None  # _read_definition ran above
+    else:
+        assert definition is not None
         result = asyncio.run(runtime.define_metric(definition))
     print(json.dumps(result, default=_json_default))
     return 0
 
 
-def _print_discovery(runtime: DiscoveryRuntime, args: argparse.Namespace) -> int:
+def _print_discovery(runtime: _DiscoverySession, args: argparse.Namespace) -> int:
     report = asyncio.run(runtime.discover(args.query, limit=args.limit))
     if args.json:
         print(json.dumps(report, default=_json_default))
@@ -502,7 +383,7 @@ def _print_discovery(runtime: DiscoveryRuntime, args: argparse.Namespace) -> int
 def _effective_error_budget(args: argparse.Namespace | None) -> float:
     """The EFFECTIVE host response budget for bounding generic CLI errors
     (fix pass 2, finding 2a): the route the invocation selected — the managed
-    --project root, else the fixed legacy host CWD — with the built-in default
+    --project root (the CLI's current-directory default) — with the built-in default
     when no invocation was parsed or the host config itself is unusable."""
     try:
         root = args.project if args is not None and args.project is not None else Path.cwd()

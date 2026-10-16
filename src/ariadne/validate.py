@@ -1,14 +1,14 @@
-"""Deterministic validation of staged OSI models (ticket #4; ADR-0008 since rev 7).
+"""Deterministic validation of explicit OSI artifact directories (ticket #4; ADR-0008 since rev 7).
 
-``validate(staging_dir)`` validates every model under
-``<staging>/semantic_layer/models/`` through the own sqlglot compiler
+``validate()`` checks every model under the supplied artifact directory's
+``semantic_layer/models/`` through the own sqlglot compiler
 (:mod:`ariadne.render`, ADR-0008): an envelope schema check (required fields:
 version, model name, dataset name/source/fields, metric name/expression), then
 a full ``render()`` of every model — a malformed envelope or unrenderable
 construct fails with the compiler's verbatim reason. There is no datus import
 anywhere in the pipeline.
 
-Multi-fact (issue #26, spec rev 1): every staging tree first normalizes through
+Multi-fact (issue #26, spec rev 1): every artifact tree first normalizes through
 :func:`ariadne.semantic_graph.load_graph` — both OSI layouts (one domain
 multi-dataset file, or per-source files plus ``semantic_layer/graph.yml``)
 become one validated graph, and graph failures (duplicate metrics, ambiguous
@@ -17,14 +17,14 @@ fail structurally BEFORE any SELECT is compiled. Domain models compile
 per-owning-dataset through the same single-dataset ``render()``. The result
 carries a digest-bound :class:`ValidationReport` (consumed model/graph/context
 bytes, registry identity, validator version, distinct check outcomes). Since
-issue #27 the live stage additionally audits every declared relationship's
+issue #27 live validation additionally audits every declared relationship's
 target key (exact composite tuple uniqueness + non-NULL components,
 :func:`ariadne.grain.relationship_target_audit`); the planner rechecks the
 participating subset per request. A compile-only report keeps reporting the
 relationship audit as not-run.
 
-With ``db_path`` (``--db``, passed by the author loop), the rendered SQL also
-passes an EXPLAIN bind-check on a read-only DuckDB attach of the SQLite database
+Revision-bound Authoring validation also EXPLAIN-bind-checks rendered SQL on a
+read-only DuckDB connection for the operator-approved source identity
 (a column missing from the source only surfaces at bind time — nothing executes),
 and then the post-compile GRAIN AUDIT
 runs per ADR-0006 §5 (project/adr/0006-grain-governance-multi-cardinality-joins.md):
@@ -37,15 +37,14 @@ audit's AUTHORITATIVE gate is the query runtime's shared structural guard
 (:func:`ariadne.grain.check_grain_preserving`) applied to every authored dataset
 source — any join ANYWHERE in the tree (CTEs included) whose ON key is not unique
 on the joined side fails the audit; the sum-invariance assertion stays as
-secondary defense in depth (a tracer bypass is no longer a blocker). The audit
-executes the authored source SQL on a read-only DuckDB attach of the SQLite
-database — the sanctioned staged-authoring path.
-Without ``db_path``, validate checks schema and renderability only.
+secondary defense in depth (a tracer bypass is no longer a blocker).
+The audit reads declared sources through the approved read-only registry.
+A direct ``ariadne-validate ARTIFACT_DIR`` invocation performs only the static
+schema and renderability checks; success is partial evidence, never admission.
 
 CLI::
 
-    python -m ariadne.validate staging/               # exit 0 = compiles
-    python -m ariadne.validate staging/ --db DB   # + bind check + grain audit
+    ariadne-validate ARTIFACT_DIR/  # exit 0 = compile checks passed; not admission
 """
 
 from __future__ import annotations
@@ -80,7 +79,6 @@ from ariadne.semantic_graph import (  # pyright: ignore[reportMissingImports] �
 )
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     Registry,
-    default_registry_path,
     load_registry,
 )
 
@@ -96,7 +94,7 @@ _ADR_TOLERANCE = 1e-9
 # 4: the K4 applicability contract (issue #44, spec 0010 §9) — semantic
 # checks carry explicit not_applicable outcomes with reasons on a
 # context-only candidate.
-VALIDATOR_VERSION = "ariadne-validate/4"
+VALIDATOR_VERSION = "ariadne-validate/6"
 
 
 def validator_identity(performed_checks: list[str] | tuple[str, ...]) -> dict:
@@ -172,7 +170,7 @@ def _models_dir(staging_dir: str | Path) -> Path:
 
 def _model_entries(staging_dir: str | Path) -> list[tuple[str, dict]]:
     """(model_name, single-entry envelope) for every semantic_model entry across
-    the staged YAML files. A file without a semantic_model list is a load error
+    the artifact YAML files. A file without a semantic_model list is a load error
     surfaced by the caller."""
     entries: list[tuple[str, dict]] = []
     for path in sorted(_models_dir(staging_dir).glob("*.yml")):
@@ -258,16 +256,15 @@ def _audit_execution(
     registry: Registry | None = None,
 ) -> DuckDBExecution:
     """The audit's DuckDB session, owned by the shared execution module
-    (ADR-0010/0016): a pre-built approved registry object (the Git route's
-    frozen-binding identity, spec 0025 §4), a --sources registry connection
-    when given, else the legacy read-only attach of the single SQLite database
-    as catalog ``demo``."""
+    (ADR-0010/0016): normally a pre-built approved registry object from the
+    Git Authoring path; internal numerical callers may supply a registry path
+    or a single SQLite database."""
     if registry is not None:
         return DuckDBExecution(registry)
     if sources_path is not None:
         return DuckDBExecution(load_registry(sources_path))
     if db_path is None:
-        raise ValueError("audit connection requires --sources or --db")
+        raise ValueError("live audit requires an explicit source registry or database connection")
     return DuckDBExecution.legacy_sqlite(db_path)
 
 
@@ -285,7 +282,7 @@ def _bind_check(rendered: list[tuple[str, str]], con: duckdb.DuckDBPyConnection)
 
 
 def _datasets(staging_dir: str | Path) -> list[tuple[str, str, str, list[str]]]:
-    """(model_name, dataset_name, source, primary_key) from the staged OSI YAML."""
+    """(model_name, dataset_name, source, primary_key) from OSI artifact YAML."""
     found: list[tuple[str, str, str, list[str]]] = []
     for path in sorted(_models_dir(staging_dir).glob("*.yml")):
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -478,7 +475,7 @@ def _assertion_2(
 
 
 def _grain_audit(staging_dir: str | Path, con: duckdb.DuckDBPyConnection) -> list[str]:
-    """ADR-0006 §5 pre-flight protocol over the staged models: Assertion 1 (grain
+    """ADR-0006 §5 pre-flight protocol over the artifact models: Assertion 1 (grain
     uniqueness) then Assertion 2 (parent aggregate invariance), executed on the
     shared audit connection (spec §6)."""
     datasets = _datasets(staging_dir)
@@ -542,20 +539,19 @@ def _digest_files(files: list[tuple[str, Path, bytes]]) -> str:
     return digest.hexdigest()
 
 
-# Bookkeeping the promotion gate regenerates on every merge (verified stamps,
-# indexes, the log): excluded from the admission digest because their bytes are
-# promotion-owned, never reviewed content (issue #30).
+# Generated Context navigation/history is excluded from the runtime digest
+# because governed answers do not consult it. Candidate validation still binds
+# authored Context files and generated navigation in the Git artifact digest.
 _BOOKKEEPING_NAMES = frozenset({"index.md", "log.md"})
 
 
 def served_tree_files(
     semantic_dir: str | Path, context_dir: str | Path
 ) -> list[tuple[str, Path, bytes]]:
-    """The admission-scope walker (issue #30): every model YAML plus the
-    optional ``graph.yml`` the graph loads, and the cited-context pages under
-    ``context_layer/`` (except promotion bookkeeping) that ride the governed
-    answers. One walker behind both the admission digest and the promotion
-    survivor gate, so neither can drift from the other."""
+    """The runtime-scope walker (issue #30): every model YAML, optional
+    ``graph.yml`` and cited-context page consulted by governed answers, except
+    generated bookkeeping. The runtime digest uses these exact files to detect
+    a served tree that changed after human admission."""
     files: list[tuple[str, Path, bytes]] = []
     semantic = Path(semantic_dir)
     models = semantic / "models"
@@ -573,26 +569,20 @@ def served_tree_files(
 
 
 def served_tree_digest(semantic_dir: str | Path, context_dir: str | Path) -> str:
-    """The digest of the corpus the runtime actually serves for an admitted
-    multi-fact graph (issue #30). ``promote_bundle`` records this POST-merge
-    digest so the runtime can refuse any served tree that changed after the
-    human Promotion — the staged review digest and the served bytes differ by
-    promotion decoration, and this is the binding between them. Same hashing
-    scheme as the validation report, so one helper cannot drift from the
-    other."""
+    """Digest the semantic and context files consulted by the admitted
+    multi-fact runtime. The runtime refuses a served tree whose bytes changed
+    after admission; generated bookkeeping is excluded. Uses the same hashing
+    scheme as the validation report."""
     return _digest_files(served_tree_files(semantic_dir, context_dir))
 
 
 # The COMPLETE candidate-scope walker (issue #36/G4, plan §2 "Project storage
-# and authority"): unlike served_tree_files above — the LEGACY admission walker
-# that deliberately excludes promotion bookkeeping and stays for its legacy
-# callers (promote/query) — this walks the WHOLE candidate snapshot identity of
-# a Git authoring proposal: registry, Seed Notes, models, graph and ALL OKF
-# pages INCLUDING the system-generated computations and the bookkeeping
-# (index.md/log.md). The new complete artifact digest therefore changes when
-# ANY candidate-scope byte changes; nothing silently rides outside the binding.
+# and authority"): unlike the runtime-scope digest above, this binds a Git
+# proposal's registry, Seed Notes, models, graph, Context pages and Answer
+# Examples, including generated navigation where it belongs to the artifact.
+# No candidate-scope byte silently rides outside the complete artifact digest.
 def candidate_scope_files(staging: str | Path) -> list[tuple[str, Path, bytes]]:
-    """Every byte of the candidate artifact scope under ``staging`` — the exact
+    """Every byte of the candidate artifact scope under the supplied directory — the exact
     artifact set a Git proposal validates, reviews and admits (one walker
     behind the complete digest and the review inventory, so neither can drift
     from the other)."""
@@ -610,6 +600,10 @@ def candidate_scope_files(staging: str | Path) -> list[tuple[str, Path, bytes]]:
     if context.is_dir():
         for path in sorted(p for p in context.rglob("*.md") if p.is_file()):
             files.append((f"context_layer/{path.relative_to(context)}", path, path.read_bytes()))
+    examples = staging / "answer_examples"
+    if examples.is_dir():
+        for path in sorted(p for p in examples.glob("*.md") if p.is_file() and p.name != "log.md"):
+            files.append((f"answer_examples/{path.name}", path, path.read_bytes()))
     return files
 
 
@@ -624,16 +618,13 @@ def _registry_identity(
     sources_path: str | Path | None,
     registry: Registry | None = None,
 ) -> tuple[str | None, str | None]:
-    """``(digest, label)`` of the source identity the audit is bound to: the
-    registry file (ADR-0010), the ``--db`` file standing in for the implicit
-    one-source registry, or a pre-built APPROVED registry object (the Git
-    route's frozen-binding identity, spec 0025 §4 — digested by its canonical
-    resolved identity, never file bytes). When BOTH a file and a registry
-    object are given (the legacy route's frozen-binding audit), the FILE
-    identity wins: the legacy graph admission's serving check (query.py /
-    discovery.py) compares the recorded validation digest against the
-    registry file's bytes, so freezing the audit binding must never change
-    the recorded digest's form. ``None`` when validation is compile-only."""
+    """``(digest, label)`` of the source identity bound to the audit: an
+    explicit registry file, a single-database path for the internal numerical
+    seam, or a pre-built approved registry object from Git Authoring (spec 0025
+    §4, digested by its canonical resolved identity rather than file bytes).
+    If both a file path and registry object are supplied, the file digest is
+    reported while the execution owner uses the pre-built object. ``None`` when
+    validation is compile-only."""
     if sources_path is not None:
         path = Path(sources_path)
     elif db_path is not None:
@@ -796,11 +787,10 @@ def validate(
     *,
     registry: Registry | None = None,
 ) -> ValidationResult:
-    """Normalize (issue #26), schema-check and render the staged OSI models
-    (ADR-0008); with ``db_path``, ``sources_path`` (ADR-0010) or a pre-built
-    ``registry`` (the Git route's approved frozen-binding identity, spec 0025
-    §4), additionally EXPLAIN-bind the rendered SQL and run the ADR-0006 §5
-    grain audit over the shared audit connection. The result carries a
+    """Normalize (issue #26), schema-check and render OSI artifact models
+    (ADR-0008); with an explicit source binding, additionally EXPLAIN-bind the
+    rendered SQL and run the ADR-0006 §5 grain audit. Git Authoring supplies
+    the operator-approved registry (spec 0025 §4). The result carries a
     digest-bound :class:`ValidationReport`; graph failures are structural and
     precede any SELECT compilation."""
     staging = Path(staging_dir)
@@ -897,8 +887,7 @@ def validate(
         ),
     )
     if graph is not None and not errors and live:
-        # bind check + audit only what compiles; one audit connection for both
-        # (the shared execution owner, ADR-0010/0016 — or the legacy demo attach).
+        # Bind-check and audit only compiled models, through one shared execution owner.
         execution = _audit_execution(db_path, sources_path, registry)
         con = execution.con
         try:
@@ -965,47 +954,25 @@ def validate(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m ariadne.validate",
-        description="Validate staged OSI semantic models with the own sqlglot renderer "
-        "(ADR-0008; exit 0/1); with --db, also EXPLAIN-bind and run the ADR-0006 §5 grain audit.",
+        prog="ariadne-validate",
+        description=(
+            "Compile-check an explicit artifact directory without opening sources. "
+            "Success is partial structural evidence, never Git Admission."
+        ),
     )
-    parser.add_argument("staging_dir", nargs="?", default="staging")
-    parser.add_argument(
-        "--db", default=None, help="SQLite database for the grain audit (read-only attach)"
-    )
-    parser.add_argument(
-        "--sources",
-        default=None,
-        help="source registry YAML for the audit connection (ADR-0010; default: "
-        "./ariadne.yaml only when neither --sources nor --db is given)",
-    )
+    parser.add_argument("artifact_dir", help="explicit artifact directory to validate")
     args = parser.parse_args(argv)
-    sources_path = default_registry_path(args.sources, args.db)
-    if sources_path is not None:
-        args.db = None  # the registry connection replaces the single-sqlite attach
-    result = validate(args.staging_dir, db_path=args.db, sources_path=sources_path)
-    scope = (
-        f"scope: {result.report.scope}; relationship-audit: "
-        f"{result.report.outcome('relationship_audit')}"
-        if result.report
-        else ""
-    )
+    result = validate(args.artifact_dir)
     if result.ok:
-        audited = (
-            " and pass the grain audit (ADR-0006 §5)"
-            if args.db is not None or sources_path is not None
-            else ""
-        )
-        print(f"ok: staged OSI models under {args.staging_dir} compile{audited}")
-        if result.report:  # the digest-bound scope label (spec rev 1: a
-            # compile-only report is visibly partial, never a full pass)
-            print(scope)
+        print(f"ok: artifact directory {args.artifact_dir} compiles")
+        if result.report:
+            print(f"scope: {result.report.scope}")
             print(f"digest: {result.report.digest} (validator {result.report.validator_version})")
         return 0
     for error in result.errors:
         print(f"error: {error}", file=sys.stderr)
-    if scope:
-        print(scope, file=sys.stderr)  # CI sees which checks the failure covers
+    if result.report:
+        print(f"scope: {result.report.scope}", file=sys.stderr)
     return 1
 
 

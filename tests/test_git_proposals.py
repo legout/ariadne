@@ -416,8 +416,8 @@ def test_initial_artifacts_with_credentials_are_refused_before_staging(tmp_path)
     assert not (project / ".ariadne" / "worktrees").exists()
 
 
-# A policy page whose base revision already carries a system-stamped verified
-# entry (what the promotion gate appends): an edit may KEEP it verbatim, but
+# A policy page whose base revision already carries a system-owned verified
+# marker: an edit may KEEP it verbatim, but
 # may never introduce or change such a claim (spec §4).
 _POLICY_WITH_VERIFIED = (
     "---\n"
@@ -895,47 +895,6 @@ def served(tmp_path_factory):
         GOLDEN_OKF, encoding="utf-8"
     )
     return root, db
-
-
-def test_query_routes_ad_hoc_staging_through_the_shared_reserve_stage(
-    tmp_path, served, monkeypatch
-):
-    """Plan §2 proof: Query stages the compiled ad-hoc definition through
-    the shared ad-hoc staging owner in ariadne.proposals (patched target) —
-    the reservation-based seam spec 0014 §5 added (issue #56/S1), still not a
-    Query-local copy — and the staged model/page land in the legacy staging
-    store, never in a Git proposal."""
-    import asyncio
-
-    from ariadne.query import QueryRuntime
-
-    root, db = served
-    staging = tmp_path / "staging"
-    runtime = QueryRuntime(root / "semantic_layer", root / "context_layer", db, staging_dir=staging)
-    calls: list[tuple] = []
-    real = proposals.stage_reserved_ad_hoc
-
-    def spy(reserved, envelope, params):
-        calls.append((str(reserved[0].parents[3]), reserved[0].stem))
-        return real(reserved, envelope, params)
-
-    monkeypatch.setattr(proposals, "stage_reserved_ad_hoc", spy)
-    result = asyncio.run(
-        runtime.define_metric(
-            {
-                "name": "orders_total",
-                "description": "Total amount of all orders",
-                "source": "orders",
-                "expression": "SUM(amount)",
-                "dimensions": [],
-            }
-        )
-    )
-    assert calls == [(str(staging), "orders_total")]  # routed through the shared op
-    assert result["governed"] is False  # ad-hoc stays ungoverned, unadmitted
-    assert (staging / "semantic_layer" / "models" / "adhoc" / "orders_total.yml").is_file()
-    assert (staging / "context_layer" / "metrics" / "orders_total.md").is_file()
-    assert not (tmp_path / ".ariadne").exists()  # never a Git proposal store
 
 
 def _generated_table_page(resource: str) -> str:

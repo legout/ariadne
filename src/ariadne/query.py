@@ -5,7 +5,7 @@ agents (spec 2026-09-23-0001 §3, ADR-0012; moved here from
 ``ariadne.runtime`` in the modular-core extraction, spec 2026-10-02-0009 §2 /
 ADR-0016) — the MCP adapter (:mod:`ariadne.serve`) and the local CLI
 (:mod:`ariadne.cli`) register these operations; they never duplicate
-compilation, execution, context, grain, or proposal-staging logic:
+compilation, execution, context, or grain logic:
 
     list_metrics()                     -> served governed metrics with descriptions
     list_datasets()                    -> [{name, columns: [{name, type}]}] from the attach
@@ -18,34 +18,29 @@ compilation, execution, context, grain, or proposal-staging logic:
                                           governed: true + context (rev 10): the full
                                           served OKF metric page plus the full bodies
                                           of every policy its frontmatter cites
-    define_metric(definition)          -> the ad-hoc path (spec rev 3): ephemeral OSI model ->
-                                          render -> read-only execution -> rows + SQL +
-                                          governed: false + auto-staged proposal
+    define_metric(definition)          -> ephemeral OSI model -> render -> read-only
+                                          execution -> rows + SQL + governed: false +
+                                          persistence: not_saved
     query_metrics/query_detail         -> the admitted multi-fact graph (issue #30)
 
 Mechanism per ADR-0008 (spec rev 7): our own sqlglot compiler
 (:mod:`ariadne.render`) renders the OSI envelope model to SQL and the
 execution-owned DuckDB connection (:class:`ariadne.execution.DuckDBExecution`,
-built by the shared source-registry builder :mod:`ariadne.sources`, ADR-0010:
-a ``ariadne.yaml`` registry, or the legacy ``--db`` SQLite file attached
-read-only as catalog ``demo``) executes it. ``range`` is an optional
+built from the operator-approved registry identity resolved by the Git project
+factory) executes it. ``range`` is an optional
 ``{start, end}`` applied by the compiler to the model's primary date dimension
 (the is_time field). ``list_metrics``/``list_datasets`` read the envelope
 metadata and the attach directly — no datus anywhere in the query path.
 
 Ad-hoc (ADR-0005, spec §6): ``define_metric`` params are expanded into an
 ephemeral OSI-core model (version 0.2.0.dev0 shape, dialects-expression fields,
-is_time dimension), rendered by :mod:`ariadne.render` (no files touched — the
-served semantic dir is never written). Compile failure returns the compiler's
-error verbatim; nothing is staged, nothing executed. On success the compiled SQL
-is executed read-only and the definition is auto-staged as a proposal: the OSI
-model under ``staging/semantic_layer/models/adhoc/`` plus a minimal OKF draft
-under ``staging/context_layer/metrics/`` so ``search_context`` can discover it
-(numeric suffix on name collision, never overwrite); promotion stays human
-(ADR-0003). Query stages ad-hoc definitions through the shared
-``ariadne.proposals.reserve_ad_hoc``/``stage_reserved_ad_hoc`` operations without
-importing the Authoring
-workflow (spec 2026-10-02-0009 §2).
+is_time dimension), rendered by :mod:`ariadne.render`, compiled and executed
+read-only. Success returns the complete bounded result, SQL provenance, echoed
+definition, ``governed: false`` and ``persistence: {status: not_saved}``; it writes
+no candidate or artifact. Failures likewise leave no authored state. If a user
+explicitly requests retention, the existing Authoring ``start`` and
+revision-checked typed edits retain the definition in a Git candidate; there is
+no persistence flag or new save operation.
 
 Routing contract (spec rev 4 §8.12): fresh consuming agents discover the ad-hoc
 path through the runtime itself — ``list_metrics`` ends with the routing hint
@@ -72,21 +67,18 @@ from pathlib import Path
 from typing import Any
 
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-from sqlglot import expressions as exp  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+from sqlglot import (
+    expressions as exp,  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+)
 from sqlglot.optimizer.scope import Scope, build_scope  # pyright: ignore[reportMissingImports]
 
 # Issue #19 (ADR-0015, spec 2026-09-29-0007): the answer-example store is a
 # separate transport-neutral module — the runtime only contributes its selected
 # roots; examples never touch compilation, execution or governed context.
-#
-# Shared Proposals (issue #34, ADR-0016): the compiled ad-hoc staging/label
-# operation — Query stages ad-hoc definitions through it WITHOUT importing the
-# Authoring workflow or touching any Git proposal store (spec 2026-10-02-0009 §2).
 from ariadne import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     admission,  # issue #37/G5: pinned-snapshot resolution for open_project
     answer_examples,
     context,  # issue #48 fix: the assessment clock/assembly seams stay internal
-    proposals,  # pyright: ignore[reportMissingImports] — drift
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: the analyzer binds `ariadne` to the venv's editable main checkout, which lacks this lane's new module; runtime/uvx resolve the worktree
 )
 from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
@@ -95,7 +87,7 @@ from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
 
 # Shared Context Layer (issue #33, ADR-0016): retrieval, citation attachment and
 # deterministic OKF generation live in ariadne.context.
-from ariadne.discovery import MISSING_CATALOG, ROUTING_HINT, DiscoveryRuntime
+from ariadne.discovery import MISSING_CATALOG, ROUTING_HINT, _DiscoverySession
 
 # Shared Execution (issue #33, ADR-0016): the DuckDB session, catalog, bind
 # operation, statement guard and result collection are execution-owned.
@@ -176,18 +168,14 @@ _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _IDENTIFIER_PATH_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 
-class QueryRuntime(DiscoveryRuntime):
-    """Governed + ad-hoc metric runtime: render-gate compile + execution-owned
-    DuckDB execution. ``ariadne.runtime.AriadneRuntime`` and ``ariadne.serve.Facade``
-    are aliases of exactly this class (spec 2026-10-02-0009 §2) — never a second
-    implementation."""
+class _QueryRuntimeSession(_DiscoverySession):
+    """Internal query session created by the project-bound ``QueryRuntime`` factory."""
 
     def __init__(
         self,
         semantic_dir: str | Path,
         context_dir: str | Path,
         db_path: str | Path | None,
-        staging_dir: str | Path = "staging",
         sources: str | Path | None = None,
         *,
         registry: Registry | None = None,
@@ -197,16 +185,11 @@ class QueryRuntime(DiscoveryRuntime):
         response_measure=None,
         deadline_budget: DeadlineBudget | None = None,
     ):
-        """``db_path``/``sources`` select the LEGACY explicit source identity
-        (the ``--db`` shorthand or an ADR-0010 registry file). The keyword-only
-        parameters carry the MANAGED Git route (issue #37/G5):
-        ``registry`` is an already-resolved approved identity (never a file),
-        ``admission_record`` the pinned Git-review admission
-        (:meth:`open_project` resolves both), and ``project_root`` the logical
-        project root that anchors the staging/ad-hoc/Answer Example stores —
-        separate from the pinned artifact root, which is derived from
-        ``context_dir``. An explicit legacy construction (no ``registry``/
-        ``admission_record``) keeps its legacy behavior exactly.
+        """The public ``QueryRuntime.open_project`` factory supplies the
+        already-resolved approved ``registry``, pinned Git-review
+        ``admission_record``, and logical ``project_root``. ``db_path`` and
+        ``sources`` remain private lower-level inputs for synthetic numerical
+        tests only; no public route constructs a runtime from an artifact root.
 
         Issue #56/S1 (spec 0014 §4–§6): ``query_limits`` is the HOST-owned
         complete-output ceilings (validated tightening-only; built-ins when
@@ -231,18 +214,14 @@ class QueryRuntime(DiscoveryRuntime):
         # ADR-0010/0016: one shared owner produces the runtime's long-lived DuckDB
         # session over the registry sources (addressable as <source>.<table>);
         # non-DuckDB attaches are connection-local, so this happens exactly
-        # once. Compiled SQL references <catalog>.<schema>.<table> — the legacy
-        # shorthand keeps the authoring contract's catalog name demo.
+        # once. Compiled SQL references <catalog>.<schema>.<table>.
         if registry is not None:
             source_registry = registry
         elif sources is not None:
             source_registry = load_registry(sources)
         else:
             if db_path is None:
-                # unreachable via the public factories (the managed route always
-                # resolves an approved registry; the legacy roots always carry a
-                # --db) — kept type-honest for direct construction
-                raise ValueError("legacy construction requires db_path or sources")
+                raise ValueError("an internal query session requires an approved registry")
             source_registry = implicit_registry(db_path)
         # Issue #56/S1 (spec 0014 §4/§6): the host-owned ceilings are loaded and
         # validated BEFORE source construction, and the eager setup runs under
@@ -268,77 +247,27 @@ class QueryRuntime(DiscoveryRuntime):
             self.con.execute("USE demo.main")
         # Issue #59 (spec 0014 §9): the ad-hoc IO-authority boundary's approved
         # physical-relation set — the ALREADY-BUILT execution catalog plus
-        # DuckDB's own current catalog/schema (the legacy --db route's
-        # USE demo.main is what makes bare table names resolve; a registry
-        # route keeps its <source>.<table> form). Read once here, from trusted
+        # DuckDB's own current catalog/schema (the private single-database
+        # test seam's USE demo.main is what makes bare table names resolve; a
+        # registry route keeps its <source>.<table> form). Read once here, from trusted
         # internal reads only, so an ad-hoc refusal never needs a DuckDB call.
         self._ad_hoc_authority = AdHocAuthority.build(self.catalog, self.con)
-        self.staging_dir = Path(staging_dir)
         # Issue #53 (spec 0013 §4): the exact-identity map of the ALREADY-BUILT
         # execution catalog — qualified table name → canonical resource — built
         # lazily once and reused by every data_signals attachment. No new catalog
         # or source query ever runs for quality evidence.
         self._catalog_resources: dict[str, str] | None = None
-        self._init_artifacts(
-            semantic_dir, db_path, sources, staging_dir, admission_record, project_root
-        )
-
-    @classmethod
-    def open_project(
-        cls,
-        project: str | Path,
-        *,
-        staging_dir: str | Path | None = None,
-        deadline_budget: DeadlineBudget | None = None,
-        discovery: DiscoveryRuntime | None = None,
-    ) -> QueryRuntime:
-        """The managed-project factory (issue #37/G5, plan §2): resolve the
-        pinned snapshot and its approved source configuration of a Git-managed
-        data project and construct the runtime over them. EVERY query method
-        of the returned runtime therefore requires admission by construction —
-        a Git-managed project with no valid admission is refused here, never a
-        silent fallback to proposal worktrees or mutable project files, while
-        the explicit legacy artifact-root constructors keep legacy behavior for
-        fixtures/operators. Source locations resolve through the
-        operator-approved identity (never snapshot-relative paths); the
-        staging/ad-hoc/Answer Example stores stay at their ORIGINAL
-        project-owned locations (default ``<project>/staging``), separate from
-        the pinned artifact root. Each session pins one coherent admitted
-        revision; a later session picks up a later admission."""
-        root = Path(project).resolve()
-        if discovery is None:
-            record, snapshot = admission.resolve_admission(root)
-        else:
-            # Deferred adapters retain ONE admitted revision across discovery and queries.
-            if discovery._project != root or discovery._managed is None:
-                raise ValueError("discovery does not pin an admission for this project")
-            discovery._recheck_pinned()
-            record, snapshot = discovery._managed, discovery.context_dir.parent
-            if staging_dir is None:
-                staging_dir = discovery.staging_dir
-        return cls(
-            snapshot / "semantic_layer",
-            snapshot / "context_layer",
-            None,
-            staging_dir=(root / "staging") if staging_dir is None else staging_dir,
-            registry=admission.approved_registry(record),
-            admission_record=record,
-            project_root=root,
-            # issue #56/S1: the LOGICAL host project's operator ceilings — never
-            # the pinned snapshot's inert ``query:`` copy (plan 0014 §2)
-            query_limits=query_results.load_host_query_limits(root),
-            deadline_budget=deadline_budget,
-        )
+        self._source_free = False
+        self._init_artifacts(semantic_dir, db_path, sources, admission_record, project_root)
 
     async def list_metrics(self) -> list[dict | str]:
         self._discard_request_budget()
         return await super().list_metrics()
 
     async def list_datasets(self) -> list[dict]:
-        """Every queryable table across all registry sources with its columns
-        (the agent's map, spec rev 9 §8.20). The legacy --db shorthand keeps
-        plain table names; a registry qualifies each entry as
-        ``<source>.<table>`` so both sources stay distinguishable. K1 (issue
+        """Every queryable table across the approved registry with its columns
+        (the agent's map, spec rev 9 §8.20). Qualified names keep entries from
+        distinct sources distinguishable. K1 (issue
         #41): every entry additionally carries the EXPLICIT identity fields
         (source/catalog/schema/table plus the canonical credential-free
         ``resource``) — same-named tables in distinct schemas/collections stay
@@ -484,7 +413,7 @@ class QueryRuntime(DiscoveryRuntime):
         if self._managed is not None:
             # Issue #37/G5: revision/route provenance alongside the existing
             # caveats (spec §5: governed answers identify the admitted revision
-            # and route) — legacy responses keep their exact shape.
+            # and route).
             result["admission"] = self._admission_view(self._managed)
         # Issue #53/#54 (spec 0013 §4): the additive advisory source-quality
         # view. Identity comes from the executed query's direct dataset
@@ -558,9 +487,7 @@ class QueryRuntime(DiscoveryRuntime):
         qualified table name or a SELECT — is matched against the ALREADY-BUILT
         execution catalog by exact qualified identity, never an unqualified
         display-name match (same-named tables in distinct sources stay distinct
-        assets, which is why :func:`ariadne.context._source_tables` — it
-        deliberately strips qualification — is never used as an identity
-        resolver here). An unmatched or unresolvable dependency is ``None``:
+        assets). An unmatched or unresolvable dependency is ``None``:
         unknown coverage, never a guess."""
         dependencies: list[str | None] = []
         for dataset in self._metrics[name]["model"]["semantic_model"][0].get("datasets") or []:
@@ -638,7 +565,7 @@ class QueryRuntime(DiscoveryRuntime):
                 "admission_stale",
                 "the served layers changed after admission "
                 f"(served digest {current[:12]}… != recorded "
-                f"{self._admission['served_digest'][:12]}…) — revalidate and re-promote "
+                f"{self._admission['served_digest'][:12]}…) — revalidate and re-admit "
                 "before serving the graph as governed",
             )
         bound = (self._admission.get("validation") or {}).get("registry_digest")
@@ -647,7 +574,7 @@ class QueryRuntime(DiscoveryRuntime):
             raise PlannerError(
                 "admission_stale",
                 "the approved source registry changed after admission — revalidate and "
-                "re-promote before serving the graph as governed",
+                "re-admit before serving the graph as governed",
             )
         return self._graph, self._admission
 
@@ -663,8 +590,8 @@ class QueryRuntime(DiscoveryRuntime):
         before the one guarded SELECT executes. The response carries the rows,
         the compiled SQL, a bounded lineage plan, per-metric OKF metric + Policy
         context with the independent attestation state, and the local admission
-        provenance — ``governed: true`` only because a human Promoted the exact
-        validated bytes."""
+        provenance — ``governed: true`` only because a human admitted the exact
+        validated revision."""
         graph, admission = self._admitted()
         # Issue #56/S1 (spec 0014 §6): the shared budget covers the planner's
         # live relationship/grain audits, the EXPLAIN bind and the bounded
@@ -807,10 +734,10 @@ class QueryRuntime(DiscoveryRuntime):
         selected-value tie tuple, and a same-execution lookahead indicator —
         never a metric, never an admitted graph traversal, never caller SQL.
         Every answer reports ``governed: false`` and truthful bounded
-        provenance; nothing is ever staged. The managed route keeps its
+        provenance; nothing is ever staged. The public project route keeps its
         pinned-admission and approved-source rechecks (admission is a
-        provenance fact, not admission of this request); the legacy route
-        needs no graph admission. Compiled through the existing planner
+        provenance fact, not admission of this request). Private synthetic
+        sessions do not represent public serving. Compiled through the existing planner
         ownership, the single-statement guard and the EXPLAIN bind, then the
         shared S1 output safeguards bound the answer."""
         if self._managed is not None:
@@ -910,8 +837,8 @@ class QueryRuntime(DiscoveryRuntime):
     def _record_provenance(self) -> dict:
         """The record answer's truthful provenance (spec 0014 §3): the actual
         route and artifact identity when established — the managed route's
-        pinned admission view — otherwise the unversioned/as-of disclosure;
-        legacy host configuration is never called Git Review Admission."""
+        pinned admission view — otherwise an internal synthetic-session
+        disclosure; no public route establishes provenance without Git Admission."""
         if self._managed is not None:
             return {
                 "route": "managed-pinned-admission",
@@ -926,39 +853,51 @@ class QueryRuntime(DiscoveryRuntime):
                 ),
             }
         return {
-            "route": "legacy-local-sources" if self._qualified else "legacy-local-attach",
+            "route": "internal-synthetic-session",
             "admission": None,
-            "disclosure": (
-                "unversioned, as-of source data — legacy host configuration is "
-                "not Git Review Admission; no snapshot identity is established"
-            ),
+            "disclosure": "unversioned, as-of source data; no Git snapshot identity is established",
         }
 
-    async def save_example(self, submission: dict) -> dict:
-        """Issue #19 (spec 2026-09-29-0007, ADR-0015): stage one explicitly
-        submitted answer example as a labeled ``status: draft`` OKF record
-        under ``staging/answer_examples/`` — transport-neutral, so the local
-        CLI and the optional MCP adapter share exactly this path. Validated
-        before any write: malformed submissions, oversized excerpts/records,
-        citations that do not resolve inside the selected served root, and
-        claimed (rather than self-declared) identity or verification all store
-        nothing. The served roots are never touched. Citations resolve against
-        the PINNED artifact root on the managed route; the staging store stays
-        at its original project-owned location (issue #37 fix pass)."""
-        self._discard_request_budget()  # fix pass 2, finding 1b (save_example)
-        return answer_examples.save_example(
-            submission,
-            self.context_dir.parent,
-            self.staging_dir,
-            examples_root=self._examples_root,
-        )
+    async def save_example(
+        self,
+        submission: dict,
+        *,
+        proposal: str | None = None,
+        expected_revision: str | None = None,
+    ) -> dict:
+        """Save one explicit Example as an unadmitted Git proposal candidate."""
+        self._discard_request_budget()
+        if self._managed is not None:
+            if self._project is None:
+                raise ValueError("Git Example authoring requires a managed --project")
+            return answer_examples.save_candidate_example(
+                submission,
+                self._project,
+                self.context_dir.parent,
+                self._managed["commit"],
+                proposal=proposal,
+                expected_revision=expected_revision,
+            )
+        raise ValueError("a Git admission is required for Example authoring")
 
     async def search_examples(
-        self, query: str, limit: int = 10, include_history: bool = False, include_sql: bool = False
+        self,
+        query: str,
+        limit: int = 10,
+        include_history: bool = False,
+        include_sql: bool = False,
+        *,
+        proposal: str | None = None,
+        revision: str | None = None,
     ) -> list[dict]:
         self._discard_request_budget()
         return await super().search_examples(
-            query, limit=limit, include_history=include_history, include_sql=include_sql
+            query,
+            limit=limit,
+            include_history=include_history,
+            include_sql=include_sql,
+            proposal=proposal,
+            revision=revision,
         )
 
     def _metric_context(self, name: str, *, _now: datetime | None = None) -> dict:
@@ -971,18 +910,13 @@ class QueryRuntime(DiscoveryRuntime):
         return context._metric_context(self.context_dir, name, now=_now)
 
     async def define_metric(self, definition: dict) -> dict:
-        """Ad-hoc path (spec rev 3 §4/§5, amended by spec 0014 §5): draft ->
-        compile gate -> bounded execute -> FULL core + selected-transport
-        success preflight -> stage -> return.
+        """Ad-hoc path: normalize -> compile gate -> bounded read-only execution
+        -> complete-output preflight -> return an explicitly unsaved result.
 
-        The definition is expanded into an ephemeral OSI model and rendered by
-        ariadne.render; failure returns the compiler's error verbatim (nothing
-        staged, nothing executed). On success the compiled SQL executes
-        read-only under the shared complete-output safeguards; the complete
-        bounded staging receipt is reserved and preflighted BEFORE the write,
-        so an output refusal after successful computation — including an
-        MCP-envelope refusal — stages NOTHING and the definition is never
-        auto-promoted (issue #56/S1).
+        Failure returns the compiler's error verbatim or a bounded refusal;
+        neither failure nor success writes a candidate or artifact. The existing
+        complete-output safeguards still refuse any incomplete result, including
+        an MCP-envelope overflow (issue #56/S1).
 
         Issue #59 (spec 0014 §9): the static IO-authority boundary runs FIRST,
         on the whole nested ``source`` and ``expression`` trees, so an ad-hoc
@@ -998,7 +932,7 @@ class QueryRuntime(DiscoveryRuntime):
             # grain guard, compile, bind or any execution — the entire nested
             # source AND expression trees may read only the registered catalog
             # relations and call only the reviewed built-in analytics functions.
-            # A refusal is static (no DuckDB call at all): nothing staged,
+            # A refusal is static (no DuckDB call at all): no artifact written,
             # nothing executed.
             assert_ad_hoc_authority(
                 params["source"], kind="source", authority=self._ad_hoc_authority
@@ -1009,8 +943,8 @@ class QueryRuntime(DiscoveryRuntime):
             # Grain guard BEFORE envelope expansion/compile (spec rev 5 §13): a
             # source that fans out the fact grain is rejected outright — the
             # compiler would aggregate at joined-row grain
-            # (Datus-ai/Datus-agent#1426). Nothing staged, nothing executed;
-            # same contract as the single-statement guard below.
+            # (Datus-ai/Datus-agent#1426). No authored state is written and
+            # nothing executes; same contract as the single-statement guard.
             check_grain_preserving(self.con, params["source"])
             envelope = _expand_adhoc_model(params)
             sql = await self._compile_adhoc(envelope, params["name"], params["dimensions"])
@@ -1028,55 +962,30 @@ class QueryRuntime(DiscoveryRuntime):
             # the definition reached execution exclusively through the compiler
             # above.
             bounded = self._collect(sql, budget)
-        if budget.expired():  # exhaustion is checked before preflight/staging
+        if budget.expired():  # no complete answer after expiry (spec 0014 §6)
             raise query_results.deadline_refusal(budget.seconds)
-        # The complete bounded staging receipt is RESERVED (atomically claimed,
-        # collision-suffixed exactly as the write would be) so the preflight
-        # measures the actual receipt paths — then the payloads are written only
-        # after every preflight passed; a refusal releases the reservation and
-        # leaves no model or draft page behind (spec 0014 §5).
-        reserved = proposals.reserve_ad_hoc(self.staging_dir, params["name"])
-        try:
-            result = {
-                "metric": params["name"],
-                "columns": bounded.columns,
-                "rows": bounded.rows,
-                "sql": sql,
-                "governed": False,
-                "context": None,  # spec rev 10: no served page exists for ad-hoc metrics
-                "definition": params,  # echoed definition
-                "staged_as": str(reserved[0]),
-                "staged_context_as": str(reserved[1]),
-                "result": query_results.completeness(len(bounded.rows)),
-            }
-            query_results.account_rows(self._limits, result, bounded.rows)
-            query_results.finalize_response(self._limits, result, response_measure=self._measure)
-            if budget.expired():  # no staging after expiry (spec 0014 §6)
-                raise query_results.deadline_refusal(budget.seconds)
-            # The SHARED compiled ad-hoc staging operation (moved intact into
-            # ariadne.proposals, issue #34): the OSI model + draft OKF page land
-            # in the legacy staging store — ungoverned, discoverable, never a
-            # Git proposal, never admitted.
-            proposals.stage_reserved_ad_hoc(reserved, envelope, params)
-        except BaseException:
-            proposals.release_reserved(reserved)  # an output refusal stages nothing
-            raise
+        result = {
+            "metric": params["name"],
+            "columns": bounded.columns,
+            "rows": bounded.rows,
+            "sql": sql,
+            "governed": False,
+            "context": None,  # spec rev 10: no served page exists for ad-hoc metrics
+            "definition": params,
+            "persistence": {"status": "not_saved"},
+            "result": query_results.completeness(len(bounded.rows)),
+        }
+        query_results.account_rows(self._limits, result, bounded.rows)
+        query_results.finalize_response(self._limits, result, response_measure=self._measure)
         if budget.expired():
-            # Fix pass 2, finding 1a (spec 0014 §6): staging completed but the
-            # budget is spent — no successful complete result is returned after
-            # exhaustion. The fulfilled reservation is NOT released (the write
-            # happened); the refusal reports the staging honestly instead of
-            # claiming nothing occurred, mirroring the spec's
-            # network-failure-after-staging stance (§5).
-            raise query_results.deadline_refusal(budget.seconds, staging_status="staged")
+            raise query_results.deadline_refusal(budget.seconds)
         return result
 
     async def _compile_adhoc(self, envelope: dict, name: str, dimensions: list[str]) -> str:
         """Render-gate compile (ADR-0008) of the ephemeral model — the only gate
         between tool args and execution. Returns the compiled SQL; raises
         ValueError carrying the compiler's verbatim reason (spec §7). No files
-        are touched: the envelope is compiled in memory; the served semantic dir
-        and everything outside staging is never written."""
+        are touched: the envelope is compiled in memory."""
         try:
             return render(envelope, dimensions)
         except ValueError:
@@ -1096,9 +1005,43 @@ class QueryRuntime(DiscoveryRuntime):
         self._discard_request_budget()
         return await super().list_context_pages()
 
-    async def read_context_page(self, path: str, draft: bool = False) -> dict:
+    async def read_context_page(self, path: str) -> dict:
         self._discard_request_budget()
-        return await super().read_context_page(path, draft=draft)
+        return await super().read_context_page(path)
+
+
+class QueryRuntime:
+    """Public query factory; governed runtimes can only come from Git admission."""
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("QueryRuntime is a project factory; use QueryRuntime.open_project(project)")
+
+    @classmethod
+    def open_project(
+        cls,
+        project: str | Path,
+        *,
+        deadline_budget: DeadlineBudget | None = None,
+        discovery: _DiscoverySession | None = None,
+    ) -> _QueryRuntimeSession:
+        root = Path(project).resolve()
+        if discovery is None:
+            record, snapshot = admission.resolve_admission(root)
+        else:
+            if discovery._project != root or discovery._managed is None:
+                raise ValueError("discovery does not pin an admission for this project")
+            discovery._recheck_pinned()
+            record, snapshot = discovery._managed, discovery.context_dir.parent
+        return _QueryRuntimeSession(
+            snapshot / "semantic_layer",
+            snapshot / "context_layer",
+            None,
+            registry=admission.approved_registry(record),
+            admission_record=record,
+            project_root=root,
+            query_limits=query_results.load_host_query_limits(root),
+            deadline_budget=deadline_budget,
+        )
 
 
 class DeferredQueryRuntime:
@@ -1106,22 +1049,25 @@ class DeferredQueryRuntime:
 
     def __init__(
         self,
-        factory: Callable[[], QueryRuntime],
-        discovery: DiscoveryRuntime | Callable[[], DiscoveryRuntime],
+        factory: Callable[[], _QueryRuntimeSession],
+        discovery: _DiscoverySession | Callable[[], _DiscoverySession],
     ):
         self._factory = factory
         self._discovery = discovery
-        self._runtime: QueryRuntime | None = None
+        self._runtime: _QueryRuntimeSession | None = None
 
-    def runtime(self) -> QueryRuntime:
+    def runtime(self) -> _QueryRuntimeSession:
         if self._runtime is None:
             self._runtime = self._factory()
         return self._runtime
 
     @property
-    def discovery(self) -> DiscoveryRuntime:
+    def discovery(self) -> _DiscoverySession:
         if callable(self._discovery):
-            self._discovery = self._discovery()
+            discovery = self._discovery()
+            if discovery._managed is not None:
+                self._discovery = discovery
+            return discovery
         return self._discovery
 
     @property

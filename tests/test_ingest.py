@@ -1,10 +1,7 @@
-"""Standalone document ingestion (spec rev 8 §8.19, ADR-0009).
+"""Git-candidate document ingestion (specs 0021 and 0027 §5).
 
-LLM responses are fixture-mocked (no network), the same machinery as
-tests/test_author.py; the per-type gate runs for real (the author's
-_page_contract_errors over assembled pages). Real converter invocations are
-gated by pytest.importorskip so the suite passes with or without the
-[documents] extra installed.
+LLM responses are fixture-mocked (no network), the per-type gate runs for real,
+and converter calls use the existing optional [documents] dependencies.
 """
 
 import base64
@@ -12,6 +9,7 @@ import hashlib
 import json
 import sys
 import zipfile
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -22,6 +20,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
+from ariadne import admission as admission_module  # noqa: E402
+from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.ingest import (  # noqa: E402
     _CONVERTERS,
     _NATIVE_SUFFIXES,
@@ -32,7 +32,7 @@ from ariadne.ingest import (  # noqa: E402
     reconcile_ingest,
 )
 from ariadne.init import main as init_main  # noqa: E402
-from ariadne.promote import promote  # noqa: E402
+from tests.test_git_authoring import complete_bundle_project, run_git, worktree_of  # noqa: E402
 
 MODEL = "test-model"
 
@@ -65,8 +65,112 @@ def make_doc(tmp_path: Path, suffix: str = ".md", text: str | None = None) -> Pa
     return doc
 
 
+class GitIngestCase:
+    """A real Authoring proposal for tests focused on document conversion."""
+
+    def __init__(
+        self,
+        tmp_path: Path,
+        docs: Sequence[str | Path],
+        initial_files: dict[str, str] | None = None,
+    ):
+        self.project = complete_bundle_project(tmp_path / "project")
+        registry = self.project / "ariadne.yaml"
+        config = yaml.safe_load(registry.read_text(encoding="utf-8"))
+        config["documents"] = {"roots": sorted({str(Path(doc).parent.resolve()) for doc in docs})}
+        registry.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+        commit_paths = ["ariadne.yaml"]
+        for rel, content in (initial_files or {}).items():
+            path = self.project / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            commit_paths.append(rel)
+        run_git(self.project, "add", "--", *commit_paths)
+        run_git(
+            self.project,
+            "commit",
+            "-q",
+            "-m",
+            "human: configure ingest fixture",
+            "--",
+            *commit_paths,
+        )
+        self.authoring = AuthoringProject(self.project)
+        self.started = self.authoring.start_proposal()
+        self.proposal = self.started["proposal"]
+        self.revision = self.started["candidate_revision"]
+        self.worktree = worktree_of(self.project, self.proposal)
+
+    def ingest(self, docs: Sequence[str | Path], *, complete=None, verbatim: bool = False) -> dict:
+        result = ingest(
+            list(docs),
+            project=self.project,
+            proposal=self.proposal,
+            expected_revision=self.revision,
+            complete=complete,
+            verbatim=verbatim,
+        )
+        self.revision = result["candidate_revision"]
+        return result
+
+    def reconcile(
+        self, docs: Sequence[str | Path], *, complete=None
+    ) -> tuple[dict, list[Reconciliation]]:
+        result, comparisons = reconcile_ingest(
+            list(docs),
+            project=self.project,
+            proposal=self.proposal,
+            expected_revision=self.revision,
+            complete=complete,
+        )
+        self.revision = result["candidate_revision"]
+        return result, comparisons
+
+    def pages(self, result: dict) -> list[Path]:
+        return [self.worktree / rel for rel in (*result["written"], *result["unchanged"])]
+
+    def written_pages(self, result: dict) -> list[Path]:
+        return [self.worktree / rel for rel in result["written"]]
+
+    def start_next(self) -> None:
+        self.started = self.authoring.start_proposal()
+        self.proposal = self.started["proposal"]
+        self.revision = self.started["candidate_revision"]
+        self.worktree = worktree_of(self.project, self.proposal)
+
+    def edit_page(self, section: str, name: str, content: str) -> None:
+        edited = self.authoring.edit_proposal(
+            self.proposal,
+            self.revision,
+            {"kind": "page", "section": section, "name": name, "content": content},
+        )
+        self.revision = edited["revision"]
+
+    def admit(self) -> Path:
+        validated = self.authoring.validate_proposal(self.proposal, self.revision)
+        assert validated["ok"] is True, validated["errors"]
+        review = self.authoring.review_proposal(self.proposal)
+        assert review["revision"] == validated["revision"]
+        admission_module.admit_revision(
+            self.project,
+            self.proposal,
+            review["revision"],
+            review["review_digest"],
+            confirmed_by="human:alice",
+        )
+        _, snapshot = admission_module.resolve_admission(self.project)
+        return snapshot
+
+
+_CASE_BY_WORKTREE: dict[Path, GitIngestCase] = {}
+
+
+def _case_for_worktree(worktree: Path) -> GitIngestCase:
+    return _CASE_BY_WORKTREE[worktree.resolve()]
+
+
 def run_ingest(tmp_path: Path, doc: Path, responses: list[str], monkeypatch):
-    """ingest() with a replaying fake LLM; returns (staging, staged, errors, calls)."""
+    """One conversion call through a real revision-checked Git proposal."""
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
     calls: list[list[dict]] = []
 
@@ -74,9 +178,10 @@ def run_ingest(tmp_path: Path, doc: Path, responses: list[str], monkeypatch):
         calls.append(messages)
         return responses[min(len(calls), len(responses)) - 1]
 
-    staging = tmp_path / "staging"
-    staged, errors = ingest([doc], staging_dir=staging, complete=complete)
-    return staging, staged, errors, calls
+    case = GitIngestCase(tmp_path, [doc])
+    result = case.ingest([doc], complete=complete)
+    _CASE_BY_WORKTREE[case.worktree.resolve()] = case
+    return case.worktree, case.pages(result), result["errors"], calls
 
 
 def front_of(page: Path) -> dict:
@@ -86,7 +191,7 @@ def front_of(page: Path) -> dict:
 # --- (a) md ingestion: typed page, mechanical provenance ----------------------
 
 
-def test_md_ingestion_stages_typed_page_with_provenance(tmp_path, monkeypatch):
+def test_md_ingestion_commits_typed_candidate_page_with_provenance(tmp_path, monkeypatch):
     doc = make_doc(tmp_path)
     staging, staged, errors, calls = run_ingest(
         tmp_path, doc, [response(page_entry())], monkeypatch
@@ -108,7 +213,7 @@ def test_md_ingestion_stages_typed_page_with_provenance(tmp_path, monkeypatch):
     assert "CHURNED" in page.read_text(encoding="utf-8")  # body survived assembly
 
 
-def test_multi_page_response_stages_every_page(tmp_path, monkeypatch):
+def test_multi_page_response_commits_every_candidate_page(tmp_path, monkeypatch):
     doc = make_doc(tmp_path)
     entries = [
         page_entry(),
@@ -133,7 +238,7 @@ def test_multi_page_response_stages_every_page(tmp_path, monkeypatch):
     assert front["grain"]["primary_key"] == ["account_id", "renewal_date"]
 
 
-# --- (b) contract violations: retry loop, nothing partially staged ------------
+# --- (b) contract violations: retry loop, no partial candidate commit --------
 
 
 def test_contract_violation_retries_then_stages_nothing(tmp_path, monkeypatch):
@@ -145,7 +250,7 @@ def test_contract_violation_retries_then_stages_nothing(tmp_path, monkeypatch):
 
     assert len(calls) == 1 + MAX_RETRIES  # first attempt + ≤2 retries, then stop
     assert errors and any("author-owned" in error for error in errors)
-    assert not (staging / "context_layer").exists()  # nothing ever touched staging
+    assert run_git(staging, "status", "--short") == ""  # rejected entries never entered Git
     feedback = calls[1][-1]["content"]
     assert "Contract violations" in feedback  # error feedback loop like the author
 
@@ -185,7 +290,7 @@ def test_gate_rejects_table_page_without_grain(tmp_path, monkeypatch):
     assert errors and any("grain" in error for error in errors)  # ...violation named
 
 
-def test_index_and_log_names_never_stage(tmp_path, monkeypatch):
+def test_index_and_log_names_never_enter_candidate(tmp_path, monkeypatch):
     doc = make_doc(tmp_path)
     _, staged, errors, _ = run_ingest(
         tmp_path, doc, [response(page_entry(name="index"))], monkeypatch
@@ -283,8 +388,8 @@ def test_ingest_preserves_reference_bindings_without_fabricating_measurements(
     page = staging / "context_layer" / "references" / "order-number.md"
     assert staged == [page]
     front = front_of(page)
-    # the structured declaration survived staging verbatim (the metadata-loss
-    # path: _assemble used to drop everything but its fixed frontmatter keys)
+    # the structured declaration survived the candidate write verbatim (the
+    # metadata-loss path: _assemble used to drop everything but fixed keys)
     assert front["aliases"] == ["order number concept"]
     extension = front["ariadne"]
     assert extension["version"] == 1 and extension["reference_role"] == "term"
@@ -369,9 +474,10 @@ def test_non_reference_ariadne_blocks_are_refused_not_preserved(tmp_path, monkey
     # the block standing on a non-Reference: refused every round, nothing staged
     staging, staged, errors, calls = run_ingest(tmp_path, doc, [response(smuggled)], monkeypatch)
     assert staged == []
-    assert len(calls) == 1 + MAX_RETRIES  # fed back each round, never staged
+    assert len(calls) == 1 + MAX_RETRIES  # fed back each round, never written
     assert any("belongs to References" in error for error in errors)
-    assert not (staging / "context_layer").exists()
+    case = _case_for_worktree(staging)
+    assert case.revision == case.started["candidate_revision"]
 
     # the fed-back violation is repairable: the entry without the block stages
     repair = tmp_path / "repair"
@@ -433,19 +539,8 @@ def test_mapping_citing_the_input_document_stages_and_validates(tmp_path, monkey
     assert mapping["claim"] == "asserted" and mapping["source_ids"] == [digest]
 
 
-def test_ingestion_never_registers_mentioned_sources_and_keeps_its_own_store(tmp_path, monkeypatch):
-    """K6 (issue #46 [3], spec 0010 §3/§9 + §10 AC10 existing-check): a
-    document that MENTIONS other data locations stages its typed pages with
-    the ACTUAL input document's provenance — ingestion never registers,
-    opens or fabricates receipts for a mentioned source, the project's source
-    registry is untouched, and the staged proposal stays in ingestion's own
-    store: nothing lands in Git proposals, ad-hoc drafts or Answer Examples,
-    and Policy reconciliation stays OPT-IN behind --reconcile."""
-    registry = tmp_path / "ariadne.yaml"
-    registry.write_text(
-        "sources:\n  - name: local\n    type: parquet\n    path: data/local.parquet\n",
-        encoding="utf-8",
-    )
+def test_ingestion_does_not_register_mentioned_sources_or_retain_originals(tmp_path, monkeypatch):
+    """Mentioned locations stay inert, and originals remain outside authored Git."""
     doc = make_doc(
         tmp_path,
         text="# Warehouse notes\n\nThe nightly warehouse snapshot lives at "
@@ -462,7 +557,12 @@ def test_ingestion_never_registers_mentioned_sources_and_keeps_its_own_store(tmp
             "(s3://corp/warehouse/sales); no schema was measured.\n"
         ),
     )
-    staging, staged, errors, _calls = run_ingest(tmp_path, doc, [response(entry)], monkeypatch)
+    case = GitIngestCase(tmp_path, [doc])
+    project = case.project
+    registry = project / "ariadne.yaml"
+    registry_before = registry.read_bytes()
+    result = case.ingest([doc], complete=lambda _m: response(entry))
+    staged, errors = case.pages(result), result["errors"]
 
     assert errors == [] and staged
     # the staged page cites the ACTUAL input document — mechanically attached
@@ -476,23 +576,16 @@ def test_ingestion_never_registers_mentioned_sources_and_keeps_its_own_store(tmp
 
     # the mentioned source was never registered: the project registry and the
     # local source set are byte-identical, and nothing was connected
-    assert registry.read_text(encoding="utf-8") == (
-        "sources:\n  - name: local\n    type: parquet\n    path: data/local.parquet\n"
-    )
-    staged_tree = sorted(
-        path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file()
-    )
-    assert staged_tree == ["context_layer/tables/warehouse-sales.md"]
-
-    # ingestion's own store only: no Git proposal state, no ad-hoc drafts, no
-    # Answer Examples, and no reconciliation output without the opt-in flag
-    project = tmp_path
-    assert not (project / ".ariadne").exists()
-    assert not (project / "staging" / "semantic_layer").exists()
-    assert not (project / "staging" / "answer_examples").exists()
-    assert not any(
-        path.name.startswith("reconcil") for path in staging.rglob("*") if path.is_file()
-    )
+    assert registry.read_bytes() == registry_before
+    config = yaml.safe_load(registry.read_text(encoding="utf-8"))
+    assert {source["name"] for source in config["sources"]} == {"events", "labels"}
+    candidate_files = run_git(
+        project, "ls-tree", "-r", "--name-only", result["candidate_revision"]
+    ).splitlines()
+    assert "context_layer/tables/warehouse-sales.md" in candidate_files
+    assert not any(path.startswith("answer_examples/") for path in candidate_files)
+    assert "data/docs/notes.md" not in candidate_files  # original is external, not retained
+    assert not (project / "staging").exists()
 
 
 # --- (d) name collisions suffix atomically -----------------------------------
@@ -500,16 +593,18 @@ def test_ingestion_never_registers_mentioned_sources_and_keeps_its_own_store(tmp
 
 def test_name_collision_suffixes_never_overwrites(tmp_path, monkeypatch):
     doc = make_doc(tmp_path)
-    staging = tmp_path / "staging"
-    existing = staging / "context_layer" / "policies" / "churned-arr-not-expansion.md"
-    existing.parent.mkdir(parents=True)
-    existing.write_text("---\ntype: policy\n---\n\nkeep me\n", encoding="utf-8")
+    original = "---\ntype: policy\n---\n\nkeep me\n"
+    case = GitIngestCase(
+        tmp_path,
+        [doc],
+        {"context_layer/policies/churned-arr-not-expansion.md": original},
+    )
+    result = case.ingest([doc], complete=lambda _m: response(page_entry()))
 
-    staging2, staged, errors, _ = run_ingest(tmp_path, doc, [response(page_entry())], monkeypatch)
-
-    assert errors == []
-    assert staged == [staging / "context_layer" / "policies" / "churned-arr-not-expansion-2.md"]
-    assert "keep me" in existing.read_text(encoding="utf-8")  # original untouched
+    assert result["errors"] == []
+    assert result["written"] == ["context_layer/policies/churned-arr-not-expansion-2.md"]
+    existing = case.worktree / "context_layer/policies/churned-arr-not-expansion.md"
+    assert existing.read_text(encoding="utf-8") == original
 
 
 # --- (e) unsupported extension + missing extra name the extra ----------------
@@ -531,30 +626,40 @@ def test_missing_pdf_converter_error_names_requirement(tmp_path, monkeypatch):
     doc = make_doc(tmp_path, suffix=".pdf", text="unused")
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
     monkeypatch.setitem(sys.modules, "liteparse", None)  # import raises ImportError
-    # also block a submodule an earlier test may really have imported: a
-    # surviving liteparse.parser entry would defeat the parent-module block
     monkeypatch.setitem(sys.modules, "liteparse.parser", None)
-    staged, errors = ingest([doc], staging_dir=tmp_path / "staging", complete=lambda _m: "")
+    case = GitIngestCase(tmp_path, [doc])
+    result = case.ingest([doc], complete=lambda _m: "")
 
-    assert staged == []
-    assert any("liteparse" in error and "[documents]" in error for error in errors)
+    assert case.pages(result) == []
+    assert any("liteparse" in error and "[documents]" in error for error in result["errors"])
 
 
 def test_missing_docx_converter_error_names_markitdown_extra(tmp_path, monkeypatch):
     doc = make_doc(tmp_path, suffix=".docx", text="unused")
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
     monkeypatch.setitem(sys.modules, "markitdown", None)
-    staged, errors = ingest([doc], staging_dir=tmp_path / "staging", complete=lambda _m: "")
+    case = GitIngestCase(tmp_path, [doc])
+    result = case.ingest([doc], complete=lambda _m: "")
 
-    assert staged == []
-    assert any("markitdown[docx]" in error for error in errors)
+    assert case.pages(result) == []
+    assert any("markitdown[docx]" in error for error in result["errors"])
 
 
-def test_ingest_never_writes_outside_staging(tmp_path, monkeypatch):
+def test_ingest_writes_only_to_the_selected_git_candidate(tmp_path, monkeypatch):
     doc = make_doc(tmp_path)
-    with pytest.raises(ValueError, match="repo root|served"):
-        ingest([doc], staging_dir=Path.cwd(), complete=lambda _m: response(page_entry()))
-    assert not list(tmp_path.rglob("context_layer"))
+    case = GitIngestCase(tmp_path, [doc])
+    result = case.ingest([doc], complete=lambda _m: response(page_entry()))
+
+    assert result["errors"] == []
+    assert result["written"] == ["context_layer/policies/churned-arr-not-expansion.md"]
+    assert case.pages(result) == [
+        case.worktree / "context_layer/policies/churned-arr-not-expansion.md"
+    ]
+    assert not (case.project / "staging").exists()
+    candidate_files = run_git(
+        case.project, "ls-tree", "-r", "--name-only", result["candidate_revision"]
+    ).splitlines()
+    assert not any(path.startswith("data/docs/") for path in candidate_files)
 
 
 def test_model_stamp_uses_env_loaded_by_the_first_call(tmp_path, monkeypatch):
@@ -567,20 +672,34 @@ def test_model_stamp_uses_env_loaded_by_the_first_call(tmp_path, monkeypatch):
         monkeypatch.setenv("OPENAI_MODEL", "late-model")  # what _load_env does
         return response(page_entry())
 
-    staged, errors = ingest([doc], staging_dir=tmp_path / "staging", complete=complete)
-    assert errors == []
-    assert front_of(staged[0])["generated"]["by"] == "ariadne-ingest:late-model"
+    case = GitIngestCase(tmp_path, [doc])
+    result = case.ingest([doc], complete=complete)
+    assert result["errors"] == []
+    assert front_of(case.pages(result)[0])["generated"]["by"] == "ariadne-ingest:late-model"
 
 
-# --- (f) init scaffolds data/docs/ --------------------------------------------
+# --- (f) init scaffolds operator inputs, not a document upload store -----------
 
 
-def test_init_scaffolds_data_docs(tmp_path):
+def test_init_keeps_private_document_inputs_operator_managed(tmp_path):
     target = tmp_path / "proj"
     assert init_main([str(target)]) == 0
-    assert (target / "data" / "docs").is_dir()
-    assert init_main([str(target)]) == 0  # idempotent re-run still succeeds
-    assert (target / "data" / "docs").is_dir()
+    seed_notes = target / "data" / "seed_notes.md"
+    docs = target / "data" / "docs"
+    assert seed_notes.is_file() and not docs.exists()
+    inert_files = ("ariadne.yaml", "AGENTS.md", ".env.example", ".gitignore")
+    assert all((target / path).is_file() for path in inert_files)
+
+    seed_notes.write_text("# Operator-maintained seed notes\n", encoding="utf-8")
+    private = docs / "contract.md"
+    private.parent.mkdir(parents=True)
+    private.write_text("# Operator-owned original\n", encoding="utf-8")
+    seed_bytes = seed_notes.read_bytes()
+    private_bytes = private.read_bytes()
+
+    assert init_main([str(target)]) == 0  # idempotent re-run never overwrites inputs
+    assert seed_notes.read_bytes() == seed_bytes
+    assert private.read_bytes() == private_bytes
 
 
 # --- (g) converter dispatch table + real conversions behind importorskip ------
@@ -719,43 +838,7 @@ def test_rtf_conversion_via_firecrawl_anydoc(tmp_path):
     assert "Churned ARR" in _convert(doc)
 
 
-# --- (h) staging symlink refusal (init.py component-walk discipline) ---------
-
-
-def test_symlinked_context_layer_refuses_to_stage_anything(tmp_path, monkeypatch):
-    """staging/context_layer -> external dir: an attacker-planted link must
-    receive nothing — staged pages would otherwise bypass the promotion gate."""
-    doc = make_doc(tmp_path)
-    staging = tmp_path / "staging"
-    outside = tmp_path / "context_layer"  # e.g. the served layer
-    outside.mkdir()
-    staging.mkdir()
-    link = staging / "context_layer"
-    link.symlink_to(outside, target_is_directory=True)
-
-    _, staged, errors, _ = run_ingest(tmp_path, doc, [response(page_entry())], monkeypatch)
-
-    assert staged == []  # nothing staged
-    assert not list(outside.iterdir())  # nothing written outside staging
-    (error,) = errors
-    assert "symlink" in error and str(link) in error  # offending path named
-
-
-def test_symlinked_subfolder_component_refuses_too(tmp_path, monkeypatch):
-    """Every component from staging/ down is walked: a link planted deeper
-    (staging/context_layer/policies) is refused just the same."""
-    doc = make_doc(tmp_path)
-    staging = tmp_path / "staging"
-    outside = tmp_path / "outside"
-    (outside / "policies").mkdir(parents=True)
-    (staging / "context_layer").mkdir(parents=True)
-    (staging / "context_layer" / "policies").symlink_to(outside / "policies")
-
-    _, staged, errors, _ = run_ingest(tmp_path, doc, [response(page_entry())], monkeypatch)
-
-    assert staged == []
-    assert not list((outside / "policies").iterdir())
-    assert any("symlink" in error for error in errors)
+# --- (h) untrusted model output ------------------------------------------------
 
 
 # --- (i) secret scan: LLM output is untrusted ------------------------------
@@ -776,7 +859,8 @@ def test_secret_token_in_body_rejects_page_naming_class_not_secret(tmp_path, mon
     )
 
     assert len(calls) == 1 + MAX_RETRIES  # every round violates
-    assert staged == [] and not (staging / "context_layer").exists()
+    case = _case_for_worktree(staging)
+    assert staged == [] and case.revision == case.started["candidate_revision"]
     feedback = calls[1][-1]["content"]
     assert "api_token" in feedback  # pattern CLASS named
     assert secret not in feedback and secret not in str(errors)  # value never echoed
@@ -827,44 +911,53 @@ def test_secret_scan_covers_frontmatter_and_every_pattern_class(
 # --- CLI ----------------------------------------------------------------------
 
 
-def test_cli_stages_and_reports(tmp_path, monkeypatch, capsys):
+def _ingest_cli_args(case: GitIngestCase, doc: Path) -> list[str]:
+    return [
+        str(doc),
+        "--project",
+        str(case.project),
+        "--proposal",
+        case.proposal,
+        "--expected-revision",
+        case.revision,
+    ]
+
+
+def test_cli_commits_and_reports_candidate(tmp_path, monkeypatch, capsys):
     import ariadne.ingest as ingest_module
+    from ariadne import proposals
 
     doc = make_doc(tmp_path)
+    case = GitIngestCase(tmp_path, [doc])
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
     monkeypatch.setattr(ingest_module, "_default_complete", lambda _m: response(page_entry()))
-    code = main([str(doc), "--staging", str(tmp_path / "staging")])
+    code = main(_ingest_cli_args(case, doc))
 
     assert code == 0
     out = capsys.readouterr().out
-    assert "staged:" in out and "[policy]" in out
-    assert (tmp_path / "staging" / "context_layer" / "policies").is_dir()
+    assert "written: context_layer/policies/churned-arr-not-expansion.md" in out
+    assert "candidate:" in out
+    candidate = proposals._load_record(case.project, case.proposal)["candidate_revision"]
+    page = case.worktree / "context_layer/policies/churned-arr-not-expansion.md"
+    assert page.is_file()
+    assert f"candidate: {candidate}" in out
 
 
 def test_cli_fails_on_unsupported_extension(tmp_path, capsys):
     doc = make_doc(tmp_path, suffix=".pages")
-    assert main([str(doc)]) == 1  # the console script raises SystemExit(1) on this
+    case = GitIngestCase(tmp_path, [doc])
+    assert main(_ingest_cli_args(case, doc)) == 1
     assert "[documents]" in capsys.readouterr().err
 
 
-def test_cli_accepts_ignored_db_flag(tmp_path, monkeypatch):
-    import ariadne.ingest as ingest_module
-
+def test_cli_refuses_retired_db_and_staging_selectors(tmp_path, monkeypatch):
     doc = make_doc(tmp_path)
-    monkeypatch.setenv("OPENAI_MODEL", MODEL)
-    monkeypatch.setattr(ingest_module, "_default_complete", lambda _m: response(page_entry()))
-    assert (
-        main(
-            [
-                str(doc),
-                "--db",
-                "examples/retail-demo/data/demo.db",
-                "--staging",
-                str(tmp_path / "s"),
-            ]
-        )
-        == 0
-    )
+    case = GitIngestCase(tmp_path, [doc])
+    before = case.revision
+    with pytest.raises(SystemExit):
+        main([*_ingest_cli_args(case, doc), "--db", "demo.db", "--staging", "staging"])
+    assert case.revision == before
+    assert run_git(case.worktree, "status", "--short") == ""
 
 
 # --- (j) opt-in evidence reconciliation (spec 2026-09-23-0004, issue #12 unit A) ---
@@ -874,8 +967,40 @@ APPROVED = "policies/churned-arr-not-expansion.md"  # context-layer-relative pat
 PROMOTED_AT = "2026-09-24T10:00:00+00:00"
 
 
+_CASE_BY_SNAPSHOT: dict[Path, GitIngestCase] = {}
+
+
+def _case_for_snapshot(snapshot: Path) -> GitIngestCase:
+    return _CASE_BY_SNAPSHOT[snapshot.resolve()]
+
+
+def _human_edit_admitted_page(snapshot: Path, rel: str, transform) -> Path:
+    case = _case_for_snapshot(snapshot)
+    section, filename = rel.split("/", 1)
+    name = filename.removesuffix(".md")
+    path = case.worktree / "context_layer" / rel
+    case.edit_page(section, name, transform(path.read_text(encoding="utf-8")))
+    return _admit_case(case)
+
+
+def _admit_case(case: GitIngestCase) -> Path:
+    snapshot = case.admit()
+    _CASE_BY_SNAPSHOT[snapshot.resolve()] = case
+    case.start_next()
+    return snapshot
+
+
+def _reconcile_candidate(case: GitIngestCase, docs, *, complete=None):
+    result, comparisons = case.reconcile(docs, complete=complete)
+    return case.written_pages(result), result["errors"], comparisons
+
+
+def _reconcile_snapshot(snapshot: Path, docs, *, complete=None):
+    return _reconcile_candidate(_case_for_snapshot(snapshot), docs, complete=complete)
+
+
 def _served_snapshot(served: Path) -> dict[str, bytes]:
-    """Every served file's bytes — reconcile must leave them byte-identical."""
+    """Every immutable admitted file's bytes — reconciliation cannot rewrite it."""
     return {
         p.relative_to(served).as_posix(): p.read_bytes()
         for p in sorted(served.rglob("*"))
@@ -884,120 +1009,89 @@ def _served_snapshot(served: Path) -> dict[str, bytes]:
 
 
 def test_reconcile_journey(tmp_path, monkeypatch):
-    """One public-entry journey: human-edited served Policy preserved, exact-path
-    replacement with source-linked diff, unchanged repeat, provenance-only update,
-    path-drift warning, same-path source mismatch, multi-page preflight, occupied
-    target, and ordinary ingestion unchanged (spec 2026-09-23-0004 AC1–AC3/AC5)."""
+    """Reconcile revisions against an admitted Git base without mutating it."""
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
-    served = tmp_path / "served"
     doc = make_doc(tmp_path)
+    case = GitIngestCase(tmp_path, [doc])
+    first = case.ingest([doc], complete=lambda _m: response(page_entry()))
+    assert first["errors"] == [] and len(first["written"]) == 1
+    snapshot = _admit_case(case)
 
-    # (1) ordinary ingest + human promotion establish the approved page
-    staging1 = tmp_path / "staging-first"
-    staged, errors = ingest([doc], staging_dir=staging1, complete=lambda _m: response(page_entry()))
-    assert errors == [] and len(staged) == 1
-    promote(staging1, served, by="human:alice", assume_yes=True, at=PROMOTED_AT)
-    approved = served / "context_layer" / APPROVED
-    assert approved.is_file()
-
-    # (2) concrete human edit of the served Policy
-    human_text = approved.read_text(encoding="utf-8").replace(
-        "CHURNED rows record lost ARR.", "CHURNED rows record lost ARR. (annotated by the owner.)"
+    page = case.worktree / "context_layer" / APPROVED
+    human_text = page.read_text(encoding="utf-8").replace(
+        "CHURNED rows record lost ARR.",
+        "CHURNED rows record lost ARR. (annotated by the owner.)",
     )
-    approved.write_text(human_text, encoding="utf-8")
+    case.edit_page("policies", "churned-arr-not-expansion", human_text)
+    snapshot = _admit_case(case)
+    immutable = _served_snapshot(snapshot)
 
-    # (3) reconcile a revised document: changed rule text -> proposal at the EXACT
-    # approved path; served tree byte-identical; diff and old/new digest visible
-    doc.write_text("# Renewal notes v2\n\nCHURNED never counts toward expansion or net new ARR.\n")
+    doc.write_text(
+        "# Renewal notes v2\n\nCHURNED never counts toward expansion or net new ARR.\n",
+        encoding="utf-8",
+    )
     changed_entry = page_entry(
-        body="# Churned ARR is not expansion\n\nCHURNED rows record lost ARR and never count "
-        "toward net new either."
+        body="# Churned ARR is not expansion\n\nCHURNED rows record lost ARR and never "
+        "count toward net new either."
     )
-    snapshot = _served_snapshot(served)
-    staging2 = tmp_path / "staging-changed"
     no_conflict = _advisor_aware_complete(changed_entry, json.dumps({"possible_conflict": False}))
-    staged, errors, comparisons = reconcile_ingest(
-        [doc],
-        served_root=served,
-        staging_dir=staging2,
-        complete=no_conflict,
-    )
-    assert errors == []
-    (proposal,) = staged
-    assert proposal == staging2 / "context_layer" / APPROVED  # exact approved path, no suffix
-    assert _served_snapshot(served) == snapshot  # human edit byte-identical, nothing served
+    written, errors, comparisons = _reconcile_candidate(case, [doc], complete=no_conflict)
+    assert errors == [] and len(written) == 1
+    assert written[0] == case.worktree / "context_layer" / APPROVED
+    assert _served_snapshot(snapshot) == immutable
     (record,) = comparisons
     assert record.proposal == APPROVED
     assert record.match == "same-path" and record.change == "changed"
     assert record.old_source is not None
-    assert record.old_source["digest"] != record.new_source["digest"]  # v1 vs v2 doc bytes
+    assert record.old_source["digest"] != record.new_source["digest"]
     assert record.old_source["resource"] == record.new_source["resource"] == str(doc.resolve())
     diff_lines = record.diff.splitlines()
     assert "-CHURNED rows record lost ARR. (annotated by the owner.)" in diff_lines
     assert "+CHURNED rows record lost ARR and never count toward net new either." in diff_lines
-    assert record.advisory.status == "none"  # eligible, but this fake model suggests nothing
-    front = front_of(proposal)
-    assert front["status"] == "draft"  # still a proposal: promotion stays human
+    assert record.advisory.status == "none"
+    front = front_of(written[0])
+    assert front["status"] == "draft"
     assert front["sources"][0]["id"] == hashlib.sha256(doc.read_bytes()).hexdigest()[:12]
 
-    # (4) promote the proposal, then re-reconcile identical input: unchanged, stages nothing
-    promote(staging2, served, by="human:alice", assume_yes=True, at="2026-09-24T11:00:00+00:00")
-    staging3 = tmp_path / "staging-unchanged"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc],
-        served_root=served,
-        staging_dir=staging3,
-        complete=lambda _m: response(changed_entry),
+    snapshot = _admit_case(case)
+    written, errors, comparisons = _reconcile_candidate(
+        case, [doc], complete=lambda _m: response(changed_entry)
     )
-    assert staged == [] and errors == []
+    assert written == [] and errors == []
     (record,) = comparisons
-    assert record.change == "unchanged" and record.staged is None
-    assert not (staging3 / "context_layer").exists()  # nothing at all was staged
+    assert record.change == "unchanged" and record.candidate_path is not None
 
-    # (5) provenance-only: identical rule text, changed source bytes
-    doc.write_text(doc.read_text(encoding="utf-8") + "\n(v2 re-export with new bytes)\n")
-    staging4 = tmp_path / "staging-provenance"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc],
-        served_root=served,
-        staging_dir=staging4,
-        complete=lambda _m: response(changed_entry),  # same page content as served
+    doc.write_text(
+        doc.read_text(encoding="utf-8") + "\n(v2 re-export with new bytes)\n", encoding="utf-8"
     )
-    assert errors == []
-    (proposal,) = staged
-    assert proposal == staging4 / "context_layer" / APPROVED  # corrected citation, exact path
+    written, errors, comparisons = _reconcile_candidate(
+        case, [doc], complete=lambda _m: response(changed_entry)
+    )
+    assert errors == [] and len(written) == 1
     (record,) = comparisons
     assert record.change == "provenance_only"
     digest = hashlib.sha256(doc.read_bytes()).hexdigest()[:12]
-    assert front_of(proposal)["sources"][0]["id"] == digest
+    assert front_of(written[0])["sources"][0]["id"] == digest
 
-    # (6) path drift: same source document, renamed proposal path -> duplicate
-    # warning, staged as a NEW page (never silently retargeted)
-    staging5 = tmp_path / "staging-drift"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc],
-        served_root=served,
-        staging_dir=staging5,
-        complete=lambda _m: response(page_entry(name="churned-arr-not-expansion-v2")),
+    snapshot = _admit_case(case)
+    renamed = page_entry(name="churned-arr-not-expansion-v2")
+    written, errors, comparisons = _reconcile_candidate(
+        case, [doc], complete=lambda _m: response(renamed)
     )
-    assert errors == []
-    (proposal,) = staged
-    assert proposal == staging5 / "context_layer" / "policies" / "churned-arr-not-expansion-v2.md"
+    assert errors == [] and len(written) == 1
+    assert written[0].name == "churned-arr-not-expansion-v2.md"
     (record,) = comparisons
     assert record.match == "new" and record.change == "new"
-    assert record.warning is not None
-    assert "possible duplicate" in record.warning
-    assert "policies/churned-arr-not-expansion.md" in record.warning
-    assert record.staged == proposal  # final path reported explicitly
+    assert record.warning is not None and "possible duplicate" in record.warning
+    assert APPROVED in record.warning
+    assert record.candidate_path == written[0].relative_to(case.worktree).as_posix()
 
-    # (7) same-path source mismatch + multi-page preflight: NOTHING from that doc
     other = tmp_path / "other-playbook.md"
     other.write_text("# Another team's playbook\n\nTheir own rule.\n", encoding="utf-8")
-    staging6 = tmp_path / "staging-mismatch"
-    staged, errors, comparisons = reconcile_ingest(
+    before_revision = case.revision
+    written, errors, comparisons = _reconcile_candidate(
+        case,
         [other],
-        served_root=served,
-        staging_dir=staging6,
         complete=lambda _m: response(
             page_entry(
                 name="seat-based-renewal-window",
@@ -1005,107 +1099,51 @@ def test_reconcile_journey(tmp_path, monkeypatch):
                 description="Seats renew in the booked month.",
                 body="# Seat-based renewal window\n\nSeats renew in the booked month.",
             ),
-            page_entry(),  # same path as the approved page, WRONG source document
+            page_entry(),
         ),
     )
-    assert staged == [] and comparisons == []
-    assert any("identity conflict" in e and APPROVED in e for e in errors)
-    assert not (staging6 / "context_layer").exists()  # the innocent page staged nothing either
-
-    # (8) occupied replacement target: error, no -2 suffix, no overwrite
-    staging7 = tmp_path / "staging-occupied"
-    occupied = staging7 / "context_layer" / APPROVED
-    occupied.parent.mkdir(parents=True)
-    occupied.write_text("---\ntype: policy\n---\n\nearlier proposal\n", encoding="utf-8")
-    staged, errors, comparisons = reconcile_ingest(
-        [doc],
-        served_root=served,
-        staging_dir=staging7,
-        complete=lambda _m: response(
-            page_entry(body="# Churned ARR is not expansion\n\nRewritten again for v3.")
-        ),
-    )
-    assert staged == [] and comparisons == []
-    assert any("occupied" in e and APPROVED in e for e in errors)
-    assert occupied.read_text(encoding="utf-8").startswith("---\ntype: policy")  # untouched
-
-    # (9) ordinary mode keeps its collision-suffix behavior and 2-tuple shape
-    staging8 = tmp_path / "staging-ordinary"
-    existing = staging8 / "context_layer" / APPROVED
-    existing.parent.mkdir(parents=True)
-    existing.write_text("x", encoding="utf-8")
-    staged, errors = ingest(
-        [doc],
-        staging_dir=staging8,
-        complete=lambda _m: response(
-            page_entry(body="# Churned ARR is not expansion\n\nRewritten again for v3.")
-        ),
-    )
-    assert errors == []
-    assert staged == [staging8 / "context_layer" / "policies" / "churned-arr-not-expansion-2.md"]
-
-
-def test_reconcile_invalid_served_root_fails_before_model_or_writes(tmp_path, monkeypatch):
-    """A served root without context_layer/ fails before any model call or write."""
-
-    def boom(_messages):
-        raise AssertionError("model must not be called")
-
-    staging = tmp_path / "staging"
-    with pytest.raises(ValueError, match="context_layer"):
-        reconcile_ingest(
-            [make_doc(tmp_path)],
-            served_root=tmp_path / "nope",
-            staging_dir=staging,
-            complete=boom,
-        )
-    assert not staging.exists()  # nothing was staged
+    assert written == [] and comparisons == []
+    assert any("identity conflict" in error and APPROVED in error for error in errors)
+    assert case.revision == before_revision
 
 
 def test_cli_reconcile_reports_match_diff_and_sources(tmp_path, monkeypatch, capsys):
-    """--reconcile --served prints the match, change class, old/new source digests
-    and the bounded diff, staging the proposal at the exact approved path."""
+    """The CLI reports a Git candidate comparison without editing admission."""
     import ariadne.ingest as ingest_module
 
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
     doc = make_doc(tmp_path)
-    monkeypatch.setattr(ingest_module, "_default_complete", lambda _m: response(page_entry()))
-    assert main([str(doc), "--staging", str(tmp_path / "s1")]) == 0
-    promote(tmp_path / "s1", tmp_path / "served", by="human:alice", assume_yes=True, at=PROMOTED_AT)
-    approved = tmp_path / "served" / "context_layer" / APPROVED
-    approved.write_text(
-        approved.read_text(encoding="utf-8").replace(
+    case = GitIngestCase(tmp_path, [doc])
+    first = case.ingest([doc], complete=lambda _m: response(page_entry()))
+    assert first["errors"] == []
+    _admit_case(case)
+
+    page = case.worktree / "context_layer" / APPROVED
+    case.edit_page(
+        "policies",
+        "churned-arr-not-expansion",
+        page.read_text(encoding="utf-8").replace(
             "CHURNED rows record lost ARR.", "CHURNED rows record lost ARR. (owner note)"
         ),
-        encoding="utf-8",
     )
-
+    snapshot = _admit_case(case)
+    immutable = _served_snapshot(snapshot)
     doc.write_text("# Renewal notes v2\n\nCHURNED never counts toward net new ARR.\n")
     monkeypatch.setattr(
         ingest_module,
         "_default_complete",
         lambda _m: response(page_entry(body="# Churned ARR is not expansion\n\nRewritten for v2.")),
     )
-    code = main(
-        [
-            str(doc),
-            "--reconcile",
-            "--served",
-            str(tmp_path / "served"),
-            "--staging",
-            str(tmp_path / "s2"),
-        ]
-    )
-    assert code == 0
+    assert main([*_ingest_cli_args(case, doc), "--reconcile"]) == 0
     out = capsys.readouterr().out
     assert f"reconcile: {APPROVED}" in out and "same-path" in out and "changed" in out
     assert "old source:" in out and "new source:" in out
     assert "-CHURNED rows record lost ARR. (owner note)" in out
-    assert (tmp_path / "s2" / "context_layer" / APPROVED).is_file()
+    assert (case.worktree / "context_layer" / APPROVED).is_file()
+    assert _served_snapshot(snapshot) == immutable
 
 
-def test_cli_reconcile_requires_served_before_any_model_call(tmp_path, monkeypatch, capsys):
-    """--reconcile without --served is a CLI error before any model call."""
+def test_cli_reconcile_requires_candidate_identity_before_model_call(tmp_path, monkeypatch, capsys):
     import ariadne.ingest as ingest_module
 
     def boom(_messages):
@@ -1114,37 +1152,16 @@ def test_cli_reconcile_requires_served_before_any_model_call(tmp_path, monkeypat
     monkeypatch.setattr(ingest_module, "_default_complete", boom)
     with pytest.raises(SystemExit):
         main([str(make_doc(tmp_path)), "--reconcile"])
-    assert "--served" in capsys.readouterr().err
-
-
-# --- (k) immediate-review fix pass (issue #12 unit A, authorized findings) ------
+    assert "--project" in capsys.readouterr().err
 
 
 def _approved_state(tmp_path, entry, text=None):
-    """Ingest one page entry and promote it: returns (served root, document)."""
+    """Ingest and explicitly Git-admit one synthetic page; return snapshot and case."""
     doc = make_doc(tmp_path, text=text)
-    staging = tmp_path / "staging-seed"
-    staged, errors = ingest([doc], staging_dir=staging, complete=lambda _m: response(entry))
-    assert errors == [] and len(staged) == 1
-    promote(staging, tmp_path / "served", by="human:alice", assume_yes=True, at=PROMOTED_AT)
-    return tmp_path / "served", doc
-
-
-def test_reconcile_rejects_staging_inside_the_served_root(tmp_path):
-    """Finding 1: staging_dir overlapping the caller-selected served root would
-    let a new page land directly in served state, bypassing promotion."""
-    served, doc = _approved_state(tmp_path, page_entry())
-
-    def boom(_messages):
-        raise AssertionError("model must not be called")
-
-    with pytest.raises(ValueError, match="served root"):
-        reconcile_ingest([doc], served_root=served, staging_dir=served, complete=boom)
-    with pytest.raises(ValueError, match="served root"):
-        reconcile_ingest(
-            [doc], served_root=served, staging_dir=served / "nested-staging", complete=boom
-        )
-    assert not (served / "nested-staging").exists()  # nothing was written
+    case = GitIngestCase(tmp_path, [doc])
+    result = case.ingest([doc], complete=lambda _m: response(entry))
+    assert result["errors"] == [] and len(result["written"]) == 1
+    return _admit_case(case), doc
 
 
 def test_reconcile_detects_changed_table_grain_as_changed(tmp_path):
@@ -1164,17 +1181,17 @@ def test_reconcile_detects_changed_table_grain_as_changed(tmp_path):
         body="# Renewals\n\nOne row per renewal event.",
     )
     served, doc = _approved_state(tmp_path, entry)
-    page = served / "context_layer" / "tables" / "renewals.md"
-    page.write_text(
-        page.read_text(encoding="utf-8").replace(
-            "cardinality_enforcement: STRICT_1_TO_1", "cardinality_enforcement: ONE_TO_MANY"
-        ),
-        encoding="utf-8",
+    case = _case_for_snapshot(served)
+    page = case.worktree / "context_layer" / "tables" / "renewals.md"
+    edited = page.read_text(encoding="utf-8").replace(
+        "cardinality_enforcement: STRICT_1_TO_1", "cardinality_enforcement: ONE_TO_MANY"
     )
+    case.edit_page("tables", "renewals", edited)
+    _admit_case(case)
 
-    staging = tmp_path / "staging-grain"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc], served_root=served, staging_dir=staging, complete=lambda _m: response(entry)
+    staging = case.worktree
+    staged, errors, comparisons = _reconcile_candidate(
+        case, [doc], complete=lambda _m: response(entry)
     )
     assert errors == []
     (record,) = comparisons
@@ -1188,22 +1205,27 @@ def test_reconcile_uses_the_matching_approved_source_for_identity(tmp_path):
     """Finding 3: with several approved citations, old source/digest must follow
     the entry that actually matched, not the first entry."""
     served, doc = _approved_state(tmp_path, page_entry())
-    page = served / "context_layer" / APPROVED
-    page.write_text(
-        page.read_text(encoding="utf-8").replace(
-            "sources:\n",
-            "sources:\n"
-            "- id: '000000000000'\n"
-            "  resource: /elsewhere/original-handbook.docx\n"
-            "  title: original-handbook.docx\n",
-            1,
-        ),
-        encoding="utf-8",
+    case = _case_for_snapshot(served)
+    other = tmp_path / "original-handbook.docx"
+    other.write_bytes(b"another approved source")
+    page = case.worktree / "context_layer" / APPROVED
+    content = page.read_text(encoding="utf-8")
+    metadata = front_of(page)
+    metadata["sources"].insert(
+        0,
+        {
+            "id": hashlib.sha256(other.read_bytes()).hexdigest()[:12],
+            "resource": str(other.resolve()),
+            "title": other.name,
+        },
     )
+    body = content.split("---", 2)[2]
+    edited = f"---\n{yaml.safe_dump(metadata, sort_keys=False)}---{body}"
+    case.edit_page("policies", "churned-arr-not-expansion", edited)
+    _admit_case(case)
 
-    staging = tmp_path / "staging-two-sources"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc], served_root=served, staging_dir=staging, complete=lambda _m: response(page_entry())
+    staged, errors, comparisons = _reconcile_candidate(
+        case, [doc], complete=lambda _m: response(page_entry())
     )
     assert errors == []
     assert staged == []  # identical page and identical MATCHED digest: unchanged
@@ -1214,68 +1236,38 @@ def test_reconcile_uses_the_matching_approved_source_for_identity(tmp_path):
     assert record.old_source["digest"] == hashlib.sha256(doc.read_bytes()).hexdigest()[:12]
 
 
-def test_reconcile_duplicate_scan_never_reads_symlinked_candidates(tmp_path):
-    """Finding 4: duplicate discovery must not read through a symlink planted in
-    the served tree (an out-of-layer read steered by the proposed path)."""
-    served, doc = _approved_state(tmp_path, page_entry())
-    outside = tmp_path / "outside" / "decoy.md"  # content lives OUTSIDE the served root
-    outside.parent.mkdir(parents=True)
-    outside.write_text(
-        "---\ntype: policy\ntitle: Churned ARR is not expansion\n---\n\ndecoy\n",
-        encoding="utf-8",
-    )
-    # sorts BEFORE the real page, so an unguarded scan would read it first
-    (served / "context_layer" / "policies" / "aaa-decoy.md").symlink_to(outside)
-
-    staging = tmp_path / "staging-scan"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc],
-        served_root=served,
-        staging_dir=staging,
-        complete=lambda _m: response(page_entry(name="churned-arr-not-expansion-v2")),
-    )
-    assert errors == []
-    (proposal,) = staged  # the unmatched new page still stages
-    assert proposal.name == "churned-arr-not-expansion-v2.md"
-    (record,) = comparisons
-    assert record.warning is not None
-    assert "possible duplicate" in record.warning
-    assert "aaa-decoy.md" not in record.warning  # the symlinked decoy was never read
-    assert "policies/churned-arr-not-expansion.md" in record.warning  # the real suspect
-
-
 def test_reconcile_duplicate_proposed_path_detected_even_when_first_is_unchanged(tmp_path):
     """Finding 5: the same proposed path emitted twice must fail preflight even
     when the first occurrence classifies unchanged (it never enters the plan)."""
     served, doc = _approved_state(tmp_path, page_entry())
     changed = page_entry(body="# Churned ARR is not expansion\n\nRewritten body.")
 
-    staging = tmp_path / "staging-dup"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc],
-        served_root=served,
-        staging_dir=staging,
-        complete=lambda _m: response(page_entry(), changed),  # same path: unchanged, changed
+    case = _case_for_snapshot(served)
+    candidate_page = case.worktree / "context_layer" / APPROVED
+    original = candidate_page.read_bytes()
+    before_revision = case.revision
+    staged, errors, comparisons = _reconcile_candidate(
+        case, [doc], complete=lambda _m: response(page_entry(), changed)
     )
     assert staged == [] and comparisons == []
     assert any("duplicate proposal path" in e and APPROVED in e for e in errors)
-    assert not (staging / "context_layer").exists()  # preflight failed: nothing staged
+    assert case.revision == before_revision
+    assert candidate_page.read_bytes() == original
 
 
 # --- (l) opt-in conflict advisory (spec 2026-09-23-0004 AC4, issue #12 unit B) ---
 
 
 def _approved_policy_with_human_edit(tmp_path, *, annotation="(owner annotation)"):
-    """Approved policy + human-edited served body + a revised document and its
-    changed rendering; returns (served, doc, changed_entry)."""
+    """Admit a Policy, a human Git edit and a changed external source snapshot."""
     served, doc = _approved_state(tmp_path, page_entry())
-    approved = served / "context_layer" / APPROVED
-    approved.write_text(
-        approved.read_text(encoding="utf-8").replace(
-            "CHURNED rows record lost ARR.", f"CHURNED rows record lost ARR. {annotation}"
-        ),
-        encoding="utf-8",
+    case = _case_for_snapshot(served)
+    candidate = case.worktree / "context_layer" / APPROVED
+    edited = candidate.read_text(encoding="utf-8").replace(
+        "CHURNED rows record lost ARR.", f"CHURNED rows record lost ARR. {annotation}"
     )
+    case.edit_page("policies", "churned-arr-not-expansion", edited)
+    served = _admit_case(case)
     doc.write_text(
         "# Renewal notes v2\n\nCHURNED rows never count toward expansion nor net new ARR.\n"
     )
@@ -1311,13 +1303,11 @@ def test_reconcile_advisory_supported_quotes_for_changed_policy(tmp_path, monkey
             }
         )
 
-    staging = tmp_path / "staging-advisory"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc], served_root=served, staging_dir=staging, complete=complete
-    )
+    candidate = _case_for_snapshot(served).worktree
+    staged, errors, comparisons = _reconcile_snapshot(served, [doc], complete=complete)
     assert errors == []
-    (proposal,) = staged  # deterministic staging is independent of the advisory
-    assert proposal == staging / "context_layer" / APPROVED
+    (proposal,) = staged  # deterministic candidate edits are independent of the advisory
+    assert proposal == candidate / "context_layer" / APPROVED
     (record,) = comparisons
     assert record.change == "changed"
 
@@ -1358,13 +1348,11 @@ def test_reconcile_advisory_refuses_credential_pattern_before_any_egress(tmp_pat
         calls.append(messages)
         return response(changed_entry)
 
-    staging = tmp_path / "staging-refused"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc], served_root=served, staging_dir=staging, complete=complete
-    )
+    candidate = _case_for_snapshot(served).worktree
+    staged, errors, comparisons = _reconcile_snapshot(served, [doc], complete=complete)
     assert errors == []
-    (proposal,) = staged  # staging is unaffected by the refusal
-    assert proposal == staging / "context_layer" / APPROVED
+    (proposal,) = staged  # the candidate write is unaffected by the advisory refusal
+    assert proposal == candidate / "context_layer" / APPROVED
     (record,) = comparisons
     assert record.change == "changed" and record.diff  # deterministic diff stands
     advisory = record.advisory
@@ -1393,12 +1381,9 @@ def test_reconcile_advisory_invented_quotes_are_unverified(tmp_path):
             )
         return response(changed_entry)
 
-    staging = tmp_path / "staging-invented"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc], served_root=served, staging_dir=staging, complete=complete
-    )
+    staged, errors, comparisons = _reconcile_snapshot(served, [doc], complete=complete)
     assert errors == []
-    assert len(staged) == 1  # safe staging persists
+    assert len(staged) == 1  # safe candidate edit persists
     (record,) = comparisons
     advisory = record.advisory
     assert advisory.status == "unverified"
@@ -1418,13 +1403,11 @@ def test_reconcile_advisory_provider_failure_is_unavailable_but_stages(tmp_path)
             raise RuntimeError("provider exploded")
         return response(changed_entry)
 
-    staging = tmp_path / "staging-provider"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc], served_root=served, staging_dir=staging, complete=complete
-    )
+    candidate = _case_for_snapshot(served).worktree
+    staged, errors, comparisons = _reconcile_snapshot(served, [doc], complete=complete)
     assert errors == []
-    (proposal,) = staged  # staging happened despite the failure
-    assert proposal == staging / "context_layer" / APPROVED
+    (proposal,) = staged  # candidate edit happened despite the advisory failure
+    assert proposal == candidate / "context_layer" / APPROVED
     (record,) = comparisons
     assert record.change == "changed" and "-CHURNED" in record.diff  # diff still visible
     assert record.advisory.status == "unavailable"
@@ -1442,10 +1425,7 @@ def test_reconcile_advisory_no_suggestion_is_not_proof_of_consistency(tmp_path):
             return json.dumps({"possible_conflict": False})
         return response(changed_entry)
 
-    staging = tmp_path / "staging-none"
-    _, errors, comparisons = reconcile_ingest(
-        [doc], served_root=served, staging_dir=staging, complete=complete
-    )
+    _, errors, comparisons = _reconcile_snapshot(served, [doc], complete=complete)
     assert errors == []
     (record,) = comparisons
     assert record.advisory.status == "none"
@@ -1453,8 +1433,7 @@ def test_reconcile_advisory_no_suggestion_is_not_proof_of_consistency(tmp_path):
 
 
 def test_reconcile_advisory_skips_ineligible_pages(tmp_path):
-    """No advisory call for unchanged, provenance-only, new, non-Policy or
-    body-identical (title-only) changes: exactly one model call — distillation."""
+    """Unchanged, provenance-only, new, non-Policy and title-only pages are not advised."""
     table_entry = page_entry(
         folder="tables",
         name="renewals",
@@ -1466,10 +1445,16 @@ def test_reconcile_advisory_skips_ineligible_pages(tmp_path):
         body="# Renewals\n\nOne row per renewal event.",
     )
 
-    def scenario(base: Path, entry, doc_mutate, served_edit) -> Reconciliation:
+    def scenario(base: Path, entry, doc_mutate, page_transform) -> Reconciliation:
         base.mkdir(parents=True)
-        served, doc = _approved_state(base, entry)
-        served_edit(served / "context_layer" / entry["folder"] / f"{entry['name']}.md")
+        snapshot, doc = _approved_state(base, entry)
+        case = _case_for_snapshot(snapshot)
+        path = case.worktree / "context_layer" / entry["folder"] / f"{entry['name']}.md"
+        content = path.read_text(encoding="utf-8")
+        edited = page_transform(content)
+        if edited != content:
+            case.edit_page(entry["folder"], entry["name"], edited)
+            snapshot = _admit_case(case)
         doc_mutate(doc)
         calls: list[list[dict]] = []
 
@@ -1477,69 +1462,59 @@ def test_reconcile_advisory_skips_ineligible_pages(tmp_path):
             calls.append(messages)
             return response(entry)
 
-        _, errors, comparisons = reconcile_ingest(
-            [doc], served_root=served, staging_dir=base / "staging", complete=complete
-        )
-        assert errors == [] and len(calls) == 1, errors  # distillation ONLY
+        _, errors, comparisons = _reconcile_snapshot(snapshot, [doc], complete=complete)
+        assert errors == []
+        assert len(calls) == 1  # distillation only
         (record,) = comparisons
         return record
 
-    def human_edit_body(path: Path) -> None:
-        path.write_text(
-            path.read_text(encoding="utf-8").replace("One row per renewal event.", "Human edit."),
-            encoding="utf-8",
+    def identity(content):
+        return content
+
+    def body_edit(content):
+        return content.replace("One row per renewal event.", "Human edit.")
+
+    def title_edit(content):
+        return content.replace(
+            "title: Churned ARR is not expansion", "title: Retitled by the owner"
         )
 
-    def human_edit_title(path: Path) -> None:
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                "title: Churned ARR is not expansion", "title: Retitled by the owner"
-            ),
-            encoding="utf-8",
-        )
-
-    # unchanged: same document bytes, same rendered content, served untouched
-    record = scenario(tmp_path / "c1", page_entry(), lambda doc: None, lambda path: None)
+    record = scenario(tmp_path / "c1", page_entry(), lambda doc: None, identity)
     assert record.change == "unchanged" and record.advisory.status == "not_applicable"
-    # provenance-only: new document bytes, identical rendered content, served untouched
     record = scenario(
         tmp_path / "c2",
         page_entry(),
         lambda doc: doc.write_text(doc.read_text(encoding="utf-8") + "\n(re-export)\n"),
-        lambda path: None,
+        identity,
     )
     assert record.change == "provenance_only" and record.advisory.status == "not_applicable"
-    # new unmatched page (renamed path): staged as new, never advised
-    renamed = page_entry(name="churned-arr-not-expansion-v2")
+
     base = tmp_path / "c3"
-    base.mkdir(parents=True)
-    served, doc = _approved_state(base, page_entry())
+    base.mkdir()
+    snapshot, doc = _approved_state(base, page_entry())
     calls = []
+    renamed = page_entry(name="churned-arr-not-expansion-v2")
 
     def complete(messages):
         calls.append(messages)
         return response(renamed)
 
-    _, errors, comparisons = reconcile_ingest(
-        [doc], served_root=served, staging_dir=base / "staging", complete=complete
-    )
+    _, errors, comparisons = _reconcile_snapshot(snapshot, [doc], complete=complete)
     assert errors == [] and len(calls) == 1
     (record,) = comparisons
     assert record.change == "new" and record.advisory.status == "not_applicable"
-    # non-Policy: changed approved table body
-    record = scenario(tmp_path / "c4", table_entry, lambda doc: None, human_edit_body)
+
+    record = scenario(tmp_path / "c4", table_entry, lambda doc: None, body_edit)
+    assert record.match == "same-path" and record.change == "changed"
+    assert record.advisory.status == "not_applicable"
+
+    record = scenario(tmp_path / "c5", page_entry(), lambda doc: None, title_edit)
     assert record.change == "changed" and record.advisory.status == "not_applicable"
-    # Policy with title-only change: body identical
-    record = scenario(tmp_path / "c5", page_entry(), lambda doc: None, human_edit_title)
-    assert record.change == "changed" and record.advisory.status == "not_applicable"
 
 
-def test_reconcile_discloses_no_approved_policy_outside_eligibility(tmp_path):
-    """Source mismatch and a symlinked approved path never send approved text:
-    the only model call is the document distillation."""
-    served, doc = _approved_state(tmp_path, page_entry())
-
-    # (a) same-path source mismatch: preflight error, nothing staged
+def test_reconcile_source_mismatch_never_discloses_approved_policy(tmp_path):
+    """A same-path source mismatch fails before approved Policy text can egress."""
+    served, _doc = _approved_state(tmp_path, page_entry())
     other = tmp_path / "other-playbook.md"
     other.write_text("# Another playbook\n\nTheir rule.\n", encoding="utf-8")
     calls: list[list[dict]] = []
@@ -1548,39 +1523,10 @@ def test_reconcile_discloses_no_approved_policy_outside_eligibility(tmp_path):
         calls.append(messages)
         return response(page_entry())
 
-    staging = tmp_path / "staging-mismatch-b"
-    staged, errors, _ = reconcile_ingest(
-        [other], served_root=served, staging_dir=staging, complete=complete
-    )
-    assert staged == [] and any("identity conflict" in e for e in errors)
-    assert len(calls) == 1  # distillation only
-    approved_body = "CHURNED rows record lost ARR."
-    assert not any(approved_body in str(c) for c in calls)  # no approved text disclosed
-
-    # (b) symlinked approved component: refused before any approved read
-    base = tmp_path / "case-b"
-    base.mkdir(parents=True)
-    outside = tmp_path / "elsewhere"
-    outside.mkdir()
-    served2, doc2 = _approved_state(base, page_entry())
-    (served2 / "context_layer" / "policies").rename(outside / "policies")
-    (served2 / "context_layer" / "policies").symlink_to(outside / "policies")
-    calls2: list[list[dict]] = []
-
-    def complete2(messages):
-        calls2.append(messages)
-        return response(page_entry())
-
-    staging2 = tmp_path / "staging-symlink-b"
-    staged2, errors2, _ = reconcile_ingest(
-        [doc2], served_root=served2, staging_dir=staging2, complete=complete2
-    )
-    assert staged2 == [] and any("symlink" in e for e in errors2)
-    assert len(calls2) == 1
-    assert not any(approved_body in str(c) for c in calls2)
-
-
-# --- (m) unit-B fix pass (parent-authorized P1/P2/P3 findings) -----------------
+    staged, errors, _ = _reconcile_snapshot(served, [other], complete=complete)
+    assert staged == [] and any("identity conflict" in error for error in errors)
+    assert len(calls) == 1
+    assert not any("CHURNED rows record lost ARR." in str(call) for call in calls)
 
 
 def _advisor_aware_complete(changed_entry, advisory_answer):
@@ -1621,13 +1567,11 @@ def test_reconcile_advisory_uses_the_first_converted_text_when_doc_changes_mid_r
         doc.write_text("# totally different\n\nreplacement content\n", encoding="utf-8")
         return response(changed_entry)
 
-    staging = base / "staging"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc], served_root=served, staging_dir=staging, complete=complete
-    )
+    candidate = _case_for_snapshot(served).worktree
+    staged, errors, comparisons = _reconcile_snapshot(served, [doc], complete=complete)
     assert errors == []
     (proposal,) = staged
-    assert proposal == staging / "context_layer" / APPROVED
+    assert proposal == candidate / "context_layer" / APPROVED
     (record,) = comparisons
     assert record.change == "changed" and record.diff  # deterministic result stands
     assert record.advisory.status == "supported"  # verified against the FIRST text
@@ -1647,12 +1591,9 @@ def test_reconcile_advisory_uses_the_first_converted_text_when_doc_changes_mid_r
         doc2.unlink()  # the document vanishes mid-run
         return response(changed_entry2)
 
-    staging2 = base2 / "staging"
-    staged2, errors2, comparisons2 = reconcile_ingest(
-        [doc2], served_root=served2, staging_dir=staging2, complete=complete2
-    )
+    staged2, errors2, comparisons2 = _reconcile_snapshot(served2, [doc2], complete=complete2)
     assert errors2 == []
-    (proposal2,) = staged2  # staging already happened before the advisory
+    (proposal2,) = staged2  # candidate edit happened before the advisory
     assert proposal2.is_file()
     (record2,) = comparisons2
     assert record2.change == "changed" and record2.diff
@@ -1668,12 +1609,9 @@ def test_reconcile_advisory_malformed_conflict_flag_is_unavailable(tmp_path):
         json.dumps({"possible_conflict": "maybe"}),
         json.dumps({"possible_conflict": None}),
     ]
-    for i, payload in enumerate(payloads):
-        _, errors, comparisons = reconcile_ingest(
-            [doc],
-            served_root=served,
-            staging_dir=tmp_path / f"staging-bad-{i}",
-            complete=_advisor_aware_complete(changed_entry, payload),
+    for payload in payloads:
+        _, errors, comparisons = _reconcile_snapshot(
+            served, [doc], complete=_advisor_aware_complete(changed_entry, payload)
         )
         assert errors == []
         (record,) = comparisons
@@ -1684,150 +1622,91 @@ def test_reconcile_advisory_malformed_conflict_flag_is_unavailable(tmp_path):
 def test_reconcile_credential_refusal_redacts_secret_from_diff_and_cli_output(
     tmp_path, monkeypatch, capsys
 ):
-    """P3: when the approved Policy matches a credential pattern, the returned
-    AND printed diff must not echo the suspected secret — the diff stays useful
-    and the staged proposal persists."""
     secret = "sk-a1B2c3D4e5F6g7H8i9J0k1"
     served, doc, changed_entry = _approved_policy_with_human_edit(
         tmp_path, annotation=f"(note: {secret} embedded)"
     )
-
-    staging = tmp_path / "staging-redact"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc],
-        served_root=served,
-        staging_dir=staging,
-        complete=lambda _m: response(changed_entry),
+    case = _case_for_snapshot(served)
+    staged, errors, comparisons = _reconcile_candidate(
+        case, [doc], complete=lambda _m: response(changed_entry)
     )
-    assert errors == []
-    (proposal,) = staged
-    assert proposal.is_file()  # staging unaffected
+    assert errors == [] and len(staged) == 1
     (record,) = comparisons
     assert record.change == "changed"
     assert record.advisory.status == "unavailable" and "api_token" in record.advisory.reason
-    assert record.diff  # the bounded diff survives...
-    assert secret not in record.diff  # ...without the token...
-    assert "[redacted api_token]" in record.diff  # ...class named in its place
+    assert secret not in record.diff and "[redacted api_token]" in record.diff
     assert secret not in str(record)
 
-    # CLI review output: the same redaction on stdout
     import ariadne.ingest as ingest_module
 
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
     base = tmp_path / "cli"
-    base.mkdir(parents=True)
+    base.mkdir()
     served2, doc2, changed_entry2 = _approved_policy_with_human_edit(
         base, annotation=f"(note: {secret} embedded)"
     )
+    case2 = _case_for_snapshot(served2)
     monkeypatch.setattr(ingest_module, "_default_complete", lambda _m: response(changed_entry2))
-    code = main(
-        [
-            str(doc2),
-            "--reconcile",
-            "--served",
-            str(served2),
-            "--staging",
-            str(base / "s2"),
-        ]
-    )
-    assert code == 0
+    assert main([*_ingest_cli_args(case2, doc2), "--reconcile"]) == 0
     out = capsys.readouterr().out
-    assert secret not in out
-    assert "[redacted api_token]" in out
-    assert (base / "s2" / "context_layer" / APPROVED).is_file()
-
-
-# --- (n) owner-authorized exception: entire PEM block redacted from the diff ----
+    assert secret not in out and "[redacted api_token]" in out
+    assert (case2.worktree / "context_layer" / APPROVED).is_file()
 
 
 def test_reconcile_credential_refusal_redacts_entire_pem_block_from_diff_and_cli(
     tmp_path, monkeypatch, capsys
 ):
-    """A recognized multiline PEM private key in the approved body must vanish
-    WHOLE from the returned and printed diff — BEGIN header, payload and END
-    marker — while the refusal, staging and surrounding diff stay intact."""
     pem_payload = "MIIEowIBAAKCAQEA7SYNTHETICnotAREALkeyPAYLOAD0123456789=="
     pem = f"-----BEGIN RSA PRIVATE KEY-----\n{pem_payload}\n-----END RSA PRIVATE KEY-----"
     served, doc, changed_entry = _approved_policy_with_human_edit(tmp_path, annotation=f"({pem})")
-    calls: list[list[dict]] = []
-
-    def complete(messages):
-        calls.append(messages)
-        return response(changed_entry)
-
-    staging = tmp_path / "staging-pem"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc], served_root=served, staging_dir=staging, complete=complete
+    case = _case_for_snapshot(served)
+    staged, errors, comparisons = _reconcile_candidate(
+        case, [doc], complete=lambda _m: response(changed_entry)
     )
-    assert errors == []
-    (proposal,) = staged  # the refusal never blocks safe staging
-    assert proposal.is_file() and "MIIEow" not in proposal.read_text(encoding="utf-8")
+    assert errors == [] and len(staged) == 1
     (record,) = comparisons
     assert record.change == "changed"
     assert record.advisory.status == "unavailable" and "private_key" in record.advisory.reason
-    assert len(calls) == 1  # refusal preceded any egress
-    assert record.diff  # the bounded diff survives...
-    assert pem_payload not in record.diff  # ...without the key payload...
-    assert "BEGIN RSA PRIVATE KEY" not in record.diff  # ...or the header...
-    assert "END RSA PRIVATE KEY" not in record.diff  # ...or the END marker
-    assert "[redacted private_key]" in record.diff  # one marker names the class
-    assert "CHURNED rows record lost ARR" in record.diff  # surrounding text kept useful
-    # the served page and staged proposal are never altered by redaction
+    assert pem_payload not in record.diff
+    assert "BEGIN RSA PRIVATE KEY" not in record.diff
+    assert "END RSA PRIVATE KEY" not in record.diff
+    assert "[redacted private_key]" in record.diff
+    assert "CHURNED rows record lost ARR" in record.diff
     assert pem_payload in (served / "context_layer" / APPROVED).read_text(encoding="utf-8")
 
-    # CLI review output: same whole-block redaction on stdout
     import ariadne.ingest as ingest_module
 
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
     base = tmp_path / "cli"
-    base.mkdir(parents=True)
+    base.mkdir()
     served2, doc2, changed_entry2 = _approved_policy_with_human_edit(base, annotation=f"({pem})")
+    case2 = _case_for_snapshot(served2)
     monkeypatch.setattr(ingest_module, "_default_complete", lambda _m: response(changed_entry2))
-    code = main(
-        [
-            str(doc2),
-            "--reconcile",
-            "--served",
-            str(served2),
-            "--staging",
-            str(base / "s2"),
-        ]
-    )
-    assert code == 0
+    assert main([*_ingest_cli_args(case2, doc2), "--reconcile"]) == 0
     out = capsys.readouterr().out
     assert pem_payload not in out and "PRIVATE KEY" not in out
     assert "[redacted private_key]" in out
-    assert (base / "s2" / "context_layer" / APPROVED).is_file()
+    assert (case2.worktree / "context_layer" / APPROVED).is_file()
 
 
-# --- (o) candidate-review fix: description-token refusal + all-diff redaction ---
-
-
-def _with_description_token(served: Path, token_line: str) -> None:
-    """Human-edit the approved Policy's frontmatter description to carry a
-    credential-looking assignment (metadata, not body)."""
-    page = served / "context_layer" / APPROVED
-    page.write_text(
-        page.read_text(encoding="utf-8").replace(
+def _with_description_token(snapshot: Path, token_line: str) -> Path:
+    """Make and admit a Git edit to the Policy's source-authored metadata."""
+    return _human_edit_admitted_page(
+        snapshot,
+        APPROVED,
+        lambda content: content.replace(
             "description: CHURNED renewal rows are excluded from expansion totals.",
             f"description: {token_line}",
         ),
-        encoding="utf-8",
     )
 
 
 def test_reconcile_credential_in_approved_description_refuses_and_redacts(
     tmp_path, monkeypatch, capsys
 ):
-    """Candidate-review finding: a credential token in the approved Policy's
-    frontmatter DESCRIPTION must (a) trigger the refusal with NO extra model
-    call and an advisory naming only the credential class, (b) never echo in
-    the returned diff or CLI output while the diff stays useful, and (c) leave
-    staging exact and the served page untouched. Metadata-only changes get the
-    same redaction."""
     token = "hunter2-rotation"
     served, doc, changed_entry = _approved_policy_with_human_edit(tmp_path)
-    _with_description_token(served, f"ops note (password = {token}) for renewals.")
+    served = _with_description_token(served, f"ops note (password = {token}) for renewals.")
     snapshot = _served_snapshot(served)
     calls: list[list[dict]] = []
 
@@ -1835,75 +1714,59 @@ def test_reconcile_credential_in_approved_description_refuses_and_redacts(
         calls.append(messages)
         return response(changed_entry)
 
-    staging = tmp_path / "staging-desc-token"
-    staged, errors, comparisons = reconcile_ingest(
-        [doc], served_root=served, staging_dir=staging, complete=complete
-    )
-    assert errors == []
-    (proposal,) = staged  # (c) exact approved path, staged
-    assert proposal == staging / "context_layer" / APPROVED
-    assert _served_snapshot(served) == snapshot  # (c) served byte-identical
+    case = _case_for_snapshot(served)
+    staged, errors, comparisons = _reconcile_candidate(case, [doc], complete=complete)
+    assert errors == [] and len(staged) == 1
+    assert _served_snapshot(served) == snapshot
     assert token in (served / "context_layer" / APPROVED).read_text(encoding="utf-8")
     (record,) = comparisons
     assert record.change == "changed"
-    assert record.advisory.status == "unavailable"  # (a) class-only refusal
+    assert record.advisory.status == "unavailable"
     assert "credential_assignment" in record.advisory.reason
     assert token not in record.advisory.reason
-    assert len(calls) == 1  # (a) distillation only: description never egressed
-    assert record.diff  # (b) useful diff survives...
-    assert token not in record.diff  # ...without the token...
+    assert len(calls) == 1
+    assert record.diff and token not in record.diff
     assert "[redacted credential_assignment]" in record.diff
-    assert "never count toward net new either." in record.diff  # change still visible
+    assert "never count toward net new either." in record.diff
 
-    # (b) CLI review output: same redaction on stdout
     import ariadne.ingest as ingest_module
 
     monkeypatch.setenv("OPENAI_MODEL", MODEL)
     base = tmp_path / "cli"
-    base.mkdir(parents=True)
+    base.mkdir()
     served2, doc2, changed_entry2 = _approved_policy_with_human_edit(base)
-    _with_description_token(served2, f"ops note (password = {token}) for renewals.")
+    served2 = _with_description_token(served2, f"ops note (password = {token}) for renewals.")
+    case2 = _case_for_snapshot(served2)
     monkeypatch.setattr(ingest_module, "_default_complete", lambda _m: response(changed_entry2))
-    code = main(
-        [
-            str(doc2),
-            "--reconcile",
-            "--served",
-            str(served2),
-            "--staging",
-            str(base / "s2"),
-        ]
-    )
-    assert code == 0
+    assert main([*_ingest_cli_args(case2, doc2), "--reconcile"]) == 0
     out = capsys.readouterr().out
-    assert token not in out
-    assert "[redacted credential_assignment]" in out
-    assert (base / "s2" / "context_layer" / APPROVED).is_file()
+    assert token not in out and "[redacted credential_assignment]" in out
+    assert (case2.worktree / "context_layer" / APPROVED).is_file()
 
-    # metadata-only change (body identical): no advisory call, same redaction
     base3 = tmp_path / "c3"
-    base3.mkdir(parents=True)
+    base3.mkdir()
     served3, doc3 = _approved_state(base3, page_entry())
-    _with_description_token(served3, f"ops note (password = {token}) for renewals.")
+    served3 = _with_description_token(served3, f"ops note (password = {token}) for renewals.")
+    case3 = _case_for_snapshot(served3)
     calls3: list[list[dict]] = []
 
     def complete3(messages):
         calls3.append(messages)
-        return response(page_entry())  # identical rendering: only metadata differs
+        return response(page_entry())
 
-    staging3 = base3 / "staging"
-    staged3, errors3, comparisons3 = reconcile_ingest(
-        [doc3], served_root=served3, staging_dir=staging3, complete=complete3
-    )
-    assert errors3 == [] and len(staged3) == 1  # changed metadata still stages
+    staged3, errors3, comparisons3 = _reconcile_candidate(case3, [doc3], complete=complete3)
+    assert errors3 == [] and len(staged3) == 1
     (record3,) = comparisons3
     assert record3.change == "changed" and record3.advisory.status == "not_applicable"
-    assert len(calls3) == 1  # body unchanged: not advisory-eligible, no egress
+    assert len(calls3) == 1
     assert token not in record3.diff
     assert "[redacted credential_assignment]" in record3.diff
 
 
 # --- (p) opt-in verbatim mode (spec 2026-10-13-0021, issue #66 V1) --------------
+
+_VERBATIM_TOKEN = "hunter2-rotation"
+
 
 # AC1 fixture: textual frontmatter of its own (with a tempting `status: stable`),
 # indented/trailing whitespace, a code block and NO final newline — hand-authored
@@ -1937,11 +1800,7 @@ class _FixedClock:
 
 
 def test_verbatim_preserves_document_and_never_calls_model(tmp_path, monkeypatch):
-    """AC1: one native Markdown document becomes ONE draft Reference whose body
-    is the reader's text exactly (frontmatter, whitespace, code block, missing
-    final newline); the source's own `status: stable` never reaches the outer
-    metadata; neither a supplied callback nor the default boundary is invoked,
-    and no LLM configuration is needed."""
+    """Verbatim writes one exact-content Reference into the selected Git candidate."""
     import ariadne.ingest as ingest_module
 
     def supplied(_messages):
@@ -1953,22 +1812,22 @@ def test_verbatim_preserves_document_and_never_calls_model(tmp_path, monkeypatch
     monkeypatch.setattr(ingest_module, "_default_complete", default_boom)
     doc = tmp_path / "field-notes.md"
     doc.write_text(VERBATIM_SOURCE, encoding="utf-8")
+    case = GitIngestCase(tmp_path, [doc])
+    base_files = set(
+        run_git(case.project, "ls-tree", "-r", "--name-only", case.revision).splitlines()
+    )
+    result = case.ingest([doc], complete=supplied, verbatim=True)
 
-    staging = tmp_path / "staging"
-    staged, errors = ingest([doc], staging_dir=staging, complete=supplied, verbatim=True)
-
-    assert errors == []
-    assert staged == [staging / "context_layer" / "references" / "field-notes.md"]
-    page_text = staged[0].read_text(encoding="utf-8")
-    # exact preservation: everything after the wrapper delimiter is the fixture
-    # byte-for-byte — read back without any whitespace-stripping helper
+    assert result["errors"] == []
+    assert result["written"] == ["context_layer/references/field-notes.md"]
+    page = case.worktree / result["written"][0]
+    page_text = page.read_text(encoding="utf-8")
     assert page_text.split("\n---\n\n", 1)[1] == VERBATIM_SOURCE
-    front = front_of(staged[0])
-    assert front["type"] == "reference"
-    assert front["status"] == "draft"  # the source's `status: stable` stays body text
+    front = front_of(page)
+    assert front["type"] == "reference" and front["status"] == "draft"
     assert front["tags"] == ["ingest", "verbatim"]
     assert front["generated"]["by"] == "ariadne-ingest:verbatim"
-    assert front["generated"]["at"]  # generation time present
+    assert front["generated"]["at"]
     assert front["sources"] == [
         {
             "id": hashlib.sha256(doc.read_bytes()).hexdigest()[:12],
@@ -1976,21 +1835,19 @@ def test_verbatim_preserves_document_and_never_calls_model(tmp_path, monkeypatch
             "title": doc.name,
         }
     ]
-    # filename-derived title/description; no adopted authority beyond the
-    # mechanical wrapper keys (no verification, grain or model claim)
     assert front["title"] == "field-notes" and "field-notes.md" in front["description"]
     assert set(front) == {"type", "status", "title", "description", "tags", "sources", "generated"}
-    # exactly one page exists, and nothing else was written
-    assert sorted(
-        path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file()
-    ) == ["context_layer/references/field-notes.md"]
+    candidate_files = set(
+        run_git(
+            case.project, "ls-tree", "-r", "--name-only", result["candidate_revision"]
+        ).splitlines()
+    )
+    assert candidate_files - base_files == {"context_layer/references/field-notes.md"}
+    assert str(doc.resolve()) not in candidate_files
 
 
 def test_verbatim_uses_existing_converter_output(tmp_path, monkeypatch):
-    """AC2: a supported non-native suffix dispatches through the existing
-    converter table; ONLY the converter seam is substituted (a known literal
-    with boundary whitespace) while dispatch, wrapper, gates and staging run
-    for real — the converter's text becomes the body exactly, no model call."""
+    """The installed converter seam supplies exact text; no model call is made."""
     converter_text = (
         "\n  \n# Converted handbook\n\nParagraph retained from the converter.  \n(no final newline)"
     )
@@ -2007,17 +1864,14 @@ def test_verbatim_uses_existing_converter_output(tmp_path, monkeypatch):
 
     doc = tmp_path / "handbook.html"
     doc.write_text("<html><body>raw bytes never read natively</body></html>", encoding="utf-8")
-    staged, errors = ingest([doc], staging_dir=tmp_path / "staging", complete=boom, verbatim=True)
+    case = GitIngestCase(tmp_path, [doc])
+    result = case.ingest([doc], complete=boom, verbatim=True)
 
-    assert errors == [] and calls == [doc]
-    assert staged == [tmp_path / "staging" / "context_layer" / "references" / "handbook.md"]
-    page_text = staged[0].read_text(encoding="utf-8")
-    # the converter's output is the body EXACTLY — boundary whitespace included
-    assert page_text.split("\n---\n\n", 1)[1] == converter_text
-    front = front_of(staged[0])
-    assert front["type"] == "reference" and front["status"] == "draft"
-    # provenance binds the actual document (digest of its bytes), not the text
-    assert front["sources"] == [
+    assert result["errors"] == [] and calls == [doc]
+    page = case.worktree / "context_layer/references/handbook.md"
+    assert result["written"] == ["context_layer/references/handbook.md"]
+    assert page.read_text(encoding="utf-8").split("\n---\n\n", 1)[1] == converter_text
+    assert front_of(page)["sources"] == [
         {
             "id": hashlib.sha256(doc.read_bytes()).hexdigest()[:12],
             "resource": str(doc.resolve()),
@@ -2026,12 +1880,8 @@ def test_verbatim_uses_existing_converter_output(tmp_path, monkeypatch):
     ]
 
 
-def test_verbatim_retry_preserves_drafts_and_new_versions(tmp_path, monkeypatch):
-    """AC3 journey through the public entry: a true no-op retry (advanced
-    generation clock, unchanged bytes and mtime), then changed source bytes,
-    changed converter output, a distinct resolved location and a human edit —
-    each stages a NEW exclusive draft while every earlier draft survives
-    byte-identical (no-overwrite contract, no intake ledger)."""
+def test_verbatim_retry_is_candidate_bound_and_never_overwrites(tmp_path, monkeypatch):
+    """Retries are no-op only for the same source/content; changed bindings get new files."""
     import ariadne.ingest as ingest_module
 
     clock = _FixedClock(datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC))
@@ -2040,200 +1890,134 @@ def test_verbatim_retry_preserves_drafts_and_new_versions(tmp_path, monkeypatch)
     monkeypatch.setitem(
         _CONVERTERS, ".html", (lambda _path: converted["text"], _CONVERTERS[".html"][1])
     )
-
-    staging = tmp_path / "staging"
     doc = tmp_path / "handbook.html"
     doc.write_text("binary-ish v1", encoding="utf-8")
-
-    def run(entry=None):
-        return ingest([entry or doc], staging_dir=staging, verbatim=True)
-
-    def staged_files():
-        return sorted(
-            path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file()
-        )
-
-    # (1) first intake: exactly one draft at the slug path
-    staged, errors = run()
-    assert errors == [] and staged == [staging / "context_layer" / "references" / "handbook.md"]
-    draft1 = staged[0]
-    original_bytes = draft1.read_bytes()
-    original_mtime = draft1.stat().st_mtime_ns
-
-    # (2) retry at an ADVANCED clock, same source bytes and converted text: a
-    # true no-op — no new path, byte- and mtime-identical draft, the original
-    # generation time retained (the retry's timestamp never lands in the file)
-    clock.now_value = clock.now_value + timedelta(hours=2)
-    staged, errors = run()
-    assert errors == [] and staged == []
-    assert draft1.read_bytes() == original_bytes
-    assert draft1.stat().st_mtime_ns == original_mtime
-    assert front_of(draft1)["generated"]["at"] == "2026-01-01T12:00:00+00:00"
-    assert staged_files() == ["context_layer/references/handbook.md"]
-
-    # (3) changed source bytes: new digest -> a NEW draft, earlier one intact
-    doc.write_text("binary-ish v2", encoding="utf-8")
-    staged, errors = run()
-    assert errors == []
-    draft2 = staged[0]
-    assert draft2.name == "handbook-2.md" and draft2 != draft1
-    assert draft1.read_bytes() == original_bytes
-    assert front_of(draft2)["sources"][0]["id"] == hashlib.sha256(doc.read_bytes()).hexdigest()[:12]
-
-    # (4) changed converter output, source bytes restored: new body -> new draft
-    doc.write_text("binary-ish v1", encoding="utf-8")  # same digest as (1)/(2)
-    converted["text"] = "# Handbook v1 (re-converted)\n\nDifferent converter output.\n"
-    staged, errors = run()
-    assert errors == []
-    draft3 = staged[0]
-    assert draft3.name == "handbook-3.md"
-    assert draft3.read_text(encoding="utf-8").split("\n---\n\n", 1)[1] == converted["text"]
-    assert draft1.read_bytes() == original_bytes and draft2.is_file()
-
-    # (5) distinct resolved location, identical bytes and text: never conflated
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     twin = elsewhere / "handbook.html"
     twin.write_text("binary-ish v1", encoding="utf-8")
-    staged, errors = run(twin)
-    assert errors == []
-    draft4 = staged[0]
+    case = GitIngestCase(tmp_path, [doc, twin])
+
+    first = case.ingest([doc], verbatim=True)
+    draft1 = case.worktree / first["written"][0]
+    original = draft1.read_bytes()
+    original_mtime = draft1.stat().st_mtime_ns
+
+    clock.now_value += timedelta(hours=2)
+    same = case.ingest([doc], verbatim=True)
+    assert same["written"] == [] and same["unchanged"] == ["context_layer/references/handbook.md"]
+    assert draft1.read_bytes() == original and draft1.stat().st_mtime_ns == original_mtime
+    assert front_of(draft1)["generated"]["at"] == "2026-01-01T12:00:00+00:00"
+
+    doc.write_text("binary-ish v2", encoding="utf-8")
+    changed_source = case.ingest([doc], verbatim=True)
+    draft2 = case.worktree / changed_source["written"][0]
+    assert draft2.name == "handbook-2.md" and draft1.read_bytes() == original
+    assert front_of(draft2)["sources"][0]["id"] == hashlib.sha256(doc.read_bytes()).hexdigest()[:12]
+
+    doc.write_text("binary-ish v1", encoding="utf-8")
+    converted["text"] = "# Handbook v1 (re-converted)\n\nDifferent converter output.\n"
+    changed_text = case.ingest([doc], verbatim=True)
+    draft3 = case.worktree / changed_text["written"][0]
+    assert draft3.name == "handbook-3.md"
+    assert draft3.read_text(encoding="utf-8").split("\n---\n\n", 1)[1] == converted["text"]
+    assert draft1.read_bytes() == original and draft2.is_file()
+
+    distinct_source = case.ingest([twin], verbatim=True)
+    draft4 = case.worktree / distinct_source["written"][0]
     assert draft4.name == "handbook-4.md"
     assert front_of(draft4)["sources"][0]["resource"] == str(twin.resolve())
-    assert draft4.read_bytes() != draft1.read_bytes()  # only the binding differs
+    assert draft4.read_bytes() != draft1.read_bytes()
 
-    # (6) human edit to the original draft: edit retained, retry stages ANOTHER
-    # exclusive draft instead of overwriting or claiming a byte-identical no-op
     doc.write_text("binary-ish v1", encoding="utf-8")
     converted["text"] = "# Handbook v1\n\nUnchanged converted paragraph.\n"
-    draft1.write_text(draft1.read_text(encoding="utf-8") + "\n(owner annotation)", encoding="utf-8")
-    staged, errors = run()
-    assert errors == []
-    draft5 = staged[0]
+    human_edit = draft1.read_text(encoding="utf-8") + "\n(owner annotation)"
+    case.edit_page("references", "handbook", human_edit)
+    result = case.ingest([doc], verbatim=True)
+    draft5 = case.worktree / result["written"][0]
     assert draft5.name == "handbook-5.md"
     assert draft1.read_text(encoding="utf-8").endswith("(owner annotation)")
     assert draft5.read_bytes() != draft1.read_bytes()
 
-    # staging holds only the five draft pages — no intake ledger, no bookkeeping
-    # (lexicographic order: 'handbook-2.md' sorts before 'handbook.md')
-    assert staged_files() == [
-        "context_layer/references/handbook-2.md",
-        "context_layer/references/handbook-3.md",
-        "context_layer/references/handbook-4.md",
-        "context_layer/references/handbook-5.md",
-        "context_layer/references/handbook.md",
-    ]
 
-
-_VERBATIM_TOKEN = "hunter2-rotation"
-
-
-def _verbatim_refusal(
-    case: str, tmp_path: Path, monkeypatch
-) -> tuple[Path, list[str | Path], list[str], list[str], Path | None]:
-    """Build one AC4 refusal scenario: (staging, docs, must_contain, must_not_echo,
-    must_stay_empty_dir). Every expectation reuses the existing error wording."""
-    staging = tmp_path / "staging"
-    if case == "unsupported":
-        docs: list[str | Path] = [make_doc(tmp_path, suffix=".pages")]
-        return staging, docs, ["[documents]", "uv pip install"], [], None
-    if case == "empty":
-        return staging, [make_doc(tmp_path, text="   \n\t \n")], ["empty"], [], None
-    if case == "converter-unavailable":
+def _verbatim_refusal(case_name: str, tmp_path: Path, monkeypatch):
+    if case_name == "unsupported":
+        doc = make_doc(tmp_path, suffix=".pages")
+        return GitIngestCase(tmp_path, [doc]), [doc], ["[documents]", "uv pip install"], []
+    if case_name == "empty":
+        doc = make_doc(tmp_path, text="   \n\t \n")
+        return GitIngestCase(tmp_path, [doc]), [doc], ["empty"], []
+    if case_name == "converter-unavailable":
         doc = make_doc(tmp_path, suffix=".pdf", text="unused")
         monkeypatch.setitem(sys.modules, "liteparse", None)
         monkeypatch.setitem(sys.modules, "liteparse.parser", None)
-        return staging, [doc], ["liteparse", "[documents]"], [], None
-    if case == "credential-body":
+        return GitIngestCase(tmp_path, [doc]), [doc], ["liteparse", "[documents]"], []
+    if case_name == "credential-body":
         doc = make_doc(tmp_path, text=f"# ops\n\nrotation password: {_VERBATIM_TOKEN}\n")
-        return staging, [doc], ["credential_assignment"], [_VERBATIM_TOKEN], None
-    if case == "credential-wrapper":
-        # the credential flows into the WRAPPER through the filename itself
-        doc = tmp_path / "token=topsecret987x.md"
-        doc.write_text("# innocent body\n", encoding="utf-8")
-        return staging, [doc], ["credential_assignment"], ["topsecret987x"], None
-    if case == "staging-symlink":
-        doc = make_doc(tmp_path)
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        staging.mkdir()
-        link = staging / "context_layer"
-        link.symlink_to(outside, target_is_directory=True)
-        return staging, [doc], ["symlink", str(link)], [], outside
-    # symlinked existing retry candidate: the staged draft is replaced by a
-    # symlink to a directory — reading through it would raise, so a clean
-    # symlink refusal proves the candidate check precedes any dedup read
-    doc = make_doc(tmp_path)
-    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
-    assert errors == [] and len(staged) == 1
-    attacker = tmp_path / "attacker"
-    attacker.mkdir()
-    staged[0].unlink()
-    staged[0].symlink_to(attacker)
-    return staging, [doc], ["symlink", str(staged[0])], [], attacker
+        return GitIngestCase(tmp_path, [doc]), [doc], ["credential_assignment"], [_VERBATIM_TOKEN]
+    doc = tmp_path / "token=topsecret987x.md"
+    doc.write_text("# innocent body\n", encoding="utf-8")
+    return GitIngestCase(tmp_path, [doc]), [doc], ["credential_assignment"], ["topsecret987x"]
 
 
 @pytest.mark.parametrize(
-    "case",
-    [
-        "unsupported",
-        "empty",
-        "converter-unavailable",
-        "credential-body",
-        "credential-wrapper",
-        "staging-symlink",
-        "symlinked-retry-candidate",
-    ],
+    "case_name",
+    ["unsupported", "empty", "converter-unavailable", "credential-body", "credential-wrapper"],
 )
-def test_verbatim_refusals_leave_no_new_files(tmp_path, monkeypatch, case):
-    """AC4: every refusal path stages nothing — no new files anywhere, the
-    existing error classes are named (never a weaker assertion), credentials
-    are reported by pattern CLASS without the matched value, and a retry
-    lookup never reads through a symlinked candidate."""
-    staging, docs, must_contain, must_not_echo, must_stay_empty = _verbatim_refusal(
-        case, tmp_path, monkeypatch
-    )
+def test_verbatim_refusals_leave_candidate_unchanged(tmp_path, monkeypatch, case_name):
+    case, docs, must_contain, must_not_echo = _verbatim_refusal(case_name, tmp_path, monkeypatch)
+    before = case.revision
+    result = case.ingest(docs, verbatim=True)
 
-    def all_files():
-        return sorted(
-            path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*") if path.is_file()
-        )
-
-    before = all_files()
-    staged, errors = ingest(docs, staging_dir=staging, verbatim=True)
-    assert staged == [], case
-    assert errors, case
-    joined = "\n".join(errors)
+    assert result["written"] == [] and result["unchanged"] == []
+    assert result["candidate_revision"] == before
+    assert result["errors"]
+    joined = "\n".join(result["errors"])
     for needle in must_contain:
-        assert needle in joined, (case, needle, errors)
+        assert needle in joined, (case_name, needle, result["errors"])
     for secret in must_not_echo:
-        assert secret not in joined, case
-    assert all_files() == before, case  # no new files, no bookkeeping writes
-    if must_stay_empty is not None:
-        assert not list(must_stay_empty.iterdir()), case  # nothing written outside
+        assert secret not in joined, case_name
+    assert run_git(case.worktree, "status", "--short") == ""
 
 
-def test_verbatim_cli_retries_and_rejects_reconcile_before_work(tmp_path, monkeypatch, capsys):
-    """AC5/AC7: the CLI no-op retry is exit 0 honestly reported as unchanged
-    (never 'no useful content'), --verbatim --reconcile is refused before any
-    converter/model work, and a mixed batch keeps exit 1 with the good draft."""
+def test_verbatim_refuses_documents_outside_configured_roots(tmp_path):
+    allowed_dir = tmp_path / "allowed"
+    allowed_dir.mkdir()
+    allowed = allowed_dir / "notes.md"
+    allowed.write_text("# Allowed\n", encoding="utf-8")
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside = outside_dir / "notes.md"
+    outside.write_text("# Not allowed\n", encoding="utf-8")
+    case = GitIngestCase(tmp_path, [allowed])
+    before = case.revision
+
+    result = case.ingest([outside], verbatim=True)
+
+    assert result["written"] == [] and result["candidate_revision"] == before
+    assert result["errors"] and any("root" in error.lower() for error in result["errors"])
+    assert run_git(case.worktree, "status", "--short") == ""
+
+
+def test_verbatim_cli_retries_and_reports_partial_batch(tmp_path, monkeypatch, capsys):
+    """CLI retries report no-op honestly; mixed batches report actual candidate writes."""
     import ariadne.ingest as ingest_module
+    from ariadne import proposals
 
     doc = make_doc(tmp_path)
-    staging = tmp_path / "staging"
-    assert main([str(doc), "--staging", str(staging), "--verbatim"]) == 0
+    case = GitIngestCase(tmp_path, [doc])
+    args = [*_ingest_cli_args(case, doc), "--verbatim"]
+    assert main(args) == 0
     first = capsys.readouterr()
-    assert "staged:" in first.out and "[reference]" in first.out
-    assert (staging / "context_layer" / "references" / "notes.md").is_file()
+    assert "written: context_layer/references/notes.md" in first.out
+    assert "candidate:" in first.out
+    case.revision = proposals._load_record(case.project, case.proposal)["candidate_revision"]
 
-    assert main([str(doc), "--staging", str(staging), "--verbatim"]) == 0
+    assert main([*_ingest_cli_args(case, doc), "--verbatim"]) == 0
     retry = capsys.readouterr()
-    assert "unchanged" in retry.out and "staged:" not in retry.out
-    assert retry.err == ""
-    assert len(list((staging / "context_layer" / "references").glob("*.md"))) == 1
+    assert "unchanged: context_layer/references/notes.md" in retry.out
+    assert "written:" not in retry.out and retry.err == ""
 
-    # the invalid combination is refused before ANY work: neither the converter
-    # nor any model boundary may run
     def model_boom(_messages):
         raise AssertionError("model must not be called")
 
@@ -2243,236 +2027,128 @@ def test_verbatim_cli_retries_and_rejects_reconcile_before_work(tmp_path, monkey
     monkeypatch.setattr(ingest_module, "_default_complete", model_boom)
     monkeypatch.setattr(ingest_module, "_convert", convert_boom)
     with pytest.raises(SystemExit):
-        main(
-            [
-                str(doc),
-                "--verbatim",
-                "--reconcile",
-                "--served",
-                str(tmp_path / "served"),
-                "--staging",
-                str(staging),
-            ]
-        )
+        main([*_ingest_cli_args(case, doc), "--verbatim", "--reconcile"])
     refusal = capsys.readouterr()
     assert "--verbatim" in refusal.err and "--reconcile" in refusal.err
 
-    # mixed batch (AC7): the good document stages, the bad one errors, exit 1
-    monkeypatch.undo()  # restore the real converter for the batch leg
+    monkeypatch.undo()
     good = tmp_path / "good-notes.md"
     good.write_text("# Good notes\n\nFine to preserve.\n", encoding="utf-8")
     bad = make_doc(tmp_path, suffix=".pages")
-    assert main([str(good), str(bad), "--staging", str(tmp_path / "s2"), "--verbatim"]) == 1
+    batch_case = GitIngestCase(tmp_path / "batch", [good, bad])
+    code = main([str(good), str(bad), *_ingest_cli_args(batch_case, good)[1:], "--verbatim"])
+    assert code == 1
     batch = capsys.readouterr()
-    assert "staged:" in batch.out and "good-notes" in batch.out
+    assert "written: context_layer/references/good-notes.md" in batch.out
     assert "[documents]" in batch.err
-    assert (tmp_path / "s2" / "context_layer" / "references" / "good-notes.md").is_file()
+    batch_case.revision = proposals._load_record(batch_case.project, batch_case.proposal)[
+        "candidate_revision"
+    ]
+    assert f"candidate: {batch_case.revision}" in batch.out
+    assert (batch_case.worktree / "context_layer/references/good-notes.md").is_file()
 
 
-def test_verbatim_reference_is_discoverable_as_draft(tmp_path):
-    """AC6: the staged verbatim page is immediately discoverable through the
-    existing Context search/list/read seams with the draft label and original
-    content — and the intake itself creates no Policy, metric or served
-    artifact."""
+def test_verbatim_reference_is_discoverable_as_unadmitted_candidate_draft(tmp_path):
     from ariadne.context import list_pages, read_page, search_pages
 
     doc = tmp_path / "glossary.md"
     doc.write_text(
         "# Glossary\n\nRenewal means reopening the contract for another term.\n", encoding="utf-8"
     )
-    staging = tmp_path / "staging"
-    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
-    assert errors == [] and len(staged) == 1
-    context = staging / "context_layer"
+    case = GitIngestCase(tmp_path, [doc])
+    result = case.ingest([doc], verbatim=True)
+    assert result["errors"] == [] and len(result["written"]) == 1
+    context = case.worktree / "context_layer"
     roots = [(context, True)]
 
     hits = search_pages("renewal reopening contract", limit=5, roots=roots)
     assert [(hit["path"], hit["draft"]) for hit in hits] == [("references/glossary.md", True)]
     assert "# Glossary" in hits[0]["content"]
     assert "Renewal means reopening the contract for another term." in hits[0]["content"]
-
     listing = list_pages(roots)
     assert [(entry["path"], entry["draft"]) for entry in listing] == [
         ("references/glossary.md", True)
     ]
-
     page = read_page("references/glossary.md", context, draft=True)
     assert page["draft"] is True
-    assert page["content"] == staged[0].read_text(encoding="utf-8")
-
-    # no Policy/metric/verification/served artifact: staging holds exactly the
-    # one draft Reference
-    assert sorted(
-        path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file()
-    ) == ["context_layer/references/glossary.md"]
+    assert page["content"] == (case.worktree / result["written"][0]).read_text(encoding="utf-8")
 
 
-def test_verbatim_retry_counts_edited_draft_as_changed_not_unchanged(tmp_path, monkeypatch):
-    """F1 (spec §4): a candidate draft differing ANYWHERE beyond the generation
-    timestamp — an owner note under ``generated``, or edited blank lines between
-    frontmatter and body — counts as CHANGED: a new exclusive draft stages, the
-    edited draft is retained byte-identical, and the retry is never misreported
-    as an unchanged no-op."""
+def test_verbatim_retry_detects_authoring_edits_and_malformed_candidates(tmp_path, monkeypatch):
+    """Typed Git edits, including malformed YAML and formatting changes, never get overwritten."""
     import ariadne.ingest as ingest_module
 
     clock = _FixedClock(datetime(2026, 2, 1, 9, 0, 0, tzinfo=UTC))
     monkeypatch.setattr(ingest_module, "datetime", clock)
-    staging = tmp_path / "staging"
-    doc = make_doc(tmp_path)  # notes.md
-
-    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
-    assert errors == [] and staged == [staging / "context_layer" / "references" / "notes.md"]
-    draft = staged[0]
-
-    # (a) an owner note under generated: differs only beyond generated.at —
-    # anchored on the wrapper's ``  at: `` line (spec §2's generated block),
-    # independent of YAML quoting of the timestamp value
-    lines = draft.read_text(encoding="utf-8").splitlines(keepends=True)
+    doc = make_doc(tmp_path)
+    case = GitIngestCase(tmp_path, [doc])
+    first = case.ingest([doc], verbatim=True)
+    draft = case.worktree / first["written"][0]
+    original = draft.read_text(encoding="utf-8")
+    lines = original.splitlines(keepends=True)
     at_line = next(index for index, line in enumerate(lines) if line.startswith("  at: "))
     lines.insert(at_line + 1, "  note: owner annotation\n")
     edited = "".join(lines)
-    assert edited != draft.read_text(encoding="utf-8")  # the edit landed
-    draft.write_text(edited, encoding="utf-8")
-    clock.now_value = clock.now_value + timedelta(hours=1)
-    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
-    assert errors == []
-    assert staged == [staging / "context_layer" / "references" / "notes-2.md"]  # changed
-    assert draft.read_text(encoding="utf-8") == edited  # the human edit is retained
+    case.edit_page("references", "notes", edited)
+    clock.now_value += timedelta(hours=1)
+    changed = case.ingest([doc], verbatim=True)
+    assert changed["written"] == ["context_layer/references/notes-2.md"]
+    assert draft.read_text(encoding="utf-8") == edited
 
-    # (b) the owner removed the blank separator line before the body: also
-    # changed, never a parse-normalized false "unchanged"
-    staging2 = tmp_path / "staging-blank"
-    doc2 = tmp_path / "memo.md"
-    doc2.write_text("# Memo\n\nBody text.\n", encoding="utf-8")
-    staged, errors = ingest([doc2], staging_dir=staging2, verbatim=True)
-    assert errors == [] and len(staged) == 1
-    page = staged[0].read_text(encoding="utf-8")
-    trimmed = page.replace("\n---\n\n", "\n---\n", 1)
-    assert trimmed != page
-    staged[0].write_text(trimmed, encoding="utf-8")
-    staged, errors = ingest([doc2], staging_dir=staging2, verbatim=True)
-    assert errors == []
-    assert staged == [staging2 / "context_layer" / "references" / "memo-2.md"]
-    assert (staging2 / "context_layer" / "references" / "memo.md").read_text(
+    memo = tmp_path / "memo.md"
+    memo.write_text("# Memo\n\nBody text.\n", encoding="utf-8")
+    memo_case = GitIngestCase(tmp_path / "memo-case", [memo])
+    first_memo = memo_case.ingest([memo], verbatim=True)
+    memo_page = memo_case.worktree / first_memo["written"][0]
+    page_text = memo_page.read_text(encoding="utf-8")
+    trimmed = page_text.replace("\n---\n\n", "\n---\n", 1)
+    memo_case.edit_page("references", "memo", trimmed)
+    second_memo = memo_case.ingest([memo], verbatim=True)
+    assert second_memo["written"] == ["context_layer/references/memo-2.md"]
+    assert memo_page.read_text(encoding="utf-8") == trimmed
+
+    malformed = (
+        "---\ntype: reference\n  sources: [unclosed\n---\n\n# notes\n\nbroken by the owner\n"
+    )
+    case.edit_page("references", "notes", malformed)
+    later = tmp_path / "second-notes.md"
+    later.write_text("# Second\n\nAnother document in the same batch.\n", encoding="utf-8")
+    result = case.ingest([doc, later], verbatim=True)
+    assert result["errors"] == []
+    assert result["written"] == ["context_layer/references/second-notes.md"]
+    assert result["unchanged"] == ["context_layer/references/notes-2.md"]
+    assert (case.worktree / "context_layer/references/notes.md").read_text(
         encoding="utf-8"
-    ) == trimmed  # untouched
+    ) == malformed
 
 
-def test_verbatim_retry_finds_unchanged_draft_across_filename_gap(tmp_path, monkeypatch):
-    """F2 (spec §4): an unchanged verbatim draft is found ACROSS a filename gap
-    — with the unsuffixed slot freed (promotion/removal), the unchanged draft at
-    ``-2`` yields the honest unchanged no-op; no duplicate is staged into the
-    freed slot."""
+def test_verbatim_retry_detects_changes_on_timestamp_line(tmp_path, monkeypatch):
+    """Only the timestamp value is ignored; any other timestamp-line edit changes the page."""
     import ariadne.ingest as ingest_module
 
-    clock = _FixedClock(datetime(2026, 3, 1, 8, 0, 0, tzinfo=UTC))
-    monkeypatch.setattr(ingest_module, "datetime", clock)
-    staging = tmp_path / "staging"
-    doc = tmp_path / "handbook.md"
-
-    # the newer revision occupies the unsuffixed slot first
-    doc.write_text("# Handbook v2\n\nNewer revision.\n", encoding="utf-8")
-    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
-    assert errors == [] and staged == [staging / "context_layer" / "references" / "handbook.md"]
-
-    # the older revision stages behind it at handbook-2.md
-    doc.write_text("# Handbook v1\n\nOriginal revision.\n", encoding="utf-8")
-    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
-    assert errors == [] and staged == [staging / "context_layer" / "references" / "handbook-2.md"]
-    older = staged[0]
-    older_bytes = older.read_bytes()
-
-    # the newer draft leaves staging (human promotion/removal) — a filename gap
-    (staging / "context_layer" / "references" / "handbook.md").unlink()
-
-    # retry of the UNCHANGED older revision is found across the gap: an honest
-    # no-op at an advanced clock; nothing is staged into the freed slot
-    clock.now_value = clock.now_value + timedelta(days=1)
-    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
-    assert errors == [] and staged == []
-    assert older.read_bytes() == older_bytes
-    assert sorted(p.name for p in (staging / "context_layer" / "references").iterdir()) == [
-        "handbook-2.md"
-    ]
-
-
-def test_verbatim_retry_treats_malformed_draft_as_nonmatching(tmp_path, monkeypatch):
-    """F3 (spec §4): a candidate draft with malformed frontmatter YAML is a
-    NONMATCHING candidate — never a traceback abort: it stays byte-identical, a
-    new exclusive draft stages, and later documents in the same batch still
-    process."""
-    import ariadne.ingest as ingest_module
-
-    clock = _FixedClock(datetime(2026, 4, 1, 10, 0, 0, tzinfo=UTC))
-    monkeypatch.setattr(ingest_module, "datetime", clock)
-    staging = tmp_path / "staging"
-    doc = make_doc(tmp_path)
-    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
-    assert errors == [] and staged == [staging / "context_layer" / "references" / "notes.md"]
-
-    broken = "---\ntype: reference\n  sources: [unclosed\n---\n\n# notes\n\nbroken by the owner\n"
-    staged[0].write_text(broken, encoding="utf-8")  # human corruption
-    clock.now_value = clock.now_value + timedelta(minutes=30)
-
-    good = tmp_path / "second-notes.md"
-    good.write_text("# Second\n\nAnother document in the same batch.\n", encoding="utf-8")
-    staged, errors = ingest([doc, good], staging_dir=staging, verbatim=True)  # must not raise
-
-    assert errors == []
-    assert staged == [
-        staging / "context_layer" / "references" / "notes-2.md",
-        staging / "context_layer" / "references" / "second-notes.md",
-    ]
-    assert (staging / "context_layer" / "references" / "notes.md").read_text(
-        encoding="utf-8"
-    ) == broken  # the corrupted draft is untouched
-
-
-def test_verbatim_retry_counts_edits_on_the_timestamp_line_as_changed(tmp_path, monkeypatch):
-    """Owner-approved final exception (spec 0021 §4/AC3): ONLY the generation
-    timestamp's VALUE may be ignored. Any other byte on the ``  at: `` line —
-    an appended owner comment, a corrupted value — makes the candidate CHANGED:
-    a new exclusive draft stages, the edited candidate stays byte-identical,
-    and the retry is never misreported as unchanged."""
-    import ariadne.ingest as ingest_module
-
-    staging = tmp_path / "staging"
-    doc = make_doc(tmp_path)  # notes.md
-
-    def edit_at_line(page_name: str, new_line: str) -> str:
-        """Replace the named draft's ``  at: `` line with ``new_line``; returns
-        the edited page text (anchored on the spec §2 generated block's line)."""
-        page = staging / "context_layer" / "references" / page_name
-        lines = page.read_text(encoding="utf-8").splitlines(keepends=True)
-        at_line = next(index for index, line in enumerate(lines) if line.startswith("  at: "))
-        lines[at_line] = new_line + "\n"
-        edited = "".join(lines)
-        page.write_text(edited, encoding="utf-8")
-        return edited
-
-    # baseline draft at a fixed clock
     clock = _FixedClock(datetime(2026, 5, 1, 7, 0, 0, tzinfo=UTC))
     monkeypatch.setattr(ingest_module, "datetime", clock)
-    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
-    assert errors == [] and staged == [staging / "context_layer" / "references" / "notes.md"]
+    doc = make_doc(tmp_path)
+    case = GitIngestCase(tmp_path, [doc])
+    first = case.ingest([doc], verbatim=True)
+    page = case.worktree / first["written"][0]
+    lines = page.read_text(encoding="utf-8").splitlines(keepends=True)
+    at_line = next(index for index, line in enumerate(lines) if line.startswith("  at: "))
+    lines[at_line] = "  at: '2026-05-01T07:00:00+00:00' # owner annotation\n"
+    edited = "".join(lines)
+    case.edit_page("references", "notes", edited)
+    clock.now_value += timedelta(hours=3)
+    second = case.ingest([doc], verbatim=True)
+    assert second["written"] == ["context_layer/references/notes-2.md"]
+    assert page.read_text(encoding="utf-8") == edited
 
-    # (a) an owner comment appended after the timestamp value: the timestamp
-    # itself is unchanged, but the line is not the serialized stamp alone
-    edited = edit_at_line("notes.md", "  at: '2026-05-01T07:00:00+00:00' # owner annotation")
-    clock.now_value = clock.now_value + timedelta(hours=3)
-    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
-    assert errors == []
-    assert staged == [staging / "context_layer" / "references" / "notes-2.md"]  # changed
-    assert (staging / "context_layer" / "references" / "notes.md").read_text(
-        encoding="utf-8"
-    ) == edited  # candidate byte-identical
-
-    # (b) a corrupted timestamp value on the same line: also changed
-    corrupted = edit_at_line("notes-2.md", "  at: [unclosed")
-    clock.now_value = clock.now_value + timedelta(hours=3)
-    staged, errors = ingest([doc], staging_dir=staging, verbatim=True)
-    assert errors == []
-    assert staged == [staging / "context_layer" / "references" / "notes-3.md"]  # changed
-    assert (staging / "context_layer" / "references" / "notes-2.md").read_text(
-        encoding="utf-8"
-    ) == corrupted  # candidate byte-identical
+    second_page = case.worktree / second["written"][0]
+    lines = second_page.read_text(encoding="utf-8").splitlines(keepends=True)
+    at_line = next(index for index, line in enumerate(lines) if line.startswith("  at: "))
+    lines[at_line] = "  at: [unclosed\n"
+    corrupted = "".join(lines)
+    case.edit_page("references", "notes-2", corrupted)
+    clock.now_value += timedelta(hours=3)
+    third = case.ingest([doc], verbatim=True)
+    assert third["written"] == ["context_layer/references/notes-3.md"]
+    assert (case.worktree / second["written"][0]).read_text(encoding="utf-8") == corrupted

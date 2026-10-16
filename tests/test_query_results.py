@@ -1,6 +1,6 @@
 """Spec 0014 §7 V2/V3 validation (issue #56/S1): the shared complete-output
 safeguards and the shared execution deadline over the four existing result
-operations, at the public Query seam.
+operations, at the private numerical session and Git-admitted CLI seams.
 
 Every expectation below is specified by the contract INDEPENDENTLY of the
 encoder/compiler under test:
@@ -11,7 +11,7 @@ encoder/compiler under test:
   ``\\uXXXX`` (``'é' * 5``: 5 characters, 10 UTF-8 bytes, 32 serialized bytes);
 - 10 + 20 + 30 = 60, and a safety row ceiling can never act as an input LIMIT;
 - three groups under a row ceiling of two refuse with an observed lower bound
-  of 3 and stage nothing;
+  of 3 without writing authored state;
 - the deadline is exercised through the existing deterministic clock seam
   (``ariadne.execution._deadline_clock``), never a wall-clock race or sleep.
 
@@ -36,7 +36,7 @@ from ariadne import (
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: analyzer binds the venv copy lacking this lane's new module
 )
 from ariadne.execution import DeadlineBudget
-from ariadne.query import QueryRuntime
+from ariadne.query import _QueryRuntimeSession as QueryRuntime
 from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -169,19 +169,14 @@ def served(tmp_path_factory):
     return root, db
 
 
-def make_runtime(served, staging, **limits):
+def make_runtime(served, **limits):
     root, db = served
     return QueryRuntime(
         root / "semantic_layer",
         root / "context_layer",
         db,
-        staging_dir=staging,
         query_limits=limits or None,
     )
-
-
-def staged_files(staging: Path) -> list[Path]:
-    return sorted(p for p in staging.rglob("*") if p.is_file()) if staging.exists() else []
 
 
 class _SpyConnection:
@@ -253,7 +248,7 @@ def _stepped_clock(jump_after: int):
         "framing_reserve_covers_worst_case_ids",
         "refusal_forms_and_identifiers_are_bounded",
         "cli_replaces_oversized_error_representations",
-        "refused_definitions_stage_nothing_narrowed_retry_stages_suffixes_hold",
+        "definitions_are_ephemeral_after_refusal_and_retry",
         "refusal_payloads_are_bounded",
         "host_config_section_validation",
         "host_config_file_tightens_the_cli",
@@ -265,8 +260,7 @@ def _stepped_clock(jump_after: int):
 def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
     root, db = served
     if case == "three_groups_refuse_at_row_ceiling_two":
-        staging = tmp_path / "staging"
-        rt = make_runtime(served, staging, max_rows=2)
+        rt = make_runtime(served, max_rows=2)
         spy = _SpyConnection(rt._execution.con)
         monkeypatch.setattr(rt._execution, "con", spy)
         monkeypatch.setattr(rt, "con", spy)
@@ -292,11 +286,10 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
             "complete": False,
             "returned_rows": 0,
         }
-        assert body["rows"] == [] and body["staging_status"] == "not_staged"
-        assert staged_files(staging) == []  # refusal stages NOTHING
+        assert body["rows"] == [] and body["persistence"] == {"status": "not_saved"}
 
     elif case == "input_rows_never_limited_sum_is_60":
-        rt = make_runtime(served, tmp_path / "staging", max_rows=2)
+        rt = make_runtime(served, max_rows=2)
         result = asyncio.run(rt.get_metric("plain_total"))
         # 10 + 20 + 30 = 60 over three INPUT rows; the row ceiling of two must
         # never act as an input LIMIT (which would wrongly yield 30).
@@ -306,7 +299,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert result["result"]["returned_rows"] == 1
 
     elif case == "seventeen_byte_serialized_cell_refuses":
-        rt = make_runtime(served, tmp_path / "staging", cell_bytes=16)
+        rt = make_runtime(served, cell_bytes=16)
         with pytest.raises(QueryResultError) as raised:
             asyncio.run(rt.get_metric("n", ["txt"]))
         # 'x' * 15 passes the 16-byte raw guard but serializes to 17 bytes
@@ -315,7 +308,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert raised.value.observed["columns"] == ["txt"]
 
     elif case == "raw_oversized_cells_cross_as_markers_not_values":
-        rt = make_runtime(served, tmp_path / "staging", cell_bytes=16)
+        rt = make_runtime(served, cell_bytes=16)
         budget = DeadlineBudget(20)
         bounded = rt._execution.fetch_bounded(
             "SELECT txt FROM cells ORDER BY id", rt._limits, budget
@@ -327,20 +320,20 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
                 assert not (isinstance(value, str) and len(value.encode("utf-8")) > 16)
 
     elif case == "unicode_serialized_bytes_differ_from_characters":
-        refusing = make_runtime(served, tmp_path / "s1", cell_bytes=16)
+        refusing = make_runtime(served, cell_bytes=16)
         with pytest.raises(QueryResultError) as raised:
             asyncio.run(refusing.get_metric("u", ["txt"]))
         assert raised.value.code == "result_cell_limit"
         # 'é' * 5 is 5 characters and 10 UTF-8 bytes — both under 16 — but JSON
         # escaping serializes each as \uXXXX: 5*6 + 2 quotes = 32 > 16. The
         # control with a 32-byte ceiling returns the value unchanged.
-        fitting = make_runtime(served, tmp_path / "s2", cell_bytes=32)
+        fitting = make_runtime(served, cell_bytes=32)
         result = asyncio.run(fitting.get_metric("u", ["txt"]))
         values = {row["txt"] for row in result["rows"]}
         assert values == {"é" * 5, "z" * 14}
 
     elif case == "nested_output_column_refuses_before_materialization":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         spy = _SpyConnection(rt._execution.con)
         monkeypatch.setattr(rt._execution, "con", spy)
         monkeypatch.setattr(rt, "con", spy)
@@ -359,10 +352,9 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert raised.value.code == "result_type_unsupported"
         assert raised.value.observed["columns"] == ["nested_probe"]
         assert spy.fetched_rows == 0  # nothing was materialized to discover size
-        assert staged_files(tmp_path / "staging") == []
 
     elif case == "parameterized_nested_types_refuse_before_transfer":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         for expression in (
             "list(CAST(val AS DECIMAL(12,2)))",  # DECIMAL(12,2)[]: nested AFTER the parameter list
             "map([grp], [val])",  # MAP(...)
@@ -413,7 +405,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
     elif case == "enum_labels_are_raw_guarded_as_variable":
         # a 40-byte enum label under a 16-byte ceiling: the in-DuckDB marker
         # guard fires (the value itself never crosses into Python)
-        rt = make_runtime(served, tmp_path / "staging", cell_bytes=16)
+        rt = make_runtime(served, cell_bytes=16)
         budget = DeadlineBudget(20)
         long_label = "l" * 40
         sql = f"SELECT CAST(label AS ENUM('ok', '{long_label}')) AS label FROM enums ORDER BY id"
@@ -425,7 +417,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
     elif case == "flag_namespace_collision_is_positional":
         # a PHYSICAL column named like a generated flag is a value column:
         # positional association never swallows or misreads it
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         budget = DeadlineBudget(20)
         bounded = rt._execution.fetch_bounded(
             'SELECT id, "__ariadne_cell_overflow_0" FROM tricky ORDER BY id',
@@ -444,7 +436,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         # so the extra row's payload cells never transfer. The enums fixture:
         # row id 1 ('ok') fits a 16-byte cell ceiling; the next row's 40-byte
         # label would flag cell_overflow if it transferred — it does not.
-        rt = make_runtime(served, tmp_path / "staging", cell_bytes=16)
+        rt = make_runtime(served, cell_bytes=16)
         result = asyncio.run(
             rt.query_records(
                 {
@@ -463,7 +455,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
     elif case == "rows_fit_but_metadata_overflows":
         # 2000 clears the refusal-form floor (every refusable representation
         # must fit) while the required cited page (~4.6KB) still overflows it
-        rt = make_runtime(served, tmp_path / "staging", response_bytes=2000)
+        rt = make_runtime(served, response_bytes=2000)
         with pytest.raises(QueryResultError) as raised:
             asyncio.run(rt.get_metric("total"))
         assert raised.value.code == "result_byte_limit"
@@ -495,22 +487,20 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
     elif case == "mcp_envelope_only_overflow_refuses":
         from ariadne.serve import _mcp_result_bytes
 
-        refusing = make_runtime(
-            served, tmp_path / "s1", response_bytes=65536, mcp_response_bytes=1500
-        )
+        refusing = make_runtime(served, response_bytes=65536, mcp_response_bytes=1500)
         refusing._measure = _mcp_result_bytes  # the adapter-supplied preflight
         with pytest.raises(QueryResultError) as raised:
             asyncio.run(refusing.get_metric("total"))
         assert raised.value.code == "result_byte_limit"
         assert raised.value.exhausted == {"mcp_response_bytes": 1500}
         # the core dict fits (same limits without the transport measure succeed)
-        control = make_runtime(served, tmp_path / "s2", response_bytes=65536)
+        control = make_runtime(served, response_bytes=65536)
         assert asyncio.run(control.get_metric("total"))["rows"] == [{"total": 60.0}]
 
     elif case == "mcp_measure_installed_at_build_app_for_instance_and_factory":
         from ariadne.serve import _mcp_result_bytes, build_app
 
-        instance = make_runtime(served, tmp_path / "s1")
+        instance = make_runtime(served)
         assert instance._measure is None  # not yet: direct construction has no transport
         app = build_app(instance, toolset="analyst")
         result = asyncio.run(app.call_tool("get_metric", {"name": "plain_total"}))
@@ -519,11 +509,11 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert isinstance(result, CallToolResult) and not result.is_error
         assert json.loads(result.content[0].text)["rows"] == [{"plain_total": 60.0}]
         assert instance._measure is _mcp_result_bytes  # installed at the seam
-        factory_built = make_runtime(served, tmp_path / "s2")
+        factory_built = make_runtime(served)
         app2 = build_app(lambda: factory_built, toolset="analyst")
         asyncio.run(app2.call_tool("get_metric", {"name": "plain_total"}))
         assert factory_built._measure is _mcp_result_bytes  # factory callers too
-        explicit = make_runtime(served, tmp_path / "s3")
+        explicit = make_runtime(served)
         explicit._measure = lambda result: 1  # an explicit measure still overrides
         app3 = build_app(explicit, toolset="analyst")
         asyncio.run(app3.call_tool("get_metric", {"name": "plain_total"}))
@@ -575,55 +565,44 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert query_results.result_json_bytes(body) < 2000
         assert body["error"]["observed"]["columns"][-1] == "+12 more"  # capped list
 
-    elif case == "refused_definitions_stage_nothing_narrowed_retry_stages_suffixes_hold":
-        staging = tmp_path / "staging"
-        rt = make_runtime(served, staging, max_rows=2)
+    elif case == "definitions_are_ephemeral_after_refusal_and_retry":
+        rt = make_runtime(served, max_rows=2)
         definition = {
-            "name": "staging_probe",
-            "description": "staging sequence",
+            "name": "ephemeral_probe",
+            "description": "ephemeral sequence",
             "source": "groups3",
             "expression": "SUM(val)",
             "dimensions": ["grp"],
         }
         with pytest.raises(QueryResultError):
             asyncio.run(rt.define_metric(dict(definition)))
-        assert staged_files(staging) == []
-        # a fitting narrowed retry executes anew and stages normally — and the
-        # released reservation leaves the unsuffixed name free
+        # A fitting narrowed retry executes anew and remains ephemeral.
         narrowed = {**definition, "dimensions": []}
         first = asyncio.run(rt.define_metric(dict(narrowed)))
-        assert Path(first["staged_as"]).name == "staging_probe.yml"
-        assert Path(first["staged_context_as"]).name == "staging_probe.md"
-        assert first["rows"] == [{"staging_probe": 60.0}]
-        # FIX 8: capture the FIRST artifacts BEFORE the second invocation
-        first_model = Path(first["staged_as"]).read_bytes()
-        first_page = Path(first["staged_context_as"]).read_bytes()
-        # an identical success still creates a collision-suffixed candidate
+        assert first["rows"] == [{"ephemeral_probe": 60.0}]
+        assert first["persistence"] == {"status": "not_saved"}
+        assert "staged_as" not in first and "staged_context_as" not in first
         second = asyncio.run(rt.define_metric(dict(narrowed)))
-        assert Path(second["staged_as"]).name == "staging_probe-2.yml"
-        assert Path(second["staged_context_as"]).name == "staging_probe-2.md"
-        # the first proposal was never overwritten...
-        assert Path(first["staged_as"]).read_bytes() == first_model
-        assert Path(first["staged_context_as"]).read_bytes() == first_page
-        # ...and both candidates carry independently meaningful content
-        second_model = Path(second["staged_as"]).read_bytes()
-        assert b"staging_probe" in first_model and b"semantic_model" in first_model
-        assert b"staging_probe" in second_model and b"semantic_model" in second_model
-        second_page = Path(second["staged_context_as"]).read_bytes()
-        assert b"status: draft" in first_page and b"status: draft" in second_page
-        assert Path(first["staged_as"]) != Path(second["staged_as"])
-        assert len(staged_files(staging)) == 4
+        assert second["rows"] == first["rows"]
+        assert second["persistence"] == {"status": "not_saved"}
 
     elif case == "cli_replaces_oversized_error_representations":
         from ariadne import cli
 
-        async def exploding(self, name, dimensions=None, range=None):
-            raise ValueError("E" * 200_000)  # an unrestricted exception dump
+        project = tmp_path / "cli-project"
+        project.mkdir()
 
-        monkeypatch.setattr(QueryRuntime, "get_metric", exploding)
+        class FailingRuntime:
+            message = "E" * 200_000
+
+            async def get_metric(self, name, dimensions=None, range=None):
+                raise ValueError(self.message)
+
+        runtime = FailingRuntime()
+        monkeypatch.setattr(cli.QueryRuntime, "open_project", lambda *args, **kwargs: runtime)
         capsys.readouterr()
         code = cli.main(
-            ["get-metric", "total", "--served", str(root), "--db", str(db)],
+            ["get-metric", "total", "--project", str(project)],
             stdin=io.StringIO(""),
         )
         captured = capsys.readouterr()
@@ -636,20 +615,17 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert "withheld" in error["message"]
 
         # a FITTING error keeps its verbatim message
-        async def fitting_failure(self, name, dimensions=None, range=None):
-            raise ValueError("small verbatim failure")
-
-        monkeypatch.setattr(QueryRuntime, "get_metric", fitting_failure)
+        runtime.message = "small verbatim failure"
         capsys.readouterr()
         code = cli.main(
-            ["get-metric", "total", "--served", str(root), "--db", str(db)],
+            ["get-metric", "total", "--project", str(project)],
             stdin=io.StringIO(""),
         )
         assert code == 1
         assert json.loads(capsys.readouterr().err)["error"]["message"] == "small verbatim failure"
 
     elif case == "refusal_payloads_are_bounded":
-        rt = make_runtime(served, tmp_path / "staging", response_bytes=2000, max_rows=2)
+        rt = make_runtime(served, response_bytes=2000, max_rows=2)
         refusals = []
         with pytest.raises(QueryResultError) as raised:
             asyncio.run(rt.get_metric("total", ["grp"]))
@@ -691,18 +667,34 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert tightened["max_rows"] == 5 and tightened["execution_seconds"] == 2.5
         assert tightened["response_bytes"] == 65536  # untouched keys keep defaults
         with pytest.raises(ValueError):
-            make_runtime(served, tmp_path / "never", response_bytes=64)
+            make_runtime(served, response_bytes=64)
 
     elif case == "host_config_file_tightens_the_cli":
         from ariadne import cli
+        from ariadne.authoring import AuthoringProject
+        from tests.test_git_admission import admit, admitted_ready
+        from tests.test_git_authoring import POLICY_PAGE, complete_bundle_project
 
-        host = tmp_path / "host"
-        host.mkdir()
-        (host / "ariadne.yaml").write_text("query:\n  max_rows: 2\n", encoding="utf-8")
-        monkeypatch.chdir(host)
+        project = complete_bundle_project(tmp_path)
+        api = AuthoringProject(project)
+        review, _ = admitted_ready(
+            api,
+            project,
+            {
+                "kind": "page",
+                "section": "policies",
+                "name": "all-events-count",
+                "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
+            },
+        )
+        assert admit(project, review) == 0
+        capsys.readouterr()
+        registry = project / "ariadne.yaml"
+        original_registry = registry.read_text(encoding="utf-8")
+        registry.write_text(original_registry + "\nquery:\n  max_rows: 2\n", encoding="utf-8")
         capsys.readouterr()
         code = cli.main(
-            ["get-metric", "total", "--dimension", "grp", "--served", str(root), "--db", str(db)],
+            ["get-metric", "event_count", "--dimension", "label", "--project", str(project)],
             stdin=io.StringIO(""),
         )
         captured = capsys.readouterr()
@@ -715,19 +707,23 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
             "complete": False,
             "returned_rows": 0,
         }
-        # without the host section the same call fits and succeeds
-        plain_host = tmp_path / "plain-host"
-        plain_host.mkdir()
-        monkeypatch.chdir(plain_host)
+
+        # without the host section the same admitted project returns all three rows
+        registry.write_text(original_registry, encoding="utf-8")
         capsys.readouterr()
         code = cli.main(
-            ["get-metric", "total", "--served", str(root), "--db", str(db)], stdin=io.StringIO("")
+            ["get-metric", "event_count", "--dimension", "label", "--project", str(project)],
+            stdin=io.StringIO(""),
         )
         assert code == 0
-        assert json.loads(capsys.readouterr().out)["rows"] == [{"total": 60.0}]
+        assert json.loads(capsys.readouterr().out)["rows"] == [
+            {"label": "a", "event_count": 1},
+            {"label": "b", "event_count": 1},
+            {"label": "c", "event_count": 1},
+        ]
 
     elif case == "fixed_size_array_seam":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         budget = DeadlineBudget(20)
         with pytest.raises(QueryResultError) as raised:
             rt._execution.fetch_bounded(
@@ -798,7 +794,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         # the modeled form is the one the SDK emits (probe-confirmed shape)
 
 
-# ------------------------------------------- V3: deadlines and staging
+# ------------------------------------------- V3: deadlines
 
 
 @pytest.mark.parametrize(
@@ -809,7 +805,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         "expiry_between_phases_never_returns_success",
         "request_budget_spans_construction_and_first_operation",
         "cli_threads_one_request_budget_through_construction",
-        "post_staging_expiry_reports_staged_honestly",
+        "expiry_after_collection_refuses_without_persistence",
         "non_result_request_discards_the_request_budget",
         "interrupted_collection_refuses",
         "fresh_budget_no_inherited_cancellation",
@@ -819,11 +815,10 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
     if case == "setup_exhaustion_refuses_before_the_source_opens":
         monkeypatch.setattr(execution, "_deadline_clock", _jumped_clock())
         with pytest.raises(ValueError, match="deadline"):
-            make_runtime(served, tmp_path / "staging", execution_seconds=1)
+            make_runtime(served, execution_seconds=1)
 
     elif case == "operation_exhaustion_refuses_with_no_complete_answer":
-        staging = tmp_path / "staging"
-        rt = make_runtime(served, staging)
+        rt = make_runtime(served)
         real = execution._deadline_clock
         monkeypatch.setattr(execution, "_deadline_clock", _jumped_clock())
         with pytest.raises(QueryResultError) as raised:
@@ -842,11 +837,10 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
                     }
                 )
             )
-        assert staged_files(staging) == []  # exhaustion before staging stages nothing
         monkeypatch.setattr(execution, "_deadline_clock", real)
 
     elif case == "expiry_between_phases_never_returns_success":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         for jump_after in (2, 4, 6):  # deterministic expiry at varying phase points
             monkeypatch.setattr(execution, "_deadline_clock", _stepped_clock(jump_after))
             with pytest.raises(QueryResultError) as raised:
@@ -862,7 +856,6 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
             served[0] / "semantic_layer",
             served[0] / "context_layer",
             served[1],
-            staging_dir=tmp_path / "staging",
             deadline_budget=budget,  # request-lifecycle construction: ONE budget
         )
         # construction alone consumed more than the 20s deadline: the FIRST
@@ -879,24 +872,26 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
 
     elif case == "cli_threads_one_request_budget_through_construction":
         from ariadne import cli
+        from ariadne.authoring import AuthoringProject
+        from tests.test_git_admission import admit, admitted_ready
+        from tests.test_git_authoring import POLICY_PAGE, complete_bundle_project
 
-        host = tmp_path / "host"
-        host.mkdir()
-        monkeypatch.chdir(host)
-        # construction consumes reads 1-2; the stepped clock jumps afterwards,
-        # so the SHARED request budget refuses the operation — while a fresh
-        # per-operation budget (the ~2x bug) would start at the jumped instant
-        # and happily succeed
+        project = complete_bundle_project(tmp_path)
+        api = AuthoringProject(project)
+        review, _ = admitted_ready(
+            api,
+            project,
+            {
+                "kind": "page",
+                "section": "policies",
+                "name": "all-events-count",
+                "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
+            },
+        )
+        assert admit(project, review) == 0
         monkeypatch.setattr(execution, "_deadline_clock", _stepped_clock(3))
         code = cli.main(
-            [
-                "get-metric",
-                "total",
-                "--served",
-                str(served[0]),
-                "--db",
-                str(served[1]),
-            ],
+            ["get-metric", "event_count", "--project", str(project)],
             stdin=io.StringIO(""),
         )
         assert code == 1
@@ -904,19 +899,15 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         assert refusal["error"]["code"] == "execution_deadline"
         assert refusal["result"]["complete"] is False
 
-    elif case == "post_staging_expiry_reports_staged_honestly":
-        staging = tmp_path / "staging"
-        rt = make_runtime(served, staging)
-        # a stepped clock expiring between the pre-write check and the
-        # post-staging return (the test's clock starts at the operation —
-        # construction is not counted here): the artifacts ARE written, and
-        # the refusal says so
-        monkeypatch.setattr(execution, "_deadline_clock", _stepped_clock(9))
+    elif case == "expiry_after_collection_refuses_without_persistence":
+        rt = make_runtime(served)
+        # The final response check refuses when the deadline expires there.
+        monkeypatch.setattr(execution, "_deadline_clock", _stepped_clock(8))
         with pytest.raises(QueryResultError) as raised:
             asyncio.run(
                 rt.define_metric(
                     {
-                        "name": "post_stage_probe",
+                        "name": "post_collection_probe",
                         "description": "d",
                         "source": "groups3",
                         "expression": "SUM(val)",
@@ -927,10 +918,7 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         assert raised.value.code == "execution_deadline"
         body = raised.value.refusal()
         assert body["result"]["complete"] is False
-        # honest: staging HAPPENED — never a claim that nothing was staged
-        assert body["staging_status"] == "staged"
-        assert (staging / "semantic_layer" / "models" / "adhoc" / "post_stage_probe.yml").is_file()
-        assert (staging / "context_layer" / "metrics" / "post_stage_probe.md").is_file()
+        assert body["persistence"] == {"status": "not_saved"}
 
     elif case == "non_result_request_discards_the_request_budget":
         real = time.monotonic
@@ -941,7 +929,6 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
             served[0] / "semantic_layer",
             served[0] / "context_layer",
             served[1],
-            staging_dir=tmp_path / "staging",
             deadline_budget=budget,
         )
         asyncio.run(rt.list_metrics())  # the non-result call that "constructed"
@@ -950,7 +937,7 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         assert result["result"]["complete"] is True
 
     elif case == "interrupted_collection_refuses":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         clock = {"now": 0.0}
         budget = DeadlineBudget(100, clock=lambda: clock["now"])
         con = rt._execution.con
@@ -985,7 +972,7 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         assert spy.interrupted
 
     elif case == "fresh_budget_no_inherited_cancellation":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         timers_before = threading.active_count()
         real = execution._deadline_clock
         monkeypatch.setattr(execution, "_deadline_clock", _jumped_clock())

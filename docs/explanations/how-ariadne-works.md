@@ -23,9 +23,9 @@ agent or operator drafts typed artifacts in a proposal
         ↓
 validation + review of the exact candidate revision
         ↓
-human admits that reviewed revision (or promotes a legacy bundle)
+human admits that reviewed revision
         ↓
-Ariadne serves the admitted catalog and approved sources
+Ariadne serves the pinned admitted snapshot and approved sources
         ↓
 compiled, read-only query → result + applicable context/policies
 ```
@@ -36,13 +36,12 @@ Each gate has a distinct meaning:
 - **Validation** checks declared artifacts; it does not admit them.
 - **Review** describes a candidate; reading the report is not sign-off.
 - **Git Review Admission** binds a human decision to the exact reviewed and validated revision. A Git commit by itself is not admission.
-- **Legacy Promotion** is the separate human gate for staged projects.
 
-The Git-managed and legacy routes remain distinct. A managed query reads the pinned admitted snapshot; it never falls back to a mutable project tree or proposal. A legacy query reads the human-promoted served artifacts. Ariadne does not silently migrate one route into the other.
+Core serves only new Git-managed projects through their exact admitted snapshots. There is no plain-root serving, legacy import, or Promotion fallback.
 
 ## Source access is not metric governance
 
-Source approval concerns which resolved source identity may be opened by the authoring workflow. It does not admit metric definitions or context pages. Conversely, a read-only data connection does not make a query governed: governance comes from a human-admitted Semantic Layer definition or a human-promoted legacy catalog.
+Source approval concerns which resolved source identity may be opened by the authoring workflow. It does not admit metric definitions or context pages. Conversely, a read-only data connection does not make a query governed: governance comes from a human-admitted Semantic Layer definition in the project's pinned Git snapshot.
 
 Native DuckDB catalogs are trusted inputs, not sandboxes. Read-only attachment protects a catalog from writes, but does not isolate filesystem or network access, freeze remote backing data, or make a view safe to execute. The operator must trust the catalog and its backing resources. See the [data source reference](../reference/data-sources.md#remote-and-native-duckdb-paths) for the connection details.
 
@@ -54,6 +53,6 @@ An ad-hoc metric is explicitly `governed: false`. It can be useful for explorati
 
 ## Integrations do not change authority
 
-The local CLI is the core interface. MCP and the separately installed Ariadne Agent are adapters over the same Ariadne operations; they do not gain source-approval, admission, Promotion, or example-review authority. In authoring, agents can draft and inspect proposals, while the operator performs the human-only decisions.
+The local CLI is the core interface and MCP is an optional adapter; neither gains source-approval or admission authority. In authoring, agents can draft and inspect proposals, while the operator performs the human-only decisions. The separately installed Ariadne Agent is outside this Core change; its compatibility has not been re-certified.
 
 For task-oriented steps, see the [getting-started tutorial](../tutorials/getting-started.md), [Git-backed authoring](../how-to/git-authoring.md), and [Context knowledge](../how-to/context-knowledge.md).

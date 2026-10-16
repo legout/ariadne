@@ -4,7 +4,6 @@ QueryRuntime reuses this path; only its execution construction renders models
 and opens sources (spec 0018 / ADR-0021).
 """
 
-import json
 import shlex
 from pathlib import Path
 from typing import Any
@@ -16,7 +15,7 @@ from ariadne.context import list_pages, read_page, resolve_term, search_pages
 from ariadne.planner import PlannerError
 from ariadne.semantic_graph import SemanticGraph, load_graph
 from ariadne.sources import Registry, implicit_registry, load_registry
-from ariadne.validate import _registry_identity, candidate_scope_digest, served_tree_digest
+from ariadne.validate import candidate_scope_digest
 
 # Spec rev 4 §8.12: the explicit route for questions no governed metric answers.
 # Shared by list_metrics' trailing hint and the unknown-metric error so both
@@ -24,8 +23,8 @@ from ariadne.validate import _registry_identity, candidate_scope_digest, served_
 ROUTING_HINT = (
     "If no governed metric above answers your question, route it to the ad-hoc path: "
     "call list_datasets() to see the queryable tables, then define_metric(definition) "
-    "to compute the answer (compiled, executed read-only, auto-staged for human promotion). "
-    "For bounded record selection over one known table (no aggregation, no staging), "
+    "to compute the answer (compiled and executed read-only; not saved). "
+    "For bounded record selection over one known table (no aggregation or persistence), "
     "call query_records(request) with {dataset, fields, order, limit?} — never raw SQL."
 )
 
@@ -33,8 +32,7 @@ ROUTING_HINT = (
 # metric operation keeps on a human-admitted CONTEXT-ONLY snapshot (schemas/
 # References, no metrics): discovery and terminology resolution serve the
 # admitted context, the metric surface refuses explicitly, and no absent
-# model ever triggers a fallback raw-SQL route. The legacy explicit-root
-# constructors keep their historical fail-fast startup errors instead.
+# model ever triggers a fallback raw-SQL route.
 MISSING_CATALOG = (
     "no governed metric catalog: the pinned admitted snapshot carries no semantic "
     "models — metric operations are refused; discovery (search_context) and term "
@@ -43,34 +41,39 @@ MISSING_CATALOG = (
 )
 
 
-class DiscoveryRuntime:
-    """Source-free artifact reads for legacy roots or one pinned admission."""
+class _DiscoverySession:
+    """Internal artifact view; public construction is through DiscoveryRuntime."""
 
     def __init__(
         self,
         semantic_dir: str | Path,
         context_dir: str | Path,
         db_path: str | Path | None,
-        staging_dir: str | Path = "staging",
         sources: str | Path | None = None,
         *,
         registry: Registry | None = None,
         admission_record: dict | None = None,
         project_root: str | Path | None = None,
+        source_free: bool = False,
     ):
-        self._load_catalog(semantic_dir, context_dir, admission_record, report_read_errors=True)
+        self._source_free = source_free
+        if source_free:
+            self._catalog_error = None
+            self.context_dir = Path(context_dir)
+            self._metrics = {}
+            self._context_only = True
+        else:
+            self._load_catalog(semantic_dir, context_dir, admission_record, report_read_errors=True)
         self._qualified = sources is not None or registry is not None
         # Parse source identity only; never open the registered location.
-        if registry is None:
+        if registry is None and not source_free:
             if sources is not None:
                 load_registry(sources)
             elif db_path is not None:
                 implicit_registry(db_path)
             else:
-                raise ValueError("legacy construction requires db_path or sources")
-        self._init_artifacts(
-            semantic_dir, db_path, sources, staging_dir, admission_record, project_root
-        )
+                raise ValueError("internal artifact sessions require a source identity")
+        self._init_artifacts(semantic_dir, db_path, sources, admission_record, project_root)
 
     def _load_catalog(
         self, semantic_dir, context_dir, admission_record, *, report_read_errors=False
@@ -81,13 +84,12 @@ class DiscoveryRuntime:
         # K4 (issue #44, spec 0010 §6): a MANAGED context-only admitted snapshot
         # (no semantic models — schemas/References only) constructs for
         # discovery and term resolution; every metric operation then refuses
-        # with the SPECIFIC missing-catalog error. The legacy explicit-root
-        # constructors keep the historical fail-fast startup errors exactly.
+        # with the SPECIFIC missing-catalog error.
         self._context_only = False
         if not models.is_dir():
             if admission_record is None:
                 raise RuntimeError(
-                    f"no semantic models under {models} — promote staging/semantic_layer/ first"
+                    f"no semantic models under {models} — author a Git project proposal first"
                 )
             self._context_only = True
         # Envelope metadata read directly (no datus): per metric, its description,
@@ -123,71 +125,32 @@ class DiscoveryRuntime:
                 raise RuntimeError(f"no governed metrics found under {models}")
             self._context_only = True  # a managed catalog-less admission serves discovery
 
-    def _init_artifacts(
-        self, semantic_dir, db_path, sources, staging_dir, admission_record, project_root
-    ):
-        self.staging_dir = Path(staging_dir)
-        # Issue #30: the admitted multi-fact graph. Admission is the human local
-        # Promotion of a validated bundle — the promotion-written admission record
-        # under the served semantic layer binds the post-Promotion served-tree
-        # digest; a graph without it (hand-placed, or plain staging promotion) is
-        # never governed. Production Git-review admission is a separate blocked
-        # workstream: this runtime has no code path that could label an unreviewed
-        # commit governed, and reports only the route it actually served. The
-        # bound identity (db/sources) is kept for the per-query staleness recheck.
+    def _init_artifacts(self, semantic_dir, db_path, sources, admission_record, project_root):
         self._graph: SemanticGraph | None = None
         self._admission: dict | None = None
         self._admission_reason: str | None = None
         self._admission_db = db_path
         self._admission_sources = sources
         self._semantic_dir = Path(semantic_dir)
-        # The managed Git route (issue #37/G5): the session pins ONE coherent
-        # admitted revision — snapshot bytes, approved source identity and the
-        # logical project root that anchors the ORIGINAL project-owned staging
-        # and Answer Example stores (never the pinned artifact root).
         self._managed = admission_record
         self._project = Path(project_root).resolve() if project_root is not None else None
-        # Issue #37 fix pass: the Answer Example store stays anchored at the
-        # LOGICAL project root on the managed route (operator-reviewed stable
-        # examples under <project>/answer_examples stay discoverable), while
-        # citations and staleness keep resolving against the PINNED artifact
-        # root (context_dir.parent) — the legacy route keeps its single shared
-        # root (examples_root=None).
         self._examples_root = self._project
+        if self._source_free:
+            self._admission_reason = "the project has no admitted snapshot"
+            return
         if self._catalog_error is not None:
-            # Avoid rereading broken models for graph metadata; managed consistency
-            # checks still run at admission resolution and before serving any group.
             return
         if admission_record is not None:
             self._load_managed_graph(self._semantic_dir)
             if self._context_only and self._graph is None:
-                # the managed multi-fact refusal names the missing CATALOG on a
-                # context-only snapshot, not a broken admission
                 self._admission_reason = MISSING_CATALOG
         else:
-            self._load_admission(Path(semantic_dir), db_path, sources)
-
-    @classmethod
-    def open_project(cls, project: str | Path, *, staging_dir=None):
-        root = Path(project).resolve()
-        record, snapshot = admission.resolve_admission(root)
-        return cls(
-            snapshot / "semantic_layer",
-            snapshot / "context_layer",
-            None,
-            staging_dir=root / "staging" if staging_dir is None else staging_dir,
-            registry=admission.approved_registry(record),
-            admission_record=record,
-            project_root=root,
-        )
+            self._admission_reason = "a valid Git admission is required for public discovery"
 
     def _load_managed_graph(self, semantic_dir: Path) -> None:
-        """The managed route's multi-fact gate (issue #37/G5): the pinned
-        Git-review admission IS the graph's admission — the legacy
-        promotion-written ``admission.json`` never exists inside a snapshot
-        (it is not admitted artifact scope), so ``query_metrics``/
-        ``query_detail`` serve only when the pinned snapshot itself carries a
-        loadable graph."""
+        """The Git-review admission is the multi-fact graph's admission:
+        ``query_metrics``/``query_detail`` serve only when the pinned snapshot
+        itself carries a loadable graph."""
         if (semantic_dir / "graph.yml").is_file():
             try:
                 self._graph = load_graph(semantic_dir)
@@ -205,9 +168,8 @@ class DiscoveryRuntime:
     def _recheck_pinned(self) -> None:
         """Issue #37/G5: re-verify the session's bound snapshot bytes and
         source identity on every governed answer — a hand-edited snapshot file
-        or a withdrawn source approval is a staleness refusal (the runtime
-        never serves mutated pinned bytes), exactly like the legacy admission
-        digest recheck."""
+        or a withdrawn source approval is a staleness refusal; the runtime
+        never serves mutated pinned bytes."""
         record = self._managed
         assert record is not None  # only the managed route calls this
         digest = candidate_scope_digest(self.context_dir.parent)
@@ -228,60 +190,6 @@ class DiscoveryRuntime:
                 "approval — re-approve the exact resolved identity before serving",
             )
 
-    def _load_admission(
-        self, semantic_dir: Path, db_path: str | Path | None, sources: str | Path | None
-    ) -> None:
-        """Resolve the served tree's multi-fact admission (issue #30). The
-        promotion-written ``semantic_layer/admission.json`` maps the exact
-        staged review digest to the POST-Promotion served-tree digest together
-        with the persisted technical validation scope; the graph serves only
-        while the CURRENT served bytes still match it. No record, a corrupt
-        record, changed served bytes, or a changed approved registry each leave
-        the runtime unadmitted — ``query_metrics``/``query_detail`` refuse with
-        that reason while the legacy single-metric path keeps its behavior
-        (spec rev 1 AC7)."""
-        record_path = semantic_dir / "admission.json"
-        if not record_path.is_file():
-            self._admission_reason = (
-                "the served tree carries no multi-fact admission record — admit the "
-                "graph by submitting the bundle, having a human review it, and running "
-                "the exact-digest ariadne-promote --digest (local route); an unadmitted "
-                "graph is never governed"
-            )
-            return
-        try:
-            record = json.loads(record_path.read_text(encoding="utf-8"))
-            if not isinstance(record, dict) or not record.get("served_digest"):
-                raise ValueError("not an admission record")
-        except ValueError as exc:
-            self._admission_reason = (
-                f"{record_path}: unreadable admission record ({exc}) — the multi-fact "
-                "query interface stays refused until a human re-promotes a validated "
-                "bundle"
-            )
-            return
-        current = served_tree_digest(semantic_dir, self.context_dir)
-        if current != record["served_digest"]:
-            self._admission_reason = (
-                "the served layers changed after admission "
-                f"(served digest {current[:12]}… != recorded {record['served_digest'][:12]}…) "
-                "— revalidate and re-promote before serving the graph as governed"
-            )
-            return
-        bound = (record.get("validation") or {}).get("registry_digest")
-        registry_digest, _label = _registry_identity(db_path, sources)
-        if bound is not None and registry_digest != bound:
-            self._admission_reason = (
-                "the approved source registry changed after admission — revalidate and "
-                "re-promote before serving the graph as governed"
-            )
-            return
-        try:
-            self._graph = load_graph(semantic_dir)
-        except Exception as exc:  # fail fast: an admitted tree that cannot load
-            raise RuntimeError(f"admitted graph under {semantic_dir} does not load: {exc}") from exc
-        self._admission = record
-
     def _admission_view(self, record: dict) -> dict:
         """The response's local admission provenance. The managed Git route
         (issue #37/G5) reports the pinned revision/route evidence: route,
@@ -299,11 +207,12 @@ class DiscoveryRuntime:
             }
         return {
             "route": record.get("route"),
-            "reviewed_digest": record.get("reviewed_digest"),
-            "served_digest": record.get("served_digest"),
-            "revision": record.get("revision"),
+            "revision": record.get("commit"),
+            "proposal": record.get("proposal"),
+            "review_digest": record.get("review_digest"),
+            "artifact_digest": record.get("artifact_digest"),
+            "confirmed": record.get("confirmed"),
             "validation": record.get("validation"),
-            "promoted": record.get("promoted"),
         }
 
     async def discover(self, query: str, limit: int = 5) -> dict:
@@ -374,6 +283,8 @@ class DiscoveryRuntime:
             self._recheck_pinned()
         if self._catalog_error is not None:
             raise ValueError(self._catalog_error)
+        if self._source_free:
+            raise ValueError("no admitted snapshot is available")
         if self._context_only:
             raise ValueError(MISSING_CATALOG)
         entries: list[dict | str] = [
@@ -388,44 +299,51 @@ class DiscoveryRuntime:
         return entries
 
     async def search_examples(
-        self, query: str, limit: int = 10, include_history: bool = False, include_sql: bool = False
+        self,
+        query: str,
+        limit: int = 10,
+        include_history: bool = False,
+        include_sql: bool = False,
+        *,
+        proposal: str | None = None,
+        revision: str | None = None,
     ) -> list[dict]:
-        """Issue #19: ranked labeled example records (draft/stable identity,
-        staleness, question/interpretation, method summary, provenance, path)
-        from the current served and staging example roots — re-read on each
-        request, no query execution, no saved rows. ``include_sql`` (spec 0023
-        §3) attaches each selected hit's stored ``sql_provenance`` mapping as
-        ``provenance.sql`` (``null`` for legacy records); it never widens
-        record eligibility or ranking. On the managed route the
-        served example store is anchored at the LOGICAL project root (issue
-        #37 fix pass), while citation staleness checks the pinned artifact
-        root. ``search_context`` and governed ``get_metric.context`` are
-        unaffected: examples live outside ``context_layer/`` and never enter
-        them."""
-        return answer_examples.search_examples(
-            self.context_dir.parent,
-            self.staging_dir,
-            query,
-            limit=limit,
-            include_history=include_history,
-            include_sql=include_sql,
-            examples_root=self._examples_root,
-        )
-
-    async def search_context(self, query: str, limit: int = 10) -> list[dict]:
-        """Search the served Context Layer and staged drafts for business rules
-        (spec 2026-09-23-0002; the shared ranking implementation and its
-        contract live in :func:`ariadne.context.search_pages`): deterministic
-        token-aware ranking over the served context dir plus the staged context
-        drafts, served hits ``draft: false`` and staged hits ``draft: true``.
-        Serves pinned snapshot bytes on the managed route, so the pinned digest
-        is re-checked first — mid-session tampering refuses here exactly like
-        ``get_metric`` (issue #37 fix pass)."""
+        """Search admitted Examples by default, or one explicitly selected candidate."""
+        if (proposal is None) != (revision is None):
+            raise ValueError("--proposal and --revision are required together")
+        if proposal is not None:
+            assert revision is not None
+            if self._project is None:
+                raise ValueError("candidate Example search requires a managed --project")
+            return answer_examples.search_candidate(
+                self._project,
+                query,
+                proposal=proposal,
+                revision=revision,
+                limit=limit,
+                include_history=include_history,
+                include_sql=include_sql,
+            )
         if self._managed is not None:
             self._recheck_pinned()
-        return search_pages(
-            query, limit, [(self.context_dir, False), (self.staging_dir / "context_layer", True)]
-        )
+            return answer_examples.search_admitted(
+                self.context_dir.parent,
+                query,
+                limit=limit,
+                include_history=include_history,
+                include_sql=include_sql,
+            )
+        if self._source_free:
+            return []
+        raise ValueError("Examples are available only from a Git admission or explicit candidate")
+
+    async def search_context(self, query: str, limit: int = 10) -> list[dict]:
+        """Search only the admitted Context snapshot."""
+        if self._source_free:
+            return []
+        if self._managed is not None:
+            self._recheck_pinned()
+        return search_pages(query, limit, [(self.context_dir, False)])
 
     async def resolve_term(self, request: str | dict, *, part: int = 1) -> dict:
         """Resolve one shared business term or exact ``{resource, column}``
@@ -435,11 +353,13 @@ class DiscoveryRuntime:
         concept/representation identities with their exact bindings, required
         scope, ambiguity, unconfirmed claim status, freshness and actual
         page/source citations. Resolves the PINNED admitted context only
-        (never staging drafts); the managed route re-checks the pinned bytes
+        (never proposal drafts); the managed route re-checks the pinned bytes
         first and carries the admission provenance alongside the matches. The
         resolver applies no transform, rewrites no SQL and authorizes no join;
         ``search_context`` keeps its lexical ranking and passage pointers
         unchanged."""
+        if self._source_free:
+            return resolve_term([], request, part=part)
         if self._managed is not None:
             self._recheck_pinned()
         result = resolve_term(
@@ -468,28 +388,47 @@ class DiscoveryRuntime:
         return result
 
     async def list_context_pages(self) -> list[dict]:
-        """Enumerate every served and staged Context Layer page (spec 0015,
-        ADR-0020): metadata only — ``path``, ``draft``, ``title`` and the
-        advisory ``context_signals`` envelope — served before staged, then
-        path, deterministically. No bodies and no query tokens: the
-        token-free directory view for discovery and onboarding. Serves
-        pinned snapshot bytes on the managed route, so the pinned digest is
-        re-checked first exactly like ``search_context``."""
+        """List admitted Context metadata without opening a source."""
+        if self._source_free:
+            return []
         if self._managed is not None:
             self._recheck_pinned()
-        return list_pages([(self.context_dir, False), (self.staging_dir / "context_layer", True)])
+        return list_pages([(self.context_dir, False)])
 
-    async def read_context_page(self, path: str, draft: bool = False) -> dict:
-        """Read one exact Context Layer page by bundle-relative POSIX path
-        (spec 0015, ADR-0020): full ``content`` plus ``draft``, ``title``-free
-        metadata, and the advisory ``context_signals`` envelope. ``draft=false``
-        (the default) reads the served root and re-checks the pinned digest
-        on the managed route exactly like ``search_context``; ``draft=true``
-        reads the staged root's live bytes (a draft is by definition not
-        pinned). An absolute, root-escaping, non-markdown or unknown path
-        raises ``ValueError`` naming the rejected path — never a search
-        fallback, never an empty success."""
-        if not draft and self._managed is not None:
+    async def read_context_page(self, path: str) -> dict:
+        """Read one exact page from the admitted Context snapshot."""
+        if self._source_free:
+            raise ValueError("no admitted Context snapshot; use Authoring for a candidate")
+        if self._managed is not None:
             self._recheck_pinned()
-        root = self.staging_dir / "context_layer" if draft else self.context_dir
-        return read_page(path, root, draft=draft)
+        return read_page(path, self.context_dir, draft=False)
+
+
+class DiscoveryRuntime:
+    """Public source-free factory for admitted-project discovery."""
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError(
+            "DiscoveryRuntime is a project factory; use DiscoveryRuntime.open_project(project)"
+        )
+
+    @classmethod
+    def open_project(cls, project: str | Path) -> _DiscoverySession:
+        root = Path(project).resolve()
+        if admission.load_current(root) is None:
+            return _DiscoverySession(
+                root / "semantic_layer",
+                root / "context_layer",
+                None,
+                project_root=root,
+                source_free=True,
+            )
+        record, snapshot = admission.resolve_admission(root)
+        return _DiscoverySession(
+            snapshot / "semantic_layer",
+            snapshot / "context_layer",
+            None,
+            registry=admission.approved_registry(record),
+            admission_record=record,
+            project_root=root,
+        )

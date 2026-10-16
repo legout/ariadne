@@ -1,5 +1,5 @@
-"""Spec 0017 AC1–7: public CLI seams, real local repos, no network/provider.
-AC8 additionally runs tests/setup_wheel_walkthrough.py against a fresh wheel venv.
+"""Git-only setup CLI checks with synthetic projects and no source access.
+The wheel walkthrough remains a separately bounded packaging check.
 """
 
 import hashlib
@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
 
-from ariadne import admission, author, authoring, authoring_sources, init, proposals, skill
+from ariadne import admission, authoring, authoring_sources, init, proposals, skill
 from ariadne.authoring import AuthoringProject
 from ariadne.cli import main as cli
 
@@ -48,15 +48,13 @@ def isolated(tmp_path, monkeypatch, capsys):
     ):
         for name in names:
             monkeypatch.setattr(module, name, forbidden)
-    from ariadne import execution, promote, query, sources
+    from ariadne import execution, query, sources
 
-    monkeypatch.setattr(promote, "main", forbidden)
     monkeypatch.setattr(query.QueryRuntime, "__init__", forbidden)
     monkeypatch.setattr(sources, "build_connection", forbidden)
     monkeypatch.setattr(execution.DuckDBExecution, "__init__", forbidden)
     monkeypatch.setattr(socket, "create_connection", forbidden)
     monkeypatch.setattr(socket, "socket", forbidden)
-    monkeypatch.setattr(author, "main", forbidden)
 
 
 def run_setup(project, answers="", *flags, tty=True):
@@ -116,7 +114,7 @@ def test_missing_git_prerequisites_pause_declarations(tmp_path, capsys, monkeypa
 
 def test_managed_typed_declaration_exact_handoff_and_idempotent_resume(tmp_path, capsys):
     project = tmp_path / "managed"
-    init.main([str(project), "--git"])
+    init.main([str(project)])
     (project / "data/events.parquet").write_bytes(b"not opened or parsed")
     prepare_git(project)
     original = (project / "ariadne.yaml").read_bytes()
@@ -168,7 +166,7 @@ def test_managed_typed_declaration_exact_handoff_and_idempotent_resume(tmp_path,
 
 def test_conflicting_identity_never_overwrites_or_replaces_pending_proposal(tmp_path, capsys):
     project = tmp_path / "managed"
-    init.main([str(project), "--git"])
+    init.main([str(project)])
     prepare_git(project)
     api = authoring.AuthoringProject(project)
     started = api.start_proposal()
@@ -184,46 +182,16 @@ def test_conflicting_identity_never_overwrites_or_replaces_pending_proposal(tmp_
     assert records(project) == before
 
 
-def test_existing_legacy_and_explicit_legacy_preserve_files_and_inert_pending_proposal(
-    tmp_path, capsys
-):
-    project = tmp_path / "legacy"
-    assert run_setup(project, "", "--legacy", "--no-input") == 0
-    (project / "data/orders.csv").write_bytes(b"never read")
-    (project / "data/seed_notes.md").write_text("Operator rules\n")
-    original = (project / "ariadne.yaml").read_bytes()
-    capsys.readouterr()
-    assert run_setup(project, "accept\n\nyes\n") == 0
-    output = capsys.readouterr().out
-    assert "Scaffold/resume: legacy" in output
-    assert "ariadne-authoring approve-sources --project" in output and "--digest" in output
-    stored = project / authoring.PROPOSAL_REL
-    proposal = stored.read_bytes()
-    assert (project / "ariadne.yaml").read_bytes() == original
-    assert (project / "data/seed_notes.md").read_text() == "Operator rules\n"
-    assert not (project / ".git").exists() and "Authoring paused" not in output
-    assert run_setup(project, "accept\n\nyes\n") == 0
-    assert stored.read_bytes() == proposal  # does not replace the pending declaration
-
-
-def test_ambiguous_scaffold_requires_operator_route_choice(tmp_path, capsys):
-    project = tmp_path / "ambiguous"
+def test_existing_registry_is_preserved_without_route_choice(tmp_path, capsys):
+    project = tmp_path / "existing"
     project.mkdir()
-    (project / "ariadne.yaml").write_text("# operator scaffold\n")
+    registry = b"# operator-owned registry\n"
+    (project / "ariadne.yaml").write_bytes(registry)
     assert run_setup(project, "", "--no-input") == 0
-    assert "Route choice required" in capsys.readouterr().out
-    assert not (project / "AGENTS.md").exists()
-    assert run_setup(project, "managed\n\n") == 0
+    output = capsys.readouterr().out
+    assert "git_managed" in output and "Route choice required" not in output
+    assert (project / "ariadne.yaml").read_bytes() == registry
     assert "## Admission gate" in (project / "AGENTS.md").read_text()
-
-
-def test_managed_route_cannot_be_changed_by_legacy_flag(tmp_path, capsys):
-    project = tmp_path / "managed"
-    init.main([str(project), "--git"])
-    before = (project / "AGENTS.md").read_bytes()
-    assert run_setup(project, "", "--legacy", "--no-input") == 1
-    assert "never migrates" in capsys.readouterr().err
-    assert (project / "AGENTS.md").read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -270,7 +238,7 @@ def test_noninteractive_detects_filenames_never_accepts_sources_or_runs_author(
     tmp_path, monkeypatch, capsys, no_input, tty
 ):
     project = tmp_path / "project"
-    init.main([str(project), "--git"])
+    init.main([str(project)])
     prepare_git(project)
     for relative in (
         "data/a.db",
@@ -316,7 +284,7 @@ def test_postgres_uses_env_name_and_never_emits_or_stores_credential_value(
     tmp_path, capsys, monkeypatch
 ):
     project = tmp_path / "project"
-    init.main([str(project), "--git"])
+    init.main([str(project)])
     prepare_git(project)
     secret = "postgresql://operator:secret-password@host/database"
     monkeypatch.setenv("ARIADNE_PG_DSN", secret)
@@ -333,7 +301,7 @@ def test_postgres_uses_env_name_and_never_emits_or_stores_credential_value(
 
 def test_inline_credential_refused_without_echo_or_declaration(tmp_path, capsys):
     project = tmp_path / "project"
-    init.main([str(project), "--git"])
+    init.main([str(project)])
     prepare_git(project)
     secret = "postgresql://operator:secret-password@host/database"
     assert (
@@ -347,31 +315,9 @@ def test_inline_credential_refused_without_echo_or_declaration(tmp_path, capsys)
     assert secret not in output.out + output.err and not records(project)
 
 
-def test_only_explicit_legacy_authoring_run_has_disclosed_access(tmp_path, capsys, monkeypatch):
-    project = tmp_path / "legacy"
-    init.main([str(project)])
-    (project / "ariadne.yaml").write_text(
-        "sources:\n- name: events\n  type: csv\n  path: events.csv\n"
-    )
-    monkeypatch.setenv("OPENAI_API_KEY", "not-printed")
-    monkeypatch.setenv("OPENAI_MODEL", "test-model")
-    calls = []
-
-    def delegated(argv):
-        assert "network/data egress" in capsys.readouterr().out
-        assert Path.cwd() == project
-        calls.append(argv)
-        return 0
-
-    monkeypatch.setattr(author, "main", delegated)
-    # manual source intake done (blank), then explicit selection of the existing author
-    assert run_setup(project, "\nyes\n") == 0
-    assert calls == [["--sources", "ariadne.yaml", "--notes", "data/seed_notes.md"]]
-
-
 def test_rejected_confirmation_and_nonterminal_output_never_declare(tmp_path, capsys):
     project = tmp_path / "project"
-    init.main([str(project), "--git"])
+    init.main([str(project)])
     prepare_git(project)
     (project / "data/events.csv").write_text("id\n1\n")
     assert run_setup(project, "accept\n\nno\n") == 0
@@ -386,7 +332,7 @@ def test_interrupted_intake_reports_completed_steps_and_still_installs_selected_
     tmp_path, capsys
 ):
     project = tmp_path / "project"
-    init.main([str(project), "--git"])
+    init.main([str(project)])
     prepare_git(project)
     (project / "data/events.csv").write_text("id\n1\n")
     assert run_setup(project, "accept\n", "--agents", "--agent", "pi") == 1
@@ -396,38 +342,9 @@ def test_interrupted_intake_reports_completed_steps_and_still_installs_selected_
     assert (project / ".pi/skills/ariadne").is_symlink() and not records(project)
 
 
-def test_noninteractive_legacy_resume_prints_exact_pending_approval_without_writes(
-    tmp_path, capsys
-):
-    project = tmp_path / "legacy"
-    init.main([str(project)])
-    intake = tmp_path / "intake.yaml"
-    intake.write_text("sources:\n- name: events\n  type: csv\n  path: events.csv\n")
-    proposed = authoring.propose_sources(intake, project=project)
-    stored = (project / authoring.PROPOSAL_REL).read_bytes()
-    registry = (project / "ariadne.yaml").read_bytes()
-    assert run_setup(project, "", "--no-input") == 0
-    output = capsys.readouterr().out
-    assert (
-        shlex.join(
-            [
-                "ariadne-authoring",
-                "approve-sources",
-                "--project",
-                str(project),
-                "--digest",
-                proposed["digest"],
-            ]
-        )
-        in output
-    )
-    assert (project / authoring.PROPOSAL_REL).read_bytes() == stored
-    assert (project / "ariadne.yaml").read_bytes() == registry
-
-
 def test_existing_proposal_operator_selection_reuses_only_chosen_id(tmp_path, capsys):
     project = tmp_path / "managed"
-    init.main([str(project), "--git"])
+    init.main([str(project)])
     prepare_git(project)
     api = authoring.AuthoringProject(project)
     first, second = api.start_proposal(), api.start_proposal()
@@ -513,70 +430,6 @@ def test_status_internal_skill_selection_preserves_default_and_scopes_steps(
     assert "project/pi:" in output and "user/hermes:" not in output
 
 
-def test_managed_scaffold_route_survives_empty_staging_before_proposals(tmp_path, capsys):
-    project = tmp_path / "managed"
-    assert init.main([str(project), "--git"]) == 0
-    assert not (project / ".ariadne").exists()
-    (project / "staging").mkdir()
-    originals = {
-        name: (project / name).read_bytes() for name in ("AGENTS.md", ".gitignore", "ariadne.yaml")
-    }
-    capsys.readouterr()
-    assert run_setup(project, "", "--no-input") == 0
-    output = capsys.readouterr().out
-    assert "Scaffold/resume: managed" in output and "git_managed" in output
-    assert "Proposal preparation paused" in output and "git init" in output
-    assert not (project / ".git").exists() and not records(project)
-    assert {name: (project / name).read_bytes() for name in originals} == originals
-    assert run_setup(project, "", "--legacy", "--no-input") == 1
-    assert "never migrates" in capsys.readouterr().err
-
-
-def test_completed_legacy_source_approval_allows_next_declaration_but_preserves_pending(
-    tmp_path, capsys
-):
-    project = tmp_path / "legacy"
-    assert init.main([str(project)]) == 0
-    intake = tmp_path / "first.yaml"
-    intake.write_text("sources:\n- name: first\n  type: csv\n  path: first.csv\n")
-    first = authoring.propose_sources(intake, project=project)
-    # The fixture's operator approves outside setup; setup's human-call guards remain active.
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "ariadne.authoring_cli",
-            "approve-sources",
-            "--project",
-            str(project),
-            "--digest",
-            first["digest"],
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    registry = (project / "ariadne.yaml").read_bytes()
-    stored = project / authoring.PROPOSAL_REL
-    assert stored.exists()  # approval intentionally retains this completed proposal
-    capsys.readouterr()
-    second = '{"name":"second","type":"csv","path":"second.csv"}\n\nyes\n'
-    assert run_setup(project, second) == 0
-    output = capsys.readouterr().out
-    pending = stored.read_bytes()
-    assert yaml.safe_load(pending)["sources"] == [
-        {"name": "second", "type": "csv", "path": str(project / "second.csv")}
-    ]
-    assert (project / "ariadne.yaml").read_bytes() == registry
-    assert "Source approval pending" in output and "Authoring paused" in output
-    assert run_setup(project, second) == 0
-    assert stored.read_bytes() == pending  # identical pending entries are not duplicated
-    third = '{"name":"third","type":"csv","path":"third.csv"}\n\nyes\n'
-    assert run_setup(project, third) == 1
-    assert "a source proposal is already pending" in capsys.readouterr().err
-    assert stored.read_bytes() == pending and (project / "ariadne.yaml").read_bytes() == registry
-
-
 def test_filename_detection_skips_custom_virtualenvs_without_opening_config_or_sources(
     tmp_path, monkeypatch
 ):
@@ -647,7 +500,7 @@ def test_setup_declaration_references_an_existing_candidate_profile(tmp_path, ca
     wizard, no new credential tooling), and the approve handoff names the
     declaration digest exactly as before."""
     project = tmp_path / "managed"
-    init.main([str(project), "--git"])
+    init.main([str(project)])
     (project / "data/events.parquet").write_bytes(b"not opened or parsed")
     prepare_git(project)
     api = AuthoringProject(project)

@@ -1,60 +1,35 @@
-"""Standalone proposal-first document ingestion (spec rev 8 §8.19, ADR-0009).
+"""Revision-bound document ingestion for native Git authoring candidates.
 
-``ariadne-ingest <doc>...`` turns documents into typed OKF proposals WITHOUT the
-authoring loop: convert to Markdown, LLM-distill into pages classified into the
-existing bundle taxonomy, enforce the per-type frontmatter contract, and stage
-under ``staging/context_layer/`` only — the human promotion gate
-(``ariadne-promote``) stays the only path to served state; served dirs,
-``index.md`` and ``log.md`` are never written (promote owns bundle bookkeeping).
+``ariadne-ingest`` reads references only from the operator's configured local
+roots or exact approved object-store URIs, captures each source digest and
+converted text from one byte snapshot, and writes generated OKF pages through
+the existing revision-checked proposal edit seam. It never writes a staging
+catalog, retains original bytes, or admits the candidate. Verbatim mode skips
+the model and preserves the converter's text exactly; ordinary reconciliation
+compares against the immutable admitted snapshot and keeps Policy egress
+opt-in.
 
-Converter dispatch — the lumio-wiki-researched stack, installed via the optional
-``[documents]`` extra so the base install stays lightweight::
+Converter dispatch remains optional via ``[documents]``::
 
     .md .txt                                  native read (no dependencies)
     .pdf                                      liteparse
     .docx .pptx .xlsx .html                   markitdown[docx]
     .doc .rtf .epub .csv .odt .ods .odp .xls  firecrawl-anydoc (imports as ``anydoc``)
 
-(.html routes to markitdown: firecrawl-anydoc 0.1.3 ships no HTML reader —
-owner decision, rev 8 implementation round.) A missing converter or an
-unsupported extension fails that document with the exact install hint and
-stages nothing for it.
-
 The LLM call reuses the author's OpenAI-compatible wiring (``OPENAI_*`` loaded
-from ``ARIADNE_ENV``). What the pipeline already knows mechanically is never
-trusted to LLM recall: every assembled page carries
-``sources: [{id: <sha256-12 of the file>, resource: <absolute path>, title:
-<filename>}]``, ``generated: {by: ariadne-ingest:<model>, at: <iso>}`` and
-``status: draft``; the LLM supplies only the classification, title,
-description, tags and body. Pages are gated with the author's per-type contract
-(:func:`ariadne.context._page_contract_errors`) BEFORE anything touches staging,
-with at most 2 retry rounds feeding violations back; a document that never
-passes stages nothing.
-
-Two further untrusted-input refusals: staging refuses to write through any
-symlinked component under staging/ (init.py's component-walk discipline — an
-attacker-planted link, e.g. ``staging/context_layer`` -> the served dir,
-receives nothing), and every fully-rendered page is scanned for credential
-patterns before staging, rejected naming the pattern CLASS, never the secret.
-
-Staging writes use the facade's atomic ``O_CREAT|O_EXCL`` claim — name
-collisions suffix ``-2``/``-3``/… instead of overwriting (spec §8.11 discipline).
-
-Verbatim mode (``--verbatim`` / ``verbatim=True``, spec 2026-10-13-0021) skips
-the model entirely: the converter's text is wrapped mechanically into ONE
-draft Reference under ``staging/context_layer/references/`` — body byte-exact
-(no ``.strip()``, no added terminal newline), the source's own frontmatter
-stays literal body text, and staging-local retries no-op while the draft is
-unchanged (generation time ignored); any change stages a NEW exclusive draft.
+from ``ARIADNE_ENV``). Core assembles provenance/lifecycle metadata, validates
+each page and scans credentials before writing. Each successful artifact edit
+uses the current candidate revision; collisions create a new suffixed page,
+not an overwrite. Partial batches report actual writes and the resulting
+candidate revision.
 
 Interfaces::
 
-    ingest(docs, staging_dir="staging", complete=None, verbatim=False)
-        -> (staged paths, errors)
-    reconcile_ingest(docs, *, served_root, staging_dir="staging", complete=None)
-        -> (staged paths, errors, comparisons)   # opt-in, spec 2026-09-23-0004
-    ariadne-ingest <doc>... [--db DB] [--verbatim]   # --db reserved: unwired
-    ariadne-ingest --reconcile --served ROOT <doc>...  # never with --verbatim
+    ingest(docs, *, project, proposal, expected_revision, complete=None, verbatim=False)
+        -> {proposal, base_revision, candidate_revision, written, unchanged, errors}
+    reconcile_ingest(docs, *, project, proposal, expected_revision, complete=None)
+        -> (ingest result, comparisons)   # opt-in, spec 2026-09-23-0004
+    ariadne-ingest DOC... --project DIR --proposal ID --expected-revision REV
 """
 
 from __future__ import annotations
@@ -74,15 +49,14 @@ from typing import Any, cast
 
 import yaml
 
-from ariadne.author import _default_complete, _validate_staging
+from ariadne.author import _default_complete
 from ariadne.context import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     _FRONTMATTER_RE,
     _page_contract_errors,
 )
-from ariadne.init import _symlink_under
 
 MAX_RETRIES = 2  # ≤2 retry rounds on contract violations (rev 8 brief; author allows 3 total)
-STAGING_SUBDIR = "context_layer"  # the only place ingest ever writes under staging/
+CONTEXT_SUBDIR = "context_layer"
 
 # Bundle taxonomy ingest may classify into (ADR-0009): folder -> frontmatter type.
 # metrics/computations/skills stay author-owned (metric pages need OSI-model
@@ -96,8 +70,8 @@ _ALLOWED_FOLDERS = {
 
 _NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")  # slug; no slashes/dots: no path tricks
 
-# Credential classes rejected before staging: LLM output is untrusted, so a
-# secret from the source document must never be echoed into a staged page.
+# Credential classes rejected before a candidate edit: LLM output is untrusted,
+# so a secret from the source document must never enter an authored artifact.
 # Violations name the CLASS only — the matched text is never reproduced.
 # (sk- allows -/_ so real sk-proj-... keys match; assignments are same-line so
 # prose ending in the word "token" cannot false-positive across newlines.)
@@ -142,7 +116,7 @@ def _convert_markitdown(path: Path) -> str:
 
 
 def _convert_anydoc(path: Path) -> str:
-    import anydoc  # firecrawl-anydoc installs as firecrawl-anydoc, imports as anydoc
+    import anydoc  # pyright: ignore[reportMissingImports] — optional [documents] extra
 
     return anydoc.to_markdown(str(path))
 
@@ -182,7 +156,7 @@ def _convert(path: Path) -> str:
         raise _ConversionError(
             f"{path}: unsupported document type '{suffix or '(no extension)'}'. "
             f"Supported: {supported}. For the converter formats, {_INSTALL_HINT}. "
-            "Nothing was staged."
+            "Nothing was written."
         )
     convert, requirement = entry
     try:
@@ -190,7 +164,7 @@ def _convert(path: Path) -> str:
     except ImportError:
         raise _ConversionError(
             f"{path}: converting '{suffix}' needs the optional '{requirement}' package — "
-            f"{_INSTALL_HINT}. Nothing was staged."
+            f"{_INSTALL_HINT}. Nothing was written."
         ) from None
     except _ConversionError:
         raise
@@ -232,7 +206,7 @@ include "aliases": [...] and the structured declaration \
 canonical table resources (ariadne://table/...); NEVER add measured counts, \
 receipts, approval or confirmation states. A mapping citing the document \
 itself uses "source_ids": ["@document"] — ingestion binds that token to the \
-document's staged footnote id mechanically. The ariadne declaration belongs \
+document's citation id mechanically. The ariadne declaration belongs \
 to references ONLY: never attach it to a table or policy page.
 - Any other knowledge worth keeping (glossary, background, meeting notes) -> \
 folder "references", type "reference", and include the tag "ingest".
@@ -255,8 +229,8 @@ lifecycle fields are attached mechanically; never write YAML yourself.
 def _user_prompt(text: str, filename: str, citation_id: str) -> str:
     return (
         f"Source document: {filename} (already converted to markdown)\n"
-        f"Document citation id: {citation_id} — this document stages as that "
-        "footnote id; a mapping citing the document itself uses the token "
+        f"Document citation id: {citation_id} — this id identifies the document "
+        "in the candidate; a mapping citing the document itself uses the token "
         '"@document" in source_ids and ingestion binds it to this id.\n\n'
         f"<document>\n{text.strip()}\n</document>\n\n"
         "Distill it into typed OKF pages now. Return only the JSON object."
@@ -266,14 +240,14 @@ def _user_prompt(text: str, filename: str, citation_id: str) -> str:
 # The explicit input-document citation token (K2, spec 0010 §4: domain
 # claims cite the ACTUAL input document): the digest footnote id is
 # core-owned, never guessed by the model — a mapping cites the document
-# itself with this token and _assemble binds the real staged id
+# itself with this token and _assemble binds the real citation id
 # mechanically, like every other mechanical provenance field.
 _DOCUMENT_CITATION_TOKEN = "@document"
 
 
 def _bind_document_citations(extension: dict, citation_id: str) -> dict:
     """Bind every ``@document`` mapping-citation token to the input document's
-    ACTUAL staged footnote id: validation then resolves it like any authored
+    ACTUAL citation id: validation then resolves it like any authored
     source_id, so a mapping citing the actual input document survives
     ingestion instead of failing the footnote-resolution gate."""
     for mapping in extension.get("mappings") or []:
@@ -332,7 +306,7 @@ def _assemble(
             errors.append(f"{rel}: name must be a lowercase slug (got {name!r})")
             continue
         if name in ("index", "log"):
-            errors.append(f"{rel}: name '{name}' is bundle bookkeeping (promote-owned)")
+            errors.append(f"{rel}: name '{name}' is system-owned bundle bookkeeping")
             continue
         title = str(entry.get("title") or "").strip()
         description = str(entry.get("description") or "").strip()
@@ -363,7 +337,7 @@ def _assemble(
         if expected == "table" and isinstance(entry.get("grain"), dict):
             front["grain"] = entry["grain"]  # per-type gate validates the block
         # K2 (issue #42, spec 0010 §3/§5): the ALLOWLISTED structured Reference
-        # declarations survive ordinary staging — page aliases and the
+        # declarations survive ordinary candidate edits — page aliases and the
         # versioned ``ariadne`` extension — with the document's own provenance
         # (sources above); everything else the entry carries stays ignored.
         # The extension belongs to References ONLY (spec 0010 §3): a table or
@@ -388,7 +362,7 @@ def _assemble(
             errors.append(
                 f"{rel}: the ariadne extension belongs to References (spec 0010 §3) "
                 f"— a {expected} page carries no structured declaration, and "
-                "authority/measurement claims are never staged; remove it"
+                "authority/measurement claims are never added to candidate content; remove it"
             )
         elif extension is not None:
             if not isinstance(extension, dict):
@@ -403,19 +377,6 @@ def _assemble(
     return pages, errors
 
 
-def _symlink_offender(staging: Path, pages: list[tuple]) -> str | None:
-    """First symlinked component of any page's staging path (from staging/
-    down to the target file), or None — the same component-walk refusal as
-    ariadne.init's scaffolder: an attacker-planted link (e.g.
-    ``staging/context_layer`` -> the served context_layer/) must never receive
-    staged pages directly, bypassing the promotion gate."""
-    for folder, name, _text in pages:
-        offender = _symlink_under(staging, f"{STAGING_SUBDIR}/{folder}/{name}.md")
-        if offender is not None:
-            return offender
-    return None
-
-
 def _secret_violations(pages: list[tuple]) -> list[str]:
     """Reject pages whose fully-rendered text (frontmatter values + body)
     matches a credential pattern. The violation names the pattern CLASS,
@@ -426,22 +387,20 @@ def _secret_violations(pages: list[tuple]) -> list[str]:
             if pattern.search(text):
                 violations.append(
                     f"pages[{position}]: appears to contain a {label} credential — "
-                    "remove it and re-send; secrets are never staged"
+                    "remove it and re-send; secrets are never written to the candidate"
                 )
                 break  # one class names the rejection; drop the page
     return violations
 
 
 def _contract_errors(pages: list[tuple]) -> list[str]:
-    """Run the author's per-type gate over assembled pages WITHOUT staging them:
-    pages are mirrored into a throwaway tree so a violating round never leaves
-    anything under staging/ (rev 8: nothing partially staged)."""
+    """Run the per-type gate in temporary scratch before any candidate edit."""
     errors: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         paths: list[tuple[Path, str]] = []
         for folder, name, text in pages:
-            page = root / STAGING_SUBDIR / folder / f"{name}.md"
+            page = root / CONTEXT_SUBDIR / folder / f"{name}.md"
             page.parent.mkdir(parents=True, exist_ok=True)
             page.write_text(text, encoding="utf-8")
             paths.append((page, _ALLOWED_FOLDERS[folder]))
@@ -450,57 +409,17 @@ def _contract_errors(pages: list[tuple]) -> list[str]:
     return errors
 
 
-def _claim_exclusive(candidate: Path, text: str) -> Path:
-    """Atomic O_CREAT|O_EXCL write: claims the path or raises FileExistsError."""
-    fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(text)
-    return candidate
-
-
-def _stage_atomic(directory: Path, name: str, text: str) -> Path:
-    """Mirror of the facade's O_CREAT|O_EXCL claim (ariadne.serve): the suffix
-    race resolves atomically, collisions get -2/-3/…, never an overwrite."""
-    directory.mkdir(parents=True, exist_ok=True)
-    candidate = directory / f"{name}.md"
-    suffix = 2
-    while True:
-        try:
-            return _claim_exclusive(candidate, text)
-        except FileExistsError:
-            candidate = directory / f"{name}-{suffix}.md"
-            suffix += 1
-
-
-def _distill(doc: Path, *, complete, now: str) -> tuple[list[tuple], list[str], str]:
-    """Convert + LLM-distill + gate one document WITHOUT touching staging;
-    returns (gate-clean page triples, errors, converted text). The SAME
-    converted text is returned so callers that quote-check against the document
-    (the reconcile advisory) never re-read a file that may have changed mid-run.
-    Shared by ordinary ingest and the opt-in reconcile mode."""
-    if not doc.is_file():
-        return [], [f"{doc}: no such document"], ""
-    try:
-        text = _convert(doc)
-    except _ConversionError as exc:
-        return [], [str(exc)], ""
-    source = {
-        "id": hashlib.sha256(doc.read_bytes()).hexdigest()[:12],
-        "resource": str(doc.resolve()),
-        "title": doc.name,
-    }
+def _distill(
+    text: str, *, filename: str, source: dict, complete, now: str
+) -> tuple[list[tuple], list[str], str]:
+    """Distill one already-snapshotted document and return gate-clean pages."""
     messages: list[dict] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
-        # The document's ACTUAL staged footnote id rides in the prompt material
-        # (K2): the model never guesses the core-owned digest, it cites the
-        # "@document" token and _assemble binds this id mechanically.
-        {"role": "user", "content": _user_prompt(text, doc.name, source["id"])},
+        {"role": "user", "content": _user_prompt(text, filename, source["id"])},
     ]
     violations: list[str] = []
     for attempt in range(1 + MAX_RETRIES):
         raw = complete(messages)
-        # Read AFTER the first call: the default endpoint loads ARIADNE_ENV inside
-        # _default_complete, so OPENAI_MODEL is only guaranteed present by now.
         model = os.environ.get("OPENAI_MODEL") or "unknown"
         try:
             entries = _parse_pages(raw)
@@ -512,10 +431,10 @@ def _distill(doc: Path, *, complete, now: str) -> tuple[list[tuple], list[str], 
                 violations = _secret_violations(pages)
             if not violations:
                 violations = _contract_errors(pages)
-            if not violations:  # gate-clean: the caller decides what gets staged
+            if not violations:
                 return pages, [], text
         print(
-            f"ariadne-ingest: {doc.name}: attempt {attempt + 1}: "
+            f"ariadne-ingest: {filename}: attempt {attempt + 1}: "
             f"{len(violations)} contract violation(s), feeding back",
             flush=True,
         )
@@ -529,28 +448,11 @@ def _distill(doc: Path, *, complete, now: str) -> tuple[list[tuple], list[str], 
             }
         )
     print(
-        f"ariadne-ingest: {doc.name}: still violating after 1 + {MAX_RETRIES} "
-        "attempts — nothing staged",
+        f"ariadne-ingest: {filename}: still violating after 1 + {MAX_RETRIES} "
+        "attempts — nothing was written",
         flush=True,
     )
     return [], violations, text
-
-
-def _ingest_one(doc: Path, *, staging: Path, complete, now: str) -> tuple[list[Path], list[str]]:
-    """Convert + distill + gate + stage one document. Returns (staged, errors)."""
-    pages, errors, _converted = _distill(doc, complete=complete, now=now)
-    if errors:
-        return [], errors
-    offender = _symlink_offender(staging, pages)
-    if offender is not None:  # refuse BEFORE any write: stage nothing
-        return [], [
-            f"{doc.name}: refusing to stage through a symlink: {offender} "
-            f"is a symlink under {staging}; remove it and re-run"
-        ]
-    return [
-        _stage_atomic(staging / STAGING_SUBDIR / folder, name, page_text)
-        for folder, name, page_text in pages
-    ], []
 
 
 # --- opt-in verbatim mode (spec 2026-10-13-0021, issue #66): preserve, never distill ---
@@ -564,13 +466,13 @@ _VERBATIM_FOLDER = "references"  # every verbatim document is one draft Referenc
 # a changed key/indentation, a corrupted or non-timestamp value — stays
 # unmasked and counts as changed (spec §4), as does every other byte of the
 # candidate; if the renderer ever changed form, retries fail SAFE toward
-# staging a new draft, never toward a false 'unchanged'.
+# writing a new candidate draft, never toward a false 'unchanged'.
 _AT_LINE_RE = re.compile(r"(?m)^  at: '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00'$")
 
 
 def _verbatim_name(doc: Path) -> str | None:
     """Safe page name derived mechanically from the filename (spec §2), or None
-    when the stem yields no slug or collides with promote-owned bookkeeping —
+    when the stem yields no slug or collides with system-owned bookkeeping —
     the same name discipline as distilled pages."""
     slug = re.sub(r"[^a-z0-9_-]+", "-", doc.stem.lower()).strip("-_")
     if _NAME_RE.fullmatch(slug) and slug not in ("index", "log"):
@@ -578,22 +480,25 @@ def _verbatim_name(doc: Path) -> str | None:
     return None
 
 
-def _verbatim_page(doc: Path, name: str, text: str, source: dict, now: str) -> str:
-    """Render the one draft Reference wrapping the converted text verbatim:
-    the body keeps the reader/converter output EXACTLY — no ``.strip()`` and no
-    added terminal newline (unlike ``_assemble``) — so the source document's
-    own frontmatter stays literal body text, never adopted Ariadne metadata."""
+def _verbatim_page(filename: str, text: str, source: dict, now: str) -> tuple[str, str, str]:
+    """Render one draft Reference without changing the converter's text."""
+    name = _verbatim_name(Path(filename))
+    if name is None:
+        raise ValueError(
+            f"{filename}: filename yields no safe page name (empty slugs and "
+            "the system-owned 'index'/'log' are refused)"
+        )
     front: dict = {
         "type": "reference",
         "status": "draft",
-        "title": doc.stem,
-        "description": f"Verbatim preservation of {doc.name} (unmodified converter output).",
+        "title": Path(filename).stem,
+        "description": f"Verbatim preservation of {filename} (unmodified converter output).",
         "tags": ["ingest", "verbatim"],
         "sources": [source],
         "generated": {"by": _VERBATIM_BY, "at": now},
     }
     front_yaml = yaml.safe_dump(front, default_flow_style=False, sort_keys=False).strip()
-    return f"---\n{front_yaml}\n---\n\n{text}"
+    return _VERBATIM_FOLDER, name, f"---\n{front_yaml}\n---\n\n{text}"
 
 
 def _mask_generation_time(text: str) -> str | None:
@@ -608,149 +513,247 @@ def _mask_generation_time(text: str) -> str | None:
     return text[:start] + _AT_LINE_RE.sub("  at: @", text[start:end]) + text[end:]
 
 
-def _verbatim_unchanged(existing_text: str, page_text: str) -> bool:
-    """True only when the candidate draft is byte-identical to the page this
-    run would write, modulo the generation timestamp's value ALONE (spec §4):
-    an owner note under ``generated``, edited blank lines, reformatted YAML or
-    any body change counts as changed — never a false 'unchanged' no-op. Purely
-    textual, so unparseable candidate frontmatter cannot crash the comparison
-    (a malformed candidate is simply nonmatching)."""
+def _candidate_page_unchanged(existing_text: str, page_text: str) -> bool:
+    """True only when candidate bytes match, modulo the generated timestamp."""
     masked = _mask_generation_time(existing_text)
     return masked is not None and masked == _mask_generation_time(page_text)
 
 
-def _verbatim_one(doc: Path, *, staging: Path, now: str) -> tuple[list[Path], list[str]]:
-    """Convert + mechanically wrap + gate + stage one document WITHOUT any
-    model call (spec 2026-10-13-0021). Returns (staged, errors); a retry of an
-    unchanged source whose unchanged draft is still present is a no-op."""
-    if not doc.is_file():
-        return [], [f"{doc}: no such document"]
-    try:
-        text = _convert(doc)
-    except _ConversionError as exc:
-        return [], [str(exc)]
-    if not text.strip():
-        return [], [
-            f"{doc}: converted text is empty (whitespace only) — refused instead of "
-            "staging an invalid Reference. Nothing was staged."
-        ]
-    name = _verbatim_name(doc)
-    if name is None:
-        return [], [
-            f"{doc}: filename yields no safe page name (empty slugs and the "
-            "promote-owned 'index'/'log' are refused). Nothing was staged."
-        ]
+def _source_snapshot(reference: str | Path, project: Path) -> tuple[str, str, dict]:
+    """Read one operator-authorized source once; digest and text share bytes."""
+    from ariadne.authoring_inputs import _convert_snapshot, _document_bytes
+
+    resource, filename, data = _document_bytes(str(reference), project)
+    text = _convert_snapshot(data, Path(filename).suffix, display=filename)
     source = {
-        "id": hashlib.sha256(doc.read_bytes()).hexdigest()[:12],
-        "resource": str(doc.resolve()),
-        "title": doc.name,
+        "id": hashlib.sha256(data).hexdigest()[:12],
+        "resource": resource,
+        "title": filename,
     }
-    page_text = _verbatim_page(doc, name, text, source, now)
-    # every gate BEFORE any staging read or write — a credential-bearing document
-    # never even reaches the retry lookup, and the page contract is the author's
-    # own per-type gate, never a second framework.
-    errors = _contract_errors([(_VERBATIM_FOLDER, name, page_text)])
-    if errors:
-        return [], errors
-    for label, pattern in _SECRET_PATTERNS:
-        if pattern.search(page_text):  # body AND rendered wrapper values
-            # the document is named with any credential match REDACTED from its
-            # own path: a secret-bearing filename must not echo back (the class
-            # names it); the matched body/wrapper value is never reproduced
-            return [], [
-                f"{_redact_credential_matches(str(doc))}: document or wrapper matches "
-                f"the {label} credential pattern — verbatim documents are never "
-                "altered to pass; remove the secret and re-run. Nothing was staged."
-            ]
-    # staging-local retry lookup (spec §4): identity is the resolved source
-    # location + content digest + converted text. The WHOLE suffix family
-    # {name}.md, {name}-N.md is scanned ACROSS filename gaps (a draft freed by
-    # promotion/removal of an earlier slot never hides an unchanged one), and
-    # every candidate's path is symlink-checked BEFORE the candidate is read;
-    # a differing draft is never overwritten or misreported — the first free
-    # suffix stages anew.
-    directory = staging / STAGING_SUBDIR / _VERBATIM_FOLDER
-    offender = _symlink_under(staging, f"{STAGING_SUBDIR}/{_VERBATIM_FOLDER}/{name}.md")
-    if offender is not None:  # the shared context_layer/references components
-        return [], [
-            f"{doc.name}: refusing to stage through a symlink: {offender} is a "
-            f"symlink under {staging}; remove it and re-run"
-        ]
-    family = re.compile(rf"^{re.escape(name)}(?:-\d+)?\.md$")
-    existing = (
-        sorted(path for path in directory.iterdir() if family.fullmatch(path.name))
-        if directory.is_dir()
-        else []
-    )
-    for candidate in existing:
-        offender = _symlink_under(staging, f"{STAGING_SUBDIR}/{_VERBATIM_FOLDER}/{candidate.name}")
-        if offender is not None:  # per candidate, BEFORE any read through it
-            return [], [
-                f"{doc.name}: refusing to stage through a symlink: {offender} is a "
-                f"symlink under {staging}; remove it and re-run"
-            ]
-        if not candidate.is_file():
-            continue
-        if _verbatim_unchanged(candidate.read_text(encoding="utf-8"), page_text):
-            print(
-                f"ariadne-ingest: {doc.name}: verbatim draft already staged — unchanged",
-                flush=True,
+    return filename, text, source
+
+
+def _document_pages(
+    reference: str | Path, project: Path, *, complete, now: str, verbatim: bool
+) -> tuple[list[tuple], list[str], str]:
+    try:
+        filename, text, source = _source_snapshot(reference, project)
+    except (OSError, ValueError, _ConversionError) as exc:
+        shown = _redact_credential_matches(str(reference))
+        return [], [f"{shown}: {_redact_credential_matches(str(exc))}"], ""
+    if verbatim:
+        if not text.strip():
+            return [], [f"{filename}: converted text is empty (whitespace only)"], text
+        try:
+            page = _verbatim_page(filename, text, source, now)
+        except ValueError as exc:
+            return [], [str(exc)], text
+        errors = _contract_errors([page])
+        if not errors:
+            errors = _secret_violations([page])
+        return ([], errors, text) if errors else ([page], [], text)
+    return _distill(text, filename=filename, source=source, complete=complete, now=now)
+
+
+def _proposal_state(project: Path, proposal: str, expected_revision: str):
+    from ariadne import proposals
+
+    record = proposals._load_record(project, proposal)
+    proposals._check_coherent(project, record)
+    current = record["candidate_revision"]
+    if expected_revision != current:
+        raise ValueError(
+            f"stale revision: proposal {proposal} is at candidate {current}, the ingest "
+            f"expected {expected_revision} — re-read the candidate and retry; nothing was written"
+        )
+    return record, current
+
+
+def _observe_failed_edit(
+    project: Path, proposal: str, previous_revision: str, artifact_path: str, content: str
+) -> tuple[str | None, bool, str]:
+    """Report branch/record state after an edit call fails, without repairing it."""
+    from ariadne import proposals
+
+    worktree = project / proposals.WORKTREES_REL / proposal
+    try:
+        result = proposals._git(["rev-parse", "HEAD"], worktree, check=False)
+        head = result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        head = None
+    try:
+        record_revision = proposals._load_record(project, proposal).get("candidate_revision")
+    except Exception:
+        record_revision = None
+
+    wrote = False
+    if head and head != previous_revision:
+        try:
+            expected = content.encode("utf-8")
+            wrote = (
+                proposals._read_blob(project, head, artifact_path) == expected
+                and proposals._read_blob(project, previous_revision, artifact_path) != expected
             )
-            return [], []
-    return [_stage_atomic(directory, name, page_text)], []
+        except Exception:
+            wrote = False
+
+    if not head:
+        return (
+            None,
+            wrote,
+            f"proposal state after failure: branch HEAD unavailable; recorded candidate "
+            f"{record_revision or 'unavailable'}; committed residue is unknown, not rolled back",
+        )
+    if not record_revision:
+        state = "recorded candidate unavailable; proposal state is incoherent"
+    elif head != record_revision:
+        state = f"recorded candidate {record_revision}; proposal state is incoherent"
+    else:
+        state = f"recorded candidate {record_revision}; branch and record agree"
+    residue = (
+        f"; committed artifact {artifact_path} is present at branch HEAD"
+        if wrote
+        else "; attempted artifact content was not independently confirmed; no rollback is claimed"
+    )
+    return head, wrote, f"proposal state after failure: branch HEAD {head}; {state}{residue}"
+
+
+def _context_pages(project: Path, revision: str) -> dict[str, str]:
+    from ariadne import proposals
+
+    return {
+        rel: blob.decode("utf-8", errors="replace")
+        for rel, blob in proposals.scope_blobs(project, revision)
+        if rel.startswith(f"{CONTEXT_SUBDIR}/") and rel.endswith(".md")
+    }
+
+
+def _candidate_page_target(
+    pages: dict[str, str], folder: str, name: str, page_text: str
+) -> tuple[str, str | None]:
+    """Find an unchanged source/page in the complete suffix family, else the
+    first free Git artifact path. Existing candidate bytes are never replaced."""
+    directory = f"{CONTEXT_SUBDIR}/{folder}/"
+    family = re.compile(rf"^{re.escape(directory + name)}(?:-(\d+))?\.md$")
+    matches = [(rel, match) for rel in pages if (match := family.fullmatch(rel)) is not None]
+    matches.sort(
+        key=lambda item: (
+            (0,) if item[1].group(1) is None else (len(item[1].group(1)), item[1].group(1))
+        )
+    )
+    for rel, _match in matches:
+        existing = pages[rel]
+        if _candidate_page_unchanged(existing, page_text):
+            return rel, existing
+    suffix = 1
+    while True:
+        rel = f"{directory}{name if suffix == 1 else f'{name}-{suffix}'}.md"
+        if rel not in pages:
+            return rel, None
+        suffix += 1
 
 
 def ingest(
     docs: list[str | Path],
     *,
-    staging_dir: str | Path = "staging",
+    project: str | Path,
+    proposal: str,
+    expected_revision: str,
     complete=None,
     verbatim: bool = False,
-) -> tuple[list[Path], list[str]]:
-    """Ingest documents into staged OKF proposals; returns (staged paths, errors).
+) -> dict:
+    """Write derived pages to one revision-checked Git candidate.
 
-    ``complete(messages) -> str`` is the LLM call boundary (default: the same
-    OpenAI-compatible endpoint the author uses). With ``verbatim=True`` no
-    completion boundary is resolved or called and no LLM configuration is
-    needed: each document stages as ONE draft Reference preserving the
-    converter's exact text (spec 2026-10-13-0021)."""
-    staging = Path(staging_dir)
-    _validate_staging(staging)  # spec §6: never the repo root or a served layer
-    now = datetime.now(UTC).isoformat(timespec="seconds")
-    staged: list[Path] = []
-    errors: list[str] = []
-    if verbatim:
-        for doc in docs:
-            paths, doc_errors = _verbatim_one(Path(doc), staging=staging, now=now)
-            staged.extend(paths)
-            errors.extend(doc_errors)
-        return staged, errors
+    Sources are resolved only through the host project's operator-managed
+    document boundary. Each durable edit is its own Git commit; partial batches
+    report the paths and revision that actually remain in the candidate."""
+    from ariadne import proposals
+
+    root = Path(project).resolve()
+    record, current_revision = _proposal_state(root, proposal, expected_revision)
+    base_revision = record["base_revision"]
+    candidate_pages = _context_pages(root, current_revision)
     complete = complete or _default_complete
-    for doc in docs:
-        paths, doc_errors = _ingest_one(Path(doc), staging=staging, complete=complete, now=now)
-        staged.extend(paths)
-        errors.extend(doc_errors)
-    return staged, errors
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    written: list[str] = []
+    unchanged: list[str] = []
+    errors: list[str] = []
+    mutation_failed = False
+    reported_revision: str | None = current_revision
+
+    for reference in docs:
+        pages, doc_errors, _converted = _document_pages(
+            reference, root, complete=complete, now=now, verbatim=verbatim
+        )
+        if doc_errors:
+            errors.extend(doc_errors)
+            continue
+        for folder, name, page_text in pages:
+            rel, existing_text = _candidate_page_target(candidate_pages, folder, name, page_text)
+            content = existing_text if existing_text is not None else page_text
+            try:
+                result = proposals.edit_proposal(
+                    root, proposal, current_revision, rel, content, core_generated=True
+                )
+            except Exception as exc:
+                observed_revision, observed_write, state = _observe_failed_edit(
+                    root, proposal, current_revision, rel, content
+                )
+                if observed_write and rel not in written:
+                    written.append(rel)
+                reported_revision = observed_revision
+                errors.append(
+                    f"{reference}: candidate edit failed: "
+                    f"{_redact_credential_matches(str(exc))}; {state}"
+                )
+                mutation_failed = True
+                break
+            current_revision = result["revision"]
+            reported_revision = current_revision
+            candidate_pages[rel] = content
+            target = written if result["changed"] else unchanged
+            if rel not in target:
+                target.append(rel)
+        if mutation_failed:
+            break
+
+    if not mutation_failed:
+        try:
+            current_revision = proposals._load_record(root, proposal)["candidate_revision"]
+            reported_revision = current_revision
+        except Exception as exc:
+            if not errors:
+                errors.append(
+                    f"candidate revision is unavailable after ingest: {type(exc).__name__}"
+                )
+    return {
+        "proposal": proposal,
+        "base_revision": base_revision,
+        "candidate_revision": reported_revision,
+        "written": written,
+        "unchanged": unchanged,
+        "errors": errors,
+    }
 
 
 # --- opt-in evidence reconciliation (spec 2026-09-23-0004 rev 1, ADR-0003/0009) ---
-# Deterministic identity + staging (issue #12 validation unit A) plus the
+# Deterministic identity + candidate comparison (issue #12 validation unit A) plus the
 # explicitly opt-in conflict advisory (unit B): only a same-path matched
 # APPROVED Policy with changed body text is ever sent to the configured
 # ingestion model, after the existing credential-pattern refusal — never any
 # other approved page, never `verified` identities.
 
 _DIFF_LINE_CAP = 60  # bounded human-readable diff: review output stays readable
-# Frontmatter excluded from owner-content comparison: promotion bookkeeping
-# (status/verified/generated, promote.py's no-op key) and source provenance,
-# which is compared separately as digest identity (provenance_only class).
+# Frontmatter excluded from owner-content comparison: lifecycle/generation
+# metadata (status/verified/generated) and source provenance, which is compared
+# separately as digest identity (provenance_only class).
 _BOOKKEEPING_KEYS = ("status", "verified", "generated", "sources")
 
 
 @dataclass
 class Advisory:
     """Fallible conflict advice for the human reviewer (spec 2026-09-23-0004):
-    it never promotes, blocks, rewrites, or sets review_needed — a suggestion
+    it never admits, blocks, rewrites, or sets review_needed — a suggestion
     with no verbatim-verified quote is not evidence."""
 
     status: str  # "supported" | "unverified" | "none" | "unavailable" | "not_applicable"
@@ -770,7 +773,7 @@ class Reconciliation:
     old_source: dict | None = None  # matched approved page's {resource, digest}
     diff: str = ""  # bounded unified diff of owner content (changed only)
     warning: str | None = None  # e.g. possible-duplicate on path drift
-    staged: Path | None = None  # final staged path (suffixed path for new pages)
+    candidate_path: str | None = None  # artifact-relative path in the candidate
     advisory: Advisory = field(  # not_applicable unless eligible (unit B)
         default_factory=lambda: Advisory("not_applicable")
     )
@@ -835,7 +838,7 @@ def _redact_credential_matches(text: str) -> str:
     a useful bounded comparison without echoing a suspected secret (spec
     2026-09-23-0004). A recognized PEM private key is removed as the ENTIRE
     block — BEGIN header, payload lines and END marker. Applied where a diff
-    is built — never to a staged page or the served state."""
+    is built — never to an authored page or the admitted state."""
     text = _PEM_BLOCK_RE.sub("[redacted private_key]", text)
     combined = re.compile(
         "|".join(
@@ -898,7 +901,7 @@ def _run_advisory(
     ]
     try:
         data = _parse_advisory(complete(messages))
-    except Exception as exc:  # provider failure/unparseable: advice is unavailable, staging stands
+    except Exception as exc:  # provider failure/unparseable: the deterministic edit remains
         cause = type(exc).__name__
         record.advisory = Advisory("unavailable", reason=f"advisory call failed ({cause})")
         return
@@ -938,7 +941,7 @@ def _split_page(text: str) -> tuple[dict, str]:
 
 
 def _owner_text(meta: dict, body: str) -> str:
-    """Canonical owner content: every frontmatter field except promotion
+    """Canonical owner content: every frontmatter field except lifecycle
     bookkeeping (status, verified, generated) and source provenance (compared
     separately as digest identity) — substantive per-type metadata such as a
     table's grain participates in change detection — plus the body."""
@@ -971,40 +974,26 @@ def _matching_source(meta: dict, resource: str) -> dict | None:
     return None
 
 
-def _approved_page(served_root: Path, rel: str) -> tuple[Path | None, str | None]:
-    """Contained, symlink-free approved page at exactly ``rel`` under
-    served_root/context_layer/, or (None, error). A proposed or symlinked path
-    must never read outside the selected approved Context Layer."""
-    offender = _symlink_under(served_root, f"{STAGING_SUBDIR}/{rel}")
-    if offender is not None:
-        return None, f"approved path {rel} traverses a symlink ({offender})"
-    served_context = served_root / STAGING_SUBDIR
-    page = served_context / rel
-    if not page.resolve().is_relative_to(served_context.resolve()):
-        return None, f"approved path {rel} escapes the served Context Layer"
-    if page.is_file():
-        return page, None
-    return None, None  # no approved page at that exact path: an unmatched new page
+def _approved_page(pages: dict[str, str], rel: str) -> str | None:
+    """Read an exact-path page from the proposal's immutable base revision."""
+    return pages.get(f"{CONTEXT_SUBDIR}/{rel}")
 
 
-def _duplicate_suspect(served_root: Path, meta: dict) -> str | None:
-    """Approved page at a DIFFERENT path sharing the proposal's source resource
-    or title (path-drift hint); warning-only — it never retargets a proposal.
-    Symlinked candidates are skipped unread: discovery must never read outside
-    the selected approved Context Layer."""
-    served_context = served_root / STAGING_SUBDIR
+def _duplicate_suspect(pages: dict[str, str], meta: dict) -> str | None:
+    """Find a different base-snapshot page sharing source identity or title."""
     resource = ""
     sources = meta.get("sources") or []
     if sources and isinstance(sources[0], dict):
         resource = str(sources[0].get("resource", ""))
     title = str(meta.get("title", ""))
-    for page in sorted(served_context.rglob("*.md")):
-        if page.name == "index.md":
+    prefix = f"{CONTEXT_SUBDIR}/"
+    for artifact, text in sorted(pages.items()):
+        if not artifact.startswith(prefix) or not artifact.endswith(".md"):
             continue
-        rel = page.relative_to(served_context).as_posix()
-        if _symlink_under(served_root, f"{STAGING_SUBDIR}/{rel}") is not None:
-            continue  # symlinked candidate: never read through it
-        suspect_meta, _ = _split_page(page.read_text(encoding="utf-8", errors="replace"))
+        rel = artifact.removeprefix(prefix)
+        if Path(rel).name == "index.md":
+            continue
+        suspect_meta, _ = _split_page(text)
         if not suspect_meta:
             continue
         for entry in suspect_meta.get("sources") or []:
@@ -1028,120 +1017,148 @@ def _bounded_diff(old: str, new: str) -> str:
 
 
 def _reconcile_one(
-    doc: Path, *, staging: Path, served_root: Path, complete, now: str
-) -> tuple[list[Path], list[str], list[Reconciliation]]:
-    """Reconcile one document: distill, resolve EVERY candidate's identity and
-    collisions first, then stage. Any preflight failure stages nothing for this
-    document; other documents stay independently processable."""
-    pages, errors, converted = _distill(doc, complete=complete, now=now)
+    reference: str | Path,
+    *,
+    project: Path,
+    proposal: str,
+    current_revision: str,
+    base_pages: dict[str, str],
+    candidate_pages: dict[str, str],
+    complete,
+    now: str,
+) -> tuple[str | None, list[str], list[str], list[str], list[Reconciliation], bool]:
+    """Compare one source with the admitted base, preflight its paths, then edit Git."""
+    pages, errors, converted = _document_pages(
+        reference, project, complete=complete, now=now, verbatim=False
+    )
     if errors:
-        return [], errors, []
+        return current_revision, [], [], errors, [], False
+
+    shown = _redact_credential_matches(str(reference))
     doc_errors: list[str] = []
     comparisons: list[Reconciliation] = []
-    plans: list[tuple[str, str, str]] = []  # (rel, mode, page_text); mode: replacement|new
-    seen: set[str] = set()  # every proposed path, unchanged ones included
-    advisory_jobs: list[tuple[Reconciliation, dict, str]] = []  # (record, ameta, abody)
-    # -- preflight: resolve all candidates before any per-document write ------
+    plans: list[tuple[Reconciliation, str, str]] = []
+    advisory_jobs: list[tuple[Reconciliation, dict, str]] = []
+    preflight_unchanged: list[str] = []
+    planned_pages = candidate_pages.copy()
+    seen: set[str] = set()
+
     for folder, name, page_text in pages:
         rel = f"{folder}/{name}.md"
         if rel in seen:
             doc_errors.append(
-                f"{doc.name}: duplicate proposal path {rel} within this document — "
-                "nothing staged for this document"
+                f"{shown}: duplicate proposal path {rel} within this document — "
+                "nothing was written for this document"
             )
             break
         seen.add(rel)
+        artifact_path = f"{CONTEXT_SUBDIR}/{rel}"
         pmeta, pbody = _split_page(page_text)
         new_source = _source_identity(pmeta) or {"resource": "", "digest": ""}
-        approved, containment_error = _approved_page(served_root, rel)
-        if containment_error is not None:
-            doc_errors.append(
-                f"{doc.name}: refusing to reconcile {rel}: {containment_error}; "
-                "nothing staged for this document"
-            )
-            break
+        approved = _approved_page(base_pages, rel)
+        current = planned_pages.get(artifact_path)
+
         if approved is not None:
-            ameta, abody = _split_page(approved.read_text(encoding="utf-8"))
+            ameta, abody = _split_page(approved)
             old_source = _matching_source(ameta, new_source["resource"])
             if old_source is None:
                 doc_errors.append(
-                    f"{doc.name}: identity conflict at {rel}: the approved page's sources "
-                    f"do not reference {new_source['resource']} — resolve the mismatch "
-                    "manually; nothing staged for this document"
+                    f"{shown}: identity conflict at {rel}: the base page's sources do not "
+                    f"reference {new_source['resource']} — resolve the mismatch manually; "
+                    "nothing was written for this document"
                 )
                 break
             same_owner = _owner_text(ameta, abody) == _owner_text(pmeta, pbody)
             if same_owner and old_source == new_source:
-                comparisons.append(  # identical page and digest: stages nothing
-                    Reconciliation(rel, "same-path", "unchanged", new_source, old_source)
-                )
+                record = Reconciliation(rel, "same-path", "unchanged", new_source, old_source)
+                record.candidate_path = artifact_path if current is not None else None
+                comparisons.append(record)
+                if current is not None:
+                    preflight_unchanged.append(artifact_path)
+                    planned_pages[artifact_path] = current
                 continue
+
             change = "provenance_only" if same_owner else "changed"
             diff = ""
             if not same_owner:
-                # EVERY returned/printed diff is credential-redacted where it is
-                # built (spec 2026-09-23-0004: no suspected secret in review
-                # output) — independent of advisory eligibility, so a metadata
-                # credential echoes nowhere. The proposal side is already
-                # secret-free by the distillation gate; only approved-side
-                # echoes are masked.
                 diff = _redact_credential_matches(
                     _bounded_diff(_owner_text(ameta, abody), _owner_text(pmeta, pbody))
                 )
-            if (staging / STAGING_SUBDIR / rel).exists():
-                doc_errors.append(
-                    f"{doc.name}: replacement staging target {rel} is already occupied "
-                    f"under {staging} — nothing staged for this document"
-                )
-                break
             record = Reconciliation(rel, "same-path", change, new_source, old_source, diff=diff)
             comparisons.append(record)
-            plans.append((rel, "replacement", page_text))
+            if current != approved:
+                if current is not None and _candidate_page_unchanged(current, page_text):
+                    record.candidate_path = artifact_path
+                    preflight_unchanged.append(artifact_path)
+                    planned_pages[artifact_path] = current
+                else:
+                    doc_errors.append(
+                        f"{shown}: candidate replacement target {artifact_path} differs from "
+                        "its admitted base — re-read the candidate and resolve the edit; "
+                        "nothing was written for this document"
+                    )
+                    break
+            else:
+                plans.append((record, artifact_path, page_text))
+                planned_pages[artifact_path] = page_text
             if ameta.get("type") == "policy" and abody.strip() != pbody.strip():
-                # unit B eligibility: only a matched approved POLICY with changed
-                # BODY text is ever disclosed to the advisory model
                 advisory_jobs.append((record, ameta, abody))
-        else:
-            suspect = _duplicate_suspect(served_root, pmeta)
-            warning = None
-            if suspect is not None:
-                warning = (
-                    f"possible duplicate: no approved page at {rel}, but approved "
-                    f"{suspect} matches this proposal's source/title — staged as a new "
-                    "page, not retargeted"
-                )
-            comparisons.append(Reconciliation(rel, "new", "new", new_source, warning=warning))
-            plans.append((rel, "new", page_text))
-    if doc_errors:
-        return [], doc_errors, []
-    for _rel, _mode, _text in plans:  # staging containment refusal, unchanged walk
-        offender = _symlink_under(staging, f"{STAGING_SUBDIR}/{_rel}")
-        if offender is not None:
-            return (
-                [],
-                [
-                    f"{doc.name}: refusing to stage through a symlink: {offender} is a "
-                    f"symlink under {staging}; remove it and re-run"
-                ],
-                [],
+            continue
+
+        suspect = _duplicate_suspect(base_pages, pmeta)
+        warning = None
+        if suspect is not None:
+            warning = (
+                f"possible duplicate: no admitted page at {rel}, but {suspect} matches "
+                "this proposal's source/title — written as a new candidate page, not retargeted"
             )
-    # -- all candidates resolved: only now does anything touch staging --------
-    staged: list[Path] = []
-    for rel, mode, page_text in plans:
-        directory = staging / STAGING_SUBDIR / Path(rel).parent
-        directory.mkdir(parents=True, exist_ok=True)
-        if mode == "replacement":  # exact approved path: suffixing would change identity
-            staged.append(_claim_exclusive(directory / f"{Path(rel).stem}.md", page_text))
+        path, existing = _candidate_page_target(planned_pages, folder, name, page_text)
+        record = Reconciliation(rel, "new", "new", new_source, warning=warning)
+        record.candidate_path = path if existing is not None else None
+        comparisons.append(record)
+        if existing is None:
+            plans.append((record, path, page_text))
+            planned_pages[path] = page_text
         else:
-            staged.append(_stage_atomic(directory, Path(rel).stem, page_text))
-    final_by_rel = {rel: path for (rel, _mode, _text), path in zip(plans, staged)}
-    for record in comparisons:
-        record.staged = final_by_rel.get(record.proposal)
-    # -- opt-in advisory (unit B): only eligible changed approved Policies, and
-    # only AFTER the deterministic comparison and staging are complete — advice
-    # can never gate, rewrite or undo them (spec 2026-09-23-0004). The advisory
-    # quote-checks against the SAME converted text the distillation saw: no
-    # re-read of a document that may have changed or vanished mid-run.
+            preflight_unchanged.append(path)
+            planned_pages[path] = existing
+
+    if doc_errors:
+        return current_revision, [], [], doc_errors, [], False
+
+    from ariadne import proposals
+
+    written: list[str] = []
+    unchanged = preflight_unchanged
+    mutation_failed = False
+    reported_revision: str | None = current_revision
+    for record, artifact_path, page_text in plans:
+        try:
+            result = proposals.edit_proposal(
+                project, proposal, current_revision, artifact_path, page_text, core_generated=True
+            )
+        except Exception as exc:
+            observed_revision, observed_write, state = _observe_failed_edit(
+                project, proposal, current_revision, artifact_path, page_text
+            )
+            if observed_write:
+                record.candidate_path = artifact_path
+                if artifact_path not in written:
+                    written.append(artifact_path)
+            reported_revision = observed_revision
+            doc_errors.append(
+                f"{shown}: candidate edit failed: {_redact_credential_matches(str(exc))}; {state}"
+            )
+            mutation_failed = True
+            break
+        current_revision = result["revision"]
+        reported_revision = current_revision
+        candidate_pages[artifact_path] = page_text
+        record.candidate_path = artifact_path
+        target = written if result["changed"] else unchanged
+        if artifact_path not in target:
+            target.append(artifact_path)
+
     for record, ameta, abody in advisory_jobs:
         _run_advisory(
             record,
@@ -1149,55 +1166,94 @@ def _reconcile_one(
             abody,
             identity=record.old_source or {"resource": "", "digest": ""},
             converted=converted,
-            filename=doc.name,
+            filename=Path(str(reference)).name,
             complete=complete,
         )
-    return staged, [], comparisons
+    return reported_revision, written, unchanged, doc_errors, comparisons, mutation_failed
 
 
 def reconcile_ingest(
     docs: list[str | Path],
     *,
-    served_root: str | Path,
-    staging_dir: str | Path = "staging",
+    project: str | Path,
+    proposal: str,
+    expected_revision: str,
     complete=None,
-) -> tuple[list[Path], list[str], list[Reconciliation]]:
-    """Opt-in re-ingestion with evidence reconciliation (spec 2026-09-23-0004):
-    compares document-derived proposals against same-path approved pages,
-    stages replacements at their exact approved relative path, and returns
-    (staged_paths, errors, comparisons). The served tree is never written;
-    human promotion stays the only path to served state."""
-    staging = Path(staging_dir)
-    _validate_staging(staging)  # same spec §6 discipline as ordinary ingest
-    served = Path(served_root)
-    if not (served / STAGING_SUBDIR).is_dir():
-        raise ValueError(
-            f"served root {served} has no {STAGING_SUBDIR}/ — nothing to "
-            "reconcile against; pass the served root that promotion writes"
-        )
-    staging_resolved = staging.resolve()
-    served_resolved = served.resolve()
-    if staging_resolved == served_resolved or staging_resolved.is_relative_to(served_resolved):
-        # _validate_staging only knows the repo's fixed served paths; the
-        # caller-selected served root needs the same promotion-gate discipline
-        # (ADR-0003), or an unmatched new page would land directly in served state.
-        raise ValueError(
-            f"staging directory {staging} is inside the served root {served}: staged "
-            "pages reach served state only through human promotion — spec §6"
-        )
+) -> tuple[dict, list[Reconciliation]]:
+    """Compare source-derived pages with the admitted base and edit one candidate.
+
+    Advisory egress remains opt-in. The base and candidate are read by exact Git
+    revision; no mutable served tree or separate staging catalog participates.
+    """
+    from ariadne import proposals
+
+    root = Path(project).resolve()
+    record, current_revision = _proposal_state(root, proposal, expected_revision)
+    base_revision = record["base_revision"]
+    base_pages = _context_pages(root, base_revision)
+    candidate_pages = _context_pages(root, current_revision)
     complete = complete or _default_complete
     now = datetime.now(UTC).isoformat(timespec="seconds")
-    staged: list[Path] = []
+    written: list[str] = []
+    unchanged: list[str] = []
     errors: list[str] = []
     comparisons: list[Reconciliation] = []
-    for doc in docs:  # documents stay independently processable
-        paths, doc_errors, doc_comparisons = _reconcile_one(
-            Path(doc), staging=staging, served_root=served, complete=complete, now=now
+    mutation_failed = False
+    reported_revision: str | None = current_revision
+
+    for reference in docs:
+        (
+            next_revision,
+            doc_written,
+            doc_unchanged,
+            doc_errors,
+            doc_comparisons,
+            mutation_failed,
+        ) = _reconcile_one(
+            reference,
+            project=root,
+            proposal=proposal,
+            current_revision=current_revision,
+            base_pages=base_pages,
+            candidate_pages=candidate_pages,
+            complete=complete,
+            now=now,
         )
-        staged.extend(paths)
+        written.extend(doc_written)
+        unchanged.extend(doc_unchanged)
         errors.extend(doc_errors)
         comparisons.extend(doc_comparisons)
-    return staged, errors, comparisons
+        if mutation_failed:
+            reported_revision = next_revision
+            break
+        if next_revision is None:
+            reported_revision = None
+            mutation_failed = True
+            errors.append(
+                "candidate revision unavailable after reconciliation; no further edits attempted"
+            )
+            break
+        current_revision = next_revision
+        reported_revision = current_revision
+
+    if not mutation_failed:
+        try:
+            current_revision = proposals._load_record(root, proposal)["candidate_revision"]
+            reported_revision = current_revision
+        except Exception as exc:
+            if not errors:
+                errors.append(
+                    f"candidate revision is unavailable after reconciliation: {type(exc).__name__}"
+                )
+    result = {
+        "proposal": proposal,
+        "base_revision": base_revision,
+        "candidate_revision": reported_revision,
+        "written": written,
+        "unchanged": unchanged,
+        "errors": errors,
+    }
+    return result, comparisons
 
 
 def _print_reconciliation(record: Reconciliation) -> None:
@@ -1213,8 +1269,8 @@ def _print_reconciliation(record: Reconciliation) -> None:
         print("  diff:")
         for line in record.diff.splitlines():
             print(f"    {line}")
-    if record.staged is not None:
-        print(f"  staged: {record.staged}")
+    if record.candidate_path is not None:
+        print(f"  candidate: {record.candidate_path}")
     advisory = record.advisory
     line = f"  advisory: {advisory.status}"
     if advisory.reason:
@@ -1230,70 +1286,55 @@ def _print_reconciliation(record: Reconciliation) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ariadne-ingest",
-        description="Ingest documents as typed OKF proposals into staging/ "
-        "(ADR-0009): convert -> LLM distill -> per-type gate -> stage; the human "
-        "promotion gate stays the only path to served state.",
+        description="Ingest documents into a revision-checked Git Authoring candidate.",
     )
     parser.add_argument(
         "docs",
         nargs="+",
-        help="documents to ingest: .md/.txt natively; .pdf/.docx/.pptx/.xlsx/.html "
-        "and more via the optional [documents] extra",
+        help="operator-authorized document references; supported formats may require [documents]",
     )
-    parser.add_argument(
-        "--db",
-        default=None,
-        help="ignored for now (reserved for a future author-loop widening, ADR-0009)",
-    )
-    parser.add_argument("--staging", default="staging", help="staging directory (default: staging)")
+    parser.add_argument("--project", required=True, help="the local Git data project")
+    parser.add_argument("--proposal", required=True, help="existing Authoring proposal ID")
+    parser.add_argument("--expected-revision", required=True, help="current candidate revision")
     parser.add_argument(
         "--reconcile",
         action="store_true",
-        help="opt-in (spec 2026-09-23-0004): compare proposals against same-path "
-        "approved pages under --served before staging; replacements claim their "
-        "exact approved path, nothing is ever served automatically",
-    )
-    parser.add_argument(
-        "--served",
-        default=None,
-        help="served root holding context_layer/ (required with --reconcile)",
+        help="compare with the proposal's immutable admitted base; Policy text egress stays opt-in",
     )
     parser.add_argument(
         "--verbatim",
         action="store_true",
-        help="opt-in (spec 2026-10-13-0021): preserve the converted document text "
-        "word-for-word in one draft Reference per document — no model call; "
-        "unchanged retries are reported as unchanged, changes stage new drafts",
+        help="preserve converted text in one draft Reference per document without a model call",
     )
     args = parser.parse_args(argv)
     if args.verbatim and args.reconcile:
-        parser.error(
-            "--verbatim does not support --reconcile: verbatim stages untouched "
-            "draft References; a reconciliation combination needs its own design "
-            "(spec 2026-10-13-0021 §2)"
-        )
-    if args.reconcile and not args.served:
-        parser.error("--reconcile requires --served ROOT (a served root containing context_layer/)")
+        parser.error("--verbatim does not support --reconcile (spec 0021 §2)")
 
     if args.reconcile:
-        staged, errors, comparisons = reconcile_ingest(
-            args.docs, served_root=Path(args.served), staging_dir=Path(args.staging)
+        result, comparisons = reconcile_ingest(
+            args.docs,
+            project=args.project,
+            proposal=args.proposal,
+            expected_revision=args.expected_revision,
         )
         for record in comparisons:
             _print_reconciliation(record)
     else:
-        staged, errors = ingest(args.docs, staging_dir=Path(args.staging), verbatim=args.verbatim)
-    for path in staged:
-        meta = yaml.safe_load(path.read_text(encoding="utf-8").split("---")[1]) or {}
-        print(f"staged: {path} [{meta.get('type')}] {meta.get('description', '')}")
-    if not staged and not errors and not args.verbatim:
-        # verbatim no-ops already reported themselves as unchanged
-        print("ingest: documents yielded no pages worth keeping; nothing staged")
-    if errors:
-        for error in errors:
-            print(f"error: {error}", file=sys.stderr)
-        return 1
-    return 0
+        result = ingest(
+            args.docs,
+            project=args.project,
+            proposal=args.proposal,
+            expected_revision=args.expected_revision,
+            verbatim=args.verbatim,
+        )
+    for path in result["written"]:
+        print(f"written: {path}")
+    for path in result["unchanged"]:
+        print(f"unchanged: {path}")
+    print(f"candidate: {result['candidate_revision']}")
+    for error in result["errors"]:
+        print(f"error: {error}", file=sys.stderr)
+    return 1 if result["errors"] else 0
 
 
 if __name__ == "__main__":

@@ -1,18 +1,12 @@
 #!/usr/bin/env python3
-"""Scripted MCP stdio client for the Ariadne facade (ticket #6, spec §8.7).
+"""Run the retail MCP example against an explicitly admitted Git project.
 
-Spawns ``python -m ariadne.serve`` over stdio and runs the acceptance calls:
-``list_metrics()``, ``search_context("gross margin")``,
-``get_metric("gross_margin", ["region"])``, ``get_metric("order_count",
-["region"])``, and one unknown-metric error display. Output is human-readable;
-the two metric results are asserted against tests/fixtures/expected_metrics.json
-(hand-computed; order-insensitive via region-keyed dicts, rounded to the
-fixture's precision — same rule as tests/test_serve.py). Exit 0 = all served.
+The project's source data and authored layers must match the retail fixtures;
+expected rows come from the independent hand-computed test fixture.
 
 Usage::
 
-    python examples/retail-demo/mcp_client.py [--db examples/retail-demo/data/demo.db]
-        [--semantic semantic_layer] [--context context_layer]
+    python examples/retail-demo/mcp_client.py --project /path/to/retail-project
 """
 
 from __future__ import annotations
@@ -101,12 +95,8 @@ async def run(args: argparse.Namespace) -> None:
         args=[
             "-m",
             "ariadne.serve",
-            "--db",
-            args.db,
-            "--semantic",
-            args.semantic,
-            "--context",
-            args.context,
+            "--project",
+            str(Path(args.project).resolve()),
         ],
         cwd=str(REPO_ROOT),  # serve.py resolves layers relative to the repo root
     )
@@ -156,10 +146,8 @@ def main() -> int:
         description="Scripted MCP client: run the spec §8 acceptance calls against the facade."
     )
     parser.add_argument(
-        "--db", default="examples/retail-demo/data/demo.db", help="SQLite database to attach"
+        "--project", required=True, help="Git-managed project with a valid admitted snapshot"
     )
-    parser.add_argument("--semantic", default="semantic_layer", help="served OSI layer directory")
-    parser.add_argument("--context", default="context_layer", help="served OKF layer directory")
     args = parser.parse_args()
     try:
         asyncio.run(run(args))

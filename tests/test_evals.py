@@ -1,28 +1,24 @@
-"""Semantic-correctness eval harness (spec rev 5 §13): golden entries + fan-out trap.
+"""Numerical semantic-correctness evals: golden entries + fan-out trap.
 
-Golden entries (``tests/evals/golden.json``) cover every currently served governed
-metric. Expected values are derived at run time by INDEPENDENT hand-written SQL
-(the two seed-note rules spelled out inline; plain customer-count SQL) — never
-from the seeder, the fixture generator, or the facade. Each golden entry is
-asserted three ways: baked golden.json values == independent SQL == facade
-``get_metric`` rows (tolerance 1e-6), with ``governed: true``.
+Golden entries (``tests/evals/golden.json``) cover the reference metrics in this
+fixture. Expected values come from INDEPENDENT hand-written SQL (the two
+seed-note rules are spelled out inline; plain customer-count SQL), never from
+the seeder, fixture generator, or runtime. Each golden value is checked against
+that SQL and private ``_QueryRuntimeSession.get_metric`` rows (tolerance 1e-6).
+Public project admission is covered by the Git lifecycle tests, not this numeric
+seam.
 
-Served-set provenance: the eval snapshots ``semantic_layer/models`` and
-``context_layer`` from the REPO WORKTREE COPY into tmp (never a live dir another
-process could mutate). Both are gitignored and may be absent from a fresh
-checkout — the sanctioned fallback reconstructs the served set from the recorded
-rev-4 golden orders model (``tests/test_serve.py`` GOLDEN_OSI, execution-verified
-against the hand-computed fixture) plus the verbatim promoted customers model
-below, supplied by the orchestrator from the currently served tree (nothing in
-git records it; the canonical ``tests/evals/served/`` reference copy lands in a
-later lane). Documented in the lane report.
+Artifact-fixture provenance: the eval snapshots ``semantic_layer/models`` and
+``context_layer`` from the repo worktree copy into tmp, never a live directory
+another process could mutate. Fresh checkouts may lack those gitignored files;
+the fallback uses the recorded reference orders model plus the customers model
+below. These are private numerical fixtures, not a public served-project claim.
 
-Ad-hoc round trip: "mean order amount per customer" under the revision-2
+Ad-hoc execution: "mean order amount per customer" under the revision-2
 definition (spec 2026-09-23-0003): AVG of billable order amounts in USD per
 ``customer_id`` — CANCELLED/RETURNED excluded, pre-2024 EMEA amounts converted
 via ``rate_to_usd`` — through ``define_metric``: governed false, every
-customer ID checked against independent SQL, the proposal staged, staging
-cleaned up afterwards.
+customer ID checked against independent SQL, and no durable artifact created.
 
 Fan-out disposition (spec rev 5 §13, upstream finding Datus-ai/Datus-agent#1426:
 the datus compiler aggregated at joined-row grain and did NOT prevent fan-out;
@@ -32,8 +28,7 @@ three tests over the trap fixture (``tests/evals/build_trap_fixture.py``,
 orders 1:N order_lines, deduplicated totals NA 300 / EMEA 400):
 
 1. **Guard**: a naive fanned source through ``define_metric`` is REJECTED by the
-   facade grain guard (grain-preservation invariant) — nothing staged, nothing
-   compiled, nothing executed.
+facade grain guard (grain-preservation invariant) before compile or execution.
 2. **Sanctioned shape**: pre-aggregating the many side to the fact grain inside
    source (``GROUP BY order_id``) passes the guard and returns the correct
    deduplicated totals.
@@ -58,17 +53,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
+from ariadne.query import _QueryRuntimeSession as Facade  # noqa: E402
 from ariadne.render import render  # noqa: E402  # pyright: ignore[reportMissingImports]
-from ariadne.serve import Facade  # noqa: E402
 from tests.test_seed import run_seed  # noqa: E402
 from tests.test_serve import GOLDEN_OKF, GOLDEN_OSI  # noqa: E402
 
 TOLERANCE = 1e-6
 GOLDEN = json.loads((REPO_ROOT / "tests" / "evals" / "golden.json").read_text())
 
-# Verbatim promoted customers model (semantic_layer/models/customers.yml as
-# currently served; provided by the orchestrator). Values verified live on the
-# real demo.db: customer_count = 30 overall, exactly 3 per country.
+# Reference customers model used by the private numerical fixture. Values are
+# independently verified on the synthetic demo.db: 30 overall, exactly 3 per country.
 CUSTOMERS_MODEL = """\
 version: 0.2.0.dev0
 semantic_model:
@@ -197,10 +191,10 @@ def assert_close(actual, expected, where: str) -> None:
 
 
 def resolve_served(served: Path) -> Path:
-    """Snapshot the currently served layers from the worktree copy into tmp
-    (never point the eval at a live dir another process could mutate). Fresh
-    checkouts (gitignored, absent) reconstruct from the recorded rev-4 golden
-    orders model + the verbatim promoted customers model — see module docstring."""
+    """Snapshot the reference layers from the worktree copy into tmp (never
+    point the numerical eval at a live directory another process could mutate).
+    Fresh checkouts reconstruct the recorded reference orders and customers
+    models — see module docstring."""
     models_dst = served / "semantic_layer" / "models"
     models_dst.mkdir(parents=True)
     (served / "context_layer").mkdir(parents=True)
@@ -229,12 +223,7 @@ def demo_db(tmp_path_factory) -> Path:
 @pytest.fixture(scope="module")
 def facade(tmp_path_factory, demo_db) -> Facade:
     served = resolve_served(tmp_path_factory.mktemp("served"))
-    return Facade(
-        served / "semantic_layer",
-        served / "context_layer",
-        demo_db,
-        staging_dir=tmp_path_factory.mktemp("staging"),
-    )
+    return Facade(served / "semantic_layer", served / "context_layer", demo_db)
 
 
 @pytest.mark.parametrize(
@@ -329,7 +318,7 @@ def independent_adhoc_means(db_path: Path) -> dict:
     return {"per_customer": per_customer, "overall": overall, "customer_ids": ids}
 
 
-def test_adhoc_round_trip_stages_proposal_then_cleans_up(facade, demo_db):
+def test_adhoc_evaluation_is_ephemeral(facade, demo_db):
     definition = {
         "name": ADHOC_ENTRY["metric"],
         "description": "Mean billable order amount per customer in USD",
@@ -337,31 +326,21 @@ def test_adhoc_round_trip_stages_proposal_then_cleans_up(facade, demo_db):
         "expression": _MEAN_EXPR,
         "dimensions": ADHOC_ENTRY["dimensions"],
     }
-    staged: list[Path] = []
-    try:
-        result = asyncio.run(facade.define_metric(dict(definition)))
-        assert result["governed"] is False
-        assert result["sql"]  # provenance SQL present
-        assert result["definition"]["source"] == _JOIN_SOURCE  # echoed definition
-        staged_model = Path(result["staged_as"])
-        staged_page = Path(result["staged_context_as"])
-        assert staged_model.is_file() and staged_model.parent.name == "adhoc"
-        assert staged_page.is_file()
-        staged = [staged_model, staged_page]
+    result = asyncio.run(facade.define_metric(dict(definition)))
+    assert result["governed"] is False
+    assert result["sql"]  # provenance SQL present
+    assert result["definition"]["source"] == _JOIN_SOURCE  # echoed definition
+    assert result["persistence"] == {"status": "not_saved"}
+    assert "staged_as" not in result and "staged_context_as" not in result
 
-        oracle = independent_adhoc_means(demo_db)
-        expected = oracle["per_customer"]
-        actual = {row["customer_id"]: row[ADHOC_ENTRY["metric"]] for row in result["rows"]}
-        assert set(actual) == set(expected) == set(oracle["customer_ids"]), (
-            "every customer ID in the demo must appear with a billable-order mean"
-        )
-        for customer_id, value in actual.items():
-            assert_close(value, expected[customer_id], f"mean per customer {customer_id}")
-    finally:
-        for path in staged:
-            path.unlink(missing_ok=True)  # clean it up after (spec §13)
-    adhoc = Path(facade.staging_dir) / "semantic_layer" / "models" / "adhoc"
-    assert not adhoc.exists() or not any(adhoc.iterdir()), "staging left dirty"
+    oracle = independent_adhoc_means(demo_db)
+    expected = oracle["per_customer"]
+    actual = {row["customer_id"]: row[ADHOC_ENTRY["metric"]] for row in result["rows"]}
+    assert set(actual) == set(expected) == set(oracle["customer_ids"]), (
+        "every customer ID in the demo must appear with a billable-order mean"
+    )
+    for customer_id, value in actual.items():
+        assert_close(value, expected[customer_id], f"mean per customer {customer_id}")
 
 
 # --- Fan-out disposition (spec rev 5 §13, Datus-ai/Datus-agent#1426) ----------
@@ -425,24 +404,11 @@ def trap_facade(tmp_path):
     """A live facade over the trap fixture (orders 1:N order_lines, trap.db).
     Deduplicated ground truth: NA 300, EMEA 400; the naive join would inflate."""
     served = build_trap(tmp_path)
-    return Facade(
-        served / "semantic",
-        served / "context",
-        served / "trap.db",
-        staging_dir=served / "staging",
-    )
-
-
-def _assert_staging_clean(facade):
-    adhoc = Path(facade.staging_dir) / "semantic_layer" / "models" / "adhoc"
-    assert not adhoc.exists() or not any(adhoc.iterdir()), "staging left dirty"
+    return Facade(served / "semantic", served / "context", served / "trap.db")
 
 
 def test_define_metric_rejects_fanout_source(trap_facade, monkeypatch):
-    """§13 disposition (guard): the naive fanned source is rejected with the
-    grain-preservation guidance BEFORE compile — nothing staged, nothing
-    compiled, nothing executed. The compiler itself would inflate (sentinel
-    below): the facade owns the invariant (Datus-ai/Datus-agent#1426)."""
+    """The naive fanned source is rejected before compile or execution."""
 
     async def _must_not_be_reached(*args, **kwargs):  # compile/execute never reached
         raise AssertionError("guard must reject before the compile gate")
@@ -460,34 +426,27 @@ def test_define_metric_rejects_fanout_source(trap_facade, monkeypatch):
                 }
             )
         )
-    _assert_staging_clean(trap_facade)
 
 
 def test_define_metric_accepts_preaggregated_one_to_many(trap_facade):
     """§13 disposition (sanctioned shape): pre-aggregating the many side to the
     fact grain inside source (GROUP BY) passes the guard and returns the
     DEDUPLICATED totals — NA 300 / EMEA 400, never the inflated 700/400."""
-    staged: list[Path] = []
-    try:
-        result = asyncio.run(
-            trap_facade.define_metric(
-                {
-                    "name": "orders_total_preagg",
-                    "description": "deduplicated order total via pre-aggregated lines",
-                    "source": PREAGG_SOURCE,
-                    "expression": "SUM(amount)",
-                    "dimensions": ["region"],
-                }
-            )
+    result = asyncio.run(
+        trap_facade.define_metric(
+            {
+                "name": "orders_total_preagg",
+                "description": "deduplicated order total via pre-aggregated lines",
+                "source": PREAGG_SOURCE,
+                "expression": "SUM(amount)",
+                "dimensions": ["region"],
+            }
         )
-        staged = [Path(result["staged_as"]), Path(result["staged_context_as"])]
-        assert result["governed"] is False
-        actual = {row["region"]: row["orders_total_preagg"] for row in result["rows"]}
-        assert actual == pytest.approx({"NA": 300.0, "EMEA": 400.0})
-    finally:
-        for path in staged:
-            path.unlink(missing_ok=True)  # clean it up after (spec §13)
-    _assert_staging_clean(trap_facade)
+    )
+    assert result["governed"] is False
+    assert result["persistence"] == {"status": "not_saved"}
+    actual = {row["region"]: row["orders_total_preagg"] for row in result["rows"]}
+    assert actual == pytest.approx({"NA": 300.0, "EMEA": 400.0})
 
 
 def test_renderer_aggregates_at_joined_row_grain_and_guard_rejects_fanout(tmp_path, trap_facade):
@@ -515,8 +474,7 @@ def test_renderer_aggregates_at_joined_row_grain_and_guard_rejects_fanout(tmp_pa
     ), "renderer must aggregate at joined-row grain (INFLATED), by design — "
     "the grain guard keeps it unservable"
 
-    # The same fanned source through the facade: rejected before compile —
-    # nothing staged, nothing compiled, nothing executed.
+    # The same fanned source through the facade is rejected before compile.
     with pytest.raises(ValueError, match="grain-preservation invariant"):
         asyncio.run(
             trap_facade.define_metric(
@@ -529,7 +487,6 @@ def test_renderer_aggregates_at_joined_row_grain_and_guard_rejects_fanout(tmp_pa
                 }
             )
         )
-    _assert_staging_clean(trap_facade)
 
 
 def test_get_metric_rejects_served_model_with_fanned_source(trap_facade):
@@ -550,12 +507,7 @@ def test_get_metric_answers_served_model_with_many_to_one_source(tmp_path):
     NA 300 / EMEA 400, with provenance SQL and governed: true."""
     served = build_trap(tmp_path)
     (served / "semantic" / "models" / "lines.yml").write_text(LINES_MODEL, encoding="utf-8")
-    facade = Facade(
-        served / "semantic",
-        served / "context",
-        served / "trap.db",
-        staging_dir=served / "staging",
-    )
+    facade = Facade(served / "semantic", served / "context", served / "trap.db")
     result = asyncio.run(facade.get_metric("sanctioned_lines_total", ["region"]))
     assert result["governed"] is True
     assert result["sql"].strip().upper().startswith("SELECT")

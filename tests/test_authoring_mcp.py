@@ -7,14 +7,13 @@ Real MCP sessions against ``python -m ariadne.serve --project DIR``
 launched in temporary projects: the ``authoring_``-prefixed tools are one-line
 delegations over the SAME :class:`ariadne.authoring.AuthoringProject` the
 ``ariadne-authoring`` CLI calls (identical checks and response contracts), no
-tool offers source approval, admission or Promotion, the project root is fixed
+tool offers source approval or Git Review Admission, the project root is fixed
 at server launch (never a tool argument), and no bearer token is involved
 locally. The legacy complete-bundle wrappers (``authoring_submit_bundle``/
 ``authoring_review_bundle``) are gone from every surface; their explicit
 replacement is start_proposal + per-artifact edit_proposal +
 validate_proposal / review_proposal (see ariadne.serve's migration note). The
-legacy staged-bundle route itself keeps serving through the local CLI and
-through Promotion exactly as before.
+staged-bundle and separate Example-review routes are retired.
 
 The HTTP tests (issue #18, LOCAL-ONLY mode per the owner decision 2026-10-03)
 launch the REAL ``--http`` server process on a loopback port and talk to it
@@ -23,7 +22,6 @@ stdio, behind a bearer token read from the server environment only.
 """
 
 import asyncio
-import base64
 import contextlib
 import copy
 import hashlib
@@ -52,16 +50,7 @@ from mcp.client.streamable_http import (  # noqa: E402  # pyright: ignore[report
     streamable_http_client,
 )
 
-from ariadne import authoring  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
-from ariadne.authoring_inputs import MAX_UPLOAD_BYTES  # noqa: E402
-from ariadne.promote import promote_bundle  # noqa: E402
-from tests.test_authoring import (  # noqa: E402
-    bundle_submission,
-    scaffold_project,
-    write_parquet,
-    write_proposal,
-)
 from tests.test_git_authoring import (  # noqa: E402 — the shared Git fixtures; no second oracle here
     POLICY_PAGE,
     approved,
@@ -76,7 +65,6 @@ AUTHORING_TOOLS = {
     "authoring_edit_proposal",
     "authoring_propose_sources",
     "authoring_inputs",
-    "authoring_upload_document",
     "authoring_validate_proposal",
     "authoring_refresh_schema",
     "authoring_inspect_mapping",  # K3 (issue #43): bounded inspection + receipts
@@ -152,23 +140,10 @@ def _events_proposal(project: Path) -> list[dict]:
     return [{"name": "events", "type": "parquet", "path": str(project / "data" / "events.parquet")}]
 
 
-def _approved_project(tmp_path: Path) -> Path:
-    """A fresh local project with one parquet source — proposal made, approval
-    performed by the OPERATOR (the human seam, never an MCP tool)."""
-    project = scaffold_project(tmp_path)
-    write_parquet(project / "data" / "events.parquet")
-    digest = authoring.propose_sources(
-        write_proposal(tmp_path, _events_proposal(project)), project=project
-    )["digest"]
-    authoring.approve_sources(digest, project=project)
-    return project
-
-
-def test_stdio_tool_boundary_authoring_without_approval_or_promotion(tmp_path):
-    """S4 red anchor, G6 surface: in a fresh EMPTY project (no promotion ever)
-    the stdio server starts, offers the eight Git authoring operations beside
-    the unchanged query tools, never a source approval, admission or Promotion
-    tool, and no tool takes a project root or credential argument."""
+def test_stdio_tool_boundary_authoring_without_approval_or_admission(tmp_path):
+    """G6 surface: in a fresh project the stdio server offers Git Authoring
+    beside the query tools, but no source-approval or admission tool; no tool
+    takes a project root or credential argument."""
     project = tmp_path / "empty"
     project.mkdir()
 
@@ -181,6 +156,7 @@ def test_stdio_tool_boundary_authoring_without_approval_or_promotion(tmp_path):
     tools = asyncio.run(run())
     assert AUTHORING_TOOLS <= set(tools)
     assert QUERY_TOOLS <= set(tools)
+    assert "authoring_upload_document" not in tools  # originals stay operator-owned
     assert not [name for name in tools if any(marker in name for marker in HUMAN_OPERATION_MARKERS)]
     for name, tool in tools.items():  # the project root is server-selected only
         assert "project" not in tool.input_schema.get("properties", {}), name
@@ -190,15 +166,12 @@ def test_stdio_tool_boundary_authoring_without_approval_or_promotion(tmp_path):
 
 
 def test_stdio_git_journey_matches_core_contracts(tmp_path):
-    """The prefixed Git authoring tools over real stdio return EXACTLY what
-    the shared AuthoringProject returns to the local CLI — inputs/review by
-    full-dict equality, upload against its retained-identity contract —
-    including the bounded upload refusal; the proposal stays staged (no
-    admission) while the same session's query tools keep the managed route's
-    missing-admission error."""
+    """Real stdio authoring reads operator-placed documents by reference."""
     project = complete_bundle_project(tmp_path / "proj")
     api = AuthoringProject(project)
     policy = "# Revision notes\n\nDrafted over stdio.\n"
+    document = project / "data" / "docs" / "revision-notes.md"
+    document.write_text(policy, encoding="utf-8")
 
     async def run() -> dict:
         out: dict = {}
@@ -229,15 +202,6 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
                         },
                     )
                 )
-                out["upload"] = _payload(
-                    await session.call_tool(
-                        "authoring_upload_document",
-                        {
-                            "name": "revision-notes.md",
-                            "content_b64": base64.b64encode(policy.encode()).decode(),
-                        },
-                    )
-                )
                 out["inputs"] = _payload(
                     await session.call_tool(
                         "authoring_inputs",
@@ -265,13 +229,6 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
                 out["review"] = _payload(
                     await session.call_tool("authoring_review_proposal", {"proposal": proposal})
                 )
-                out["oversize"] = await session.call_tool(
-                    "authoring_upload_document",
-                    {
-                        "name": "big.md",
-                        "content_b64": base64.b64encode(b"x" * (MAX_UPLOAD_BYTES + 1)).decode(),
-                    },
-                )
         # a session launched AFTER the project became Git-managed pins the
         # managed route: no admission yet, so queries refuse while authoring
         # keeps working (the launch-time route is pinned per process)
@@ -287,12 +244,12 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
     assert out["edited"]["changed"] is True
     assert out["edited"]["revision"] != started["candidate_revision"]
 
-    # same contracts as the CLI: the upload's retained identity, the bounded
-    # sampled profile, and the full review envelope
-    assert out["upload"] == {
-        "resource": str((project / "data" / "docs" / "revision-notes.md").resolve()),
-        "digest": hashlib.sha256(policy.encode()).hexdigest(),
-    }
+    # same contracts as the CLI: external document evidence, sampled profile,
+    # and the full review envelope
+    assert out["inputs"]["documents"][0]["resource"] == str(document.resolve())
+    assert out["inputs"]["documents"][0]["digest"] == hashlib.sha256(policy.encode()).hexdigest()
+    assert document.read_text(encoding="utf-8") == policy
+    assert not (project / "data" / "object-store").exists()
     twin = out["inputs_twin"]
     assert out["inputs"]["proposal"] == twin["proposal"]
     assert out["inputs"]["revision"] == twin["revision"]
@@ -303,7 +260,6 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
     assert out["inputs"]["profile"] is not None  # the approved source profile
     table = out["inputs"]["profile"]["sources"][0]["tables"]["events"]
     assert table["sampled"] is True and table["sample_limit"] == 1
-    assert out["inputs"]["documents"][0]["resource"] == out["upload"]["resource"]
     validated = out["validated"]
     assert validated["ok"] is True and validated["errors"] == []
     assert out["review"] == api.review_proposal(started["proposal"])  # full-dict equality
@@ -315,50 +271,10 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
     assert out["queries"].is_error and "no valid admission" in _text(out["queries"])
     assert not (project / ".ariadne" / "current.json").exists()
 
-    # the upload bound holds over stdio: refused before any write
-    assert out["oversize"].is_error and "over the" in _text(out["oversize"])
     assert sorted(p.name for p in (project / "data" / "docs").iterdir()) == [
         "notes.md",
         "revision-notes.md",
     ]
-
-
-def test_stdio_legacy_promoted_project_keeps_serving_queries(tmp_path):
-    """Green clause (G6 keeps the legacy route): a LEGACY staged-bundle
-    project — promoted by the OPERATOR through the unchanged human seam, never
-    an MCP tool — still serves the combined facade's query tools normally
-    after relaunch; the Git toolset markers never touched this project."""
-    project = _approved_project(tmp_path)
-    submitted = authoring.submit_bundle(
-        _write_json(tmp_path, bundle_submission(), "bundle.json"), project=project
-    )
-    assert submitted["status"] == "validated"
-    digest = authoring.review_bundle(project=project)["digest"]
-    promote_bundle(
-        digest,
-        staging_root=project / "staging",
-        served_root=project,
-        by="human:tester",
-        assume_yes=True,
-    )
-
-    async def run() -> dict:
-        async with _launch(project) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                listed = _payload(await session.call_tool("list_metrics", {}))
-                metric = _payload(
-                    await session.call_tool(
-                        "get_metric", {"name": "event_count", "dimensions": ["label"]}
-                    )
-                )
-                return {"listed": listed, "metric": metric}
-
-    out = asyncio.run(run())
-    names = [entry.get("name") for entry in out["listed"] if isinstance(entry, dict)]
-    assert "event_count" in names
-    assert out["metric"]["governed"] is True
-    assert out["metric"]["rows"]
 
 
 def test_stdio_refresh_schema_matches_core_and_noops_on_identical_retry(tmp_path):
@@ -703,10 +619,7 @@ def test_container_http_authenticated_health_and_readiness(tmp_path, toolset, re
 
 
 def test_http_bearer_gate_refuses_every_request_before_dispatch(tmp_path):
-    """S6 red anchor: at the actual HTTP seam an absent or wrong bearer token
-    cannot list tools, read, upload, submit or dispatch — including in an
-    empty project before any Promotion — and the failures disclose no
-    project data (fixed 401 body, no path or tool names)."""
+    """Absent/wrong bearer tokens refuse before dispatch with no project data."""
     import httpx2 as httpx  # pyright: ignore[reportMissingImports] — mcp 2.2.0 ships httpx2 (same client API)
 
     project = tmp_path / "empty"
@@ -722,14 +635,11 @@ def test_http_bearer_gate_refuses_every_request_before_dispatch(tmp_path):
             "clientInfo": {"name": "probe", "version": "0"},
         },
     }
-    upload = {
+    retired_operation = {
         "jsonrpc": "2.0",
         "id": 2,
         "method": "tools/call",
-        "params": {
-            "name": "authoring_upload_document",
-            "arguments": {"name": "notes.md", "content_b64": base64.b64encode(b"x").decode()},
-        },
+        "params": {"name": "authoring_upload_document", "arguments": {}},
     }
 
     async def probe(url: str) -> list[tuple[str, httpx.Response]]:
@@ -738,11 +648,11 @@ def test_http_bearer_gate_refuses_every_request_before_dispatch(tmp_path):
             cases = [
                 ("initialize without token", {"headers": {}}),
                 ("initialize wrong token", {"headers": {"Authorization": "Bearer wrong"}}),
-                ("upload dispatch without token", {"headers": {}}),
-                ("upload dispatch wrong token", {"headers": {"Authorization": "Bearer nope"}}),
+                ("retired tool without token", {"headers": {}}),
+                ("retired tool with wrong token", {"headers": {"Authorization": "Bearer nope"}}),
             ]
             for label, kw in cases:
-                body = upload if "dispatch" in label else initialize
+                body = retired_operation if "retired tool" in label else initialize
                 headers = {
                     "Content-Type": "application/json",
                     "Accept": "application/json, text/event-stream",
@@ -779,18 +689,17 @@ def test_http_bearer_gate_refuses_every_request_before_dispatch(tmp_path):
         assert response.status_code == 401, label
         assert response.json() == {"error": "unauthorized"}, label
         assert str(project) not in response.text, label
-    # the refused upload dispatch wrote nothing to the project's input area
+    # the refused retired-tool dispatch wrote nothing to the project
     assert not (project / "data" / "docs").exists()
 
 
 def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
-    """S6 green: authenticated HTTP serves the SAME build_app toolsets and
-    contracts as stdio — the full Git authoring journey in a project with no
-    admission yet (operator approval stays outside the tools), the bounded
-    upload refusal, and the managed route's missing-admission query error."""
+    """Authenticated HTTP mirrors stdio and reads external originals by reference."""
     project = complete_bundle_project(tmp_path / "proj")
     api = AuthoringProject(project)
     policy = "# Revision notes\n\nDrafted over HTTP.\n"
+    document = project / "data" / "docs" / "revision-notes.md"
+    document.write_text(policy, encoding="utf-8")
 
     async def run(url: str) -> dict:
         out: dict = {}
@@ -820,15 +729,6 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
                     },
                 )
             )
-            out["upload"] = _payload(
-                await session.call_tool(
-                    "authoring_upload_document",
-                    {
-                        "name": "revision-notes.md",
-                        "content_b64": base64.b64encode(policy.encode()).decode(),
-                    },
-                )
-            )
             out["inputs"] = _payload(
                 await session.call_tool(
                     "authoring_inputs",
@@ -846,13 +746,6 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
             )
             out["review"] = _payload(
                 await session.call_tool("authoring_review_proposal", {"proposal": proposal})
-            )
-            out["oversize"] = await session.call_tool(
-                "authoring_upload_document",
-                {
-                    "name": "big.md",
-                    "content_b64": base64.b64encode(b"x" * (MAX_UPLOAD_BYTES + 1)).decode(),
-                },
             )
         return out
 
@@ -879,10 +772,10 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
     assert set(out["started"]) == {"proposal", "base_revision", "candidate_revision"}
     assert out["edited"]["changed"] is True
     # identical contracts to the local CLI over the same core
-    assert out["upload"] == {
-        "resource": str((project / "data" / "docs" / "revision-notes.md").resolve()),
-        "digest": hashlib.sha256(policy.encode()).hexdigest(),
-    }
+    assert out["inputs"]["documents"][0]["resource"] == str(document.resolve())
+    assert out["inputs"]["documents"][0]["digest"] == hashlib.sha256(policy.encode()).hexdigest()
+    assert document.read_text(encoding="utf-8") == policy
+    assert not (project / "data" / "object-store").exists()
     twin = out["inputs_twin"]
     assert out["inputs"]["revision"] == twin["revision"]
     assert out["inputs"]["seed_notes"] == twin["seed_notes"]
@@ -890,8 +783,6 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
     assert _stable_profile(out["inputs"]["profile"]) == _stable_profile(twin["profile"])
     assert out["validated"]["ok"] is True and out["validated"]["errors"] == []
     assert out["review"] == api.review_proposal(out["started"]["proposal"])
-    # the upload bound holds over HTTP: refused before any write
-    assert out["oversize"].is_error and "over the" in _text(out["oversize"])
     assert sorted(p.name for p in (project / "data" / "docs").iterdir()) == [
         "notes.md",
         "revision-notes.md",
@@ -899,52 +790,6 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
     # nothing admitted: the managed route still refuses queries
     assert out["queries"].is_error and "no valid admission" in _text(out["queries"])
     assert not (project / ".ariadne" / "current.json").exists()
-
-
-def test_http_legacy_promoted_project_keeps_serving_queries(tmp_path):
-    """S6 green: after the OPERATOR's Promotion (the unchanged human seam) the
-    authenticated HTTP surface serves the same query tools as stdio."""
-    project = _approved_project(tmp_path)
-    submitted = authoring.submit_bundle(
-        _write_json(tmp_path, bundle_submission(), "bundle.json"), project=project
-    )
-    assert submitted["status"] == "validated"
-    digest = authoring.review_bundle(project=project)["digest"]
-    promote_bundle(
-        digest,
-        staging_root=project / "staging",
-        served_root=project,
-        by="human:tester",
-        assume_yes=True,
-    )
-
-    async def run(url: str) -> dict:
-        import httpx2 as httpx  # pyright: ignore[reportMissingImports] — mcp 2.2.0 ships httpx2 (same client API)
-
-        async with httpx.AsyncClient() as client:
-            ready = await client.get(
-                url.removesuffix("/mcp") + "/readyz",
-                headers={"Authorization": f"Bearer {HTTP_TOKEN}"},
-            )
-            assert ready.status_code == 200
-            assert ready.json() == {"status": "ready"}
-        async with _http_exit(url, HTTP_TOKEN) as session:
-            await session.initialize()
-            listed = _payload(await session.call_tool("list_metrics", {}))
-            metric = _payload(
-                await session.call_tool(
-                    "get_metric", {"name": "event_count", "dimensions": ["label"]}
-                )
-            )
-            return {"listed": listed, "metric": metric}
-
-    with _launch_http(project, token=HTTP_TOKEN) as url:
-        out = asyncio.run(run(url))
-
-    names = [entry.get("name") for entry in out["listed"] if isinstance(entry, dict)]
-    assert "event_count" in names
-    assert out["metric"]["governed"] is True
-    assert out["metric"]["rows"]
 
 
 def test_stdio_needs_no_token_even_when_http_env_is_set(tmp_path):

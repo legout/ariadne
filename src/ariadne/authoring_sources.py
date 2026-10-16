@@ -22,9 +22,8 @@ identity with the operator-approved identity BEFORE any source access, and
 the shared connection builder is never called for an unapproved one. Approval
 records are keyed by resolved identity (not by proposal slot), so granting
 access for a concurrent proposal never overwrites the active snapshot's grant,
-and no new proposal revokes one. The LEGACY route
-(:func:`ariadne.authoring.propose_sources` / ``approve_sources`` /
-``harness_inputs``) is unchanged for legacy callers.
+and no new proposal revokes one. Source declarations and input evidence
+remain within the same revision-bound Git proposal workflow.
 """
 
 from __future__ import annotations
@@ -57,8 +56,8 @@ def resolved_digest(entries: object) -> str:
     """sha256 over the canonical form of (resolved) source entries: identity
     is the exact content — whitespace and key order do not matter, any changed
     entry (location, type, table, read-only, complete referenced storage
-    profile definition) changes the digest. Shared with the legacy route's
-    entries digest."""
+    profile definition) changes the digest. This is the proposal's source-
+    identity digest."""
     canonical = json.dumps(entries, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -539,8 +538,8 @@ def inputs(
     plus source-linked converted evidence for the referenced documents (the
     operator's HOST-root document boundary; a candidate's committed
     ``documents:`` section is never consulted) and the candidate's Seed Notes
-    evidence from the recorded candidate revision. Bounded exactly like the
-    legacy harness inputs; digests are stable across calls (same bytes, same
+    evidence from the recorded candidate revision. Bounded by the shared
+    input-evidence limits; digests are stable across calls (same bytes, same
     digest)."""
     project = Path(project).resolve()
     record = proposals._load_record(project, proposal)

@@ -7,7 +7,7 @@ Raw text-to-SQL asks an agent to guess tables, joins, filters, and definitions. 
 - **Semantic Layer (OSI):** reviewed metric definitions, compiled to SQL and executed read-only by Ariadne.
 - **Context Layer (OKF):** business policies, source caveats, and terminology that explain how to interpret a result.
 
-Ariadne is a Python package with embedded DuckDB. Use it locally through the CLI, connect an agent through optional MCP, or add the separately distributed Ariadne Agent. A human remains responsible for source approval and for admitting or promoting the reviewed catalog. Ariadne is not a BI dashboard or a high-concurrency metrics API.
+Ariadne is a Python package with embedded DuckDB. Use it locally through the CLI, connect an agent through optional MCP, or add the separately distributed Ariadne Agent. A human remains responsible for source approval and for admitting the exact reviewed Git revision. Ariadne is not a BI dashboard or a high-concurrency metrics API.
 
 ## Documentation
 
@@ -28,10 +28,11 @@ Work on Ariadne itself happens from the package checkout, not inside a data proj
 uv venv --python 3.14 .venv
 uv pip install --python .venv/bin/python -e .
 source .venv/bin/activate
-# Bundled end-to-end demo: live configured LLM, human review, then a fresh query:
-examples/retail-demo/demo.sh
+# Optional MCP example (after creating and admitting a project; requires .[mcp]):
+uv pip install --python .venv/bin/python -e '.[mcp]'
+examples/retail-demo/mcp_client.py --project /path/to/admitted/retail-project
 ```
 
 For a candidate-wheel check, run `uv build`, install `dist/ariadne_data-*.whl`
-into a fresh virtual environment, and exercise the walkthrough with the
-installed console scripts rather than the editable install.
+into a fresh virtual environment, and follow the [getting-started tutorial](docs/tutorials/getting-started.md)
+with the installed console scripts rather than the editable install.

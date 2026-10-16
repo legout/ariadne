@@ -1,12 +1,8 @@
-"""Packaging: the ariadne-init scaffolder and the console-script entry points.
+"""Git-only project scaffolding and Core console-script entry points.
 
-Scaffolding covers INPUTS only (seed notes, AGENTS.md pointer, .env.example,
-.gitignore, empty data/) — the served layers are author+promote outputs and
-must never be pre-seeded. `.mcp.json` is opt-in (spec 2026-09-23-0001 §7): the
-default scaffold omits it — the local `ariadne` CLI needs no server config —
-and `--with-mcp` creates the registry-aware MCP config without ever removing
-an existing file. Entry points assert the editable install registered all
-nine console scripts and that each import target resolves.
+A fresh scaffold writes operator inputs, Git-ignore rules and an AGENTS.md
+pointer; authored layers arrive through proposals and no staging tree is made.
+MCP remains opt-in and project-bound. Existing user files are never overwritten.
 """
 
 import json
@@ -15,35 +11,22 @@ from importlib.metadata import entry_points
 from ariadne.init import main
 
 CONSOLE_SCRIPTS = (
-    "ariadne",  # the local JSON CLI (spec 2026-09-23-0001 §4)
-    "ariadne-author",
+    "ariadne",
+    "ariadne-ingest",
     "ariadne-validate",
     "ariadne-serve",
-    "ariadne-promote",
+    "ariadne-analyst-mcp",
+    "ariadne-authoring-mcp",
     "ariadne-init",
     "ariadne-skill",
     "ariadne-profiler",
-    "ariadne-ingest",
+    "ariadne-authoring",
+    "ariadne-admit",
 )
 
 GITIGNORE_LINES = (
-    "data/*.db",
-    "staging/",
-    "context_layer/",
-    "semantic_layer/",
-    ".env",
-    "__pycache__/",
-    ".venv/",
-)
-
-# The Git-mode scaffold (issue #39/G7): the artifact layers are TRACKED Git
-# artifacts; the operator state dir, pending proposals, the supported input
-# locations under data/ (except the Seed Notes artifact) and secrets stay
-# ignored.
-GIT_MODE_GITIGNORE_LINES = (
     "data/*",
     "!data/seed_notes.md",
-    "staging/",
     ".env",
     "__pycache__/",
     ".venv/",
@@ -65,8 +48,8 @@ def test_scaffold_creates_expected_inputs(tmp_path):
     assert "revenue" in notes  # a human-voice example rule, not schema documentation
 
     env = (target / ".env.example").read_text(encoding="utf-8")
-    for var in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"):
-        assert var in env, var
+    assert "Point ARIADNE_ENV at this file" in env
+    assert "Never commit credentials" in env
 
     gitignore = (target / ".gitignore").read_text(encoding="utf-8")
     for line in GITIGNORE_LINES:
@@ -74,9 +57,7 @@ def test_scaffold_creates_expected_inputs(tmp_path):
 
 
 def test_scaffold_with_mcp_creates_registry_aware_config(tmp_path):
-    """--with-mcp (spec §7): the opt-in .mcp.json keeps the registry-aware shape —
-    --sources names the project's ariadne.yaml; the semantic/context paths are
-    the project-root defaults promote creates on first promotion."""
+    """--with-mcp (spec §7): the opt-in server is bound to this project."""
     target = tmp_path / "proj"
     assert main([str(target), "--with-mcp"]) == 0
     for rel in ("data/seed_notes.md", ".gitignore"):
@@ -84,14 +65,7 @@ def test_scaffold_with_mcp_creates_registry_aware_config(tmp_path):
     mcp = json.loads((target / ".mcp.json").read_text(encoding="utf-8"))  # parses as JSON
     server = mcp["mcpServers"]["ariadne"]
     assert server["command"] == "ariadne-serve"
-    assert server["args"] == [
-        "--sources",
-        "ariadne.yaml",
-        "--semantic",
-        "semantic_layer",
-        "--context",
-        "context_layer",
-    ]
+    assert server["args"] == ["--project", "."]
 
 
 def test_existing_mcp_json_is_never_removed_or_overwritten(tmp_path):
@@ -107,16 +81,14 @@ def test_existing_mcp_json_is_never_removed_or_overwritten(tmp_path):
 
 
 def test_agents_md_is_pointer_page_not_workflow(tmp_path):
-    """Rev 10 (ADR-0011): AGENTS.md = project facts + skill pointer + layout
-    table + promotion-gate rule. The workflow prose belongs to the packaged
-    skill and is NOT duplicated here."""
+    """AGENTS.md is a facts/skill pointer with the Git Admission boundary."""
     target = tmp_path / "proj"
     assert main([str(target)]) == 0
     agents = (target / "AGENTS.md").read_text(encoding="utf-8")
     assert "Load the ariadne skill (`ariadne-skill install` if absent)" in agents
     assert "TODO" in agents  # project facts the owner fills in
-    assert "`context_layer/`" in agents and "`staging/`" in agents  # layout table
-    assert "ariadne-promote" in agents and "review_needed" in agents  # gate rule
+    assert "`context_layer/`" in agents and "`.ariadne/`" in agents
+    assert "ariadne-admit" in agents and "source permission" in agents
     assert "profile" not in agents.lower()  # the loop prose lives in the skill
 
 
@@ -141,15 +113,13 @@ def test_layout_names_the_full_okf_bundle_sections(tmp_path):
     assert "tables, references, policies, metrics, computations" in agents
 
 
-def test_git_pointer_page_names_the_legacy_migration_human_seams(tmp_path):
-    """K6 (issue #46, spec 0010 §9): the Git scaffold's gate rule names legacy
-    migration (`import-legacy`, `enrich-legacy`) among the human-only
-    operations — an agent never binds or imports legacy pages itself."""
+def test_git_pointer_page_separates_source_permission_and_admission(tmp_path):
     target = tmp_path / "proj"
-    assert main([str(target), "--git"]) == 0
+    assert main([str(target)]) == 0
     agents = (target / "AGENTS.md").read_text(encoding="utf-8")
-    assert "import-legacy" in agents and "enrich-legacy" in agents
-    assert "`approve-sources`" in agents and "`ariadne-admit`" in agents
+    assert "source permission and Admission remain separate human decisions" in agents
+    assert "`ariadne-authoring`" in agents and "`ariadne-admit`" in agents
+    assert "staging/" not in agents and "ariadne-promote" not in agents
 
 
 def test_second_run_is_idempotent(tmp_path, capsys):
@@ -185,41 +155,33 @@ def test_existing_gitignore_is_not_overwritten(tmp_path):
 
 
 def test_git_scaffold_tracks_artifact_layers_and_ignores_state_and_inputs(tmp_path):
-    """Issue #39 [2]: ``--git`` scaffolds for the Git authoring workflow —
-    the served artifact layers are TRACKED (not ignored), while ``.ariadne/``
-    state, pending ``staging/`` and inputs/secrets stay ignored, and no
-    output layer is pre-seeded."""
+    """A fresh scaffold tracks authored layers and ignores private inputs/state."""
     target = tmp_path / "proj"
-    assert main([str(target), "--git"]) == 0
+    assert main([str(target)]) == 0
     gitignore = (target / ".gitignore").read_text(encoding="utf-8")
-    for line in GIT_MODE_GITIGNORE_LINES:
+    for line in GITIGNORE_LINES:
         assert line in gitignore, line
     assert "context_layer" not in gitignore and "semantic_layer" not in gitignore
     for rel in ("data/seed_notes.md", "ariadne.yaml", "AGENTS.md", ".env.example"):
         assert (target / rel).is_file(), rel
-    # no pre-seeded outputs: the artifact layers arrive only through proposals
     assert not (target / "context_layer").exists()
     assert not (target / "semantic_layer").exists()
     assert not (target / "staging").exists()
-    # the pointer page names the Git admission gate, not staging promotion
     agents = (target / "AGENTS.md").read_text(encoding="utf-8")
     assert "ariadne-admit" in agents and "`.ariadne/`" in agents
     assert "ariadne-promote" not in agents
-    assert "profile" not in agents.lower()  # still a pointer page, no loop prose
+    assert "profile" not in agents.lower()
 
 
 def test_git_scaffold_keeps_existing_files_and_ignore_rules(tmp_path, capsys):
-    """Issue #39 [2]/[3]: adopting Git over an existing legacy project keeps
-    every existing file — including a legacy ``.gitignore`` whose rules still
-    exclude the served layers (the proposal seams track chosen artifacts
-    explicitly, so the old rules never block the migration)."""
-    target = tmp_path / "legacy"
+    """Scaffolding never overwrites existing user files or ignore rules."""
+    target = tmp_path / "existing"
     target.mkdir()
     (target / ".gitignore").write_text("*.tmp\ncontext_layer/\nsemantic_layer/\n", encoding="utf-8")
     (target / "data").mkdir()
     (target / "data" / "seed_notes.md").write_text("# my notes\n", encoding="utf-8")
     (target / "AGENTS.md").write_text("# my project\n", encoding="utf-8")
-    assert main([str(target), "--git"]) == 0
+    assert main([str(target)]) == 0
     assert (target / ".gitignore").read_text(encoding="utf-8") == (
         "*.tmp\ncontext_layer/\nsemantic_layer/\n"
     )  # existing rules are NOT rewritten
@@ -229,15 +191,15 @@ def test_git_scaffold_keeps_existing_files_and_ignore_rules(tmp_path, capsys):
 
 
 def test_git_scaffold_ignores_supported_input_locations_but_keeps_seed_notes(tmp_path):
-    """G7 fix pass F4: the --git ignore template covers the supported INPUT
-    locations (databases, parquet/csv/json/delta datasets under data/, and
+    """The Git-only ignore template covers supported private INPUT locations
+    (databases, parquet/csv/json/delta datasets under data/, and
     documents under data/docs/), so ordinary ``git add`` never picks up local
     inputs — while ``data/seed_notes.md`` stays trackable (the artifact the
     allowlisted ``-f`` literal-pathspec seam commits)."""
     import subprocess
 
     target = tmp_path / "proj"
-    assert main([str(target), "--git"]) == 0
+    assert main([str(target)]) == 0
 
     def git(*argv: str) -> subprocess.CompletedProcess:
         proc = subprocess.run(

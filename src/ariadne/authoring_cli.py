@@ -1,129 +1,14 @@
-"""``ariadne-authoring`` — the local command surface of harness-led authoring
-(spec 2026-09-24-0005 "Authoring interface and lifecycle"; issue #13 exposes
-the source-proposal pair, issue #14 adds inputs, issue #15 adds submit/review,
-issue #34 adds the Git-backed proposal seam start/read/edit, issue #35 adds
-the Git-aware propose-sources/approve-sources/inputs).
+"""Local command surface for project-bound Git authoring.
 
-Follows the ``ariadne`` CLI's JSON contract: one JSON value on stdout for
-success; one ``{"error": {"type", "message"}}`` object on stderr plus exit 1
-for failure, message verbatim.
+The harness edits one explicit proposal by exact revision. Source declarations
+are inert until a human approves the resolved identity; validation and review
+never admit. Document originals stay operator-managed and external to Git.
 
-    ariadne-authoring propose-sources --file FILE [--project DIR]
-    ariadne-authoring propose-sources --proposal ID --expected-revision REV
-                                       --file FILE [--project DIR]
-    ariadne-authoring approve-sources --digest DIGEST [--project DIR]
-    ariadne-authoring approve-sources --proposal ID --revision REV
-                                       --source-digest DIGEST [--project DIR]
-    ariadne-authoring inputs [--document REF ...] [--part N] [--project DIR]
-    ariadne-authoring inputs --proposal ID [--document REF ...] [--part N]
-                             [--sample-rows N] [--project DIR]
-    ariadne-authoring submit --file FILE [--base-digest DIGEST] [--project DIR]
-    ariadne-authoring review [--part N] [--project DIR]
-    ariadne-authoring review --proposal ID [--part N] [--project DIR]
-    ariadne-authoring start [--base-revision REV] [--project DIR]
-    ariadne-authoring read --proposal ID --kind KIND [--name N] [--section S]
-                            [--part N] [--project DIR]
-    ariadne-authoring edit --proposal ID --expected-revision REV --file FILE
-                            [--project DIR]
-    ariadne-authoring validate --proposal ID --expected-revision REV
-                              [--project DIR]
-    ariadne-authoring refresh-schema --proposal ID --expected-revision REV
-                                    --file FILE [--project DIR]
-    ariadne-authoring inspect-mapping --proposal ID --expected-revision REV
-                                      --file FILE [--project DIR]  (issue #43;
-                                      bounded mapping inspection, never a
-                                      page edit or approval)
-    ariadne-authoring resolve-term --proposal ID [TERM] [--file FILE]
-                                    [--part N] [--project DIR]  (issue #42;
-                                    read-only candidate resolution)
-    ariadne-authoring reconcile --proposal ID --expected-revision OLD
-                                --revision NEW [--project DIR]
-    ariadne-authoring import-legacy --from-root ROOT [--project DIR]   (HUMAN-ONLY)
-    ariadne-authoring enrich-legacy --proposal ID --revision REV --page PAGE
-                                   [--file ASSET] [--project DIR]   (HUMAN-ONLY,
-                                   issue #46/K6: explicit legacy-page binding)
-
-``approve-sources`` is HUMAN-ONLY and runs on the server host (ADR-0013): the
-packaged skill must never invoke it, and it is excluded from every MCP tool
-surface. The legacy ``--digest`` route installs entries into the project's
-``ariadne.yaml``; the Git mode (``--proposal``/``--revision``/
-``--source-digest``) records the operator's permission for the proposal's
-EXACT resolved source identity in the operator-owned
-``.ariadne/source-approvals.json`` without editing the already-committed
-candidate (issue #35/G3, spec §5). ``submit`` and ``review`` are
-harness-invocable; they stage and expose proposals but NEVER approve,
-promote, or serve anything — the exact-digest Promotion gate is the separate
-human-only ``ariadne-promote --digest DIGEST`` (ADR-0003). The ``--project``
-default is the working directory — locally the project root; remotely the
-server's single configured project, whose filesystem root no client argument
-ever selects.
-
-MCP surface mapping (issue #38/G6, spec §6): the MCP registrations expose the
-GIT contract above — ``authoring_start_proposal``/``authoring_read_artifact``/
-``authoring_edit_proposal``/``authoring_propose_sources`` (Git mode:
-``--proposal``/``--expected-revision`` + typed entries)/``authoring_inputs``
-(Git mode: ``--proposal``)/``authoring_upload_document``/
-``authoring_validate_proposal``/``authoring_refresh_schema`` (issue #41: the
-explicit physical schema refresh)/``authoring_inspect_mapping`` (issue #43:
-the bounded mapping inspection with authentic receipts)/``authoring_resolve_term``
-(issue #42: the read-only candidate term resolution)/``authoring_review_proposal`` — with model
-arguments carrying only proposal IDs, revisions and typed artifact
-identities. A legacy complete-bundle ``submit``/``review`` payload composes as
-``start`` + one ``edit`` per artifact + ``validate``/``review --proposal``
-instead, and no MCP entry ever guesses a proposal for an old bundle payload
-(the local legacy staged-bundle route is retained documented for its named
-consumers — never an MCP surface).
-
-``start``/``read``/``edit`` (issue #34/G2, spec 2026-10-02-0009 §§3–4) drive
-isolated Git authoring proposals over the project's own Git repository:
-``start`` derives the system-generated proposal ID, branch and worktree;
-``edit`` applies one complete artifact edit revision-checked (``--file -``
-reads the edit JSON from stdin); ``read`` returns one bounded artifact part of
-the current candidate. Git-mode ``propose-sources``/``inputs`` (issue #35/G3)
-address the same proposals: a typed source proposal commits into the candidate
-registry and returns the resolved identity digest (never opening anything);
-``inputs`` measures ONLY the operator-approved resolved identity plus the
-operator-bound documents. ``validate`` (issue #36/G4) finalizes the generated
-artifacts, commits any generated changes, validates the EXACT final commit
-against the approved source identity and returns that revision with its
-report/errors — never a signoff. ``refresh-schema`` (issue #41/K1)
-regenerates the core-owned physical schema facts and Dataset Overviews of an
-explicit catalog asset list inside the candidate: reads only the
-operator-approved resolved source identity, revision-checked writes, authored
-meaning preserved for identical column identity/type and retained as
-reviewable history otherwise — never admission. ``review --proposal`` (issue #36/G4) is the
-read-only Git-candidate review; ``review`` without ``--proposal`` keeps its
-legacy staged-bundle meaning. ``reconcile`` (issue #37/G5) is HUMAN-ONLY like
-``approve-sources`` and never an MCP/native Agent tool: after the human performs
-a local rebase/merge (the admitted baseline advanced past the branch), it
-records the clean new HEAD — requiring the current admitted revision in the
-candidate's ancestry — and invalidates the old revision's validation/review; it
-never merges automatically or clears an inconsistent interrupted transition or
-exhausted repair state.
-
-``import-legacy`` (issue #39/G7) is HUMAN-ONLY the same way: the explicit
-legacy-artifact migration of :mod:`ariadne.migration` (spec §7/AC9), exposed
-ONLY here — never an MCP or Agent tool. It copies a legacy project's selected
-artifacts (registry, Seed Notes, models, graph, OKF pages) into a fresh
-UNADMITTED Git proposal — or into the human-created initial artifact revision
-when the project has none yet — preserving pending legacy staging byte-for-byte
-and NEVER admitting: a Git commit of existing files is not human review. The
-retained legacy ``submit``/``review`` staged-bundle route keeps its named
-consumers (tests/test_authoring.py, tests/test_promote.py,
-tests/test_multifact.py, tests/test_authoring_mcp.py and every legacy staged
-project); see docs/how-to/git-authoring.md for the complete legacy → new
-mapping.
-
-``enrich-legacy`` (issue #46/K6) is HUMAN-ONLY the same way: the explicit
-binding of ONE imported legacy physical-table page to its canonical catalog
-resource (spec 0010 §4/§9) — a complete page edit through the core-owned
-regeneration seam. With ``--file`` the exact asset tuple
-``{source, catalog, schema, table}`` is named; without it the page's own
-legacy spelling must resolve to exactly ONE approved asset — several matches
-(same-named tables of distinct sources/schemas) refuse rather than guess. The
-old filename, links and history are preserved; refresh, validation, review and
-admission stay their own separate steps, and the pending legacy staging is
-never touched.
+``ariadne-authoring`` exposes proposal start/read/edit, source propose/approve,
+measured inputs, validate/review, schema refresh, bounded mapping inspection,
+term resolution and human-only local reconciliation. It has no staged bundle,
+Promotion, legacy import/enrichment, direct root write or source-opening
+fallback route.
 """
 
 from __future__ import annotations
@@ -137,15 +22,7 @@ from typing import Any, NoReturn
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
 from ariadne.admission import reconcile
-from ariadne.authoring import (
-    AuthoringProject,
-    approve_sources,
-    harness_inputs,
-    propose_sources,
-    review_bundle,
-    submit_bundle,
-)
-from ariadne.migration import enrich_legacy, import_legacy
+from ariadne.authoring import AuthoringProject
 
 
 class UsageError(ValueError):
@@ -174,15 +51,10 @@ def build_parser() -> _Parser:
     )
     propose.add_argument("--file", required=True, help="proposal YAML (registry-shaped)")
     propose.add_argument(
-        "--proposal",
-        default=None,
-        help="Git mode: append the entries to this proposal's candidate registry "
-        "(requires --expected-revision); returns the resolved identity digest",
+        "--proposal", required=True, help="append entries to this proposal's candidate registry"
     )
     propose.add_argument(
-        "--expected-revision",
-        default=None,
-        help="Git mode: the CURRENT candidate revision the proposal is based on",
+        "--expected-revision", required=True, help="the CURRENT candidate revision"
     )
     propose.add_argument(
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
@@ -190,18 +62,12 @@ def build_parser() -> _Parser:
 
     approve = sub.add_parser(
         "approve-sources",
-        help="install the digest-matched pending proposal into ariadne.yaml "
-        "(HUMAN-ONLY, server host; the skill never invokes this)",
-    )
-    approve.add_argument(
-        "--digest",
-        default=None,
-        help="legacy route: the reviewed pending-proposal digest to install",
+        help="record permission for an exact proposal identity (HUMAN-ONLY, server host)",
     )
     approve.add_argument(
         "--proposal",
-        default=None,
-        help="Git mode: the proposal whose candidate registry is approved "
+        required=True,
+        help="the proposal whose candidate registry is approved "
         "(requires --revision and --source-digest; records the permission in "
         ".ariadne/source-approvals.json without editing the candidate)",
     )
@@ -226,8 +92,8 @@ def build_parser() -> _Parser:
     )
     inputs.add_argument(
         "--proposal",
-        default=None,
-        help="Git mode: measure this proposal's candidate — the profile opens only "
+        required=True,
+        help="measure this proposal's candidate — the profile opens only "
         "the operator-APPROVED resolved source identity (issue #35/G3)",
     )
     inputs.add_argument(
@@ -254,38 +120,14 @@ def build_parser() -> _Parser:
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
 
-    submit = sub.add_parser(
-        "submit",
-        help="submit the harness model's complete proposed bundle (Seed Notes + OSI "
-        "+ OKF pages as relative paths/contents) for deterministic validation "
-        "and staged review — never approval or promotion",
-    )
-    submit.add_argument(
-        "--file",
-        required=True,
-        help='submission JSON: {"files": [{path, content}], "documents": '
-        '[reference, ...], "base_digest": ...} — documents name input-area '
-        "references whose citations the service verifies itself",
-    )
-    submit.add_argument(
-        "--base-digest",
-        default=None,
-        help="the CURRENT submission digest (required to repair an active proposal)",
-    )
-    submit.add_argument(
-        "--project", default=".", help="project root holding ariadne.yaml (default: .)"
-    )
-
     review_cmd = sub.add_parser(
         "review",
-        help="the staged bundle proposal: inventory, provenance, validation state, "
-        "exact content digest, verified document citations, bounded bodies — "
-        "readable, never a signoff",
+        help="review a Git proposal's effective candidate — readable, never a signoff",
     )
     review_cmd.add_argument(
         "--proposal",
-        default=None,
-        help="Git mode: review this proposal's effective candidate — exact "
+        required=True,
+        help="proposal ID; review exact revisions, changes, citations and validation evidence — "
         "revisions, change inventory, bounded bodies, citations, the validation "
         "report, the structured mapping assertions with their assertion digests "
         "and confirmation eligibility (K4/issue #44: what a human may select "
@@ -474,50 +316,6 @@ def build_parser() -> _Parser:
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
 
-    import_cmd = sub.add_parser(
-        "import-legacy",
-        help="HUMAN-ONLY: copy a legacy project's selected artifacts (registry, Seed "
-        "Notes, models, graph, OKF pages) into a fresh UNADMITTED Git proposal — or "
-        "the initial artifact revision when the project has none; never admission",
-    )
-    import_cmd.add_argument(
-        "--from-root",
-        required=True,
-        help="the legacy project root to import from (its ariadne.yaml, seed notes, "
-        "served semantic/context layers; pending staging is preserved untouched)",
-    )
-    import_cmd.add_argument(
-        "--project", default=".", help="the managed Git data project (default: .)"
-    )
-
-    enrich_cmd = sub.add_parser(
-        "enrich-legacy",
-        help="HUMAN-ONLY: bind ONE imported legacy table page to its explicitly "
-        "identified canonical catalog resource (a complete page edit; the old "
-        "filename, links and history are preserved — ambiguous spellings refuse, "
-        "refresh/admission stay separate steps)",
-    )
-    enrich_cmd.add_argument("--proposal", required=True, help="the proposal ID")
-    enrich_cmd.add_argument(
-        "--revision",
-        required=True,
-        help="the proposal's CURRENT candidate revision (a stale one is refused)",
-    )
-    enrich_cmd.add_argument(
-        "--page",
-        required=True,
-        help="the legacy page to bind, under context_layer/tables/ (its unqualified "
-        "legacy spelling is resolved against the operator-approved identity)",
-    )
-    enrich_cmd.add_argument(
-        "--file",
-        default=None,
-        help="optional explicit catalog asset JSON {source, catalog, schema, table} "
-        '(or {"asset": {...}}); without it an ambiguous spelling refuses',
-    )
-    enrich_cmd.add_argument(
-        "--project", default=".", help="the managed Git data project (default: .)"
-    )
     return parser
 
 
@@ -529,27 +327,6 @@ def _read_edit_document(file: str) -> dict:
         return json.loads(raw)
     except ValueError as exc:
         raise UsageError(f"{file}: edit is not valid JSON: {exc}") from None
-
-
-def _read_enrichment_asset(file: str) -> dict:
-    """The ONE explicit catalog asset of an enrich-legacy request from
-    ``--file`` (or stdin with ``-``): the asset object itself, or the object
-    form ``{"asset": {...}}`` — adapter input only, never a filesystem
-    destination. Malformed JSON is a UsageError so the one-JSON-error-object
-    contract still holds."""
-    raw = sys.stdin.read() if file == "-" else Path(file).read_text(encoding="utf-8")
-    try:
-        data = json.loads(raw)
-    except ValueError as exc:
-        raise UsageError(f"{file}: the asset is not valid JSON: {exc}") from None
-    if isinstance(data, dict) and set(data) == {"asset"}:
-        data = data["asset"]
-    if not isinstance(data, dict):
-        raise UsageError(
-            f"{file}: the explicit asset must be a JSON object "
-            '{"source": ..., "catalog": ..., "schema": ..., "table": ...}'
-        )
-    return data
 
 
 def _read_asset_list(file: str) -> list[dict]:
@@ -590,8 +367,8 @@ def _read_inspection_request(file: str) -> tuple[object, object]:
 
 
 def _read_source_entries(file: str) -> list[dict]:
-    """The typed source entries of a registry-shaped intake document (the
-    same shape the legacy route validates): its ``sources:`` list."""
+    """The typed source entries of a registry-shaped Git proposal intake
+    document: its ``sources:`` list."""
     return _read_source_intake(file)[0]
 
 
@@ -617,38 +394,18 @@ def main(argv: list[str] | None = None) -> int:
         args = build_parser().parse_args(argv)
         if args.command == "propose-sources":
             entries, storages = _read_source_intake(args.file)
-            if args.proposal is not None:
-                if args.expected_revision is None:
-                    raise UsageError("Git-mode propose-sources requires --expected-revision")
-                result: Any = AuthoringProject(args.project).propose_sources(
-                    args.proposal, args.expected_revision, entries, storages
-                )
-            else:
-                result = propose_sources(args.file, project=args.project)
+            result: Any = AuthoringProject(args.project).propose_sources(
+                args.proposal, args.expected_revision, entries, storages
+            )
         elif args.command == "inputs":
-            if args.proposal is not None:
-                result = AuthoringProject(args.project).inputs(
-                    args.proposal,
-                    documents=args.documents,
-                    part=args.part,
-                    sample_rows=args.sample_rows,
-                )
-            else:
-                result = harness_inputs(
-                    project=args.project,
-                    documents=args.documents,
-                    part=args.part,
-                    sample_rows=args.sample_rows,
-                )
-        elif args.command == "submit":
-            result = submit_bundle(args.file, project=args.project, base_digest=args.base_digest)
+            result = AuthoringProject(args.project).inputs(
+                args.proposal,
+                documents=args.documents,
+                part=args.part,
+                sample_rows=args.sample_rows,
+            )
         elif args.command == "review":
-            if args.proposal is not None:
-                result = AuthoringProject(args.project).review_proposal(
-                    args.proposal, part=args.part
-                )
-            else:
-                result = review_bundle(project=args.project, part=args.part)
+            result = AuthoringProject(args.project).review_proposal(args.proposal, part=args.part)
         elif args.command == "validate":
             result = AuthoringProject(args.project).validate_proposal(
                 args.proposal, args.expected_revision
@@ -687,21 +444,6 @@ def main(argv: list[str] | None = None) -> int:
             # HUMAN-ONLY (issue #37/G5): records a local rebase/merge; never an
             # MCP/Agent tool and never an automatic merge.
             result = reconcile(args.project, args.proposal, args.expected_revision, args.revision)
-        elif args.command == "import-legacy":
-            # HUMAN-ONLY (issue #39/G7): the explicit legacy-artifact migration —
-            # never an MCP/Agent tool, never admission.
-            result = import_legacy(project=args.project, from_root=args.from_root)
-        elif args.command == "enrich-legacy":
-            # HUMAN-ONLY (issue #46/K6): the explicit legacy-page binding —
-            # never an MCP/Agent tool, never refresh or admission.
-            asset = _read_enrichment_asset(args.file) if args.file is not None else None
-            result = enrich_legacy(
-                project=args.project,
-                proposal=args.proposal,
-                revision=args.revision,
-                page=args.page,
-                asset=asset,
-            )
         elif args.command == "start":
             result = AuthoringProject(args.project).start_proposal(args.base_revision)
         elif args.command == "read":
@@ -717,29 +459,10 @@ def main(argv: list[str] | None = None) -> int:
             result = AuthoringProject(args.project).edit_proposal(
                 args.proposal, args.expected_revision, _read_edit_document(args.file)
             )
-        else:  # approve-sources: legacy --digest, or Git-mode identity approval
-            git_mode = (args.proposal, args.revision, args.source_digest)
-            if any(flag is not None for flag in git_mode):
-                if args.digest is not None:
-                    raise UsageError(
-                        "approve-sources takes either --digest (legacy) or "
-                        "--proposal/--revision/--source-digest (Git mode), not both"
-                    )
-                if any(flag is None for flag in git_mode):
-                    raise UsageError(
-                        "Git-mode approve-sources requires --proposal, --revision "
-                        "and --source-digest together"
-                    )
-                result = AuthoringProject(args.project).approve_sources(
-                    args.proposal, args.revision, args.source_digest
-                )
-            else:
-                if args.digest is None:
-                    raise UsageError(
-                        "approve-sources requires --digest DIGEST (legacy) or "
-                        "--proposal/--revision/--source-digest (Git mode)"
-                    )
-                result = approve_sources(args.digest, project=args.project)
+        else:  # approve-sources is the human-only exact Git source permission
+            result = AuthoringProject(args.project).approve_sources(
+                args.proposal, args.revision, args.source_digest
+            )
     except Exception as exc:  # one JSON error object, message verbatim
         print(
             json.dumps({"error": {"type": type(exc).__name__, "message": str(exc)}}),

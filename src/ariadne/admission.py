@@ -79,9 +79,8 @@ ADMISSION_ROUTE = "git-review-admission"
 
 # The checks a FULL, matching validation must show PASSED for admission (spec
 # §5: a compile-only or failed report is not sufficient admission evidence).
-# ``conformance`` stays a disclosed not-run, exactly like the legacy promotion
-# gate; the live relationship audit is additionally required whenever the
-# candidate carries a multi-fact graph.
+# ``conformance`` stays disclosed as not-run; the live relationship audit is
+# additionally required whenever the candidate carries a multi-fact graph.
 REQUIRED_CHECKS = (
     "source_boundary",
     "structural",

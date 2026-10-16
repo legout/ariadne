@@ -8,7 +8,6 @@ import io
 import json
 import os
 import shlex
-import shutil
 import sys
 from pathlib import Path
 
@@ -24,18 +23,12 @@ from ariadne import (  # noqa: E402
     admission,
     authoring,
     execution,
-    promote,
     query,
     skill,
     sources,
     status,
 )
 from ariadne.cli import main as cli  # noqa: E402
-from tests.test_authoring import (  # noqa: E402
-    approved_project,
-    bundle_submission,
-    write_submission,
-)
 from tests.test_context_admission import (  # noqa: E402
     REFERENCE_EDIT,
     TABLE_EDIT,
@@ -46,8 +39,6 @@ from tests.test_context_admission import (  # noqa: E402
     table_page,
 )
 from tests.test_git_authoring import branch_of  # noqa: E402
-from tests.test_multifact import _t5_admitted  # noqa: E402
-from tests.test_promote import make_staging  # noqa: E402
 
 
 class Terminal(io.StringIO):
@@ -97,7 +88,6 @@ def test_unadmitted_native_payload_noninteractive_is_read_only(
         (execution, "build_connection"),
         (execution.DuckDBExecution, "__init__"),
         (admission, "main"),
-        (promote, "main"),
     ):
         monkeypatch.setattr(module, name, forbidden)
     assert (
@@ -530,286 +520,7 @@ def test_interface_rejects_route_conflicts_and_bypass_flags(monkeypatch, capsys,
     assert json.loads(capsys.readouterr().err)["error"]["message"]
 
 
-def staged_bundle(root, *, pk="id"):
-    root.mkdir()
-    project = approved_project(root)
-    authoring.submit_bundle(write_submission(project, bundle_submission(pk=pk)), project=project)
-    return project, authoring.review_bundle(project=project)
-
-
 @pytest.mark.parametrize("tty,output_tty", [(False, True), (True, False)])
-def test_noninteractive_legacy_inventory_never_consumes_affirmative_input(
-    tmp_path,
-    monkeypatch,
-    capsys,
-    tty,
-    output_tty,
-):
-    staging = make_staging(tmp_path / "drafts")
-    served = tmp_path / "fresh"
-    before = governed(tmp_path)
-    calls = []
-    monkeypatch.setattr(promote, "main", lambda argv: calls.append(argv))
-    assert (
-        run_review(
-            "--staging",
-            staging,
-            "--served",
-            served,
-            answers="yes\n",
-            tty=tty,
-            output_tty=output_tty,
-            monkeypatch=monkeypatch,
-        )
-        == 0
-    )
-    output = capsys.readouterr().out
-    assert "Ordinary merge-only" in output and "no bundle digest" in output
-    assert "created" in output and "orders.yml" in output
-    assert (
-        shlex.join(["ariadne-promote", "--staging", str(staging), "--served", str(served)])
-        in output
-    )
-    assert calls == [] and not served.exists() and governed(tmp_path) == before
-
-
-@pytest.mark.parametrize("answer,code", [("yes\n", 0), ("no\n", 1), ("", 1)])
-def test_ordinary_promotion_uses_only_native_prompt_and_fresh_target(
-    tmp_path,
-    monkeypatch,
-    capsys,
-    answer,
-    code,
-):
-    staging = make_staging(tmp_path / "drafts")
-    served = tmp_path / "fresh"
-    native = promote.main
-    before = governed(tmp_path)
-    calls = []
-
-    def record(argv):
-        assert not served.exists() and governed(tmp_path) == before
-        calls.append(argv)
-        return native(argv)
-
-    monkeypatch.setattr(promote, "main", record)
-    assert (
-        run_review(
-            "--staging", staging, "--served", served, answers=answer, monkeypatch=monkeypatch
-        )
-        == code
-    )
-    assert calls == [["--staging", str(staging), "--served", str(served)]]
-    output = capsys.readouterr().out
-    assert output.count("file(s) as human:") == 1
-    assert "--yes" not in output and "--digest" not in output
-    if code == 0:
-        meta = yaml.safe_load(
-            (served / "context_layer/metrics/gross_margin.md").read_text().split("---")[1]
-        )
-        assert meta["status"] == "stable" and len(meta["verified"]) == 1
-    else:
-        assert not served.exists() and governed(tmp_path) == before
-
-
-def test_legacy_root_selection_preserves_ambiguity_and_requires_fresh_target(
-    tmp_path, monkeypatch, capsys
-):
-    make_staging(tmp_path / "staging")
-    assert run_review(monkeypatch=monkeypatch) == 1
-    assert "before first Promotion" in capsys.readouterr().err
-    for root in (tmp_path, tmp_path / "served"):
-        (root / "context_layer").mkdir(parents=True)
-        (root / "semantic_layer/models").mkdir(parents=True)
-        if root == tmp_path:
-            assert run_review(tty=False, monkeypatch=monkeypatch) == 0
-            assert f"Selected served target: {tmp_path}" in capsys.readouterr().out
-    assert run_review(tty=False, monkeypatch=monkeypatch) == 1
-    assert "ambiguous promoted roots" in capsys.readouterr().err
-
-
-def test_review_needed_and_empty_staging_make_no_human_call(tmp_path, monkeypatch, capsys):
-    staging = make_staging(tmp_path / "staging")
-    model = staging / "semantic_layer/models/orders.yml"
-    model.write_text(model.read_text() + "\nstatus: review_needed\n")
-    calls = []
-    monkeypatch.setattr(promote, "main", lambda argv: calls.append(argv))
-    assert run_review("--served", tmp_path / "fresh", monkeypatch=monkeypatch) == 1
-    assert "review_needed" in capsys.readouterr().err
-    assert (
-        run_review(
-            "--served", tmp_path / "fresh", "--staging", tmp_path / "empty", monkeypatch=monkeypatch
-        )
-        == 0
-    )
-    assert "No pending Promotion" in capsys.readouterr().out
-    assert calls == [] and not (tmp_path / "fresh").exists()
-
-
-@pytest.mark.parametrize("tty", [False, True])
-def test_bundle_review_matches_native_payload_and_digest_route(tmp_path, monkeypatch, capsys, tty):
-    project, expected = staged_bundle(tmp_path / "legacy")
-    served = tmp_path / "fresh"
-    staging = project / "staging"
-    native = promote.main
-    calls = []
-    before = governed(project)
-
-    def record(argv):
-        assert governed(project) == before and not served.exists()
-        calls.append(argv)
-        return native(argv)
-
-    monkeypatch.setattr(promote, "main", record)
-    assert (
-        run_review(
-            "--staging",
-            staging,
-            "--served",
-            served,
-            answers="yes\n",
-            tty=tty,
-            monkeypatch=monkeypatch,
-        )
-        == 0
-    )
-    output = capsys.readouterr().out
-    shown = json.JSONDecoder().raw_decode(output[output.index("{") :])[0]
-    assert shown == expected and "Digest-backed bundle" in output
-    expected_argv = [
-        "--staging",
-        str(staging),
-        "--served",
-        str(served),
-        "--digest",
-        expected["digest"],
-    ]
-    assert shlex.join(["ariadne-promote", *expected_argv]) in output
-    assert "--yes" not in output
-    if tty:
-        assert calls == [expected_argv] and output.count("file(s) as human:") == 1
-        assert (served / "data/seed_notes.md").read_text() == "# Seed notes\n\nAll events count.\n"
-        assert authoring.review_bundle(project=project)["status"] == "promoted"
-    else:
-        assert calls == [] and governed(project) == before and not served.exists()
-
-
-def test_unchanged_promoted_graph_review_never_delegates_or_rewrites_admission(
-    tmp_path, monkeypatch, capsys
-):
-    # The existing SQLite fixture uses the full suite's installed DuckDB extension.
-    with monkeypatch.context() as fixture_env:
-        fixture_env.setenv("HOME", str(HOST_HOME))
-        project, _ = _t5_admitted(tmp_path)
-    staging, served = project / "staging", project / "served"
-    payload = authoring.review_bundle(project=project)
-    assert payload["status"] == "promoted"
-    admission_path = served / "semantic_layer/admission.json"
-    before = admission_path.read_bytes()
-    native = promote.main
-    calls = []
-
-    def record(argv):
-        calls.append(argv)
-        return native(argv)
-
-    monkeypatch.setattr(promote, "getuser", lambda: "walkthrough")
-    monkeypatch.setattr(promote, "main", record)
-    assert run_review("--staging", staging, "--served", served, monkeypatch=monkeypatch) == 0
-    assert admission_path.read_bytes() == before
-    assert calls == []
-    output = capsys.readouterr().out
-    assert "nothing to promote: served layers already match the reviewed bundle" in output
-    assert "record-heal" in output
-    assert (
-        shlex.join(
-            [
-                "ariadne-promote",
-                "--staging",
-                str(staging),
-                "--served",
-                str(served),
-                "--digest",
-                payload["digest"],
-            ]
-        )
-        in output
-    )
-
-
-def test_relocated_bundle_refuses_with_exact_operator_handoffs(tmp_path, monkeypatch, capsys):
-    project, payload = staged_bundle(tmp_path / "legacy")
-    staging = tmp_path / "relocated"
-    shutil.copytree(project / "staging", staging)
-    served = tmp_path / "fresh"
-    calls = []
-    monkeypatch.setattr(promote, "main", lambda argv: calls.append(argv))
-    monkeypatch.setattr(admission, "main", lambda argv: calls.append(argv))
-    monkeypatch.setattr(
-        authoring, "review_bundle", lambda **kwargs: pytest.fail("reviewed wrong bundle")
-    )
-    assert (
-        run_review(
-            "--staging", staging, "--served", served, answers="yes\n", monkeypatch=monkeypatch
-        )
-        == 1
-    )
-    message = json.loads(capsys.readouterr().err)["error"]["message"]
-    assert "relocated active bundle" in message
-    assert str(staging) in message and str(project / "staging") in message
-    assert shlex.join(["ariadne-authoring", "review", "--project", str(project)]) in message
-    assert (
-        shlex.join(
-            [
-                "ariadne-promote",
-                "--staging",
-                str(staging),
-                "--served",
-                str(served),
-                "--digest",
-                payload["digest"],
-            ]
-        )
-        in message
-    )
-    assert "not reviewed here" in message
-    assert calls == [] and not served.exists()
-
-
-@pytest.mark.parametrize("invalid", [False, True])
-def test_bundle_native_stale_digest_or_failed_validation_refuses_without_serving(
-    tmp_path,
-    monkeypatch,
-    capsys,
-    invalid,
-):
-    project, payload = staged_bundle(tmp_path / "legacy", pk="label" if invalid else "id")
-    staging = project / "staging"
-    served = tmp_path / "fresh"
-    native = promote.main
-    calls = []
-
-    def record(argv):
-        calls.append(argv)
-        if not invalid:
-            notes = project / authoring.BUNDLE_STAGING_REL / "data/seed_notes.md"
-            notes.write_text(notes.read_text() + "\nChanged after review.\n")
-        return native(argv)
-
-    monkeypatch.setattr(promote, "main", record)
-    assert (
-        run_review(
-            "--staging", staging, "--served", served, answers="yes\n", monkeypatch=monkeypatch
-        )
-        == 1
-    )
-    assert len(calls) == 1 and calls[0][-2:] == ["--digest", payload["digest"]]
-    assert not served.exists()
-    output = capsys.readouterr()
-    assert ("only a proposal" if invalid else "changed after the review") in output.err
-    assert "do not assume rollback or retry" in output.out
-
-
 def test_interrupted_post_admission_inspection_guides_status_without_pre_call_claim(
     tmp_path, monkeypatch, capsys
 ):

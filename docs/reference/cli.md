@@ -1,76 +1,63 @@
 # CLI reference
 
-This reference lists the Ariadne 0.3.0 command-line interfaces and their roles. Use `--help` on a command for its complete options. Examples assume the command is run from the data-project root.
+This reference describes the Git-only Core interfaces. Examples assume commands run from a project root; use an explicit project path when running elsewhere.
 
-## Select the project route
+## Project setup and route
 
-For a Git-managed project, use `--project DIR` on query commands. It selects the human-admitted snapshot and its approved source identity. A project without a valid admission fails rather than falling back to mutable files.
+`ariadne-init DIR` scaffolds a new project. It writes Seed Notes, the source-registry template, an operator pointer page and ignore rules. It does not initialize or configure Git, approve sources, admit a revision, or import existing staged state. `--with-mcp` opts into an MCP config; `--force` only overrides the project-manifest check and never overwrites existing scaffold files.
 
-For a legacy staged project, use `--sources ariadne.yaml` or `--db PATH`; use `--served PATH` when the promoted artifacts are not unambiguously discoverable. These selectors are not interchangeable with `--project`.
-
-The registry file carries optional top-level blocks together: `storages:` (named S3 storage profiles — current development candidate, not published 0.3.0) alongside `sources:`. Every registry-reading command and the `ariadne-authoring propose-sources --file` input accept the same shape; see the [data source reference](data-sources.md#storage-profiles) and [Multiple S3 storages](../how-to/multiple-s3-storages.md) for the fields, environment delivery and human approval semantics.
-
-The common query selectors follow the subcommand:
+Configure Git yourself, then start a revision-checked proposal with `ariadne-authoring start --project DIR`. Durable project queries are project-bound and require a valid human admission:
 
 ```bash
+ariadne status --project .
 ariadne list-metrics --project .
 ariadne get-metric gross_margin --project .
-ariadne list-metrics --sources ariadne.yaml
 ```
 
-## Project setup and diagnostics
+There is no plain-root serving route. The former `--served`, `--sources` and `--db` query selectors, staged bundle workflow, Promotion and legacy import/enrichment commands are not supported.
+
+`ariadne setup --project DIR` is read-only with respect to authority and Git configuration: it may scaffold, inspect filenames and print operator handoffs, but it never runs `git init/config`, opens a source, approves sources, or admits. `ariadne status --project DIR [--json]` reports Git prerequisites, proposals, source approval, admission, and readiness without connecting to sources. `ariadne review --project DIR [--proposal ID]` is an operator walkthrough for one Git proposal; without an ID it lists pending proposals. A terminal prompt does not establish authenticated human identity.
+
+## Query and discovery
 
 | Command | Purpose |
 | --- | --- |
-| `ariadne setup --project DIR` | Scaffold or resume the selected project route; guide the operator through setup and show next steps. Does not initialize Git, approve sources, admit, or promote. |
-| `ariadne setup --legacy --project DIR` | Explicitly choose a new legacy staged project. This is not a migration command. |
-| `ariadne status --project DIR` | Read-only readiness and next-step report for a managed project. Use `--json` for structured output. |
-| `ariadne status --sources FILE` | Read-only diagnostics for a legacy project. |
-| `ariadne review --project DIR` | Operator review walkthrough for a managed proposal. |
-| `ariadne review --served DIR` | Operator review walkthrough for a legacy Promotion target. |
+| `ariadne search TEXT --project DIR` | Read-only grouped discovery over admitted metrics, context, terms, and Examples. |
+| `ariadne list-metrics --project DIR` | List governed metrics and dimensions. |
+| `ariadne get-metric NAME --project DIR` | Execute a governed metric; supports repeatable `--dimension` and optional `--start` / `--end`. |
+| `ariadne list-datasets --project DIR` | List queryable datasets from the approved source identity. |
+| `ariadne search-context TEXT --project DIR` | Search the admitted context snapshot. |
+| `ariadne resolve-term TERM --project DIR` | Resolve an admitted term or field request; guidance does not authorize joins. |
+| `ariadne query-metrics --file REQUEST.json --project DIR` | Query the admitted multi-fact graph. |
+| `ariadne query-detail --file REQUEST.json --project DIR` | Project fields through safe lookups from one root dataset. |
+| `ariadne query-records --file REQUEST.json --project DIR` | Select bounded records from one known table; no aggregation and `governed: false`. |
+| `ariadne define-metric --file REQUEST.json --project DIR` | Run an ephemeral ad-hoc metric; result is `governed: false` and `persistence: {status: not_saved}`. |
+| `ariadne search-examples TEXT --project DIR` | Find admitted Example method references; `--include-history` and `--include-sql` opt into labeled history and SQL provenance. |
+| `ariadne save-example --file REQUEST.json --project DIR` | Save an explicitly confirmed Example to a Git proposal; no separate review store. |
 
-See the [getting-started tutorial](../tutorials/getting-started.md) for the setup path and [Git-backed authoring](../how-to/git-authoring.md) for proposal and human-gate procedures.
+The local CLI emits one JSON result per successful operation and one JSON error object on failure. Request commands accept `--file` or standard input; consult `ariadne COMMAND --help` for exact request shapes. Ad-hoc results are not retained automatically. To keep a definition or Example, use revision-checked proposal edits/saves, validate and review the candidate, then stop for human admission.
 
-## Query and discovery commands
+## Git Authoring and human-only decisions
 
-| Command | Purpose |
-| --- | --- |
-| `ariadne search TEXT` | Read-only, grouped discovery across metrics, context pages, terms, and examples. |
-| `ariadne list-metrics` | List governed metrics and available dimensions. |
-| `ariadne get-metric NAME` | Execute a governed metric; accepts repeatable `--dimension` and optional `--start` / `--end`. |
-| `ariadne list-datasets` | List queryable datasets. |
-| `ariadne search-context TEXT` | Search context pages and policies. |
-| `ariadne resolve-term TERM` | Resolve a documented term or exact field request; read-only guidance, never join authority. |
-| `ariadne query-metrics --file REQUEST.json` | Query a multi-fact semantic graph. |
-| `ariadne query-detail --file REQUEST.json` | Project fields through safe lookup paths from one root dataset. |
-| `ariadne query-records --file REQUEST.json` | Select bounded records from one known table; no aggregation and `governed: false`. |
-| `ariadne define-metric --file REQUEST.json` | Try an ad-hoc definition through the compile/safety path; result remains `governed: false` and may be staged as a proposal. |
-| `ariadne search-examples TEXT` | Find labeled Answer Examples; these are method references, not cached answers. `--include-sql` opts into returned SQL provenance. |
-| `ariadne save-example --file REQUEST.json` | Submit a confirmed Answer Example draft for the separate operator review path. |
+`ariadne-authoring` supports proposal start/read/edit, source proposal, inputs, schema refresh, validation, review, context resolution, and bounded mapping inspection. Every mutation targets an explicit proposal and current revision.
 
-The `ariadne` CLI prints JSON for query operations. Many commands accept `--file` or read the request from standard input when the file is omitted. Check `ariadne COMMAND --help` for the exact request shape and supported options.
+The following decisions remain local and human-only; they are not MCP tools:
 
-## Authoring and human-only commands
+- `ariadne-authoring approve-sources --project DIR --proposal ID --revision REV --source-digest DIGEST` grants permission for the exact resolved source identity.
+- `ariadne-admit --project DIR --proposal ID --revision REV --reviewed-digest DIGEST --confirm` admits the exact reviewed and validated revision (optional mapping confirmations must be explicitly selected).
+- `ariadne-authoring reconcile` records a permitted clean local rebase/merge after the admitted baseline advances; it never merges or resets automatically.
 
-`ariadne-authoring` is the proposal interface for authoring agents and operators. Its commands cover proposal creation, source proposals, inputs, typed artifact edits, validation, review, and context operations. See [Git-backed authoring](../how-to/git-authoring.md) for the full sequence.
+A Git commit, validation result, proposed source, authored status field or successful query is not source approval or admission. See [Git-backed authoring](../how-to/git-authoring.md) and the [Git-only route reference](git-authoring-migration.md) for the complete sequence.
 
-The following decisions remain local, human-only operations; they are not exposed as agent/MCP tools:
+## Document ingestion and static validation
 
-- `ariadne-authoring approve-sources`
-- `ariadne-admit`
-- `ariadne-authoring reconcile`, `import-legacy`, and `enrich-legacy`
-- `ariadne-promote` for a legacy staged project
-- `ariadne-example-review` for Answer Examples
+`ariadne-ingest DOC... --project DIR --proposal ID --expected-revision REV` reads operator-authorized external document references and writes authored pages into that proposal revision. `--verbatim` preserves converted text without a model call; `--reconcile` compares against the immutable admitted base and is mutually exclusive with `--verbatim`. Original documents remain external; Core has no upload/archive store.
 
-## Document ingestion
+`ariadne-validate ARTIFACT_DIR` performs source-free compile checks on an explicit artifact directory. Its result is partial structural evidence only: it does not open sources, perform live validation, approve sources, or admit content. Live validation is revision-bound through `ariadne-authoring validate` after human source approval.
 
-`ariadne-ingest` stages document-derived proposals; it does not serve them automatically. Markdown and text are handled natively. PDF, Office, HTML, and other supported conversion formats require the optional `ariadne-data[documents]` extra.
+## MCP
 
-`ariadne-ingest --verbatim` creates a draft Reference from the converter's Markdown output without a model call. Verbatim mode cannot be combined with `--reconcile`.
-
-## MCP registration modes
-
-MCP registers query and authoring tools over the same core. Startup selects a combined or role-restricted toolset:
+MCP binds one locally selected project with `--project DIR`. Choose `combined`, `analyst` or `authoring` at startup:
 
 ```bash
 python -m ariadne.serve --project DIR
@@ -80,12 +67,4 @@ ariadne-analyst-mcp --project DIR
 ariadne-authoring-mcp --project DIR
 ```
 
-These registrations do not expose source approval, admission, reconciliation, legacy import/enrichment, Promotion, or Answer Example review.
-
-## Optional transports and packages
-
-- Core local interface: install `ariadne-data`.
-- MCP server: install `ariadne-data[mcp]`, then run `ariadne-serve`; stdio is local. HTTP is opt-in and requires operator configuration.
-- Conversational Python backend: install `ariadne-agent` separately. See the [Agent API README](../../ariadne-agent/README.md).
-
-See [Docker MCP](../how-to/docker-mcp.md) for a private container setup. Installing an adapter does not change the human governance gates.
+No tool argument selects another project, worktree, source identity, source approval or admission. Stdio is the default; HTTP is opt-in. Installing an adapter does not change the human governance gates.

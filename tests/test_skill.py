@@ -39,14 +39,14 @@ def test_packaged_assets_exist():
 
 def test_skill_teaches_local_cli_as_default_mcp_optional():
     """Spec 2026-09-23-0001 §8: the packaged skill defaults to the five local
-    `ariadne` commands (root selection, caveats, labels, file/stdin ad-hoc
+    `ariadne` commands (project selection, caveats, labels, file/stdin ad-hoc
     definitions); MCP appears only in the optional integration section with
     accurate ariadne-data[mcp] install guidance — never as a requirement."""
     skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
     for cmd in ("list-metrics", "search-context", "get-metric", "list-datasets", "define-metric"):
         assert f"ariadne {cmd}" in skill, cmd
     assert "ariadne define-metric --file" in skill  # file definitions (stdin named too)
-    assert "--served" in skill  # safe promoted-root selection escape hatch
+    assert "ariadne list-metrics --project ." in skill
     assert "governed: true" in skill and "governed: false" in skill  # labels taught
     # MCP only after the optional integration heading, with the real extra named
     optional_at = skill.index("Optional: MCP integration")
@@ -58,7 +58,7 @@ def test_skill_teaches_local_cli_as_default_mcp_optional():
     assert "not from the data project root" in normalized
     assert "ariadne-init --with-mcp ." in skill
     assert skill.index("pyproject.toml") < skill.index("ariadne-init --with-mcp .")
-    assert "ariadne-serve --sources ariadne.yaml" in skill
+    assert "ariadne-serve --project ." in skill
 
 
 def test_skill_teaches_answer_example_guidance():
@@ -81,28 +81,21 @@ def test_skill_teaches_answer_example_guidance():
     assert "confirm BEFORE calling save" in normalized  # user gate before the call
     assert "ariadne save-example" in normalized
     assert "Never save silently, never harvest the transcript" in normalized
-    assert "never run the operator-only `ariadne-example-review`" in normalized
+    assert "there is no separate Example-review command" in normalized
 
 
-def test_skill_separates_managed_project_queries_from_legacy_roots():
-    """G7 fix pass F3: the default query workflow must not send Git-project
-    operators to mutable legacy roots — managed queries go through
-    `--project DIR` (the pinned human-admitted snapshot, route
-    git-review-admission), the retained legacy route keeps --served/--sources,
-    and multi-metric governance names BOTH human routes (legacy Promotion AND
-    Git Review Admission), not Promotion exclusively."""
+def test_skill_uses_only_the_project_bound_query_route():
+    """G4: the default workflow uses admitted Git projects and no legacy roots."""
     skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
     querying = skill[: skill.index("## Answer examples")]  # the query workflow
     assert "--project DIR" in querying  # the managed route is taught
     assert "--project ." in querying  # with its concrete invocation
     assert "git-review-admission" in querying
     assert "admitted snapshot" in querying
-    # the legacy roots stay documented as the RETAINED route, never the default
-    assert "--served PATH" in querying and "--sources ariadne.yaml" in querying
-    # multi-metric governance names both human routes
-    assert "route: local-promotion" in querying
+    assert "There is no" in querying and "plain-root" in querying
+    assert "--served PATH" not in querying and "--sources ariadne.yaml" not in querying
+    assert "local-promotion" not in querying
     assert "Git Review Admission" in querying
-    assert "local Promotion only" not in querying  # the exclusive claim is gone
 
 
 def test_skill_routes_record_questions_to_the_separate_operation():
@@ -250,23 +243,22 @@ def test_rubric_states_the_real_grain_audit_order():
 
 def test_skill_teaches_the_admitted_multifact_query_commands():
     """Issue #30: the packaged skill teaches the two multi-fact commands — that
-    they answer only over a graph admitted by human Promotion of a validated
-    bundle, and that their responses are governed through that local route
-    (never a claim that a validated-but-unpromoted graph is governed)."""
+    they answer only over a graph admitted through Git Review Admission, and
+    that their responses are governed through that project-bound route
+    (never a claim that a validated-but-unadmitted graph is governed)."""
     skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
     for cmd in ("query-metrics", "query-detail"):
         assert f"ariadne {cmd} --file" in skill, cmd
     assert "admitted" in skill and "unadmitted" in skill
-    assert "route: local-promotion" in skill
+    assert "Git Review Admission" in skill
     # the submission boundary names the graph path (the one extra semantic file)
     assert "semantic_layer/graph.yml" in skill
 
 
 def test_skill_teaches_git_proposal_workflow_and_stops_at_human_gates():
-    """Issue #39/G7 (spec 2026-10-02-0009 §6–7): the packaged skill teaches the
-    Git proposal workflow — start/read/edit/validate/review with revisions —
-    keeps the legacy submit/review/promote route documented as legacy, hands
-    import-legacy and ariadne-admit to the human, and never teaches arbitrary
+    """G4 (spec 0027 §§2/6): the packaged skill teaches the Git proposal
+    workflow — start/read/edit/validate/review with revisions — leaves the
+    human gates to the operator, and never teaches arbitrary
     Git branch/shell/file mutation."""
     skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
     for cmd in (
@@ -280,17 +272,17 @@ def test_skill_teaches_git_proposal_workflow_and_stops_at_human_gates():
     ):
         assert cmd in skill, cmd
     assert "--expected-revision" in skill  # revision-checked edits
-    # the human gates: admission and the legacy import are never agent actions
+    # admission is human-only; no legacy importer or staged submit route remains
     assert "ariadne-admit" in skill and "--confirm" in skill
-    assert "import-legacy" in skill
+    assert "Core does not import legacy staged artifacts" in skill
     assert "Never run" in skill and "human-only" in skill.lower()
     # Git operations appear ONLY as named prohibitions, never as instructions
     rules_at = skill.index("## Agent rules")
     assert "never run" in skill[rules_at:].lower() and "git" in skill[rules_at:]
-    # the legacy staged route stays documented as legacy, not primary
-    assert "ariadne-authoring submit --file submission.json" in skill
-    assert "--base-digest" in skill
-    assert "ariadne-promote" in skill
+    # retired public operations are not taught as runnable commands
+    assert "ariadne-authoring submit --file submission.json" not in skill
+    assert "ariadne-promote" not in skill
+    assert "ariadne-authoring enrich-legacy" not in skill
     assert "--toolset" in skill  # split vs combined registrations taught
 
 
@@ -320,13 +312,12 @@ def test_skill_teaches_automatic_mapping_hypothesis_capture():
     assert "not chat memory" in normalized  # restart reads Git/evidence state
 
 
-def test_skill_teaches_context_knowledge_and_explicit_enrichment():
+def test_skill_teaches_context_knowledge_and_typed_page_edits():
     """K6 (issue #46, spec 2026-10-02-0010 §4–§9): the packaged skill teaches
     the context-knowledge workflow — admitted term resolution on the QUERY
     side (aliases/ambiguity/claim status, never join authority), the explicit
     schema refresh with context-only proposals, `--confirm-mapping` as the
-    only confirmation route, and the HUMAN-ONLY explicit legacy-page
-    enrichment with its ambiguity refusal — plus the standing warning that
+    human confirmation route, and typed page edits — plus the standing warning that
     aliases, observations and measurements never authorize joins or replace
     OSI/live audits, and points at the how-to."""
     normalized = " ".join((ASSETS / "SKILL.md").read_text(encoding="utf-8").split())
@@ -340,10 +331,11 @@ def test_skill_teaches_context_knowledge_and_explicit_enrichment():
     # confirmation is the human admission selection only
     assert "--confirm-mapping" in normalized
     assert "never mark anything confirmed" in normalized
-    # the HUMAN-ONLY legacy-page enrichment and its refusal contract
-    assert "ariadne-authoring enrich-legacy" in normalized
+    # durable context changes use typed edits; the retired enrichment operation is absent
+    assert "ariadne-authoring edit --proposal ID" in normalized
+    assert "context_layer/references/context-routing.md" in normalized
+    assert "ariadne-authoring enrich-legacy" not in normalized
     assert "ambiguous" in normalized and "refuses rather than guesses" in normalized
-    assert "--page context_layer/tables/NAME.md" in normalized
     # the standing warning + the how-to pointer
     assert "Aliases, observations and measurements never authorize joins" in normalized
     assert "never authorizes a join" in normalized

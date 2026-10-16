@@ -1,6 +1,5 @@
-"""Shared Proposals: local Git authoring identities plus the compiled ad-hoc
-staging operation (spec 2026-10-02-0009 §2 "Shared Proposals"/§4, ADR-0016,
-plan §2 "Project storage and authority").
+"""Shared Proposals: local Git authoring identities (spec 2026-10-02-0009 §2
+"Shared Proposals"/§4, ADR-0016, plan §2 "Project storage and authority").
 
 Two responsibilities live here so Authoring (:mod:`ariadne.authoring`) and
 Query (:mod:`ariadne.query`) share ONE implementation:
@@ -14,15 +13,7 @@ Query (:mod:`ariadne.query`) share ONE implementation:
   candidate-scope snapshot walker behind exact-final-commit
   validation/review, and the separately stored validation evidence
   (``validation/<id>/<commit>.json`` — operator-owned, never committed) plus
-  the shared pre-write content boundary (bounds + credential classes) the
-  legacy bundle submission also uses;
-- :func:`reserve_ad_hoc`/:func:`stage_reserved_ad_hoc`/:func:`release_reserved`,
-  the compiled ad-hoc staging/label operation (reserve, preflight, write — a
-  refusal releases the claim and stages nothing)
-  moved INTACT out of the Query runtime (issue #34/G2) so Query stages ad-hoc
-  definitions through this shared module without importing Authoring and
-  without touching any Git proposal store (spec §2: staged ad-hoc definitions
-  keep their own legacy staging contract — they never become Git proposals).
+  the shared pre-write content boundary (payload bounds + credential classes);
 
 Git discipline (plan §2): fixed argv through :mod:`subprocess`, never a shell,
 never model-supplied Git commands; IDs, commit revisions and artifact names are
@@ -53,8 +44,7 @@ from pathlib import Path, PurePosixPath
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-# The auto-staged draft page lives in the shared Context module (moved intact).
-from ariadne.context import _build_adhoc_page, _load, core_body_sections
+from ariadne.context import _load, core_body_sections
 from ariadne.ingest import _SECRET_PATTERNS
 from ariadne.sources import _DSN_PASSWORD_RE
 
@@ -73,9 +63,7 @@ _PROPOSAL_ID_RE = re.compile(r"p-[0-9a-f]{14}-[0-9a-f]{6}")
 # Commit revisions cross the API (base/expected/candidate): hex SHAs only.
 _COMMIT_RE = re.compile(r"[0-9a-f]{7,40}")
 
-# One complete artifact edit is bounded exactly like the legacy bundle
-# submission (authoring.MAX_BUNDLE_BYTES); reads arrive in bounded parts the
-# same way the legacy review bodies do (authoring.EVIDENCE_PART_CHARS).
+# Complete artifact edits and revision-specific reads have explicit bounds.
 MAX_ARTIFACT_BYTES = 2 * 1024 * 1024
 READ_PART_CHARS = 20_000
 
@@ -88,7 +76,7 @@ _GENERATED_FILES = frozenset({"index.md", "log.md"})
 
 # Named env-style credential assignments the URL-password rule misses (the
 # value is never echoed; the same-line ``=`` keeps prose that merely MENTIONS
-# the variable from matching). Shared with the legacy bundle submission.
+# the variable from matching). Shared with proposal artifact edits.
 _AWS_ASSIGNMENT_RE = re.compile(
     r"\b(AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN)[ \t]*=[ \t]*\S+"
 )
@@ -367,7 +355,7 @@ def check_artifact_name(name: object, *, what: str) -> str:
     dispatch: a plain POSIX filename that cannot traverse (no '/', '..', NUL),
     be absolute, become a git option (leading '-'), hide a generated name, or
     carry pathspec magic (*, ?, [, :) — a wildcard "name" would match other
-    artifacts at the staging gate. Names are converted to allowed artifact
+    artifacts at the candidate gate. Names are converted to allowed artifact
     paths only by the layer resolvers."""
     if not isinstance(name, str) or not name:
         raise ValueError(f"{what} must be a non-empty string, got {name!r}")
@@ -408,7 +396,7 @@ def refuse_generated(rel: str) -> None:
 
 
 # System-owned trust/lifecycle claim keys (ADR-0007 trust frontmatter the
-# finalize and promotion passes stamp mechanically — verified history,
+# finalize pass stamps mechanically — verified history,
 # generated/stale_after — plus the attestation/approval words of the edit
 # envelope's smuggling rule): an edit may only RETAIN a claim inherited
 # verbatim from the base revision, never introduce, change or remove one
@@ -435,8 +423,7 @@ _SYSTEM_CLAIM_KEYS = frozenset(
 
 
 def check_artifact_content(where: str, content: str) -> None:
-    """The shared pre-write content boundary (the credential/payload half of
-    the legacy ``_check_submission`` family, shared verbatim with it): an
+    """The shared pre-write content boundary for Git proposal edits: an
     over-limit payload, an inline URL credential, a known secret-shape, or a
     named AWS assignment is refused BEFORE anything is written — the matched
     value is never echoed. Invalid/incomplete DRAFT content is allowed: artifact
@@ -518,7 +505,7 @@ def _refuse_forged_claims(rel: str, content: str, base_content: bytes | None) ->
         raise ValueError(
             f"the edit of {rel!r} introduces, changes or removes system-owned trust "
             f"claim(s) {forged} — approval and attestation are stamped by the "
-            "deterministic finalize/promotion passes, and generated schema facts are "
+            "deterministic finalize pass, and generated schema facts are "
             "regenerated by refresh_schema; never authored in a proposal — claims "
             "inherited unchanged from the base revision are allowed, remove the "
             "claim and retry"
@@ -552,7 +539,7 @@ _MODEL_SUFFIXES = (".yml", ".yaml")
 def _assert_scope(rel: str) -> None:
     """Defense in depth behind the layer resolvers: every artifact identity
     that reaches Git must be one of the allowed candidate paths (plan §2
-    candidate scope), explicitly staged — never a directory, never a traversal,
+    candidate scope), explicitly selected as a file — never a directory, never a traversal,
     never a generated artifact."""
     if not _in_user_scope(rel):
         raise ValueError(
@@ -626,7 +613,12 @@ def _in_snapshot(rel: str) -> bool:
         and pure.suffix in _MODEL_SUFFIXES
     ):
         return True
-    return parts[0] == "context_layer" and pure.suffix == ".md"
+    return (parts[0] == "context_layer" and pure.suffix == ".md") or (
+        len(parts) == 2
+        and parts[0] == "answer_examples"
+        and pure.suffix == ".md"
+        and pure.name != "log.md"
+    )
 
 
 def _scope_files(project: Path) -> list[str]:
@@ -634,8 +626,7 @@ def _scope_files(project: Path) -> list[str]:
     human-created initial artifact revision commits exactly these, never an
     unrelated user file and never ``git add .`` (plan §2). The
     system-generated bookkeeping (``index.md``/``log.md``) is EXCLUDED: the
-    finalize pass owns and regenerates it, so a legacy served tree adopting
-    Git imports its pages without stale generated indexes (issue #39/G7)."""
+    finalize pass owns and regenerates it."""
     rels: list[str] = []
     for rel in ("ariadne.yaml", "data/seed_notes.md", "semantic_layer/graph.yml"):
         if (project / rel).is_file():
@@ -655,6 +646,13 @@ def _scope_files(project: Path) -> list[str]:
                 for path in sorted(root.rglob("*.md"))
                 if path.is_file() and path.name not in _GENERATED_FILES
             )
+    examples = project / "answer_examples"
+    if examples.is_dir():
+        rels.extend(
+            path.relative_to(project).as_posix()
+            for path in sorted(examples.glob("*.md"))
+            if path.is_file() and path.name not in _GENERATED_FILES
+        )
     return rels
 
 
@@ -706,25 +704,6 @@ def _create_initial_revision(project: Path) -> str:
             )
         _git(["commit", "--allow-empty", "-m", "ariadne: initial artifact revision"], project)
     return _current_head(project) or ""
-
-
-def create_initial_revision(project: str | Path) -> str:
-    """Public seam for the HUMAN legacy import (issue #39/G7,
-    :mod:`ariadne.migration`): establish the human-created initial artifact
-    revision from the project's CURRENT in-scope files when the repository
-    commits history but no artifact revision yet (the fresh-Git-adoption case
-    whose files were just copied in by the operator's import). The same
-    discipline ``start_proposal`` uses for a repository with no commits: the
-    shared credential boundary BEFORE any staging, explicit allowlisted
-    LITERAL pathspecs (never ``git add .``, tracked even under an old ignore
-    rule), and the state dir recorded in the repo-LOCAL exclude file."""
-    project = Path(project).resolve()
-    _require_repo(project)
-    _refuse_symlinked_component(project, ARIADNE_STATE_DIR)
-    _require_git_identity(project)
-    with _file_lock(project / LOCKS_REL / "project.lock"):
-        _ensure_state_ignored(project)
-        return _create_initial_revision(project)
 
 
 # ------------------------------------------------------- the proposal lifecycle
@@ -1000,6 +979,45 @@ def edit_proposal(
     return {"proposal": proposal, "revision": new_revision, "changed": True, "path": rel}
 
 
+def add_answer_example(
+    project: str | Path, proposal: str, expected_revision: str, example_id: str, content: str
+) -> dict:
+    """Commit one new Example at its generated artifact identity only.
+
+    This narrow seam shares proposal locking, revision checks and exact-path
+    staging with ordinary edits without making ``answer_examples/`` a general
+    authoring file surface. Existing identities are never overwritten.
+    """
+    project = Path(project).resolve()
+    example_id = check_artifact_name(example_id, what="answer example ID")
+    rel = f"answer_examples/{example_id}.md"
+    check_artifact_content(f"answer example {example_id!r}", content)
+    _load_record(project, proposal)
+    worktree = project / WORKTREES_REL / proposal
+    with _file_lock(project / LOCKS_REL / f"{proposal}.lock"):
+        record = _load_record(project, proposal)
+        _check_coherent(project, record)
+        current = record["candidate_revision"]
+        if expected_revision != current:
+            raise ValueError(
+                f"stale revision: proposal {proposal} is at candidate {current}, the "
+                f"save-example expected {expected_revision} — re-read the candidate "
+                "and retry with the current revision; nothing was written"
+            )
+        if _read_blob(project, current, rel) is not None:
+            raise ValueError(f"answer example {example_id!r} already exists in candidate {current}")
+        _require_git_identity(project)
+        _refuse_untracked_new_artifact(project, worktree, rel, current)
+        _safe_write(worktree, rel, content)
+        literal = _literal(rel)
+        _git(["add", "-f", "--", literal], worktree)
+        _git(["commit", "-m", f"ariadne: add answer example {example_id}", "--", literal], worktree)
+        revision = _git(["rev-parse", "HEAD"], worktree).stdout.strip()
+        record["candidate_revision"] = revision
+        _store_record(project, record)
+    return {"proposal": proposal, "revision": revision, "changed": True, "path": rel}
+
+
 # ------------------------------------------- G4 (issue #36): finalize + evidence
 
 # The ONLY paths the deterministic finalize pass may change in a worktree
@@ -1009,7 +1027,8 @@ def edit_proposal(
 _FINALIZE_PATH_RE = re.compile(
     r"^(?:context_layer/metrics/[^/]+\.md"
     r"|context_layer/computations/[^/]+\.md"
-    r"|context_layer(?:/[^/]+)*/index\.md)$"
+    r"|context_layer(?:/[^/]+)*/index\.md"
+    r"|answer_examples/index\.md)$"
 )
 
 
@@ -1143,86 +1162,3 @@ def load_validation(project: Path, proposal: str, revision: str) -> dict | None:
             "not an agent reset"
         )
     return evidence
-
-
-# -------------------------------------------- the shared ad-hoc staging operation
-
-
-def _stage_atomic(directory: Path, stem: str, ext: str, payload: bytes) -> Path:
-    """Auto-stage one proposal artifact after successful execution (ADR-0003:
-    promotion stays human). Numeric suffix on collision — never overwrites
-    (spec §8.11): the O_CREAT|O_EXCL claim is atomic, so racing facade
-    processes suffix off each other instead of overwriting (no
-    exists()-then-write TOCTOU). Same discipline for the model (.yml) and
-    the context page (.md) — spec rev 4 §4. (Moved intact from the Query
-    runtime, issue #34/G2.)"""
-    return _write_claimed(_claim_atomic(directory, stem, ext), payload)
-
-
-def _claim_atomic(directory: Path, stem: str, ext: str) -> Path:
-    """Atomically CLAIM one artifact path (empty file, O_CREAT|O_EXCL,
-    numeric suffix on collision — never overwrites). The claim is the exact
-    receipt a caller may preflight against: until it is written or released,
-    no other writer can take the path, so an exists-then-stage guess that
-    could pick a longer suffixed path after the preflight is impossible
-    (spec 0014 §5, issue #56/S1)."""
-    directory.mkdir(parents=True, exist_ok=True)
-    candidate = directory / f"{stem}{ext}"
-    suffix = 2
-    while True:
-        try:
-            fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        except FileExistsError:
-            candidate = directory / f"{stem}-{suffix}{ext}"
-            suffix += 1
-            continue
-        os.close(fd)
-        return candidate
-
-
-def _write_claimed(candidate: Path, payload: bytes) -> Path:
-    """Write the payload into an ALREADY-claimed path (issue #56/S1): the
-    claim guaranteed the path, so the write cannot collide or drift to a
-    different suffix than the preflighted receipt."""
-    fd = os.open(candidate, os.O_WRONLY)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(payload)
-    return candidate
-
-
-def reserve_ad_hoc(staging_dir: str | Path, name: str) -> tuple[Path, Path]:
-    """RESERVE the complete ad-hoc staging receipt (spec 0014 §5, issue
-    #56/S1): atomically claim the model and page paths with the exact
-    collision suffixes the write would take, so the response's staging
-    receipt can be preflighted against the paths that will actually exist —
-    a safe serialized receipt reservation across valid collision-suffixed
-    paths, never an exists-then-stage guess."""
-    staging_dir = Path(staging_dir)
-    model = _claim_atomic(staging_dir / "semantic_layer" / "models" / "adhoc", name, ".yml")
-    page = _claim_atomic(staging_dir / "context_layer" / "metrics", name, ".md")
-    return model, page
-
-
-def stage_reserved_ad_hoc(
-    reserved: tuple[Path, Path], envelope: dict, params: dict
-) -> tuple[Path, Path]:
-    """Write the compiled payloads into an ALREADY-RESERVED receipt (the
-    claim made the paths exact); identical content and collision behavior
-    to the historical one-shot staging."""
-    model, page = reserved
-    _write_claimed(model, yaml.safe_dump(envelope, sort_keys=False).encode("utf-8"))
-    _write_claimed(page, _build_adhoc_page(params))
-    return model, page
-
-
-def release_reserved(reserved: tuple[Path, Path]) -> None:
-    """Release a reservation an output refusal left behind (spec 0014 §5:
-    a refused output stages NOTHING): only still-empty claims are removed —
-    a payload that was already written keeps the historical non-transactional
-    staging-I/O behavior (not redesigned here)."""
-    for path in reserved:
-        try:
-            if path.stat().st_size == 0:
-                path.unlink()
-        except FileNotFoundError:
-            continue

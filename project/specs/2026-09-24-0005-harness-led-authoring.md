@@ -1,5 +1,7 @@
 # Specification: Harness-led authoring, local and remote
 
+**Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; the owner approved the complete written revision and these scoped amendments with “Schriftliche Fassung freigeben (Recommended)”. Remaining staged submission/Promotion and persistent upload/retained-original operations retire. Existing operator document/source permissions, private external originals, measurement and human Git Admission remain. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved (revision 2)** |
