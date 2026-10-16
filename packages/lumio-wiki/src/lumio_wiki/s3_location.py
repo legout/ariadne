@@ -52,7 +52,7 @@ from lumio_wiki.knowledge_base import (
     _InMemoryKbSource,
     _load_and_validate,
 )
-from lumio_wiki.location import KnowledgeBaseSnapshot
+from lumio_wiki.location import CURRENT_POINTER_OBJECT, MANIFEST_OBJECT, KnowledgeBaseSnapshot
 from lumio_wiki.records import EXTRACTOR_VERSION
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
@@ -64,9 +64,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
 S3_LOCATION_KIND = "s3"
 
 # Object keys (relative to the Location prefix) for the version pointer and the
-# per-version manifest. These are the publication protocol's fixed names.
-CURRENT_POINTER_OBJECT = "current.json"
-MANIFEST_OBJECT = "manifest.json"
+# per-version manifest: the publication protocol's fixed names, owned by
+# ``lumio_wiki.location`` so the local Published Version layout and the S3
+# layout share one source of truth (imported above).
 
 # The derived-artifact subdirectory under an immutable version prefix
 # (``{prefix}/{version}/derived/...``). Holds rebuildable, non-canonical state

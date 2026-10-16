@@ -49,6 +49,12 @@ PUBLISH_TO_ENV_VAR: Final[str] = "LUMIO_PUBLISH_TO"
 #: --source-store`` (issue #161, ADR-0020). Private; never commit it.
 SOURCE_STORE_ENV_VAR: Final[str] = "LUMIO_SOURCE_STORE"
 
+#: Explicit private Source Registry directory for Git-native authoring
+#: (spec 0008 §3.2): the shared registry that authoring worktrees select
+#: explicitly. Private; never commit it and never place it inside the
+#: authoring Knowledge Base subtree.
+SOURCE_REGISTRY_ENV_VAR: Final[str] = "LUMIO_SOURCE_REGISTRY"
+
 #: Source Artifact retention policy (issue #164, ADR-0020): ``required``
 #: blocks publication activation while a referenced non-synthetic source
 #: lacks a verified artifact; the default (unset/``disabled``) preserves the
@@ -87,6 +93,7 @@ ENV_ALLOWLIST: Final[frozenset[str]] = frozenset(
         KB_PATH_ENV_VAR,
         PUBLISH_TO_ENV_VAR,
         SOURCE_STORE_ENV_VAR,
+        SOURCE_REGISTRY_ENV_VAR,
         ARTIFACT_RETENTION_ENV_VAR,
         RETRIEVAL_BACKEND_ENV_VAR,
         RETRIEVAL_MODE_ENV_VAR,

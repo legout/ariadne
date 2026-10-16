@@ -535,6 +535,68 @@ class SourceRegistry:
                 "add a reviewed new version"
             )
 
+    def register_version(
+        self,
+        source_id: str,
+        raw_bytes: bytes,
+        *,
+        filename: str | None = None,
+        content_type: str | None = None,
+    ) -> tuple[SourceVersion, SourceRegistrationAction]:
+        """Append one immutable Source Version under an explicit identity.
+
+        The Git-authoring registration rule (specification 0008 §3.2):
+        registering different bytes extends the identity's explicit immutable
+        history — it never admits knowledge, switches a page's supporting
+        version, or changes lifecycle status (retirement/reactivation intent
+        is reviewed in the Git Source Reference Manifest, not here). Repeated
+        identical registration converges to the already-recorded Source
+        Version instead of appending a duplicate.
+        """
+        _validate_source_id(source_id)
+        version = _source_version(
+            source_id, raw_bytes, filename=filename, content_type=content_type
+        )
+        with mutation_lock(self.root):
+            state = self._reload()
+            source_index = next(
+                (i for i, item in enumerate(state.sources) if item.source_id == source_id),
+                None,
+            )
+            if source_index is None:
+                sources = [
+                    *state.sources,
+                    KnowledgeSource(source_id=source_id, status="active", versions=[version]),
+                ]
+                self._commit(msgspec.structs.replace(state, sources=sources))
+                return version, "registered"
+            source = state.sources[source_index]
+            for existing in source.versions:
+                if existing.content_hash == version.content_hash:
+                    return existing, "reused"
+            sources = list(state.sources)
+            sources[source_index] = msgspec.structs.replace(
+                source, versions=[*source.versions, version]
+            )
+            self._commit(msgspec.structs.replace(state, sources=sources))
+            return version, "registered"
+
+    def find_version(self, source_id: str, content_hash: str) -> SourceVersion | None:
+        """Resolve one EXACT registered Source Version, never registry-latest.
+
+        The Git-authoring lookup rule (specification 0008 §3.2): managed page
+        bindings resolve the exact reviewed content hash. ``None`` means the
+        identity or the exact version is unknown — callers fail closed on
+        that instead of falling back to ``versions[-1]``.
+        """
+        _validate_source_id(source_id)
+        with mutation_lock(self.root):
+            for source in self._reload().sources:
+                if source.source_id != source_id:
+                    continue
+                return next((v for v in source.versions if v.content_hash == content_hash), None)
+        return None
+
     def record_artifact_binding(self, source_id: str, content_hash: str) -> None:
         """Mark one exact Source Version as having a verified artifact (#164).
 

@@ -87,6 +87,7 @@ from lumio_wiki.env_loader import (
     READER_BASE_URL_ENV_VAR,
     RETRIEVAL_BACKEND_ENV_VAR,
     RETRIEVAL_MODE_ENV_VAR,
+    SOURCE_REGISTRY_ENV_VAR,
     SOURCE_STORE_ENV_VAR,
     discover_kb_path_from_project_env,
     discover_nearest_env_file,
@@ -2158,6 +2159,53 @@ def _cmd_hot(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_ingest_git_authoring(
+    args: argparse.Namespace,
+    kb,
+    raw_bytes: bytes,
+    content_type: str | None,
+    source_path: Path,
+    source_id: str,
+    compiled_page: Path,
+) -> int:
+    """Managed ingest into the Git authoring worktree (no proposal, no commit)."""
+    from lumio_wiki.git_authoring import GitAuthoringError, ingest_into_worktree
+
+    registry = _git_source_registry(args)
+    if registry is None:
+        raise CliError(
+            "Git-native managed ingest requires the explicitly selected private "
+            "Source Registry: pass --source-registry <dir> or set "
+            f"{SOURCE_REGISTRY_ENV_VAR}",
+            exit_code=2,
+        )
+    if not compiled_page.is_file():
+        raise CliError(f"compiled-page file not found: {compiled_page}")
+    authored_markdown = compiled_page.read_text(encoding="utf-8")
+    artifact_store = _artifact_store_from_env()
+    try:
+        result = ingest_into_worktree(
+            kb.root,
+            raw_bytes,
+            content_type,
+            source_path.name,
+            source_id,
+            authored_markdown,
+            source_registry=registry,
+            artifact_store=artifact_store,
+        )
+    except (GitAuthoringError, ManagedIngestError, SourceRegistryError) as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    print("Ingested into the Git authoring worktree (nothing committed):")
+    print(f"  page:     {', '.join(result.page_paths)}")
+    print(f"  title:    {result.page_title}")
+    print(f"  entity:   {result.entity_id}")
+    print(f"  source:   {result.source_id} ({result.registration}, {result.content_hash})")
+    print(f"  manifest: {result.manifest_path}")
+    print("Review the changes and commit them with Git; publication admits an exact commit.")
+    return 0
+
+
 def _cmd_index(args: argparse.Namespace) -> int:
     """Print a generated Navigation Index (retrieval-ladder step 1).
 
@@ -2207,6 +2255,34 @@ def _artifact_store_from_env():
         raise CliError(f"cannot open Source Artifact Store at {uri!r}: {exc}") from exc
 
 
+def _git_source_registry(args: argparse.Namespace):
+    """Resolve the explicitly selected private Source Registry, or ``None``.
+
+    Git-native authoring never guesses private state (spec 0008 §3.2): the
+    shared registry comes from ``--source-registry``, the exported process
+    value, or the project ``.env`` allowlist. ``None`` keeps preview honest —
+    managed bindings then surface as a blocking review diagnostic instead of
+    silently resolving through an unrelated default.
+    """
+    from lumio_wiki.source_registry import SourceRegistry
+
+    raw = getattr(args, "source_registry", None)
+    text = (
+        str(raw)
+        if raw
+        else (
+            os.environ.get(SOURCE_REGISTRY_ENV_VAR)
+            or load_project_config().get(SOURCE_REGISTRY_ENV_VAR)
+        )
+    )
+    if not text:
+        return None
+    try:
+        return SourceRegistry(text)
+    except OSError as exc:
+        raise CliError(f"cannot open Source Registry at {text!r}: {exc}") from exc
+
+
 def _artifact_retention_required() -> bool:
     """Whether artifact retention is configured as required (issue #164).
 
@@ -2243,6 +2319,30 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         raise CliError(f"source file not found: {source_path}")
     raw_bytes = source_path.read_bytes()
     content_type = args.content_type or _infer_content_type(source_path)
+
+    # Git-native managed ingest (spec 0008 §7): when the Knowledge Base has
+    # adopted the Source Reference Manifest, the managed host-Distiller route
+    # writes ordinary files and exact bindings into the authoring worktree —
+    # never a proposal. A present-but-invalid manifest is refused here for
+    # every route: the legacy proposal store is never a fallback over it.
+    from lumio_wiki.source_references import (
+        SOURCE_REFERENCE_MANIFEST_BASENAME,
+        SourceReferenceError,
+        load_source_reference_manifest,
+    )
+
+    try:
+        authoring_manifest = load_source_reference_manifest(kb.root)
+    except SourceReferenceError as exc:
+        raise CliError(
+            f"{SOURCE_REFERENCE_MANIFEST_BASENAME} is invalid: {exc}; the legacy "
+            "proposal route is never a fallback over an invalid manifest",
+            exit_code=1,
+        ) from exc
+    if authoring_manifest is not None and compiled_page is not None and source_id is not None:
+        return _cmd_ingest_git_authoring(
+            args, kb, raw_bytes, content_type, source_path, source_id, compiled_page
+        )
 
     ingest_dir = _resolve_ingest_dir(args, kb.root)
     ingest_dir.mkdir(parents=True, exist_ok=True)
@@ -2908,6 +3008,14 @@ def _cmd_proposal_validate(args: argparse.Namespace) -> int:
 
 
 def _cmd_publish(args: argparse.Namespace) -> int:
+    if getattr(args, "revision", None):
+        return _cmd_publish_revision(args)
+    if not getattr(args, "proposal_id", None):
+        raise CliError(
+            "publish requires a proposal id (legacy route) or --revision "
+            "<full-commit-id> (Git-native route)",
+            exit_code=2,
+        )
     _kb, pipeline = _proposal_pipeline(args)
     try:
         published = pipeline.publish(args.proposal_id)
@@ -2942,6 +3050,151 @@ def _cmd_publish(args: argparse.Namespace) -> int:
         print(f"Published proposal {published.id}")
         print(f"  status:         {published.status}")
         print(f"  affected_pages: {', '.join(published.affected_pages) or '(none)'}")
+    return 0
+
+
+def _print_publication_review(review) -> None:
+    """Print the stateless Publication Review (spec 0008 §4.1)."""
+    print(f"Publication Review (validator contract {review.validator_contract})")
+    print(f"  revision:         {review.revision}")
+    print(f"  subtree:          {review.subtree or '(repository root)'}")
+    print(f"  version:          {review.version}")
+    print(f"  namespace:        {review.namespace}")
+    print(f"  fingerprint:      {review.fingerprint}")
+    print(f"  manifest digest:  {review.manifest_digest}")
+    print(f"  destination:      {review.destination}")
+    print(f"  expected current: {review.expected_current}")
+    print(f"  observed current: {review.observed_current or '(none)'}")
+    print(f"  adoption:         {review.adoption}")
+    print(f"  retention:        {review.retention}")
+    if review.source_refs:
+        print(f"  source refs:      {', '.join(review.source_refs)}")
+    if review.bindings:
+        print("  bindings:")
+        for binding in review.bindings:
+            print(f"    {binding}")
+    if review.source_impact:
+        print("  source impact:")
+        for item in review.source_impact:
+            where = f" ({item.entity_id})" if item.entity_id else ""
+            print(f"    {item.source_id}{where}: {item.change} [{item.support}]")
+    if review.page_mutations:
+        print("  page mutations:")
+        for mutation in review.page_mutations:
+            print(f"    {mutation}")
+    if review.public_only_sources:
+        print(f"  public-only sources (unmanaged): {', '.join(review.public_only_sources)}")
+    print(f"  derived artifacts: {', '.join(review.requested_artifacts)}")
+    if review.blocking_diagnostics:
+        print("  BLOCKING diagnostics:")
+        for diagnostic in review.blocking_diagnostics:
+            print(f"    {diagnostic}")
+
+
+def _cmd_publish_revision(args: argparse.Namespace) -> int:
+    """Preview (default) or explicitly confirm one exact Git revision."""
+    from lumio_wiki.git_authoring import (
+        GitAuthoringError,
+        preview_publication,
+        publish_revision,
+    )
+
+    if not getattr(args, "to", None):
+        raise CliError("--to <local-destination> is required with --revision", exit_code=2)
+    if _is_object_store_uri(args.to):
+        raise CliError(
+            "the Git route publishes to a LOCAL destination directory; S3 "
+            "destinations belong to the S3 publication capability",
+            exit_code=2,
+        )
+    if not getattr(args, "expected_current", None):
+        raise CliError(
+            "--expected-current <published-version-or-none> is required: name "
+            "the active Published Version explicitly, or 'none' when nothing "
+            "has been admitted at the destination yet",
+            exit_code=2,
+        )
+    registry = _git_source_registry(args)
+    retention_required = _artifact_retention_required()
+    artifact_store = _artifact_store_from_env() if retention_required else None
+    try:
+        review = preview_publication(
+            args.path,
+            args.revision,
+            args.to,
+            args.expected_current,
+            source_registry=registry,
+            artifact_store=artifact_store,
+            retention_required=retention_required,
+        )
+    except GitAuthoringError as exc:
+        raise CliError(f"publication review failed: {exc}", exit_code=1) from exc
+    if not getattr(args, "confirm", None):
+        if getattr(args, "json", False):
+            print(json.dumps(json.loads(msgspec.json.encode(review)), indent=2))
+        else:
+            _print_publication_review(review)
+        print()
+        print(f"Review digest: {review.review_digest}")
+        print(
+            "Reading this review does not authorize publication; authorize the "
+            "displayed state explicitly with --confirm " + review.review_digest
+        )
+        return 0
+    try:
+        receipt = publish_revision(
+            args.path,
+            args.revision,
+            args.to,
+            args.expected_current,
+            args.confirm,
+            source_registry=registry,
+            artifact_store=artifact_store,
+            retention_required=retention_required,
+        )
+    except GitAuthoringError as exc:
+        raise CliError(f"publication refused: {exc}", exit_code=1) from exc
+    if getattr(args, "json", False):
+        print(json.dumps(json.loads(msgspec.json.encode(receipt)), indent=2))
+    else:
+        print(f"Admitted Published Version {receipt.version}")
+        print(f"  revision:       {receipt.revision}")
+        print(f"  fingerprint:    {receipt.fingerprint}")
+        print(f"  manifest digest: {receipt.manifest_digest}")
+        print(f"  destination:    {receipt.destination}")
+        print(f"  review digest:  {receipt.review_digest}")
+        print(f"  activated:      {receipt.activated}")
+    return 0
+
+
+def _cmd_rollback(args: argparse.Namespace) -> int:
+    """Expected-current activation of a complete local Published Version."""
+    from lumio_wiki.git_authoring import GitAuthoringError, rollback_publication
+
+    retention_required = _artifact_retention_required()
+    artifact_store = None
+    if retention_required:
+        artifact_store = _artifact_store_from_env()
+        if artifact_store is None:
+            raise CliError(
+                "artifact retention is required ("
+                f"{ARTIFACT_RETENTION_ENV_VAR}=required) but no Source Artifact "
+                f"Store is configured ({SOURCE_STORE_ENV_VAR}); refusing to "
+                "activate ungated",
+                exit_code=1,
+            )
+    try:
+        manifest = rollback_publication(
+            args.destination,
+            args.version,
+            getattr(args, "expected_current", None),
+            artifact_store=artifact_store,
+            retention_required=retention_required,
+        )
+    except GitAuthoringError as exc:
+        raise CliError(f"rollback refused: {exc}", exit_code=1) from exc
+    print(f"Rolled back to Published Version {manifest.version}")
+    print(f"  fingerprint: {manifest.fingerprint}")
     return 0
 
 
@@ -5637,6 +5890,17 @@ def build_parser() -> argparse.ArgumentParser:
             "ASCII label). Required together with --compiled-page."
         ),
     )
+    ingest_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Git-native managed ingest: explicitly selected private Source "
+            f"Registry directory (fallback: {SOURCE_REGISTRY_ENV_VAR}). "
+            "Required when the Knowledge Base carries a Source Reference "
+            "Manifest."
+        ),
+    )
     _add_ingest_dir_argument(ingest_parser)
     ingest_parser.set_defaults(func=_cmd_ingest)
 
@@ -5960,11 +6224,67 @@ def build_parser() -> argparse.ArgumentParser:
     # publish
     publish_parser = subparsers.add_parser(
         "publish",
-        help="Publish a reviewable proposal to the Knowledge Base.",
-        description="Apply a proposal's pages to the KB root and mark it terminal.",
+        help="Publish a proposal or an exact Git revision to the Knowledge Base.",
+        description=(
+            "Apply a proposal's pages to the KB root (legacy route), or — "
+            "Git-native authoring (spec 0008) — preview and explicitly confirm "
+            "one exact Git revision as an immutable local Published Version. "
+            "--revision selects the Git route; a proposal id selects the "
+            "legacy route."
+        ),
     )
     _add_kb_argument(publish_parser)
-    publish_parser.add_argument("proposal_id", type=str, help="Proposal id to publish.")
+    publish_parser.add_argument(
+        "proposal_id",
+        type=str,
+        nargs="?",
+        default=None,
+        help="Proposal id to publish (legacy route).",
+    )
+    publish_parser.add_argument(
+        "--revision",
+        type=str,
+        default=None,
+        help=(
+            "Git-native route: FULL commit id (40 hex characters) of the "
+            "reviewed Authoring Revision. Branch names and abbreviations "
+            "cannot be confirmed."
+        ),
+    )
+    publish_parser.add_argument(
+        "--to",
+        type=str,
+        default=None,
+        help="Git-native route: local publication destination directory.",
+    )
+    publish_parser.add_argument(
+        "--expected-current",
+        type=str,
+        default=None,
+        help=(
+            "Git-native route: the active Published Version expected before "
+            "activation (compare-and-swap guard), or 'none' when nothing has "
+            "been admitted at the destination yet."
+        ),
+    )
+    publish_parser.add_argument(
+        "--confirm",
+        type=str,
+        default=None,
+        help=(
+            "Git-native route: the review digest of the explicit authorization. "
+            "Without it the command produces the stateless preview only."
+        ),
+    )
+    publish_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Git-native route: explicitly selected private Source Registry "
+            f"directory (fallback: {SOURCE_REGISTRY_ENV_VAR})."
+        ),
+    )
     publish_parser.add_argument(
         "--json", action="store_true", help="Emit a stable machine-readable mutation result."
     )
@@ -6056,6 +6376,39 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     rollback_s3_parser.set_defaults(func=_cmd_rollback_s3)
+
+    # rollback (Git-native local publication, spec 0008 §5)
+    rollback_parser = subparsers.add_parser(
+        "rollback",
+        help="Activate a complete local Published Version (Git authoring).",
+        description=(
+            "Explicitly review and expected-current-activate an already "
+            "complete immutable local Published Version (Git-native "
+            "publication). The target is validated complete and never rebuilt "
+            "or overwritten; a stale rollback fails closed."
+        ),
+    )
+    rollback_parser.add_argument(
+        "destination",
+        type=str,
+        help="Local publication destination directory.",
+    )
+    rollback_parser.add_argument(
+        "--version",
+        required=True,
+        type=str,
+        help="The complete immutable Published Version (commit id) to activate.",
+    )
+    rollback_parser.add_argument(
+        "--expected-current",
+        default=None,
+        type=str,
+        help=(
+            "Active version expected before rolling back (compare-and-swap "
+            "guard); omit to CAS against the currently observed pointer."
+        ),
+    )
+    rollback_parser.set_defaults(func=_cmd_rollback)
 
     # cleanup-s3 (issue #163, ADR-0019: report-only)
     cleanup_s3_parser = subparsers.add_parser(
