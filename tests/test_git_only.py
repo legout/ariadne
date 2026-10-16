@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 
+import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
 
 from ariadne import admission
@@ -706,3 +707,190 @@ def test_public_routes_refuse_legacy_and_pin_admitted_git(tmp_path, capsys, monk
     assert not (fresh / ".ariadne" / "source-approvals.json").exists()
     assert not (fresh / ".ariadne" / "current.json").exists()
     assert not list((fresh / ".ariadne" / "proposals").glob("*.json"))
+
+
+def test_deferred_server_resolves_first_admission(tmp_path, capsys, monkeypatch):
+    from ariadne import serve
+
+    project = complete_bundle_project(tmp_path)
+    authoring = AuthoringProject(project)
+    build_app = serve.build_app
+    facades = []
+
+    class CapturedApp:
+        def __init__(self, facade, **kwargs):
+            facades.append(facade)
+            self.app = build_app(facade, **kwargs)
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr(serve, "build_app", CapturedApp)
+    monkeypatch.chdir(project.parent)
+
+    import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("pre-admission server discovery must not connect to sources")
+
+    with monkeypatch.context() as source_guard:
+        source_guard.setattr(duckdb, "connect", forbidden)
+        assert serve.main(["--project", str(project), "--toolset", "analyst"]) == 0
+        before = asyncio.run(facades[0].discover("event"))
+        assert before["groups"]["metrics"]["status"] == "unavailable"
+        with pytest.raises(ValueError, match="admission"):
+            asyncio.run(facades[0].get_metric("event_count"))
+        assert facades[0]._runtime is None
+    capsys.readouterr()
+    (facade,) = facades
+
+    first_review = _validated_ready(
+        authoring, project, _policy_edit("The first admitted server rule.")
+    )
+    assert admit(project, first_review) == 0
+    capsys.readouterr()
+    first = asyncio.run(facade.get_metric("event_count"))
+    assert first["rows"] == [{"event_count": 3}]
+    assert first["admission"]["revision"] == first_review["revision"]
+    assert "The first admitted server rule." in "".join(first["context"]["policies"])
+
+    second_review = _validated_ready(
+        authoring, project, _policy_edit("The second admitted server rule.")
+    )
+    assert admit(project, second_review) == 0
+    capsys.readouterr()
+    pinned = asyncio.run(facade.get_metric("event_count"))
+    assert pinned["admission"]["revision"] == first_review["revision"]
+    assert "The first admitted server rule." in "".join(pinned["context"]["policies"])
+    assert "The second admitted server rule." not in "".join(pinned["context"]["policies"])
+    runtime = facade._runtime
+    assert runtime is not None
+    runtime.con.close()
+
+
+def test_admitted_example_search_refuses_snapshot_drift(tmp_path, capsys):
+    from ariadne.discovery import DiscoveryRuntime
+
+    project = complete_bundle_project(tmp_path)
+    authoring = AuthoringProject(project)
+    initial = _validated_ready(authoring, project, _policy_edit("The G2 example rule."))
+    assert admit(project, initial) == 0
+    capsys.readouterr()
+
+    runtime = QueryRuntime.open_project(project)
+    submission = {
+        "question": "How many events are present?",
+        "interpretation": "Count every admitted event row.",
+        "method": {"operation": "get_metric", "arguments": {"name": "event_count"}},
+        "result": {
+            "metric": "event_count",
+            "sql": "SELECT COUNT(id) AS event_count FROM events.events",
+            "columns": ["event_count"],
+            "rows": [{"event_count": 3}],
+            "governed": True,
+        },
+        "submitter": "Ariadne Tests",
+        "attestation": "I confirmed this against the observed event_count result.",
+        "sources": [
+            "context_layer/metrics/event_count.md",
+            "context_layer/policies/all-events-count.md",
+        ],
+    }
+    saved = asyncio.run(runtime.save_example(submission))
+    runtime.con.close()
+    validation = authoring.validate_proposal(saved["proposal"], saved["candidate_revision"])
+    assert validation["ok"] is True
+    review = authoring.review_proposal(saved["proposal"])
+    assert admit(project, review) == 0
+    capsys.readouterr()
+
+    discovery = DiscoveryRuntime.open_project(project)
+    hits = asyncio.run(discovery.search_examples("event count"))
+    assert len(hits) == 1 and hits[0]["status"] == "stable"
+    _, snapshot = admission.resolve_admission(project)
+    example_path = snapshot / saved["path"]
+    admitted_bytes = example_path.read_bytes()
+    example_path.write_bytes(admitted_bytes + b"\n# snapshot drift\n")
+    with pytest.raises(ValueError, match="pinned snapshot changed"):
+        asyncio.run(discovery.search_examples("event count"))
+
+
+def test_ingested_original_digest_mismatch_blocks_validation(tmp_path):
+    project = complete_bundle_project(tmp_path)
+    authoring = AuthoringProject(project)
+    original = "# External source A\n\nOriginal body.\n"
+    changed = "# External source B\n\nChanged body.\n"
+    document = project / "data" / "docs" / "notes.md"
+    document.write_text(original, encoding="utf-8")
+    started = authoring.start_proposal()
+    approved(authoring, project, started)
+    ingested = ingest(
+        ["notes.md"],
+        project=project,
+        proposal=started["proposal"],
+        expected_revision=started["candidate_revision"],
+        verbatim=True,
+    )
+    assert ingested["errors"] == []
+    page = authoring.read_artifact(
+        started["proposal"], {"kind": "page", "section": "references", "name": "notes"}
+    )
+    source_id = yaml.safe_load(page["content"].split("---", 2)[1])["sources"][0]["id"]
+    original_digest = hashlib.sha256(original.encode()).hexdigest()
+    changed_digest = hashlib.sha256(changed.encode()).hexdigest()
+    assert original_digest != changed_digest and source_id == original_digest[:12]
+
+    document.write_text(changed, encoding="utf-8")
+    first = authoring.validate_proposal(started["proposal"], ingested["candidate_revision"])
+    assert first["ok"] is False
+    mismatch = "\n".join(first["errors"])
+    assert "recorded document digest binding" in mismatch
+    assert original_digest[:12] in mismatch and changed_digest[:12] in mismatch
+
+    retried = authoring.validate_proposal(started["proposal"], first["revision"])
+    assert retried["ok"] is False
+    assert any("recorded document digest binding" in error for error in retried["errors"])
+
+
+def test_ingest_reports_postcommit_record_failure(tmp_path, monkeypatch):
+    from ariadne import proposals
+
+    project = complete_bundle_project(tmp_path)
+    authoring = AuthoringProject(project)
+    source = project / "data" / "docs" / "notes.md"
+    source.write_text("# Postcommit source\n\nKeep this committed body.\n", encoding="utf-8")
+    started = authoring.start_proposal()
+    approved(authoring, project, started)
+
+    def fail_store(*args, **kwargs):
+        raise OSError("simulated record-store failure")
+
+    monkeypatch.setattr(proposals, "_store_record", fail_store)
+    result = ingest(
+        ["notes.md"],
+        project=project,
+        proposal=started["proposal"],
+        expected_revision=started["candidate_revision"],
+        verbatim=True,
+    )
+
+    path = "context_layer/references/notes.md"
+    head = branch_of(project, started["proposal"])
+    stored = proposals._load_record(project, started["proposal"])
+    assert result["candidate_revision"] == head
+    assert head != started["candidate_revision"] == stored["candidate_revision"]
+    assert result["written"] == [path] and result["unchanged"] == []
+    error = "\n".join(result["errors"])
+    assert "simulated record-store failure" in error
+    assert f"branch HEAD {head}" in error
+    assert f"recorded candidate {stored['candidate_revision']}" in error
+    assert "proposal state is incoherent" in error
+    assert "Keep this committed body." in run_git(project, "show", f"{head}:{path}")
+
+    with pytest.raises(ValueError, match="branch is at"):
+        authoring.edit_proposal(
+            started["proposal"],
+            started["candidate_revision"],
+            _policy_edit("A later mutation must remain blocked."),
+        )
+    assert proposals._load_record(project, started["proposal"]) == stored

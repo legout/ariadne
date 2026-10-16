@@ -19,8 +19,7 @@ from tests.test_context_admission import admitted_candidate  # noqa: E402
 from tests.test_git_authoring import complete_bundle_project  # noqa: E402
 
 
-@pytest.fixture
-def source_free(monkeypatch):
+def _source_free_guards(monkeypatch):
     import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
     import ariadne.execution as execution
@@ -43,16 +42,19 @@ def source_free(monkeypatch):
 
 
 def test_discovery_refuses_unadmitted_roots_and_ignores_mutable_candidates(
-    tmp_path, capsys, source_free
+    tmp_path, capsys, monkeypatch
 ):
     project = complete_bundle_project(tmp_path)
     candidate = project / "staging" / "context_layer"
     candidate.mkdir(parents=True)
-    (candidate / "unadmitted.md").write_text("# NeedleQuartz unadmitted\n", encoding="utf-8")
-    (project / "context_layer").mkdir()
-    (project / "context_layer" / "mutable-root.md").write_text(
-        "# NeedleQuartz mutable root\n", encoding="utf-8"
-    )
+    unadmitted = candidate / "unadmitted.md"
+    unadmitted.write_text("# NeedleQuartz unadmitted\n", encoding="utf-8")
+    (project / "context_layer").mkdir(exist_ok=True)
+    mutable_root = project / "context_layer" / "mutable-root.md"
+    mutable_root.write_text("# NeedleQuartz mutable root\n", encoding="utf-8")
+    unadmitted_bytes = unadmitted.read_bytes()
+    mutable_bytes = mutable_root.read_bytes()
+    _source_free_guards(monkeypatch)
 
     discovery = DiscoveryRuntime.open_project(project)
     report = asyncio.run(discovery.discover("NeedleQuartz"))
@@ -68,9 +70,8 @@ def test_discovery_refuses_unadmitted_roots_and_ignores_mutable_candidates(
     assert cli(["search", "NeedleQuartz", "--json", "--project", str(project)]) == 0
     groups = json.loads(capsys.readouterr().out)["groups"]
     assert groups["pages"]["items"] == []
-    assert not any(
-        path.name in {"staging", "mutable-root.md"} for path in project.rglob("*") if path.is_file()
-    )
+    assert unadmitted.read_bytes() == unadmitted_bytes
+    assert mutable_root.read_bytes() == mutable_bytes
     with pytest.raises(TypeError, match="DiscoveryRuntime.open_project"):
         DiscoveryRuntime.__new__(
             DiscoveryRuntime, project / "semantic_layer", project / "context_layer", None
@@ -78,7 +79,7 @@ def test_discovery_refuses_unadmitted_roots_and_ignores_mutable_candidates(
 
 
 def test_admitted_context_only_discovery_pins_snapshot_and_never_reads_sources(
-    tmp_path, capsys, source_free, monkeypatch
+    tmp_path, capsys, monkeypatch
 ):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
@@ -94,6 +95,7 @@ def test_admitted_context_only_discovery_pins_snapshot_and_never_reads_sources(
     staging.mkdir(parents=True)
     (staging / "draft.md").write_text("# Order number staged draft\n")
     (project / "data" / "orders.parquet").unlink()
+    _source_free_guards(monkeypatch)
 
     runtime = DiscoveryRuntime.open_project(project)
     native = asyncio.run(runtime.resolve_term("order number"))
@@ -115,13 +117,12 @@ def test_admitted_context_only_discovery_pins_snapshot_and_never_reads_sources(
     assert not failure.out and "snapshot" in failure.err
 
 
-def test_mcp_discovery_starts_source_free_for_every_registration(
-    tmp_path, source_free, monkeypatch
-):
+def test_mcp_discovery_starts_source_free_for_every_registration(tmp_path, monkeypatch):
     from ariadne import serve
 
     project = complete_bundle_project(tmp_path)
     monkeypatch.chdir(project)
+    _source_free_guards(monkeypatch)
     build_app = serve.build_app
     observed = []
 

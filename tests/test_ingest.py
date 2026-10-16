@@ -678,15 +678,28 @@ def test_model_stamp_uses_env_loaded_by_the_first_call(tmp_path, monkeypatch):
     assert front_of(case.pages(result)[0])["generated"]["by"] == "ariadne-ingest:late-model"
 
 
-# --- (f) init scaffolds data/docs/ --------------------------------------------
+# --- (f) init scaffolds operator inputs, not a document upload store -----------
 
 
-def test_init_scaffolds_data_docs(tmp_path):
+def test_init_keeps_private_document_inputs_operator_managed(tmp_path):
     target = tmp_path / "proj"
     assert init_main([str(target)]) == 0
-    assert (target / "data" / "docs").is_dir()
-    assert init_main([str(target)]) == 0  # idempotent re-run still succeeds
-    assert (target / "data" / "docs").is_dir()
+    seed_notes = target / "data" / "seed_notes.md"
+    docs = target / "data" / "docs"
+    assert seed_notes.is_file() and not docs.exists()
+    inert_files = ("ariadne.yaml", "AGENTS.md", ".env.example", ".gitignore")
+    assert all((target / path).is_file() for path in inert_files)
+
+    seed_notes.write_text("# Operator-maintained seed notes\n", encoding="utf-8")
+    private = docs / "contract.md"
+    private.parent.mkdir(parents=True)
+    private.write_text("# Operator-owned original\n", encoding="utf-8")
+    seed_bytes = seed_notes.read_bytes()
+    private_bytes = private.read_bytes()
+
+    assert init_main([str(target)]) == 0  # idempotent re-run never overwrites inputs
+    assert seed_notes.read_bytes() == seed_bytes
+    assert private.read_bytes() == private_bytes
 
 
 # --- (g) converter dispatch table + real conversions behind importorskip ------

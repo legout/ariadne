@@ -569,6 +569,55 @@ def _proposal_state(project: Path, proposal: str, expected_revision: str):
     return record, current
 
 
+def _observe_failed_edit(
+    project: Path, proposal: str, previous_revision: str, artifact_path: str, content: str
+) -> tuple[str | None, bool, str]:
+    """Report branch/record state after an edit call fails, without repairing it."""
+    from ariadne import proposals
+
+    worktree = project / proposals.WORKTREES_REL / proposal
+    try:
+        result = proposals._git(["rev-parse", "HEAD"], worktree, check=False)
+        head = result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        head = None
+    try:
+        record_revision = proposals._load_record(project, proposal).get("candidate_revision")
+    except Exception:
+        record_revision = None
+
+    wrote = False
+    if head and head != previous_revision:
+        try:
+            expected = content.encode("utf-8")
+            wrote = (
+                proposals._read_blob(project, head, artifact_path) == expected
+                and proposals._read_blob(project, previous_revision, artifact_path) != expected
+            )
+        except Exception:
+            wrote = False
+
+    if not head:
+        return (
+            None,
+            wrote,
+            f"proposal state after failure: branch HEAD unavailable; recorded candidate "
+            f"{record_revision or 'unavailable'}; committed residue is unknown, not rolled back",
+        )
+    if not record_revision:
+        state = "recorded candidate unavailable; proposal state is incoherent"
+    elif head != record_revision:
+        state = f"recorded candidate {record_revision}; proposal state is incoherent"
+    else:
+        state = f"recorded candidate {record_revision}; branch and record agree"
+    residue = (
+        f"; committed artifact {artifact_path} is present at branch HEAD"
+        if wrote
+        else "; attempted artifact content was not independently confirmed; no rollback is claimed"
+    )
+    return head, wrote, f"proposal state after failure: branch HEAD {head}; {state}{residue}"
+
+
 def _context_pages(project: Path, revision: str) -> dict[str, str]:
     from ariadne import proposals
 
@@ -630,6 +679,7 @@ def ingest(
     unchanged: list[str] = []
     errors: list[str] = []
     mutation_failed = False
+    reported_revision: str | None = current_revision
 
     for reference in docs:
         pages, doc_errors, _converted = _document_pages(
@@ -646,12 +696,20 @@ def ingest(
                     root, proposal, current_revision, rel, content, core_generated=True
                 )
             except Exception as exc:
+                observed_revision, observed_write, state = _observe_failed_edit(
+                    root, proposal, current_revision, rel, content
+                )
+                if observed_write and rel not in written:
+                    written.append(rel)
+                reported_revision = observed_revision
                 errors.append(
-                    f"{reference}: candidate edit failed: {_redact_credential_matches(str(exc))}"
+                    f"{reference}: candidate edit failed: "
+                    f"{_redact_credential_matches(str(exc))}; {state}"
                 )
                 mutation_failed = True
                 break
             current_revision = result["revision"]
+            reported_revision = current_revision
             candidate_pages[rel] = content
             target = written if result["changed"] else unchanged
             if rel not in target:
@@ -659,15 +717,19 @@ def ingest(
         if mutation_failed:
             break
 
-    try:
-        current_revision = proposals._load_record(root, proposal)["candidate_revision"]
-    except Exception as exc:
-        if not errors:
-            errors.append(f"candidate revision is unavailable after ingest: {type(exc).__name__}")
+    if not mutation_failed:
+        try:
+            current_revision = proposals._load_record(root, proposal)["candidate_revision"]
+            reported_revision = current_revision
+        except Exception as exc:
+            if not errors:
+                errors.append(
+                    f"candidate revision is unavailable after ingest: {type(exc).__name__}"
+                )
     return {
         "proposal": proposal,
         "base_revision": base_revision,
-        "candidate_revision": current_revision,
+        "candidate_revision": reported_revision,
         "written": written,
         "unchanged": unchanged,
         "errors": errors,
@@ -964,7 +1026,7 @@ def _reconcile_one(
     candidate_pages: dict[str, str],
     complete,
     now: str,
-) -> tuple[str, list[str], list[str], list[str], list[Reconciliation], bool]:
+) -> tuple[str | None, list[str], list[str], list[str], list[Reconciliation], bool]:
     """Compare one source with the admitted base, preflight its paths, then edit Git."""
     pages, errors, converted = _document_pages(
         reference, project, complete=complete, now=now, verbatim=False
@@ -1069,18 +1131,28 @@ def _reconcile_one(
     written: list[str] = []
     unchanged = preflight_unchanged
     mutation_failed = False
+    reported_revision: str | None = current_revision
     for record, artifact_path, page_text in plans:
         try:
             result = proposals.edit_proposal(
                 project, proposal, current_revision, artifact_path, page_text, core_generated=True
             )
         except Exception as exc:
+            observed_revision, observed_write, state = _observe_failed_edit(
+                project, proposal, current_revision, artifact_path, page_text
+            )
+            if observed_write:
+                record.candidate_path = artifact_path
+                if artifact_path not in written:
+                    written.append(artifact_path)
+            reported_revision = observed_revision
             doc_errors.append(
-                f"{shown}: candidate edit failed: {_redact_credential_matches(str(exc))}"
+                f"{shown}: candidate edit failed: {_redact_credential_matches(str(exc))}; {state}"
             )
             mutation_failed = True
             break
         current_revision = result["revision"]
+        reported_revision = current_revision
         candidate_pages[artifact_path] = page_text
         record.candidate_path = artifact_path
         target = written if result["changed"] else unchanged
@@ -1097,7 +1169,7 @@ def _reconcile_one(
             filename=Path(str(reference)).name,
             complete=complete,
         )
-    return current_revision, written, unchanged, doc_errors, comparisons, mutation_failed
+    return reported_revision, written, unchanged, doc_errors, comparisons, mutation_failed
 
 
 def reconcile_ingest(
@@ -1126,10 +1198,12 @@ def reconcile_ingest(
     unchanged: list[str] = []
     errors: list[str] = []
     comparisons: list[Reconciliation] = []
+    mutation_failed = False
+    reported_revision: str | None = current_revision
 
     for reference in docs:
         (
-            current_revision,
+            next_revision,
             doc_written,
             doc_unchanged,
             doc_errors,
@@ -1150,19 +1224,31 @@ def reconcile_ingest(
         errors.extend(doc_errors)
         comparisons.extend(doc_comparisons)
         if mutation_failed:
+            reported_revision = next_revision
             break
-
-    try:
-        current_revision = proposals._load_record(root, proposal)["candidate_revision"]
-    except Exception as exc:
-        if not errors:
+        if next_revision is None:
+            reported_revision = None
+            mutation_failed = True
             errors.append(
-                f"candidate revision is unavailable after reconciliation: {type(exc).__name__}"
+                "candidate revision unavailable after reconciliation; no further edits attempted"
             )
+            break
+        current_revision = next_revision
+        reported_revision = current_revision
+
+    if not mutation_failed:
+        try:
+            current_revision = proposals._load_record(root, proposal)["candidate_revision"]
+            reported_revision = current_revision
+        except Exception as exc:
+            if not errors:
+                errors.append(
+                    f"candidate revision is unavailable after reconciliation: {type(exc).__name__}"
+                )
     result = {
         "proposal": proposal,
         "base_revision": base_revision,
-        "candidate_revision": current_revision,
+        "candidate_revision": reported_revision,
         "written": written,
         "unchanged": unchanged,
         "errors": errors,

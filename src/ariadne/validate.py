@@ -94,7 +94,7 @@ _ADR_TOLERANCE = 1e-9
 # 4: the K4 applicability contract (issue #44, spec 0010 §9) — semantic
 # checks carry explicit not_applicable outcomes with reasons on a
 # context-only candidate.
-VALIDATOR_VERSION = "ariadne-validate/5"
+VALIDATOR_VERSION = "ariadne-validate/6"
 
 
 def validator_identity(performed_checks: list[str] | tuple[str, ...]) -> dict:

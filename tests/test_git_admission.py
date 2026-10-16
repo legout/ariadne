@@ -927,8 +927,13 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
     assert second["proposal"] == saved["proposal"]
     assert second["candidate_revision"] != saved["candidate_revision"]
 
-    # The removed selector refuses explicitly rather than silently writing elsewhere.
+    # The removed selector is rejected by argument parsing before any writes.
     explicit = tmp_path / "explicit-staging"
+    refs_before = run_git(
+        project, "for-each-ref", "--format=%(refname)=%(objectname)", "refs/heads"
+    ).splitlines()
+    branch_before = branch_of(project, saved["proposal"])
+    status_before = run_git(project, "status", "--porcelain", "--untracked-files=all")
     assert (
         cli(
             ["save-example", "--project", str(project), "--staging", str(explicit)],
@@ -936,8 +941,17 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
         )
         == 1
     )
-    assert "does not select Git Examples" in json.loads(capsys.readouterr().err)["error"]["message"]
+    refusal = json.loads(capsys.readouterr().err)["error"]["message"]
+    assert "unrecognized arguments" in refusal and "--staging" in refusal
     assert not explicit.exists() and not (operator_desk / "staging").exists()
+    assert (
+        run_git(
+            project, "for-each-ref", "--format=%(refname)=%(objectname)", "refs/heads"
+        ).splitlines()
+        == refs_before
+    )
+    assert branch_of(project, saved["proposal"]) == branch_before
+    assert run_git(project, "status", "--porcelain", "--untracked-files=all") == status_before
 
 
 # ------------- [7] review fix pass: bound baselines and pinned serving

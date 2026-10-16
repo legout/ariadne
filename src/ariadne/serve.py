@@ -1371,14 +1371,17 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     def _new_runtime(budget: DeadlineBudget | None = None) -> _QueryRuntimeSession:
+        discovery = (
+            cast(DeferredQueryRuntime, facade).discovery
+            if isinstance(facade, DeferredQueryRuntime)
+            else None
+        )
+        if discovery is not None and discovery._managed is None:
+            discovery = None
         runtime = QueryRuntime.open_project(
             project,
             deadline_budget=budget,
-            discovery=(
-                cast(DeferredQueryRuntime, facade).discovery
-                if isinstance(facade, DeferredQueryRuntime)
-                else None
-            ),
+            discovery=discovery,
         )
         # The MCP response measure belongs to the transport adapter, not core.
         if not _mcp_sdk_absent():
@@ -1414,7 +1417,7 @@ def main(argv: list[str] | None = None) -> int:
 
             if _DATUS_IMPORT_ERROR is not None:
                 raise RuntimeError(f"{INSTALL_HINT}: {_DATUS_IMPORT_ERROR}")
-            facade = DeferredQueryRuntime(_deferred_runtime, _new_discovery())
+            facade = DeferredQueryRuntime(_deferred_runtime, _new_discovery)
         except Exception as exc:  # keep Combined's Authoring surface available
             if args.toolset != "combined" or _mcp_sdk_absent():
                 print(f"error: {exc}", file=sys.stderr)

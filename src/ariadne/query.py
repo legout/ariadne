@@ -1064,7 +1064,10 @@ class DeferredQueryRuntime:
     @property
     def discovery(self) -> _DiscoverySession:
         if callable(self._discovery):
-            self._discovery = self._discovery()
+            discovery = self._discovery()
+            if discovery._managed is not None:
+                self._discovery = discovery
+            return discovery
         return self._discovery
 
     @property

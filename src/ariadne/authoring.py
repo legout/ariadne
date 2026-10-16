@@ -109,11 +109,21 @@ _LAYER_EDITORS = {
 EDIT_KINDS = tuple(sorted(_LAYER_EDITORS))
 
 
-def _citation_record(reference: str, project: Path) -> dict:
-    """Verify one external document citation from the current byte snapshot."""
+def _citation_record(
+    reference: str, project: Path, source_id: str | None = None
+) -> tuple[dict, str | None]:
+    """Observe one permitted document and check any native digest-prefix binding."""
     resource, title, data = _document_bytes(reference, project)
     _convert_snapshot(data, Path(title).suffix, display=title)
-    return {"resource": resource, "title": title, "digest": _sha256_hex(data)}
+    digest = _sha256_hex(data)
+    binding_error = None
+    if isinstance(source_id, str) and re.fullmatch(r"[0-9a-f]{12}", source_id):
+        if not digest.startswith(source_id):
+            binding_error = (
+                f"recorded document digest binding {source_id} does not match "
+                f"permitted original bytes (current sha256 prefix {digest[:12]})"
+            )
+    return {"resource": resource, "title": title, "digest": digest}, binding_error
 
 
 def _authorize_dataset_sources(tree: Path, approved: set[str]) -> None:
@@ -431,20 +441,18 @@ class AuthoringProject:
 FINALIZE_COMMIT_MESSAGE = "ariadne: finalize generated artifacts"
 
 
-def _cited_resources(meta: dict) -> list[str]:
-    """The distinct citation resources of one page's frontmatter ``sources``
-    (a mapping's ``resource`` — the rev 10 context field — or the plain
-    string itself), plus — K2 (issue #42) — the canonical catalog identities a
-    structured Reference's field/scope bindings name: bindings ride the SAME
-    verified-citation walk, so a declared binding must parse and name an
-    approved source like any other catalog citation."""
-    resources: list[str] = []
+def _cited_resources(meta: dict) -> list[tuple[str, str | None]]:
+    """Distinct citation resources and their existing ``sources[].id`` bindings."""
+    resources: list[tuple[str, str | None]] = []
     for source in meta.get("sources") or []:
         resource = (
             source.get("resource") if isinstance(source, dict) and "resource" in source else source
         )
-        if isinstance(resource, str) and resource and resource not in resources:
-            resources.append(resource)
+        if isinstance(resource, str) and resource:
+            source_id = source.get("id") if isinstance(source, dict) else None
+            citation = (resource, source_id if isinstance(source_id, str) else None)
+            if citation not in resources:
+                resources.append(citation)
     extension = meta.get("ariadne") if isinstance(meta.get("ariadne"), dict) else None
     for representation in (extension or {}).get("representations") or []:
         if not isinstance(representation, dict):
@@ -452,9 +460,9 @@ def _cited_resources(meta: dict) -> list[str]:
         bindings = [*(representation.get("fields") or []), *(representation.get("scope") or [])]
         for binding in bindings:
             if isinstance(binding, dict) and isinstance(binding.get("resource"), str):
-                resource = binding["resource"]
-                if resource not in resources:
-                    resources.append(resource)
+                citation = (binding["resource"], None)
+                if citation not in resources:
+                    resources.append(citation)
     return resources
 
 
@@ -506,7 +514,7 @@ def _verified_citations(
                 f"{rel}: frontmatter is not valid YAML — its citations cannot be verified: {exc}"
             )
             continue
-        for resource in _cited_resources(meta):
+        for resource, source_id in _cited_resources(meta):
             if (bundle_rel := _tree_citation(tree, page, resource)) is not None:
                 citations[("bundle", resource)] = {
                     "resource": resource,
@@ -542,7 +550,7 @@ def _verified_citations(
                 citations[("source", resource)] = {"resource": resource, "kind": "source"}
             else:
                 try:  # the operator's document boundary (verified, digest-bound)
-                    citation = _citation_record(resource, project)
+                    citation, binding_error = _citation_record(resource, project, source_id)
                 except ValueError as exc:
                     errors.append(
                         f"{rel}: cited resource {resource!r} does not resolve as a "
@@ -557,6 +565,8 @@ def _verified_citations(
                     "digest": citation["digest"],
                     "location": citation["resource"],
                 }
+                if binding_error:
+                    errors.append(f"{rel}: cited document {resource!r}: {binding_error}")
     return [citations[key] for key in sorted(citations)], errors
 
 

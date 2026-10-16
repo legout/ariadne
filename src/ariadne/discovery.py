@@ -325,6 +325,7 @@ class _DiscoverySession:
                 include_sql=include_sql,
             )
         if self._managed is not None:
+            self._recheck_pinned()
             return answer_examples.search_admitted(
                 self.context_dir.parent,
                 query,
