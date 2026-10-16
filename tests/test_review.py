@@ -522,7 +522,7 @@ def test_interface_rejects_route_conflicts_and_bypass_flags(monkeypatch, capsys,
 
 @pytest.mark.parametrize("tty,output_tty", [(False, True), (True, False)])
 def test_interrupted_post_admission_inspection_guides_status_without_pre_call_claim(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, tty, output_tty
 ):
     project, api, payload = admitted_candidate(tmp_path / "managed")
     native = admission.main
@@ -546,6 +546,8 @@ def test_interrupted_post_admission_inspection_guides_status_without_pre_call_cl
             "--proposal",
             payload["proposal"],
             answers="\nyes\n",
+            tty=tty,
+            output_tty=output_tty,
             monkeypatch=monkeypatch,
         )
         == 1
