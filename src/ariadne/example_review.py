@@ -55,17 +55,13 @@ import yaml
 from ariadne import admission
 from ariadne.answer_examples import (
     _FRONTMATTER_RE,
-    _OPERATION_ARGUMENTS,
     EXAMPLES_DIR,
-    MAX_EXCERPT_BYTES,
     MAX_RECORD_BYTES,
-    OPERATIONS,
     _guard_staging,
     _is_stale,
-    _resolve_citation,
     _sha256_hex,
     _write_index,
-    validated_sql_provenance,
+    validate_staged_record,
 )
 from ariadne.authoring import _fsync_path
 from ariadne.cli import _resolve_served_root
@@ -75,14 +71,6 @@ OUTCOMES = ("approve", "reject", "request-revision")
 # A staged/example ID is one safe path component — never a directory walk,
 # bookkeeping page, or hidden file.
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-# A recorded sha256 digest (result or cited dependency) is lowercase hex.
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
-# The bounded historical answer evidence a staged page records in its body
-# (save writes: "Captured answer excerpt (<time>; full structured-result
-# digest `<sha256>`):" before the fenced excerpt block).
-_ANSWER_EVIDENCE_RE = re.compile(
-    r"Captured answer excerpt \((.+?); full structured-result digest `([0-9a-f]{64})`\):"
-)
 # A decision must not overstate the review (spec): reproducing a current query
 # cannot verify the historical numeric value captured in the record.
 _NUMERIC_CLAIMS = ("historical_value_verified", "value_verified", "numerically_verified")
@@ -264,95 +252,8 @@ def _review_roots(served_root: Path) -> tuple[Path, Path | None]:
 
 
 def _validate_staged_record(meta: dict, body: str, served_root: Path) -> None:
-    """The stored record shape approval requires (spec §"Location, format and
-    identity"): question, interpretation, a supported operation with its real
-    structured arguments, the bounded historical answer evidence with its
-    result digest in the page body, and the recorded dependency list. The
-    decision digest binds the reviewed BYTES, not their completeness: a locally
-    edited staged page that keeps type and attestation but drops the
-    method/answer and tears out the dependency list fails closed (boundary
-    review finding 3) — a methodless record must never become a served
-    reference. Every recorded citation is validated by its RESOLVED location
-    through the save-side citation rule (delta recheck finding 3): a
-    metric-looking lexical prefix reaching a served answer-example page through
-    ``..`` is a malformed record, not metric evidence. Shape checks over the
-    save-side constants; no parallel schema."""
-    if meta.get("status") != "draft":
-        raise ValueError(
-            "the staged record must be a current draft, not "
-            f"{meta.get('status')!r} — review admits one exact staged submission"
-        )
-    for key in ("question", "interpretation"):
-        value = meta.get(key)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"the staged record needs a non-empty string {key!r}")
-    method = meta.get("method")
-    operation = method.get("operation") if isinstance(method, dict) else None
-    arguments = method.get("arguments") if isinstance(method, dict) else None
-    if operation not in OPERATIONS or not isinstance(arguments, dict) or not arguments:
-        raise ValueError(
-            "the staged record must record operation 'get_metric' or 'define_metric' "
-            "with its structured 'arguments' (never standalone SQL)"
-        )
-    missing = [
-        key
-        for key in _OPERATION_ARGUMENTS[operation]
-        if not isinstance(arguments.get(key), str) or not arguments[key].strip()
-    ]
-    if missing:
-        raise ValueError(
-            f"the staged record's {operation!r} method is missing its structured "
-            f"arguments (missing or non-string: {', '.join(missing)})"
-        )
-    # spec 0023 §4: a PRESENT sql_provenance must be the exact result-derived
-    # mapping (fixed source, non-whitespace text) before any stable write — a
-    # malformed one refuses approval; an ABSENT one is a valid legacy record,
-    # never a review failure. The exact text is retained unchanged below (the
-    # digest already binds the reviewed bytes, SQL included); nothing is
-    # executed, backfilled or rewritten.
-    validated_sql_provenance(meta, "the staged record")
-    evidence = _ANSWER_EVIDENCE_RE.search(body)
-    if evidence is None:
-        raise ValueError(
-            "the staged record must keep its bounded historical answer evidence "
-            "(captured excerpt and full structured-result digest) in the page body"
-        )
-    excerpt = re.search(r"````json\n(.*?)\n````", body, re.DOTALL)
-    if excerpt is None:
-        raise ValueError("the staged record's answer excerpt block is missing")
-    if len(excerpt.group(1).encode("utf-8")) > MAX_EXCERPT_BYTES:
-        raise ValueError(
-            f"the staged record's answer excerpt is over the {MAX_EXCERPT_BYTES}-byte "
-            "bound — submit a fresh bounded revision"
-        )
-    sources = meta.get("sources")
-    if not isinstance(sources, list):
-        raise ValueError(
-            "'sources' must be the recorded list of served metric/Policy digests "
-            "(an empty list records no dependency)"
-        )
-    for entry in sources:
-        path = entry.get("path") if isinstance(entry, dict) else None
-        sha256 = entry.get("sha256") if isinstance(entry, dict) else None
-        if (
-            not isinstance(path, str)
-            or not path.strip()
-            or not path.endswith(".md")
-            or not isinstance(sha256, str)
-            or not _SHA256_RE.fullmatch(sha256)
-        ):
-            raise ValueError(
-                "each recorded citation must be a served metric/Policy page "
-                "(context_layer/metrics|policies/*.md) with its sha256 digest"
-            )
-        # The resolved location, never the lexical prefix, decides the page
-        # kind (delta recheck finding 3): reuse the save-side rule, which
-        # already checks canonical resolved kind, containment and existence.
-        if _resolve_citation(path, served_root)["sha256"] != sha256:
-            raise ValueError(
-                f"recorded citation {path!r} no longer matches the current served "
-                "metric/Policy bytes — submit and review a fresh revision"
-            )
+    """Keep the legacy review command on the shared Example shape gate."""
+    validate_staged_record(meta, body, served_root)
 
 
 def _approve(

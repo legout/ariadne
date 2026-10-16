@@ -224,7 +224,7 @@ def test_managed_context_only_pinned_discovery_and_global_refusals(
     project, _, review = admitted_candidate(tmp_path, asserted=False)
     assert admit(project, review) == 0
     capsys.readouterr()
-    # Mutable root context is not served; only explicitly selected staging is draft.
+    # Mutable root and staging context are not part of managed discovery.
     (project / "context_layer").mkdir(exist_ok=True)
     (project / "context_layer" / "root-draft.md").write_text("# Order number mutable root\n")
     staging = project / "staging" / "context_layer"
@@ -243,8 +243,8 @@ def test_managed_context_only_pinned_discovery_and_global_refusals(
     assert groups["terms"]["result"] == native
     assert native["admission"]["revision"] == review["revision"]
     paths = [hit["path"] for hit in groups["pages"]["items"]]
-    assert "root-draft.md" not in paths and "draft.md" in paths
-    assert next(h for h in groups["pages"]["items"] if h["path"] == "draft.md")["draft"]
+    assert "root-draft.md" not in paths and "draft.md" not in paths
+    assert all(not hit["draft"] for hit in groups["pages"]["items"])
     assert groups["examples"]["items"] == []
     # Admission is a global boundary, including rechecks on a long-lived discovery session.
     runtime.context_dir.joinpath("tampered.md").write_text("# hand-edited snapshot\n")

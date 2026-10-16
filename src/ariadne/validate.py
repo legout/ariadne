@@ -96,7 +96,7 @@ _ADR_TOLERANCE = 1e-9
 # 4: the K4 applicability contract (issue #44, spec 0010 §9) — semantic
 # checks carry explicit not_applicable outcomes with reasons on a
 # context-only candidate.
-VALIDATOR_VERSION = "ariadne-validate/4"
+VALIDATOR_VERSION = "ariadne-validate/5"
 
 
 def validator_identity(performed_checks: list[str] | tuple[str, ...]) -> dict:
@@ -610,6 +610,10 @@ def candidate_scope_files(staging: str | Path) -> list[tuple[str, Path, bytes]]:
     if context.is_dir():
         for path in sorted(p for p in context.rglob("*.md") if p.is_file()):
             files.append((f"context_layer/{path.relative_to(context)}", path, path.read_bytes()))
+    examples = staging / "answer_examples"
+    if examples.is_dir():
+        for path in sorted(p for p in examples.glob("*.md") if p.is_file() and p.name != "log.md"):
+            files.append((f"answer_examples/{path.name}", path, path.read_bytes()))
     return files
 
 

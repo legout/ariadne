@@ -374,7 +374,7 @@ def _metric_context(context_dir: Path, name: str, *, now: datetime | None = None
                 raise _RequiredContextUnavailable(ref)
             try:
                 policy_text = body.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
+            except OSError, UnicodeDecodeError:
                 raise _RequiredContextUnavailable(ref) from None
             policies.append(policy_text)
             policy_views.setdefault(ref, _page_view(ref, _page_meta(policy_text), assess))
@@ -961,6 +961,11 @@ def finalize_candidate(staging: Path) -> None:
                 if page.stem not in models:
                     page.unlink()
     _regenerate_indexes(staging / "context_layer")
+    examples = staging / "answer_examples"
+    if examples.is_dir():
+        from ariadne.answer_examples import _write_candidate_index
+
+        _write_candidate_index(examples)
 
 
 # -------------------------- K1 (issue #41): core-owned physical schema pages
@@ -2362,7 +2367,7 @@ def evidence_freshness(observed_at: object, max_age_hours: float | None) -> dict
         if observed is None:
             raise ValueError(observed_at)
         age = datetime.now(UTC) - observed
-    except (ValueError, TypeError, OverflowError):
+    except ValueError, TypeError, OverflowError:
         return {
             "state": "unknown",
             "observed_at": observed_at,

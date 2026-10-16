@@ -261,9 +261,20 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
         )
     )
     assert saved["status"] == "draft"
-    assert (project / "staging" / "answer_examples" / f"{saved['id']}.md").is_file()
-    hits = asyncio.run(fresh.search_examples("events"))
+    assert saved["base_revision"] == revision
+    assert saved["candidate_revision"] != revision
+    assert (worktree_of(project, saved["proposal"]) / saved["path"]).is_file()
+    assert not (project / "staging" / "answer_examples").exists()
+    assert asyncio.run(fresh.search_examples("events")) == []
+    hits = asyncio.run(
+        fresh.search_examples(
+            "events",
+            proposal=saved["proposal"],
+            revision=saved["candidate_revision"],
+        )
+    )
     assert hits and hits[0]["id"] == saved["id"] and hits[0]["status"] == "draft"
+    fresh.con.close()
 
     # none of it moved one pinned byte
     assert candidate_scope_digest(snapshot) == current["artifact_digest"]
@@ -887,9 +898,31 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
         == 0
     )
     saved = json.loads(capsys.readouterr().out)
-    staged = Path(saved["path"])
-    assert staged.is_relative_to((project / "staging" / "answer_examples").resolve())
+    assert saved["status"] == "draft"
+    assert saved["base_revision"] == review["revision"]
+    assert saved["path"].startswith("answer_examples/")
+    assert (worktree_of(project, saved["proposal"]) / saved["path"]).is_file()
+    assert not (project / "staging").exists()
     assert not (operator_desk / "staging").exists()  # nothing escaped to the CWD
+    assert cli(["search-examples", "events total", "--project", str(project)]) == 0
+    assert json.loads(capsys.readouterr().out) == []  # unadmitted draft stays hidden
+    assert (
+        cli(
+            [
+                "search-examples",
+                "events total",
+                "--project",
+                str(project),
+                "--proposal",
+                saved["proposal"],
+                "--revision",
+                saved["candidate_revision"],
+            ]
+        )
+        == 0
+    )
+    preview = json.loads(capsys.readouterr().out)
+    assert preview[0]["id"] == saved["id"] and preview[0]["status"] == "draft"
 
     assert (
         cli(
@@ -914,36 +947,46 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
     assert not list((project / "staging" / "context_layer" / "metrics").glob("*.md"))
     assert not (operator_desk / "staging").exists()  # still nothing in the CWD
 
-    # the project-owned draft is discoverable through the managed runtime
-    runtime = QueryRuntime.open_project(project)
-    hits = asyncio.run(runtime.search_examples("events total"))
-    assert any(hit["id"] == saved["id"] and hit["status"] == "draft" for hit in hits)
-
-    # an explicit --staging still overrides the project-owned default
-    explicit = tmp_path / "explicit-staging"
+    # An explicit save into the existing candidate is revision-checked.
     assert (
         cli(
-            ["save-example", "--project", str(project), "--staging", str(explicit)],
+            [
+                "save-example",
+                "--project",
+                str(project),
+                "--proposal",
+                saved["proposal"],
+                "--expected-revision",
+                saved["candidate_revision"],
+            ],
             stdin=io.StringIO(
                 json.dumps({**submission, "question": "How many event ids exist in total"})
             ),
         )
         == 0
     )
-    override = json.loads(capsys.readouterr().out)
-    assert Path(override["path"]).is_relative_to(explicit.resolve())
+    second = json.loads(capsys.readouterr().out)
+    assert second["proposal"] == saved["proposal"]
+    assert second["candidate_revision"] != saved["candidate_revision"]
+
+    # The removed selector refuses explicitly rather than silently writing elsewhere.
+    explicit = tmp_path / "explicit-staging"
+    assert (
+        cli(
+            ["save-example", "--project", str(project), "--staging", str(explicit)],
+            stdin=io.StringIO(json.dumps(submission)),
+        )
+        == 1
+    )
+    assert "does not select Git Examples" in json.loads(capsys.readouterr().err)["error"]["message"]
+    assert not explicit.exists() and not (operator_desk / "staging").exists()
 
 
 def test_example_review_splits_citation_and_publication_roots(tmp_path, capsys):
-    """Issue #40 finding 2: human example review never conflates its citation
-    root with its publication root. Against a managed project, citations
-    validate against the pinned admitted snapshot (a Policy present ONLY
-    there), the stable example publishes under the LOGICAL project root's
-    answer_examples store where managed search looks — and a --served pointing
-    into .ariadne/ operator state is refused before anything changes, leaving
-    the pinned snapshot byte-identical."""
+    """Legacy review stores remain isolated from admitted Git Example discovery."""
     import hashlib
 
+    from ariadne import answer_examples
     from ariadne.cli import main as cli
     from ariadne.example_review import main as review_cli
 
@@ -970,7 +1013,7 @@ def test_example_review_splits_citation_and_publication_roots(tmp_path, capsys):
     assert (snapshot / cited).is_file()
     assert not (project / cited).exists()  # newly admitted page: snapshot-only
 
-    # a draft citing the SNAPSHOT-ONLY Policy stages under <project>/staging
+    # A legacy draft citing the SNAPSHOT-ONLY Policy stays in its explicit store.
     submission = {
         "question": "How many events are there under the late admitted counting rule",
         "interpretation": "Count every event row once under the late rule.",
@@ -988,7 +1031,15 @@ def test_example_review_splits_citation_and_publication_roots(tmp_path, capsys):
     }
     assert (
         cli(
-            ["save-example", "--project", str(project)],
+            [
+                "save-example",
+                "--served",
+                str(snapshot),
+                "--sources",
+                str(project / "ariadne.yaml"),
+                "--staging",
+                str(project / "staging"),
+            ],
             stdin=io.StringIO(json.dumps(submission)),
         )
         == 0
@@ -1033,15 +1084,30 @@ def test_example_review_splits_citation_and_publication_roots(tmp_path, capsys):
     assert not (snapshot / "answer_examples").exists()  # the snapshot was never the store
 
     runtime = QueryRuntime.open_project(project)
-    hits = asyncio.run(runtime.search_examples("events late rule"))
-    mine = next(hit for hit in hits if hit["id"] == saved["id"])
+    assert asyncio.run(runtime.search_examples("events late rule")) == []
+    runtime.con.close()
+    legacy_hits = answer_examples.search_examples(
+        snapshot,
+        project / "staging",
+        "events late rule",
+        examples_root=project,
+    )
+    mine = next(hit for hit in legacy_hits if hit["id"] == saved["id"])
     assert mine["status"] == "stable" and mine["stale"] is False
 
     # a --served root INSIDE .ariadne/ operator state is refused before any
     # write, naming the project root; the pinned snapshot stays byte-identical
     assert (
         cli(
-            ["save-example", "--project", str(project)],
+            [
+                "save-example",
+                "--served",
+                str(snapshot),
+                "--sources",
+                str(project / "ariadne.yaml"),
+                "--staging",
+                str(project / "staging"),
+            ],
             stdin=io.StringIO(
                 json.dumps(
                     {
@@ -1174,11 +1240,8 @@ def test_new_proposals_default_base_to_the_admitted_revision(tmp_path):
     assert explicit["base_revision"] == head
 
 
-def test_managed_search_examples_finds_project_owned_stable_examples(tmp_path):
-    """Fix pass finding 3: on the managed route the Answer Example store is
-    anchored at the LOGICAL project root (operator-reviewed stable examples
-    under <project>/answer_examples stay discoverable), separate from the
-    pinned citation/artifact root — and the snapshot bytes never move."""
+def test_managed_search_examples_ignores_unadmitted_project_root_examples(tmp_path):
+    """Managed search ignores project-root records outside the admitted Git snapshot."""
     import hashlib
 
     project = complete_bundle_project(tmp_path)
@@ -1226,13 +1289,10 @@ def test_managed_search_examples_finds_project_owned_stable_examples(tmp_path):
     )
 
     runtime = QueryRuntime.open_project(project)
-    hits = asyncio.run(runtime.search_examples("events"))
-    assert hits, "the stable project-owned example must be found on the managed route"
-    assert hits[0]["status"] == "stable"
-    assert hits[0]["id"] == "how-many-events-total"
-    assert hits[0]["stale"] is False  # its citation digests match the pinned pages
+    assert asyncio.run(runtime.search_examples("events")) == []
+    runtime.con.close()
 
-    # the example store never entered the pinned artifact scope
+    # the unadmitted project-root record never entered the pinned artifact scope
     assert not (snapshot / "answer_examples").exists()
     assert candidate_scope_digest(snapshot) == current["artifact_digest"]
 

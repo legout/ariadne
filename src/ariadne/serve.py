@@ -550,20 +550,19 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         @app.tool()
         @_tool_errors
         async def search_context(query: str) -> list[dict]:
-            """Search the Context Layer (OKF pages) for business rules; ranked matches.
+            """Search admitted Context pages; explicit legacy roots also expose drafts.
 
-            Includes existing legacy context drafts marked draft: true; ephemeral
-            ad-hoc metric definitions are not saved as Context Layer pages.
+            Managed routes never mix staged candidate content into default discovery.
             """
             return await _runtime().search_context(query)
 
         @app.tool()
         @_tool_errors
         async def list_context_pages() -> list[dict]:
-            """List every Context Layer page — served and staged — without query
-            tokens: path, draft flag, title and the advisory context_signals
-            envelope, served before staged. Metadata only (no bodies); pair with
-            read_context_page(path, draft) for the full rule text (spec 0015).
+            """List Context metadata; managed projects show admitted pages only.
+
+            Legacy roots may also show staged drafts; pair with read_context_page
+            for the full body (spec 0015).
             """
             return await _runtime().list_context_pages()
 
@@ -576,8 +575,8 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             Args:
                 path: the exact relative .md path from list_context_pages or a
                     search_context hit (e.g. policies/emea-currency-cutover.md).
-                draft: true reads the staged draft under staging/context_layer/
-                    instead of the served page (default false).
+                draft: true selects a legacy staged page; managed projects refuse
+                    it and require Authoring's explicit proposal/revision read.
             """
             return await _runtime().read_context_page(path, draft=draft)
 
@@ -791,9 +790,13 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
 
         @app.tool()
         @_tool_errors
-        async def save_example(submission: dict) -> dict:
-            """Stage one explicit answer example as a labeled draft under
-            staging/answer_examples/ — an EXPLICIT user-confirmed submission only:
+        async def save_example(
+            submission: dict,
+            proposal: str | None = None,
+            expected_revision: str | None = None,
+        ) -> dict:
+            """Save one explicit answer example as an unadmitted Git proposal draft —
+            an EXPLICIT user-confirmed submission only:
             present the bounded record (result excerpt/digest, method/arguments,
             question/interpretation/parameters, the EXACT submitted result SQL
             text — the sql_provenance the save will retain verbatim, so the user
@@ -806,15 +809,24 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 submission: {question, interpretation, parameters?, method:
                     {operation: get_metric|define_metric, arguments}, result: the
                     observed Ariadne envelope (metric/sql/columns/rows/governed),
-                    submitter (self-declared), attestation, sources: cited served
+                    submitter (self-declared), attestation, sources: cited admitted
                     metric/Policy paths}. Malformed input stores nothing.
+                proposal: an existing candidate ID; omit to start a new proposal.
+                expected_revision: the exact current candidate revision; required with proposal.
             """
-            return await _runtime().save_example(submission)
+            return await _runtime().save_example(
+                submission, proposal=proposal, expected_revision=expected_revision
+            )
 
         @app.tool()
         @_tool_errors
         async def search_examples(
-            query: str, limit: int = 10, include_history: bool = False, include_sql: bool = False
+            query: str,
+            limit: int = 10,
+            include_history: bool = False,
+            include_sql: bool = False,
+            proposal: str | None = None,
+            revision: str | None = None,
         ) -> list[dict]:
             """Search saved answer examples as labeled references (draft/stable,
             staleness, provenance, path) — historical evidence to check a METHOD
@@ -827,12 +839,34 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             Args:
                 query: terms ranked against question/interpretation.
                 limit: maximum records returned.
+                proposal: explicitly select one Git authoring candidate; requires revision.
+                revision: the proposal's exact current candidate commit.
                 include_history: include stale/superseded/rejected records, labeled.
                 include_sql: additionally return each hit's stored sql_provenance
                     as provenance.sql — the EXACT submitted result SQL as
                     historical evidence (null for legacy records without it);
                     never executed, never a ranking input, never wider history.
             """
+            if (proposal is None) != (revision is None):
+                raise ValueError("proposal and revision must be supplied together")
+            if proposal is not None:
+                assert revision is not None
+                from ariadne import answer_examples
+
+                return answer_examples.search_candidate(
+                    project,
+                    query,
+                    proposal=proposal,
+                    revision=revision,
+                    limit=limit,
+                    include_history=include_history,
+                    include_sql=include_sql,
+                )
+            if (Path(project) / ".ariadne").exists():
+                discovery = DiscoveryRuntime.open_project(project)
+                return await discovery.search_examples(
+                    query, limit=limit, include_history=include_history, include_sql=include_sql
+                )
             return await _runtime().search_examples(
                 query, limit=limit, include_history=include_history, include_sql=include_sql
             )

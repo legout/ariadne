@@ -388,20 +388,39 @@ class DiscoveryRuntime:
         return entries
 
     async def search_examples(
-        self, query: str, limit: int = 10, include_history: bool = False, include_sql: bool = False
+        self,
+        query: str,
+        limit: int = 10,
+        include_history: bool = False,
+        include_sql: bool = False,
+        *,
+        proposal: str | None = None,
+        revision: str | None = None,
     ) -> list[dict]:
-        """Issue #19: ranked labeled example records (draft/stable identity,
-        staleness, question/interpretation, method summary, provenance, path)
-        from the current served and staging example roots — re-read on each
-        request, no query execution, no saved rows. ``include_sql`` (spec 0023
-        §3) attaches each selected hit's stored ``sql_provenance`` mapping as
-        ``provenance.sql`` (``null`` for legacy records); it never widens
-        record eligibility or ranking. On the managed route the
-        served example store is anchored at the LOGICAL project root (issue
-        #37 fix pass), while citation staleness checks the pinned artifact
-        root. ``search_context`` and governed ``get_metric.context`` are
-        unaffected: examples live outside ``context_layer/`` and never enter
-        them."""
+        """Search admitted Examples by default, or one explicitly selected candidate."""
+        if (proposal is None) != (revision is None):
+            raise ValueError("--proposal and --revision are required together")
+        if proposal is not None:
+            assert revision is not None
+            if self._project is None:
+                raise ValueError("candidate Example search requires a managed --project")
+            return answer_examples.search_candidate(
+                self._project,
+                query,
+                proposal=proposal,
+                revision=revision,
+                limit=limit,
+                include_history=include_history,
+                include_sql=include_sql,
+            )
+        if self._managed is not None:
+            return answer_examples.search_admitted(
+                self.context_dir.parent,
+                query,
+                limit=limit,
+                include_history=include_history,
+                include_sql=include_sql,
+            )
         return answer_examples.search_examples(
             self.context_dir.parent,
             self.staging_dir,
@@ -413,16 +432,10 @@ class DiscoveryRuntime:
         )
 
     async def search_context(self, query: str, limit: int = 10) -> list[dict]:
-        """Search the served Context Layer and staged drafts for business rules
-        (spec 2026-09-23-0002; the shared ranking implementation and its
-        contract live in :func:`ariadne.context.search_pages`): deterministic
-        token-aware ranking over the served context dir plus the staged context
-        drafts, served hits ``draft: false`` and staged hits ``draft: true``.
-        Serves pinned snapshot bytes on the managed route, so the pinned digest
-        is re-checked first — mid-session tampering refuses here exactly like
-        ``get_metric`` (issue #37 fix pass)."""
+        """Search admitted Context by default; legacy roots also expose staged drafts."""
         if self._managed is not None:
             self._recheck_pinned()
+            return search_pages(query, limit, [(self.context_dir, False)])
         return search_pages(
             query, limit, [(self.context_dir, False), (self.staging_dir / "context_layer", True)]
         )
@@ -468,28 +481,21 @@ class DiscoveryRuntime:
         return result
 
     async def list_context_pages(self) -> list[dict]:
-        """Enumerate every served and staged Context Layer page (spec 0015,
-        ADR-0020): metadata only — ``path``, ``draft``, ``title`` and the
-        advisory ``context_signals`` envelope — served before staged, then
-        path, deterministically. No bodies and no query tokens: the
-        token-free directory view for discovery and onboarding. Serves
-        pinned snapshot bytes on the managed route, so the pinned digest is
-        re-checked first exactly like ``search_context``."""
+        """List admitted Context metadata; legacy roots also expose staged drafts."""
         if self._managed is not None:
             self._recheck_pinned()
+            return list_pages([(self.context_dir, False)])
         return list_pages([(self.context_dir, False), (self.staging_dir / "context_layer", True)])
 
     async def read_context_page(self, path: str, draft: bool = False) -> dict:
-        """Read one exact Context Layer page by bundle-relative POSIX path
-        (spec 0015, ADR-0020): full ``content`` plus ``draft``, ``title``-free
-        metadata, and the advisory ``context_signals`` envelope. ``draft=false``
-        (the default) reads the served root and re-checks the pinned digest
-        on the managed route exactly like ``search_context``; ``draft=true``
-        reads the staged root's live bytes (a draft is by definition not
-        pinned). An absolute, root-escaping, non-markdown or unknown path
-        raises ``ValueError`` naming the rejected path — never a search
-        fallback, never an empty success."""
-        if not draft and self._managed is not None:
+        """Read one exact Context page; managed projects never read staging bytes."""
+        if self._managed is not None:
+            if draft:
+                raise ValueError(
+                    "draft Context reads are not supported for managed projects; "
+                    "use Authoring with an explicit proposal and revision"
+                )
             self._recheck_pinned()
+            return read_page(path, self.context_dir, draft=False)
         root = self.staging_dir / "context_layer" if draft else self.context_dir
         return read_page(path, root, draft=draft)

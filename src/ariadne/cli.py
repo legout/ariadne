@@ -234,6 +234,8 @@ def build_parser() -> _Parser:
         help="save an explicit answer-example draft (issue #19)",
     )
     save.add_argument("--file", help="JSON submission file (stdin when absent)")
+    save.add_argument("--proposal", help="existing Git authoring proposal ID")
+    save.add_argument("--expected-revision", help="current candidate revision for --proposal")
 
     examples = sub.add_parser(
         "search-examples", parents=[common], help="search saved answer examples"
@@ -252,6 +254,8 @@ def build_parser() -> _Parser:
         "submitted result SQL as historical evidence (null for legacy records "
         "without it); never executed, never a ranking input",
     )
+    examples.add_argument("--proposal", help="explicitly browse one Git authoring proposal")
+    examples.add_argument("--revision", help="recorded current candidate revision for --proposal")
     resolve = sub.add_parser(
         "resolve-term",
         parents=[common],
@@ -352,6 +356,36 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         root = None
     else:
         root = _resolve_served_root(args.served)
+    if args.command in ("save-example", "search-examples") and args.project is not None:
+        if args.staging is not None:
+            raise ValueError(
+                "--staging does not select Git Examples; use proposal/revision selectors"
+            )
+    if args.command == "save-example":
+        if (args.proposal is None) != (args.expected_revision is None):
+            raise ValueError("--proposal and --expected-revision are required together")
+        if args.proposal is not None and args.project is None:
+            raise ValueError("Git proposal selectors require --project")
+    if args.command == "search-examples":
+        if (args.proposal is None) != (args.revision is None):
+            raise ValueError("--proposal and --revision are required together")
+        if args.proposal is not None and args.project is None:
+            raise ValueError("candidate Example search requires --project")
+        if args.proposal is not None:
+            from ariadne import answer_examples
+
+            assert args.project is not None and args.revision is not None
+            result = answer_examples.search_candidate(
+                args.project,
+                args.query,
+                proposal=args.proposal,
+                revision=args.revision,
+                limit=args.limit,
+                include_history=args.include_history,
+                include_sql=args.include_sql,
+            )
+            print(json.dumps(result, default=_json_default))
+            return 0
     definition = None
     if args.command in (  # parsed pre-runtime (spec §9)
         "define-metric",
@@ -382,6 +416,19 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         else:
             raise ValueError("resolve-term needs a TERM argument or --file with the request JSON")
     if root is None:
+        if args.command == "search-examples":
+            assert args.project is not None
+            discovery = DiscoveryRuntime.open_project(args.project)
+            result = asyncio.run(
+                discovery.search_examples(
+                    args.query,
+                    limit=args.limit,
+                    include_history=args.include_history,
+                    include_sql=args.include_sql,
+                )
+            )
+            print(json.dumps(result, default=_json_default))
+            return 0
         if args.project is None:  # unreachable via the legacy-root detection, kept type-honest
             raise ValueError(
                 "no project selected: pass --project DIR (managed) or --served PATH (legacy)"
@@ -450,7 +497,11 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         result = asyncio.run(runtime.get_metric(args.name, args.dimension, time_range or None))
     elif args.command == "save-example":
         assert definition is not None  # _read_definition ran above
-        result = asyncio.run(runtime.save_example(definition))
+        result = asyncio.run(
+            runtime.save_example(
+                definition, proposal=args.proposal, expected_revision=args.expected_revision
+            )
+        )
     elif args.command == "search-examples":
         result = asyncio.run(
             runtime.search_examples(
@@ -458,6 +509,8 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
                 limit=args.limit,
                 include_history=args.include_history,
                 include_sql=args.include_sql,
+                proposal=args.proposal,
+                revision=args.revision,
             )
         )
     elif args.command == "query-metrics":

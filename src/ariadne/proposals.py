@@ -617,7 +617,12 @@ def _in_snapshot(rel: str) -> bool:
         and pure.suffix in _MODEL_SUFFIXES
     ):
         return True
-    return parts[0] == "context_layer" and pure.suffix == ".md"
+    return (parts[0] == "context_layer" and pure.suffix == ".md") or (
+        len(parts) == 2
+        and parts[0] == "answer_examples"
+        and pure.suffix == ".md"
+        and pure.name != "log.md"
+    )
 
 
 def _scope_files(project: Path) -> list[str]:
@@ -646,6 +651,13 @@ def _scope_files(project: Path) -> list[str]:
                 for path in sorted(root.rglob("*.md"))
                 if path.is_file() and path.name not in _GENERATED_FILES
             )
+    examples = project / "answer_examples"
+    if examples.is_dir():
+        rels.extend(
+            path.relative_to(project).as_posix()
+            for path in sorted(examples.glob("*.md"))
+            if path.is_file() and path.name not in _GENERATED_FILES
+        )
     return rels
 
 
@@ -991,6 +1003,45 @@ def edit_proposal(
     return {"proposal": proposal, "revision": new_revision, "changed": True, "path": rel}
 
 
+def add_answer_example(
+    project: str | Path, proposal: str, expected_revision: str, example_id: str, content: str
+) -> dict:
+    """Commit one new Example at its generated artifact identity only.
+
+    This narrow seam shares proposal locking, revision checks and exact-path
+    staging with ordinary edits without making ``answer_examples/`` a general
+    authoring file surface. Existing identities are never overwritten.
+    """
+    project = Path(project).resolve()
+    example_id = check_artifact_name(example_id, what="answer example ID")
+    rel = f"answer_examples/{example_id}.md"
+    check_artifact_content(f"answer example {example_id!r}", content)
+    _load_record(project, proposal)
+    worktree = project / WORKTREES_REL / proposal
+    with _file_lock(project / LOCKS_REL / f"{proposal}.lock"):
+        record = _load_record(project, proposal)
+        _check_coherent(project, record)
+        current = record["candidate_revision"]
+        if expected_revision != current:
+            raise ValueError(
+                f"stale revision: proposal {proposal} is at candidate {current}, the "
+                f"save-example expected {expected_revision} — re-read the candidate "
+                "and retry with the current revision; nothing was written"
+            )
+        if _read_blob(project, current, rel) is not None:
+            raise ValueError(f"answer example {example_id!r} already exists in candidate {current}")
+        _require_git_identity(project)
+        _refuse_untracked_new_artifact(project, worktree, rel, current)
+        _safe_write(worktree, rel, content)
+        literal = _literal(rel)
+        _git(["add", "-f", "--", literal], worktree)
+        _git(["commit", "-m", f"ariadne: add answer example {example_id}", "--", literal], worktree)
+        revision = _git(["rev-parse", "HEAD"], worktree).stdout.strip()
+        record["candidate_revision"] = revision
+        _store_record(project, record)
+    return {"proposal": proposal, "revision": revision, "changed": True, "path": rel}
+
+
 # ------------------------------------------- G4 (issue #36): finalize + evidence
 
 # The ONLY paths the deterministic finalize pass may change in a worktree
@@ -1000,7 +1051,8 @@ def edit_proposal(
 _FINALIZE_PATH_RE = re.compile(
     r"^(?:context_layer/metrics/[^/]+\.md"
     r"|context_layer/computations/[^/]+\.md"
-    r"|context_layer(?:/[^/]+)*/index\.md)$"
+    r"|context_layer(?:/[^/]+)*/index\.md"
+    r"|answer_examples/index\.md)$"
 )
 
 

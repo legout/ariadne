@@ -927,18 +927,28 @@ class QueryRuntime(DiscoveryRuntime):
             ),
         }
 
-    async def save_example(self, submission: dict) -> dict:
-        """Issue #19 (spec 2026-09-29-0007, ADR-0015): stage one explicitly
-        submitted answer example as a labeled ``status: draft`` OKF record
-        under ``staging/answer_examples/`` — transport-neutral, so the local
-        CLI and the optional MCP adapter share exactly this path. Validated
-        before any write: malformed submissions, oversized excerpts/records,
-        citations that do not resolve inside the selected served root, and
-        claimed (rather than self-declared) identity or verification all store
-        nothing. The served roots are never touched. Citations resolve against
-        the PINNED artifact root on the managed route; the staging store stays
-        at its original project-owned location (issue #37 fix pass)."""
-        self._discard_request_budget()  # fix pass 2, finding 1b (save_example)
+    async def save_example(
+        self,
+        submission: dict,
+        *,
+        proposal: str | None = None,
+        expected_revision: str | None = None,
+    ) -> dict:
+        """Save one explicit Example as an unadmitted Git proposal candidate."""
+        self._discard_request_budget()
+        if self._managed is not None:
+            if self._project is None:
+                raise ValueError("Git Example authoring requires a managed --project")
+            return answer_examples.save_candidate_example(
+                submission,
+                self._project,
+                self.context_dir.parent,
+                self._managed["commit"],
+                proposal=proposal,
+                expected_revision=expected_revision,
+            )
+        if proposal is not None or expected_revision is not None:
+            raise ValueError("Git proposal selectors require a managed --project")
         return answer_examples.save_example(
             submission,
             self.context_dir.parent,
@@ -947,11 +957,23 @@ class QueryRuntime(DiscoveryRuntime):
         )
 
     async def search_examples(
-        self, query: str, limit: int = 10, include_history: bool = False, include_sql: bool = False
+        self,
+        query: str,
+        limit: int = 10,
+        include_history: bool = False,
+        include_sql: bool = False,
+        *,
+        proposal: str | None = None,
+        revision: str | None = None,
     ) -> list[dict]:
         self._discard_request_budget()
         return await super().search_examples(
-            query, limit=limit, include_history=include_history, include_sql=include_sql
+            query,
+            limit=limit,
+            include_history=include_history,
+            include_sql=include_sql,
+            proposal=proposal,
+            revision=revision,
         )
 
     def _metric_context(self, name: str, *, _now: datetime | None = None) -> dict:

@@ -145,6 +145,7 @@ import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack s
 from sqlglot import exp  # pyright: ignore[reportMissingImports] — same
 
 from ariadne import (
+    answer_examples,
     authoring_context,
     authoring_inputs,  # noqa: F401 — re-export: the historical seam
     authoring_semantic,
@@ -1862,6 +1863,8 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             stored is not None
             and stored.get("source_digest") == source_digest
             and stored.get("approval_digest") == (approval_digest_value or source_digest)
+            and stored.get("validator_identity")
+            == validator_identity(stored.get("performed_checks") or [])
             and _document_digests_current(project, stored.get("citations") or [])
         ):
             return _validate_view(
@@ -1939,8 +1942,10 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             # K4 (issue #44): conflicting asserted claims refuse validation
             # alongside the receipt-verification gate
             claim_errors = _asserted_claim_errors(tree)
+            example_errors = answer_examples.validate_candidate_records(project, record, tree)
             citations, citation_errors = _verified_citations(tree, project, names)
             errors.extend(page_errors)
+            errors.extend(example_errors)
             errors.extend(citation_errors)
             errors.extend(receipt_errors)
             errors.extend(claim_errors)
@@ -1963,6 +1968,11 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                     "page_contract",
                     "failed" if page_errors else "passed",
                     "; ".join(page_errors),
+                ),
+                CheckOutcome(
+                    "answer_examples",
+                    "failed" if example_errors else "passed",
+                    "; ".join(example_errors),
                 ),
                 CheckOutcome(
                     "citations",
@@ -2104,6 +2114,7 @@ def _change_inventory(project: Path, record: dict) -> list[dict]:
             "data/seed_notes.md",
             "semantic_layer",
             "context_layer",
+            "answer_examples",
         )
     ]
     diff = proposals._git(
@@ -3986,7 +3997,7 @@ def _verify_receipt(
             if observed_at is None:
                 raise ValueError(observed)
             age = datetime.now(UTC) - observed_at
-        except (ValueError, TypeError, OverflowError):
+        except ValueError, TypeError, OverflowError:
             return None, (
                 f"receipt {receipt_id!r} carries no parseable measurement time — "
                 "its freshness is unknown and can never be verified as current"
