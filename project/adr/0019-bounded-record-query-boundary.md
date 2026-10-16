@@ -1,5 +1,7 @@
 # Separate bounded record queries from admitted detail and metric authoring
 
+**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) retains catalog-bound ungoverned records and all complete-output safeguards, but retires public legacy serving and automatic ad-hoc metric staging. The bounded Core design is approved in chat; written review is pending, and unaffected original approval remains.
+
 Status: accepted (owner, Pi conversation 2026-10-08: approved the revised record-query and shared-safeguard design for specification/ADR/vocabulary capture, then approved the written specification revision 1). The owner subsequently requested ticketization of the plan's revision-1 S1–S3 decomposition; implementation, project admission and release/deployment publication remain gated.
 
 A legacy project needs to retrieve a small set of trace events without turning the question into an aggregate, staging a metric or acquiring multi-fact graph admission. Add an explicitly ungoverned, catalog-bound **Ad-hoc Record Query** operation over one dataset. Keep admitted `query_detail` and its proven lookup/graph rules unchanged. Both routes use the existing compiler and shared Execution owner; no generic SQL, filesystem capability or second compiler is introduced.

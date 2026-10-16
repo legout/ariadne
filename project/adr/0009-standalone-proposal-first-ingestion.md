@@ -1,5 +1,7 @@
 # Standalone proposal-first document ingestion
 
+**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. Standalone conversion/Verbatim/consent rules are retained, but derived artifacts go into an explicitly selected Git candidate and private originals remain operator-managed external inputs; no Core upload/retention store remains. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+
 Status: accepted (owner, 2026-09-17 shape-design round for spec revision 8; inspired by the lumio-wiki Knowledge Base flow).
 
 **Structured-Reference scoped extension (owner, 2026-10-02):** [specification 0010](../specs/2026-10-02-0010-context-layer-schema-and-identifiers.md) preserves approved aliases/scoped binding metadata and actual document provenance through this ingestion route. Document claims cannot fabricate measured receipts, register/open newly mentioned data locations or confirm identifier equivalence. Standalone staging, human Promotion and opt-in approved-Policy reconciliation remain unchanged.

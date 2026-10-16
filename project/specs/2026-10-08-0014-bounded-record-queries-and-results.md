@@ -1,5 +1,7 @@
 # Specification: Bounded record queries and query results
 
+**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. Complete-output, source authority, numerical and deadline safeguards remain; successful ad-hoc execution no longer reserves/stages artifacts or returns staging receipts. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved specification, revision 1** |

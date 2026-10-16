@@ -1,5 +1,7 @@
 # Specification: Verbatim document ingestion
 
+**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. Existing converters, exact converted-text/consent/bounds/no-overwrite semantics remain; candidate Git revisions replace staging identity/idempotence, and originals remain external private operator inputs. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved, revision 1** |

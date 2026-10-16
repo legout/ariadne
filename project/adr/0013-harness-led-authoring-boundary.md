@@ -1,5 +1,7 @@
 # Harness-led authoring with server-owned checks
 
+**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. The remaining legacy submit/Promotion and persistent upload operations retire. Harness interpretation, separate operator document/source permissions, bounded measurement and human exact-revision admission remain. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+
 Status: accepted (owner, pi session 2026-09-24; approved with written harness-led authoring specification revisions 1–2).
 
 **Measured-knowledge scoped extension (owner, 2026-10-02):** [specification 0010](../specs/2026-10-02-0010-context-layer-schema-and-identifiers.md) adds bounded, typed equality/prefix/lookup inspection and automatic hypothesis capture in Git proposals. The core owns measurement receipts; operator-approved access/sample limits and exact-revision human confirmation remain binding. A sampled match, persisted hypothesis or admitted investigative page is not business-meaning approval.

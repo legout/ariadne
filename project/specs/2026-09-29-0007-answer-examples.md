@@ -1,5 +1,7 @@
 # Specification: Saved answer examples
 
+**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. Separate Example meaning, consent, bounds, provenance and staleness remain, but a sibling Git directory/common admission and explicit candidate draft discovery replace the independent staging/store/review route. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved** |

@@ -77,7 +77,7 @@ The agent that profiles a database and drafts Context Layer and Semantic Layer a
 _Avoid_: generator
 
 **Authoring Proposal**:
-A proposed change to the project's source declarations, Seed Notes, Semantic Layer or Context Layer, based on an identified artifact revision and awaiting human review. It is distinct from an ad-hoc Proposal and from served state.
+A proposed change to the project's authored artifacts, including source declarations, Seed Notes, Semantic Layer, Context Layer and explicitly saved Answer Examples, based on an identified artifact revision and awaiting human review. It is distinct from served state and from the legacy ad-hoc Proposal.
 _Avoid_: approved change, served branch
 
 **Candidate Revision**:
@@ -93,11 +93,11 @@ The operator's explicit permission to open identified source locations, includin
 _Avoid_: source discovery, artifact admission
 
 **Staging**:
-The holding area (`staging/`) for legacy authored artifacts, standalone-ingest and ad-hoc proposals, and explicitly submitted Answer Examples awaiting their applicable human review. Git-backed Authoring Proposals are also unadmitted, but do not use Staging as their revision model.
+The legacy holding area for authored artifacts and Answer Examples awaiting their former review routes. It is a historical persistence concept, not a Git-backed Authoring Proposal or Candidate Revision.
 _Avoid_: drafts, sandbox
 
 **Promotion**:
-The local human act of admitting a staged artifact into its reviewed destination, marking its review. Discoverability in Staging is never Promotion; Git-backed full-bundle authoring instead uses Git Review Admission.
+The legacy local human act of admitting a staged artifact into its reviewed destination. It is distinct from Git Review Admission; discoverability was never admission.
 _Avoid_: publish, deploy
 
 **Git Review Admission**:
@@ -127,7 +127,7 @@ A bounded selection of records from a known project dataset, validated and execu
 _Avoid_: ad-hoc metric, governed detail query, raw SQL
 
 **Proposal**:
-An auto-staged Ad-hoc Metric definition awaiting human promotion; successful Ad-hoc Metric answers leave candidates for the catalog, unlike Ad-hoc Record Queries or output-refused computations.
+A legacy persisted Ad-hoc Metric definition awaiting its former human review route. An ephemeral Ad-hoc Metric is not a Proposal; an explicitly retained definition is an Authoring Proposal.
 _Avoid_: draft, candidate file
 
 **Answer Example**:

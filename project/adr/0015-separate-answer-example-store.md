@@ -1,5 +1,7 @@
 # Separate OKF store for provisional answer examples
 
+**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. The separate Example meaning and OKF directory remain, but Git candidates/common admission replace the independent staging/store/review route; no Example becomes a metric or answer cache. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+
 Status: accepted (owner, Pi design conversation 2026-09-29; storage boundary and six follow-up choices approved). The detailed interface and failure behavior are approved in [the feature specification](../specs/2026-09-29-0007-answer-examples.md) (revision 1).
 
 Ariadne stores explicitly submitted, successful question/method/historical-answer examples in a **per-project OKF v0.2 sibling store**, not in the Context Layer: `staging/answer_examples/` for immediately discoverable, unapproved examples and `answer_examples/` under the selected served root for reviewed examples. A staged example is a labeled reference or hypothesis, never a governed definition or a cached answer. Reuse checks the current served metric/Policy and executes a fresh query; a changed cited metric or Policy suspends normal reuse of the old example pending review. Within one project checkout, submission is immediately discoverable; other checkouts see it only after ordinary repository synchronization.

@@ -1,5 +1,7 @@
 # Specification: Modular Ariadne Core and Git-backed authoring
 
+**Proposed scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; its written review is pending. All durable authored Core artifacts use the existing Git route; ad-hoc execution is ephemeral and explicit persistence uses existing Authoring edits. The owner excludes legacy migration/compatibility and real-project reset; the former retained exceptions are retired. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved, revision 1** |
