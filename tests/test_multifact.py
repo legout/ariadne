@@ -3166,7 +3166,10 @@ def test_t5_later_candidate_and_changed_registry_cannot_change_admitted_query(tm
         revision = api.edit_proposal(later["proposal"], revision, edit)["revision"]
 
     after = asyncio.run(_t5_runtime(project).query_metrics(request))
-    assert after["rows"] == before["rows"]
+    # same rows, same values — row order is not pinned (no ORDER BY)
+    assert sorted(after["rows"], key=lambda row: row["region"]) == sorted(
+        before["rows"], key=lambda row: row["region"]
+    )
     assert after["admission"]["revision"] == view["revision"]
 
     registry = project / "ariadne.yaml"
