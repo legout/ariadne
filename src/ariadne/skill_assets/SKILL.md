@@ -145,12 +145,12 @@ read-only gates.
    then `ariadne define-metric --file def.json --sources ariadne.yaml` (or
    pipe the JSON definition via stdin when `--file` is absent). The definition
    runs read-only through the same compile gate, returns `governed: false`,
-   and stages an OSI proposal plus an OKF draft under `staging/` for human
-   promotion. A record question (item 6) is not an unmodeled metric question:
+   and returns `persistence: {status: not_saved}`; explicit retention uses
+   revision-checked typed model/page edits. A record question (item 6) is not an unmodeled metric question:
    do not invent an aggregation to retrieve records.
 8. **Label answers accurately.** Governed numbers ship with their caveats and
-   `governed: true`; ad-hoc numbers are `governed: false` proposals — label
-   them as such, never as canonical. `query-metrics` responses are governed
+   `governed: true`; ad-hoc numbers are ephemeral and `governed: false` — label
+   them as unsaved, never as canonical. `query-metrics` responses are governed
    through human admission — legacy Promotion or Git Review Admission: name
    the route the response's admission block reports, and keep attestation
    honest (`attestation: pending` means admitted/Promoted, not independently
@@ -257,8 +257,10 @@ unadmitted Git proposal.
    Agents never promote.
 5. **query** — the local CLI loop above: `list-metrics` → `get-metric` for
    governed questions; `search-context` for rules; `list-datasets` →
-   `define-metric` for anything unmodeled (auto-staged as a promotion
-   proposal).
+   `define-metric` for anything unmodeled (runs read-only and returns
+   `persistence: {status: not_saved}`). For an explicit request to retain its
+   definition, use existing Authoring `start` and revision-checked typed model
+   edits; do not add a save flag or new tool.
 
 ## Git-backed authoring — the agent as author
 
@@ -473,7 +475,7 @@ separate store, never inside the Context Routing Map or table measurements.
   join runs many-to-one on a key that is unique on the joined side. Resolve
   one-to-many and many-to-many per [references/grain-rubric.md](references/grain-rubric.md)
   — pre-aggregate the many side inside `source`, or the definition is rejected
-  before compile (nothing staged, nothing executed).
+  before compile (nothing saved or executed).
 - **Every number ships its caveats; governed answers cite provenance.** Governed
   `get_metric` responses carry a `context` field: the served metric page plus
   the full bodies of every policy it cites. Restate those caveats with every
@@ -486,7 +488,7 @@ separate store, never inside the Context Routing Map or table measurements.
   "per COMPLETED order" is not the caveat) and the time window a conversion or
   filter applies to (e.g. "pre-2024 EMEA orders are converted to USD") in the
   answer text; citing a Policy path alone is not a caveat. Ad-hoc answers are
-  `governed: false` proposals — label them as such, never as canonical.
+  `governed: false` ephemeral answers — label them as unsaved, never canonical.
   For an ad-hoc definition informed by a served context
   page, cite that page and its Policy paths from the actual `search-context`
   result in the final answer, alongside the caveats; receiving the paths in
@@ -531,7 +533,9 @@ separate store, never inside the Context Routing Map or table measurements.
   caveat; warnings never change values, governance labels or permissions.
 - **`search_context` before novel questions.** The rule you are about to rediscover
   is probably already a policy page. Search first; if the question stays unmodeled,
-  route it through `define_metric` so the definition lands in staging as a proposal.
+  route it through `define_metric` for an ephemeral read-only result. If the user explicitly
+  requests retaining the definition, use existing Authoring `start` and revision-checked typed
+  model/page edits; there is no define-metric persistence option.
 - **Aliases, observations and measurements never authorize joins.** Term
   resolution, schema observations (candidate keys, distinct counts) and
   mapping receipts are guidance and evidence, never authority: no alias match,

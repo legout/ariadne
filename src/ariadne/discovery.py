@@ -24,7 +24,7 @@ from ariadne.validate import _registry_identity, candidate_scope_digest, served_
 ROUTING_HINT = (
     "If no governed metric above answers your question, route it to the ad-hoc path: "
     "call list_datasets() to see the queryable tables, then define_metric(definition) "
-    "to compute the answer (compiled, executed read-only, auto-staged for human promotion). "
+    "to compute the answer (compiled and executed read-only; not saved). "
     "For bounded record selection over one known table (no aggregation, no staging), "
     "call query_records(request) with {dataset, fields, order, limit?} — never raw SQL."
 )

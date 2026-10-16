@@ -5,7 +5,7 @@ agents (spec 2026-09-23-0001 §3, ADR-0012; moved here from
 ``ariadne.runtime`` in the modular-core extraction, spec 2026-10-02-0009 §2 /
 ADR-0016) — the MCP adapter (:mod:`ariadne.serve`) and the local CLI
 (:mod:`ariadne.cli`) register these operations; they never duplicate
-compilation, execution, context, grain, or proposal-staging logic:
+compilation, execution, context, or grain logic:
 
     list_metrics()                     -> served governed metrics with descriptions
     list_datasets()                    -> [{name, columns: [{name, type}]}] from the attach
@@ -18,9 +18,9 @@ compilation, execution, context, grain, or proposal-staging logic:
                                           governed: true + context (rev 10): the full
                                           served OKF metric page plus the full bodies
                                           of every policy its frontmatter cites
-    define_metric(definition)          -> the ad-hoc path (spec rev 3): ephemeral OSI model ->
-                                          render -> read-only execution -> rows + SQL +
-                                          governed: false + auto-staged proposal
+    define_metric(definition)          -> ephemeral OSI model -> render -> read-only
+                                          execution -> rows + SQL + governed: false +
+                                          persistence: not_saved
     query_metrics/query_detail         -> the admitted multi-fact graph (issue #30)
 
 Mechanism per ADR-0008 (spec rev 7): our own sqlglot compiler
@@ -35,17 +35,13 @@ metadata and the attach directly — no datus anywhere in the query path.
 
 Ad-hoc (ADR-0005, spec §6): ``define_metric`` params are expanded into an
 ephemeral OSI-core model (version 0.2.0.dev0 shape, dialects-expression fields,
-is_time dimension), rendered by :mod:`ariadne.render` (no files touched — the
-served semantic dir is never written). Compile failure returns the compiler's
-error verbatim; nothing is staged, nothing executed. On success the compiled SQL
-is executed read-only and the definition is auto-staged as a proposal: the OSI
-model under ``staging/semantic_layer/models/adhoc/`` plus a minimal OKF draft
-under ``staging/context_layer/metrics/`` so ``search_context`` can discover it
-(numeric suffix on name collision, never overwrite); promotion stays human
-(ADR-0003). Query stages ad-hoc definitions through the shared
-``ariadne.proposals.reserve_ad_hoc``/``stage_reserved_ad_hoc`` operations without
-importing the Authoring
-workflow (spec 2026-10-02-0009 §2).
+is_time dimension), rendered by :mod:`ariadne.render`, compiled and executed
+read-only. Success returns the complete bounded result, SQL provenance, echoed
+definition, ``governed: false`` and ``persistence: {status: not_saved}``; it writes
+no candidate or artifact. Failures likewise leave no authored state. If a user
+explicitly requests retention, the existing Authoring ``start`` and
+revision-checked typed edits retain the definition in a Git candidate; there is
+no persistence flag or new save operation.
 
 Routing contract (spec rev 4 §8.12): fresh consuming agents discover the ad-hoc
 path through the runtime itself — ``list_metrics`` ends with the routing hint
@@ -72,21 +68,18 @@ from pathlib import Path
 from typing import Any
 
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-from sqlglot import expressions as exp  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+from sqlglot import (
+    expressions as exp,  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+)
 from sqlglot.optimizer.scope import Scope, build_scope  # pyright: ignore[reportMissingImports]
 
 # Issue #19 (ADR-0015, spec 2026-09-29-0007): the answer-example store is a
 # separate transport-neutral module — the runtime only contributes its selected
 # roots; examples never touch compilation, execution or governed context.
-#
-# Shared Proposals (issue #34, ADR-0016): the compiled ad-hoc staging/label
-# operation — Query stages ad-hoc definitions through it WITHOUT importing the
-# Authoring workflow or touching any Git proposal store (spec 2026-10-02-0009 §2).
 from ariadne import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     admission,  # issue #37/G5: pinned-snapshot resolution for open_project
     answer_examples,
     context,  # issue #48 fix: the assessment clock/assembly seams stay internal
-    proposals,  # pyright: ignore[reportMissingImports] — drift
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: the analyzer binds `ariadne` to the venv's editable main checkout, which lacks this lane's new module; runtime/uvx resolve the worktree
 )
 from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
@@ -203,9 +196,9 @@ class QueryRuntime(DiscoveryRuntime):
         ``registry`` is an already-resolved approved identity (never a file),
         ``admission_record`` the pinned Git-review admission
         (:meth:`open_project` resolves both), and ``project_root`` the logical
-        project root that anchors the staging/ad-hoc/Answer Example stores —
-        separate from the pinned artifact root, which is derived from
-        ``context_dir``. An explicit legacy construction (no ``registry``/
+        project root that anchors any remaining legacy draft stores — separate
+        from the pinned artifact root, which is derived from ``context_dir``.
+        An explicit legacy construction (no ``registry``/
         ``admission_record``) keeps its legacy behavior exactly.
 
         Issue #56/S1 (spec 0014 §4–§6): ``query_limits`` is the HOST-owned
@@ -301,8 +294,8 @@ class QueryRuntime(DiscoveryRuntime):
         the explicit legacy artifact-root constructors keep legacy behavior for
         fixtures/operators. Source locations resolve through the
         operator-approved identity (never snapshot-relative paths); the
-        staging/ad-hoc/Answer Example stores stay at their ORIGINAL
-        project-owned locations (default ``<project>/staging``), separate from
+        remaining legacy draft stores stay at their ORIGINAL project-owned
+        locations (default ``<project>/staging``), separate from
         the pinned artifact root. Each session pins one coherent admitted
         revision; a later session picks up a later admission."""
         root = Path(project).resolve()
@@ -971,18 +964,13 @@ class QueryRuntime(DiscoveryRuntime):
         return context._metric_context(self.context_dir, name, now=_now)
 
     async def define_metric(self, definition: dict) -> dict:
-        """Ad-hoc path (spec rev 3 §4/§5, amended by spec 0014 §5): draft ->
-        compile gate -> bounded execute -> FULL core + selected-transport
-        success preflight -> stage -> return.
+        """Ad-hoc path: normalize -> compile gate -> bounded read-only execution
+        -> complete-output preflight -> return an explicitly unsaved result.
 
-        The definition is expanded into an ephemeral OSI model and rendered by
-        ariadne.render; failure returns the compiler's error verbatim (nothing
-        staged, nothing executed). On success the compiled SQL executes
-        read-only under the shared complete-output safeguards; the complete
-        bounded staging receipt is reserved and preflighted BEFORE the write,
-        so an output refusal after successful computation — including an
-        MCP-envelope refusal — stages NOTHING and the definition is never
-        auto-promoted (issue #56/S1).
+        Failure returns the compiler's error verbatim or a bounded refusal;
+        neither failure nor success writes a candidate or artifact. The existing
+        complete-output safeguards still refuse any incomplete result, including
+        an MCP-envelope overflow (issue #56/S1).
 
         Issue #59 (spec 0014 §9): the static IO-authority boundary runs FIRST,
         on the whole nested ``source`` and ``expression`` trees, so an ad-hoc
@@ -998,7 +986,7 @@ class QueryRuntime(DiscoveryRuntime):
             # grain guard, compile, bind or any execution — the entire nested
             # source AND expression trees may read only the registered catalog
             # relations and call only the reviewed built-in analytics functions.
-            # A refusal is static (no DuckDB call at all): nothing staged,
+            # A refusal is static (no DuckDB call at all): no artifact written,
             # nothing executed.
             assert_ad_hoc_authority(
                 params["source"], kind="source", authority=self._ad_hoc_authority
@@ -1009,8 +997,8 @@ class QueryRuntime(DiscoveryRuntime):
             # Grain guard BEFORE envelope expansion/compile (spec rev 5 §13): a
             # source that fans out the fact grain is rejected outright — the
             # compiler would aggregate at joined-row grain
-            # (Datus-ai/Datus-agent#1426). Nothing staged, nothing executed;
-            # same contract as the single-statement guard below.
+            # (Datus-ai/Datus-agent#1426). No authored state is written and
+            # nothing executes; same contract as the single-statement guard.
             check_grain_preserving(self.con, params["source"])
             envelope = _expand_adhoc_model(params)
             sql = await self._compile_adhoc(envelope, params["name"], params["dimensions"])
@@ -1028,55 +1016,30 @@ class QueryRuntime(DiscoveryRuntime):
             # the definition reached execution exclusively through the compiler
             # above.
             bounded = self._collect(sql, budget)
-        if budget.expired():  # exhaustion is checked before preflight/staging
+        if budget.expired():  # no complete answer after expiry (spec 0014 §6)
             raise query_results.deadline_refusal(budget.seconds)
-        # The complete bounded staging receipt is RESERVED (atomically claimed,
-        # collision-suffixed exactly as the write would be) so the preflight
-        # measures the actual receipt paths — then the payloads are written only
-        # after every preflight passed; a refusal releases the reservation and
-        # leaves no model or draft page behind (spec 0014 §5).
-        reserved = proposals.reserve_ad_hoc(self.staging_dir, params["name"])
-        try:
-            result = {
-                "metric": params["name"],
-                "columns": bounded.columns,
-                "rows": bounded.rows,
-                "sql": sql,
-                "governed": False,
-                "context": None,  # spec rev 10: no served page exists for ad-hoc metrics
-                "definition": params,  # echoed definition
-                "staged_as": str(reserved[0]),
-                "staged_context_as": str(reserved[1]),
-                "result": query_results.completeness(len(bounded.rows)),
-            }
-            query_results.account_rows(self._limits, result, bounded.rows)
-            query_results.finalize_response(self._limits, result, response_measure=self._measure)
-            if budget.expired():  # no staging after expiry (spec 0014 §6)
-                raise query_results.deadline_refusal(budget.seconds)
-            # The SHARED compiled ad-hoc staging operation (moved intact into
-            # ariadne.proposals, issue #34): the OSI model + draft OKF page land
-            # in the legacy staging store — ungoverned, discoverable, never a
-            # Git proposal, never admitted.
-            proposals.stage_reserved_ad_hoc(reserved, envelope, params)
-        except BaseException:
-            proposals.release_reserved(reserved)  # an output refusal stages nothing
-            raise
+        result = {
+            "metric": params["name"],
+            "columns": bounded.columns,
+            "rows": bounded.rows,
+            "sql": sql,
+            "governed": False,
+            "context": None,  # spec rev 10: no served page exists for ad-hoc metrics
+            "definition": params,
+            "persistence": {"status": "not_saved"},
+            "result": query_results.completeness(len(bounded.rows)),
+        }
+        query_results.account_rows(self._limits, result, bounded.rows)
+        query_results.finalize_response(self._limits, result, response_measure=self._measure)
         if budget.expired():
-            # Fix pass 2, finding 1a (spec 0014 §6): staging completed but the
-            # budget is spent — no successful complete result is returned after
-            # exhaustion. The fulfilled reservation is NOT released (the write
-            # happened); the refusal reports the staging honestly instead of
-            # claiming nothing occurred, mirroring the spec's
-            # network-failure-after-staging stance (§5).
-            raise query_results.deadline_refusal(budget.seconds, staging_status="staged")
+            raise query_results.deadline_refusal(budget.seconds)
         return result
 
     async def _compile_adhoc(self, envelope: dict, name: str, dimensions: list[str]) -> str:
         """Render-gate compile (ADR-0008) of the ephemeral model — the only gate
         between tool args and execution. Returns the compiled SQL; raises
         ValueError carrying the compiler's verbatim reason (spec §7). No files
-        are touched: the envelope is compiled in memory; the served semantic dir
-        and everything outside staging is never written."""
+        are touched: the envelope is compiled in memory."""
         try:
             return render(envelope, dimensions)
         except ValueError:

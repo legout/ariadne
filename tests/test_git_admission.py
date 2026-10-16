@@ -119,7 +119,7 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
     """Issue #37 [1]: ONLY an explicitly confirmed, reviewed and validated
     revision activates — the candidate's commit and bytes are unchanged by
     admission — and the managed runtime answers from the pinned snapshot with
-    hand-computed values, staging ad-hoc/Answer Example work in the ORIGINAL
+    hand-computed values while ad-hoc execution stays ephemeral; Answer Example writes stay in
     project-owned stores without moving one snapshot byte."""
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
@@ -222,8 +222,8 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
     assert pinned["admission"]["revision"] == revision
     assert "revised" in "".join(pinned["context"]["policies"])  # served page is the pinned one
 
-    # the ad-hoc path and a confirmed Answer Example land in the ORIGINAL
-    # project-owned stores — never inside the pinned artifact root
+    # Ad-hoc execution is ephemeral; the confirmed Answer Example remains in
+    # the ORIGINAL project-owned store, never inside the pinned artifact root.
     adhoc = asyncio.run(
         fresh.define_metric(
             {
@@ -235,10 +235,10 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
         )
     )
     assert adhoc["governed"] is False
-    staged_model = project / "staging" / "semantic_layer" / "models" / "adhoc" / "event_ids.yml"
-    staged_page = project / "staging" / "context_layer" / "metrics" / "event_ids.md"
-    assert staged_model.is_file() and staged_page.is_file()
-    assert "status: draft" in staged_page.read_text(encoding="utf-8")
+    assert adhoc["persistence"] == {"status": "not_saved"}
+    assert "staged_as" not in adhoc and "staged_context_as" not in adhoc
+    assert not (project / "staging" / "semantic_layer" / "models" / "adhoc").exists()
+    assert not (project / "staging" / "context_layer" / "metrics").exists()
     assert not (snapshot / "staging").exists()
 
     saved = asyncio.run(
@@ -848,14 +848,10 @@ def test_cli_project_flag_serves_the_managed_route_and_refuses_without_admission
     assert "mutually exclusive" in json.loads(capsys.readouterr().err)["error"]["message"]
 
 
-def test_cli_managed_route_stages_under_the_selected_project_from_any_cwd(
+def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
     tmp_path, monkeypatch, capsys
 ):
-    """Issue #40 finding 1: an OMITTED --staging must not override the managed
-    factory's project-owned default — from a working directory OUTSIDE the
-    project, save-example/define-metric with --project stage under
-    <project>/staging (discoverable through the managed runtime), an explicit
-    --staging still wins, and nothing escapes into the operator's CWD."""
+    """Example writes stay project-scoped; ad-hoc metric results are ephemeral."""
     from ariadne.cli import main as cli
 
     project = complete_bundle_project(tmp_path)
@@ -912,7 +908,10 @@ def test_cli_managed_route_stages_under_the_selected_project_from_any_cwd(
         == 0
     )
     adhoc = json.loads(capsys.readouterr().out)
-    assert Path(adhoc["staged_as"]).is_relative_to((project / "staging").resolve())
+    assert adhoc["persistence"] == {"status": "not_saved"}
+    assert "staged_as" not in adhoc and "staged_context_as" not in adhoc
+    assert not list((project / "staging" / "semantic_layer" / "models" / "adhoc").glob("*.yml"))
+    assert not list((project / "staging" / "context_layer" / "metrics").glob("*.md"))
     assert not (operator_desk / "staging").exists()  # still nothing in the CWD
 
     # the project-owned draft is discoverable through the managed runtime

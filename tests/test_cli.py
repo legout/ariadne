@@ -208,7 +208,7 @@ def _definition(name):
     }
 
 
-def test_define_metric_from_stdin_stages_proposal(served, tmp_path, capsys):
+def test_define_metric_from_stdin_is_ephemeral(served, tmp_path, capsys):
     staging = tmp_path / "staging"
     definition = _definition("cli_probe_metric")
     code = run_cli(served, staging, "define-metric", stdin=io.StringIO(json.dumps(definition)))
@@ -218,15 +218,15 @@ def test_define_metric_from_stdin_stages_proposal(served, tmp_path, capsys):
     result = json.loads(out)
     assert result["governed"] is False
     assert result["rows"]
-    assert Path(result["staged_as"]).is_file()  # OSI proposal staged
-    assert Path(result["staged_context_as"]).is_file()  # OKF draft staged
+    assert result["persistence"] == {"status": "not_saved"}
+    assert "staged_as" not in result and "staged_context_as" not in result
+    assert not staging.exists()
 
 
-def test_omitted_staging_keeps_the_cwd_relative_legacy_default(
+def test_omitted_staging_does_not_create_a_cwd_relative_store(
     served, tmp_path, monkeypatch, capsys
 ):
-    """Issue #40 finding 1 (legacy seam): without --project, an OMITTED
-    --staging keeps the historical CWD-relative ./staging default exactly."""
+    """A successful ephemeral query does not create the legacy CWD store."""
     scratch = tmp_path / "scratch-cwd"
     scratch.mkdir()
     monkeypatch.chdir(scratch)
@@ -237,16 +237,8 @@ def test_omitted_staging_keeps_the_cwd_relative_legacy_default(
     )
     assert code == 0
     result = json.loads(capsys.readouterr().out)
-    # staged_as echoes the CWD-relative default verbatim; it resolves under scratch
-    assert (
-        Path(result["staged_as"])
-        == Path("staging")
-        / "semantic_layer"
-        / "models"
-        / "adhoc"
-        / "cli_default_staging_metric.yml"
-    )
-    assert Path(result["staged_as"]).resolve().is_relative_to((scratch / "staging").resolve())
+    assert result["persistence"] == {"status": "not_saved"}
+    assert not (scratch / "staging").exists()
 
 
 def test_define_metric_from_file(served, tmp_path, capsys):
@@ -259,7 +251,8 @@ def test_define_metric_from_file(served, tmp_path, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["metric"] == "cli_file_metric"
     assert result["governed"] is False and result["rows"]
-    assert Path(result["staged_as"]).name == "cli_file_metric.yml"
+    assert result["persistence"] == {"status": "not_saved"}
+    assert not staging.exists()
 
 
 def test_define_metric_serializes_decimals_as_strings(served, tmp_path, capsys):
@@ -276,9 +269,9 @@ def test_define_metric_serializes_decimals_as_strings(served, tmp_path, capsys):
     assert isinstance(value, str) and re.fullmatch(r"-?\d+\.\d{2}", value)  # no precision loss
 
 
-def test_search_context_surfaces_staged_draft_alongside_served(served, tmp_path, capsys):
+def test_search_context_does_not_surface_ephemeral_definition(served, tmp_path, capsys):
     staging = tmp_path / "staging"
-    description = "staged draft discovery probe cli_lane"
+    description = "ephemeral definition discovery probe cli_lane"
     definition = {
         "name": "cli_draft_metric",
         "description": description,
@@ -287,12 +280,14 @@ def test_search_context_surfaces_staged_draft_alongside_served(served, tmp_path,
         "dimensions": [],
     }
     assert run_cli(served, staging, "define-metric", stdin=io.StringIO(json.dumps(definition))) == 0
-    capsys.readouterr()
+    result = json.loads(capsys.readouterr().out)
+    assert result["persistence"] == {"status": "not_saved"}
+    assert not staging.exists()
     assert run_cli(served, staging, "search-context", description, "--limit", "10") == 0
     hits = json.loads(capsys.readouterr().out)
-    top = hits[0]
-    assert top["path"] == "metrics/cli_draft_metric.md" and top["draft"] is True
-    assert description in top["content"]
+    assert hits
+    assert not any(hit["path"] == "metrics/cli_draft_metric.md" for hit in hits)
+    assert not any(hit["draft"] for hit in hits)
     assert any(hit["path"] == "metrics/gross_margin.md" and hit["draft"] is False for hit in hits)
 
 

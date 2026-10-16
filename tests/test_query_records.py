@@ -592,7 +592,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert "02:30" not in str(refusal)  # the source value is never dumped
         body = _refusal(refusal)
         assert body["result"] == {"status": "refused", "complete": False, "returned_rows": 0}
-        assert body["rows"] == [] and body["staging_status"] == "not_staged"
+        assert body["rows"] == [] and body["persistence"] == {"status": "not_saved"}
 
     elif case == "nonexistent_spring_forward_refuses":
         rt = make_runtime(served, tmp_path / "staging")

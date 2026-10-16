@@ -552,8 +552,8 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         async def search_context(query: str) -> list[dict]:
             """Search the Context Layer (OKF pages) for business rules; ranked matches.
 
-            Includes auto-staged ad-hoc proposals awaiting promotion; those hits are
-            marked draft: true (served pages are draft: false).
+            Includes existing legacy context drafts marked draft: true; ephemeral
+            ad-hoc metric definitions are not saved as Context Layer pages.
             """
             return await _runtime().search_context(query)
 
@@ -627,8 +627,8 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         @app.tool(structured_output=False)
         @_tool_errors
         async def define_metric(definition: dict) -> dict | CallToolResult:
-            """Define an ad-hoc metric for a question no governed metric answers:
-            compiled, executed read-only, auto-staged for human promotion.
+            """Define and execute an ad-hoc metric for a question no governed metric answers.
+            It runs read-only and is not saved; explicit retention uses existing Authoring edits.
 
             Args:
                 definition: {name, description, source, expression, dimensions?, time_field?}
@@ -641,16 +641,15 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     child-grain fact model, or fact weight allocation), i.e. pre-aggregate
                     the many side to the fact grain inside source, or the definition is
                     rejected. Invalid definitions return the compiler
-                    errors verbatim; nothing is staged or executed. Success returns rows,
+                    errors verbatim; nothing is saved or executed. Success returns rows,
                     the compiled SQL (provenance), governed: false, the echoed definition,
-                    and the staging paths of the auto-staged proposal (OSI model under
-                    semantic_layer/models/adhoc/ plus an OKF draft under
-                    context_layer/metrics/ that search_context can find).
+                    and persistence: {status: not_saved}. To retain a definition, use the
+                    existing revision-checked Authoring workflow; no save flag is added.
             """
             try:
                 runtime = _runtime()
                 return await runtime.define_metric(definition)
-            except QueryResultError as exc:  # refusal staged nothing
+            except QueryResultError as exc:  # refusal saves no authored artifact
                 return _refusal(exc)
             except Exception as exc:  # fix pass 1, finding 2c: fitting errors keep
                 bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
@@ -1390,7 +1389,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--semantic", default="semantic_layer", help="served OSI layer directory")
     parser.add_argument("--context", default="context_layer", help="served OKF layer directory")
     parser.add_argument(
-        "--staging", default="staging", help="staging root for auto-staged ad-hoc proposals"
+        "--staging", default="staging", help="legacy staging root for draft workflows"
     )
     parser.add_argument(
         "--http",
@@ -1507,7 +1506,7 @@ def main(argv: list[str] | None = None) -> int:
                         f"refusal form on this transport (largest {size} bytes) — tighten "
                         "nothing further"
                     )
-            # The actual-transport preflight the core coordinates before staging.
+            # The actual-transport preflight the core coordinates before returning.
             runtime._measure = _mcp_result_bytes
         return runtime
 

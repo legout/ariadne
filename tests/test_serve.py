@@ -856,8 +856,7 @@ def test_define_metric_rejects_unsane_name(facade):
         )
 
 
-def test_define_metric_name_collision_never_overwrites(facade):
-    """§8.11: two successes with the same name -> two files, second suffixed."""
+def test_define_metric_repeated_calls_are_ephemeral(facade):
     definition = {
         "name": "collision_probe_metric",
         "description": "same name twice",
@@ -865,35 +864,18 @@ def test_define_metric_name_collision_never_overwrites(facade):
         "expression": "SUM(amount)",
         "dimensions": [],
     }
+    _adhoc, before = _adhoc_dir(facade)
     first = asyncio.run(facade.define_metric(dict(definition)))
-    first_path = Path(first["staged_as"])
-    assert first_path.name == "collision_probe_metric.yml"
-    original_bytes = first_path.read_bytes()
-    first_page = Path(first["staged_context_as"])
-    assert first_page.name == "collision_probe_metric.md"
-    first_page_bytes = first_page.read_bytes()
-
     second = asyncio.run(facade.define_metric(dict(definition)))
-    second_path = Path(second["staged_as"])
-    assert second_path.name == "collision_probe_metric-2.yml"
-    assert first_path.exists() and second_path.exists()  # both files present
-    assert first_path != second_path  # distinct names
-    assert first_path.read_bytes() == original_bytes  # first proposal never overwritten
-    # spec rev 4 §8.12: the collision suffixes the context page too — two pages,
-    # distinct names, first draft untouched.
-    second_page = Path(second["staged_context_as"])
-    assert second_page.name == "collision_probe_metric-2.md"
-    assert first_page.is_file() and second_page.is_file()
-    assert first_page != second_page
-    assert first_page.read_bytes() == first_page_bytes
+    assert first["rows"] == second["rows"]
+    assert first["persistence"] == second["persistence"] == {"status": "not_saved"}
+    assert "staged_as" not in first and "staged_context_as" not in first
+    assert "staged_as" not in second and "staged_context_as" not in second
+    assert _adhoc_dir(facade)[1] == before
 
 
-def test_define_metric_stages_model_and_context_page(facade):
-    """Spec rev 4 §4/§8.12: success leaves BOTH the OSI model proposal and a
-    DISCOVERABLE OKF context-page draft — search_context surfaces the staged
-    page (marked draft: true) before any promotion, while unrelated text never
-    surfaces it and served pages stay draft: false."""
-    description = "probe for the auto-staged OKF draft"
+def test_define_metric_does_not_create_a_context_draft(facade):
+    description = "probe for an unsaved ad-hoc definition"
     result = asyncio.run(
         facade.define_metric(
             {
@@ -905,32 +887,12 @@ def test_define_metric_stages_model_and_context_page(facade):
             }
         )
     )
-    model = Path(result["staged_as"])
-    page = Path(result["staged_context_as"])
-    assert model.is_file() and model.parent.name == "adhoc"
-    assert page.is_file()
-    assert Path("context_layer", "metrics") == Path(*page.parts[-3:-1])
-    text = page.read_text()
-    assert "# page_probe_metric" in text  # H1 name
-    assert description in text  # description
-    assert "- status" in text  # dimensions list
-    assert "auto-staged ad-hoc proposal awaiting promotion" in text.lower()  # marker
-    assert "type: metric" in text and "status: draft" in text and "generated:" in text
-    assert "- orders" in text  # sources from the definition's source tables
-
-    # Discoverability (rev 4 §4): the description's own terms rank the staged
-    # draft first, flagged as a draft — pre-promotion, never masquerading.
-    top = asyncio.run(facade.search_context(description))[0]
-    assert top["path"] == "metrics/page_probe_metric.md"
-    assert top["draft"] is True
-    assert description in top["content"]
-    # The same response carries served pages, marked non-draft — distinguishable.
+    assert result["persistence"] == {"status": "not_saved"}
+    assert "staged_as" not in result and "staged_context_as" not in result
+    draft = Path(facade.staging_dir) / "context_layer" / "metrics" / "page_probe_metric.md"
+    assert not draft.exists()
     hits = asyncio.run(facade.search_context(description))
-    assert any(hit["path"] == "metrics/gross_margin.md" and hit["draft"] is False for hit in hits)
-    # Unrelated text (served-page terms absent from the draft) never surfaces it.
-    misses = asyncio.run(facade.search_context("gross margin"))
-    assert not any("page_probe_metric" in hit["path"] for hit in misses)
-    assert not any(hit["draft"] for hit in misses)  # only served pages match
+    assert not any(hit["path"] == "metrics/page_probe_metric.md" for hit in hits)
 
 
 _INJECTION_SOURCE = "orders) ; CREATE TEMP TABLE pwned(x int); SELECT * FROM (SELECT 1"
@@ -1092,6 +1054,7 @@ def test_define_metric_allows_grain_preserving_join(facade):
     """§13 grain guard upside: the many-to-one direction (orders ⋈ customers on
     the customers primary key) stays legitimate — same shape as the ad-hoc
     acceptance definition; the guard must not reject it."""
+    _adhoc, before = _adhoc_dir(facade)
     result = asyncio.run(
         facade.define_metric(
             {
@@ -1107,8 +1070,8 @@ def test_define_metric_allows_grain_preserving_join(facade):
         )
     )
     assert result["governed"] is False
-    Path(result["staged_as"]).unlink(missing_ok=True)
-    Path(result["staged_context_as"]).unlink(missing_ok=True)
+    assert result["persistence"] == {"status": "not_saved"}
+    assert _adhoc_dir(facade)[1] == before
 
 
 def test_serve_facade_is_the_runtime_class():

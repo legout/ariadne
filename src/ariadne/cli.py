@@ -50,7 +50,7 @@ exactly two candidates are examined — the working directory, then ``./served``
 — and exactly one must be valid (zero -> actionable error naming both layouts,
 two -> ambiguity error demanding ``--served``; the CLI never guesses). Root
 selection fails before a source connection is opened, and a ``define-metric``
-payload is parsed before the runtime executes or stages anything (spec §9).
+payload is parsed before the runtime opens a source or executes it (spec §9).
 """
 
 import argparse
@@ -132,7 +132,7 @@ def _resolve_served_root(explicit: str | None) -> Path:
 
 def _read_definition(file: str | None, stdin: Any, what: str = "definition") -> dict:
     """One JSON object from --file PATH or stdin (spec §4). Parsed before the
-    runtime is constructed, so invalid JSON can execute and stage nothing
+    runtime is constructed, so malformed input prevents source opening or execution
     (spec §9)."""
     try:
         text = Path(file).read_text(encoding="utf-8") if file else stdin.read()
@@ -175,9 +175,8 @@ def build_parser() -> _Parser:
     common.add_argument(
         "--staging",
         default=None,
-        help="staging root for auto-staged ad-hoc proposals (default: ./staging; an "
-        "omitted --staging on the managed --project route stages under "
-        "<project>/staging)",
+        help="legacy staging root for draft workflows (default: ./staging; an "
+        "omitted --staging on the managed --project route uses <project>/staging)",
     )
     parser = _Parser(
         prog="ariadne",
@@ -205,7 +204,7 @@ def build_parser() -> _Parser:
     get.add_argument("--start", help="range start on the primary date dimension")
     get.add_argument("--end", help="range end on the primary date dimension")
 
-    define = sub.add_parser("define-metric", parents=[common], help="define an ad-hoc metric")
+    define = sub.add_parser("define-metric", parents=[common], help="run an unsaved ad-hoc metric")
     define.add_argument("--file", help="JSON definition file (stdin when absent)")
 
     metrics = sub.add_parser(

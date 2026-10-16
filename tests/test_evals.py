@@ -329,7 +329,7 @@ def independent_adhoc_means(db_path: Path) -> dict:
     return {"per_customer": per_customer, "overall": overall, "customer_ids": ids}
 
 
-def test_adhoc_round_trip_stages_proposal_then_cleans_up(facade, demo_db):
+def test_adhoc_evaluation_is_ephemeral(facade, demo_db):
     definition = {
         "name": ADHOC_ENTRY["metric"],
         "description": "Mean billable order amount per customer in USD",
@@ -337,29 +337,21 @@ def test_adhoc_round_trip_stages_proposal_then_cleans_up(facade, demo_db):
         "expression": _MEAN_EXPR,
         "dimensions": ADHOC_ENTRY["dimensions"],
     }
-    staged: list[Path] = []
-    try:
-        result = asyncio.run(facade.define_metric(dict(definition)))
-        assert result["governed"] is False
-        assert result["sql"]  # provenance SQL present
-        assert result["definition"]["source"] == _JOIN_SOURCE  # echoed definition
-        staged_model = Path(result["staged_as"])
-        staged_page = Path(result["staged_context_as"])
-        assert staged_model.is_file() and staged_model.parent.name == "adhoc"
-        assert staged_page.is_file()
-        staged = [staged_model, staged_page]
+    result = asyncio.run(facade.define_metric(dict(definition)))
+    assert result["governed"] is False
+    assert result["sql"]  # provenance SQL present
+    assert result["definition"]["source"] == _JOIN_SOURCE  # echoed definition
+    assert result["persistence"] == {"status": "not_saved"}
+    assert "staged_as" not in result and "staged_context_as" not in result
 
-        oracle = independent_adhoc_means(demo_db)
-        expected = oracle["per_customer"]
-        actual = {row["customer_id"]: row[ADHOC_ENTRY["metric"]] for row in result["rows"]}
-        assert set(actual) == set(expected) == set(oracle["customer_ids"]), (
-            "every customer ID in the demo must appear with a billable-order mean"
-        )
-        for customer_id, value in actual.items():
-            assert_close(value, expected[customer_id], f"mean per customer {customer_id}")
-    finally:
-        for path in staged:
-            path.unlink(missing_ok=True)  # clean it up after (spec §13)
+    oracle = independent_adhoc_means(demo_db)
+    expected = oracle["per_customer"]
+    actual = {row["customer_id"]: row[ADHOC_ENTRY["metric"]] for row in result["rows"]}
+    assert set(actual) == set(expected) == set(oracle["customer_ids"]), (
+        "every customer ID in the demo must appear with a billable-order mean"
+    )
+    for customer_id, value in actual.items():
+        assert_close(value, expected[customer_id], f"mean per customer {customer_id}")
     adhoc = Path(facade.staging_dir) / "semantic_layer" / "models" / "adhoc"
     assert not adhoc.exists() or not any(adhoc.iterdir()), "staging left dirty"
 
@@ -467,26 +459,21 @@ def test_define_metric_accepts_preaggregated_one_to_many(trap_facade):
     """§13 disposition (sanctioned shape): pre-aggregating the many side to the
     fact grain inside source (GROUP BY) passes the guard and returns the
     DEDUPLICATED totals — NA 300 / EMEA 400, never the inflated 700/400."""
-    staged: list[Path] = []
-    try:
-        result = asyncio.run(
-            trap_facade.define_metric(
-                {
-                    "name": "orders_total_preagg",
-                    "description": "deduplicated order total via pre-aggregated lines",
-                    "source": PREAGG_SOURCE,
-                    "expression": "SUM(amount)",
-                    "dimensions": ["region"],
-                }
-            )
+    result = asyncio.run(
+        trap_facade.define_metric(
+            {
+                "name": "orders_total_preagg",
+                "description": "deduplicated order total via pre-aggregated lines",
+                "source": PREAGG_SOURCE,
+                "expression": "SUM(amount)",
+                "dimensions": ["region"],
+            }
         )
-        staged = [Path(result["staged_as"]), Path(result["staged_context_as"])]
-        assert result["governed"] is False
-        actual = {row["region"]: row["orders_total_preagg"] for row in result["rows"]}
-        assert actual == pytest.approx({"NA": 300.0, "EMEA": 400.0})
-    finally:
-        for path in staged:
-            path.unlink(missing_ok=True)  # clean it up after (spec §13)
+    )
+    assert result["governed"] is False
+    assert result["persistence"] == {"status": "not_saved"}
+    actual = {row["region"]: row["orders_total_preagg"] for row in result["rows"]}
+    assert actual == pytest.approx({"NA": 300.0, "EMEA": 400.0})
     _assert_staging_clean(trap_facade)
 
 

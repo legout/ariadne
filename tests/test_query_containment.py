@@ -264,9 +264,9 @@ def test_ad_hoc_io_authority_refuses_before_duckdb(case, runtime, project, pre_d
     ],
 )
 def test_sanctioned_definitions_stay_usable(name, source, expression, runtime):
-    """Issue #59 AC3: sanctioned SELECT, CTE and grain-safe-join definitions
-    over the declared relation still execute — 2 + 3 = 5 from the fixture, not
-    from implementation output — and stage their proposals as before."""
+    """Issue #59 AC3: sanctioned SELECT, CTE and grain-safe joins still
+    execute — 2 + 3 = 5 from the fixture, not implementation output — and are
+    not persisted."""
     result = asyncio.run(
         runtime.define_metric(
             {
@@ -281,9 +281,7 @@ def test_sanctioned_definitions_stay_usable(name, source, expression, runtime):
     assert result["governed"] is False
     (value,) = (row[name] for row in result["rows"])
     assert value == 5  # independent expectation: fixture values 2 and 3
-    assert Path(result["staged_as"]).is_file() and Path(result["staged_context_as"]).is_file()
-    Path(result["staged_as"]).unlink()
-    Path(result["staged_context_as"]).unlink()
+    assert result["persistence"] == {"status": "not_saved"}
 
 
 def test_attached_catalog_shorthand_stays_usable(tmp_path):
@@ -312,6 +310,6 @@ def test_attached_catalog_shorthand_stays_usable(tmp_path):
         )
         assert result["governed"] is False
         assert result["rows"] == [{"attached_sum": 5}]
-        assert Path(result["staged_as"]).is_file()
+        assert result["persistence"] == {"status": "not_saved"}
     finally:
         runtime.con.close()

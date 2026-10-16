@@ -253,7 +253,7 @@ def _stepped_clock(jump_after: int):
         "framing_reserve_covers_worst_case_ids",
         "refusal_forms_and_identifiers_are_bounded",
         "cli_replaces_oversized_error_representations",
-        "refused_definitions_stage_nothing_narrowed_retry_stages_suffixes_hold",
+        "definitions_are_ephemeral_after_refusal_and_retry",
         "refusal_payloads_are_bounded",
         "host_config_section_validation",
         "host_config_file_tightens_the_cli",
@@ -292,7 +292,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
             "complete": False,
             "returned_rows": 0,
         }
-        assert body["rows"] == [] and body["staging_status"] == "not_staged"
+        assert body["rows"] == [] and body["persistence"] == {"status": "not_saved"}
         assert staged_files(staging) == []  # refusal stages NOTHING
 
     elif case == "input_rows_never_limited_sum_is_60":
@@ -575,7 +575,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert query_results.result_json_bytes(body) < 2000
         assert body["error"]["observed"]["columns"][-1] == "+12 more"  # capped list
 
-    elif case == "refused_definitions_stage_nothing_narrowed_retry_stages_suffixes_hold":
+    elif case == "definitions_are_ephemeral_after_refusal_and_retry":
         staging = tmp_path / "staging"
         rt = make_runtime(served, staging, max_rows=2)
         definition = {
@@ -588,31 +588,16 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         with pytest.raises(QueryResultError):
             asyncio.run(rt.define_metric(dict(definition)))
         assert staged_files(staging) == []
-        # a fitting narrowed retry executes anew and stages normally — and the
-        # released reservation leaves the unsuffixed name free
+        # A fitting narrowed retry executes anew and remains ephemeral.
         narrowed = {**definition, "dimensions": []}
         first = asyncio.run(rt.define_metric(dict(narrowed)))
-        assert Path(first["staged_as"]).name == "staging_probe.yml"
-        assert Path(first["staged_context_as"]).name == "staging_probe.md"
         assert first["rows"] == [{"staging_probe": 60.0}]
-        # FIX 8: capture the FIRST artifacts BEFORE the second invocation
-        first_model = Path(first["staged_as"]).read_bytes()
-        first_page = Path(first["staged_context_as"]).read_bytes()
-        # an identical success still creates a collision-suffixed candidate
+        assert first["persistence"] == {"status": "not_saved"}
+        assert "staged_as" not in first and "staged_context_as" not in first
         second = asyncio.run(rt.define_metric(dict(narrowed)))
-        assert Path(second["staged_as"]).name == "staging_probe-2.yml"
-        assert Path(second["staged_context_as"]).name == "staging_probe-2.md"
-        # the first proposal was never overwritten...
-        assert Path(first["staged_as"]).read_bytes() == first_model
-        assert Path(first["staged_context_as"]).read_bytes() == first_page
-        # ...and both candidates carry independently meaningful content
-        second_model = Path(second["staged_as"]).read_bytes()
-        assert b"staging_probe" in first_model and b"semantic_model" in first_model
-        assert b"staging_probe" in second_model and b"semantic_model" in second_model
-        second_page = Path(second["staged_context_as"]).read_bytes()
-        assert b"status: draft" in first_page and b"status: draft" in second_page
-        assert Path(first["staged_as"]) != Path(second["staged_as"])
-        assert len(staged_files(staging)) == 4
+        assert second["rows"] == first["rows"]
+        assert second["persistence"] == {"status": "not_saved"}
+        assert staged_files(staging) == []
 
     elif case == "cli_replaces_oversized_error_representations":
         from ariadne import cli
@@ -809,7 +794,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         "expiry_between_phases_never_returns_success",
         "request_budget_spans_construction_and_first_operation",
         "cli_threads_one_request_budget_through_construction",
-        "post_staging_expiry_reports_staged_honestly",
+        "expiry_after_collection_refuses_without_persistence",
         "non_result_request_discards_the_request_budget",
         "interrupted_collection_refuses",
         "fresh_budget_no_inherited_cancellation",
@@ -904,14 +889,11 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         assert refusal["error"]["code"] == "execution_deadline"
         assert refusal["result"]["complete"] is False
 
-    elif case == "post_staging_expiry_reports_staged_honestly":
+    elif case == "expiry_after_collection_refuses_without_persistence":
         staging = tmp_path / "staging"
         rt = make_runtime(served, staging)
-        # a stepped clock expiring between the pre-write check and the
-        # post-staging return (the test's clock starts at the operation —
-        # construction is not counted here): the artifacts ARE written, and
-        # the refusal says so
-        monkeypatch.setattr(execution, "_deadline_clock", _stepped_clock(9))
+        # The final response check refuses when the deadline expires there.
+        monkeypatch.setattr(execution, "_deadline_clock", _stepped_clock(8))
         with pytest.raises(QueryResultError) as raised:
             asyncio.run(
                 rt.define_metric(
@@ -927,10 +909,8 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         assert raised.value.code == "execution_deadline"
         body = raised.value.refusal()
         assert body["result"]["complete"] is False
-        # honest: staging HAPPENED — never a claim that nothing was staged
-        assert body["staging_status"] == "staged"
-        assert (staging / "semantic_layer" / "models" / "adhoc" / "post_stage_probe.yml").is_file()
-        assert (staging / "context_layer" / "metrics" / "post_stage_probe.md").is_file()
+        assert body["persistence"] == {"status": "not_saved"}
+        assert staged_files(staging) == []
 
     elif case == "non_result_request_discards_the_request_budget":
         real = time.monotonic
