@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-16
+
+Fifth release: Git-only durable authoring (#74) on the Python 3.14 / MCP 2.2.0 core (#73).
+
 - **Core Python 3.14 and MCP 2.2.0 (spec 0026, #73)** — `ariadne-data` now
   requires Python >=3.14 (the floor change ends 3.12/3.13 support; scoped
   ADR-0008 amendment) and pins the optional `mcp` extra and development
@@ -14,6 +18,29 @@
   Ariadne Agent and Tau/tau-mcp are explicitly deferred: their files, pins
   and compatibility with this Core remain unchanged and unverified until
   that later work; the original complete #73 is not closed by this change.
+- **Git-only durable authoring (spec 0027, ADR-0024, #74)** — Git is the only durable
+  revision model for authored state. Ad-hoc `define_metric` execution is ephemeral
+  (`persistence: {status: not_saved}`, no staging writes); retention goes through
+  explicit revision-checked Authoring edits into unadmitted candidates. Answer
+  Examples live in `answer_examples/` inside the same candidate snapshot and become
+  reusable methods only through common human Git Review Admission; default search
+  stays admitted-only, with explicit unadmitted candidate browsing. Ingestion writes
+  derived pages/provenance into a named candidate (`--project`, `--proposal`,
+  `--expected-revision`) while original documents remain external operator-managed
+  inputs with digest-bound references verified at validation (validator v6). Legacy
+  staging/Promotion/migration routes, the separate Example review, direct-root serving
+  and their console entry points (`ariadne-author`, `ariadne-promote`,
+  `ariadne-example-review`) are removed: public query/discovery construction is
+  project-bound with exact human admission (no plain-root or mutable-candidate
+  fallback), `ariadne-validate` is compile-only static checking, and
+  `ariadne-init`/`ariadne setup` scaffold Git-first without running `git init` or
+  granting source access. Breaking, new-project-only cleanup: there is no legacy
+  migration/export tooling; operators arrange new projects and private originals
+  themselves. Shared #76 interfaces remain unapproved.
+- **Packaging** — `ariadne-agent` 0.4.0 aligns its Python floor to `>=3.14` with the
+  core it ships alongside; the agent's runtime compatibility with the new core
+  remains deferred and unverified (#73), and publishing still tests the core wheel
+  only.
 
 ## 0.3.1 - 2026-10-14
 
