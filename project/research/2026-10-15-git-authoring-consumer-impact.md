@@ -147,3 +147,28 @@ outcomes of this note. Catalog skill provenance is planning-contract v1 with
 installed file SHA-256
 `5adbbd63616169df00774d926e0daea2074b90c9cf213b508aea62e84942c200`;
 the precise upstream installed catalog commit is unknown.
+
+## 2026-10-16: public-only execution amendment
+
+The owner explicitly directed: “Wir wollen die lumio App vorerst nicht weiter
+berücksichtigen. Fokussiere dich nur auf lumio-Wiki und wenn nötig,
+lumio-lancedb”. Specification/plan 0008 r2 and ADR-0029 record this scope change.
+Do not continue private migration/tests/CI provisioning. The partial C0 commit
+`741546a` and its six post-handoff formatter-only deltas are preserved, not
+accepted, integrated, or cleaned. The worker confirmed it holds no writer
+ownership. Private compatibility is still known-unresolved; this is not release
+or integration authorization.
+
+Earlier public baseline preparation at unchanged `c3b68db` actually ran
+`test_managed_ingest.py` and `test_s3_publish.py`: 60 passed. Both baseline
+wheels were built into the retained private run artifact directory and their
+installed bytes independently verified. The former private-wheel provisioning
+decision is no longer an implementation dependency. Current public work starts
+at G1; existing public manifest/admission/Source/Evidence semantics are unchanged.
+No real shared KB proposal or source data was migrated.
+
+A turn-end formatter wrote six C0 files after its reported clean commit. The
+parent preserved the delta and independently compared all six ASTs as equal;
+the child confirmed harness automation, not a second implementer. The worktree
+is intentionally left dirty and unaccepted, with its original patch retained
+in the existing run state. No configuration or harness behavior was changed.

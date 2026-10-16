@@ -14,6 +14,12 @@ design commit `81ed0f7c15c8295cf0799c88d08a570749ff5f73`.** This opens planning,
 not runtime implementation or integration. Behavior and acceptance belong to
 [specification 0008](../specs/2026-10-15-0008-git-native-knowledge-authoring.md).
 
+**Owner scope amendment, 2026-10-16:** focus only on `lumio-wiki` and necessary
+`lumio-lancedb` work; defer the private application entirely. Specification/plan
+0008 r2 capture this explicit instruction. The public Git-authoring design and
+supervised execution stay approved; the earlier private C0 prerequisite does
+not apply to isolated public candidate work.
+
 Git branches/worktrees and native diff/review become the only persistent
 Knowledge Base authoring lifecycle. A stored Ingest Proposal, pending source
 transition tied to a proposal, or application-owned merge/review state machine
@@ -74,8 +80,9 @@ Context Provider, namespace mappings, or governed-query integration.
   boundary and was rejected.
 
 The change breaks proposal-facing CLI/SDK contracts and requires an explicit
-legacy export path. The private application is an observed consumer, not a
-hypothetical one: its isolated transition candidate must pin old wheels and
-refuse KB writes server-side before API retirement can be considered safe.
-There is no new Git Workshop in this scope, no release approval, and no target
-branch integration authority.
+legacy export path. The private app is a known consumer, but its migration and
+CI work are deferred by the owner; its partial C0 result is not accepted or
+integrated. This does not prove consumer compatibility or clear specification
+0006's breaking-release/adoption gate. There is no private-app work, new Git
+Workshop, release approval, or target branch integration authority in the
+current public-only scope.

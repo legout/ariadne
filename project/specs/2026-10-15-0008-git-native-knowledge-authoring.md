@@ -1,6 +1,14 @@
 # Specification 0008: Git-native Knowledge Authoring
 
-**Written revision:** 1 — owner-approved.
+**Written revision:** 2 — owner-directed public-foundation-only scope amendment.
+
+**Scope amendment, 2026-10-16:** the owner explicitly instructed:
+“Wir wollen die lumio App vorerst nicht weiter berücksichtigen. Fokussiere dich
+nur auf lumio-Wiki und wenn nötig, lumio-lancedb”. This supersedes the private
+app slice/AC6 and its prerequisite for isolated public implementation. Public
+engine behavior, manifest/admission interfaces and AC1–AC5/AC7 remain the
+approved revision-1 contract. Existing supervised execution authority continues
+for that retained scope; no new integration, push or release is authorized.
 
 **Approval:** on 2026-10-15 the owner replied **“Ja Freigabe”** to the explicit
 request to approve written specification 0008 r1 and ADR-0029, presented in
@@ -367,41 +375,22 @@ Release numbering and public publication are not part of this specification.
 Unknown external consumers remain a release risk; absence of repository matches
 is not evidence that a supported API is unused.
 
-## 8. Private application: KB-read-only transition candidate
+## 8. Private application: deferred by the owner
 
-Prepare a separate isolated candidate in `legout/lumio`; do not edit its target
-branch. The owner approved locally freezing baseline wheels after PyPI metadata
-returned HTTP 404 for both package names and version 0.1.2. During separately
-approved implementation, build both unchanged baseline packages from
-`c3b68db233f8aa98a39380a0099ff2b800a70c55` into a retained private wheel archive;
-record that source commit and each actual wheel SHA-256. This is a local build,
-not a release or upload. No wheel digest is invented in this design.
+The owner removed the private application from this execution scope on
+2026-10-16 (instruction quoted in the header). Do not continue its C0 migration,
+tests, CI provisioning, review, or rollout, and do not require its candidate
+before implementing the public foundation. Preserve its incomplete work and
+artifacts without claiming acceptance or cleaning them up.
 
-Replace sibling editable sources with exact wheel artifact references and
-hash-locked resolution (`lumio-wiki==0.1.2`, `lumio-lancedb==0.1.2`, including
-matching extras). Preserve the wheel archive outside disposable worktrees and
-provide it as an explicit installation prerequisite; do not silently fall back
-to PyPI or editable source. Verify installed modules are those wheel bytes rather
-than the new SDK checkout. Preserve reader/runtime contracts against that
-baseline. Incompatible/unavailable baseline build dependencies block this slice
-for owner disposition, not an implicit dependency upgrade or release.
-
-Server-side refusal covers every KB mutation entry: source ingest/promotion,
-proposal publish/discard/create, source registration/retire/reactivate,
-canonical page/control/ontology edits, rename/remove/merge/category moves,
-maintenance apply, imports, direct-write/override, and KB storage publish paths.
-Hiding UI actions alone is insufficient. Reader chat and temporary private
-Conversation Sources, existing reading/retrieval, authentication/account
-administration, audit, and safe read-only sync are not disabled merely because
-KB authoring is disabled. Sync must not publish or import an unadmitted tree.
-Old Write Mode settings cannot reopen the disabled write routes.
-
-Keep pending private proposal data intact for the explicit migration path;
-turning off authoring neither disposes nor publishes it. The transition is
-clearly disclosed in the Workshop. Designing a Git-backed browser Workshop is
-out of scope. API retirement readiness requires the pinned read-only consumer
-candidate and evidence, not merely an inventory; actual rollout remains
-separately authorized.
+The initial consumer inventory already established real proposal-facing app
+dependencies. That known incompatibility is not disproved or repaired by this
+scope change. Public-only isolated implementation may retire those APIs under
+this approved design; production integration and a breaking release still need
+separate explicit compatibility/adoption disposition under specification 0006.
+No new private-repo work, migration, source-wheel vendoring or publication is
+authorized here. Revision 1 in Git retains the original private transition
+design as history, not current executable scope.
 
 ## 9. Observable acceptance and lean assurance
 
@@ -412,7 +401,7 @@ separately authorized.
 | AC3 | Confirm the reviewed revision for local storage and optional S3. Every page, graph/index, private binding, and receipt identifies that captured revision. Inject build/binding/activation failure or S3 CAS conflict: old readers still see only the prior complete version. Identical retry does not overwrite versions. |
 | AC4 | Register source B after reviewing a branch pinned to A; publication/inspection still use A. Explicit replacement/retirement reports the affected pages and eligible support accurately, without mutating old Evidence or creating pending proposals. Required retention refuses missing/corrupt exact artifacts. |
 | AC5 | Preview then explicitly export an unreviewed legacy proposal with a source transition and page mutation. Export preserves representable intent in an unadmitted Git branch; stale/unknown bindings block disposition, original/private history remains, retry does not overwrite edited output. |
-| AC6 | The private app candidate resolves old wheels, refuses authenticated direct requests to all KB write routes even with legacy direct-write settings, and retains a representative read/chat/citation path. No editable import reaches the new checkout. |
+| AC6 | Deferred/out of scope by the owner's 2026-10-16 amendment. Existing private-consumer incompatibility remains recorded; no private candidate or adoption proof is claimed. |
 | AC7 | Installed base wheel authors/validates/queries locally without Ariadne, model provider, server, GitHub, or LanceDB. Plain querying needs no Git executable. Optional retrieval/MCP remain same-version, visibility-safe and read-only. |
 
 Use focused existing checks wherever they establish these scenarios. The plan
@@ -420,8 +409,9 @@ assigns `existing-check`, `new-test`, or `no-new-test` per coherent validation
 unit, independently derived expectations, high-risk contract review before
 dependent work, and one parent-authorized fix pass plus one delta recheck.
 Full repository validation uses `uv run pytest -q -n 4`, never `-n auto`.
-Live S3/role enforcement and installed private consumer checks require their
-actual environments; unavailable capability is disclosed, not called passing.
+Live S3/visibility checks require their actual environments; unavailable
+capability is disclosed, not called passing. Private application checks and AC6
+are excluded from this public-only execution, not silently marked passed.
 
 ## 10. Capture checkpoint and execution handoff
 
@@ -432,8 +422,9 @@ actual environments; unavailable capability is disclosed, not called passing.
   is separate. Its scoped amendments are linked from affected source records;
   governing agent/skill operating examples change alongside the implemented
   replacement, never in advance on main.
-- Behavior: the owner-approved written revision 1 owns AC1–AC7 and the
-  interfaces above; approval reference is recorded in the header.
+- Behavior: approved revision-1 public behavior/interfaces remain unchanged;
+  revision 2 records the owner-directed exclusion of private §8/AC6. Active
+  acceptance is AC1–AC5 and AC7, with approval references in the header.
 - Uncertainty: no shared #76 interface is approved. Do not implement #2 against a
   guessed contract. The v1 manifest schema and semantic publication interface
   above are approved. Python symbol names/module layout remain implementation
