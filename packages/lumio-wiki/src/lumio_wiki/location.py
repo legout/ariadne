@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import msgspec
 
@@ -39,6 +39,9 @@ from lumio_wiki.knowledge_base import (
     ExtractionDiagnostic,
     KnowledgeBase,
     KnowledgeBaseError,
+    _fingerprint_sources,
+    _InMemoryKbSource,
+    _load_and_validate,
     load_knowledge_base,
 )
 from lumio_wiki.records import (
@@ -52,20 +55,53 @@ from lumio_wiki.records import (
     SourceFingerprint,
     ValidationReport,
 )
+from lumio_wiki.source_inspection import validate_published_version
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
+    from lumio_wiki.s3_location import S3Manifest
 
 # Stable identifier for the filesystem Location implementation. Future
 # implementations (S3, etc.) declare their own ``kind`` so traces and
 # diagnostics can name the resolved source without coupling to a class name.
 FILESYSTEM_LOCATION_KIND = "filesystem"
 
+#: The activation pointer basename at a publication root (shared layout with
+#: the S3 capability, which re-exports these from here).
+CURRENT_POINTER_OBJECT = "current.json"
+
+#: The per-version manifest basename whose presence marks a complete version.
+MANIFEST_OBJECT = "manifest.json"
+
+#: Stable identifier for the local immutable Published Version Location.
+LOCAL_PUBLISHED_LOCATION_KIND = "local-published"
+
+#: Directory of immutable version directories under a local publication root.
+VERSIONS_DIR_NAME = "versions"
+
+
+def published_version_path(destination: str | Path, version: str) -> Path:
+    """Return the immutable version directory for ``version`` at ``destination``."""
+    return Path(destination) / VERSIONS_DIR_NAME / version
+
+
+def published_pointer_path(destination: str | Path) -> Path:
+    """Return the expected-current pointer file at a local publication root."""
+    return Path(destination) / CURRENT_POINTER_OBJECT
+
+
 __all__ = [
     "FILESYSTEM_LOCATION_KIND",
     "FilesystemLocation",
     "KnowledgeBaseLocation",
     "KnowledgeBaseSnapshot",
+    "LOCAL_PUBLISHED_LOCATION_KIND",
+    "PublishedFilesystemLocation",
     "RemoteDerivedIndex",
+    "VERSIONS_DIR_NAME",
     "open_filesystem_knowledge_base",
     "open_knowledge_base",
+    "published_pointer_path",
+    "published_version_path",
 ]
 
 
@@ -377,6 +413,142 @@ class FilesystemLocation:
             validation_report=report,
             fingerprint=kb.source_fingerprint,
             location=self,
+        )
+
+
+class PublishedFilesystemLocation:
+    """A local immutable Published Version Location with a pointer layout.
+
+    Resolves a local publication destination (written by Git-native
+    publication, specification 0008) into an immutable Snapshot: the root's
+    ``current.json`` pointer is read ONCE, the named immutable version's
+    manifest is validated, every canonical file is materialized with its size
+    and SHA-256 verified, and only that version is loaded — a missing or
+    corrupt referenced version fails closed with a diagnostic instead of
+    falling back to any working tree. Passing ``version`` pins the Location
+    to one immutable version (rollback verification, historical reads); the
+    pointer is then never consulted.
+
+    Distinct from :class:`FilesystemLocation`: a plain directory load stays
+    version-free and is never silently labelled admitted, while this Location
+    always resolves exactly one admitted Published Version.
+    """
+
+    kind = LOCAL_PUBLISHED_LOCATION_KIND
+
+    def __init__(self, path: str | Path, *, version: str | None = None) -> None:
+        self._path = Path(path)
+        self._pinned_version = validate_published_version(version) if version else None
+
+    @property
+    def path(self) -> Path:
+        """The local publication destination this Location resolves."""
+        return self._path
+
+    @property
+    def version(self) -> str | None:
+        """The pinned immutable version, when this Location is pinned."""
+        return self._pinned_version
+
+    def describe(self) -> str:
+        where = f"local-published:{self._path}"
+        return f"{where}@{self._pinned_version}" if self._pinned_version else where
+
+    def read_pointer(self) -> str | None:
+        """Return the active version label, or ``None`` when no pointer exists."""
+        from lumio_wiki.s3_location import S3Pointer
+
+        pointer_file = published_pointer_path(self._path)
+        try:
+            raw = pointer_file.read_bytes()
+        except FileNotFoundError:
+            return None
+        try:
+            pointer = msgspec.json.decode(raw, type=S3Pointer)
+        except msgspec.DecodeError as exc:
+            raise KnowledgeBaseError(
+                f"publication pointer {pointer_file} is malformed: {exc}"
+            ) from exc
+        return validate_published_version(pointer.version)
+
+    def read_manifest(self, version: str) -> S3Manifest:
+        """Load and validate one immutable version's manifest."""
+        from lumio_wiki.s3_location import S3Manifest
+
+        version = validate_published_version(version)
+        manifest_file = published_version_path(self._path, version) / MANIFEST_OBJECT
+        try:
+            raw = manifest_file.read_bytes()
+        except FileNotFoundError as exc:
+            raise KnowledgeBaseError(
+                f"Published Version {version!r} at {self._path} has no manifest — "
+                "the version is absent or incomplete"
+            ) from exc
+        try:
+            manifest = msgspec.json.decode(raw, type=S3Manifest)
+        except msgspec.DecodeError as exc:
+            raise KnowledgeBaseError(
+                f"Published Version {version!r} manifest is malformed: {exc}"
+            ) from exc
+        if manifest.version != version:
+            raise KnowledgeBaseError(
+                f"Published Version {version!r} manifest names version {manifest.version!r}"
+            )
+        return manifest
+
+    def materialize(self, version: str, manifest: S3Manifest) -> dict[str, bytes]:
+        """Read every canonical file with size and digest verified."""
+        import hashlib
+
+        version_dir = published_version_path(self._path, version)
+        content: dict[str, bytes] = {}
+        for entry in manifest.files:
+            path = version_dir / entry.path
+            try:
+                raw = path.read_bytes()
+            except FileNotFoundError as exc:
+                raise KnowledgeBaseError(
+                    f"Published Version {version!r} is missing {entry.path!r}"
+                ) from exc
+            if len(raw) != entry.size:
+                raise KnowledgeBaseError(
+                    f"Published Version {version!r} file {entry.path!r} size "
+                    f"{len(raw)} != manifest size {entry.size}"
+                )
+            actual = hashlib.sha256(raw).hexdigest()
+            if actual != entry.digest:
+                raise KnowledgeBaseError(
+                    f"Published Version {version!r} file {entry.path!r} digest "
+                    f"{actual} != manifest digest {entry.digest}"
+                )
+            content[entry.path] = raw
+        return content
+
+    def resolve(self) -> KnowledgeBaseSnapshot:
+        """Resolve the pointer's (or pinned) immutable version into a Snapshot."""
+        version = self._pinned_version or self.read_pointer()
+        if version is None:
+            raise KnowledgeBaseError(
+                f"no published version pointer at {self._path}: nothing has been "
+                "admitted at this destination yet"
+            )
+        manifest = self.read_manifest(version)
+        content = self.materialize(version, manifest)
+        root = published_version_path(self._path, version)
+        source = _InMemoryKbSource(content, root=root)
+        fingerprint = _fingerprint_sources(source)
+        if fingerprint.digest != manifest.fingerprint:
+            raise KnowledgeBaseError(
+                f"Published Version {version!r} content fingerprint "
+                f"{fingerprint.digest} != manifest fingerprint {manifest.fingerprint}"
+            )
+        kb, report = _load_and_validate(source, fingerprint=fingerprint)
+        return KnowledgeBaseSnapshot(
+            knowledge_base=kb,
+            validation_report=report,
+            fingerprint=fingerprint,
+            location=self,
+            published_version=version,
         )
 
 

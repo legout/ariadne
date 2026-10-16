@@ -52,7 +52,7 @@ from lumio_wiki.knowledge_base import (
     _InMemoryKbSource,
     _load_and_validate,
 )
-from lumio_wiki.location import KnowledgeBaseSnapshot
+from lumio_wiki.location import CURRENT_POINTER_OBJECT, MANIFEST_OBJECT, KnowledgeBaseSnapshot
 from lumio_wiki.records import EXTRACTOR_VERSION
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
@@ -64,9 +64,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
 S3_LOCATION_KIND = "s3"
 
 # Object keys (relative to the Location prefix) for the version pointer and the
-# per-version manifest. These are the publication protocol's fixed names.
-CURRENT_POINTER_OBJECT = "current.json"
-MANIFEST_OBJECT = "manifest.json"
+# per-version manifest: the publication protocol's fixed names, owned by
+# ``lumio_wiki.location`` so the local Published Version layout and the S3
+# layout share one source of truth (imported above).
 
 # The derived-artifact subdirectory under an immutable version prefix
 # (``{prefix}/{version}/derived/...``). Holds rebuildable, non-canonical state
@@ -170,7 +170,29 @@ class S3Manifest(msgspec.Struct, frozen=True):
     """Every canonical file: Control File plus all Markdown (including reserved artifacts)."""
 
     derived_files: list[S3ManifestFile] = msgspec.field(default_factory=list)
-    """Derived (non-canonical) artifacts with their digests and sizes."""
+    """Derived (non-canonical) artifacts — their presence in this list is the
+    version's derived-artifact completion record."""
+
+    # -- Local Git-native publication provenance (spec 0008 §5) -------------
+    #
+    # Optional so S3 manifests and every pre-existing local manifest keep
+    # decoding with their original shape (old-format reading compatibility):
+    # absent fields default to empty strings and readers never require them.
+    # The local Git publisher sets them so an immutable Published Version's
+    # own manifest identifies its exact authoring provenance without
+    # consulting later registry state.
+
+    revision: str = ""
+    """The exact full Git commit id this version was admitted from (local)."""
+
+    subtree: str = ""
+    """The selected Knowledge Base subtree inside the authoring repository (local)."""
+
+    source_reference_digest: str = ""
+    """SHA-256 of the reviewed Source Reference Manifest bytes (local)."""
+
+    format_identity: str = ""
+    """The validator/format contract identity that admitted this version (local)."""
 
 
 class S3Pointer(msgspec.Struct, frozen=True):
@@ -185,6 +207,10 @@ def build_published_manifest(
     content: dict[str, bytes],
     *,
     derived_content: dict[str, bytes] | None = None,
+    revision: str = "",
+    subtree: str = "",
+    source_reference_digest: str = "",
+    format_identity: str = "",
 ) -> S3Manifest:
     """Build a manifest for an immutable version from canonical content.
 
@@ -223,6 +249,10 @@ def build_published_manifest(
         fingerprint=fingerprint_digest,
         files=files,
         derived_files=derived_files,
+        revision=revision,
+        subtree=subtree,
+        source_reference_digest=source_reference_digest,
+        format_identity=format_identity,
     )
 
 
