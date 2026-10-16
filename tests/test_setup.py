@@ -41,7 +41,6 @@ def isolated(tmp_path, monkeypatch, capsys):
         pytest.fail("setup invoked a human-only operation or network/source access")
 
     for module, names in (
-        (authoring, ("approve_sources",)),
         (authoring_sources, ("approve_sources",)),
         (authoring.AuthoringProject, ("approve_sources",)),
         (admission, ("admit_revision", "reconcile")),
@@ -89,7 +88,8 @@ def test_new_managed_scaffold_reports_gates_without_git_mutation(tmp_path, capsy
     assert run_setup(project, "", "--no-input") == 0
     output = capsys.readouterr().out
     assert "git_managed" in output and "Ready: no" in output
-    assert "admission:" in output and "no admission recorded" in output
+    assert "admission:" in output  # the diagnostic status block names the gate state
+    assert "Human gates remain" in output and "Git Review Admission" in output
     assert "git init" in output and "config user.name" in output and "config user.email" in output
     assert ".ariadne/" in (project / ".gitignore").read_text()
     assert not (project / ".git").exists() and not records(project)
@@ -461,8 +461,11 @@ def test_filename_detection_skips_custom_virtualenvs_without_opening_config_or_s
 
 def test_skill_and_release_docs_operator_rules_and_distribution():
     text = (skill.ASSETS / "SKILL.md").read_text()
-    assert "ariadne setup --no-input" in text
-    assert "never satisfy prompts" in text.lower()
+    normalized = " ".join(text.split())  # line-wrapped prose compares normalized
+    # setup stays operator-facing; agents pass the exact commands to the human
+    assert "`ariadne setup` is operator-facing" in normalized
+    assert "agents do not initialize/configure Git" in normalized
+    assert "Pass exact operator commands and blockers to the human" in normalized
     assert "ariadne review" in text and "operator-only" in text
     for path in (".pi/skills/ariadne", ".claude/skills/ariadne", ".hermes/skills/ariadne"):
         assert path in text
@@ -483,7 +486,9 @@ def test_skill_and_release_docs_operator_rules_and_distribution():
     how_to = (Path(__file__).parents[1] / "docs" / "how-to" / "git-authoring.md").read_text()
     assert "approve-sources" in how_to  # the human-only gate stays in the procedure guide
     cli = (Path(__file__).parents[1] / "docs" / "reference" / "cli.md").read_text()
-    assert "ariadne-agent" in cli  # conversational host stays an optional install
+    # hosts/adapters stay optional installs that change no governance gate
+    # (the ariadne-agent conversational host is out of the Git-only Core docs)
+    assert "Installing an adapter does not change the human governance gates" in cli
     explanation = (
         Path(__file__).parents[1] / "docs" / "explanations" / "how-ariadne-works.md"
     ).read_text()

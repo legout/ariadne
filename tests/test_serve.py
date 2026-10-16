@@ -565,13 +565,56 @@ def test_get_metric_discloses_expired_and_deprecated_policy_signals(served, tmp_
     context_dir = tmp_path / "context_layer"
     shutil.copytree(served_dir / "context_layer", context_dir)
     expired = context_dir / "policies" / "order-status-billing.md"
+    # the slimmed golden fixture carries no lifecycle metadata: the spec 0011
+    # §3/§5 states under test are authored into the COPY explicitly — a past
+    # supported expiry, an explicitly deprecated status, and (metric page) a
+    # declared review_needed status, empty verified list and FUTURE stamp
     expired.write_text(
-        re.sub(r"^stale_after: .*$", "stale_after: 2020-01-01", expired.read_text(), flags=re.M),
+        re.sub(
+            r"^status: draft$",
+            "status: draft\nstale_after: 2020-01-01",
+            expired.read_text(),
+            count=1,
+            flags=re.M,
+        ),
         encoding="utf-8",
     )
     deprecated = context_dir / "policies" / "emea-currency-cutover.md"
     deprecated.write_text(
-        deprecated.read_text().replace("status: review_needed", "status: deprecated", 1),
+        deprecated.read_text().replace("status: draft", "status: deprecated", 1),
+        encoding="utf-8",
+    )
+    metric_page = context_dir / "metrics" / "gross_margin.md"
+    metric_page.write_text(
+        metric_page.read_text(encoding="utf-8").replace(
+            "status: draft",
+            "status: review_needed\n"
+            "stale_after: 2030-01-01\n"
+            "verified: []\n"
+            "generated:\n"
+            "  by: ariadne-author",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    # the consumed computation page (generated into admitted snapshots by the
+    # finalize pass; hand-placed here — the private numerical seam generates
+    # nothing) enters spec 0011 §5's consumed set exactly when it is readable
+    computation = context_dir / "computations" / "gross_margin.md"
+    computation.parent.mkdir(parents=True, exist_ok=True)
+    computation.write_text(
+        "---\n"
+        "type: computation\n"
+        "title: sanctioned SQL — orders::gross_margin\n"
+        "description: The sanctioned SQL, runtime and attestation record.\n"
+        "tags: [computation]\n"
+        "status: review_needed\n"
+        "runtime: duckdb\n"
+        "sources:\n"
+        "  - id: model-orders\n"
+        "    resource: ../../semantic_layer/models/orders.yml\n"
+        "    title: orders OSI model\n"
+        "---\n\n# Sanctioned computation\n",
         encoding="utf-8",
     )
     before = {page: page.read_bytes() for page in (expired, deprecated)}

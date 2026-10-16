@@ -88,7 +88,8 @@ def test_agents_md_is_pointer_page_not_workflow(tmp_path):
     assert "Load the ariadne skill (`ariadne-skill install` if absent)" in agents
     assert "TODO" in agents  # project facts the owner fills in
     assert "`context_layer/`" in agents and "`.ariadne/`" in agents
-    assert "ariadne-admit" in agents and "source permission" in agents
+    assert "Admission gate" in agents and "source permission" in agents
+    assert "human-admitted Git revision" in agents  # governed = the admitted snapshot
     assert "profile" not in agents.lower()  # the loop prose lives in the skill
 
 
@@ -117,8 +118,10 @@ def test_git_pointer_page_separates_source_permission_and_admission(tmp_path):
     target = tmp_path / "proj"
     assert main([str(target)]) == 0
     agents = (target / "AGENTS.md").read_text(encoding="utf-8")
-    assert "source permission and Admission remain separate human decisions" in agents
-    assert "`ariadne-authoring`" in agents and "`ariadne-admit`" in agents
+    normalized = " ".join(agents.split())  # line-wrapped prose compares normalized
+    assert "source permission and Admission remain separate human decisions" in normalized
+    assert "`ariadne-authoring`" in agents
+    assert "Original documents stay outside the authored artifact snapshot" in normalized
     assert "staging/" not in agents and "ariadne-promote" not in agents
 
 
@@ -168,7 +171,7 @@ def test_git_scaffold_tracks_artifact_layers_and_ignores_state_and_inputs(tmp_pa
     assert not (target / "semantic_layer").exists()
     assert not (target / "staging").exists()
     agents = (target / "AGENTS.md").read_text(encoding="utf-8")
-    assert "ariadne-admit" in agents and "`.ariadne/`" in agents
+    assert "Admission gate" in agents and "`.ariadne/`" in agents
     assert "ariadne-promote" not in agents
     assert "profile" not in agents.lower()
 
@@ -214,6 +217,7 @@ def test_git_scaffold_ignores_supported_input_locations_but_keeps_seed_notes(tmp
     (target / "data" / "events.parquet").write_bytes(b"PAR1\n")
     (target / "data" / "lake").mkdir()
     (target / "data" / "lake" / "part-0.parquet").write_bytes(b"PAR1\n")
+    (target / "data" / "docs").mkdir()  # operator-placed inputs (spec 0027 §5)
     (target / "data" / "docs" / "notes.md").write_text("# notes\n", encoding="utf-8")
     (target / "data" / "demo.db").write_bytes(b"sqlite bytes\n")
 

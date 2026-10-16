@@ -812,9 +812,10 @@ def test_cli_project_flag_serves_the_managed_route_and_refuses_without_admission
     assert answer["rows"] == [{"event_count": 3}]
     assert answer["admission"]["route"] == "git-review-admission"
 
-    # --project and --served are mutually exclusive explicit roots
+    # --served is a retired selector (spec 0027 §6): the parser refuses the
+    # old spelling before any mutation — no compatibility route behind it
     assert cli(["list-metrics", "--project", str(project), "--served", str(project)]) == 1
-    assert "mutually exclusive" in json.loads(capsys.readouterr().err)["error"]["message"]
+    assert "unrecognized arguments" in json.loads(capsys.readouterr().err)["error"]["message"]
 
 
 def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(

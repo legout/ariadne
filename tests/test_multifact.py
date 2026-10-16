@@ -2880,8 +2880,13 @@ def _t5_bundle(
     return {"files": files}
 
 
-def _t5_candidate(tmp_path: Path, bundle: dict | None = None):
-    """Create the graph fixture as a revision-bound Authoring candidate."""
+def _t5_candidate(tmp_path: Path, bundle: dict | None = None, initial: tuple[str, ...] = ()):
+    """Create the graph fixture as a revision-bound Authoring candidate.
+
+    ``initial`` names bundle artifact paths the OPERATOR authored in the human
+    base commit (not typed edits) — the only supported way a page may carry a
+    system-owned trust claim like ``stale_after`` from the start (spec 0027 §4:
+    typed edits may only inherit such claims unchanged)."""
 
     project = tmp_path / "proj"
     build_source_fixture(project)  # project/ariadne.yaml + project/mf.db (approved registry)
@@ -2889,20 +2894,34 @@ def _t5_candidate(tmp_path: Path, bundle: dict | None = None):
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
     run_git(project, "add", "--", "ariadne.yaml")
+    human_paths = ["ariadne.yaml"]
+    for artifact in (bundle if bundle is not None else _t5_bundle())["files"]:
+        if artifact["path"] not in initial:
+            continue
+        path = project / artifact["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(artifact["content"], encoding="utf-8")
+        human_paths.append(artifact["path"])
+    if len(human_paths) > 1:
+        run_git(project, "add", "--", *human_paths)
     run_git(
         project,
         "commit",
         "-q",
         "-m",
-        "human: synthetic source registry",
+        "human: synthetic source registry"
+        if len(human_paths) == 1
+        else "human: synthetic source registry and owner pages",
         "--",
-        "ariadne.yaml",
+        *human_paths,
     )
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
     revision = started["candidate_revision"]
     for artifact in (bundle if bundle is not None else _t5_bundle())["files"]:
+        if artifact["path"] in initial:
+            continue  # already in the human base revision
         parts = Path(artifact["path"]).parts
         if parts == ("data", "seed_notes.md"):
             edit = {"kind": "seed_notes", "content": artifact["content"]}
@@ -2930,8 +2949,10 @@ def _t5_candidate(tmp_path: Path, bundle: dict | None = None):
     return project, api, started, revision
 
 
-def _t5_admitted(tmp_path: Path, bundle: dict | None = None) -> tuple[Path, dict]:
-    project, api, started, revision = _t5_candidate(tmp_path, bundle)
+def _t5_admitted(
+    tmp_path: Path, bundle: dict | None = None, initial: tuple[str, ...] = ()
+) -> tuple[Path, dict]:
+    project, api, started, revision = _t5_candidate(tmp_path, bundle, initial)
     validated = api.validate_proposal(started["proposal"], revision)
     assert validated["ok"] is True, validated["errors"]
     review = api.review_proposal(started["proposal"])
@@ -3066,11 +3087,18 @@ def test_t5_query_metrics_captures_one_assessment_instant_across_metrics(tmp_pat
     policy["content"] = policy["content"].replace(
         "sources:\n", f"stale_after: {stamped.isoformat()}\nsources:\n", 1
     )
-    project, _view = _t5_admitted(tmp_path, bundle)
+    # the expiry stamp is a system-owned trust claim (spec 0027 §4): typed
+    # edits may only inherit it, so the operator authors the page in the
+    # human base revision and the typed edits build the rest on top
+    project, _view = _t5_admitted(
+        tmp_path, bundle, initial=("context_layer/policies/region-rollup.md",)
+    )
     _, snapshot = admission.resolve_admission(project)
     served_policy = snapshot / "context_layer" / "policies" / "region-rollup.md"
     frontmatter = yaml.safe_load(served_policy.read_text(encoding="utf-8").split("---")[1])
-    assert frontmatter["stale_after"] == stamped.isoformat()
+    # YAML parses the bare date stamp into a date object (spec 0011 §3); the
+    # DISCLOSED freshness view below serializes it back to the ISO string
+    assert frontmatter["stale_after"] == stamped
     midnight = datetime(stamped.year, stamped.month, stamped.day, tzinfo=UTC)
     runtime = _t5_runtime(project)
     ticks = iter([midnight + timedelta(hours=10), midnight + timedelta(days=1)])
@@ -3110,7 +3138,8 @@ def test_t5_query_detail_projects_through_the_admitted_graph(tmp_path):
 
 def test_t5_later_candidate_and_changed_registry_cannot_change_admitted_query(tmp_path):
     # A later authored model/graph/Policy stays outside the admitted snapshot;
-    # changing the operator registry invalidates construction instead.
+    # a mutable-root registry edit never reaches the admitted query either
+    # (spec 0027 §2: the pinned snapshot's approved identity answers).
     project, view = _t5_admitted(tmp_path)
     runtime = _t5_runtime(project)
     request = {"metrics": ["orders_total", "lines_total"], "dimensions": ["region"]}
@@ -3148,8 +3177,20 @@ def test_t5_later_candidate_and_changed_registry_cannot_change_admitted_query(tm
         encoding="utf-8",
     )
     try:
-        with pytest.raises(ValueError, match="source"):
-            _t5_runtime(project)
+        # the mutable root registry never reaches the admitted query (spec
+        # 0027 §2/AC6): the pinned snapshot's approved identity still answers
+        # with the same rows and the same admitted revision — no fallback, no
+        # silent change, and no construction failure from the root edit
+        pinned = _t5_runtime(project)
+        try:
+            after_registry = asyncio.run(pinned.query_metrics(request))
+        finally:
+            pinned.con.close()
+        # same rows, same values — row order is not pinned (no ORDER BY)
+        assert sorted(after_registry["rows"], key=lambda row: row["region"]) == sorted(
+            before["rows"], key=lambda row: row["region"]
+        )
+        assert after_registry["admission"]["revision"] == view["revision"]
     finally:
         registry.write_bytes(original)
     runtime.con.close()

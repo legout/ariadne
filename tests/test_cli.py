@@ -167,7 +167,12 @@ def test_search_context_matches_runtime_and_honors_limit(served, tmp_path, capsy
         make_runtime(served, tmp_path / "staging").search_context("gross margin", 1)
     )
     assert hits == expected
-    assert hits[0]["path"] == "metrics/gross_margin.md" and hits[0]["draft"] is False
+    assert hits[0]["draft"] is False  # admitted snapshot content, never a candidate
+    # rank order across the full admitted snapshot (generated pages included)
+    # is not pinned; the metric's own page stays discoverable
+    assert run_cli(served, tmp_path / "staging", "search-context", "gross margin") == 0
+    paths = [hit["path"] for hit in json.loads(capsys.readouterr().out)]
+    assert "metrics/gross_margin.md" in paths
 
 
 def test_get_metric_matches_runtime_including_context(served, tmp_path, capsys):

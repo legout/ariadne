@@ -22,7 +22,6 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 
 from ariadne.admission import main as admit_main  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
-from ariadne.query import _QueryRuntimeSession  # noqa: E402
 from ariadne.query_results import (  # noqa: E402
     cell_limit_refusal,
 )  # pyright: ignore[reportMissingImports] — drift
@@ -294,15 +293,23 @@ def test_lowered_envelope_refuses_without_writing_and_narrowed_retry_fits(tmp_pa
             "limit": 24,
         }
     }
-    fitting_core = _QueryRuntimeSession(
-        root / "semantic_layer",
-        root / "context_layer",
-        None,
-        sources=str(root / "ariadne.yaml"),
-        query_limits={"response_bytes": 65536},
+    narrowed_request = {
+        "dataset": "probe.uni",
+        "fields": ["id"],
+        "order": [{"field": "id"}],
+        "limit": 1,
+    }
+    # Measure the SERVED forms through the exact admitted route the server
+    # uses (the managed provenance block rides every result); the host query
+    # limits are the working tree's LOGICAL config, so the ceiling can be
+    # committed after admission without re-admission (plan 0014 §2).
+    _admit_project(root)
+    from ariadne.query import QueryRuntime
+
+    served_full = asyncio.run(
+        QueryRuntime.open_project(root).query_records(full_request["request"])
     )
-    inner = asyncio.run(fitting_core.query_records(full_request["request"]))
-    assert len(inner["rows"]) == 24  # the widened population rides the payload
+    assert len(served_full["rows"]) == 24  # the widened population rides the payload
 
     def _refusal_modern_bytes(form: dict) -> int:
         # the adapter's isError refusal representation (text + structured
@@ -323,13 +330,36 @@ def test_lowered_envelope_refuses_without_writing_and_narrowed_retry_fits(tmp_pa
         return len(response.model_dump_json(by_alias=True, exclude_unset=True).encode("utf-8"))
 
     refusal_floor = max(_refusal_modern_bytes(form) for form in refusal_forms())
-    inner_bytes = _mcp_result_bytes(inner)
-    inner_dict_bytes = len(json.dumps(inner).encode("utf-8"))
-    assert inner_bytes > inner_dict_bytes  # the envelope duplication is real
-    ceiling = max(refusal_floor + 64, (inner_dict_bytes + inner_bytes) // 2)
-    assert inner_dict_bytes <= ceiling < inner_bytes  # inner fits, envelope cannot
+    full_dict_bytes = len(json.dumps(served_full).encode("utf-8"))
+    full_env_bytes = _mcp_result_bytes(served_full)
+    assert full_env_bytes > full_dict_bytes  # the envelope duplication is real
+    narrowed_env = _mcp_result_bytes(
+        asyncio.run(QueryRuntime.open_project(root).query_records(narrowed_request))
+    )
+    define_env = _mcp_result_bytes(
+        asyncio.run(
+            QueryRuntime.open_project(root).define_metric(
+                {
+                    "name": "envelope_probe",
+                    "description": "d",
+                    "source": "probe.uni",
+                    "expression": "MAX(txt)",
+                    "dimensions": ["txt"],
+                }
+            )
+        )
+    )  # ephemeral under default limits: nothing was written
+    ceiling = max(refusal_floor + 64, (full_dict_bytes + full_env_bytes) // 2)
+    # the narrowed retry fits, the full envelope cannot, refusals stay representable
+    assert refusal_floor <= ceiling
+    assert narrowed_env <= ceiling < full_env_bytes
+    # the ad-hoc definition is smaller than the narrowed record result, so its
+    # own refusal needs its own (tighter) ceiling in a second session below
+    define_ceiling = max(refusal_floor + 256, (refusal_floor + define_env) // 2)
+    assert refusal_floor <= define_ceiling < define_env
 
-    # Admit the exact project revision carrying the lowered host ceiling.
+    # Commit the lowered working-tree host ceiling (the logical config the
+    # runtime reads; the admitted snapshot itself stays untouched).
     registry_path = root / "ariadne.yaml"
     registry = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
     registry["query"] = {"mcp_response_bytes": ceiling}
@@ -344,7 +374,6 @@ def test_lowered_envelope_refuses_without_writing_and_narrowed_retry_fits(tmp_pa
         "--",
         "ariadne.yaml",
     )
-    _admit_project(root)
     head_before = run_git(root, "rev-parse", "HEAD").strip()
     status_before = run_git(root, "status", "--porcelain", "--untracked-files=all")
     with _StdioServer(root) as server:
@@ -356,9 +385,41 @@ def test_lowered_envelope_refuses_without_writing_and_narrowed_retry_fits(tmp_pa
         assert body["result"] == {"status": "refused", "complete": False, "returned_rows": 0}
         assert len(raw_ref.encode("utf-8")) <= ceiling
 
-        # An output-refused ad-hoc definition leaves the project unchanged.
-        raw_def, frame_def = server.call_tool(
+        # a fitting narrowed retry executes afresh and returns the FULL result
+        raw_fit, frame_fit = server.call_tool(
             2,
+            "query_records",
+            {"request": narrowed_request},
+        )
+        assert frame_fit["result"]["isError"] is False
+        fitted = json.loads(frame_fit["result"]["content"][0]["text"])
+        assert fitted["rows"] == [{"id": 1}]
+        assert fitted["result"]["complete"] is True
+
+    # neither the refusal nor the fresh retry wrote anything
+    assert run_git(root, "rev-parse", "HEAD").strip() == head_before
+    assert run_git(root, "status", "--porcelain", "--untracked-files=all") == status_before
+
+    # A tighter ceiling refuses an over-envelope ad-hoc definition the same
+    # all-or-nothing way — still without any project write
+    registry["query"] = {"mcp_response_bytes": define_ceiling}
+    registry_path.write_text(yaml.safe_dump(registry, sort_keys=False), encoding="utf-8")
+    run_git(root, "add", "--", "ariadne.yaml")
+    run_git(
+        root,
+        "commit",
+        "-q",
+        "-m",
+        "human: tighten synthetic response ceiling",
+        "--",
+        "ariadne.yaml",
+    )
+    head_define = run_git(root, "rev-parse", "HEAD").strip()
+    status_define = run_git(root, "status", "--porcelain", "--untracked-files=all")
+    with _StdioServer(root) as server:
+        server.initialize(0)
+        raw_def, frame_def = server.call_tool(
+            1,
             "define_metric",
             {
                 "definition": {
@@ -375,27 +436,10 @@ def test_lowered_envelope_refuses_without_writing_and_narrowed_retry_fits(tmp_pa
             json.loads(frame_def["result"]["content"][0]["text"])["error"]["code"]
             == "result_byte_limit"
         )
+        assert len(raw_def.encode("utf-8")) <= define_ceiling
 
-        # a fitting narrowed retry executes afresh and returns the FULL result
-        raw_fit, frame_fit = server.call_tool(
-            3,
-            "query_records",
-            {
-                "request": {
-                    "dataset": "probe.uni",
-                    "fields": ["id"],
-                    "order": [{"field": "id"}],
-                    "limit": 1,
-                }
-            },
-        )
-        assert frame_fit["result"]["isError"] is False
-        fitted = json.loads(frame_fit["result"]["content"][0]["text"])
-        assert fitted["rows"] == [{"id": 1}]
-        assert fitted["result"]["complete"] is True
-
-    assert run_git(root, "rev-parse", "HEAD").strip() == head_before
-    assert run_git(root, "status", "--porcelain", "--untracked-files=all") == status_before
+    assert run_git(root, "rev-parse", "HEAD").strip() == head_define
+    assert run_git(root, "status", "--porcelain", "--untracked-files=all") == status_define
 
 
 def test_refusal_frames_stay_bounded_under_the_default_ceiling(served):

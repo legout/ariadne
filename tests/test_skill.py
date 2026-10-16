@@ -80,7 +80,7 @@ def test_skill_teaches_answer_example_guidance():
     assert "Drafts are hypotheses" in normalized  # uncheckable drafts not support
     assert "confirm BEFORE calling save" in normalized  # user gate before the call
     assert "ariadne save-example" in normalized
-    assert "Never save silently, never harvest the transcript" in normalized
+    assert "Never save silently or harvest the transcript" in normalized
     assert "there is no separate Example-review command" in normalized
 
 
@@ -88,9 +88,10 @@ def test_skill_uses_only_the_project_bound_query_route():
     """G4: the default workflow uses admitted Git projects and no legacy roots."""
     skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
     querying = skill[: skill.index("## Answer examples")]  # the query workflow
+    normalized_querying = " ".join(querying.split())  # line-wrapped prose
     assert "--project DIR" in querying  # the managed route is taught
     assert "--project ." in querying  # with its concrete invocation
-    assert "git-review-admission" in querying
+    assert "admission block naming the Git Review Admission route" in normalized_querying
     assert "admitted snapshot" in querying
     assert "There is no" in querying and "plain-root" in querying
     assert "--served PATH" not in querying and "--sources ariadne.yaml" not in querying
@@ -274,7 +275,8 @@ def test_skill_teaches_git_proposal_workflow_and_stops_at_human_gates():
     assert "--expected-revision" in skill  # revision-checked edits
     # admission is human-only; no legacy importer or staged submit route remains
     assert "ariadne-admit" in skill and "--confirm" in skill
-    assert "Core does not import legacy staged artifacts" in skill
+    normalized = " ".join(skill.split())
+    assert "Core does not import legacy staged artifacts" in normalized
     assert "Never run" in skill and "human-only" in skill.lower()
     # Git operations appear ONLY as named prohibitions, never as instructions
     rules_at = skill.index("## Agent rules")
@@ -335,7 +337,8 @@ def test_skill_teaches_context_knowledge_and_typed_page_edits():
     assert "ariadne-authoring edit --proposal ID" in normalized
     assert "context_layer/references/context-routing.md" in normalized
     assert "ariadne-authoring enrich-legacy" not in normalized
-    assert "ambiguous" in normalized and "refuses rather than guesses" in normalized
+    assert "ambiguous" in normalized and "ambiguity between alternatives" in normalized
+    assert "never guessed" in normalized  # resolution refuses rather than guesses
     # the standing warning + the how-to pointer
     assert "Aliases, observations and measurements never authorize joins" in normalized
     assert "never authorizes a join" in normalized
