@@ -355,6 +355,22 @@ def test_tool_descriptions_carry_routing_language(served):
     assert "dimensions" in desc["list_metrics"]
 
 
+def test_http_body_bound_is_independent_of_document_uploads():
+    """Retiring uploads preserves the existing fixed MCP request-body ceiling."""
+    from ariadne.serve import build_http_app
+
+    class FakeMCPServer:
+        options: dict
+
+        def streamable_http_app(self, **options):
+            self.options = options
+            return object()
+
+    server = FakeMCPServer()
+    build_http_app(server, "synthetic-token")
+    assert server.options["max_request_body_size"] == (5 * 1024 * 1024 * 4 // 3) + 65_536
+
+
 def test_server_registers_five_query_and_five_authoring_tools(served):
     """Spec 2026-09-23-0001 §4 keeps exactly the five legacy query/ad-hoc tools;
     spec 2026-09-24-0005 adds the authoring registration (issue #16); issue #21
@@ -401,7 +417,6 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
         "authoring_edit_proposal",
         "authoring_propose_sources",
         "authoring_inputs",
-        "authoring_upload_document",
         "authoring_validate_proposal",
         "authoring_refresh_schema",
         "authoring_resolve_term",

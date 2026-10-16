@@ -62,8 +62,8 @@ MCP surface mapping (issue #38/G6, spec §6): the MCP registrations expose the
 GIT contract above — ``authoring_start_proposal``/``authoring_read_artifact``/
 ``authoring_edit_proposal``/``authoring_propose_sources`` (Git mode:
 ``--proposal``/``--expected-revision`` + typed entries)/``authoring_inputs``
-(Git mode: ``--proposal``)/``authoring_upload_document``/
-``authoring_validate_proposal``/``authoring_refresh_schema`` (issue #41: the
+(Git mode: ``--proposal``)/``authoring_validate_proposal``/
+``authoring_refresh_schema`` (issue #41: the
 explicit physical schema refresh)/``authoring_inspect_mapping`` (issue #43:
 the bounded mapping inspection with authentic receipts)/``authoring_resolve_term``
 (issue #42: the read-only candidate term resolution)/``authoring_review_proposal`` — with model

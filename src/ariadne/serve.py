@@ -35,8 +35,8 @@ The three registrations (spec §6, AC7):
 - **authoring** — the Git authoring contract with one stable prefix:
   ``authoring_start_proposal``, ``authoring_read_artifact``,
   ``authoring_edit_proposal``, ``authoring_propose_sources``,
-  ``authoring_inputs``, ``authoring_upload_document``,
-  ``authoring_validate_proposal``, ``authoring_refresh_schema`` (issue #41:
+  ``authoring_inputs``, ``authoring_validate_proposal``,
+  ``authoring_refresh_schema`` (issue #41:
   the explicit physical schema refresh), ``authoring_resolve_term`` (issue
   #42: read-only candidate term resolution), ``authoring_review_proposal``.
   No query operation; the registration starts without a governed catalog
@@ -103,7 +103,6 @@ Usage::
 """
 
 import argparse
-import base64
 import functools
 import hmac
 import json
@@ -1033,26 +1032,6 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
 
         @app.tool()
         @_tool_errors
-        async def authoring_upload_document(name: str, content_b64: str) -> dict:
-            """Upload one bounded document (base64 bytes) into the project input
-            area; its original bytes are retained under the name's stable identity
-            {resource, digest}. No Git artifact staging. Large documents belong in
-            the operator input area or object storage instead (the bound is
-            enforced before any write). Same contract as the local CLI.
-
-            Args:
-                name: a plain filename (no directories).
-                content_b64: the document's raw bytes, base64-encoded; at most
-                    5 MiB decoded.
-            """
-            try:
-                data = base64.b64decode(content_b64, validate=True)
-            except ValueError as exc:  # binascii.Error included
-                raise ValueError(f"{name}: upload content is not valid base64: {exc}") from None
-            return authoring_api.upload_document(name, data)
-
-        @app.tool()
-        @_tool_errors
         async def authoring_validate_proposal(proposal: str, expected_revision: str) -> dict:
             """Validate the proposal's effective candidate at its EXACT final
             revision: finalize the deterministic generated artifacts, commit any
@@ -1242,6 +1221,10 @@ class BearerTokenGate:
         await self._wrapped(scope, receive, send)
 
 
+# Preserve the fixed MCP request-body ceiling after retiring document uploads.
+MAX_HTTP_BODY_BYTES = (5 * 1024 * 1024 * 4 // 3) + 65_536
+
+
 def build_http_app(
     app,
     token: str,
@@ -1259,20 +1242,15 @@ def build_http_app(
     ``streamable_http_app()`` arguments (spec 0026 §4): the body limit and the
     DNS-rebinding protection — loopback defaults plus the launch's explicit
     Host/Origin additions, never a disabled safeguard — are passed here."""
-    # The HTTP body limit must not undercut the documented upload bound: the
-    # tool-level 5 MiB refusal (identical to stdio, enforced before any
-    # write) stays the effective bound only if a valid 5 MiB upload's base64
-    # body can arrive — so the limit is the tool bound's base64 size plus
-    # JSON-argument slack, nothing more.
+    # Keep the existing framing/security ceiling independently of any artifact
+    # tool contract; removing uploads must not disable or enlarge this bound.
     from mcp.server.transport_security import (  # pyright: ignore[reportMissingImports] — [mcp] extra
         TransportSecuritySettings,
     )
 
-    from ariadne.authoring_inputs import MAX_UPLOAD_BYTES
-
     return BearerTokenGate(
         app.streamable_http_app(
-            max_request_body_size=MAX_UPLOAD_BYTES * 4 // 3 + 65_536,
+            max_request_body_size=MAX_HTTP_BODY_BYTES,
             transport_security=TransportSecuritySettings(
                 enable_dns_rebinding_protection=True,
                 allowed_hosts=[

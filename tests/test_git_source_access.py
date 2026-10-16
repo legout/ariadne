@@ -1,7 +1,7 @@
 """Git-aware source access and measured inputs (issue #35 / G3; spec
 2026-10-02-0009 §5 "Source approval and artifact admission", AC5/6/8; plan §2
 "Project storage and authority" + "Authoring call contract" rows
-propose_sources/inputs/upload_document).
+propose_sources/inputs/reference-based document evidence).
 
 Source approval and artifact admission are distinct decisions: a source entry
 committed in a proposal's candidate registry never opens anything until the
@@ -437,11 +437,8 @@ def test_git_propose_sources_refuses_duplicate_names_and_stale_revisions(tmp_pat
 # ------------------------------------- onboarding inputs + uploads outside Git
 
 
-def test_inputs_without_sources_and_uploads_never_become_git_artifacts(tmp_path, connection_spy):
-    """AC5 onboarding: a candidate with no registry sources measures NOTHING
-    (profile None, no error — a missing catalog never blocks the flow), uploads
-    land in the operator input area with stable evidence digests, and neither
-    is ever committed to Git."""
+def test_inputs_without_sources_and_operator_documents_remain_external(tmp_path, connection_spy):
+    """A source-free candidate does not open data; operator documents stay external."""
     project = git_project(tmp_path)
     api = AuthoringProject(project)
     started = api.start_proposal()
@@ -452,18 +449,17 @@ def test_inputs_without_sources_and_uploads_never_become_git_artifacts(tmp_path,
     assert empty["documents"] == []
     assert connection_spy == []
 
-    upload = api.upload_document("notes.md", b"# uploaded policy\n")
-    assert upload["resource"] == str(project / "data" / "docs" / "notes.md")
-    measured = api.inputs(started["proposal"], documents=["notes.md"])
-    assert measured["documents"][0]["digest"] == upload["digest"]
-    assert measured["documents"][0]["complete"] is True
-    # digests are stable across calls (same bytes, same digest)
-    assert (
-        api.inputs(started["proposal"], documents=["notes.md"])["documents"][0]["digest"]
-        == upload["digest"]
-    )
-    assert measured["seed_notes"] == empty["seed_notes"]
-    # the operator input area is never staged or committed by any edit
+    from ariadne.authoring_inputs import document_evidence
+
+    docs = project / "data" / "docs"
+    docs.mkdir(parents=True)
+    raw = b"# operator-placed policy\n"
+    (docs / "notes.md").write_bytes(raw)
+    evidence = document_evidence("notes.md", project=project)
+    assert evidence["resource"] == str(project / "data" / "docs" / "notes.md")
+    assert evidence["digest"] == hashlib.sha256(raw).hexdigest()
+    assert evidence["complete"] is True
+    assert not (project / "data" / "object-store").exists()
     assert run_git(project, "ls-files", "--", "data/docs") == ""
     assert run_git(project, "status", "--porcelain", "--", "data/docs").strip().startswith("??")
 

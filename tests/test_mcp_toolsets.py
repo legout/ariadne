@@ -9,7 +9,7 @@ projects: Analyst and Combined register the SAME Query operations (the
 established names — governed and ad-hoc queries, multi-fact query/detail,
 Answer Examples); Authoring and Combined register the SAME
 ``authoring_``-prefixed Git authoring contract (start/read/edit/propose
-sources/inputs/upload/validate/review, plan §2's Authoring call contract).
+sources/inputs/validate/review, plan §2's Authoring call contract).
 Every surface is project-bound at launch: no tool takes a project root or a
 credential, no surface registers source approval, artifact admission
 (``ariadne-admit``), reconciliation (``ariadne-authoring reconcile``) or
@@ -75,7 +75,6 @@ AUTHORING_TOOLS = {
     "authoring_edit_proposal",
     "authoring_propose_sources",
     "authoring_inputs",
-    "authoring_upload_document",
     "authoring_validate_proposal",
     "authoring_refresh_schema",
     "authoring_inspect_mapping",  # K3 (issue #43): bounded inspection + receipts

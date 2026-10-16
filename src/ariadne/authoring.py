@@ -24,33 +24,23 @@ source is profileable through the same shared connection as every existing
 command (``ariadne-profiler --sources ariadne.yaml``) — including its failure:
 profiling an approved-but-absent location reports that location honestly.
 
-Slice 2 — :func:`store_upload`, :func:`document_evidence` and
-:func:`harness_inputs` prepare the harness's evidence WITHOUT any model: a
-bounded upload retains its original bytes and digest in the project-controlled
-input area (``data/docs/`` — the operator-configured root, the same directory
-init scaffolds for documents); a reference converts through ariadne-ingest's
-optional ``[documents]`` converter dispatch and returns as source-linked
-evidence — exact resource, sha256 digest, and ONE bounded part of the text,
-never claiming a truncated part complete. Reads stay inside what the operator
-configured: the human-managed project config (``ariadne.yaml``) carries the
-EXACT approved object-store document URIs (``documents.object_store``, S3 —
-the specified minimum object-store case) and the allowed local input roots
-(``documents.roots``, default ``data/docs``) — never the server environment
-or client-request arguments (owner decision 2026-09-24). A client may not
-name an unapproved URI or root: traversal, absolute paths outside the roots,
-unapproved or credentialed URI references, unreadable files, unsupported
-formats and missing converters all fail explicitly BEFORE anything is
-fetched, read, written, or served. Approved objects are retrieved with
-server-held credentials (DuckDB's blob reader; no client-supplied credential
-exists), their original bytes RETAINED with the digest in the project input
-area (``data/object-store/``), and converted from that one stable snapshot.
-:func:`harness_inputs` bounds the whole batch (an explicit per-call document
-count) and adds the deterministic per-source profile — only
-``ariadne-authoring approve-sources`` installs registry entries, so the
-profile exists only after approval — plus the optional already-approved Seed
-Notes (``data/seed_notes.md``); source credentials never appear (the registry
-carries env-var NAMES only; connections resolve server-side). A remote
-client's local dataset path is not a server path: it is simply an escaping
+Slice 2 — :func:`document_evidence` and :func:`harness_inputs` prepare
+source-linked evidence WITHOUT any model: references convert through
+ariadne-ingest's optional ``[documents]`` dispatch and return the exact
+resource, sha256 digest and ONE bounded text part, never claiming a truncated
+part complete. Originals remain private operator-managed inputs; Core has no
+upload or retained-object copy. Reads stay inside the human-managed
+``ariadne.yaml`` permissions: exact approved S3 URIs
+(``documents.object_store``) and local roots (``documents.roots``, default
+``data/docs``). Traversal, absolute paths outside the roots, unapproved or
+credentialed URIs, unreadable files, unsupported formats and missing
+converters fail before unrelated reads or writes. Approved objects use
+server-held credentials and are fetched for the current read from the exact
+URI, with digest and converted text derived from that one snapshot.
+:func:`harness_inputs` bounds the whole batch, adds the deterministic profile
+only for the separately approved registry identity, and includes optional
+Seed Notes (``data/seed_notes.md``); source credentials never appear. A
+remote client's local dataset path is not a server path: it is an escaping
 reference here.
 
 Slice 3 — :func:`submit_bundle` / :func:`review_bundle` (issue #15; spec
@@ -167,7 +157,6 @@ from ariadne.authoring_inputs import (  # noqa: F401 — re-export: the historic
     EVIDENCE_PART_CHARS,
     MAX_DOCUMENTS_PER_CALL,
     MAX_RAW_EXAMPLES,
-    MAX_UPLOAD_BYTES,
     SEED_NOTES_REL,
     _convert_snapshot,
     _document_bytes,
@@ -181,7 +170,6 @@ from ariadne.authoring_inputs import (  # noqa: F401 — re-export: the historic
     document_evidence,
     effective_inspection_limits,
     project_inspection_limits,
-    store_upload,
 )
 from ariadne.context import (  # noqa: F401 — the K1 generated-page seam (issue #41)
     _EVIDENCE_SUMMARY_KEYS,
@@ -1367,7 +1355,7 @@ class AuthoringProject:
     ``validate_proposal``/``review_proposal`` are G4. Source proposals,
     operator approval and measured inputs are G3 (issue #35), routed through
     :mod:`ariadne.authoring_sources` (``propose_sources``/``approve_sources``/
-    ``inputs``) and :mod:`ariadne.authoring_inputs` (``upload_document``).
+    ``inputs``) and :mod:`ariadne.authoring_inputs` (``document_evidence``).
     """
 
     def __init__(self, project: str | Path = "."):
@@ -1459,12 +1447,6 @@ class AuthoringProject:
         return authoring_sources.inputs(
             self.project, proposal, documents=list(documents), part=part, sample_rows=sample_rows
         )
-
-    def upload_document(self, name: str, data: bytes, *, max_bytes: int = MAX_UPLOAD_BYTES) -> dict:
-        """The existing bounded upload contract, under the operator input
-        area of the fixed project (never a Git artifact): retain the original
-        bytes and return the stable identity ``{resource, digest}``."""
-        return store_upload(name, data, project=self.project, max_bytes=max_bytes)
 
     # ----------------------- G4 (issue #36): validate and review the candidate
 

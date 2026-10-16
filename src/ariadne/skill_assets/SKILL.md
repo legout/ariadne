@@ -300,8 +300,10 @@ proposal worktrees or `.ariadne/` state).
    source-linked converted document evidence (exact resource, sha256 digest,
    bounded text parts), and the candidate's Seed Notes evidence. Local
    documents must live inside the operator-configured input roots (default
-   `data/docs/`); PDF/Office/HTML conversion needs the optional `[documents]`
-   extra. Bound every batch: ≤16 documents per call, big documents part by
+   `data/docs/`) or be exact operator-approved S3 URIs. Place originals yourself:
+   Core reads them for the current request and never uploads or retains copies.
+   PDF/Office/HTML conversion needs the optional `[documents]` extra. Bound every
+   batch: ≤16 documents per call, big documents part by
    part.
 5. **refresh the physical schema (context-only is fine)** — after approval,
    `ariadne-authoring refresh-schema --project . --proposal ID
@@ -619,8 +621,7 @@ artifact-root project keeps `ariadne-serve --sources ariadne.yaml`),
 `--toolset authoring` (the Git proposal contract:
 `authoring_start_proposal`, `authoring_read_artifact`,
 `authoring_edit_proposal`, `authoring_propose_sources`,
-`authoring_inputs`, `authoring_upload_document` — one bounded document,
-≤5 MiB decoded bytes — `authoring_refresh_schema`,
+`authoring_inputs`, `authoring_refresh_schema`,
 `authoring_validate_proposal`, `authoring_inspect_mapping`,
 `authoring_resolve_term`, `authoring_review_proposal`) — with the SAME
 checks and response contracts as the `ariadne-authoring` commands above. The
@@ -637,7 +638,7 @@ managed route's missing-admission error until a human admits.
 **Opt-in HTTP (issue #18).** The same server can instead expose the toolsets
 over Streamable HTTP: `--http` (`--http-port`, default 8000) binds loopback
 (`127.0.0.1`) at `/mcp` by default, and every request
-— tool listing, reads, uploads, dispatch — must carry the bearer token from
+— tool listing, reads and dispatch — must carry the bearer token from
 the server environment (`ARIADNE_HTTP_TOKEN`, never in `ariadne.yaml`, a
 tool response or a log):
 
@@ -647,8 +648,8 @@ ARIADNE_HTTP_TOKEN="$(cat ~/.ariadne-http-token)" ariadne-serve --project DIR --
 
 A harness client connects with the SDK's streamable-http client against
 `http://127.0.0.1:8000/mcp`, sending `Authorization: Bearer <token>`; an
-absent or wrong token is refused before any project data, MCP dispatch or
-staging write, and the token never authorizes source approval, admission or
+absent or wrong token is refused before any project data or MCP dispatch,
+and the token never authorizes source approval, admission or
 Promotion (still human-only server commands). Without `--http` nothing
 listens, and local stdio needs no token. The operator may explicitly use
 `--http-container --http-host 0.0.0.0` inside a private Compose network

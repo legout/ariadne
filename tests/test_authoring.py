@@ -360,32 +360,26 @@ def test_cli_inputs_can_bound_approved_profile(tmp_path, capsys):
 # ------------------------------------------- slice 2 (issue #14): harness evidence
 
 
-def test_upload_then_reference_converts_to_stable_identity_evidence(tmp_path, connection_spy):
-    """Issue #14 seam: a bounded upload retains its original bytes in the
-    project-controlled input area; the referenced document converts WITHOUT any
-    model and retrieves with the exact same identity/digest every time; and
-    harness_inputs returns it beside the deterministic per-source profile —
-    which appears only after the #13 approval — and the approved Seed Notes."""
+def test_operator_document_reference_converts_to_stable_identity_evidence(tmp_path, connection_spy):
+    """Operator-placed originals stay external while evidence derives from one snapshot."""
     project = scaffold_project(tmp_path)
     bytes_ = b"# Pricing policy\n\nUSD is the only billing currency.\n"
 
-    # Bounded upload: original bytes retained, digest reported.
-    upload = authoring.store_upload("pricing.md", bytes_, project=project)
-    assert upload["digest"] == hashlib.sha256(bytes_).hexdigest()
-    retained = project / "data" / "docs" / "pricing.md"
-    assert retained.read_bytes() == bytes_
-
-    # An identical re-upload keeps the same identity (nothing multiplied).
-    again = authoring.store_upload("pricing.md", bytes_, project=project)
-    assert again == upload
+    docs = project / "data" / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    original = docs / "pricing.md"
+    original.write_bytes(bytes_)
+    digest = hashlib.sha256(bytes_).hexdigest()
 
     # Referenced conversion: complete text, source identity, no connection opened.
     evidence = authoring.document_evidence("pricing.md", project=project)
     assert evidence["complete"] is True
     assert "USD is the only billing currency" in evidence["text"]
-    assert evidence["digest"] == upload["digest"]
-    assert evidence["resource"] == upload["resource"]
+    assert evidence["digest"] == digest
+    assert evidence["resource"] == str(original.resolve())
     assert authoring.document_evidence("pricing.md", project=project) == evidence
+    assert original.read_bytes() == bytes_
+    assert not (project / "data" / "object-store").exists()
 
     (project / "data" / "seed_notes.md").write_text(
         "# Seed notes\n\nGross revenue excludes churned rows.\n", encoding="utf-8"
@@ -394,7 +388,7 @@ def test_upload_then_reference_converts_to_stable_identity_evidence(tmp_path, co
     # Before source approval: evidence yes, profile no — nothing opened.
     early = authoring.harness_inputs(project=project, documents=["pricing.md"])
     assert early["profile"] is None
-    assert early["documents"][0]["digest"] == upload["digest"]
+    assert early["documents"][0]["digest"] == digest
     assert early["seed_notes"]["complete"] is True
     assert connection_spy == []  # no proposed location was ever opened
 
@@ -454,12 +448,8 @@ def test_unapproved_object_reference_is_refused_before_any_fetch(tmp_path, monke
     assert not (project / "data" / "object-store").exists()
 
 
-def test_approved_object_reference_converts_with_retained_bytes(tmp_path, monkeypatch):
-    """Issue #14 owner decision: the operator lists EXACT approved object-store
-    URIs under documents.object_store in ariadne.yaml. The approved reference is
-    fetched once with server-held credentials, its original bytes RETAINED in
-    the project input area, and converted to evidence whose resource is the
-    exact URI — and the retained copy serves repeat calls without a re-fetch."""
+def test_approved_object_reference_fetches_each_read_without_retention(tmp_path, monkeypatch):
+    """Approved object URIs are fetched per read; Core retains no original copy."""
     project = scaffold_project(tmp_path)
     approved = "s3://ariadne-docs/policies/pricing.md"
     (project / "ariadne.yaml").write_text(
@@ -483,15 +473,11 @@ def test_approved_object_reference_converts_with_retained_bytes(tmp_path, monkey
     assert evidence["complete"] is True
     assert fetched == [approved]  # fetched exactly once, server-side seam
 
-    # Original bytes retained in the project input area, digest-identical.
-    retained = list((project / "data" / "object-store").rglob("*"))
-    assert [p for p in retained if p.is_file()] and all(
-        p.read_bytes() == payload for p in retained if p.is_file()
-    )
+    assert not (project / "data" / "object-store").exists()
 
-    # Repeat calls read the retained snapshot: same identity, no re-fetch.
+    # Repeat calls fetch the still-approved URI again and preserve its identity.
     assert authoring.document_evidence(approved, project=project) == evidence
-    assert fetched == [approved]
+    assert fetched == [approved, approved]
 
 
 def test_object_store_config_is_validated_by_the_registry_rules(tmp_path):
@@ -548,10 +534,8 @@ def test_fetch_object_bytes_uses_duckdb_read_blob(tmp_path):
 
 
 @pytest.mark.parametrize("dangling", [False, True], ids=["existing", "dangling"])
-def test_upload_refuses_a_preexisting_symlink_in_the_input_root(tmp_path, dangling):
-    """A client-named upload filename that matches a pre-existing symlink in
-    the input root — pointing outside it, or dangling — is refused without
-    following the link: no read through it, no write at its target."""
+def test_document_reference_refuses_symlinks_outside_the_input_root(tmp_path, dangling):
+    """Local document reads refuse outside/dangling symlinks before opening a target."""
     project = scaffold_project(tmp_path)
     docs = project / "data" / "docs"
     docs.mkdir(parents=True)
@@ -560,8 +544,8 @@ def test_upload_refuses_a_preexisting_symlink_in_the_input_root(tmp_path, dangli
     target = project / "absent.txt" if dangling else secret
     (docs / "pricing.md").symlink_to(target)
 
-    with pytest.raises(ValueError, match="symlink"):
-        authoring.store_upload("pricing.md", b"# client payload\n", project=project)
+    with pytest.raises(ValueError, match="escapes"):
+        authoring.document_evidence("pricing.md", project=project)
 
     if dangling:
         assert not (project / "absent.txt").exists()  # nothing written outside the root
@@ -595,15 +579,14 @@ def test_document_evidence_digest_and_text_come_from_one_stable_snapshot(tmp_pat
     doc.write_text("# original policy\n", encoding="utf-8")
     original_bytes = doc.read_bytes()
 
-    real_convert = authoring_inputs._convert
+    real_convert = authoring_inputs._convert_snapshot
 
-    def convert_then_replace(path):  # the replacement lands between the two reads
-        text = real_convert(path)
-        if path.suffix == doc.suffix:
-            doc.write_text("# replaced mid-flight\n", encoding="utf-8")
+    def convert_then_replace(data, suffix, *, display):
+        text = real_convert(data, suffix, display=display)
+        doc.write_text("# replaced mid-flight\n", encoding="utf-8")
         return text
 
-    monkeypatch.setattr(authoring_inputs, "_convert", convert_then_replace)
+    monkeypatch.setattr(authoring_inputs, "_convert_snapshot", convert_then_replace)
     evidence = authoring.document_evidence("raced.md", project=project)
     assert evidence["text"].startswith("# original policy")
     assert evidence["digest"] == hashlib.sha256(original_bytes).hexdigest()
@@ -629,15 +612,6 @@ def test_seed_notes_digest_and_text_come_from_one_stable_snapshot(tmp_path, monk
     inputs = authoring.harness_inputs(project=project)
     assert inputs["seed_notes"]["text"].startswith("# original seed notes")
     assert inputs["seed_notes"]["digest"] == real_digest(original_bytes)
-
-
-def test_oversize_upload_is_refused_before_anything_is_written(tmp_path):
-    """A bounded upload that exceeds the limit fails explicitly and writes
-    nothing — not even the input-area directory."""
-    project = scaffold_project(tmp_path)
-    with pytest.raises(ValueError, match="over the"):
-        authoring.store_upload("big.pdf", b"x" * 11, project=project, max_bytes=10)
-    assert not (project / "data").exists()
 
 
 def test_long_document_evidence_is_bounded_and_never_claimed_complete(tmp_path):
