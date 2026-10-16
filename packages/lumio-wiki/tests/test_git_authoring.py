@@ -1090,6 +1090,85 @@ def test_f1_ingest_preserves_uncommitted_author_edits(tmp_path):
     assert "Uncommitted author note." in dirty.read_text()
 
 
+@pytest.mark.parametrize("status_mode", ["ignored", "hidden-untracked"])
+def test_r1_ingest_refuses_existing_unreported_destination_before_registration(
+    tmp_path, status_mode
+):
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    relative = "kb/concepts/workbench_press.md"
+    if status_mode == "ignored":
+        (repo / ".gitignore").write_text(f"/{relative}\n")
+    _commit(repo)
+    if status_mode == "hidden-untracked":
+        _git(repo, "config", "status.showUntrackedFiles", "no")
+
+    destination = repo / relative
+    destination.write_text(_authored_ingest_page("operator-manual"))
+    assert _git(repo, "status", "--porcelain", "--", relative) == ""
+    if status_mode == "ignored":
+        _git(repo, "check-ignore", "-q", relative)
+
+    original_page = destination.read_bytes()
+    original_manifest = (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    registry = SourceRegistry(tmp_path / "registry")
+    from lumio_wiki.git_authoring import ingest_into_worktree
+
+    with pytest.raises(GitAuthoringError, match="uncommitted"):
+        ingest_into_worktree(
+            kb,
+            A_BYTES,
+            "text/plain",
+            "manual.txt",
+            "operator-manual",
+            _authored_ingest_page("operator-manual"),
+            source_registry=registry,
+        )
+
+    assert destination.read_bytes() == original_page
+    assert (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes() == original_manifest
+    assert registry.find_version("operator-manual", A_DIGEST) is None
+
+
+def test_r1_ingest_allows_absent_destination_below_ignored_parent(tmp_path):
+    repo = _init_repo(tmp_path)
+    kb = repo / "kb"
+    kb.mkdir()
+    (kb / "lumio.yaml").write_text(CONTROL_V2)
+    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        serialize_source_reference_manifest(SourceReferenceManifest(version=1, namespace=NAMESPACE))
+    )
+    (repo / ".gitignore").write_text("/kb/concepts/\n")
+    _commit(repo)
+
+    (kb / "concepts").mkdir()
+    relative = "kb/concepts/workbench_press.md"
+    assert _git(
+        repo,
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--ignored=matching",
+        "--",
+        relative,
+    ).startswith("!!")
+    registry = SourceRegistry(tmp_path / "registry")
+    from lumio_wiki.git_authoring import ingest_into_worktree
+
+    ingest_into_worktree(
+        kb,
+        A_BYTES,
+        "text/plain",
+        "manual.txt",
+        "operator-manual",
+        _authored_ingest_page("operator-manual"),
+        source_registry=registry,
+    )
+
+    assert (kb / "concepts" / "workbench_press.md").is_file()
+    assert registry.find_version("operator-manual", A_DIGEST) is not None
+
+
 def test_f1_ingest_requires_a_git_worktree(tmp_path):
     repo = _init_repo(tmp_path)
     kb = _write_kb(repo)
@@ -1302,10 +1381,42 @@ def test_f7_cli_reads_one_pointer_pinned_local_snapshot(tmp_path, capsys):
     pointer.write_text("{corrupt")
     code = main(["page", str(tmp_path / "dest"), "Hydraulic Press"])
     assert code == 1
+    capsys.readouterr()
+
+    pointer.unlink()
+    code = main(["page", str(tmp_path / "dest"), "Hydraulic Press"])
+    assert code == 1
+    assert "no published version pointer" in capsys.readouterr().err
 
     pointer.write_text(json.dumps({"version": "f" * 40}))
     code = main(["page", str(tmp_path / "dest"), "Hydraulic Press"])
     assert code == 1  # a missing version never falls back to recursive loading
+
+
+def test_r2_plain_versions_v1_kb_remains_readable_and_valid(tmp_path, capsys):
+    kb = tmp_path / "plain-kb"
+    page = kb / "versions" / "v1" / "overview.md"
+    page.parent.mkdir(parents=True)
+    page.write_text(
+        "---\n"
+        'title: "Overview"\n'
+        'tags:\n  - "test"\n'
+        'summary: "Overview."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        'sources:\n  - id: "src-overview"\n    title: "Overview Source"\n'
+        "---\n\nOverview body.\n"
+    )
+    assert not (kb / "current.json").exists()
+    assert not (page.parent / "manifest.json").exists()
+    assert not (kb / ".lumio-publication").exists()
+    _plain_kb, report = load_knowledge_base(kb)
+    assert report.is_valid, report
+
+    assert main(["validate", str(kb)]) == 0
+    capsys.readouterr()
+    assert main(["page", str(kb), "Overview"]) == 0
+    assert "Overview body." in capsys.readouterr().out
 
 
 def test_f8_recovery_enforces_changed_policy_and_private_completeness(tmp_path):
@@ -1390,6 +1501,67 @@ def test_f9_successful_retry_cannot_undo_a_later_rollback(tmp_path):
     )
     assert retried.activated is True  # the immutable historical admission fact
     assert PublishedFilesystemLocation(tmp_path / "dest").read_pointer() == revision_a
+
+
+def test_r3_post_activation_receipt_failure_cannot_replay_after_rollback(tmp_path, monkeypatch):
+    import lumio_wiki.git_authoring as git_authoring
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    destination = tmp_path / "dest"
+    revision_a = _commit(repo)
+    review_a = preview_publication(kb, revision_a, destination, "none")
+    publish_revision(kb, revision_a, destination, "none", review_a.review_digest)
+
+    page = kb / "concepts" / "steel-blank.md"
+    page.write_text(
+        _entity_page(
+            "Steel Blank",
+            "entity:steel-blank",
+            ["material"],
+            body_sections="## Overview\n\nB body.\n",
+        )
+    )
+    revision_b = _commit(repo)
+    review_b = preview_publication(kb, revision_b, destination, revision_a)
+    receipt_b = destination / ".lumio-publication" / "receipts" / f"{revision_b}.json"
+    atomic_write = git_authoring.atomic_write_bytes
+    failed_receipt_writes = []
+
+    def fail_activated_receipt(path, data):
+        if Path(path) == receipt_b and json.loads(data).get("activated") is True:
+            failed_receipt_writes.append(Path(path))
+            raise OSError("injected activated receipt bookkeeping failure")
+        atomic_write(path, data)
+
+    monkeypatch.setattr(git_authoring, "atomic_write_bytes", fail_activated_receipt)
+    with pytest.raises(OSError, match="activated receipt bookkeeping failure"):
+        publish_revision(kb, revision_b, destination, revision_a, review_b.review_digest)
+    assert failed_receipt_writes == [receipt_b]
+    assert PublishedFilesystemLocation(destination).resolve().published_version == revision_b
+    assert _published_receipt(destination, revision_b)["activated"] is False
+
+    monkeypatch.setattr(git_authoring, "atomic_write_bytes", atomic_write)
+    page.write_text(
+        _entity_page(
+            "Steel Blank",
+            "entity:steel-blank",
+            ["material"],
+            body_sections="## Overview\n\nC body.\n",
+        )
+    )
+    revision_c = _commit(repo)
+    review_c = preview_publication(kb, revision_c, destination, revision_b)
+    publish_revision(kb, revision_c, destination, revision_b, review_c.review_digest)
+    assert _published_receipt(destination, revision_b)["activated"] is True
+
+    rollback_review = preview_rollback(destination, revision_a, revision_c)
+    rollback_publication(destination, revision_a, revision_c, rollback_review.review_digest)
+    assert PublishedFilesystemLocation(destination).read_pointer() == revision_a
+
+    retried_b = publish_revision(kb, revision_b, destination, revision_a, review_b.review_digest)
+    assert retried_b.activated is True
+    assert PublishedFilesystemLocation(destination).read_pointer() == revision_a
 
 
 def test_f10_rollback_verifies_sealed_binding_identity(tmp_path):
@@ -1614,6 +1786,76 @@ def test_f15_source_impact_support_labels(tmp_path):
     sole = by_entity[("entity:sole-press", "source-s")]
     assert sole.support == "sole-source-lost", review2.source_impact
     assert not any(item.support == "replaced-exact-version" for item in review2.source_impact)
+
+
+@pytest.mark.parametrize("alternative", ["unregistered", "undeclared"])
+def test_r4_retirement_ignores_ineligible_alternative_support(tmp_path, alternative):
+    repo = _init_repo(tmp_path)
+    registry = SourceRegistry(tmp_path / "registry")
+    source_s = b"S bytes"
+    source_t = b"T bytes"
+    digest_s = hashlib.sha256(source_s).hexdigest()
+    digest_t = hashlib.sha256(source_t).hexdigest()
+    registry.register_version("source-s", source_s)
+    source_ids = ["source-s", "source-t"]
+    if alternative == "undeclared":
+        registry.register_version("source-t", source_t)
+        source_ids = ["source-s"]
+
+    page_path = "concepts/dual.md"
+    pages = {page_path: _two_source_page("entity:dual-press", "Dual Press", source_ids)}
+    initial = SourceReferenceManifest(
+        version=1,
+        namespace=NAMESPACE,
+        sources={"source-s": "active"},
+        bindings={"entity:dual-press": {"source-s": digest_s}},
+    )
+    kb = _write_kb(repo, manifest=initial, pages=pages)
+    revision_a = _commit(repo)
+    review_a = preview_publication(
+        kb, revision_a, tmp_path / "dest", "none", source_registry=registry
+    )
+    assert not review_a.blocking_diagnostics, review_a.blocking_diagnostics
+    publish_revision(
+        kb,
+        revision_a,
+        tmp_path / "dest",
+        "none",
+        review_a.review_digest,
+        source_registry=registry,
+    )
+
+    retired = SourceReferenceManifest(
+        version=1,
+        namespace=NAMESPACE,
+        sources={"source-s": "retired", "source-t": "active"},
+        bindings={"entity:dual-press": {"source-t": digest_t}},
+    )
+    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        serialize_source_reference_manifest(retired)
+    )
+    revision_b = _commit(repo)
+    review_b = preview_publication(
+        kb, revision_b, tmp_path / "dest", revision_a, source_registry=registry
+    )
+    by_entity = {(item.entity_id, item.source_id): item for item in review_b.source_impact}
+    assert by_entity[("entity:dual-press", "source-s")].support == "sole-source-lost"
+    diagnostic = (
+        "does not resolve to an exact registered Source Version"
+        if alternative == "unregistered"
+        else "is not declared in that page's sources[].id"
+    )
+    assert any(diagnostic in item for item in review_b.blocking_diagnostics)
+    with pytest.raises(GitAuthoringError, match="blocking diagnostics"):
+        publish_revision(
+            kb,
+            revision_b,
+            tmp_path / "dest",
+            revision_a,
+            review_b.review_digest,
+            source_registry=registry,
+        )
+    assert PublishedFilesystemLocation(tmp_path / "dest").read_pointer() == revision_a
 
 
 def test_f16_publication_records_carry_provenance_and_inspection_metadata(tmp_path):

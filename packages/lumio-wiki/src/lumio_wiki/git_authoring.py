@@ -647,9 +647,25 @@ def _refuse_unsafe_worktree_mutation(
             f"refusing to mutate a worktree with unresolved Git conflicts: {paths}"
         )
     for relative in relative_paths:
-        status = _git(repo_root, "status", "--porcelain", "--", str(kb_path / relative)).decode()
+        target = kb_path / relative
+        status = _git(
+            repo_root,
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--ignored=matching",
+            "--",
+            str(target),
+        ).decode()
         if relative in allow_untracked and status.startswith("??"):
             continue
+        if (
+            status.strip()
+            and not target.exists()
+            and not target.is_symlink()
+            and all(line.startswith("!! ") for line in status.splitlines())
+        ):
+            continue  # an ignored parent is not an existing destination collision
         if status.strip():
             raise GitAuthoringError(
                 f"uncommitted author changes exist at {relative!r}; the ingest "
@@ -727,20 +743,30 @@ def _check_pointer_expectation(
 
 
 def _eligible_candidate_support(
-    candidate: SourceReferenceManifest, entity_id: str, *, exclude: frozenset[str] = frozenset()
+    candidate: SourceReferenceManifest,
+    entity_id: str,
+    declared_sources: frozenset[str],
+    source_registry: SourceRegistry | None,
+    *,
+    exclude: frozenset[str] = frozenset(),
 ) -> int:
-    """Count the Entity's eligible active support in the candidate manifest."""
+    """Count active bindings declared on the Entity and pinned to registered versions."""
     return sum(
         1
-        for source_id in candidate.bindings.get(entity_id, {})
-        if source_id not in exclude and candidate.sources.get(source_id) == "active"
+        for source_id, digest in candidate.bindings.get(entity_id, {}).items()
+        if source_id not in exclude
+        and source_id in declared_sources
+        and candidate.sources.get(source_id) == "active"
+        and source_registry is not None
+        and source_registry.find_version(source_id, digest) is not None
     )
 
 
 def _source_impact(
     candidate: SourceReferenceManifest,
     admitted: SealedSourceReferences | None,
-    page_entities: set[str] | None = None,
+    page_sources: dict[str, frozenset[str]] | None = None,
+    source_registry: SourceRegistry | None = None,
 ) -> list[PublicationSourceImpact]:
     """Compare admitted and candidate source references (spec 0008 §3.3).
 
@@ -753,7 +779,8 @@ def _source_impact(
     ``replaced`` binding whose exact new version still supports the page —
     distinct from a removed binding (finding 15).
     """
-    page_entities = page_entities or set()
+    page_sources = page_sources or {}
+    page_entities = set(page_sources)
     impact: list[PublicationSourceImpact] = []
     if admitted is None:
         impact.extend(
@@ -819,7 +846,13 @@ def _source_impact(
             # from the candidate's remaining eligible support (finding 15).
             if entity_id not in page_entities:
                 support = "page-removed"
-            elif _eligible_candidate_support(candidate, entity_id, exclude=frozenset({source_id})):
+            elif _eligible_candidate_support(
+                candidate,
+                entity_id,
+                page_sources.get(entity_id, frozenset()),
+                source_registry,
+                exclude=frozenset({source_id}),
+            ):
                 support = "still-supported"
             else:
                 support = "sole-source-lost"
@@ -1073,7 +1106,11 @@ def _review_from_capture(
             if source.id and source.id not in manifest.sources
         }
     )
-    page_entities = {page.id for page in captured.kb.pages if getattr(page, "id", None)}
+    page_sources = {
+        page.id: frozenset(source.id for source in page.sources if source.id)
+        for page in captured.kb.pages
+        if getattr(page, "id", None)
+    }
     review = PublicationReview(
         validator_contract=VALIDATOR_CONTRACT_ID,
         kb_path=str(captured.kb_root),
@@ -1086,7 +1123,7 @@ def _review_from_capture(
         manifest_digest=captured.manifest_digest,
         source_refs=source_refs,
         bindings=bindings,
-        source_impact=_source_impact(manifest, admitted, page_entities),
+        source_impact=_source_impact(manifest, admitted, page_sources, source_registry),
         page_mutations=_page_mutations(captured.content, active_manifest),
         blocking_diagnostics=sorted(blocking),
         public_only_sources=public_only,
@@ -1232,6 +1269,7 @@ def publish_revision(
         location = PublishedFilesystemLocation(destination_path)
         observed = location.read_pointer()
         _check_pointer_expectation(observed, expected_current, version)
+        _reconcile_active_receipt(destination_path, observed)
         version_dir = published_version_path(destination_path, version)
         receipt_path = _receipt_path(destination_path, version)
         locked_retry = _retry_admitted_publication(
@@ -1394,6 +1432,30 @@ def _retry_admitted_publication(
             f"the verified admission receipt for {version!r} changed during retry"
         )
     return _reconcile_receipt_activation(destination, receipt)
+
+
+def _reconcile_active_receipt(destination: Path, version: str | None) -> None:
+    """Persist an already-observed activation before a later pointer transition."""
+    if version is None:
+        return
+    receipt_path = _receipt_path(destination, version)
+    if not receipt_path.exists():
+        return  # legacy Published Versions have no Git-authoring receipt
+    receipt = _load_receipt(destination, version)
+    if receipt.version != version or receipt.destination != str(destination):
+        raise GitAuthoringError(
+            f"the active Published Version {version!r} does not match its admission receipt"
+        )
+    if receipt.activated:
+        return
+    if PublishedFilesystemLocation(destination).read_pointer() != version:
+        raise PublicationConflict(
+            f"the active Published Version changed while reconciling {version!r}"
+        )
+    receipt = msgspec.structs.replace(receipt, activated=True)
+    raw = msgspec.json.encode(receipt)
+    atomic_write_bytes(receipt_path, raw)
+    _verify_written(receipt_path, raw)
 
 
 def _reconcile_receipt_activation(
@@ -1660,6 +1722,8 @@ def rollback_publication(
                             f"binding {source_id} for {review.version!r} lacks "
                             f"a verified artifact"
                         )
+        active_version = PublishedFilesystemLocation(destination_path).read_pointer()
+        _reconcile_active_receipt(destination_path, active_version)
         atomic_write_bytes(published_pointer_path(destination_path), _pointer_bytes(review.version))
         return PublishedFilesystemLocation(destination_path).read_manifest(review.version)
 

@@ -366,12 +366,16 @@ def _kb_location_label(value: str | Path, kb: KnowledgeBase) -> str:
 
 
 def _is_local_published_layout(path: str | Path) -> bool:
-    """Recognize the local immutable layout without capturing ordinary KBs."""
+    """Recognize publication protocol artifacts, not ordinary version-like folders."""
+    from lumio_wiki.git_authoring import PRIVATE_OPERATIONS_DIR
     from lumio_wiki.location import CURRENT_POINTER_OBJECT
 
     root = Path(path)
     pointer = root / CURRENT_POINTER_OBJECT
     if pointer.exists() or pointer.is_symlink():
+        return True
+    private_state = root / PRIVATE_OPERATIONS_DIR
+    if private_state.exists() or private_state.is_symlink():
         return True
     versions = root / "versions"
     if not versions.is_dir():
@@ -379,11 +383,9 @@ def _is_local_published_layout(path: str | Path) -> bool:
     for version_dir in versions.iterdir():
         if not (version_dir.is_dir() or version_dir.is_symlink()):
             continue
-        try:
-            validate_published_version(version_dir.name)
-        except ValueError:
-            continue
-        return True
+        manifest = version_dir / "manifest.json"
+        if manifest.exists() or manifest.is_symlink():
+            return True
     return False
 
 
