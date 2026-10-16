@@ -241,12 +241,12 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
         page["path"] == "policies/unadmitted-g2-boundary.md"
         for page in asyncio.run(runtime.list_context_pages())
     )
-    expect_value_error(
-        "managed projects",
-        lambda: asyncio.run(
-            runtime.read_context_page("policies/unadmitted-g2-boundary.md", draft=True)
-        ),
-    )
+    try:
+        asyncio.run(runtime.read_context_page("policies/unadmitted-g2-boundary.md"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an unadmitted project-root page must not be readable")
     assert asyncio.run(runtime.search_examples("event count")) == []
 
     # An explicit write to an existing candidate must use its current revision.
@@ -604,3 +604,105 @@ def test_example_commit_failure_reports_unadmitted_worktree_state(tmp_path, caps
     assert "A  answer_examples/partial-example.md" in message
     assert "simulated commit failure" in message
     runtime.con.close()
+
+
+def test_public_routes_refuse_legacy_and_pin_admitted_git(tmp_path, capsys, monkeypatch):
+    """Public reads bind to human admission, never roots, proposals or setup defaults."""
+    import io
+    import os
+
+    from ariadne import proposals
+    from ariadne.authoring import AuthoringProject
+    from ariadne.cli import main as cli_main
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    project = complete_bundle_project(tmp_path / "admitted")
+    authoring = AuthoringProject(project)
+    review = _validated_ready(
+        authoring,
+        project,
+        _policy_edit(POLICY_PAGE.replace("The rule body.", "The G4 admitted rule.")),
+    )
+
+    def refuse_unadmitted_project():
+        try:
+            QueryRuntime.open_project(project)
+        except ValueError as exc:
+            assert "admission" in str(exc).lower()
+        else:
+            raise AssertionError("a project without valid admission must refuse")
+
+    refuse_unadmitted_project()
+    assert cli_main(["list-metrics", "--project", str(project)]) == 1
+    missing_error = json.loads(capsys.readouterr().err)["error"]["message"]
+    assert "admission" in missing_error.lower()
+
+    assert admit(project, review) == 0
+    capsys.readouterr()
+    admission_path = project / ".ariadne" / "current.json"
+    admitted_record = admission_path.read_bytes()
+    first_runtime = QueryRuntime.open_project(project)
+    first = asyncio.run(first_runtime.get_metric("event_count"))
+    assert first["rows"] == [{"event_count": 3}]
+    assert first["admission"]["revision"] == review["revision"]
+    assert "The G4 admitted rule." in "".join(first["context"]["policies"])
+
+    admission_path.write_text("{", encoding="utf-8")
+    refuse_unadmitted_project()
+    assert cli_main(["list-metrics", "--project", str(project)]) == 1
+    corrupt_error = json.loads(capsys.readouterr().err)["error"]["message"]
+    assert "admission" in corrupt_error.lower()
+    admission_path.write_bytes(admitted_record)
+
+    # A later candidate remains invisible to both existing and new sessions.
+    later = authoring.start_proposal()
+    candidate = authoring.edit_proposal(
+        later["proposal"],
+        later["candidate_revision"],
+        _policy_edit(POLICY_PAGE.replace("The rule body.", "The G4 unadmitted rule.")),
+    )
+    assert candidate["revision"] != review["revision"]
+    existing_answer = asyncio.run(first_runtime.get_metric("event_count"))
+    new_runtime = QueryRuntime.open_project(project)
+    new_answer = asyncio.run(new_runtime.get_metric("event_count"))
+    assert existing_answer["rows"] == first["rows"] == new_answer["rows"]
+    assert existing_answer["context"] == first["context"] == new_answer["context"]
+    assert "The G4 unadmitted rule." not in "".join(new_answer["context"]["policies"])
+    assert new_answer["admission"]["revision"] == review["revision"]
+    first_runtime.con.close()
+    new_runtime.con.close()
+
+    # Retired selectors and commands fail during argument parsing, before writes.
+    for argv in (
+        ["list-metrics", "--project", str(project), "--served", str(project)],
+        ["save-example", "--project", str(project), "--staging", str(tmp_path / "staging")],
+        ["promote", "--project", str(project)],
+        ["setup", "--project", str(project), "--legacy", "--no-input"],
+    ):
+        assert cli_main(argv, stdin=io.StringIO("")) == 1
+        assert "error" in json.loads(capsys.readouterr().err)
+    assert not (tmp_path / "staging").exists()
+
+    # Setup reports operator commands but never initializes/configures Git,
+    # records source permission, admits state or starts an implicit proposal.
+    fresh = tmp_path / "setup-only"
+    git = proposals._git
+    commands = []
+
+    def observe_git(argv, *args, **kwargs):
+        commands.append(argv)
+        assert argv[:1] != ["init"]
+        assert argv[:1] != ["config"] or argv[1:2] == ["--get"]
+        return git(argv, *args, **kwargs)
+
+    monkeypatch.setattr(proposals, "_git", observe_git)
+    assert cli_main(["setup", "--project", str(fresh), "--no-input"]) == 0
+    output = capsys.readouterr().out
+    assert "setup never runs git init/config" in output
+    assert "source permission and Admission remain separate human decisions" in output
+    assert commands
+    assert not (fresh / ".git").exists()
+    assert not (fresh / ".ariadne" / "source-approvals.json").exists()
+    assert not (fresh / ".ariadne" / "current.json").exists()
+    assert not list((fresh / ".ariadne" / "proposals").glob("*.json"))

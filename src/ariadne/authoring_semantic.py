@@ -9,7 +9,7 @@ resolver, no arbitrary path field, no per-metric mutation, no deletion or
 rename (spec §3). Content may be an incomplete or invalid draft: artifact
 validation is a later gate; only identity, payload bounds, credentials and the
 system-owned-artifact boundary apply now. Model/graph YAML is normalized to
-readable block scalars exactly like the legacy bundle staging
+readable block scalars by the shared authoring normalizer
 (:func:`ariadne.author.normalize_layer_yaml`, issue #31) so the human reviews
 the same readable form at the Git gate.
 """
@@ -58,8 +58,8 @@ def resolve_edit(edit: dict) -> tuple[str, str]:
     rel = _relpath(edit)
     refuse_generated(rel)
     check_artifact_content(f"edit {rel!r}", edit["content"])
-    # Readable block scalars for multi-line sources (issue #31 parity with the
-    # legacy staging gate); non-YAML drafts pass through unchanged.
+    # Readable block scalars for multi-line sources; non-YAML drafts pass
+    # through unchanged.
     return rel, normalize_layer_yaml(edit["content"])
 
 

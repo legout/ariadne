@@ -2,20 +2,15 @@
 2026-10-02-0009 §6, issue #38/G6; ADR-0002's facade decision as amended by
 ADR-0016 — tool-surface separation, never a new account system).
 
-All query behavior — compilation, execution, context attachment, grain checks,
-proposal staging — lives in :class:`ariadne.query.QueryRuntime` (spec
-2026-09-23-0001 §3, ADR-0012; moved from ``ariadne.runtime`` in the
-modular-core extraction, issue #33/ADR-0016); this module only registers
-tools over one runtime instance and parses the server arguments. All
-answer-example behavior lives in :mod:`ariadne.answer_examples` behind the
-runtime's transport-neutral ``save_example``/``search_examples`` (issue #21),
-and the operator review command (``ariadne-example-review``) is never
-registered as a tool. All authoring behavior lives in
-:class:`ariadne.authoring.AuthoringProject` (plan §2's Authoring call
-contract, issues #34–#36): this adapter adds thin ``authoring_``-prefixed
-wrappers over its methods. ``Facade`` remains import-compatible here as a
-plain alias of the query runtime class — never a subclass or wrapper that
-could diverge.
+All query behavior — compilation, execution, context attachment and grain
+checks — lives in :class:`ariadne.query.QueryRuntime`; this module registers
+tools over the project-bound runtime factory and parses server arguments.
+Answer examples are proposal artifacts: ``save_example`` and
+``search_examples`` use the same Git candidate and human admission as other
+authored content, with no separate review store. Authoring behavior lives in
+:class:`ariadne.authoring.AuthoringProject`; this adapter adds thin
+``authoring_``-prefixed wrappers. ``Facade`` is a compatibility alias for the
+public project factory, not a second runtime implementation.
 
 The three registrations (spec §6, AC7):
 
@@ -27,10 +22,8 @@ The three registrations (spec §6, AC7):
   context; issue #44/K4 reports claim/confirmation status and AS-OF evidence
   freshness, and serves a context-only admitted snapshot — no metrics yet —
   while metric tools surface the specific missing-catalog error),
-  ``list_context_pages``/``read_context_page`` (issue #60, spec 0015 /
-  ADR-0020: token-free page listing and path-addressed reading of served
-  and staged Context Layer pages — read-only, draft-labeled, never a
-  governed-context source).
+  ``list_context_pages``/``read_context_page``: token-free listing and
+  path-addressed reading of the admitted Context snapshot — read-only.
   No authoring operation.
 - **authoring** — the Git authoring contract with one stable prefix:
   ``authoring_start_proposal``, ``authoring_read_artifact``,
@@ -43,43 +36,21 @@ The three registrations (spec §6, AC7):
   (AC5).
 - **combined** (the ``ariadne-serve`` default) — their union.
 
-Explicit migration of the legacy complete-bundle wrappers (spec §6 permits
-breaking interfaces when explicitly mapped; the legacy staged-bundle route
-itself is retained, documented, for its named local consumers —
-tests/test_authoring.py, tests/test_promote.py, tests/test_multifact.py and
-tests/test_authoring_mcp.py plus every legacy staged project — and legacy
-pending work keeps its review path; see docs/how-to/git-authoring.md):
+All MCP authoring operations address one explicit Git proposal and its exact
+revision. There is no complete-bundle submission, staged-project, or separate
+Example-review registration.
 
-- ``authoring_submit_bundle`` (one complete bundle) is REPLACED by
-  ``authoring_start_proposal`` + one ``authoring_edit_proposal`` per artifact
-  + ``authoring_validate_proposal`` — independent edits against revision-
-  checked candidates, never a resubmitted whole bundle. No legacy complete-
-  bundle entry is retained on any MCP surface, so no caller can silently map
-  an old bundle payload onto a guessed proposal.
-- ``authoring_review_bundle`` is REPLACED by ``authoring_review_proposal``
-  (proposal ID + bounded part).
-- The legacy ``authoring_propose_sources``/``authoring_inputs`` payloads
-  (registry-shaped YAML text / project-level call) map to the Git-mode
-  arguments: proposal ID + expected revision + typed source entries, and
-  proposal ID + documents/part/sample bound.
+No registration exposes source approval (``ariadne-authoring
+approve-sources``), Git Review Admission (``ariadne-admit``, including its
+``--confirm-mapping`` decision), or reconciliation (``ariadne-authoring
+reconcile``): those are human-only local commands. Tool arguments never select
+a project root, worktree path or credential.
 
-No registration ever exposes source approval (``ariadne-authoring
-approve-sources``), artifact admission (``ariadne-admit``, including its
-K4/issue #44 ``--confirm-mapping`` assertion confirmation), reconciliation
-(``ariadne-authoring reconcile``) or Promotion (``ariadne-promote``): those
-are human-only server-host commands (ADR-0013, spec §5), and no tool argument
-ever selects a project root, worktree path or credential.
-
-The server is launched for ONE locally configured project (``--project DIR``):
-the caller cannot select another project root or source credentials through
-any tool argument, and stdio needs no bearer token (that is the #18 HTTP
-transport's rule). A Git-managed data project is served through its pinned
-human admission (``QueryRuntime.open_project``, issue #37): a project with no
-admission yet still starts its Authoring/Combined surfaces, and query tool
-calls surface the managed route's missing-admission error instead of blocking
-authoring (AC5). A legacy (non-Git) project keeps the empty-project behavior:
-the authoring tools work before the first Promotion, and query tool calls
-surface the runtime's existing missing-served-model error.
+The server is launched for ONE locally configured Git project (``--project
+DIR``): tool arguments cannot select another project or source credentials,
+and stdio needs no bearer token. Governed query operations use the project's
+exact human-admitted snapshot. Without a valid admission, query calls refuse;
+the Authoring/Combined surfaces remain available for proposal work.
 
 The opt-in Streamable HTTP transport keeps loopback as the default.
 ``--http-container --http-host 0.0.0.0`` explicitly permits a container-network
@@ -110,6 +81,7 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 # The transport-neutral authoring service (plan §2's Authoring call contract):
 # one import, the tool bodies are one-line delegations with its verbatim
@@ -118,7 +90,7 @@ from ariadne import (
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: analyzer binds the venv copy lacking this lane's new module
 )
 from ariadne.authoring import AuthoringProject
-from ariadne.discovery import DiscoveryRuntime
+from ariadne.discovery import DiscoveryRuntime, _DiscoverySession
 from ariadne.execution import DeadlineBudget  # pyright: ignore[reportMissingImports] — drift
 
 # The grain guidance constant lives in ariadne.grain; it stays importable from
@@ -127,21 +99,16 @@ from ariadne.grain import GRAIN_GUIDANCE  # noqa: F401 — re-export
 from ariadne.query import (  # pyright: ignore[reportMissingImports] — drift
     DeferredQueryRuntime,
     QueryRuntime,
+    _QueryRuntimeSession,
 )
 from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift
-from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
-    default_registry_path,
-)
 
-# Back-compat alias (spec 2026-09-23-0001 §3): ariadne.serve.Facade IS the
-# query runtime class — a plain assignment, not a subclass or wrapper.
+# Historical aliases expose only the Git-project factory; they cannot create a
+# runtime from mutable artifact roots or staging directories.
 Facade = QueryRuntime
-
-# A live query runtime, or a zero-arg factory for a project whose query
-# surface is not available yet (spec 2026-09-24-0005: the promoted-models
-# requirement "cannot block startup of the authoring tools"; query calls
-# re-attempt construction).
-FacadeSource = QueryRuntime | DeferredQueryRuntime | Callable[[], QueryRuntime]
+FacadeSource = (
+    QueryRuntime | _QueryRuntimeSession | DeferredQueryRuntime | Callable[[], _QueryRuntimeSession]
+)
 
 # The three registrations (spec §6): Query under its established names, the
 # authoring contract under one stable prefix, and their union.
@@ -428,16 +395,16 @@ def _refusal(exc: QueryResultError):
 
 def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str = "combined"):
     """Wire one tool registration of the shared core onto one MCP stdio
-    server (spec §6): ``analyst`` registers the Query operations, ``authoring``
-    the ``authoring_``-prefixed Git authoring contract, ``combined`` (the
+        server (spec §6): ``analyst`` registers the Query operations, ``authoring``
+        the ``authoring_``-prefixed Git authoring contract, ``combined`` (the
     default, the historic facade) their union — and never source approval,
-    admission, reconciliation or Promotion.
+    admission or reconciliation.
 
-    ``project`` is the ONE configured project root the authoring tools operate
-    on; the default is the current directory because :func:`main` chdir'd into
-    the ``--project`` root at launch (direct in-process callers pass theirs).
-    Model arguments carry only proposal/artifact identities, revisions and
-    content — never paths, worktrees or credentials."""
+        ``project`` is the ONE configured project root the authoring tools operate
+        on; the default is the current directory because :func:`main` chdir'd into
+        the ``--project`` root at launch (direct in-process callers pass theirs).
+        Model arguments carry only proposal/artifact identities, revisions and
+        content — never paths, worktrees or credentials."""
     if toolset not in TOOLSETS:
         raise ValueError(f"unknown toolset {toolset!r}; this build serves {TOOLSETS}")
     from mcp.server.mcpserver import (  # pyright: ignore[reportMissingImports, reportAttributeAccessIssue]
@@ -476,7 +443,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
 
     if toolset in ("analyst", "combined"):
 
-        def _runtime() -> QueryRuntime:
+        def _runtime() -> _QueryRuntimeSession:
             """The query runtime — a live instance, or the launch-time factory
             (empty project: the authoring tools work, query calls surface the
             construction error). Fix pass 1, finding 6: the DEFAULT MCP
@@ -487,9 +454,16 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             measure still wins (this only fills a missing one, once per
             runtime, together with the one-time refusal-representability check
             on this transport)."""
-            runtime = facade() if callable(facade) else facade
-            if isinstance(runtime, DeferredQueryRuntime):
-                runtime = runtime.runtime()
+            if facade is QueryRuntime:
+                runtime: _QueryRuntimeSession = QueryRuntime.open_project(project)
+            elif isinstance(facade, DeferredQueryRuntime):
+                runtime = cast(DeferredQueryRuntime, facade).runtime()
+            elif isinstance(facade, _QueryRuntimeSession):
+                runtime = facade
+            elif callable(facade):
+                runtime = cast(Callable[[], _QueryRuntimeSession], facade)()
+            else:
+                raise TypeError("facade must be a Git-project query factory or runtime")
             if runtime._measure is None:
                 runtime._measure = _mcp_result_bytes
                 for form in query_results.refusal_forms():
@@ -522,18 +496,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             Four native groups, draft/history/freshness labels and bounded term
             continuation; never executes an answer or authorizes a join.
             """
-            if isinstance(facade, (QueryRuntime, DeferredQueryRuntime)):
-                discovery = facade
-            elif (Path(project) / ".ariadne").exists():
-                discovery = DiscoveryRuntime.open_project(project)
-            else:
-                discovery = DiscoveryRuntime(
-                    Path(project) / "semantic_layer",
-                    Path(project) / "context_layer",
-                    None,
-                    staging_dir=Path(project) / "staging",
-                    sources=default_registry_path(),
-                )
+            discovery = DiscoveryRuntime.open_project(project)
             return await discovery.discover(query, limit=limit)
 
         @app.tool()
@@ -549,35 +512,25 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         @app.tool()
         @_tool_errors
         async def search_context(query: str) -> list[dict]:
-            """Search admitted Context pages; explicit legacy roots also expose drafts.
-
-            Managed routes never mix staged candidate content into default discovery.
-            """
+            """Search only Context pages from the admitted Git snapshot."""
             return await _runtime().search_context(query)
 
         @app.tool()
         @_tool_errors
         async def list_context_pages() -> list[dict]:
-            """List Context metadata; managed projects show admitted pages only.
-
-            Legacy roots may also show staged drafts; pair with read_context_page
-            for the full body (spec 0015).
-            """
+            """List Context metadata from the admitted Git snapshot."""
             return await _runtime().list_context_pages()
 
         @app.tool()
         @_tool_errors
-        async def read_context_page(path: str, draft: bool = False) -> dict:
-            """Read one exact Context Layer page by its bundle-relative POSIX path:
-            full content plus draft flag and context_signals (spec 0015).
+        async def read_context_page(path: str) -> dict:
+            """Read one exact page from the admitted Context snapshot.
 
             Args:
                 path: the exact relative .md path from list_context_pages or a
                     search_context hit (e.g. policies/emea-currency-cutover.md).
-                draft: true selects a legacy staged page; managed projects refuse
-                    it and require Authoring's explicit proposal/revision read.
             """
-            return await _runtime().read_context_page(path, draft=draft)
+            return await _runtime().read_context_page(path)
 
         @app.tool(structured_output=False)
         @_tool_errors
@@ -666,8 +619,8 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             graph: each fact aggregates at its own grain and the branches align on
             conformed keys — a raw fact-to-fact join never executes. Same contract as
             ``ariadne query-metrics``. Only predefined metric names: never raw SQL.
-            Requires the served graph to be admitted (human Promotion of a validated
-            bundle); an unadmitted or hand-edited graph refuses with that reason.
+            Requires the graph in the exact Git snapshot to be admitted by a human;
+            an unadmitted or hand-edited graph refuses with that reason.
 
             The response carries rows, the compiled single-SELECT SQL, a bounded
             lineage plan (fact branches, joins, conformed keys, filters, windows,
@@ -783,9 +736,8 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         # --- the two answer-example tools (issue #21, spec 2026-09-29-0007) ---
         # Thin adapters over the runtime's transport-neutral save/search (issue
         # #19): the local JSON CLI rides the exact same runtime methods, so a
-        # draft saved over one transport is immediately searchable over the other.
-        # The operator review command (ariadne-example-review, issue #20) is
-        # deliberately NOT registered as a tool — review is human-only.
+        # draft saved over one transport is immediately searchable over the other;
+        # Example artifacts share normal proposal review and Git Admission.
 
         @app.tool()
         @_tool_errors
@@ -800,8 +752,8 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             question/interpretation/parameters, the EXACT submitted result SQL
             text — the sql_provenance the save will retain verbatim, so the user
             can assess sensitive literals —, sources, submitter attestation)
-            for user confirmation BEFORE calling this. Never a governed write, a
-            promotion, or transcript harvesting; nothing about the example changes
+            for user confirmation BEFORE calling this. Never a governed write or
+            admission, and never transcript harvesting; nothing about the example changes
             the served catalog. Same contract as ``ariadne save-example``.
 
             Args:
@@ -843,7 +795,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 include_history: include stale/superseded/rejected records, labeled.
                 include_sql: additionally return each hit's stored sql_provenance
                     as provenance.sql — the EXACT submitted result SQL as
-                    historical evidence (null for legacy records without it);
+                    historical evidence (null when no submitted SQL was recorded);
                     never executed, never a ranking input, never wider history.
             """
             if (proposal is None) != (revision is None):
@@ -861,12 +813,8 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     include_history=include_history,
                     include_sql=include_sql,
                 )
-            if (Path(project) / ".ariadne").exists():
-                discovery = DiscoveryRuntime.open_project(project)
-                return await discovery.search_examples(
-                    query, limit=limit, include_history=include_history, include_sql=include_sql
-                )
-            return await _runtime().search_examples(
+            discovery = DiscoveryRuntime.open_project(project)
+            return await discovery.search_examples(
                 query, limit=limit, include_history=include_history, include_sql=include_sql
             )
 
@@ -1010,21 +958,21 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             sample_rows: int | None = None,
         ) -> dict:
             """The proposal's measured inputs (no model anywhere): the
-            deterministic profile of the operator-APPROVED resolved registry
-            identity (an unapproved or changed entry is an explicit error),
-            source-linked converted evidence for the referenced documents, and
-            the candidate's Seed Notes — each in bounded parts (part 1 of N;
-            complete only when N is 1). Same contract as Git-mode
-            ``ariadne-authoring inputs``.
+                        deterministic profile of the operator-APPROVED resolved registry
+                        identity (an unapproved or changed entry is an explicit error),
+                        source-linked converted evidence for the referenced documents, and
+                        the candidate's Seed Notes — each in bounded parts (part 1 of N;
+                        complete only when N is 1). Same contract as Git-mode
+                        ``ariadne-authoring inputs``.
 
-            Args:
-                proposal: the proposal ID.
-                documents: input-area references (e.g. uploaded filenames); at
-                    most 16 per call, each inside the operator-configured roots.
-                part: which bounded part of each document's converted text.
-                sample_rows: optional positive per-table profile row bound;
-                    sampled statistics do not claim primary or foreign key
-                    candidates.
+                        Args:
+                            proposal: the proposal ID.
+            documents: operator-placed input-area references; at most 16 per call,
+                                each inside the operator-configured roots.
+                            part: which bounded part of each document's converted text.
+                            sample_rows: optional positive per-table profile row bound;
+                                sampled statistics do not claim primary or foreign key
+                                candidates.
             """
             return authoring_api.inputs(
                 proposal, documents=documents or [], part=part, sample_rows=sample_rows
@@ -1179,9 +1127,9 @@ class BearerTokenGate:
     routes) is OAuth resource-server machinery; ADR-0013 selected a plain
     server-held bearer token over OAuth, so this wrapper enforces it at the
     outermost ASGI seam instead: EVERY request — session bootstrap, tool
-    listing, reads, uploads, dispatch — must carry ``Authorization: Bearer
-    <token>`` matching the exact server-held token or it fails 401 BEFORE the
-    MCP session manager, any tool dispatch, any read or any staging write.
+    listing, reads and dispatch — must carry ``Authorization: Bearer <token>``
+    matching the exact server-held token or it fails 401 BEFORE the MCP session
+    manager, any tool dispatch, or any project operation.
     The constant-time comparison never logs the token; the fixed rejection
     body discloses no project data. Non-HTTP scopes (uvicorn's lifespan, which
     runs the SDK session manager) pass through untouched."""
@@ -1353,18 +1301,6 @@ def _mcp_sdk_absent() -> bool:
     return False
 
 
-def _missing_served_models(exc: BaseException) -> bool:
-    """True for the runtime's promoted-models startup errors (no semantic
-    models directory yet / no governed metrics under it — the exact messages
-    QueryRuntime raises; query.py is outside this adapter's scope). Spec
-    2026-09-24-0005: an empty project must not block MCP startup of the
-    authoring tools, and query tool calls surface this same error."""
-    message = str(exc)
-    return "promote staging/semantic_layer/ first" in message or (
-        "no governed metrics found under" in message
-    )
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m ariadne.serve",
@@ -1385,23 +1321,6 @@ def main(argv: list[str] | None = None) -> int:
         "default combined, the historic facade union): analyst = the Query "
         "operations only; authoring = the authoring_ Git authoring contract "
         "only; combined = their union",
-    )
-    parser.add_argument(
-        "--db",
-        default=None,
-        help="SQLite database to attach read-only (required unless --sources or an "
-        "ambient ariadne.yaml applies)",
-    )
-    parser.add_argument(
-        "--sources",
-        default=None,
-        help="source registry YAML (ADR-0010; default: ./ariadne.yaml only when "
-        "neither --sources nor --db is given)",
-    )
-    parser.add_argument("--semantic", default="semantic_layer", help="served OSI layer directory")
-    parser.add_argument("--context", default="context_layer", help="served OKF layer directory")
-    parser.add_argument(
-        "--staging", default="staging", help="legacy staging root for draft workflows"
     )
     parser.add_argument(
         "--http",
@@ -1442,11 +1361,8 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.error("container/Host/Origin HTTP options require --http")
 
-    # One project root anchors everything (issue #16: the server is launched
-    # for one locally configured project): chdir so every existing
-    # cwd-relative default — the ambient ./ariadne.yaml registry, the served
-    # layer dirs, the staging root — resolves against it exactly as in a
-    # project-root launch, whatever directory the server was started from.
+    # One project root anchors every Git-only operation, regardless of the
+    # directory from which the server was launched.
     project = Path(args.project).resolve()
     try:
         os.chdir(project)
@@ -1454,60 +1370,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: --project {args.project}: {exc}", file=sys.stderr)
         return 1
 
-    # A Git-managed data project is served through its pinned human admission
-    # (issue #37/G5). The marker is Ariadne's OWN operator state — the ignored
-    # ``.ariadne/`` directory the first Git proposal/admission creates (plan §2
-    # "Project storage and authority") — not mere ``.git`` presence: a legacy
-    # artifact-root project that merely happens to live in a Git repository
-    # never opted into the managed route and keeps its legacy construction.
-    # Once the state exists, a missing/incoherent admission is a query-only
-    # refusal that never falls back to the mutable files and never blocks the
-    # authoring surface (spec §5, AC5).
-    managed = (project / ".ariadne").exists()
-
-    # Explicit --db/--sources always win over the ambient ./ariadne.yaml
-    # (shared resolution, ADR-0010). The runtime is built LAZILY per request,
-    # so a source-less project (e.g. an authoring-only server before any
-    # Promotion) still serves; when a query request DOES build the legacy
-    # runtime without any configured source, it refuses explicitly — the
-    # server never guesses a database to query.
-    sources_path = default_registry_path(args.sources, args.db)
-    db = args.db
-
-    def _new_runtime(budget=None) -> QueryRuntime:
-        if managed:
-            # open_project reads the LOGICAL host project's ``query:`` ceilings
-            # itself (never the pinned snapshot's inert copy).
-            runtime = QueryRuntime.open_project(
-                project,
-                deadline_budget=budget,
-                discovery=facade.discovery if isinstance(facade, DeferredQueryRuntime) else None,
-            )
-        else:
-            if sources_path is None and db is None:
-                raise ValueError(
-                    "no source configured: pass --sources REGISTRY or --db SQLITE, or "
-                    "declare sources in ariadne.yaml under --project — the server "
-                    "never guesses a database to query"
-                )
-            runtime = QueryRuntime(
-                args.semantic,
-                args.context,
-                db,
-                staging_dir=args.staging,
-                sources=sources_path,
-                # the fixed host CWD configuration (main() chdir'd into the one
-                # launch-selected --project root)
-                query_limits=query_results.load_host_query_limits(Path.cwd()),
-                deadline_budget=budget,
-            )
-        # Spec 0014 §5 (fix pass 1, finding 2a): reject an MCP byte budget that
-        # cannot represent EVERY refusal form in its actual isError representation
-        # (text + structured duplication) BEFORE any tool uses it. The battery
-        # and the measure touch the SDK, so they run only when the optional
-        # [mcp] extra is actually present — with it absent there is no MCP
-        # transport to preflight, and the mcp-absent hint path must stay
-        # reachable ("optional MCP remains optional", plan 0014 §2).
+    def _new_runtime(budget: DeadlineBudget | None = None) -> _QueryRuntimeSession:
+        runtime = QueryRuntime.open_project(
+            project,
+            deadline_budget=budget,
+            discovery=(
+                cast(DeferredQueryRuntime, facade).discovery
+                if isinstance(facade, DeferredQueryRuntime)
+                else None
+            ),
+        )
+        # The MCP response measure belongs to the transport adapter, not core.
         if not _mcp_sdk_absent():
             for form in query_results.refusal_forms():
                 size = _refusal_envelope_bytes(form)
@@ -1518,72 +1391,32 @@ def main(argv: list[str] | None = None) -> int:
                         f"refusal form on this transport (largest {size} bytes) — tighten "
                         "nothing further"
                     )
-            # The actual-transport preflight the core coordinates before returning.
             runtime._measure = _mcp_result_bytes
         return runtime
 
-    def _new_discovery() -> DiscoveryRuntime:
-        if managed:
-            return DiscoveryRuntime.open_project(project)
-        if sources_path is None and db is None:
-            raise ValueError(
-                "no source configured: pass --sources REGISTRY or --db SQLITE, or "
-                "declare sources in ariadne.yaml under --project — the server "
-                "never guesses a database to query"
-            )
-        return DiscoveryRuntime(
-            args.semantic, args.context, db, staging_dir=args.staging, sources=sources_path
-        )
+    def _new_discovery() -> _DiscoverySession:
+        return DiscoveryRuntime.open_project(project)
 
-    def _deferred_runtime() -> QueryRuntime:
-        seconds = query_results.load_host_query_limits(Path.cwd())["execution_seconds"]
+    def _deferred_runtime() -> _QueryRuntimeSession:
+        seconds = query_results.load_host_query_limits(project)["execution_seconds"]
         return _new_runtime(DeadlineBudget(seconds))
 
     facade: FacadeSource
     if args.toolset == "authoring":
-        # No query operation is registered, so no runtime is ever built (spec
-        # §6: the Authoring registration starts without a governed catalog).
-        def _no_runtime() -> QueryRuntime:
-            raise RuntimeError(
-                "the authoring toolset registers no query tool — this factory is never called"
-            )
+        # Authoring-only never constructs a query runtime.
+        def _no_runtime() -> _QueryRuntimeSession:
+            raise RuntimeError("the authoring toolset registers no query tool")
 
         facade = _no_runtime
     else:
         try:
-            # Preserve the explicit historical install refusal without execution setup.
             from ariadne.query import _DATUS_IMPORT_ERROR, INSTALL_HINT
 
             if _DATUS_IMPORT_ERROR is not None:
                 raise RuntimeError(f"{INSTALL_HINT}: {_DATUS_IMPORT_ERROR}")
             facade = DeferredQueryRuntime(_deferred_runtime, _new_discovery())
-        except Exception as exc:  # fail fast before any MCP traffic
-            # A query-only startup failure keeps the authoring surface alive.
-            # On the Combined registration (issue #38 criterion 2) EVERY
-            # Query construction failure is query-only: fresh onboarding is
-            # exactly when human-seeded drafts fail to compile, so the
-            # present-but-broken served model is treated like the empty
-            # legacy project (promoted-models errors, spec 2026-09-24-0005)
-            # and every managed-route admission refusal (fresh onboarding /
-            # incoherent admission, spec §5/AC5) — the authoring surface of
-            # the same session must still boot. The pure Analyst registration
-            # keeps the historical fail-fast exit on a legacy project (no
-            # authoring surface to protect) except the empty-project case.
-            # Query tool calls re-attempt construction and surface the same
-            # error — memoized once it succeeds.
-            query_only = (
-                managed
-                or args.toolset == "combined"
-                or (isinstance(exc, RuntimeError) and _missing_served_models(exc))
-            )
-            if not query_only:
-                print(f"error: {exc}", file=sys.stderr)
-                return 1
-            if _mcp_sdk_absent():
-                # Without the optional transport there is no authoring tool surface
-                # to protect, and the local ariadne-authoring CLI still works — the
-                # startup failure itself is the honest report (the install hint
-                # never masks it; spec 2026-09-23-0001 §7).
+        except Exception as exc:  # keep Combined's Authoring surface available
+            if args.toolset != "combined" or _mcp_sdk_absent():
                 print(f"error: {exc}", file=sys.stderr)
                 return 1
             facade = DeferredQueryRuntime(_deferred_runtime, _new_discovery)

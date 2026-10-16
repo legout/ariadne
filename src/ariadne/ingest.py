@@ -306,7 +306,7 @@ def _assemble(
             errors.append(f"{rel}: name must be a lowercase slug (got {name!r})")
             continue
         if name in ("index", "log"):
-            errors.append(f"{rel}: name '{name}' is bundle bookkeeping (promote-owned)")
+            errors.append(f"{rel}: name '{name}' is system-owned bundle bookkeeping")
             continue
         title = str(entry.get("title") or "").strip()
         description = str(entry.get("description") or "").strip()
@@ -472,7 +472,7 @@ _AT_LINE_RE = re.compile(r"(?m)^  at: '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:0
 
 def _verbatim_name(doc: Path) -> str | None:
     """Safe page name derived mechanically from the filename (spec §2), or None
-    when the stem yields no slug or collides with promote-owned bookkeeping —
+    when the stem yields no slug or collides with system-owned bookkeeping —
     the same name discipline as distilled pages."""
     slug = re.sub(r"[^a-z0-9_-]+", "-", doc.stem.lower()).strip("-_")
     if _NAME_RE.fullmatch(slug) and slug not in ("index", "log"):
@@ -486,7 +486,7 @@ def _verbatim_page(filename: str, text: str, source: dict, now: str) -> tuple[st
     if name is None:
         raise ValueError(
             f"{filename}: filename yields no safe page name (empty slugs and "
-            "the promote-owned 'index'/'log' are refused)"
+            "the system-owned 'index'/'log' are refused)"
         )
     front: dict = {
         "type": "reference",
@@ -682,16 +682,16 @@ def ingest(
 # other approved page, never `verified` identities.
 
 _DIFF_LINE_CAP = 60  # bounded human-readable diff: review output stays readable
-# Frontmatter excluded from owner-content comparison: promotion bookkeeping
-# (status/verified/generated, promote.py's no-op key) and source provenance,
-# which is compared separately as digest identity (provenance_only class).
+# Frontmatter excluded from owner-content comparison: lifecycle/generation
+# metadata (status/verified/generated) and source provenance, which is compared
+# separately as digest identity (provenance_only class).
 _BOOKKEEPING_KEYS = ("status", "verified", "generated", "sources")
 
 
 @dataclass
 class Advisory:
     """Fallible conflict advice for the human reviewer (spec 2026-09-23-0004):
-    it never promotes, blocks, rewrites, or sets review_needed — a suggestion
+    it never admits, blocks, rewrites, or sets review_needed — a suggestion
     with no verbatim-verified quote is not evidence."""
 
     status: str  # "supported" | "unverified" | "none" | "unavailable" | "not_applicable"
@@ -879,7 +879,7 @@ def _split_page(text: str) -> tuple[dict, str]:
 
 
 def _owner_text(meta: dict, body: str) -> str:
-    """Canonical owner content: every frontmatter field except promotion
+    """Canonical owner content: every frontmatter field except lifecycle
     bookkeeping (status, verified, generated) and source provenance (compared
     separately as digest identity) — substantive per-type metadata such as a
     table's grain participates in change detection — plus the body."""

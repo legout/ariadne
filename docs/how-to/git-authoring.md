@@ -65,21 +65,8 @@ ariadne list-metrics --project .
 ariadne get-metric my_metric --project .
 ```
 
-## Move a legacy project to Git-managed authoring
+## Scope and existing projects
 
-A legacy project uses staging and the separate human Promotion gate. To begin an explicit migration without discarding project files:
+This workflow is for authoring a new Git-managed project. Core does not import legacy staged artifacts, pending review state, or original documents; it provides no Promotion or legacy-table enrichment path. If you have an existing project, preserve its files and decide explicitly with its owner what to reauthor into a new proposal. Setup never resets or silently adopts them.
 
-```bash
-cd legacy-project
-ariadne-init --git .
-git init
-git config user.name "Your Name"
-git config user.email "you@example.org"
-ariadne-authoring import-legacy --project . --from-root .
-```
-
-Configure identity locally in this repository, not globally. `import-legacy` creates an unadmitted proposal from the selected artifact files. It does not import generated indexes/logs, does not admit anything, and leaves the existing `staging/` tree and its separate pending proposal stores untouched. Continue with source approval, validation, review, and human admission as above.
-
-Imported legacy table pages do not have canonical resource bindings. A human must explicitly enrich a table page against exactly one approved asset before schema refresh; follow [Enrich an imported legacy table page](context-knowledge.md#enrich-an-imported-legacy-table-page).
-
-Existing projects are never silently migrated by setup. Do not combine a legacy artifact root and a Git-managed admitted snapshot in one query route. See the [migration reference](../reference/git-authoring-migration.md) for exact old-to-new command and behavior mappings, and the [CLI reference](../reference/cli.md) for MCP startup options and human-only commands.
+Do not query a plain artifact root: governed query and discovery require a valid human-admitted Git snapshot. See the [Git-only route reference](../reference/git-authoring-migration.md) for the supported boundaries and the [CLI reference](../reference/cli.md) for commands and MCP startup options.

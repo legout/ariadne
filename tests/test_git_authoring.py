@@ -953,18 +953,6 @@ def test_cli_validate_and_review_the_git_proposal(tmp_path, capsys):
     assert error["type"] == "ValueError" and "stale" in error["message"]
 
 
-def test_cli_legacy_review_route_is_unchanged(tmp_path, capsys):
-    """``review`` without --proposal keeps its legacy bundle-proposal meaning:
-    no Git proposal is touched and the legacy actionable error surfaces."""
-    project = complete_bundle_project(tmp_path)
-    api = AuthoringProject(project)
-    started = api.start_proposal()
-    assert authoring_cli(["review", "--project", str(project)]) == 1
-    error = json.loads(capsys.readouterr().err)["error"]
-    assert "no active bundle proposal" in error["message"]
-    assert branch_of(project, started["proposal"]) == started["candidate_revision"]
-
-
 def test_an_unparseable_draft_model_is_a_recoverable_validation_error(tmp_path):
     """The edit seam deliberately accepts invalid DRAFT content (spec §3), so a
     model whose YAML does not parse is a validation ERROR — never a crash of

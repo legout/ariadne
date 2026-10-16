@@ -22,7 +22,7 @@ import sqlite3
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
 from ariadne.planner import PlannerError
-from ariadne.query import QueryRuntime
+from ariadne.query import QueryRuntime, _QueryRuntimeSession
 from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift
 
 _MODELS = """version: 0.2.0.dev0
@@ -256,23 +256,21 @@ def served(tmp_path_factory):
     return root, db, registry
 
 
-def make_runtime(served, staging, **limits):
+def make_runtime(served, **limits):
     root, _db, registry = served
-    return QueryRuntime(
+    return _QueryRuntimeSession(
         root / "semantic_layer",
         root / "context_layer",
         None,
-        staging_dir=staging,
         sources=str(registry),
         query_limits=limits or None,
     )
 
 
-def make_legacy_db_runtime(served, staging):
-    """The legacy ``--db`` shorthand route (implicit demo attach): the record
-    path must work there with no graph admission and no staging."""
+def make_synthetic_db_runtime(served):
+    """Use the private numerical seam with a synthetic implicit SQLite attach."""
     root, db, _registry = served
-    return QueryRuntime(root / "semantic_layer", root / "context_layer", db, staging_dir=staging)
+    return _QueryRuntimeSession(root / "semantic_layer", root / "context_layer", db)
 
 
 def _refusal(exc: QueryResultError) -> dict:
@@ -307,7 +305,7 @@ def _refusal(exc: QueryResultError) -> dict:
         "invalid_regex_refuses",
         "wrong_types_and_encodings_refuse",
         "excessive_limits_refuse",
-        "legacy_route_needs_no_admission_and_stages_nothing",
+        "synthetic_session_without_admission_refuses_graph_queries",
         "missing_managed_admission_still_refuses",
         "helper_named_physical_columns_stay_values",
         "declared_timestamp_evaluated_without_selection_or_order",
@@ -318,7 +316,7 @@ def _refusal(exc: QueryResultError) -> dict:
 )
 def test_query_records_contract(case, served, tmp_path):
     if case == "top2_returns_e2_e3_with_more_matches":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         result = asyncio.run(rt.query_records({**_RECORDS_REQUEST, "limit": 2}))
         # §7 V1-1: exactly e2, e3 (the repeated 11:00 tie breaks on the
         # selected columns — motor-A before motor-B) with more matches
@@ -360,7 +358,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert "same execution" in plan["lookahead"]
 
     elif case == "top3_keeps_the_repeated_motor":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         result = asyncio.run(rt.query_records({**_RECORDS_REQUEST, "limit": 3}))
         # §7 V1-1: e2, e3, e1 — the repeated motor-A is retained (no dedup)
         assert _motors(result) == [
@@ -372,7 +370,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert result["result"]["complete"] is True  # complete for the top-N
 
     elif case == "top10_returns_the_three_matches":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         result = asyncio.run(rt.query_records({**_RECORDS_REQUEST, "limit": 10}))
         assert len(result["rows"]) == 3
         assert result["result"]["has_more_matching"] is False
@@ -381,7 +379,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert result["result"]["scope"] == "requested_top_n"
 
     elif case == "motor_equality_filter_returns_e2_e1":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         request = {
             **_RECORDS_REQUEST,
             "limit": 10,
@@ -395,7 +393,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert _motors(result) == [("motor-A", "synthetic-B/25A"), ("motor-A", "synthetic-A/253")]
 
     elif case == "timestamp_comparison_uses_the_declared_clock":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         # §7 V1-2: a timestamp comparison uses the declared interpretation —
         # '< 2026-01-15 11:00:00' in Berlin is '< 10:00 UTC', so e2/e3
         # (11:00 Berlin == 10:00 UTC) are OUT and only e1 remains; the
@@ -424,7 +422,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert _motors(result) == [("motor-A", "synthetic-B/25A"), ("motor-B", "synthetic-C/259")]
 
     elif case == "dropping_the_null_test_includes_e7_last":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         request = {
             **_RECORDS_REQUEST,
             "limit": 10,
@@ -442,14 +440,14 @@ def test_query_records_contract(case, served, tmp_path):
         assert result["result"]["has_more_matching"] is False
 
     elif case == "insertion_order_does_not_change_visible_ties":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         shuffled = {**_RECORDS_REQUEST, "dataset": "fixture.events_shuffled", "limit": 2}
         result = asyncio.run(rt.query_records(shuffled))
         # §7 V1-2: reordering fixture insertion does not change visible ties
         assert _motors(result) == [("motor-A", "synthetic-B/25A"), ("motor-B", "synthetic-C/259")]
 
     elif case == "identical_projections_stay_repeated":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         request = {**_RECORDS_REQUEST, "dataset": "fixture.dups", "limit": 10}
         result = asyncio.run(rt.query_records(request))
         # §7 V1-2: fully identical projections remain repeated records
@@ -461,7 +459,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert result["result"]["returned_rows"] == 3
 
     elif case == "empty_match_set_returns_no_rows":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         request = {
             **_RECORDS_REQUEST,
             "filters": [
@@ -476,7 +474,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert result["result"]["complete"] is True
 
     elif case == "suffix_controls":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         result = asyncio.run(
             rt.query_records(
                 {
@@ -494,7 +492,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert [row["probe"] for row in result["rows"]] == ["/253", "/25A", "pad /253"]
 
     elif case == "match_is_on_trace_data_not_material_number":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         result = asyncio.run(rt.query_records({**_RECORDS_REQUEST, "limit": 10}))
         # §7 V1-3: the predicate matches trace data, not material number —
         # e3 (MAT-C) is included through its trace data while MAT-B rows
@@ -506,7 +504,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert all(row["genealogydata_tracedata"] for row in result["rows"])
 
     elif case == "no_implicit_trace_type_or_sap_filter":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         result = asyncio.run(
             rt.query_records(
                 {
@@ -529,7 +527,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert [row["genealogydata_genealogytracetype"] for row in result["rows"]] == [2, 7]
 
     elif case == "winter_and_summer_instants":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
 
         def clocks(timezone, value):
             return asyncio.run(
@@ -580,7 +578,7 @@ def test_query_records_contract(case, served, tmp_path):
         # and the plan discloses the interpretation in every response.
 
     elif case == "ambiguous_fall_back_refuses":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         request = {**_RECORDS_REQUEST, "dataset": "fixture.dst_ambiguous", "limit": 10}
         with pytest.raises(QueryResultError) as raised:
             asyncio.run(rt.query_records(request))
@@ -595,7 +593,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert body["rows"] == [] and body["persistence"] == {"status": "not_saved"}
 
     elif case == "nonexistent_spring_forward_refuses":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         request = {**_RECORDS_REQUEST, "dataset": "fixture.dst_nonexistent", "limit": 10}
         with pytest.raises(QueryResultError) as raised:
             asyncio.run(rt.query_records(request))
@@ -607,7 +605,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert _refusal(refusal)["result"]["complete"] is False
 
     elif case == "eligible_malformed_refuses":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         request = {**_RECORDS_REQUEST, "dataset": "fixture.malformed", "limit": 10}
         with pytest.raises(QueryResultError) as raised:
             asyncio.run(rt.query_records(request))
@@ -621,7 +619,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert _refusal(refusal)["rows"] == []
 
     elif case == "ineligible_malformed_never_poisons":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         request = {**_RECORDS_REQUEST, "dataset": "fixture.poisoned", "limit": 10}
         result = asyncio.run(rt.query_records(request))
         # §7 V1-4: the suffix-INELIGIBLE row's malformed wall time does not
@@ -639,7 +637,7 @@ def test_query_records_contract(case, served, tmp_path):
         # values return, the completeness indicator stays truthful (all
         # physical has_more values are false while a third row matches) and
         # the echoed columns carry every requested field
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         fields = [
             "__ariadne_record_ts",
             "__ariadne_record_rn",
@@ -681,7 +679,7 @@ def test_query_records_contract(case, served, tmp_path):
         # every ELIGIBLE row even when the field is neither selected nor an
         # order key — the malformed eligible value refuses, never a complete
         # answer that silently skipped the interpretation
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         request = {
             "dataset": "fixture.ts_unselected",
             "fields": ["productnumber"],
@@ -708,7 +706,7 @@ def test_query_records_contract(case, served, tmp_path):
         # not Python re's — an RE2-valid Unicode class that Python refuses
         # must run, and a Python-valid lookahead that RE2 refuses must be
         # filter_invalid BEFORE result execution
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         result = asyncio.run(
             rt.query_records(
                 {
@@ -747,7 +745,7 @@ def test_query_records_contract(case, served, tmp_path):
         # width — Australia/Lord_Howe repeats 2026-04-05 01:45:00 in a
         # 30-minute fold and must refuse exactly like the ±1-hour Berlin
         # fall-back; an ordinary Lord_Howe wall time still answers
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
 
         def lord_howe(label):
             return asyncio.run(
@@ -781,7 +779,7 @@ def test_query_records_contract(case, served, tmp_path):
         # UPPERCASE physical columns named like the helper namespace collide
         # with the allocated lowercase helpers — the correct values must
         # return and completeness must stay truthful
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         fields = [
             "__ARIADNE_RECORD_RN",
             "__ARIADNE_RECORD_HAS_MORE",
@@ -815,13 +813,13 @@ def test_query_records_contract(case, served, tmp_path):
         assert result["result"]["returned_rows"] == 2
 
     elif case == "unknown_dataset_refuses":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         with pytest.raises(PlannerError) as raised:
             asyncio.run(rt.query_records({**_RECORDS_REQUEST, "dataset": "nope.x"}))
         assert raised.value.code == "unknown_dataset"
 
     elif case == "ambiguous_dataset_refuses":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         # 'events' names tables in BOTH sources — the request must name the
         # canonical resource of the intended one instead of guessing
         with pytest.raises(PlannerError) as raised:
@@ -835,7 +833,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert len(result["rows"]) == 2
 
     elif case == "unknown_field_refuses":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         request = {
             **_RECORDS_REQUEST,
             "fields": ["productnumber", "bogus_col"],
@@ -845,7 +843,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert raised.value.code == "unknown_field"
 
     elif case == "sql_shaped_identities_refuse_before_execution":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         with pytest.raises(PlannerError) as raised:
             asyncio.run(
                 rt.query_records({**_RECORDS_REQUEST, "dataset": "events; DROP TABLE events"})
@@ -860,7 +858,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert len(result["rows"]) == 3
 
     elif case == "unknown_request_keys_refuse":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         with pytest.raises(PlannerError) as raised:
             asyncio.run(rt.query_records({**_RECORDS_REQUEST, "bogus": 1}))
         assert raised.value.code == "request_invalid"
@@ -869,7 +867,7 @@ def test_query_records_contract(case, served, tmp_path):
             asyncio.run(rt.query_records("not-a-mapping"))  # pyright: ignore[reportArgumentType]
 
     elif case == "invalid_regex_refuses":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         request = {
             **_RECORDS_REQUEST,
             "filters": [{"field": "genealogydata_tracedata", "op": "regex", "value": "("}],
@@ -879,7 +877,7 @@ def test_query_records_contract(case, served, tmp_path):
         assert raised.value.code == "filter_invalid"
 
     elif case == "wrong_types_and_encodings_refuse":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         ts = _RECORDS_REQUEST["timestamp"]
         attempts = [
             ({**_RECORDS_REQUEST, "limit": True}, "limit_invalid"),  # booleans are not integers
@@ -998,49 +996,44 @@ def test_query_records_contract(case, served, tmp_path):
             assert raised.value.code == code, (code, raised.value)
 
     elif case == "excessive_limits_refuse":
-        rt = make_runtime(served, tmp_path / "staging")
+        rt = make_runtime(served)
         with pytest.raises(PlannerError) as raised:
             asyncio.run(rt.query_records({**_RECORDS_REQUEST, "limit": 1001}))
         assert raised.value.code == "limit_invalid"
         # ≤ the effective host row ceiling: a tightened host refuses 3
-        tightened = make_runtime(served, tmp_path / "tightened", max_rows=2)
+        tightened = make_runtime(served, max_rows=2)
         with pytest.raises(PlannerError) as raised:
             asyncio.run(tightened.query_records({**_RECORDS_REQUEST, "limit": 3}))
         assert raised.value.code == "limit_invalid"
         fitting = asyncio.run(tightened.query_records({**_RECORDS_REQUEST, "limit": 2}))
         assert len(fitting["rows"]) == 2
 
-    elif case == "legacy_route_needs_no_admission_and_stages_nothing":
-        # §7 V1-5: the legacy products events work with no graph admission
-        # and no staging write — while the admitted detail gate is unchanged
-        staging = tmp_path / "staging"
-        rt = make_runtime(served, staging)
-        assert not any(staging.rglob("*")) if staging.exists() else True
+    elif case == "synthetic_session_without_admission_refuses_graph_queries":
+        # The private numeric session can answer records from its synthetic
+        # registry, but graph queries still require a Git admission.
+        rt = make_runtime(served)
         result = asyncio.run(rt.query_records({**_RECORDS_REQUEST, "limit": 2}))
         assert len(result["rows"]) == 2 and result["governed"] is False
-        assert rt._graph is None  # the served tree carries no admitted graph
+        assert rt._graph is None
         with pytest.raises(PlannerError) as raised:
             asyncio.run(rt.query_detail({"dataset": "events", "fields": ["productnumber"]}))
         assert raised.value.code == "not_admitted"
         with pytest.raises(PlannerError) as raised:
             asyncio.run(rt.query_metrics({"metrics": ["probe_count"]}))
         assert raised.value.code == "not_admitted"
-        # the legacy --db shorthand resolves the bare table name and the
-        # qualified attach identity identically
-        legacy = make_legacy_db_runtime(served, tmp_path / "legacy_staging")
+        # The synthetic implicit attach resolves bare and qualified identities alike.
+        synthetic = make_synthetic_db_runtime(served)
         bare = asyncio.run(
-            legacy.query_records({**_RECORDS_REQUEST, "dataset": "events", "limit": 2})
+            synthetic.query_records({**_RECORDS_REQUEST, "dataset": "events", "limit": 2})
         )
         qualified = asyncio.run(
-            legacy.query_records({**_RECORDS_REQUEST, "dataset": "demo.main.events", "limit": 2})
+            synthetic.query_records({**_RECORDS_REQUEST, "dataset": "demo.main.events", "limit": 2})
         )
         assert _motors(bare) == _motors(qualified)
-        for directory in (staging, tmp_path / "legacy_staging"):
-            assert not directory.exists() or not any(directory.rglob("*"))
 
     elif case == "missing_managed_admission_still_refuses":
-        # §7 V1-5: a Git-managed project with no valid admission is refused
-        # at the managed construction seam — never a legacy fallback
+        # A Git-managed project with no valid admission is refused at the
+        # project construction seam.
         bare = tmp_path / "bare_project"
         bare.mkdir()
         with pytest.raises(ValueError) as raised:

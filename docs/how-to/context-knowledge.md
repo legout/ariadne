@@ -63,23 +63,6 @@ ariadne-admit --project . --proposal ID --revision REV \
 
 Omitting the selection does not confirm a new assertion. Changed, stale, or conflicting assertions cannot inherit confirmation. Neither a proposal edit nor a successful inspection performs confirmation.
 
-## Enrich an imported legacy table page
-
-Legacy table pages do not have a canonical resource binding. This migration step is human-only and requires a Git proposal with approved sources:
-
-```bash
-ariadne-authoring enrich-legacy --project . --proposal ID --revision REV \
-    --page context_layer/tables/events.md
-```
-
-If the legacy spelling is ambiguous, name the asset explicitly with `--file asset.json`:
-
-```json
-{"source":"sales","catalog":null,"schema":"sales","table":"orders"}
-```
-
-The page's spelling must resolve to exactly one approved asset; Ariadne refuses zero or multiple matches instead of guessing. Enrichment preserves the filename, links, citations, authored meaning, and historical claims. It does not refresh, validate, review, or admit the page. Run the explicit schema refresh afterward.
-
 ## Add a Context Routing Map
 
 When useful destinations or known business gaps exist, author an ordinary Reference at `context_layer/references/context-routing.md` through the normal proposal edit. Keep it to a short business orientation, question families, links to existing definitions and full Policies, and explicit unresolved questions. Do not copy metric formulas, SQL, Policy bodies, or observed values into it.
@@ -96,4 +79,4 @@ Before preparing selected observed-value metadata, show the owner the exact tabl
 
 A proposal containing schema pages and References but no metrics can still be reviewed and admitted. Follow the normal source-approval, validation, review, and human-admission sequence. Validation reports checks that are not applicable; it does not relax checks for any inherited semantic declarations, policies, or relationships.
 
-For the retained staged route, source approval, legacy import, and Promotion remain separate human steps. See [Git-backed authoring](git-authoring.md) for route-specific procedures and [CLI reference](../reference/cli.md) for command entry points.
+Source approval and Git Admission remain separate human decisions. See [Git-backed authoring](git-authoring.md) for the supported proposal workflow and [CLI reference](../reference/cli.md) for command entry points.

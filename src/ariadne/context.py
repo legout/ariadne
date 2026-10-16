@@ -3,24 +3,18 @@ ownership", ADR-0016).
 
 Everything deterministic about OKF pages lives here so Query
 (:mod:`ariadne.query`), the Authoring workflows (:mod:`ariadne.author`,
-:mod:`ariadne.ingest`) and the legacy promotion gate (:mod:`ariadne.promote`)
-call one implementation — moved intact out of the workflow files (issue #33),
-never reimplemented:
+:mod:`ariadne.ingest`) share deterministic helpers here; this module has no
+authoring or admission workflow:
 
-- context retrieval: the token-aware ranked search over served and staged OKF
-  pages (:func:`search_pages`) and the governed citation attachment
+- context retrieval: token-aware ranked search over explicitly selected OKF
+  roots (:func:`search_pages`) and the governed citation attachment
   (:func:`metric_context`: the full served metric page plus the full bodies of
   every policy its frontmatter cites, collapsing to the null form — never
   failing a query);
-- deterministic OKF checks and generation: the per-type frontmatter contract
-  (:func:`_page_contract_errors`, :func:`_bundle_errors`), the post-validation
-  enrichment/computation/stamping passes (:func:`_finalize_bundle`) and the
-  auto-staged ad-hoc draft page (:func:`_build_adhoc_page`); the WALL-CLOCK-FREE
-  Git-candidate variant (:func:`finalize_candidate`, issue #36/G4) finalizes
-  enrichment/computations/indexes before the candidate commit is validated;
-- deterministic promotion bookkeeping: the promoted page form (verified append,
-  status flip), the regenerated ``index.md`` trees and the ``log.md`` append
-  (:func:`_promoted_text`, :func:`_regenerate_indexes`, :func:`_append_log`);
+- deterministic candidate finalization: the per-type frontmatter contract
+  (:func:`_page_contract_errors`, :func:`_bundle_errors`) and
+  :func:`finalize_candidate` generate metric metadata, computations and indexes
+  before the candidate commit is validated;
 - K2 structured References and terminology resolution (spec 0010 §§5–6, issue
   #42): the versioned ``ariadne`` extension of a Reference page is validated by
   the shared per-type gate (:func:`_reference_extension_errors` — malformed
@@ -29,9 +23,9 @@ never reimplemented:
   :func:`resolve_term` resolves terms and exact field bindings with bounded
   alternatives, unconfirmed claims and actual citations.
 
-Ranking, full Policy bodies, draft labels and attestation semantics are the
-historical ones. This module guides interpretation and never computes metrics
-(spec §2); it imports no workflow module.
+Ranking, full Policy bodies, candidate labels and attestation semantics remain
+unchanged. This module guides interpretation and never computes metrics or
+admits artifacts (spec §2); it imports no workflow module.
 """
 
 from __future__ import annotations
@@ -52,7 +46,7 @@ import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack s
 # imports no workflow module — sources is the shared registry layer).
 from ariadne.sources import parse_resource
 
-# OKF page frontmatter (same shape across author/ingest/promote/query):
+# OKF page frontmatter shared by Authoring, Ingest and Query:
 # sources[] resolution (rev 10 context field) and lifecycle bookkeeping read it.
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)\Z", re.DOTALL)
 
@@ -150,22 +144,16 @@ def _enclosing_heading(
 
 
 def search_pages(query: str, limit: int, roots: list[tuple[Path, bool]]) -> list[dict]:
-    """Rank OKF pages by query-token frequency; each hit points at its passage
-    (moved intact from the query runtime; the Query surface passes the served
-    context dir and the staged context drafts).
-
-    Scans the served context dir AND the staged context drafts
-    (``staging/context_layer/**/*.md``) — spec rev 4 §4: define_metric
-    drafts must be discoverable before promotion. Staged hits carry
-    ``draft: true`` and served hits ``draft: false`` — a draft never
-    masquerades as verified context (ADR-0003: promotion stays human).
+    """Rank OKF pages under caller-selected roots by query-token frequency; each
+    hit points at its passage. The caller supplies a descriptive draft label,
+    which never establishes admission.
 
     Spec 2026-09-23-0002: ranking is deterministic and token-aware (whole
     ``[a-z0-9]+`` tokens, so incidental substrings like "order" inside
     "orders" no longer crowd out real matches; fenced code tokens count at
     half weight so generated SQL echoes rank below prose without hiding a
-    fenced-only match; ties break by path, served before staged). Every hit
-    additionally carries ``excerpt`` (a bounded
+    fenced-only match; ties sort by path, preserving caller root order for
+    duplicate paths). Every hit additionally carries ``excerpt`` (a bounded
     verbatim substring of ``content`` around the first matched token),
     inclusive 1-based ``line_start``/``line_end`` covering that excerpt,
     and ``section`` (the containing ATX heading outside fenced code, else
@@ -199,7 +187,7 @@ def search_pages(query: str, limit: int, roots: list[tuple[Path, bool]]) -> list
                 {
                     "path": rel,
                     "score": score,  # relative ranking value, not a frequency contract
-                    "draft": draft,  # staged proposals stay distinguishable
+                    "draft": draft,  # caller-supplied read-view label, not admission
                     "content": text,  # full OKF page: the rules are the payload
                     "excerpt": excerpt,
                     "line_start": line_start,
@@ -229,12 +217,11 @@ def _page_title(meta: dict, text: str) -> str | None:
 
 
 def list_pages(roots: list[tuple[Path, bool]]) -> list[dict]:
-    """Enumerate every OKF page under the roots (spec 0015): the token-free
-    directory view over the same roots :func:`search_pages` ranks — metadata
-    only (``path``, ``draft``, ``title`` and the advisory ``context_signals``
-    envelope), never page bodies. Roots are walked in the caller's order
-    (the Query surface passes served before staged), sorted by path within
-    each, so the listing is deterministic."""
+    """Enumerate every OKF page under caller-selected roots (spec 0015): the
+    token-free directory view over the same roots :func:`search_pages` ranks —
+    metadata only (``path``, ``draft``, ``title`` and advisory
+    ``context_signals``), never page bodies. Root order is preserved and pages
+    are sorted within each root."""
     now = _assessment_now()
     pages: list[dict] = []
     for root, draft in roots:
@@ -255,7 +242,7 @@ def list_pages(roots: list[tuple[Path, bool]]) -> list[dict]:
 
 
 def read_page(path: str, root: Path, *, draft: bool) -> dict:
-    """Read one exact OKF page by bundle-relative POSIX path (spec 0015):
+    """Read one exact OKF page by context-root-relative POSIX path (spec 0015):
     full ``content`` plus ``draft``, ``context_signals`` and the resolved
     ``path``. Only an exact ``.md`` file directly under ``root`` reads — an
     absolute, backslashed, root-escaping (``..`` or symlink), non-markdown
@@ -319,7 +306,7 @@ def metric_context(context_dir: Path, name: str) -> dict:
     bodies of every policy page its frontmatter ``sources[]`` cites
     (``policies/`` paths, resolved against the served context dir). When the
     metric's computation page declares ``attestation: pending`` (ADR-0013:
-    promoted is not independently value-attested), the context carries that
+    admission is not independent value-attestation), the context carries that
     caveat explicitly. Context problems NEVER fail the query — the number is
     still governed: a missing metric page or an unresolvable policy reference
     collapses to ``{metric_page: null, policies: []}`` and is logged nowhere.
@@ -388,13 +375,11 @@ def _metric_context(context_dir: Path, name: str, *, now: datetime | None = None
             "context_signals": _context_signals(pages),
         }
         if computation is not None and computation.get("attestation") == "pending":
-            # ADR-0013/spec acceptance 5, and ONLY the pending case (the new
-            # harness-led bundles): governed:true means Promoted, never an
-            # independent numeric attestation — say so on every such answer.
-            # Existing attested bundles keep the established context shape.
+            # ADR-0013/spec acceptance 5: admission does not establish an
+            # independent numeric attestation, so preserve the pending caveat.
             context["attestation"] = "pending"
             context["governed_note"] = (
-                "governed: true means Promoted, not independently value-attested"
+                "governed: true means admitted, not independently value-attested"
             )
         return context
     except _RequiredContextUnavailable as miss:
@@ -421,44 +406,6 @@ def _computation_meta(root: Path, name: str) -> dict | None:
 
 
 # ------------------------------------------------- deterministic OKF generation
-
-_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # a bare column/table name
-
-# Best-effort table refs in an agent-authored SELECT ("FROM demo.main.orders",
-# "JOIN customers") for the draft page's provenance frontmatter.
-_TABLE_RE = re.compile(r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_.]*)", re.IGNORECASE)
-
-
-def _source_tables(source: str) -> list[str]:
-    """Table names from the definition's source (a table name or SELECT). Best
-    effort for exotic SQL — the staged OSI model stays the authoritative proposal."""
-    if _IDENTIFIER_RE.fullmatch(source):
-        return [source]
-    return list(dict.fromkeys(t.rsplit(".", 1)[-1] for t in _TABLE_RE.findall(source)))
-
-
-def _build_adhoc_page(params: dict) -> bytes:
-    """Minimal OKF draft for the auto-staged proposal (spec rev 4 §4): frontmatter
-    + name + description + dimensions + proposal marker, so ``search_context``
-    can discover ad-hoc proposals and the human gate sees them in context."""
-    frontmatter = yaml.safe_dump(
-        {
-            "type": "metric",
-            "status": "draft",
-            "generated": datetime.now(UTC).isoformat(timespec="seconds"),
-            "sources": _source_tables(params["source"]),
-        },
-        sort_keys=False,
-    )
-    dimensions = "\n".join(f"- {d}" for d in (params["dimensions"] or ["(none)"]))
-    return (
-        f"---\n{frontmatter}---\n\n"
-        f"# {params['name']}\n\n"
-        f"{params['description']}\n\n"
-        f"Dimensions:\n{dimensions}\n\n"
-        "Auto-staged ad-hoc proposal awaiting promotion.\n"
-    ).encode()
-
 
 # ------------------------------------------------------- frontmatter primitives
 
@@ -507,9 +454,7 @@ def _load(text: str) -> tuple[dict | None, str]:
 # ADR-0007 bundle contract, as amended by spec 0010 §3/§9 (issue #41):
 # every content type is CHECKED by its context_layer section and frontmatter
 # ``type``; presence is APPLICABLE (a section with pages must satisfy its
-# contract; absent sections are not invented categories), not the mandatory
-# six-category presence — callers with their own complete-bundle scope (the
-# legacy author loop) pass ``required_sections``.
+# contract; absent sections are not invented categories).
 _BUNDLE_TYPES = {
     "datasets": "dataset",
     "tables": "table",
@@ -538,7 +483,7 @@ _BUNDLE_REQUIRED_FIELDS = {
 
 
 def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list[str]:
-    """Contract violations of one staged page (ADR-0007 required frontmatter per
+    """Contract violations of one candidate page (ADR-0007 required frontmatter per
     type: every field the bundle contract documents and the per-type bundle
     tests assert — an omission anywhere fails the gate with the field named)."""
     rel = page.relative_to(staging).as_posix()
@@ -595,7 +540,7 @@ def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list
             if not meta.get(key):
                 errors.append(
                     f"{rel}: metric page lacks governed '{key}' frontmatter (no "
-                    "matching staged OSI model metric?)"
+                    "matching candidate OSI model metric?)"
                 )
         resources = [
             str(s.get("resource") if isinstance(s, dict) else s or "")
@@ -628,28 +573,19 @@ def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list
     return errors
 
 
-# System-generated promotion bookkeeping (index trees, log): never authored
-# content pages, so the per-type bundle gate does not check them (issue #36:
-# the Git candidate's finalize pass generates the index trees BEFORE
-# validation; legacy staging still has none at gate time — no behavior change
-# for the legacy route).
+# System-generated candidate bookkeeping (index trees, log) is not authored
+# content, so the per-type bundle gate does not check it.
 _BOOKKEEPING_NAMES = frozenset({"index.md", "log.md"})
 
 
-def _bundle_errors(
-    staging: Path, *, required_sections: tuple[str, ...] | set[str] | None = None
-) -> list[str]:
+def _bundle_errors(staging: Path) -> list[str]:
     """The hard ADR-0007 page-contract gate as amended by spec 0010 §3/§9
     (issue #41): applicable pages, not artificial presence of every category.
     Every section that carries pages satisfies its per-type contract — the
     inherited page→OSI/cited-Policy dependencies of the per-type checks stay
-    binding; nothing is invented for absent categories. ``required_sections``
-    restores a caller's own complete-bundle scope (the legacy author loop
-    drafts the whole demo bundle): an absent required section is the
-    historical "incomplete bundle" error."""
+    binding; nothing is invented for absent categories."""
     context = staging / "context_layer"
     errors: list[str] = []
-    present: set[str] = set()
     for section, expected_type in _BUNDLE_TYPES.items():
         section_dir = context / section
         pages = (
@@ -659,20 +595,8 @@ def _bundle_errors(
         )
         if not pages:
             continue
-        present.add(section)
         for page in pages:
             errors.extend(_page_contract_errors(staging, page, expected_type))
-    if required_sections is not None:
-        for section in required_sections:
-            if section not in present:
-                # the historical message text (it rides into the staged pages'
-                # review_errors and the measured-retrieval corpus over the
-                # demo tree depends on those bytes)
-                errors.append(
-                    f"authored bundle is incomplete: no pages under context_layer/{section}/ "
-                    "(ADR-0007 requires all six content types: tables, references/joins, "
-                    "policies, metrics, computations, skills)"
-                )
     return errors
 
 
@@ -681,16 +605,13 @@ def _bundle_errors(
 
 def _model_index(staging: Path) -> tuple[dict[str, dict], bool]:
     """``(metric name -> {model, primary_key, dimensions, dataset_sources,
-    expression}, all_parsed)`` from the staged OSI models — the mechanical
+    expression}, all_parsed)`` from the candidate OSI models — the mechanical
     source of truth for enrichment and computations. A model file whose YAML
     does not parse — or whose structures are malformed (a non-list
     ``semantic_model``, a non-mapping model/dataset/metric entry) — is SKIPPED
-    and reported through ``all_parsed=False`` (its failure belongs to the
-    validation gate, which reports it structurally); the legacy finalize runs
-    only after validation passed, so nothing changes for the legacy route —
-    the Git candidate's finalize (issue #36/G4) runs BEFORE validation and
-    must leave invalid drafts to the gate, never crash on them (and never
-    treat an unparseable draft's metrics as removed)."""
+    and reported through ``all_parsed=False`` so the validation gate can report
+    the structural failure without a finalize crash or treating an unparseable
+    draft's metrics as removed."""
     index: dict[str, dict] = {}
     all_parsed = True
     models_dir = staging / "semantic_layer" / "models"
@@ -841,52 +762,6 @@ def _write_computations(
             "```sql\n" + info["expression"].strip() + "\n```\n"
         )
         (comp_dir / f"{name}.md").write_text(f"---\n{front}\n---\n\n{body}", encoding="utf-8")
-
-
-def _stamp_pages(staging: Path, now: datetime, *, by: str = "ariadne-author") -> None:
-    """Stamp the trust/lifecycle frontmatter the LLM must never invent (ADR-0007):
-    generated/verified/stale_after on every staged OKF page."""
-    stale_after = (now + timedelta(days=90)).date().isoformat()
-    context_dir = staging / "context_layer"
-    for path in sorted(context_dir.rglob("*.md")) if context_dir.is_dir() else []:
-        path.write_text(
-            _set_frontmatter(
-                path.read_text(encoding="utf-8"),
-                {
-                    "generated": {
-                        "by": by,
-                        "at": now.isoformat(timespec="seconds"),
-                    },
-                    "verified": [],
-                    "stale_after": stale_after,
-                },
-            ),
-            encoding="utf-8",
-        )
-
-
-def _finalize_bundle(
-    staging: Path,
-    *,
-    generated_by: str = "ariadne-author",
-    attester: str | None = "tests/test_evals.py",
-    stamp_lifecycle: bool = True,
-) -> None:
-    """Post-validation deterministic passes (ADR-0007): enrich metric pages from the
-    staged models, generate the computation pages, stamp lifecycle frontmatter.
-    Harness-led submission (spec 2026-09-24-0005) passes its own provenance and
-    ``attester=None`` (pending attestation, ADR-0013). ``stamp_lifecycle=False``
-    (the Git-authoring mode, issue #39/G7 fix) skips the WALL-CLOCK
-    generated/verified/stale_after stamping: lifecycle claims belong to the
-    deterministic finalize/promotion passes of the route the drafts enter, and
-    fresh stamps would be refused as forged claims the moment the drafts are
-    imported into a project that already carries an artifact revision."""
-    now = datetime.now(UTC)
-    models, _all_parsed = _model_index(staging)  # post-validation: always parsed
-    _enrich_metric_pages(staging, models)
-    _write_computations(staging, models, attester=attester)
-    if stamp_lifecycle:
-        _stamp_pages(staging, now, by=generated_by)
 
 
 # ------------------------------------------- the Git-candidate finalize pass
@@ -3085,7 +2960,7 @@ def build_dataset_page(
     return f"---\n{front}---\n\n{body}", flags
 
 
-# -------------------------------------------- deterministic promotion bookkeeping
+# ---------------------------------------------- deterministic index generation
 
 # Section heading for a folder's index.md (SPEC §8 example form: "# Metric").
 _SECTION_TITLES = {
@@ -3108,33 +2983,8 @@ _FOLDER_BLURBS = {
     "policies": "Human-owned business rules the metrics cite.",
     "metrics": "Governed metrics and the rules that make them right.",
     "computations": "Sanctioned computations: SQL, runtime, attester.",
-    "skills": "Operational guides: run, promote, query.",
+    "skills": "Operational guides: author, review, query.",
 }
-
-
-def _content_key(text: str) -> str:
-    """Canonical form for change detection: everything EXCEPT verified/status.
-    Equal keys mean the promotion bookkeeping would be byte-identical — no-op."""
-    meta, body = _load(text)
-    if meta is None:
-        return body
-    meta = {k: v for k, v in meta.items() if k not in ("verified", "status")}
-    return yaml.safe_dump(meta, sort_keys=True) + body
-
-
-def _promoted_text(text: str, by: str, at: str, prior_verified: list | None = None) -> str:
-    """The served form of a staged OKF page: status flipped, verified appended.
-    ``prior_verified`` (the served page's existing list) is preserved, so a
-    re-promoted update APPENDS to the verification history."""
-    meta, body = _load(text)
-    if meta is None:  # callers route non-OKF files to the raw merge
-        return text
-    meta["status"] = "stable"
-    verified = list(prior_verified or [])
-    verified.append({"by": by, "at": at})
-    meta["verified"] = verified
-    front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
-    return f"---\n{front}\n---\n{body}"
 
 
 def _index_for(directory: Path, served_context: Path) -> str:
@@ -3185,35 +3035,6 @@ def _regenerate_indexes(served_context: Path) -> None:
         if _has_pages(directory):
             text = _index_for(directory, served_context)
             (directory / "index.md").write_text(text, encoding="utf-8")
-
-
-def _append_log(served_context: Path, changes: list, by: str, date: str) -> None:
-    """Append Creation/Update entries under today's heading (newest-first).
-    ``changes`` are the promoter's Change records (``action``/``rel`` duck-typed:
-    importing the promotion workflow for the annotation would invert the
-    shared-module dependency)."""
-    if not changes:
-        return
-    path = served_context / "log.md"
-    if path.is_file():
-        lines = path.read_text(encoding="utf-8").rstrip("\n").split("\n")
-    else:
-        lines = ["# Directory Update Log"]
-    heading = f"## {date}"
-    entries = [
-        f"**{'Update' if c.action == 'updated' else 'Creation'}**: {c.rel} — verified {by}"
-        for c in changes
-    ]
-    if heading in lines:
-        pos = lines.index(heading) + 1
-        while pos < len(lines) and lines[pos].startswith("**"):
-            pos += 1
-    else:
-        pos = 1 if lines and lines[0].startswith("# ") else 0
-        lines[pos:pos] = ["", heading]
-        pos += 2
-    lines[pos:pos] = entries
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 # ------------------ advisory supplied source-quality evidence (spec 0013, #53)

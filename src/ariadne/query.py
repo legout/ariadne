@@ -26,9 +26,8 @@ compilation, execution, context, or grain logic:
 Mechanism per ADR-0008 (spec rev 7): our own sqlglot compiler
 (:mod:`ariadne.render`) renders the OSI envelope model to SQL and the
 execution-owned DuckDB connection (:class:`ariadne.execution.DuckDBExecution`,
-built by the shared source-registry builder :mod:`ariadne.sources`, ADR-0010:
-a ``ariadne.yaml`` registry, or the legacy ``--db`` SQLite file attached
-read-only as catalog ``demo``) executes it. ``range`` is an optional
+built from the operator-approved registry identity resolved by the Git project
+factory) executes it. ``range`` is an optional
 ``{start, end}`` applied by the compiler to the model's primary date dimension
 (the is_time field). ``list_metrics``/``list_datasets`` read the envelope
 metadata and the attach directly — no datus anywhere in the query path.
@@ -88,7 +87,7 @@ from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
 
 # Shared Context Layer (issue #33, ADR-0016): retrieval, citation attachment and
 # deterministic OKF generation live in ariadne.context.
-from ariadne.discovery import MISSING_CATALOG, ROUTING_HINT, DiscoveryRuntime
+from ariadne.discovery import MISSING_CATALOG, ROUTING_HINT, _DiscoverySession
 
 # Shared Execution (issue #33, ADR-0016): the DuckDB session, catalog, bind
 # operation, statement guard and result collection are execution-owned.
@@ -169,18 +168,14 @@ _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _IDENTIFIER_PATH_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 
-class QueryRuntime(DiscoveryRuntime):
-    """Governed + ad-hoc metric runtime: render-gate compile + execution-owned
-    DuckDB execution. ``ariadne.runtime.AriadneRuntime`` and ``ariadne.serve.Facade``
-    are aliases of exactly this class (spec 2026-10-02-0009 §2) — never a second
-    implementation."""
+class _QueryRuntimeSession(_DiscoverySession):
+    """Internal query session created by the project-bound ``QueryRuntime`` factory."""
 
     def __init__(
         self,
         semantic_dir: str | Path,
         context_dir: str | Path,
         db_path: str | Path | None,
-        staging_dir: str | Path = "staging",
         sources: str | Path | None = None,
         *,
         registry: Registry | None = None,
@@ -190,16 +185,11 @@ class QueryRuntime(DiscoveryRuntime):
         response_measure=None,
         deadline_budget: DeadlineBudget | None = None,
     ):
-        """``db_path``/``sources`` select the LEGACY explicit source identity
-        (the ``--db`` shorthand or an ADR-0010 registry file). The keyword-only
-        parameters carry the MANAGED Git route (issue #37/G5):
-        ``registry`` is an already-resolved approved identity (never a file),
-        ``admission_record`` the pinned Git-review admission
-        (:meth:`open_project` resolves both), and ``project_root`` the logical
-        project root that anchors any remaining legacy draft stores — separate
-        from the pinned artifact root, which is derived from ``context_dir``.
-        An explicit legacy construction (no ``registry``/
-        ``admission_record``) keeps its legacy behavior exactly.
+        """The public ``QueryRuntime.open_project`` factory supplies the
+        already-resolved approved ``registry``, pinned Git-review
+        ``admission_record``, and logical ``project_root``. ``db_path`` and
+        ``sources`` remain private lower-level inputs for synthetic numerical
+        tests only; no public route constructs a runtime from an artifact root.
 
         Issue #56/S1 (spec 0014 §4–§6): ``query_limits`` is the HOST-owned
         complete-output ceilings (validated tightening-only; built-ins when
@@ -224,18 +214,14 @@ class QueryRuntime(DiscoveryRuntime):
         # ADR-0010/0016: one shared owner produces the runtime's long-lived DuckDB
         # session over the registry sources (addressable as <source>.<table>);
         # non-DuckDB attaches are connection-local, so this happens exactly
-        # once. Compiled SQL references <catalog>.<schema>.<table> — the legacy
-        # shorthand keeps the authoring contract's catalog name demo.
+        # once. Compiled SQL references <catalog>.<schema>.<table>.
         if registry is not None:
             source_registry = registry
         elif sources is not None:
             source_registry = load_registry(sources)
         else:
             if db_path is None:
-                # unreachable via the public factories (the managed route always
-                # resolves an approved registry; the legacy roots always carry a
-                # --db) — kept type-honest for direct construction
-                raise ValueError("legacy construction requires db_path or sources")
+                raise ValueError("an internal query session requires an approved registry")
             source_registry = implicit_registry(db_path)
         # Issue #56/S1 (spec 0014 §4/§6): the host-owned ceilings are loaded and
         # validated BEFORE source construction, and the eager setup runs under
@@ -261,77 +247,27 @@ class QueryRuntime(DiscoveryRuntime):
             self.con.execute("USE demo.main")
         # Issue #59 (spec 0014 §9): the ad-hoc IO-authority boundary's approved
         # physical-relation set — the ALREADY-BUILT execution catalog plus
-        # DuckDB's own current catalog/schema (the legacy --db route's
-        # USE demo.main is what makes bare table names resolve; a registry
-        # route keeps its <source>.<table> form). Read once here, from trusted
+        # DuckDB's own current catalog/schema (the private single-database
+        # test seam's USE demo.main is what makes bare table names resolve; a
+        # registry route keeps its <source>.<table> form). Read once here, from trusted
         # internal reads only, so an ad-hoc refusal never needs a DuckDB call.
         self._ad_hoc_authority = AdHocAuthority.build(self.catalog, self.con)
-        self.staging_dir = Path(staging_dir)
         # Issue #53 (spec 0013 §4): the exact-identity map of the ALREADY-BUILT
         # execution catalog — qualified table name → canonical resource — built
         # lazily once and reused by every data_signals attachment. No new catalog
         # or source query ever runs for quality evidence.
         self._catalog_resources: dict[str, str] | None = None
-        self._init_artifacts(
-            semantic_dir, db_path, sources, staging_dir, admission_record, project_root
-        )
-
-    @classmethod
-    def open_project(
-        cls,
-        project: str | Path,
-        *,
-        staging_dir: str | Path | None = None,
-        deadline_budget: DeadlineBudget | None = None,
-        discovery: DiscoveryRuntime | None = None,
-    ) -> QueryRuntime:
-        """The managed-project factory (issue #37/G5, plan §2): resolve the
-        pinned snapshot and its approved source configuration of a Git-managed
-        data project and construct the runtime over them. EVERY query method
-        of the returned runtime therefore requires admission by construction —
-        a Git-managed project with no valid admission is refused here, never a
-        silent fallback to proposal worktrees or mutable project files, while
-        the explicit legacy artifact-root constructors keep legacy behavior for
-        fixtures/operators. Source locations resolve through the
-        operator-approved identity (never snapshot-relative paths); the
-        remaining legacy draft stores stay at their ORIGINAL project-owned
-        locations (default ``<project>/staging``), separate from
-        the pinned artifact root. Each session pins one coherent admitted
-        revision; a later session picks up a later admission."""
-        root = Path(project).resolve()
-        if discovery is None:
-            record, snapshot = admission.resolve_admission(root)
-        else:
-            # Deferred adapters retain ONE admitted revision across discovery and queries.
-            if discovery._project != root or discovery._managed is None:
-                raise ValueError("discovery does not pin an admission for this project")
-            discovery._recheck_pinned()
-            record, snapshot = discovery._managed, discovery.context_dir.parent
-            if staging_dir is None:
-                staging_dir = discovery.staging_dir
-        return cls(
-            snapshot / "semantic_layer",
-            snapshot / "context_layer",
-            None,
-            staging_dir=(root / "staging") if staging_dir is None else staging_dir,
-            registry=admission.approved_registry(record),
-            admission_record=record,
-            project_root=root,
-            # issue #56/S1: the LOGICAL host project's operator ceilings — never
-            # the pinned snapshot's inert ``query:`` copy (plan 0014 §2)
-            query_limits=query_results.load_host_query_limits(root),
-            deadline_budget=deadline_budget,
-        )
+        self._source_free = False
+        self._init_artifacts(semantic_dir, db_path, sources, admission_record, project_root)
 
     async def list_metrics(self) -> list[dict | str]:
         self._discard_request_budget()
         return await super().list_metrics()
 
     async def list_datasets(self) -> list[dict]:
-        """Every queryable table across all registry sources with its columns
-        (the agent's map, spec rev 9 §8.20). The legacy --db shorthand keeps
-        plain table names; a registry qualifies each entry as
-        ``<source>.<table>`` so both sources stay distinguishable. K1 (issue
+        """Every queryable table across the approved registry with its columns
+        (the agent's map, spec rev 9 §8.20). Qualified names keep entries from
+        distinct sources distinguishable. K1 (issue
         #41): every entry additionally carries the EXPLICIT identity fields
         (source/catalog/schema/table plus the canonical credential-free
         ``resource``) — same-named tables in distinct schemas/collections stay
@@ -477,7 +413,7 @@ class QueryRuntime(DiscoveryRuntime):
         if self._managed is not None:
             # Issue #37/G5: revision/route provenance alongside the existing
             # caveats (spec §5: governed answers identify the admitted revision
-            # and route) — legacy responses keep their exact shape.
+            # and route).
             result["admission"] = self._admission_view(self._managed)
         # Issue #53/#54 (spec 0013 §4): the additive advisory source-quality
         # view. Identity comes from the executed query's direct dataset
@@ -551,9 +487,7 @@ class QueryRuntime(DiscoveryRuntime):
         qualified table name or a SELECT — is matched against the ALREADY-BUILT
         execution catalog by exact qualified identity, never an unqualified
         display-name match (same-named tables in distinct sources stay distinct
-        assets, which is why :func:`ariadne.context._source_tables` — it
-        deliberately strips qualification — is never used as an identity
-        resolver here). An unmatched or unresolvable dependency is ``None``:
+        assets). An unmatched or unresolvable dependency is ``None``:
         unknown coverage, never a guess."""
         dependencies: list[str | None] = []
         for dataset in self._metrics[name]["model"]["semantic_model"][0].get("datasets") or []:
@@ -631,7 +565,7 @@ class QueryRuntime(DiscoveryRuntime):
                 "admission_stale",
                 "the served layers changed after admission "
                 f"(served digest {current[:12]}… != recorded "
-                f"{self._admission['served_digest'][:12]}…) — revalidate and re-promote "
+                f"{self._admission['served_digest'][:12]}…) — revalidate and re-admit "
                 "before serving the graph as governed",
             )
         bound = (self._admission.get("validation") or {}).get("registry_digest")
@@ -640,7 +574,7 @@ class QueryRuntime(DiscoveryRuntime):
             raise PlannerError(
                 "admission_stale",
                 "the approved source registry changed after admission — revalidate and "
-                "re-promote before serving the graph as governed",
+                "re-admit before serving the graph as governed",
             )
         return self._graph, self._admission
 
@@ -656,8 +590,8 @@ class QueryRuntime(DiscoveryRuntime):
         before the one guarded SELECT executes. The response carries the rows,
         the compiled SQL, a bounded lineage plan, per-metric OKF metric + Policy
         context with the independent attestation state, and the local admission
-        provenance — ``governed: true`` only because a human Promoted the exact
-        validated bytes."""
+        provenance — ``governed: true`` only because a human admitted the exact
+        validated revision."""
         graph, admission = self._admitted()
         # Issue #56/S1 (spec 0014 §6): the shared budget covers the planner's
         # live relationship/grain audits, the EXPLAIN bind and the bounded
@@ -800,10 +734,10 @@ class QueryRuntime(DiscoveryRuntime):
         selected-value tie tuple, and a same-execution lookahead indicator —
         never a metric, never an admitted graph traversal, never caller SQL.
         Every answer reports ``governed: false`` and truthful bounded
-        provenance; nothing is ever staged. The managed route keeps its
+        provenance; nothing is ever staged. The public project route keeps its
         pinned-admission and approved-source rechecks (admission is a
-        provenance fact, not admission of this request); the legacy route
-        needs no graph admission. Compiled through the existing planner
+        provenance fact, not admission of this request). Private synthetic
+        sessions do not represent public serving. Compiled through the existing planner
         ownership, the single-statement guard and the EXPLAIN bind, then the
         shared S1 output safeguards bound the answer."""
         if self._managed is not None:
@@ -903,8 +837,8 @@ class QueryRuntime(DiscoveryRuntime):
     def _record_provenance(self) -> dict:
         """The record answer's truthful provenance (spec 0014 §3): the actual
         route and artifact identity when established — the managed route's
-        pinned admission view — otherwise the unversioned/as-of disclosure;
-        legacy host configuration is never called Git Review Admission."""
+        pinned admission view — otherwise an internal synthetic-session
+        disclosure; no public route establishes provenance without Git Admission."""
         if self._managed is not None:
             return {
                 "route": "managed-pinned-admission",
@@ -919,12 +853,9 @@ class QueryRuntime(DiscoveryRuntime):
                 ),
             }
         return {
-            "route": "legacy-local-sources" if self._qualified else "legacy-local-attach",
+            "route": "internal-synthetic-session",
             "admission": None,
-            "disclosure": (
-                "unversioned, as-of source data — legacy host configuration is "
-                "not Git Review Admission; no snapshot identity is established"
-            ),
+            "disclosure": "unversioned, as-of source data; no Git snapshot identity is established",
         }
 
     async def save_example(
@@ -947,14 +878,7 @@ class QueryRuntime(DiscoveryRuntime):
                 proposal=proposal,
                 expected_revision=expected_revision,
             )
-        if proposal is not None or expected_revision is not None:
-            raise ValueError("Git proposal selectors require a managed --project")
-        return answer_examples.save_example(
-            submission,
-            self.context_dir.parent,
-            self.staging_dir,
-            examples_root=self._examples_root,
-        )
+        raise ValueError("a Git admission is required for Example authoring")
 
     async def search_examples(
         self,
@@ -1081,9 +1005,43 @@ class QueryRuntime(DiscoveryRuntime):
         self._discard_request_budget()
         return await super().list_context_pages()
 
-    async def read_context_page(self, path: str, draft: bool = False) -> dict:
+    async def read_context_page(self, path: str) -> dict:
         self._discard_request_budget()
-        return await super().read_context_page(path, draft=draft)
+        return await super().read_context_page(path)
+
+
+class QueryRuntime:
+    """Public query factory; governed runtimes can only come from Git admission."""
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("QueryRuntime is a project factory; use QueryRuntime.open_project(project)")
+
+    @classmethod
+    def open_project(
+        cls,
+        project: str | Path,
+        *,
+        deadline_budget: DeadlineBudget | None = None,
+        discovery: _DiscoverySession | None = None,
+    ) -> _QueryRuntimeSession:
+        root = Path(project).resolve()
+        if discovery is None:
+            record, snapshot = admission.resolve_admission(root)
+        else:
+            if discovery._project != root or discovery._managed is None:
+                raise ValueError("discovery does not pin an admission for this project")
+            discovery._recheck_pinned()
+            record, snapshot = discovery._managed, discovery.context_dir.parent
+        return _QueryRuntimeSession(
+            snapshot / "semantic_layer",
+            snapshot / "context_layer",
+            None,
+            registry=admission.approved_registry(record),
+            admission_record=record,
+            project_root=root,
+            query_limits=query_results.load_host_query_limits(root),
+            deadline_budget=deadline_budget,
+        )
 
 
 class DeferredQueryRuntime:
@@ -1091,20 +1049,20 @@ class DeferredQueryRuntime:
 
     def __init__(
         self,
-        factory: Callable[[], QueryRuntime],
-        discovery: DiscoveryRuntime | Callable[[], DiscoveryRuntime],
+        factory: Callable[[], _QueryRuntimeSession],
+        discovery: _DiscoverySession | Callable[[], _DiscoverySession],
     ):
         self._factory = factory
         self._discovery = discovery
-        self._runtime: QueryRuntime | None = None
+        self._runtime: _QueryRuntimeSession | None = None
 
-    def runtime(self) -> QueryRuntime:
+    def runtime(self) -> _QueryRuntimeSession:
         if self._runtime is None:
             self._runtime = self._factory()
         return self._runtime
 
     @property
-    def discovery(self) -> DiscoveryRuntime:
+    def discovery(self) -> _DiscoverySession:
         if callable(self._discovery):
             self._discovery = self._discovery()
         return self._discovery

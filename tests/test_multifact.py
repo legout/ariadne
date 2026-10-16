@@ -28,11 +28,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
+from ariadne import admission  # noqa: E402
+from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.grain import relationship_target_audit  # noqa: E402
 from ariadne.planner import PlannerError, plan_query  # noqa: E402
 from ariadne.semantic_graph import GraphError, load_graph  # noqa: E402
 from ariadne.sources import build_connection, load_registry  # noqa: E402
 from ariadne.validate import validate  # noqa: E402
+from tests.test_git_admission import admit  # noqa: E402
+from tests.test_git_authoring import approved, run_git  # noqa: E402
 
 # (order_id, region, amount, customer_id) / (line_id, order_id, region,
 # line_amount): the per-order line sums equal the order amounts, and each line
@@ -2714,10 +2718,10 @@ def test_t4_time_and_window_refusals_are_structured(tmp_path):
 #
 # The public submission/runtime seam: a validated source-layout graph proposal
 # (one dataset per model + semantic_layer/graph.yml + cited OKF context) is
-# locally Promoted through the existing locked bundle machinery, and the SAME
-# rows/context come back through the runtime, the local JSON CLI, and the MCP
-# tools. Unadmitted graphs never serve as governed; post-validation edits never
-# promote; a NEW multi-fact admission without cited context is refused.
+# admitted through Git Review Admission, and the SAME rows/context come back
+# through the runtime, local JSON CLI and MCP tools. Unadmitted graphs never
+# serve as governed; post-admission candidate edits cannot change the snapshot;
+# a new multi-fact admission without cited context is refused.
 
 # One dataset per model (the b09f649 source-boundary shape), the cross-file
 # graph supplying the relationship and the conformed dimension.
@@ -2876,40 +2880,70 @@ def _t5_bundle(
     return {"files": files}
 
 
-def _t5_admitted(tmp_path: Path, bundle: dict | None = None) -> tuple[Path, dict]:
-    """One project whose source-layout graph bundle was submitted (validated),
-    humanly Promoted through the exact-digest gate, and left with its review
-    view returned. ``served/`` is the admitted served root."""
-    from ariadne import authoring
-    from ariadne.promote import promote_bundle
+def _t5_candidate(tmp_path: Path, bundle: dict | None = None):
+    """Create the graph fixture as a revision-bound Authoring candidate."""
 
     project = tmp_path / "proj"
     build_source_fixture(project)  # project/ariadne.yaml + project/mf.db (approved registry)
-    submission = tmp_path / "submission.json"
-    submission.write_text(json.dumps(bundle or _t5_bundle()), encoding="utf-8")
-    view = authoring.submit_bundle(submission, project=project)
-    if view["status"] != "validated":
-        raise AssertionError(f"bundle did not validate: {view['errors']}")
-    promote_bundle(
-        view["review_digest"],
-        staging_root=project / "staging",
-        served_root=project / "served",
-        by="human:test",
-        assume_yes=True,
+    run_git(project, "init", "-q")
+    run_git(project, "config", "user.name", "Ariadne Tests")
+    run_git(project, "config", "user.email", "tests@ariadne.local")
+    run_git(project, "add", "--", "ariadne.yaml")
+    run_git(
+        project,
+        "commit",
+        "-q",
+        "-m",
+        "human: synthetic source registry",
+        "--",
+        "ariadne.yaml",
     )
-    return project, view
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    revision = started["candidate_revision"]
+    for artifact in (bundle if bundle is not None else _t5_bundle())["files"]:
+        parts = Path(artifact["path"]).parts
+        if parts == ("data", "seed_notes.md"):
+            edit = {"kind": "seed_notes", "content": artifact["content"]}
+        elif parts[:2] == ("semantic_layer", "models"):
+            edit = {
+                "kind": "model",
+                "name": Path(parts[-1]).stem,
+                "content": artifact["content"],
+            }
+        elif parts == ("semantic_layer", "graph.yml"):
+            edit = {"kind": "graph", "content": artifact["content"]}
+        elif parts[:1] == ("context_layer",):
+            section = "joins" if parts[1:3] == ("references", "joins") else parts[1]
+            edit = {
+                "kind": "page",
+                "section": section,
+                "name": Path(parts[-1]).stem,
+                "content": artifact["content"],
+            }
+        else:
+            raise AssertionError(f"unsupported synthetic artifact path: {artifact['path']}")
+        edited = api.edit_proposal(started["proposal"], revision, edit)
+        revision = edited["revision"]
+
+    return project, api, started, revision
+
+
+def _t5_admitted(tmp_path: Path, bundle: dict | None = None) -> tuple[Path, dict]:
+    project, api, started, revision = _t5_candidate(tmp_path, bundle)
+    validated = api.validate_proposal(started["proposal"], revision)
+    assert validated["ok"] is True, validated["errors"]
+    review = api.review_proposal(started["proposal"])
+    assert review["revision"] == validated["revision"] and review["report"]["ok"] is True
+    assert admit(project, review) == 0
+    return project, review
 
 
 def _t5_runtime(project: Path):
-    from ariadne.runtime import AriadneRuntime
+    from ariadne.query import QueryRuntime
 
-    return AriadneRuntime(
-        project / "served" / "semantic_layer",
-        project / "served" / "context_layer",
-        project / "mf.db",
-        staging_dir=project / "staging",
-        sources=project / "ariadne.yaml",
-    )
+    return QueryRuntime.open_project(project)
 
 
 def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mcp(tmp_path, capsys):
@@ -2937,15 +2971,15 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
         "orders",
     ]
     assert result["plan"]["conformed_keys"] == ["region"]
-    # local admission provenance: the exact reviewed digest, the full persisted
-    # technical validation scope, and the human Promotion identity
-    admission = result["admission"]
-    assert admission["route"] == "local-promotion"
-    assert admission["reviewed_digest"] == view["review_digest"]
-    assert admission["served_digest"]
-    assert admission["validation"]["scope"] == "structural+bind+grain"
-    assert admission["validation"]["digest"]
-    assert admission["promoted"]["by"] == "human:test"
+    # Admission provenance binds the exact reviewed Git revision and its
+    # independent validation evidence; it does not mutate artifact metadata.
+    admission_view = result["admission"]
+    assert admission_view["route"] == "git-review-admission"
+    assert admission_view["revision"] == view["revision"]
+    assert admission_view["review_digest"] == view["review_digest"]
+    assert admission_view["artifact_digest"]
+    assert admission_view["validation"]["ok"] is True
+    assert admission_view["validation"]["performed_checks"]
     # per-metric cited context: the served metric page plus the cited Policy
     # body, the honest pending attestation state (ADR-0013), and the advisory
     # signals envelope over exactly the consumed pages (spec 0011 §§4–5)
@@ -2960,30 +2994,18 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
             "policies/region-rollup.md",
             f"computations/{name}.md",
         ]
-        assert signals["warnings"] == []  # stable Policy, future stamp: nothing concrete
+        assert signals["warnings"] == []
         policy_view = signals["pages"][1]
-        assert policy_view["status"] == "stable"  # the promoted document state
-        # §4: human-reviewed is the DOCUMENT verification claim declared at
-        # Promotion — advisory metadata, never admission evidence
-        assert policy_view["verification_tier"] == "human-reviewed"
-        assert policy_view["freshness"]["state"] == "current"  # the Promotion-time stamp
+        assert policy_view["status"] == "draft"
+        assert policy_view["verification_tier"] == "unverified"
+        assert policy_view["freshness"]["state"] == "unknown"
 
     # the local JSON CLI returns the SAME value over its own runtime instance
     request_file = tmp_path / "request.json"
     request_file.write_text(json.dumps(request), encoding="utf-8")
-    capsys.readouterr()  # drop the promotion chatter: the CLI writes exactly one JSON value
+    capsys.readouterr()  # drop the admission receipt: the CLI writes exactly one JSON value
     code = cli_main(
-        [
-            "query-metrics",
-            "--file",
-            str(request_file),
-            "--sources",
-            str(project / "ariadne.yaml"),
-            "--served",
-            str(project / "served"),
-            "--staging",
-            str(project / "staging"),
-        ],
+        ["query-metrics", "--project", str(project), "--file", str(request_file)],
         io.StringIO(""),
     )
     assert code == 0
@@ -3024,7 +3046,7 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
 
 def test_t5_query_metrics_captures_one_assessment_instant_across_metrics(tmp_path, monkeypatch):
     # Spec 0011 §2: one operation captures ONE aware clock value for all its
-    # assessments. The shared Policy carries the Promotion-time date-only
+    # assessments. The shared Policy carries an explicit date-only
     # expiry stamp; §3 keeps it current throughout its named UTC date and
     # stale at the next midnight. Ticks land either side of that boundary: a
     # single shared instant keeps BOTH metrics' assessments current, while
@@ -3034,11 +3056,21 @@ def test_t5_query_metrics_captures_one_assessment_instant_across_metrics(tmp_pat
 
     from ariadne import context as context_module
 
-    project, _view = _t5_admitted(tmp_path)
-    served_policy = project / "served" / "context_layer" / "policies" / "region-rollup.md"
-    stamped = date.fromisoformat(
-        yaml.safe_load(served_policy.read_text(encoding="utf-8").split("---")[1])["stale_after"]
+    bundle = _t5_bundle()
+    stamped = date.today() + timedelta(days=1)
+    policy = next(
+        artifact
+        for artifact in bundle["files"]
+        if artifact["path"] == "context_layer/policies/region-rollup.md"
     )
+    policy["content"] = policy["content"].replace(
+        "sources:\n", f"stale_after: {stamped.isoformat()}\nsources:\n", 1
+    )
+    project, _view = _t5_admitted(tmp_path, bundle)
+    _, snapshot = admission.resolve_admission(project)
+    served_policy = snapshot / "context_layer" / "policies" / "region-rollup.md"
+    frontmatter = yaml.safe_load(served_policy.read_text(encoding="utf-8").split("---")[1])
+    assert frontmatter["stale_after"] == stamped.isoformat()
     midnight = datetime(stamped.year, stamped.month, stamped.day, tzinfo=UTC)
     runtime = _t5_runtime(project)
     ticks = iter([midnight + timedelta(hours=10), midnight + timedelta(days=1)])
@@ -3073,43 +3105,41 @@ def test_t5_query_detail_projects_through_the_admitted_graph(tmp_path):
     assert result["dataset"] == "order_lines"
     amounts = {row["line_id"]: row["amount"] for row in result["rows"]}
     assert amounts == {11: 100.0, 12: 100.0, 13: 100.0, 21: 200.0, 22: 200.0, 31: 400.0}
-    assert result["admission"]["route"] == "local-promotion"
+    assert result["admission"]["route"] == "git-review-admission"
 
 
-def test_t5_mutating_model_policy_graph_or_registry_after_validation_blocks_promotion(tmp_path):
-    # Spec rev 1 acceptance 6 (local): the promoter refuses changed bytes (a
-    # staged model, the graph, a cited Policy) and a changed approved source
-    # registry — nothing is served on any of them.
-    from ariadne.promote import promote_bundle
-
+def test_t5_later_candidate_and_changed_registry_cannot_change_admitted_query(tmp_path):
+    # A later authored model/graph/Policy stays outside the admitted snapshot;
+    # changing the operator registry invalidates construction instead.
     project, view = _t5_admitted(tmp_path)
-    bundle = project / "staging" / "authoring" / "bundle"
-    digest = view["review_digest"]
-    cases = [
-        (
-            bundle / "semantic_layer" / "models" / "orders.yml",
-            T5_ORDERS_YML.replace("SUM(amount)", "SUM(amount) + 0"),
-        ),
-        (bundle / "semantic_layer" / "graph.yml", GRAPH_YML + "# touched\n"),
-        (
-            bundle / "context_layer" / "policies" / "region-rollup.md",
-            _t5_page("policy", "Region rollup", status="draft") + "changed\n",
-        ),
-    ]
-    for path, mutated in cases:
-        original = path.read_bytes()
-        path.write_text(mutated, encoding="utf-8")
-        try:
-            with pytest.raises(ValueError, match="staged content changed after the review"):
-                promote_bundle(
-                    digest,
-                    staging_root=project / "staging",
-                    served_root=project / "served",
-                    by="human:test",
-                    assume_yes=True,
-                )
-        finally:
-            path.write_bytes(original)
+    runtime = _t5_runtime(project)
+    request = {"metrics": ["orders_total", "lines_total"], "dimensions": ["region"]}
+    before = asyncio.run(runtime.query_metrics(request))
+
+    api = AuthoringProject(project)
+    later = api.start_proposal()
+    edits = (
+        {
+            "kind": "model",
+            "name": "orders",
+            "content": T5_ORDERS_YML.replace("SUM(amount)", "SUM(amount) + 0"),
+        },
+        {"kind": "graph", "content": GRAPH_YML + "# touched\n"},
+        {
+            "kind": "page",
+            "section": "policies",
+            "name": "region-rollup",
+            "content": _t5_page("policy", "Region rollup", status="draft") + "changed\n",
+        },
+    )
+    revision = later["candidate_revision"]
+    for edit in edits:
+        revision = api.edit_proposal(later["proposal"], revision, edit)["revision"]
+
+    after = asyncio.run(_t5_runtime(project).query_metrics(request))
+    assert after["rows"] == before["rows"]
+    assert after["admission"]["revision"] == view["revision"]
+
     registry = project / "ariadne.yaml"
     original = registry.read_bytes()
     registry.write_text(
@@ -3118,134 +3148,38 @@ def test_t5_mutating_model_policy_graph_or_registry_after_validation_blocks_prom
         encoding="utf-8",
     )
     try:
-        with pytest.raises(ValueError, match="approved source registry changed"):
-            promote_bundle(
-                digest,
-                staging_root=project / "staging",
-                served_root=project / "served",
-                by="human:test",
-                assume_yes=True,
-            )
+        with pytest.raises(ValueError, match="source"):
+            _t5_runtime(project)
     finally:
         registry.write_bytes(original)
-
-
-def test_t5_unadmitted_graph_cannot_be_served_as_governed(tmp_path):
-    # Spec rev 1 admission: a served graph without a matching Promotion
-    # admission record (hand-placed, or plain-staging promotion) never answers
-    # as governed, while the legacy single-metric path keeps working (AC7).
-    import shutil
-
-    from ariadne.runtime import AriadneRuntime
-
-    project, _view = _t5_admitted(tmp_path)
-    unadmitted = tmp_path / "unadmitted"
-    shutil.copytree(project / "served", unadmitted)
-    (unadmitted / "semantic_layer" / "admission.json").unlink()  # no admission record
-    runtime = AriadneRuntime(
-        unadmitted / "semantic_layer",
-        unadmitted / "context_layer",
-        project / "mf.db",
-        staging_dir=tmp_path / "staging",
-        sources=project / "ariadne.yaml",
-    )
-    legacy = asyncio.run(runtime.get_metric("orders_total", ["region"]))  # AC7: unaffected
-    assert {row["region"]: row["orders_total"] for row in legacy["rows"]} == {
-        "NA": 300.0,
-        "EMEA": 400.0,
-    }
-    for call in (
-        lambda: runtime.query_metrics({"metrics": ["orders_total"]}),
-        lambda: runtime.query_detail({"dataset": "orders", "fields": ["order_id"]}),
-    ):
-        with pytest.raises(ValueError, match="admission"):
-            asyncio.run(call())
-
-    # and post-admission edits to the served graph invalidate the record's digest
-    admitted = _t5_runtime(project)
-    graph = project / "served" / "semantic_layer" / "graph.yml"
-    original = graph.read_bytes()
-    graph.write_text(GRAPH_YML + "# hand-edited after admission\n", encoding="utf-8")
-    try:
-        with pytest.raises(ValueError, match="changed after admission"):
-            asyncio.run(admitted.query_metrics({"metrics": ["orders_total"]}))
-    finally:
-        graph.write_bytes(original)
+    runtime.con.close()
 
 
 def test_t5_missing_cited_context_refuses_new_multifact_admission(tmp_path):
-    # Spec rev 1: a missing/broken cited page fails validation for a newly
-    # admitted multi-fact definition — it can never become an uncited governed
-    # multi-fact answer. Legacy single-dataset bundles keep the old gate.
-    from ariadne import authoring
-
+    # A newly reviewed multi-fact candidate requires the cited metric and Policy
+    # pages to resolve inside the candidate; missing evidence is not admitted.
     for index, (bundle, fragment) in enumerate(
         (
             (_t5_bundle(lines_page=None), "lines_total"),
             (_t5_bundle(orders_policy="policies/no-such-policy.md"), "no-such-policy"),
         )
     ):
-        project = tmp_path / f"proj{index}"
-        build_source_fixture(project)
-        submission = project / "submission.json"
-        submission.write_text(json.dumps(bundle), encoding="utf-8")
-        view = authoring.submit_bundle(submission, project=project)
-        assert view["status"] == "invalid", view
-        assert any(fragment in error for error in view["errors"]), view["errors"]
+        project, api, started, revision = _t5_candidate(tmp_path / f"case{index}", bundle)
+        validation = api.validate_proposal(started["proposal"], revision)
+        assert validation["ok"] is False, validation
+        assert any(fragment in error for error in validation["errors"]), validation["errors"]
 
 
 def test_t5_citation_escape_outside_the_policy_directory_refuses_admission(tmp_path):
-    # mf-t5 fix F3: authoring resolves metric citations against the Policy
-    # directory exactly like the runtime — a 'policies/../skills/...' traversal
-    # that satisfies a context-root containment check (and a staged file) never
-    # reaches admission, whose served context would otherwise collapse to null
-    # while the answer stays governed.
-    from ariadne import authoring
-
-    project = tmp_path / "proj"
-    build_source_fixture(project)
-    submission = project / "submission.json"
-    submission.write_text(
-        json.dumps(_t5_bundle(orders_policy="policies/../skills/query-multi-fact.md")),
-        encoding="utf-8",
-    )
-    view = authoring.submit_bundle(submission, project=project)
-    assert view["status"] == "invalid", view
+    # A path that escapes context_layer/policies/ cannot satisfy a metric's
+    # citation, even when the target exists elsewhere in the same candidate.
+    bundle = _t5_bundle(orders_policy="policies/../skills/query-multi-fact.md")
+    project, api, started, revision = _t5_candidate(tmp_path, bundle)
+    validation = api.validate_proposal(started["proposal"], revision)
+    assert validation["ok"] is False, validation
     assert any(
-        "does not resolve inside context_layer/policies/" in error for error in view["errors"]
-    ), view["errors"]
-
-
-def test_t5_unreviewed_merge_survivor_refuses_the_admission_refresh(tmp_path):
-    # mf-t5 fix F2: a valid, uniquely named model dropped directly under the
-    # served semantic_layer/models/ (absent from the reviewed proposal) is an
-    # unreviewed merge survivor — the unchanged re-Promotion must refuse the
-    # admission refresh, and the runtime must never serve it governed (spec
-    # rev 1 admission / AC6: admission binds reviewed, validated artifacts).
-    from ariadne.promote import promote_bundle
-
-    project, view = _t5_admitted(tmp_path)
-    rogue_yml = T5_ORDERS_YML.replace("orders", "rogue").replace(
-        "demo.main.rogue", "demo.main.orders"
-    )
-    (project / "served" / "semantic_layer" / "models" / "rogue.yml").write_text(
-        rogue_yml, encoding="utf-8"
-    )
-    with pytest.raises(ValueError, match="rogue.yml"):
-        promote_bundle(
-            view["review_digest"],
-            staging_root=project / "staging",
-            served_root=project / "served",
-            by="human:test",
-            assume_yes=True,
-        )
-    runtime = _t5_runtime(project)
-    for call in (
-        lambda: runtime.query_metrics({"metrics": ["rogue_total"]}),
-        lambda: runtime.query_metrics({"metrics": ["orders_total"]}),
-    ):
-        with pytest.raises(ValueError, match="changed after admission"):
-            asyncio.run(call())
+        "does not resolve inside context_layer/policies/" in error for error in validation["errors"]
+    ), validation["errors"]
 
 
 def test_t5_cli_query_metrics_error_keeps_the_planner_code_and_candidates(tmp_path, capsys):
@@ -3260,19 +3194,9 @@ def test_t5_cli_query_metrics_error_keeps_the_planner_code_and_candidates(tmp_pa
     project, _view = _t5_admitted(tmp_path)
     request_file = tmp_path / "bad-request.json"
     request_file.write_text(json.dumps({"metrics": ["no_such_metric"]}), encoding="utf-8")
-    capsys.readouterr()  # drop the promotion chatter: the CLI writes exactly one JSON error
+    capsys.readouterr()  # drop the admission receipt: the CLI writes one JSON error
     code = cli_main(
-        [
-            "query-metrics",
-            "--file",
-            str(request_file),
-            "--sources",
-            str(project / "ariadne.yaml"),
-            "--served",
-            str(project / "served"),
-            "--staging",
-            str(project / "staging"),
-        ],
+        ["query-metrics", "--project", str(project), "--file", str(request_file)],
         io.StringIO(""),
     )
     assert code == 1

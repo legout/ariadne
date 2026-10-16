@@ -18,20 +18,17 @@ dependencies = [
 [project.scripts]
 ariadne = "ariadne.cli:main"  # the local JSON CLI (spec 2026-09-23-0001 §4)
 ariadne-ingest = "ariadne.ingest:main"
-ariadne-author = "ariadne.author:main"
 ariadne-validate = "ariadne.validate:main"
 ariadne-serve = "ariadne.serve:main"  # the MCP facade; combined toolset by default (G6)
 # The Analyst/Authoring registrations of the same adapter (spec 0009 §6, issue #38):
 # the entry point fixes the toolset — launch ariadne-serve to select one explicitly.
 ariadne-analyst-mcp = "ariadne.serve:analyst_main"
 ariadne-authoring-mcp = "ariadne.serve:authoring_main"
-ariadne-promote = "ariadne.promote:main"
 ariadne-init = "ariadne.init:main"
 ariadne-skill = "ariadne.skill:main"
 ariadne-profiler = "ariadne.profiler:main"
 ariadne-authoring = "ariadne.authoring_cli:main"  # harness-led authoring (issue #13)
 ariadne-admit = "ariadne.admission:main"  # HUMAN-ONLY Git Review Admission (issue #37, G5)
-ariadne-example-review = "ariadne.example_review:main"  # operator-only example review (issue #20)
 
 [project.optional-dependencies]
 # ADR-0012/spec §7: MCP is the optional transport extra — the base install

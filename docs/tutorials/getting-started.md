@@ -1,6 +1,6 @@
 # Getting started with Ariadne 0.3.0
 
-This tutorial takes a data owner from an empty project directory to a fresh query against a human-admitted catalog. Ariadne can prepare the work, but it does not make the owner's source-approval, review, admission, or Promotion decisions.
+This tutorial takes a data owner from an empty project directory to a fresh query against a human-admitted Git catalog. Ariadne can prepare the work, but it does not make the owner's source-approval, review, or admission decisions.
 
 ## Prerequisites
 
@@ -66,15 +66,9 @@ The query is fresh: saved answer examples are method references, not cached answ
 
 For the exact proposal commands and operator-only steps, see [Git-backed authoring](../how-to/git-authoring.md). Setup can stop at a human gate; rerunning it resumes the same project rather than approving or admitting on the operator's behalf.
 
-## Use the retained legacy route
+## Scope and existing artifacts
 
-Existing staging/Promotion projects remain supported. For a new legacy project, select that route explicitly:
-
-```bash
-ariadne setup --legacy --project retail
-```
-
-The legacy workflow drafts into `staging/`; a human reviews and promotes artifacts before querying. Setup does not convert an existing project between legacy and Git-managed routes. See [Git-backed authoring](../how-to/git-authoring.md) before choosing a migration path.
+This workflow targets a new Git-managed project. Core does not import legacy staged artifacts or pending review state, and it does not expose a Promotion route. Preserve existing project files; if content should move into a new project, decide explicitly what to reauthor through a revision-checked proposal. Setup never resets or silently adopts existing files.
 
 ## Next steps
 

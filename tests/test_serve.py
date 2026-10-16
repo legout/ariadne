@@ -1,13 +1,9 @@
-"""MCP facade (ticket #5): five tools (governed + ad-hoc); the money test lane.
+"""MCP adapter boundaries and private numerical-session contract tests.
 
-The served tree is produced offline by running the real author loop with the
-mocked-OpenAI fixture machinery from tests/test_author.py (a deterministic
-golden LLM response encoding both seed-note gotchas) and the REAL Datus
-compile as the validation gate — then the facade is pointed at that promoted
-tree. Execution happens on the facade-owned DuckDB connection over the
-deterministic demo.db (examples/retail-demo/seed_db.py), so every number below is checked
-against tests/fixtures/expected_metrics.json — hand-computed, never derived
-from seed/SQL logic. No network anywhere.
+The deterministic demo DB and authored artifact bytes live only in synthetic
+temporary fixtures. Numerical expectations come from
+``tests/fixtures/expected_metrics.json`` or independent SQL; public project
+admission is exercised in the Git lifecycle tests.
 """
 
 import asyncio
@@ -17,7 +13,6 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Any
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -26,14 +21,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne.author import author  # noqa: E402
-from ariadne.serve import Facade  # noqa: E402
-from tests.test_author import (  # noqa: E402
-    GOTCHA_1,
-    GOTCHA_2,
-    fake_complete,
-    make_notes,
-)
+from ariadne.query import _QueryRuntimeSession as Facade  # noqa: E402
+
+GOTCHA_1 = "CANCELLED and RETURNED orders are not revenue"
+GOTCHA_2 = "multiply both figures by rate_to_usd"
 
 FIXTURE = json.loads((REPO_ROOT / "tests" / "fixtures" / "expected_metrics.json").read_text())
 
@@ -230,29 +221,27 @@ def seed_demo_db(db_path: Path) -> Path:
 
 @pytest.fixture(scope="module")
 def served(tmp_path_factory):
-    """Author loop (mocked LLM, default gate: real Datus compile + ADR-0006 §5
-    grain audit over the demo db) -> promoted served tree + db."""
-    tmp = tmp_path_factory.mktemp("served")
+    """Synthetic artifact roots and demo DB for the private numerical seam."""
+    tmp = tmp_path_factory.mktemp("query-fixture")
     db = seed_demo_db(tmp / "demo.db")
-    notes = make_notes(tmp)
-    complete, _ = fake_complete([GOLDEN_RESPONSE])
-    served = tmp / "served"
-    author(db, notes, staging_dir=served, complete=complete)
-    assert (served / "semantic_layer" / "models" / "orders.yml").is_file(), (
-        "golden model must pass the real compile + grain-audit gate"
-    )
+    served = tmp / "artifacts"
+    models = served / "semantic_layer" / "models"
+    models.mkdir(parents=True)
+    (models / "orders.yml").write_text(GOLDEN_OSI, encoding="utf-8")
+    metrics = served / "context_layer" / "metrics"
+    policies = served / "context_layer" / "policies"
+    metrics.mkdir(parents=True)
+    policies.mkdir(parents=True)
+    (metrics / "gross_margin.md").write_text(GOLDEN_OKF, encoding="utf-8")
+    (policies / "order-status-billing.md").write_text(GOLDEN_POLICY_STATUS, encoding="utf-8")
+    (policies / "emea-currency-cutover.md").write_text(GOLDEN_POLICY_EMEA, encoding="utf-8")
     return served, db
 
 
 @pytest.fixture(scope="module")
-def facade(served, tmp_path_factory):
+def facade(served):
     served_dir, db = served
-    return Facade(
-        served_dir / "semantic_layer",
-        served_dir / "context_layer",
-        db,
-        staging_dir=tmp_path_factory.mktemp("staging"),
-    )
+    return Facade(served_dir / "semantic_layer", served_dir / "context_layer", db)
 
 
 def rows_by_region(result, column):
@@ -390,7 +379,7 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
     one known catalog table, spec 0014 §3); spec 0015/issue #60 adds exactly
     two more — ``list_context_pages`` and ``read_context_page`` (the token-free
     Context Layer page listing and path-addressed reading, ADR-0020); never a
-    source-approval, Promotion, admission or example-review tool (ADR-0013/#20:
+    source-approval, Git Review Admission or example-review tool (ADR-0013/#20:
     review is human-only; the surfaces are tool-surface separation, spec §6)."""
     from ariadne.serve import build_app
 
@@ -424,125 +413,6 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
         "authoring_review_proposal",
     }
     assert not [tool for tool in tools if "approve" in tool.name or "promot" in tool.name]
-
-
-def test_mcp_example_tools_parity_with_local_transport(served, tmp_path):
-    """Issue #21 (spec 2026-09-29-0007 §interfaces, AC6): the optional MCP tools
-    save_example/search_examples are thin adapters over the SAME transport-neutral
-    runtime the local JSON CLI calls — a draft saved over one transport is
-    immediately searchable over the other with the same ID/status — and the
-    example-review command is never registered as a tool (operator-only, #20)."""
-    from ariadne.serve import build_app
-
-    def _json(result) -> Any:
-        """The tool's JSON payload from an in-process ``app.call_tool`` result
-        (mcp 2.2.0 returns one CallToolResult). MCPServer wraps non-dict
-        returns as ``{"result": [...]}`` in structuredContent and emits one
-        text block per element; one block IS the value, several blocks are
-        the list elements (see tests/test_authoring_mcp._payload)."""
-
-        if isinstance(result, tuple):  # the mcp<2 call_tool shape
-            result = result[0]
-
-        data = getattr(result, "structured_content", None)
-        if isinstance(data, dict) and set(data) == {"result"}:
-            return data["result"]
-        if data is not None:
-            return data
-
-        def _element(block):
-            try:
-                return json.loads(block.text)
-            except ValueError:
-                return block.text
-
-        blocks = list(result.content)
-        if len(blocks) == 1:
-            return _element(blocks[0])
-        return [_element(block) for block in blocks]
-
-    served_dir, db = served
-    local = Facade(
-        served_dir / "semantic_layer",
-        served_dir / "context_layer",
-        db,
-        staging_dir=tmp_path / "staging",
-    )
-    app = build_app(local)
-
-    # Registration seam: exactly the two example tools, never a review tool.
-    tools = asyncio.run(app.list_tools())
-    names = {tool.name for tool in tools}
-    assert {name for name in names if "example" in name} == {"save_example", "search_examples"}
-    # Spec 0023 §2: the save tool's confirmation guidance requires presenting
-    # the exact submitted SQL to the user BEFORE the save call.
-    save_guidance = next(tool.description for tool in tools if tool.name == "save_example")
-    assert save_guidance is not None
-    assert "EXACT submitted result SQL" in save_guidance and "BEFORE calling this" in save_guidance
-
-    submission = {
-        "question": "What is the gross margin ratio by region?",
-        "interpretation": "Ratio of sums over billable orders, EMEA cutover applied",
-        "parameters": {"dimensions": ["region"], "grain": "one row per region"},
-        "method": {
-            "operation": "get_metric",
-            "arguments": {"name": "gross_margin", "dimensions": ["region"]},
-        },
-        "result": {
-            "metric": "gross_margin",
-            "columns": ["region", "gross_margin"],
-            "rows": [{"region": "EMEA", "gross_margin": 0.5}],
-            "sql": "SELECT region, 0.5 AS gross_margin",
-            "governed": True,
-        },
-        "submitter": "expert:dana",
-        "attestation": "The saved interpretation states the business meaning I intended.",
-        "sources": ["context_layer/metrics/gross_margin.md"],
-    }
-
-    # Save over MCP -> immediately searchable from a SECOND runtime over the
-    # same checkout (the exact object the local CLI constructs), same ID/status.
-    saved = _json(asyncio.run(app.call_tool("save_example", {"submission": submission})))
-    assert saved["status"] == "draft"
-    other = Facade(
-        served_dir / "semantic_layer",
-        served_dir / "context_layer",
-        db,
-        staging_dir=tmp_path / "staging",
-    )
-    hits = asyncio.run(other.search_examples("gross margin region"))
-    assert hits and hits[0]["id"] == saved["id"] and hits[0]["status"] == "draft"
-
-    # And the reverse direction: save over the local runtime, search over MCP.
-    saved_local = asyncio.run(
-        other.save_example({**submission, "question": "What is the order count by region?"})
-    )
-    assert saved_local["status"] == "draft"
-    hits_mcp = _json(asyncio.run(app.call_tool("search_examples", {"query": "order count"})))
-    if isinstance(hits_mcp, dict):  # one hit arrives as one content block
-        hits_mcp = [hits_mcp]
-    assert hits_mcp and hits_mcp[0]["id"] == saved_local["id"]
-    assert hits_mcp[0]["status"] == "draft"
-
-    # Issue #68 (spec 0023 §3): opt-in SQL retrieval is transport-neutral too.
-    # Default MCP search adds no SQL field or availability marker; include_sql
-    # over MCP returns exactly what the local runtime returns, including the
-    # result-derived sql_provenance mapping.
-    assert all("sql" not in hit["provenance"] for hit in hits_mcp)
-    mcp_sql = _json(
-        asyncio.run(
-            app.call_tool("search_examples", {"query": "gross margin", "include_sql": True})
-        )
-    )
-    if isinstance(mcp_sql, dict):  # one hit arrives as one content block
-        mcp_sql = [mcp_sql]
-    local_sql = asyncio.run(other.search_examples("gross margin", include_sql=True))
-    assert mcp_sql == local_sql
-    assert mcp_sql[0]["id"] == saved["id"]
-    assert mcp_sql[0]["provenance"]["sql"] == {
-        "source": "submitted_result.sql",
-        "text": submission["result"]["sql"],
-    }
 
 
 # --- Ad-hoc query layer (spec revision 3, §8.8-8.11) -------------------------
@@ -603,7 +473,7 @@ def test_missing_metric_page_collapses_context_without_failing(served, tmp_path)
     (spec 0011 §5: its undiscoverable Policy dependencies are not claimed to
     have been assessed)."""
     served_dir, db = served
-    naked = Facade(served_dir / "semantic_layer", tmp_path, db, staging_dir=tmp_path / "staging")
+    naked = Facade(served_dir / "semantic_layer", tmp_path, db)
     result = asyncio.run(naked.get_metric("gross_margin", ["region"]))
     assert result["governed"] is True
     assert result["rows"]
@@ -627,9 +497,7 @@ def test_unresolvable_policy_reference_collapses_context_without_failing(served,
         "  - {id: gone, resource: policies/missing-policy.md}\n---\n\n# Gross margin\n",
         encoding="utf-8",
     )
-    facade = Facade(
-        served_dir / "semantic_layer", context_dir, db, staging_dir=tmp_path / "staging"
-    )
+    facade = Facade(served_dir / "semantic_layer", context_dir, db)
     result = asyncio.run(facade.get_metric("gross_margin", ["region"]))
     assert result["governed"] is True
     assert result["context"]["metric_page"] is None
@@ -651,7 +519,6 @@ def test_metric_page_name_traversal_collapses_context_without_reading_outside(se
         served_dir / "semantic_layer",
         served_dir / "context_layer",
         db,
-        staging_dir=tmp_path / "staging",
     )
     context = facade._metric_context("../../secret")
     assert context["metric_page"] is None and context["policies"] == []
@@ -675,9 +542,7 @@ def test_policy_ref_traversal_collapses_context_without_reading_dotenv(served, t
     )
     dotenv = tmp_path / ".env"  # context_layer/policies/../../.env resolves here
     dotenv.write_text("OPENAI_API_KEY=sk-traversal-secret\n", encoding="utf-8")
-    facade = Facade(
-        served_dir / "semantic_layer", context_dir, db, staging_dir=tmp_path / "staging"
-    )
+    facade = Facade(served_dir / "semantic_layer", context_dir, db)
     result = asyncio.run(facade.get_metric("gross_margin", ["region"]))
     assert result["governed"] is True and result["rows"]  # the query never fails
     context = result["context"]
@@ -710,13 +575,12 @@ def test_get_metric_discloses_expired_and_deprecated_policy_signals(served, tmp_
         encoding="utf-8",
     )
     before = {page: page.read_bytes() for page in (expired, deprecated)}
-    warned = Facade(served_dir / "semantic_layer", context_dir, db, staging_dir=tmp_path / "warned")
+    warned = Facade(served_dir / "semantic_layer", context_dir, db)
     baseline = asyncio.run(
         Facade(
             served_dir / "semantic_layer",
             served_dir / "context_layer",
             db,
-            staging_dir=tmp_path / "baseline",
         ).get_metric("gross_margin", ["region"])
     )
     result = asyncio.run(warned.get_metric("gross_margin", ["region"]))
@@ -776,7 +640,7 @@ _MEAN_EXPR = "AVG(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount 
 
 
 def test_define_metric_adhoc_mean_per_customer(facade, served):
-    """§8.8: agent-authored join source, zero prior promotion, fixture-checked."""
+    """§8.8: ephemeral agent-authored join source, fixture-checked."""
     _, db = served
     result = asyncio.run(
         facade.define_metric(
@@ -811,16 +675,7 @@ def test_define_metric_adhoc_mean_per_customer(facade, served):
     assert actual == expected
 
 
-def _adhoc_dir(facade):
-    adhoc = Path(facade.staging_dir) / "semantic_layer" / "models" / "adhoc"
-    return adhoc, sorted(p.name for p in adhoc.iterdir()) if adhoc.is_dir() else []
-
-
-def test_define_metric_nonexistent_column_errors_without_side_effects(facade):
-    """§8.9: invalid definition -> error, staging/…/adhoc/ unchanged, no execution."""
-    adhoc, before = _adhoc_dir(facade)
-    pages = Path(facade.staging_dir) / "context_layer" / "metrics"
-    pages_before = sorted(p.name for p in pages.iterdir()) if pages.is_dir() else []
+def test_define_metric_nonexistent_column_refuses(facade):
     with pytest.raises(ValueError, match="nonexistent_col"):
         asyncio.run(
             facade.define_metric(
@@ -833,15 +688,10 @@ def test_define_metric_nonexistent_column_errors_without_side_effects(facade):
                 }
             )
         )
-    assert _adhoc_dir(facade)[1] == before
-    pages_after = sorted(p.name for p in pages.iterdir()) if pages.is_dir() else []
-    assert pages_after == pages_before  # no context page either
-    assert not (adhoc / "broken_metric.yml").exists()
 
 
 def test_define_metric_compile_error_surfaced_verbatim(facade):
-    """A definition the Datus compiler itself rejects: errors verbatim, nothing staged."""
-    adhoc, before = _adhoc_dir(facade)
+    """A definition rejected by the compiler surfaces its error verbatim."""
     with pytest.raises(ValueError, match="could not parse expression"):
         asyncio.run(
             facade.define_metric(
@@ -854,7 +704,6 @@ def test_define_metric_compile_error_surfaced_verbatim(facade):
                 }
             )
         )
-    assert _adhoc_dir(facade)[1] == before
 
 
 def test_define_metric_rejects_unsane_name(facade):
@@ -879,14 +728,12 @@ def test_define_metric_repeated_calls_are_ephemeral(facade):
         "expression": "SUM(amount)",
         "dimensions": [],
     }
-    _adhoc, before = _adhoc_dir(facade)
     first = asyncio.run(facade.define_metric(dict(definition)))
     second = asyncio.run(facade.define_metric(dict(definition)))
     assert first["rows"] == second["rows"]
     assert first["persistence"] == second["persistence"] == {"status": "not_saved"}
     assert "staged_as" not in first and "staged_context_as" not in first
     assert "staged_as" not in second and "staged_context_as" not in second
-    assert _adhoc_dir(facade)[1] == before
 
 
 def test_define_metric_does_not_create_a_context_draft(facade):
@@ -904,8 +751,6 @@ def test_define_metric_does_not_create_a_context_draft(facade):
     )
     assert result["persistence"] == {"status": "not_saved"}
     assert "staged_as" not in result and "staged_context_as" not in result
-    draft = Path(facade.staging_dir) / "context_layer" / "metrics" / "page_probe_metric.md"
-    assert not draft.exists()
     hits = asyncio.run(facade.search_context(description))
     assert not any(hit["path"] == "metrics/page_probe_metric.md" for hit in hits)
 
@@ -914,11 +759,7 @@ _INJECTION_SOURCE = "orders) ; CREATE TEMP TABLE pwned(x int); SELECT * FROM (SE
 
 
 def test_define_metric_rejects_multi_statement_compiled_sql(facade):
-    """§6 invariant: a crafted source compiles to multi-statement SQL (the CREATE
-    TEMP TABLE would execute under the EXPLAIN bind-check). The parse-level guard
-    must reject it before ANY duckdb call: error names the invariant, no temp
-    table exists on the connection, nothing staged."""
-    adhoc, before = _adhoc_dir(facade)
+    """A crafted multi-statement source is rejected before any DuckDB call."""
     with pytest.raises(ValueError, match="exactly one statement"):
         asyncio.run(
             facade.define_metric(
@@ -931,8 +772,6 @@ def test_define_metric_rejects_multi_statement_compiled_sql(facade):
                 }
             )
         )
-    assert _adhoc_dir(facade)[1] == before  # nothing staged
-    assert not (adhoc / "pwned_metric.yml").exists()
     tables = {
         row[0] for row in facade.con.execute("SELECT table_name FROM duckdb_tables()").fetchall()
     }
@@ -961,12 +800,7 @@ def test_define_metric_allows_semicolon_inside_string_literal(facade):
 
 
 def test_define_metric_rejects_fanned_out_join_source(facade):
-    """Spec rev 5 §13 grain guard: a source whose join key is not unique on the
-    joined side (orders self-joined on region_code — guaranteed duplicates) fans
-    out the fact grain; the compiler would aggregate at joined-row grain
-    (Datus-ai/Datus-agent#1426), so the facade rejects before compile. Nothing
-    staged, nothing executed."""
-    adhoc, before = _adhoc_dir(facade)
+    """A non-unique join key violates the grain-preservation guard."""
     with pytest.raises(ValueError, match="grain-preservation invariant.*pivot"):
         asyncio.run(
             facade.define_metric(
@@ -982,8 +816,6 @@ def test_define_metric_rejects_fanned_out_join_source(facade):
                 }
             )
         )
-    assert _adhoc_dir(facade)[1] == before  # nothing staged
-    assert not (adhoc / "fanned_metric.yml").exists()
 
 
 def test_grain_guidance_names_the_adr_0006_rubric():
@@ -1001,7 +833,6 @@ def test_grain_guidance_names_the_adr_0006_rubric():
 def test_define_metric_rejects_cross_join_source(facade):
     """§13 grain guard: a CROSS (or comma) join has no key to prove unique —
     unbounded row multiplication is rejected outright."""
-    adhoc, before = _adhoc_dir(facade)
     with pytest.raises(ValueError, match="grain-preservation invariant"):
         asyncio.run(
             facade.define_metric(
@@ -1014,15 +845,12 @@ def test_define_metric_rejects_cross_join_source(facade):
                 }
             )
         )
-    assert _adhoc_dir(facade)[1] == before  # nothing staged
-    assert not (adhoc / "cross_metric.yml").exists()
 
 
 def test_define_metric_rejects_on_true_cartesian_source(facade):
     """§13 grain guard correction: `ON TRUE` has zero equality keys — the old
     per-key loop never ran, so the cartesian product passed the guard and
     executed, returning inflated aggregates. Fail closed before compile."""
-    adhoc, before = _adhoc_dir(facade)
     with pytest.raises(ValueError, match="grain-preservation invariant"):
         asyncio.run(
             facade.define_metric(
@@ -1037,15 +865,12 @@ def test_define_metric_rejects_on_true_cartesian_source(facade):
                 }
             )
         )
-    assert _adhoc_dir(facade)[1] == before  # nothing staged
-    assert not (adhoc / "on_true_metric.yml").exists()
 
 
 def test_define_metric_rejects_non_equality_join_predicate(facade):
     """§13 grain guard correction: an ON with only a non-equality predicate has
     no attributable equality key to prove — the guard cannot establish grain
     preservation, so it fails closed with the grain guidance."""
-    adhoc, before = _adhoc_dir(facade)
     with pytest.raises(ValueError, match="grain-preservation invariant"):
         asyncio.run(
             facade.define_metric(
@@ -1061,15 +886,12 @@ def test_define_metric_rejects_non_equality_join_predicate(facade):
                 }
             )
         )
-    assert _adhoc_dir(facade)[1] == before  # nothing staged
-    assert not (adhoc / "inequality_metric.yml").exists()
 
 
 def test_define_metric_allows_grain_preserving_join(facade):
     """§13 grain guard upside: the many-to-one direction (orders ⋈ customers on
     the customers primary key) stays legitimate — same shape as the ad-hoc
     acceptance definition; the guard must not reject it."""
-    _adhoc, before = _adhoc_dir(facade)
     result = asyncio.run(
         facade.define_metric(
             {
@@ -1086,7 +908,6 @@ def test_define_metric_allows_grain_preserving_join(facade):
     )
     assert result["governed"] is False
     assert result["persistence"] == {"status": "not_saved"}
-    assert _adhoc_dir(facade)[1] == before
 
 
 def test_serve_facade_is_the_runtime_class():
@@ -1099,7 +920,7 @@ def test_serve_facade_is_the_runtime_class():
 
 
 def test_startup_fails_fast_without_models(tmp_path):
-    with pytest.raises(RuntimeError, match="promote staging"):
+    with pytest.raises(RuntimeError, match="no semantic models"):
         Facade(tmp_path / "semantic_layer", tmp_path / "context_layer", tmp_path / "demo.db")
 
 
@@ -1112,12 +933,7 @@ def test_startup_fails_fast_when_datus_absent(tmp_path, monkeypatch):
 
 
 def test_serve_cli_fails_fast_with_hint_when_datus_missing(tmp_path):
-    """Spec §7 for real: in a fresh interpreter with the datus imports blocked,
-    the module must still import and the Analyst CLI must exit 1 with
-    INSTALL_HINT — not abort with a raw ImportError. (The Combined default
-    no longer fails fast here: a missing datus engine is a query-side
-    failure, so its authoring surface still boots and query tools surface
-    this same error per call — issue #38 criterion 2, the G6 review fix.)"""
+    """A blocked legacy compiler import is reported without a raw traceback."""
     import os
     import subprocess
 
@@ -1128,8 +944,8 @@ def test_serve_cli_fails_fast_with_hint_when_datus_missing(tmp_path):
             "sys.modules['datus_semantic_osi.adapter'] = None",
             "sys.modules['datus_semantic_osi.config'] = None",
             "import ariadne.serve  # must not raise",
-            "sys.exit(ariadne.serve.main(['--toolset', 'analyst',",
-            "                                  '--semantic', 'x', '--context', 'y', '--db', 'z']))",
+            "sys.exit(ariadne.serve.main(['--toolset', 'analyst', "
+            f"'--project', {str(tmp_path)!r}]))",
         ]
     )
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
@@ -1149,24 +965,10 @@ RETRIEVAL_CORPUS = json.loads(
 )
 
 
-def test_context_retrieval_corpus_recall_at_five(served, tmp_path):
-    """AC1/AC2: the checked-in natural-language corpus over the demo served tree.
-    Every positive expectation lands within the first five distinct (path, draft)
-    hits; the missing-term question returns no hits; the same-path staged draft
-    and served page stay distinct; editing the staged text is visible on the very
-    next search without implying promotion."""
+def test_context_retrieval_corpus_recall_at_five(served):
+    """The checked-in corpus retrieves from the served Context Layer only."""
     served_dir, db = served
-    staging = tmp_path / "staging"
-    facade = Facade(
-        served_dir / "semantic_layer", served_dir / "context_layer", db, staging_dir=staging
-    )
-    staged_files = {}
-    for entry in RETRIEVAL_CORPUS["entries"]:  # one deterministic world state
-        for staged in entry.get("staged", []):
-            page = staging / "context_layer" / staged["path"]
-            page.parent.mkdir(parents=True, exist_ok=True)
-            page.write_text(staged["content"], encoding="utf-8")
-            staged_files[staged["path"]] = page
+    facade = Facade(served_dir / "semantic_layer", served_dir / "context_layer", db)
     top_k = RETRIEVAL_CORPUS["_meta"]["top_k"]
     for entry in RETRIEVAL_CORPUS["entries"]:
         hits = asyncio.run(facade.search_context(entry["question"]))
@@ -1179,27 +981,6 @@ def test_context_retrieval_corpus_recall_at_five(served, tmp_path):
                 )
         else:
             assert hits == [], entry["question"]
-
-    # AC2: revise the staged draft — the next search reflects the new text (the
-    # withdrawn terms stop matching, the new wording is discoverable), while the
-    # served twin keeps its own content.
-    revision = (
-        "---\ntype: policy\nstatus: draft\ntitle: Order status billing\n---\n\n"
-        "# Order status billing\n\nRevision withdrawn; no special-casing remains.\n"
-    )
-    staged_files["policies/order-status-billing.md"].write_text(revision, encoding="utf-8")
-    assert asyncio.run(facade.search_context("charity gift")) == []
-    revised = asyncio.run(facade.search_context("withdrawn special-casing"))
-    assert [(hit["path"], hit["draft"]) for hit in revised] == [
-        ("policies/order-status-billing.md", True)
-    ]
-    hits = asyncio.run(facade.search_context("order-count number"))
-    served_twin = next(
-        hit
-        for hit in hits
-        if hit["path"] == "policies/order-status-billing.md" and not hit["draft"]
-    )
-    assert "Revision withdrawn" not in served_twin["content"]  # promotion stays human
 
 
 def test_search_context_passage_coordinates_and_sections(served, tmp_path):
@@ -1259,7 +1040,7 @@ def test_search_context_passage_coordinates_and_sections(served, tmp_path):
         "Okapi paragraph after the four-tilde fence.\n"
     )
     (context / "policies" / "passage-demo.md").write_text(page, encoding="utf-8")
-    facade = Facade(served_dir / "semantic_layer", context, db, staging_dir=tmp_path / "staging")
+    facade = Facade(served_dir / "semantic_layer", context, db)
 
     def hit_for(query):
         return asyncio.run(facade.search_context(query))[0]
@@ -1332,55 +1113,34 @@ def test_search_context_passage_coordinates_and_sections(served, tmp_path):
     assert asyncio.run(facade.search_context("zebra", limit=-3)) == []
 
 
-def test_serve_main_explicit_db_beats_ambient_registry(tmp_path, monkeypatch):
-    """With an ambient ./ariadne.yaml present, an explicit --db still selects
-    the legacy single-sqlite shorthand (registry only when neither is given)."""
+def test_serve_main_anchors_tools_to_explicit_project(tmp_path, monkeypatch):
     import ariadne.serve as serve_module
 
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "ariadne.yaml").write_text(
-        "sources:\n  - name: demo\n    type: sqlite\n    path: missing.db\n",
-        encoding="utf-8",
-    )
-    served = tmp_path / "semantic_layer" / "models"
-    served.mkdir(parents=True)
-    (served / "orders.yml").write_text(GOLDEN_OSI, encoding="utf-8")
-    db = seed_demo_db(tmp_path / "demo.db")
-    built: list = []
+    project = tmp_path / "project"
+    project.mkdir()
+    built = []
 
     class FakeApp:
         def __init__(self, facade, **kwargs):
-            built.append(facade)
+            built.append((facade, Path.cwd()))
 
         def run(self):
             pass
 
     monkeypatch.setattr(serve_module, "build_app", FakeApp)
-    code = serve_module.main(
-        [
-            "--semantic",
-            str(tmp_path / "semantic_layer"),
-            "--context",
-            str(tmp_path / "context_layer"),
-            "--db",
-            str(db),
-            "--staging",
-            str(tmp_path / "staging"),
-        ]
-    )
+    code = serve_module.main(["--project", str(project), "--toolset", "authoring"])
     assert code == 0
-    assert built and built[0]._qualified is False  # legacy --db shorthand won
+    assert built and built[0][1] == project
 
 
 def test_serve_main_without_http_flag_stays_stdio_only(tmp_path, monkeypatch):
-    """Issue #18 LOCAL-ONLY: without the explicit --http flag nothing listens —
-    the same build_app is served over stdio only, and the uvicorn import path
-    is never even taken (token env absent or present, it is inert)."""
+    """Without --http, the adapter runs over stdio and does not import uvicorn."""
     import sys
 
     import ariadne.serve as serve_module
 
-    monkeypatch.chdir(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
     served: list = []
 
     class FakeApp:
@@ -1393,6 +1153,6 @@ def test_serve_main_without_http_flag_stays_stdio_only(tmp_path, monkeypatch):
     monkeypatch.setattr(serve_module, "build_app", FakeApp)
     # any attempt to import uvicorn (the HTTP listener path) fails loudly
     monkeypatch.setitem(sys.modules, "uvicorn", None)
-    code = serve_module.main([])
+    code = serve_module.main(["--project", str(project), "--toolset", "authoring"])
     assert code == 0
     assert served[-1] == "stdio-run" and len(served) == 2  # built, then stdio-run

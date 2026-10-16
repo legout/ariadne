@@ -279,9 +279,6 @@ def main():
         assert result["admission"]["route"] == "git-review-admission"
         report = command("ariadne", "status", "--project", str(project), "--json", structured=True)
         assert report["ready"] is True and report["project"]["admission"]["state"] == "valid"
-        legacy = root / "legacy"
-        command("ariadne", "setup", "--legacy", "--project", str(legacy), "--no-input")
-        assert "## Promotion gate" in (legacy / "AGENTS.md").read_text()
     print(
         f"AC8 PASS: installed core wheel at {ariadne.__file__}; fresh governed event_count=3; "
         "no optional agent/MCP/provider required; no publication."

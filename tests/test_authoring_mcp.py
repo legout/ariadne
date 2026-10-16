@@ -7,14 +7,13 @@ Real MCP sessions against ``python -m ariadne.serve --project DIR``
 launched in temporary projects: the ``authoring_``-prefixed tools are one-line
 delegations over the SAME :class:`ariadne.authoring.AuthoringProject` the
 ``ariadne-authoring`` CLI calls (identical checks and response contracts), no
-tool offers source approval, admission or Promotion, the project root is fixed
+tool offers source approval or Git Review Admission, the project root is fixed
 at server launch (never a tool argument), and no bearer token is involved
 locally. The legacy complete-bundle wrappers (``authoring_submit_bundle``/
 ``authoring_review_bundle``) are gone from every surface; their explicit
 replacement is start_proposal + per-artifact edit_proposal +
 validate_proposal / review_proposal (see ariadne.serve's migration note). The
-legacy staged-bundle route itself keeps serving through the local CLI and
-through Promotion exactly as before.
+staged-bundle and separate Example-review routes are retired.
 
 The HTTP tests (issue #18, LOCAL-ONLY mode per the owner decision 2026-10-03)
 launch the REAL ``--http`` server process on a loopback port and talk to it
@@ -51,15 +50,7 @@ from mcp.client.streamable_http import (  # noqa: E402  # pyright: ignore[report
     streamable_http_client,
 )
 
-from ariadne import authoring  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
-from ariadne.promote import promote_bundle  # noqa: E402
-from tests.test_authoring import (  # noqa: E402
-    bundle_submission,
-    scaffold_project,
-    write_parquet,
-    write_proposal,
-)
 from tests.test_git_authoring import (  # noqa: E402 — the shared Git fixtures; no second oracle here
     POLICY_PAGE,
     approved,
@@ -149,23 +140,10 @@ def _events_proposal(project: Path) -> list[dict]:
     return [{"name": "events", "type": "parquet", "path": str(project / "data" / "events.parquet")}]
 
 
-def _approved_project(tmp_path: Path) -> Path:
-    """A fresh local project with one parquet source — proposal made, approval
-    performed by the OPERATOR (the human seam, never an MCP tool)."""
-    project = scaffold_project(tmp_path)
-    write_parquet(project / "data" / "events.parquet")
-    digest = authoring.propose_sources(
-        write_proposal(tmp_path, _events_proposal(project)), project=project
-    )["digest"]
-    authoring.approve_sources(digest, project=project)
-    return project
-
-
-def test_stdio_tool_boundary_authoring_without_approval_or_promotion(tmp_path):
-    """S4 red anchor, G6 surface: in a fresh EMPTY project (no promotion ever)
-    the stdio server starts, offers the eight Git authoring operations beside
-    the unchanged query tools, never a source approval, admission or Promotion
-    tool, and no tool takes a project root or credential argument."""
+def test_stdio_tool_boundary_authoring_without_approval_or_admission(tmp_path):
+    """G6 surface: in a fresh project the stdio server offers Git Authoring
+    beside the query tools, but no source-approval or admission tool; no tool
+    takes a project root or credential argument."""
     project = tmp_path / "empty"
     project.mkdir()
 
@@ -178,6 +156,7 @@ def test_stdio_tool_boundary_authoring_without_approval_or_promotion(tmp_path):
     tools = asyncio.run(run())
     assert AUTHORING_TOOLS <= set(tools)
     assert QUERY_TOOLS <= set(tools)
+    assert "authoring_upload_document" not in tools  # originals stay operator-owned
     assert not [name for name in tools if any(marker in name for marker in HUMAN_OPERATION_MARKERS)]
     for name, tool in tools.items():  # the project root is server-selected only
         assert "project" not in tool.input_schema.get("properties", {}), name
@@ -296,44 +275,6 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
         "notes.md",
         "revision-notes.md",
     ]
-
-
-def test_stdio_legacy_promoted_project_keeps_serving_queries(tmp_path):
-    """Green clause (G6 keeps the legacy route): a LEGACY staged-bundle
-    project — promoted by the OPERATOR through the unchanged human seam, never
-    an MCP tool — still serves the combined facade's query tools normally
-    after relaunch; the Git toolset markers never touched this project."""
-    project = _approved_project(tmp_path)
-    submitted = authoring.submit_bundle(
-        _write_json(tmp_path, bundle_submission(), "bundle.json"), project=project
-    )
-    assert submitted["status"] == "validated"
-    digest = authoring.review_bundle(project=project)["digest"]
-    promote_bundle(
-        digest,
-        staging_root=project / "staging",
-        served_root=project,
-        by="human:tester",
-        assume_yes=True,
-    )
-
-    async def run() -> dict:
-        async with _launch(project) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                listed = _payload(await session.call_tool("list_metrics", {}))
-                metric = _payload(
-                    await session.call_tool(
-                        "get_metric", {"name": "event_count", "dimensions": ["label"]}
-                    )
-                )
-                return {"listed": listed, "metric": metric}
-
-    out = asyncio.run(run())
-    names = [entry.get("name") for entry in out["listed"] if isinstance(entry, dict)]
-    assert "event_count" in names
-    assert out["metric"]["governed"] is True
-    assert out["metric"]["rows"]
 
 
 def test_stdio_refresh_schema_matches_core_and_noops_on_identical_retry(tmp_path):
@@ -849,52 +790,6 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
     # nothing admitted: the managed route still refuses queries
     assert out["queries"].is_error and "no valid admission" in _text(out["queries"])
     assert not (project / ".ariadne" / "current.json").exists()
-
-
-def test_http_legacy_promoted_project_keeps_serving_queries(tmp_path):
-    """S6 green: after the OPERATOR's Promotion (the unchanged human seam) the
-    authenticated HTTP surface serves the same query tools as stdio."""
-    project = _approved_project(tmp_path)
-    submitted = authoring.submit_bundle(
-        _write_json(tmp_path, bundle_submission(), "bundle.json"), project=project
-    )
-    assert submitted["status"] == "validated"
-    digest = authoring.review_bundle(project=project)["digest"]
-    promote_bundle(
-        digest,
-        staging_root=project / "staging",
-        served_root=project,
-        by="human:tester",
-        assume_yes=True,
-    )
-
-    async def run(url: str) -> dict:
-        import httpx2 as httpx  # pyright: ignore[reportMissingImports] — mcp 2.2.0 ships httpx2 (same client API)
-
-        async with httpx.AsyncClient() as client:
-            ready = await client.get(
-                url.removesuffix("/mcp") + "/readyz",
-                headers={"Authorization": f"Bearer {HTTP_TOKEN}"},
-            )
-            assert ready.status_code == 200
-            assert ready.json() == {"status": "ready"}
-        async with _http_exit(url, HTTP_TOKEN) as session:
-            await session.initialize()
-            listed = _payload(await session.call_tool("list_metrics", {}))
-            metric = _payload(
-                await session.call_tool(
-                    "get_metric", {"name": "event_count", "dimensions": ["label"]}
-                )
-            )
-            return {"listed": listed, "metric": metric}
-
-    with _launch_http(project, token=HTTP_TOKEN) as url:
-        out = asyncio.run(run(url))
-
-    names = [entry.get("name") for entry in out["listed"] if isinstance(entry, dict)]
-    assert "event_count" in names
-    assert out["metric"]["governed"] is True
-    assert out["metric"]["rows"]
 
 
 def test_stdio_needs_no_token_even_when_http_env_is_set(tmp_path):

@@ -1,16 +1,8 @@
-"""Deterministic validation via real Datus compile (ticket #4).
+"""Static artifact validation and its revision-bound live validation helper.
 
-Compiles the spike-doc ``orders.yml`` variant adapted to OSI core per
-project/research/datus-spike.md §3.1: a valid model must pass (its one
-authoring-quality lint is severity=warning, a pass-through), and a
-deliberately broken model must fail with the compiler error captured for the
-author loop's feedback. Requires datus-semantic-osi on Python 3.12.
-
-Grain audit (spec rev 6 §8.14, ADR-0006 §5): with ``--db``, validate also runs
-the two pre-flight assertions — a fanned dataset source fails Assertion 2 with
-the divergence numbers, a non-unique declared grain fails Assertion 1, the
-currently served models (orders with its many-to-one rate join, customers)
-pass, and without ``--db`` compile-only behavior is unchanged.
+Compile-only CLI checks consume an explicit artifact directory and do not open
+sources. Direct ``validate.validate`` tests retain independent bind/grain
+assertions for the existing Authoring validation path.
 """
 
 import importlib.util
@@ -189,17 +181,23 @@ def test_context_only_tree_and_graph_without_models(tmp_path):
     assert any("no semantic models" in error for error in broken.errors)
 
 
-def test_cli_exit_codes(tmp_path, capsys, monkeypatch):
-    # tmp cwd: the repo's own ariadne.yaml (which declares sources) must not
-    # hijack these shorthand runs — the CLI's default-registry probe is cwd-based
+def test_cli_is_source_free_and_rejects_retired_selectors(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    good = make_staging(tmp_path, ORDERS_YML)
-    assert validate_main([str(good)]) == 0
-    bad_yml = ORDERS_YML.replace('"metric_kind"', '"v": "1", "metric_kind"')
-    broken = make_staging(tmp_path / "b", bad_yml)
-    assert validate_main([str(broken)]) == 1
-    err = capsys.readouterr().err
-    assert "error:" in err
+    (tmp_path / "ariadne.yaml").write_text(
+        "sources:\n  - name: demo\n    type: sqlite\n    path: missing.db\n",
+        encoding="utf-8",
+    )
+    artifacts = make_staging(tmp_path, ORDERS_YML)
+    assert validate_main([str(artifacts)]) == 0
+    assert "ok:" in capsys.readouterr().out
+
+    for option in (("--db", "missing.db"), ("--sources", "ariadne.yaml")):
+        try:
+            validate_main([str(artifacts), *option])
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:
+            raise AssertionError(f"retired source selector was accepted: {option[0]}")
 
 
 # --- Grain audit (spec rev 6 §8.14, ADR-0006 §5) -----------------------------
@@ -442,10 +440,9 @@ def test_non_unique_declared_pk_fails_assertion_1(tmp_path):
     assert not any("Assertion 2" in error for error in result.errors)  # no join -> n/a
 
 
-def test_currently_served_models_pass_the_audit(tmp_path):
-    """§8.14(c): the served tree as it stands — the orders model whose source has
-    only the many-to-one rate join, plus the customers master-data model — must
-    pass both assertions over the real demo.db."""
+def test_internal_validation_audits_served_model_sources(tmp_path):
+    """The existing internal validator applies grain assertions to the two
+    served models when Authoring supplies their approved source registry."""
     db = seed_demo_db(tmp_path / "demo.db")
     staging = tmp_path / "staging"
     _write_model(staging, "orders.yml", GOLDEN_OSI)
@@ -454,39 +451,9 @@ def test_currently_served_models_pass_the_audit(tmp_path):
     assert result.ok, f"served models must pass the audit: {result.errors}"
 
 
-def test_without_db_compile_only_unchanged(tmp_path):
-    """§8.14(d): without --db the audit never runs — the fan-out trap COMPILES
-    fine, so validate() passes (current behavior preserved)."""
-    build_trap(tmp_path / "trap")  # planted-premise assert only; staging is ours
-    staging = tmp_path / "staging"
-    _write_model(staging, "trap.yml", TRAP_MODEL)
-    result = validate(staging)
+def test_internal_compile_only_validate_does_not_open_sources(tmp_path):
+    build_trap(tmp_path / "trap")
+    artifacts = tmp_path / "artifacts"
+    _write_model(artifacts, "trap.yml", TRAP_MODEL)
+    result = validate(artifacts)
     assert result.ok, f"compile-only validate must pass: {result.errors}"
-
-
-def test_cli_db_flag_runs_the_audit(tmp_path, capsys, monkeypatch):
-    """The --db CLI flag wires the audit in: served models + demo.db -> exit 0
-    naming the audit; the same audit run is what failed in §8.14(a) via validate()."""
-    monkeypatch.chdir(tmp_path)  # the repo ariadne.yaml must not hijack --db
-    db = seed_demo_db(tmp_path / "demo.db")
-    staging = tmp_path / "staging"
-    _write_model(staging, "orders.yml", GOLDEN_OSI)
-    _write_model(staging, "customers.yml", CUSTOMERS_MODEL)
-    assert validate_main([str(staging), "--db", str(db)]) == 0
-    assert "grain audit" in capsys.readouterr().out
-
-
-def test_cli_explicit_db_beats_ambient_registry(tmp_path, capsys, monkeypatch):
-    """With an ambient ./ariadne.yaml present, an explicit --db still runs the
-    audit on THAT database — the registry applies only when neither is given."""
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "ariadne.yaml").write_text(
-        "sources:\n  - name: demo\n    type: sqlite\n    path: missing.db\n",
-        encoding="utf-8",
-    )
-    db = seed_demo_db(tmp_path / "demo.db")
-    staging = tmp_path / "staging"
-    _write_model(staging, "orders.yml", GOLDEN_OSI)
-    _write_model(staging, "customers.yml", CUSTOMERS_MODEL)
-    assert validate_main([str(staging), "--db", str(db)]) == 0
-    assert "grain audit" in capsys.readouterr().out

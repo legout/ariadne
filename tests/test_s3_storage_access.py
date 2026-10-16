@@ -37,15 +37,9 @@ from ariadne.authoring_sources import (  # noqa: E402
     candidate_sources,
     storage_bindings_from_identity,
 )
-from ariadne.promote import promote_bundle  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.sources import build_connection, load_registry  # noqa: E402
 from tests import s3_fixture as fx  # noqa: E402
-from tests.test_authoring import (  # noqa: E402 — legacy-route fixtures
-    bundle_submission,
-    scaffold_project,
-    write_submission,
-)
 from tests.test_git_authoring import (  # noqa: E402
     METRIC_PAGE,
     MODEL_YML,
@@ -139,12 +133,10 @@ def registry_file(tmp_path: Path, document: dict) -> Path:
 
 
 def test_two_profiles_route_distinct_signed_s3_data(tmp_path, monkeypatch):
-    """One shared connection, two profiles, two endpoints with DISTINCT
-    synthetic credentials: each registered source reads its own endpoint's
-    independently specified dataset (60 never 200), a native DuckDB catalog
-    attaches through the same profile, a normal compiled Ariadne metric
-    answers 60, and deliberately WRONG global AWS values cannot hide missing
-    profile configuration (spec 0025 §7 AC2)."""
+    """One shared connection routes each named profile to its own endpoint's
+    independently specified data (60 never 200); native DuckDB catalogs and
+    CSV/JSON readers use the same storage grants. The admitted-runtime path is
+    exercised by the Git project journeys below (spec 0025 §7 AC2)."""
     fx.require_docker()
     a, b = fx.storage_pair(tmp_path / "fixture")
     try:
@@ -218,9 +210,7 @@ def test_two_profiles_route_distinct_signed_s3_data(tmp_path, monkeypatch):
             )
             row = con.execute("SELECT count(*), sum(amount) FROM events.metrics").fetchone()
             assert row == (fx.ORACLE_B["count"], fx.ORACLE_B["sum"])
-            row = con.execute(
-                "SELECT count(*), sum(amount) FROM catalog.main.orders"
-            ).fetchone()
+            row = con.execute("SELECT count(*), sum(amount) FROM catalog.main.orders").fetchone()
             assert row == (fx.ORACLE_A["count"], fx.ORACLE_A["sum"])
             # the CSV/JSON reader families route through their own profiles
             row = con.execute(
@@ -233,26 +223,60 @@ def test_two_profiles_route_distinct_signed_s3_data(tmp_path, monkeypatch):
                 "SELECT count(*), sum(amount) FROM viewcat.main.backing_orders"
             ).fetchone()
             assert row == (fx.ORACLE_A["count"], fx.ORACLE_A["sum"])
-            row = con.execute(
-                "SELECT count(*), sum(amount) FROM happenings.events"
-            ).fetchone()
+            row = con.execute("SELECT count(*), sum(amount) FROM happenings.events").fetchone()
             assert row == (fx.ORACLE_B["count"], fx.ORACLE_B["sum"])
             names = {entry["name"] for entry in catalog}
             assert names == {"orders", "events", "catalog", "labels", "happenings", "viewcat"}
         finally:
             con.close()
 
-        # a normal compiled Ariadne metric over the shared registry: 60, not 200
-        semantic = tmp_path / "semantic_layer" / "models"
-        semantic.mkdir(parents=True)
-        (semantic / "orders.yml").write_text(ORDERS_MODEL, encoding="utf-8")
-        runtime = QueryRuntime(
-            tmp_path / "semantic_layer",
-            tmp_path / "context_layer",
-            None,
-            staging_dir=tmp_path / "staging",
-            sources=registry_path,
+        # Exercise the same storage path through a human-admitted Git project.
+        project = s3_git_project(tmp_path)
+        orders_model = project / "semantic_layer" / "models" / "orders.yml"
+        orders_model.write_text(ORDERS_MODEL, encoding="utf-8")
+        run_git(project, "add", "--", "semantic_layer/models/orders.yml")
+        run_git(
+            project,
+            "commit",
+            "-q",
+            "-m",
+            "human: add orders metric model",
+            "--",
+            "semantic_layer/models/orders.yml",
         )
+        api = AuthoringProject(project)
+        started = api.start_proposal()
+        proposed = api.propose_sources(
+            started["proposal"],
+            started["candidate_revision"],
+            [
+                {
+                    "name": "orders",
+                    "type": "parquet",
+                    "storage": "local",
+                    "path": "s3://retail/orders/orders.parquet",
+                },
+                {
+                    "name": "events",
+                    "type": "parquet",
+                    "storage": "remote",
+                    "path": "s3://analytics/metrics/metrics.parquet",
+                },
+            ],
+            fx.profile_definitions(a, b),
+        )
+        api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
+        validated = api.validate_proposal(started["proposal"], proposed["revision"])
+        assert validated["ok"] is True, validated["errors"]
+        review = api.review_proposal(started["proposal"])
+        admission_module.admit_revision(
+            project,
+            started["proposal"],
+            review["revision"],
+            review["review_digest"],
+            confirmed_by="human:test",
+        )
+        runtime = QueryRuntime.open_project(project)
         try:
             result = asyncio.run(runtime.get_metric("total_amount"))
             assert result["governed"] is True
@@ -339,7 +363,6 @@ def test_secret_creation_failure_redacts_echoed_statement(tmp_path, monkeypatch)
     executes, so neither the returned nor a chained error ever carries a
     credential value. Deterministic injected failure on the real owned
     connection; no network is needed (creation fails first)."""
-    import duckdb
 
     registry_path = registry_file(
         tmp_path,
@@ -445,8 +468,13 @@ def _endpoint_pair(tmp_path: Path):
     B is a second, differently-credentialed storage of the same logical
     ``s3://retail/`` dataset — the endpoint A→B journey's other side."""
     a = fx.S3Endpoint(
-        tmp_path, "retail", "retailkey001", "retailsecret001", None,
-        rotated_key="retailkey002", rotated_secret="retailsecret002",
+        tmp_path,
+        "retail",
+        "retailkey001",
+        "retailsecret001",
+        None,
+        rotated_key="retailkey002",
+        rotated_secret="retailsecret002",
     ).start()
     try:
         b = fx.S3Endpoint(tmp_path, "retailb", "retailbkey01", "retailbsecret01", None).start()
@@ -509,9 +537,7 @@ def test_effective_endpoint_change_requires_new_approval_and_evidence(
         monkeypatch.delenv("ARIADE_S1_LOCAL_SECRET", raising=False)
         started = api.start_proposal()
         revision = started["candidate_revision"]
-        proposed = api.propose_sources(
-            started["proposal"], revision, entries, profiles
-        )
+        proposed = api.propose_sources(started["proposal"], revision, entries, profiles)
         declaration_digest = proposed["source_digest"]
         resolved, digest = candidate_sources(project, proposed["revision"])
         assert digest == declaration_digest
@@ -796,16 +822,13 @@ def test_stale_schema_observations_refuse_under_a_changed_endpoint(
 
         # endpoint change A→B with B's own grant and IDENTICAL candidate bytes
         _set_local(monkeypatch, b)
-        api.approve_sources(
-            started["proposal"], validated_a["revision"], proposed["source_digest"]
-        )
+        api.approve_sources(started["proposal"], validated_a["revision"], proposed["source_digest"])
         # approved_a binds the declaration under A — kept for the reader
         assert approved_a["storage_bindings"]["local"]["endpoint"] == a.endpoint_url
         stale = api.validate_proposal(started["proposal"], validated_a["revision"])
         assert stale["ok"] is False
         assert any(
-            "bound to a different effective storage identity" in error
-            and "refresh_schema" in error
+            "bound to a different effective storage identity" in error and "refresh_schema" in error
             for error in stale["errors"]
         ), stale["errors"]
 
@@ -820,146 +843,3 @@ def test_stale_schema_observations_refuse_under_a_changed_endpoint(
         assert validated_b["storage_bindings"]["local"]["endpoint"] == b.endpoint_url
     finally:
         fx.stop_pair(a, b)
-
-
-def test_legacy_bundle_validation_binds_the_effective_endpoint(tmp_path, monkeypatch):
-    """Fix finding 5 + blocker 2 (spec 0025 §§3-5/AC7): the LEGACY staged-bundle
-    route binds its validation to the effective endpoint — a bundle validated
-    under A never retries idempotently, reviews or Promotes after the
-    environment resolves B — and validation MEASURES under the binding it
-    records: an environment change between capture and audit cannot make the
-    audit pass on B's valid grain while the state records A's duplicate grain.
-    Real loopback S3 reads; the legacy human gates stay distinct."""
-    from ariadne import authoring as legacy_authoring
-
-    fx.require_docker()
-    # BOTH endpoints share one credential set and one bucket name, so the SAME
-    # URI resolves on either endpoint: the grain oracle distinguishes WHICH
-    # endpoint validation measured, not merely whether some read failed.
-    a = fx.S3Endpoint(tmp_path / "fixture", "retail", "legkey0001", "legsecret01", None).start()
-    b = None
-    try:
-        b = fx.S3Endpoint(tmp_path / "fixture", "retail", "legkey0001", "legsecret01", None)
-        b.start()
-        unique_rows = [(1, "a"), (2, "b"), (3, "c")]
-        duplicate_rows = [(1, "a"), (1, "a-duplicate"), (2, "b")]  # violates pk id
-        a.put_parquet("retail/orders/events.parquet", unique_rows, ("id", "label"))
-        b.put_parquet("retail/orders/events.parquet", unique_rows, ("id", "label"))
-        profiles = {
-            "local": {
-                "type": "s3",
-                "access_key_id_env": "LEGACY_F5_KEY_ID",
-                "secret_access_key_env": "LEGACY_F5_SECRET",
-                "endpoint_url_env": "LEGACY_F5_ENDPOINT",
-                "scopes": ["s3://retail/"],
-            }
-        }
-
-        def install_registry(project: Path) -> None:
-            intake = project / "intake.yaml"
-            intake.write_text(
-                yaml.safe_dump(
-                    {
-                        "storages": profiles,
-                        "sources": [
-                            {
-                                "name": "events",
-                                "type": "parquet",
-                                "storage": "local",
-                                "path": "s3://retail/orders/events.parquet",
-                            }
-                        ],
-                    },
-                    sort_keys=False,
-                ),
-                encoding="utf-8",
-            )
-            installed = legacy_authoring.propose_sources(intake, project=project)
-            legacy_authoring.approve_sources(installed["digest"], project=project)
-
-        def set_env(endpoint) -> None:
-            monkeypatch.setenv("LEGACY_F5_KEY_ID", endpoint.access_key)
-            monkeypatch.setenv("LEGACY_F5_SECRET", endpoint.secret_key)
-            monkeypatch.setenv("LEGACY_F5_ENDPOINT", endpoint.endpoint_url)
-
-        # [phase 1] validated under A: the audit really read the S3 source
-        set_env(a)
-        (tmp_path / "phase1").mkdir(parents=True, exist_ok=True)
-        project = scaffold_project(tmp_path / "phase1")
-        install_registry(project)
-        submission_file = write_submission(project, bundle_submission())
-        submitted = legacy_authoring.submit_bundle(submission_file, project=project)
-        assert submitted["status"] == "validated", submitted.get("errors")
-        digest = legacy_authoring.review_bundle(project=project)["digest"]
-
-        # the endpoint environment changes to B: identical retry, review and
-        # Promotion all refuse the A-measured validation (no idempotent reuse)
-        set_env(b)
-        with pytest.raises(ValueError, match="effective storage binding changed"):
-            legacy_authoring.submit_bundle(submission_file, project=project)
-        with pytest.raises(ValueError, match="effective storage binding changed"):
-            legacy_authoring.review_bundle(project=project)
-        with pytest.raises(ValueError, match="effective storage binding changed"):
-            promote_bundle(
-                digest, staging_root=project / "staging", served_root=project, assume_yes=True
-            )
-        assert not any(project.glob("context_layer/metrics/*"))  # nothing was served
-
-        # [phase 2] blocker 2: an environment change BETWEEN the state's
-        # binding capture and the audit — A now carries DUPLICATE grain, B
-        # valid grain. Validation must measure the RECORDED binding (A) and
-        # fail on A's duplicates; it can never pass by measuring B.
-        a.put_parquet("retail/orders/events.parquet", duplicate_rows, ("id", "label"))
-        b.put_parquet("retail/orders/events.parquet", unique_rows, ("id", "label"))
-        set_env(a)
-        (tmp_path / "phase2").mkdir(parents=True, exist_ok=True)
-        project2 = scaffold_project(tmp_path / "phase2")
-        install_registry(project2)
-
-        # B is readable with the very credentials the flip supplies: the same
-        # URI there serves the UNIQUE-grain rows, so a validation that wrongly
-        # re-resolves the environment would PASS on B instead of failing on
-        # A's duplicates (the discriminating oracle).
-        set_env(b)
-        probe = duckdb.connect()
-        try:
-            b._fixture_secret(probe)
-            assert probe.execute(
-                "SELECT count(*), sum(id) FROM read_parquet('s3://retail/orders/events.parquet')"
-            ).fetchone() == (3, 6)
-        finally:
-            probe.close()
-        set_env(a)
-
-        real_validate = legacy_authoring.validate  # the seam submit_bundle calls
-        calls: list[int] = []
-
-        def flip_env_then_validate(tree, *args, **kwargs):
-            calls.append(1)
-            set_env(b)
-            return real_validate(tree, *args, **kwargs)
-
-        monkeypatch.setattr(legacy_authoring, "validate", flip_env_then_validate)
-        try:
-            measured = legacy_authoring.submit_bundle(
-                write_submission(project2, bundle_submission()), project=project2
-            )
-        finally:
-            monkeypatch.setattr(legacy_authoring, "validate", real_validate)
-            set_env(a)
-        assert calls == [1], "the endpoint flip must run on the caller's validate seam"
-        assert measured["status"] == "invalid", measured.get("errors")
-        assert any(
-            "grain" in str(error).lower() and "events" in str(error)
-            for error in measured.get("errors") or []
-        ), measured.get("errors")
-        # nothing validated means nothing promotable under the recorded A
-        digest2 = legacy_authoring.review_bundle(project=project2)["digest"]
-        with pytest.raises(ValueError, match="'invalid'"):
-            promote_bundle(
-                digest2, staging_root=project2 / "staging", served_root=project2, assume_yes=True
-            )
-    finally:
-        a.stop()
-        if b is not None:
-            b.stop()

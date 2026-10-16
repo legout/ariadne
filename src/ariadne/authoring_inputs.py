@@ -5,7 +5,7 @@ Document reads stay inside the human-managed ``documents.roots`` and exact
 inputs outside the authored Git set; approved objects are fetched for the
 current read and are never retained by Core. Conversion and digest identity
 share one stable byte snapshot. The bounded Seed Notes evidence record and
-:func:`harness_inputs` remain available to the legacy local harness.
+:func:`harness_inputs` serve the Git proposal input workflow.
 """
 
 from __future__ import annotations
@@ -291,7 +291,7 @@ def bytes_evidence(
     """One bounded evidence record over stable in-memory bytes: the digest AND
     the text come from the SAME snapshot (the Seed Notes discipline), so a file
     replaced mid-call can never split identity from content. Shared by the
-    legacy harness inputs and the Git proposal route (issue #35/G3)."""
+    Git proposal input workflow (issue #35/G3)."""
     return _evidence_record(
         resource,
         title,

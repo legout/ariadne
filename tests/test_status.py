@@ -1,28 +1,13 @@
-"""``ariadne status`` — read-only project readiness diagnostics (spec
-2026-10-12-0016, ADR-0021, the spec-0001 usability amendment).
+"""``ariadne status`` — source-free diagnostics for Git-managed projects.
 
-Public-seam tests: every invocation goes through ``ariadne.cli.main(argv)``
-(the exact target of the ``ariadne`` console script). Expected values derive
-from the spec's acceptance criteria and from independently written fixtures —
-the admitted revision/digest oracle is the ``.ariadne/current.json`` the
-admission CLI itself wrote, never status output. Real temporary Git
-repositories and parquet sources; no network, no provider.
+Every invocation goes through ``ariadne.cli.main(argv)``. Expected values
+come from approved behavior and independently authored synthetic Git fixtures;
+the admission CLI's ``.ariadne/current.json`` is the revision/digest oracle.
+No network or provider is used.
 
-AC map (spec 0016 §"Acceptance criteria"):
-1  kind:none + setup hint + exit 0; explicit scaffold reports (no query
-   factory error);
-2  legacy staging / managed proposals keep identities; ready survives
-   optional stores and drafts; review_needed is directed to review;
-3  valid admission names the checked pinned revision/digest; absent/corrupt/
-   changed state is a blocker, never a fallback; context-only distinguished;
-4  connection/compile/network entry points fail loudly if called; no file
-   changes;
-5  --json is exactly one object with the same states as human text; the
-   existing query contract is untouched;
-6  two valid legacy roots refuse naming --served; .git alone is not managed
-   and query routing is unchanged;
-7  Git prerequisites + per-target skill drift with actionable next steps;
-   absent optional skill targets are never failed installs.
+Coverage: empty/scaffold projects, exact admitted snapshots and invalidation,
+context-only admissions, source-free/read-only reporting, JSON/human parity,
+Git prerequisites, effective source grants and optional skill drift.
 """
 
 import json
@@ -58,11 +43,6 @@ from tests.test_git_authoring import (  # noqa: E402
     POLICY_PAGE,
     complete_bundle_project,
 )
-from tests.test_serve import (  # noqa: E402
-    GOLDEN_OKF,
-    GOLDEN_OSI,
-    seed_demo_db,
-)
 
 STATE = Path(".ariadne")
 CURRENT = STATE / "current.json"
@@ -77,22 +57,6 @@ def isolated_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
-
-
-@pytest.fixture(scope="module")
-def served(tmp_path_factory):
-    """A valid promoted legacy root + the deterministic demo db (the test_cli
-    fixture shape; the runtime's compile/grain gates are the validator)."""
-    tmp = tmp_path_factory.mktemp("status")
-    db = seed_demo_db(tmp / "demo.db")
-    root = tmp / "served"
-    (root / "semantic_layer" / "models").mkdir(parents=True)
-    (root / "semantic_layer" / "models" / "orders.yml").write_text(GOLDEN_OSI, encoding="utf-8")
-    (root / "context_layer" / "metrics").mkdir(parents=True)
-    (root / "context_layer" / "metrics" / "gross_margin.md").write_text(
-        GOLDEN_OKF, encoding="utf-8"
-    )
-    return root, db
 
 
 def run_status(*args):
@@ -187,13 +151,7 @@ def test_explicit_managed_scaffold_without_admission_reports_instead_of_erroring
     assert "no valid admission" not in capsys.readouterr().out
 
 
-def test_project_rejects_conflicting_and_nonexistent_selectors(tmp_path, capsys):
-    scaffold = tmp_path / "scaffold"
-    scaffold.mkdir()
-    capsys.readouterr()
-    assert run_status("--project", str(scaffold), "--served", str(scaffold)) == 1
-    error = error_payload(capsys.readouterr().err)
-    assert "mutually exclusive" in error["message"] and "--served" in error["message"]
+def test_project_rejects_nonexistent_project(tmp_path, capsys):
     capsys.readouterr()
     assert run_status("--project", str(tmp_path / "missing")) == 1
     error = error_payload(capsys.readouterr().err)
@@ -306,55 +264,22 @@ def test_status_never_opens_compiles_or_connects_and_changes_no_files(
 # ------------------------------------------------------------------- [AC5]
 
 
-def test_json_is_one_object_with_human_states_and_query_contract_unchanged(
-    served, tmp_path, capsys
-):
-    root, db = served
-    staging = tmp_path / "staging"
-    report = status_json(capsys, "--served", str(root), "--db", str(db), "--staging", str(staging))
-    assert report["project"]["kind"] == "legacy_staged"
-    assert report["project"]["artifact_state"] == "promoted"
+def test_json_status_matches_human_states_for_admitted_project(tmp_path, capsys):
+    project = admitted_project(tmp_path)
+    report = status_json(capsys, "--project", str(project))
+    assert report["project"]["kind"] == "git_managed"
+    assert report["project"]["admission"]["state"] == "valid"
     assert report["ready"] is True
     capsys.readouterr()
-    assert run_status("--served", str(root), "--db", str(db), "--staging", str(staging)) == 0
+    assert run_status("--project", str(project)) == 0
     human = capsys.readouterr().out
-    assert "legacy_staged" in human and "Ready: yes" in human  # same states as --json
-    # the existing query contract is untouched: one JSON value on stdout
-    capsys.readouterr()
-    assert (
-        cli(["list-metrics", "--served", str(root), "--db", str(db), "--staging", str(staging)])
-        == 0
-    )
-    out = capsys.readouterr().out
-    assert out.endswith("\n") and out.count("\n") == 1
-    names = [entry["name"] for entry in json.loads(out) if isinstance(entry, dict)]
-    assert "gross_margin" in names  # the fixture's governed metric, unchanged
+    assert "git_managed" in human and "Ready: yes" in human
 
 
 # ------------------------------------------------------------------- [AC6]
 
 
-def test_two_valid_legacy_roots_refuse_naming_served(served, tmp_path, capsys, monkeypatch):
-    root, db = served
-    both = tmp_path / "both"
-    both.mkdir()
-    shutil.copytree(root, both / "served")  # ./served valid…
-    shutil.copytree(root / "context_layer", both / "context_layer")  # …and cwd too
-    shutil.copytree(root / "semantic_layer", both / "semantic_layer")
-    monkeypatch.chdir(both)
-    capsys.readouterr()
-    assert run_status() == 1
-    error = error_payload(capsys.readouterr().err)
-    assert "ambiguous" in error["message"] and "--served" in error["message"]
-    # explicit selection resolves the ambiguity
-    report = status_json(capsys, "--served", str(both), "--db", str(db))
-    assert report["project"]["kind"] == "legacy_staged"
-    assert report["project"]["artifact_root"] == str(both)
-
-
-def test_git_directory_alone_is_not_managed_and_query_routing_is_unchanged(
-    tmp_path, capsys, monkeypatch
-):
+def test_git_directory_alone_is_not_managed(tmp_path, capsys, monkeypatch):
     import subprocess
 
     only_git = tmp_path / "only-git"
@@ -364,11 +289,6 @@ def test_git_directory_alone_is_not_managed_and_query_routing_is_unchanged(
     report = status_json(capsys)
     assert report["project"]["kind"] == "none"  # .git alone is no marker
     assert report["ready"] is False
-    # status-only diagnostic detection does not alter query routing
-    capsys.readouterr()
-    assert cli(["list-metrics", "--db", str(tmp_path / "missing.db")]) == 1
-    error = error_payload(capsys.readouterr().err)
-    assert "no promoted artifacts found" in error["message"]
 
 
 def test_cwd_ariadne_state_dir_selects_managed_diagnostics(tmp_path, capsys, monkeypatch):
@@ -381,47 +301,6 @@ def test_cwd_ariadne_state_dir_selects_managed_diagnostics(tmp_path, capsys, mon
 
 
 # ------------------------------------------------------------------- [AC2]
-
-
-def test_ready_legacy_served_state_survives_optional_stores_and_pending_drafts(
-    served, tmp_path, capsys
-):
-    root, db = served
-    staging = tmp_path / "staging"
-    (staging / "semantic_layer" / "models" / "adhoc").mkdir(parents=True)
-    (staging / "semantic_layer" / "models" / "adhoc" / "probe.yml").write_text("version: 0.2\n")
-    (staging / "context_layer" / "metrics").mkdir(parents=True)
-    (staging / "context_layer" / "metrics" / "probe.md").write_text("# probe draft\n")
-    (staging / "answer_examples").mkdir()
-    (staging / "answer_examples" / "d1.md").write_text(
-        "---\ntype: answer_example\nquestion: A draft example?\n---\nbody\n", encoding="utf-8"
-    )
-    (root / "answer_examples").mkdir()
-    (root / "answer_examples" / "s1.md").write_text(
-        "---\ntype: answer_example\nstatus: stable\nquestion: A stable example?\n---\nbody\n",
-        encoding="utf-8",
-    )
-    report = status_json(capsys, "--served", str(root), "--db", str(db), "--staging", str(staging))
-    assert report["ready"] is True  # optional stores/drafts never invalidate readiness
-    staged = report["work_pending"]["staged_artifacts"]
-    assert staged["count"] == 2 and staged["review_needed"] == []
-    assert report["work_pending"]["answer_examples"]["by_status"] == {"draft": 1, "stable": 1}
-
-
-def test_review_needed_work_is_directed_to_review_not_promotion(served, tmp_path, capsys):
-    root, db = served
-    staging = tmp_path / "staging"
-    (staging / "context_layer" / "policies").mkdir(parents=True)
-    (staging / "context_layer" / "policies" / "blocked.md").write_text(
-        "---\nstatus: review_needed\n---\n# needs a human\n", encoding="utf-8"
-    )
-    report = status_json(capsys, "--served", str(root), "--db", str(db), "--staging", str(staging))
-    assert report["work_pending"]["staged_artifacts"]["review_needed"] == [
-        "context_layer/policies/blocked.md"
-    ]
-    review_steps = [s for s in report["next_steps"] if "review" in s]
-    assert review_steps and "context_layer/policies/blocked.md" in review_steps[0]
-    assert not any("ariadne-promote" in s for s in report["next_steps"])  # never unconditional
 
 
 def test_managed_pending_proposals_keep_identity_and_validation_state(tmp_path, capsys):
@@ -503,34 +382,6 @@ def test_skill_targets_absent_optional_and_drifted_installed(tmp_path, capsys, m
 # ------------------------------------------- fix pass (review findings F1-F5)
 
 
-def test_explicit_legacy_selectors_win_over_automatic_managed_detection(
-    served, tmp_path, capsys, monkeypatch
-):
-    """F1 (Interface + AC6): a cwd .ariadne/ selects managed diagnostics ONLY
-    'with no explicit route selector' — explicit --served/--sources/--db
-    declare the legacy route and are honored first; an invalid --served is an
-    explicit error, never a silent cwd-admission report."""
-    project = admitted_project(tmp_path / "managed")  # cwd has .ariadne/ AND a
-    monkeypatch.chdir(project)  # complete bundle layout (a valid legacy root)
-    root, db = served
-    # no selector at all: the automatic managed diagnosis still applies
-    report = status_json(capsys)
-    assert report["project"]["kind"] == "git_managed"
-    # an invalid explicit --served is an explicit error, not the cwd admission
-    capsys.readouterr()
-    assert run_status("--served", str(tmp_path / "missing-root")) == 1
-    error = error_payload(capsys.readouterr().err)
-    assert "not an existing legacy artifact directory" in error["message"]
-    # a valid explicit --served selects the legacy route over the cwd .ariadne
-    report = status_json(capsys, "--served", str(root), "--db", str(db))
-    assert report["project"]["kind"] == "legacy_staged"
-    assert report["project"]["artifact_root"] == str(root)
-    # --db alone equally declares the legacy route (cwd itself is a valid root)
-    report = status_json(capsys, "--db", str(db))
-    assert report["project"]["kind"] == "legacy_staged"
-    assert report["project"]["artifact_root"] == str(project)
-
-
 def test_missing_git_is_report_data_with_an_actionable_step(tmp_path, capsys, monkeypatch):
     """F2 (Report section 1, AC7): Git availability/repo-root/commit-identity
     are report data — with git absent from PATH the report is still produced
@@ -551,55 +402,6 @@ def test_missing_git_is_report_data_with_an_actionable_step(tmp_path, capsys, mo
     admission = report["project"]["admission"]
     assert admission["state"] == "invalid"
     assert "git is not available" in admission["reason"]
-
-
-def test_legacy_ready_requires_readable_served_catalog_metadata(tmp_path, capsys):
-    """F3 (ready-flag definition): ready means 'selected served catalog
-    metadata and source configuration are readable' — an existing root with
-    EMPTY context_layer/ and semantic_layer/models/ and an existing db is NOT
-    ready, with the empty catalog reported while other sections stay visible."""
-    root = tmp_path / "served"
-    (root / "context_layer").mkdir(parents=True)
-    (root / "semantic_layer" / "models").mkdir(parents=True)
-    db = tmp_path / "demo.db"
-    db.write_bytes(b"")  # exists and is readable; status never connects
-    report = status_json(capsys, "--served", str(root), "--db", str(db))
-    assert report["project"]["kind"] == "legacy_staged"
-    assert report["project"]["artifact_state"] == "promoted"  # layout exists…
-    catalog = report["project"]["catalog"]
-    assert catalog["models"] == 0 and catalog["metrics"] == 0
-    assert catalog["context_only"] is True and catalog["state"] == "ok"
-    assert report["ready"] is False  # …but the catalog metadata is empty
-    assert "catalog" in report["ready_reason"]
-    assert report["sources"]["readable"] is True  # other sections stay visible
-    assert report["work_pending"]["staged_artifacts"]["count"] == 0
-
-
-def test_staging_only_cwd_keeps_legacy_state_and_review_next_steps(tmp_path, capsys, monkeypatch):
-    """F4 (AC2 + Interface): kind:none is only for 'an empty cwd with no
-    scaffold/artifacts' — a cwd with staged work (review_needed included) is
-    the legacy project state and keeps its review/promotion next steps, never
-    the fresh-scaffold ariadne-init hint."""
-    workdir = tmp_path / "staging-only"
-    blocked = workdir / "staging" / "context_layer" / "policies"
-    blocked.mkdir(parents=True)
-    (blocked / "needs-human.md").write_text(
-        "---\nstatus: review_needed\n---\n# needs a human\n", encoding="utf-8"
-    )
-    monkeypatch.chdir(workdir)
-    report = status_json(capsys)
-    assert report["project"]["kind"] == "legacy_staged"
-    assert report["project"]["artifact_root"] is None
-    assert report["project"]["artifact_state"] == "unpromoted"
-    assert report["ready"] is False and "no promoted artifact root" in report["ready_reason"]
-    assert report["work_pending"]["staged_artifacts"]["count"] == 1
-    assert "context_layer/policies/needs-human.md" in report["next_steps"][0]
-    assert not any("ariadne-init" in step for step in report["next_steps"])
-    # without the marker the same project is directed to human promotion
-    (blocked / "needs-human.md").write_text("---\nstatus: draft\n---\n# clean\n", encoding="utf-8")
-    report = status_json(capsys)
-    assert any("ariadne-promote" in step for step in report["next_steps"])
-    assert not any("review required" in step for step in report["next_steps"])
 
 
 def test_unreadable_ambient_registry_is_report_data_not_an_exit(tmp_path, capsys, monkeypatch):
@@ -623,71 +425,6 @@ def test_unreadable_ambient_registry_is_report_data_not_an_exit(tmp_path, capsys
 
 
 # ------------------------------------------- fix pass 2 (delta findings F3a/F3b)
-
-
-def test_corrupt_served_catalog_metadata_is_an_explicit_diagnostic(tmp_path, capsys):
-    """F3a (spec 0016 ready flag + Failure behavior): corrupt catalog
-    metadata is an explicit catalog diagnostic and readiness can never stay
-    true over unreadable bytes — one valid model plus one malformed-YAML
-    model is NOT ready (no silent pass), and a scalar-text model still
-    produces its report (exit 0, never a crash)."""
-    from tests.test_serve import GOLDEN_OSI, seed_demo_db
-
-    root = tmp_path / "served"
-    models = root / "semantic_layer" / "models"
-    models.mkdir(parents=True)
-    (models / "orders.yml").write_text(GOLDEN_OSI, encoding="utf-8")  # a valid model
-    (models / "broken.yml").write_text("semantic_model: [unclosed\n", encoding="utf-8")
-    (root / "context_layer").mkdir()
-    db = seed_demo_db(tmp_path / "demo.db")
-    report = status_json(capsys, "--served", str(root), "--db", str(db))
-    catalog = report["project"]["catalog"]
-    assert catalog["state"] == "invalid"  # the malformed model is named…
-    assert any(error.startswith("broken.yml:") for error in catalog["errors"])
-    assert catalog["metrics"] >= 1  # …while the valid model still counts
-    assert report["ready"] is False  # never ready over unreadable metadata
-    assert "corrupt or unreadable" in report["ready_reason"]
-    assert "broken.yml" in report["ready_reason"]
-    assert report["sources"]["readable"] is True  # other sections stay visible
-    # a scalar-text model (parses to a non-mapping) is the same diagnostic,
-    # never an AttributeError crash: the report still exits 0
-    (models / "broken.yml").write_text("just a plain scalar document\n", encoding="utf-8")
-    report = status_json(capsys, "--served", str(root), "--db", str(db))
-    assert report["project"]["catalog"]["state"] == "invalid"
-    assert report["ready"] is False
-
-
-def test_catalog_blocker_gets_authoring_or_repair_next_steps(served, tmp_path, capsys):
-    """F3b (spec 0016 Report section 5): an actual blocker never reports an
-    empty next_steps list — the empty-catalog case carries authoring
-    guidance, the corrupt-catalog case repair guidance, and the human output
-    no longer claims 'none — no blockers'."""
-    empty = tmp_path / "empty-catalog"
-    (empty / "context_layer").mkdir(parents=True)
-    (empty / "semantic_layer" / "models").mkdir(parents=True)
-    db = tmp_path / "demo.db"
-    db.write_bytes(b"")
-    report = status_json(capsys, "--served", str(empty), "--db", str(db))
-    assert report["ready"] is False and "catalog" in report["ready_reason"]
-    assert report["next_steps"], "the catalog blocker needs a next step"
-    assert any("author semantic models" in step for step in report["next_steps"])
-    capsys.readouterr()
-    assert run_status("--served", str(empty), "--db", str(db)) == 0
-    human = capsys.readouterr().out
-    assert "none — no blockers" not in human  # the human view claims no such thing
-    # staged work plus an empty catalog points at promotion instead
-    (tmp_path / "staging" / "semantic_layer" / "models").mkdir(parents=True)
-    (tmp_path / "staging" / "semantic_layer" / "models" / "m.yml").write_text("version: 0.2\n")
-    report = status_json(
-        capsys, "--served", str(empty), "--db", str(db), "--staging", str(tmp_path / "staging")
-    )
-    assert any("ariadne-promote" in step for step in report["next_steps"])
-    # corrupt metadata points at repair of the named file
-    (empty / "semantic_layer" / "models" / "broken.yml").write_text(
-        "semantic_model: [unclosed\n", encoding="utf-8"
-    )
-    report = status_json(capsys, "--served", str(empty), "--db", str(db))
-    assert any("repair" in step and "broken.yml" in step for step in report["next_steps"])
 
 
 # ------------- spec 0025 (S1): effective-approval labels without credentials

@@ -416,8 +416,8 @@ def test_initial_artifacts_with_credentials_are_refused_before_staging(tmp_path)
     assert not (project / ".ariadne" / "worktrees").exists()
 
 
-# A policy page whose base revision already carries a system-stamped verified
-# entry (what the promotion gate appends): an edit may KEEP it verbatim, but
+# A policy page whose base revision already carries a system-owned verified
+# marker: an edit may KEEP it verbatim, but
 # may never introduce or change such a claim (spec §4).
 _POLICY_WITH_VERIFIED = (
     "---\n"

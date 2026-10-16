@@ -486,12 +486,10 @@ def test_failed_snapshot_or_record_activation_preserves_the_previous_admission(
 # --------------------------- [4] managed vs legacy factory resolution
 
 
-def test_open_project_distinguishes_managed_projects_from_explicit_legacy_roots(tmp_path):
-    """Issue #37 [4]: the factory refuses a Git-managed project with no valid
-    admission (never a fallback to the proposal worktrees or the project's own
-    mutable files), rechecks the bound snapshot bytes and approved source
-    identity at open and per governed answer, and the explicit legacy
-    constructors keep their legacy behavior over the very same project root."""
+def test_open_project_requires_admission_and_has_no_plain_root_constructor(tmp_path):
+    """The factory refuses missing admission and rechecks bound snapshot bytes
+    and approved source identity at open and per governed answer; artifact-root
+    construction is not an alternate governed route."""
     from ariadne.planner import PlannerError
 
     project = complete_bundle_project(tmp_path)
@@ -549,24 +547,8 @@ def test_open_project_distinguishes_managed_projects_from_explicit_legacy_roots(
         asyncio.run(runtime.query_metrics({"metrics": ["event_count"]}))
     assert graphless.value.code == "not_admitted"
 
-    # the EXPLICIT legacy constructors keep legacy behavior over the very same
-    # project root (fixtures/operators) — never masquerading as the Git route
-    legacy = QueryRuntime(
-        project / "semantic_layer",
-        project / "context_layer",
-        None,
-        staging_dir=tmp_path / "legacy-staging",
-        sources=project / "ariadne.yaml",
-    )
-    legacy_answer = asyncio.run(legacy.get_metric("event_count"))
-    assert legacy_answer["rows"] == [{"event_count": 3}]
-    assert "admission" not in legacy_answer  # no pinned-revision provenance claimed
-    # the legacy multi-fact gate keeps its own meaning over the legacy root
-    # (a promotion-written admission.json that does not exist there)
-    with pytest.raises(PlannerError) as legacy_graphless:
-        asyncio.run(legacy.query_metrics({"metrics": ["event_count"]}))
-    assert legacy_graphless.value.code == "not_admitted"
-    assert "no multi-fact admission record" in str(legacy_graphless.value)
+    with pytest.raises(TypeError, match="project factory"):
+        QueryRuntime(project / "semantic_layer", project / "context_layer", None)
 
 
 def test_managed_sources_resolve_through_operator_identity_not_snapshot_paths(
@@ -759,17 +741,12 @@ def test_reconcile_never_clears_exhausted_repair_state_or_inconsistent_transitio
     assert moved != rebased
 
 
-# ------------------- [6] session pinning and legacy-route separation
+# ------------------- [6] session pinning across admitted revisions
 
 
-def test_sessions_pin_one_admission_and_legacy_promotion_never_mutates_a_snapshot(tmp_path):
-    """Issue #37 [6]: each session pins ONE coherent admitted revision (a later
-    session picks up a later admission), and a legacy staged Promotion over the
-    project's own roots keeps its separate behavior — verified stamps, index
-    and log bookkeeping land in the legacy served root, never in a pinned
-    snapshot, and never change the admitted answers."""
-    from ariadne.promote import promote
-
+def test_sessions_pin_one_admission_across_later_admissions(tmp_path):
+    """Each session pins ONE coherent admitted revision; a later session picks
+    up a later admission without changing answers already pinned to the first."""
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
     first_review = _validated_ready(api, project, _policy_edit("First admitted body."))
@@ -798,26 +775,7 @@ def test_sessions_pin_one_admission_and_legacy_promotion_never_mutates_a_snapsho
     assert current_answer["admission"]["revision"] == second["commit"]
     assert "Second admitted body." in "".join(current_answer["context"]["policies"])
 
-    # legacy staged Promotion: separate route, separate bookkeeping, separate
-    # roots — the pinned snapshots are never its target
-    staging = tmp_path / "legacy-staging"
-    (staging / "context_layer" / "metrics").mkdir(parents=True)
-    (staging / "context_layer" / "metrics" / "legacy-demo.md").write_text(
-        "---\n"
-        "type: metric\n"
-        "status: draft\n"
-        "title: legacy demo\n"
-        "description: A legacy staged page.\n"
-        "tags: [metric]\n"
-        "---\n\n"
-        "# legacy demo\n",
-        encoding="utf-8",
-    )
-    promote(staging, project, by="human:test", assume_yes=True)
-    served_page = project / "context_layer" / "metrics" / "legacy-demo.md"
-    assert "verified:" in served_page.read_text(encoding="utf-8")  # legacy decoration
-    assert (project / "context_layer" / "log.md").is_file()  # legacy bookkeeping
-    assert candidate_scope_digest(first_snapshot) == first_digest  # snapshot untouched
+    assert candidate_scope_digest(first_snapshot) == first_digest  # prior snapshot stays immutable
     unchanged = asyncio.run(session2.get_metric("event_count"))
     assert unchanged["admission"]["revision"] == second["commit"]
     assert "Second admitted body." in "".join(unchanged["context"]["policies"])
@@ -980,180 +938,6 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
     )
     assert "does not select Git Examples" in json.loads(capsys.readouterr().err)["error"]["message"]
     assert not explicit.exists() and not (operator_desk / "staging").exists()
-
-
-def test_example_review_splits_citation_and_publication_roots(tmp_path, capsys):
-    """Legacy review stores remain isolated from admitted Git Example discovery."""
-    import hashlib
-
-    from ariadne import answer_examples
-    from ariadne.cli import main as cli
-    from ariadne.example_review import main as review_cli
-
-    project = complete_bundle_project(tmp_path)
-    api = AuthoringProject(project)
-    new_policy = POLICY_PAGE.replace("All events count", "Late admitted counting rule").replace(
-        "The rule body.", "A newly admitted rule body."
-    )
-    review, _journey = admitted_ready(
-        api,
-        project,
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "late-admitted-counting-rule",
-            "content": new_policy,
-        },
-    )
-    assert admit(project, review) == 0
-    capsys.readouterr()
-    current = read_current(project)
-    snapshot = project / current["snapshot"]
-    cited = "context_layer/policies/late-admitted-counting-rule.md"
-    assert (snapshot / cited).is_file()
-    assert not (project / cited).exists()  # newly admitted page: snapshot-only
-
-    # A legacy draft citing the SNAPSHOT-ONLY Policy stays in its explicit store.
-    submission = {
-        "question": "How many events are there under the late admitted counting rule",
-        "interpretation": "Count every event row once under the late rule.",
-        "method": {"operation": "get_metric", "arguments": {"name": "event_count"}},
-        "result": {
-            "metric": "event_count",
-            "sql": "SELECT COUNT(*) AS event_count FROM events.events",
-            "columns": ["event_count"],
-            "rows": [{"event_count": 3}],
-            "governed": True,
-        },
-        "submitter": "analyst",
-        "attestation": "self-declared",
-        "sources": [cited],
-    }
-    assert (
-        cli(
-            [
-                "save-example",
-                "--served",
-                str(snapshot),
-                "--sources",
-                str(project / "ariadne.yaml"),
-                "--staging",
-                str(project / "staging"),
-            ],
-            stdin=io.StringIO(json.dumps(submission)),
-        )
-        == 0
-    )
-    saved = json.loads(capsys.readouterr().out)
-    staged = Path(saved["path"])
-
-    decision_file = tmp_path / "decision.json"
-    decision_file.write_text(
-        json.dumps(
-            {
-                "id": saved["id"],
-                "actor": "maintainer:operator",
-                "outcome": "approve",
-                "technical_review": (
-                    "Method is the served event_count metric; the cited Policy matches "
-                    "the pinned admitted snapshot."
-                ),
-                "staged_digest": hashlib.sha256(staged.read_bytes()).hexdigest(),
-            }
-        ),
-        encoding="utf-8",
-    )
-    assert (
-        review_cli(
-            [
-                saved["id"],
-                "--file",
-                str(decision_file),
-                "--served",
-                str(project),
-                "--staging",
-                str(project / "staging"),
-            ]
-        )
-        == 0
-    )
-    approved = json.loads(capsys.readouterr().out)
-    served_page = project / "answer_examples" / f"{saved['id']}.md"
-    assert Path(approved["path"]) == served_page
-    assert served_page.is_file() and not staged.exists()  # the exact record moved
-    assert not (snapshot / "answer_examples").exists()  # the snapshot was never the store
-
-    runtime = QueryRuntime.open_project(project)
-    assert asyncio.run(runtime.search_examples("events late rule")) == []
-    runtime.con.close()
-    legacy_hits = answer_examples.search_examples(
-        snapshot,
-        project / "staging",
-        "events late rule",
-        examples_root=project,
-    )
-    mine = next(hit for hit in legacy_hits if hit["id"] == saved["id"])
-    assert mine["status"] == "stable" and mine["stale"] is False
-
-    # a --served root INSIDE .ariadne/ operator state is refused before any
-    # write, naming the project root; the pinned snapshot stays byte-identical
-    assert (
-        cli(
-            [
-                "save-example",
-                "--served",
-                str(snapshot),
-                "--sources",
-                str(project / "ariadne.yaml"),
-                "--staging",
-                str(project / "staging"),
-            ],
-            stdin=io.StringIO(
-                json.dumps(
-                    {
-                        **submission,
-                        "question": "How many events exist under the late counting rule overall",
-                    }
-                )
-            ),
-        )
-        == 0
-    )
-    saved2 = json.loads(capsys.readouterr().out)
-    staged2 = Path(saved2["path"])
-    second_decision = tmp_path / "decision2.json"
-    second_decision.write_text(
-        json.dumps(
-            {
-                "id": saved2["id"],
-                "actor": "maintainer:operator",
-                "outcome": "approve",
-                "technical_review": "Method and cited pages match the pinned snapshot.",
-                "staged_digest": hashlib.sha256(staged2.read_bytes()).hexdigest(),
-            }
-        ),
-        encoding="utf-8",
-    )
-    assert (
-        review_cli(
-            [
-                saved2["id"],
-                "--file",
-                str(second_decision),
-                "--served",
-                str(snapshot),
-                "--staging",
-                str(project / "staging"),
-            ]
-        )
-        == 1
-    )
-    error = json.loads(capsys.readouterr().err)["error"]
-    assert "operator state" in error["message"]
-    assert f"--served {project.resolve()}" in error["message"]
-    assert staged2.is_file()  # the staged record was not consumed
-    assert candidate_scope_digest(snapshot) == current["artifact_digest"]
-    assert not (snapshot / "answer_examples").exists()
 
 
 # ------------- [7] review fix pass: bound baselines and pinned serving

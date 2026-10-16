@@ -4,7 +4,7 @@ spec 2026-10-06-0013 §§2–5, §7; plan §2).
 Expectations are derived from the specification and plan contract, never from
 the implementation under test:
 
-- an admitted governed metric keeps its rows/SQL/governance while an EXPIRED
+- a governed metric in the synthetic session keeps its rows/SQL/governance while an EXPIRED
   supplied report is disclosed with its reported outcome/age/limitations
   (AC1); a recent event-time watermark and a reported completeness failure
   stay SEPARATE facts, neither implying live health (AC2);
@@ -14,7 +14,7 @@ the implementation under test:
   alone never establishes correspondence — unknown applicability with the
   named limitation, never a matching pass (spec §3/§4);
 - absent optional profiles and missing optionals stay explicit unknowns, and
-  legacy queries remain usable (AC5);
+  existing metric queries remain usable (AC5);
 - malformed/unsupported new declarations fail AUTHORING validation before
   human admission — never as a query refusal (AC6);
 - reads are pure: identical retries do not alter the page bytes (AC9).
@@ -48,7 +48,12 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 
 from ariadne import context  # noqa: E402
 from ariadne.context import _page_contract_errors, generated_page_filename  # noqa: E402
-from ariadne.runtime import AriadneRuntime  # noqa: E402
+from ariadne.query import (  # noqa: E402
+    _QueryRuntimeSession as AriadneRuntime,
+)
+from ariadne.query import (  # noqa: E402
+    served_tree_digest,
+)
 from ariadne.sources import parse_resource, table_resource  # noqa: E402
 
 # The pinned assessment instant every test derives its expectations from (the
@@ -222,7 +227,6 @@ def _project(
         project / "semantic_layer",
         context_dir,
         first_db,
-        staging_dir=project / "staging",
         sources=project / "ariadne.yaml",
     )
     return runtime, context_dir
@@ -1120,17 +1124,29 @@ def _mf_metric_page(name: str, table_resources: list[str]) -> str:
     )
 
 
-def _admit_quality_project(
-    tmp_path: Path, *, quality: bool, at: str
-) -> tuple[AriadneRuntime, Path]:
-    """One TWO-SOURCE project (demo + archive, each with its own same-named
-    ``orders`` table) whose multi-fact graph bundle — two facts, a shared
-    region lookup, a cross-fact derived metric, metric pages citing their own
-    facts' canonical resources, and (``quality=True``) archive's table page
-    carrying the as-of supplied report — is validated, humanly Promoted under
-    the pinned ``at`` stamp and served by an admitted runtime. The promoted
-    ``served/context_layer`` path is returned for byte-purity assertions."""
-    from ariadne.promote import promote_bundle
+def _activate_synthetic_admission(runtime: AriadneRuntime) -> None:
+    """Give this private numerical fixture a synthetic graph admission."""
+    runtime._load_managed_graph(runtime._semantic_dir)
+    runtime._admission = {
+        "route": "synthetic-test",
+        "commit": "synthetic-test-revision",
+        "review_digest": "0" * 64,
+        "artifact_digest": "0" * 64,
+        "served_digest": served_tree_digest(runtime._semantic_dir, runtime.context_dir),
+        "validation": {},
+    }
+
+
+def _write_artifacts(project: Path, files: list[dict]) -> None:
+    for artifact in files:
+        path = project / artifact["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(artifact["content"], encoding="utf-8")
+
+
+def _admit_quality_project(tmp_path: Path, *, quality: bool) -> tuple[AriadneRuntime, Path]:
+    """A synthetic two-source numerical fixture; it uses the private session
+    seam and never represents a public serving or admission route."""
 
     project = tmp_path / "proj"
     project.mkdir(parents=True)
@@ -1213,28 +1229,17 @@ def _admit_quality_project(
             },
         ]
     }
-    submission = tmp_path / "submission.json"
-    submission.write_text(json.dumps(bundle), encoding="utf-8")
-    from ariadne import authoring as _authoring  # noqa: F811 — local import style
-
-    view = _authoring.submit_bundle(submission, project=project)
-    assert view["status"] == "validated", view["errors"]
-    promote_bundle(
-        view["review_digest"],
-        staging_root=project / "staging",
-        served_root=project / "served",
-        by="human:test",
-        assume_yes=True,
-        at=at,
-    )
+    _write_artifacts(project, bundle["files"])
+    context_dir = project / "context_layer"
+    context._regenerate_indexes(context_dir)
     runtime = AriadneRuntime(
-        project / "served" / "semantic_layer",
-        project / "served" / "context_layer",
+        project / "semantic_layer",
+        context_dir,
         demo_db,
-        staging_dir=project / "staging",
         sources=project / "ariadne.yaml",
     )
-    return runtime, project / "served" / "context_layer"
+    _activate_synthetic_admission(runtime)
+    return runtime, context_dir
 
 
 def test_query_metrics_associates_each_metric_with_its_own_facts_exact_identity(
@@ -1255,9 +1260,7 @@ def test_query_metrics_associates_each_metric_with_its_own_facts_exact_identity(
     demo_resource = table_resource("demo", "demo", "main", "orders")
     archive_resource = table_resource("archive", "archive", "main", "orders")
     regions_resource = table_resource("demo", "demo", "main", "regions")
-    runtime, served_context = _admit_quality_project(
-        tmp_path / "quality", quality=True, at="2026-10-07T09:00:00+00:00"
-    )
+    runtime, served_context = _admit_quality_project(tmp_path / "quality", quality=True)
     # the fixture means what it asserts: two same-named catalog assets with
     # distinct canonical identities, established BEFORE any query
     catalog_orders = {
@@ -1362,9 +1365,7 @@ def test_query_metrics_associates_each_metric_with_its_own_facts_exact_identity(
     # rows, SQL, plan, columns, context (incl. accepted context_signals) and
     # the admission view modulo its necessarily different digests — and the
     # retry is pure: identical bytes, identical assessment
-    plain, _plain_context = _admit_quality_project(
-        tmp_path / "plain", quality=False, at="2026-10-07T09:00:00+00:00"
-    )
+    plain, _plain_context = _admit_quality_project(tmp_path / "plain", quality=False)
     baseline = asyncio.run(plain.query_metrics(request))
     for key in ("metrics", "dimensions", "columns", "sql", "plan"):
         assert baseline[key] == result[key], key
@@ -1373,7 +1374,7 @@ def test_query_metrics_associates_each_metric_with_its_own_facts_exact_identity(
     )
 
     def _sans_machine_noise(payload: object) -> str:
-        # the twins were finalized/promoted by independent wall-clock calls;
+        # the twins were finalized/admitted by independent wall-clock calls;
         # per-run ISO second stamps and per-bytes digests are machine facts,
         # not disclosure — normalized out so every CONTENT field compares exactly
         text = json.dumps(payload, default=str, sort_keys=True)
@@ -1666,7 +1667,7 @@ def test_cte_and_derived_aliases_resolve_to_physical_identity_only(tmp_path, mon
     assert shadow_metric["assets"] == [archive_resource]
     assert demo_resource not in json.dumps(shadow["data_signals"])
 
-    # (c) the unqualified legacy shorthand: a bare table name binds at EXECUTION
+    # (c) the private single-database shorthand: a bare table name binds at EXECUTION
     # (USE demo.main) but is NOT an exact identity — unknown coverage, and no
     # resource is guessed into the view
     project = _project(
@@ -1678,10 +1679,9 @@ def test_cte_and_derived_aliases_resolve_to_physical_identity_only(tmp_path, mon
         project[1].parent / "semantic_layer",
         project[1],
         db,
-        staging_dir=project[1].parent / "staging",
     )
     bare = _get_metric(bare_runtime, monkeypatch)
-    assert _rows_by_region(bare) == {"NA": 2, "EMEA": 1}  # the legacy route still serves
+    assert _rows_by_region(bare) == {"NA": 2, "EMEA": 1}  # private numerical seam
     [bare_metric] = bare["data_signals"]["metrics"]
     assert bare_metric == {"name": "order_count", "assets": [None], "coverage": "unknown"}
     assert bare["data_signals"]["assets"] == []
@@ -1935,15 +1935,13 @@ def _period_report(report_id: str, start: str, end: str, field: str = "ordered_o
     }
 
 
-def _admit_windowed_quality_project(tmp_path: Path, at: str) -> AriadneRuntime:
-    """One admitted single-registry project whose fact carries a one-month
+def _admit_windowed_quality_project(tmp_path: Path) -> AriadneRuntime:
+    """One synthetic single-registry project whose fact carries a one-month
     value-windowed metric over the conformed ``business_date`` time, with the
     fact's table page supplying three period reports: October evidence
     (inside the window lookback extension), September evidence (disjoint from
     the consumed fetch range) and a same-period report declared on an
     unrelated field."""
-    from ariadne import authoring
-    from ariadne.promote import promote_bundle
 
     project = tmp_path / "proj"
     project.mkdir(parents=True)
@@ -2016,25 +2014,17 @@ def _admit_windowed_quality_project(tmp_path: Path, at: str) -> AriadneRuntime:
             },
         ]
     }
-    submission = tmp_path / "submission.json"
-    submission.write_text(json.dumps(bundle), encoding="utf-8")
-    view = authoring.submit_bundle(submission, project=project)
-    assert view["status"] == "validated", view["errors"]
-    promote_bundle(
-        view["review_digest"],
-        staging_root=project / "staging",
-        served_root=project / "served",
-        by="human:test",
-        assume_yes=True,
-        at=at,
-    )
-    return AriadneRuntime(
-        project / "served" / "semantic_layer",
-        project / "served" / "context_layer",
+    _write_artifacts(project, bundle["files"])
+    context_dir = project / "context_layer"
+    context._regenerate_indexes(context_dir)
+    runtime = AriadneRuntime(
+        project / "semantic_layer",
+        context_dir,
         project / "mf.db",
-        staging_dir=project / "staging",
         sources=project / "ariadne.yaml",
     )
+    _activate_synthetic_admission(runtime)
+    return runtime
 
 
 def test_windowed_lookback_evidence_is_consumed_not_inapplicable(tmp_path, monkeypatch):
@@ -2047,7 +2037,7 @@ def test_windowed_lookback_evidence_is_consumed_not_inapplicable(tmp_path, monke
     field: inapplicable. The same September period on an unrelated field
     proves no field correspondence: unknown, never an unproven inapplicable."""
     monkeypatch.setattr(context, "_assessment_now", lambda: ASSESS_NOW)
-    runtime = _admit_windowed_quality_project(tmp_path / "windowed", at="2026-10-07T09:00:00+00:00")
+    runtime = _admit_windowed_quality_project(tmp_path / "windowed")
     result = asyncio.run(
         runtime.query_metrics(
             {

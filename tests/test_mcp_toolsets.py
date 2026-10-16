@@ -11,9 +11,9 @@ Answer Examples); Authoring and Combined register the SAME
 ``authoring_``-prefixed Git authoring contract (start/read/edit/propose
 sources/inputs/validate/review, plan §2's Authoring call contract).
 Every surface is project-bound at launch: no tool takes a project root or a
-credential, no surface registers source approval, artifact admission
-(``ariadne-admit``), reconciliation (``ariadne-authoring reconcile``) or
-Promotion (all human-only, spec §5/§6), and a direct call to a name the
+credential, no surface registers source approval, Git Review Admission
+(``ariadne-admit``) or reconciliation (``ariadne-authoring reconcile``)
+(all human-only, spec §5/§6), and a direct call to a name the
 toolset did not register is refused by the server. A fresh Git project with
 no admission yet starts its Authoring/Combined surfaces fine (AC5) while
 query tools surface the managed route's missing-admission error; an admitted
@@ -82,8 +82,8 @@ AUTHORING_TOOLS = {
     "authoring_review_proposal",
 }
 
-# Never a tool on ANY surface (spec §5: admission, source approval,
-# reconciliation and Promotion are human-only; the operator runs the local
+# Never a tool on ANY surface (spec §5: source approval, Git Review
+# Admission and reconciliation are human-only; the operator runs the local
 # commands, ADR-0013). K4 (issue #44) adds the mapping-confirmation marker:
 # exact-assertion confirmation rides the human-only ariadne-admit path.
 HUMAN_OPERATION_MARKERS = ("approve", "promot", "admit", "reconcil", "confirm")
@@ -278,80 +278,6 @@ def test_stdio_fresh_onboarding_authoring_unblocked_by_missing_admission(tmp_pat
     # authoring on the SAME combined session is not blocked by that refusal
     assert set(out["started_again"]) == {"proposal", "base_revision", "candidate_revision"}
     assert out["started_again"]["proposal"] != started["proposal"]
-
-
-def test_stdio_legacy_project_broken_served_model_never_blocks_combined_authoring(tmp_path):
-    """Issue #38 criterion 2, the review G6 fix: on a LEGACY (non-managed)
-    project a Query construction failure of ANY kind — here a served model
-    that is present but does not compile (``COUNT(*)`` mangled to ``COUNT(``,
-    the human-seeded draft case fresh onboarding actually hits) — is
-    query-only on the Combined registration: the session boots, the query
-    tool surfaces the compile error per call, and authoring works in the
-    very same session. Spec 0018 revision 2 now requires BOTH query toolsets
-    to boot artifact-only: discover succeeds without rendering, while the
-    first query tool still returns the existing RuntimeError compile refusal."""
-    project = complete_bundle_project(tmp_path / "broken")
-    model = project / "semantic_layer" / "models" / "events.yml"
-    model.write_text(
-        model.read_text(encoding="utf-8").replace("COUNT(*)", "COUNT("),
-        encoding="utf-8",
-    )
-    assert not (project / ".ariadne").exists()  # the legacy route: mutable files
-
-    from ariadne.query import QueryRuntime
-
-    # The unchanged execution constructor is the compile-error identity oracle.
-    with pytest.raises(RuntimeError, match="served OSI models.*do not compile") as refusal:
-        QueryRuntime(
-            project / "semantic_layer",
-            project / "context_layer",
-            None,
-            sources=project / "ariadne.yaml",
-        )
-
-    # The CLI launch uses its cwd-relative default rather than this absolute path.
-    expected_refusal = str(refusal.value).replace(
-        str(project / "semantic_layer" / "models"), "semantic_layer/models"
-    )
-
-    async def analyst() -> dict:
-        async with _launch(project, "analyst") as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                discovery = await session.call_tool("discover", {"query": "event"})
-                first_query = await session.call_tool("list_metrics", {})
-                return {"discovery": discovery, "refused": first_query}
-
-    analyst_out = asyncio.run(analyst())
-    assert not analyst_out["discovery"].is_error
-    analyst_groups = json.loads(_text(analyst_out["discovery"]))["groups"]
-    assert list(analyst_groups) == ["metrics", "pages", "terms", "examples"]
-    assert analyst_groups["metrics"]["items"][0]["name"] == "event_count"
-    assert analyst_out["refused"].is_error
-    assert _text(analyst_out["refused"]) == f"Error executing tool list_metrics: {expected_refusal}"
-
-    # Combined keeps the original authoring assertions beside the same refusal.
-    async def run() -> dict:
-        out = {}
-        async with _launch(project, "combined") as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                out["discovery"] = await session.call_tool("discover", {"query": "event"})
-                out["refused"] = await session.call_tool("list_metrics", {})
-                out["started"] = json.loads(
-                    _text(await session.call_tool("authoring_start_proposal", {}))
-                )
-        return out
-
-    out = asyncio.run(run())
-
-    assert out["refused"].is_error
-    assert "do not compile" in _text(out["refused"])
-    assert set(out["started"]) == {"proposal", "base_revision", "candidate_revision"}
-    assert _text(out["refused"]) == f"Error executing tool list_metrics: {expected_refusal}"
-    assert not out["discovery"].is_error
-    combined_groups = json.loads(_text(out["discovery"]))["groups"]
-    assert list(combined_groups) == ["metrics", "pages", "terms", "examples"]
 
 
 def test_stdio_admitted_project_serves_queries_and_keeps_authoring(tmp_path):
