@@ -1,7 +1,17 @@
 # Implementation plan 0008: Git-native Knowledge Authoring
 
-**Revision/status:** 3 — owner-authorized bounded G1 follow-up; retained public
-behavior and the earlier execution scope are unchanged.
+**Revision/status:** 4 — G1 accepted; owner-authorized G1 integration and
+continued supervised public implementation. Behavioral specification unchanged.
+
+**Integration/continuation authorization, 2026-10-16:** after the four-defect
+follow-up passed parent verification and independent scoped review at
+`a8ef28cc2a7a2bdc4725f7e91ce10e279b985e8d`, the owner instructed:
+**“Integriere G1. Commit. Push. clean up. Dann Mach weiter mit der
+Implementierung.”** This authorizes integration/push of that accepted G1 stage
+and cleanup of its owned worktrees, followed by isolated G2 implementation with
+the selected Pi/GPT-6 Luna `xhigh` worker. It does not claim completed issue #1,
+authorize a package release or real-KB operation, or grant integration/push of
+later stages. Private app and #2/#76 remain excluded.
 
 **Follow-up authorization, 2026-10-16:** after G1's single correction and delta
 recheck ended with four reproduced blockers at `410e7ac`, the parent handed the
@@ -26,14 +36,16 @@ owns rationale. This plan owns execution order, file ownership and checks.
 **Prior approvals:** written public design r1 approved with “Ja Freigabe”
 (2026-10-15; presented at `81ed0f7`, recorded in `6107567`), followed by
 “Ja. Freigabe” for supervised plan-r1 execution (presented at `299f1f1`,
-recorded in `aadfe254`). The current owner instruction removes C0 only and
-continues the public execution; it does not reopen or change the public
+recorded in `aadfe254`). The earlier public-only scope instruction removes C0
+and continues public execution; it does not reopen or change the public
 manifest/admission design. Runtime base remains public
 `c3b68db233f8aa98a39380a0099ff2b800a70c55`.
 
-**Authority:** prepare isolated public candidates and proportional reviews under
-the existing `orchestrate-implementation` workflow. No target integration,
-push, PR/issue mutation, real KB migration/publication, deployment or release.
+**Authority:** the G1-only integration/push/cleanup exception is recorded above.
+Subsequent stages prepare isolated public candidates and proportional reviews
+under `orchestrate-implementation`; their target integration/push still need
+separate authorization. No PR/issue mutation, real KB migration/publication,
+deployment or release is authorized.
 Checks use disposable fixtures, never the configured shared KB or production
 stores. No new tracker tickets or duplicate GitHub task definitions.
 
@@ -224,12 +236,22 @@ survives or a material decision is needed, stop and return to the owner again;
 no further automatic repair/review cycle. Frozen committed result, parent
 verification and independent high-risk acceptance are required before G2.
 
+**Accepted G1 checkpoint:** the prior thirteen resolved findings plus G1-R's
+four scoped repairs establish the local G1 contract at `a8ef28c`. Verified
+239 focused tests, the four original parent failure probes plus a failed-receipt-
+reconciliation safety case, and the independent scoped pass are retained in
+orchestration evidence. This is local G1 acceptance, not G2–G5 certification.
+
 ## G2 — Complete optional backends and exact historical inspection
 
-**Owner/prerequisite:** public writer from accepted G1 candidate.
+**Owner/prerequisite:** public writer from the verified integrated G1 commit,
+pinned in run state after the authorized merge. Worker remains Pi
+`openai-codex/gpt-6-luna` / `xhigh`; reviewer defaults stay unchanged. Reuse
+still-applicable G1 evidence; do not repeat green checks for ceremony.
 
-**Owned files:** `packages/lumio-wiki/src/lumio_wiki/{publish,s3_publish,s3_location,
-location,artifact_store,source_inspection,source_resolution,cli}.py`;
+**Owned files:** `packages/lumio-wiki/src/lumio_wiki/{git_authoring,publish,
+s3_publish,s3_location,location,artifact_store,source_inspection,source_resolution,
+cli,__init__}.py` (shared admission/capture reuse and public exports included);
 `packages/lumio-lancedb/src/lumio_lancedb/{publish,location,index,graph}.py` only
 where version-bound build/read composition needs it; existing `test_s3_publish.py`,
 `test_s3_location.py`, `test_artifact_store.py`, `test_source_inspection.py`,
