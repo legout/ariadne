@@ -1,6 +1,6 @@
 # Implementation plan: Core Git-only durable authoring
 
-**Status:** proposed revision 1; owner approval required before implementation. **Source:** [specification 0027 revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md), its glossary and ADR-0024/scoped source amendments, approved by the owner on 2026-10-16 with “Schriftliche Fassung freigeben (Recommended)”. This plan decomposes that standalone Core slice, not the complete #74/#76 integration scope.
+**Status:** approved revision 1. Owner, Pi conversation 2026-10-16, selected “Plan und Ausführung freigeben (Recommended)”, approving the bounded supervised Core execution, declared isolated dependencies and synthetic fixtures, with no target integration/publication or real project initialization. **Source:** [specification 0027 revision 1](../specs/2026-10-16-0027-core-git-only-authoring.md), its glossary and ADR-0024/scoped source amendments, approved by the owner on 2026-10-16 with “Schriftliche Fassung freigeben (Recommended)”. This plan decomposes that standalone Core slice, not the complete #74/#76 integration scope.
 
 ## Readiness and execution constraints
 
