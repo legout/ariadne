@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shlex
 import shutil
 from pathlib import Path
 
 import lumio_wiki as lw
+import msgspec
 import pytest
 from lumio_wiki.cli import main
 from lumio_wiki.distiller import _build_distill_system_prompt
@@ -119,22 +121,82 @@ def test_distiller_guidance_uses_current_kb_ontology():
     assert "credentials" not in prompt
 
 
-def test_real_anydoc_csv_cli_stages_reviewable_proposal(tmp_path, capsys):
+def test_real_anydoc_csv_cli_stages_reviewable_proposal(tmp_path, capsys, monkeypatch):
     pytest.importorskip("anydoc")
-    root = tmp_path / "kb"
-    assert main(["init", str(root)]) == 0
+    from lumio_wiki.ingest import prepare_proposal_content
     from test_entity_merge import _git_authoring_worktree
 
-    _git_authoring_worktree(root)
-    capsys.readouterr()
     csv = tmp_path / "records.csv"
-    csv.write_text("name,value\nalpha,1\n", encoding="utf-8")
+    original = b"name,value\nalpha,1\n"
+    csv.write_bytes(original)
+    converted, provenance = prepare_proposal_content(original, "text/csv", csv.name)
+    assert provenance.converted_by == "anydoc"
+    assert provenance.source_hash == hashlib.sha256(original).hexdigest()
+    converted_body = converted.split("---", 2)[2].strip()
+    assert all(value in converted_body for value in ("name", "value", "alpha", "1"))
 
-    assert main(["ingest", str(root), str(csv)]) == 0
+    root = tmp_path / "kb"
+    assert main(["init", str(root)]) == 0
+    control = root / "lumio.yaml"
+    control.write_text(
+        control.read_text().replace(
+            "  entity_types:\n  predicates:",
+            "  entity_types:\n    concept: {}\n  predicates:",
+        )
+    )
+    (root / ".lumio-authoring.yaml").write_text(
+        "version: 1\nnamespace: anydoc-csv-journey\nsources: {}\nbindings: {}\n"
+    )
+    _git_authoring_worktree(root)
+    registry = tmp_path / "private-registry"
+    store = tmp_path / "private-artifacts"
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store))
+    authored = tmp_path / "compiled.md"
+    authored.write_text(
+        "---\nid: entity:csv-records\ntitle: CSV Records\nentity_types: [concept]\n"
+        "tags: [records]\nsummary: A small converted record table.\n"
+        "category: references\ntype: record-table\n"
+        "durability_rationale: Durable fixture table.\nlifecycle: draft\nvisibility: internal\n"
+        "sources:\n  - id: csv-records\n    title: Original record table\n---\n\n"
+        f"# CSV Records\n\n{converted_body}\n"
+    )
+    capsys.readouterr()
+    # Managed ingest binds ORIGINAL CSV bytes; the real conversion above is preparation.
+    assert (
+        main(
+            [
+                "ingest",
+                str(root),
+                str(csv),
+                "--compiled-page",
+                str(authored),
+                "--source-id",
+                "csv-records",
+                "--source-registry",
+                str(registry),
+            ]
+        )
+        == 0
+    )
     output = capsys.readouterr().out
-    assert not (root / ".lumio").exists()
-    assert "converted_by:   anydoc" in output
-    assert lw.validate(root).is_valid
+    assert "Ingested into the Git authoring worktree" in output
+    kb, report = lw.load_knowledge_base(root)
+    assert report.is_valid
+    page = kb.lookup_by_title("CSV Records")[0]
+    assert page.id == "entity:csv-records" and page.path.startswith("references/")
+    assert converted_body in page.body
+    manifest = msgspec.yaml.decode((root / ".lumio-authoring.yaml").read_bytes())
+    assert (
+        manifest["bindings"]["entity:csv-records"]["csv-records"]
+        == hashlib.sha256(original).hexdigest()
+    )
+    assert not (root / ".lumio" / "ingest").exists()
+    assert sorted(p.name for p in (root / ".lumio").iterdir()) == ["index"]
+    assert registry.is_dir() and store.is_dir()
+    assert not (root / csv.name).exists()
+    for private_path in (csv, registry, store):
+        assert str(private_path) not in page.body
+        assert str(private_path) not in (root / ".lumio-authoring.yaml").read_text()
 
 
 def test_packaged_source_commands_execute_in_order(tmp_path, capsys):

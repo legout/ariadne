@@ -609,9 +609,13 @@ def test_s3_compat_url_ingest_retains_fetched_bytes_as_artifact(tmp_path, prefix
     kb = managed_kb(tmp_path)
     root = kb.root
     registry = SourceRegistry(tmp_path / "registry")
-    authored = managed_page("s3_compat-url-report", title="S3 Compat Artifact Page").replace(
-        "Body authored by the host coding agent from the original source.",
-        "Body authored from the original source.",
+    authored = (
+        managed_page("s3_compat-url-report", title="S3 Compat Artifact Page")
+        .replace(
+            "Body authored by the host coding agent from the original source.",
+            "Body authored from the original source.",
+        )
+        .replace('id: "entity:s3_compat-url-report"', 'id: "entity:s3-compat-url-report"')
     )
 
     def persist_observation(source_id, content_hash):

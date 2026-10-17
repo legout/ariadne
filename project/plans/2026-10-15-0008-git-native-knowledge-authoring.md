@@ -1,6 +1,223 @@
 # Implementation plan 0008: Git-native Knowledge Authoring
 
-**Revision/status:** 16 — G4 initial-M F1/F2 collective correction authorized
+**Revision/status:** 23 — worker implementation/proofs prepared; parent candidate review pending.
+Final real base verifier passed after the authorized optional-installer-metadata
+correction: 46 wiki package members match candidate ZIP/source/installed bytes,
+with actual archive SHA and isolated import identity; installed native
+commit/review/confirm/query and Git-free validation/read/query passed. Installed
+MCP CI smoke passed (valid EOF exit 0, invalid bounded exit 2, no traceback,
+fixture search), with the same candidate member identity. The existing adapter
+wheel CI smoke passed with both candidate wheels: 46 wiki + 5 adapter members
+match, no automatic inward adapter import or forbidden app-only dependencies.
+Both wheels remain version 0.1.2; no dependency/lock/ABI changes.
+
+Evidence is explicitly composed, never relabelled: original workspace Ruff
+exit 1 plus authorized affected-file passes; original full suite 1619 passed /
+17 failed / 10 skipped, then 13 passed / 4 failed, then 4 passed; original
+live group 37 passed / 3 failed / 1 skipped, then 2 passed / 1 failed, then
+1 passed. The initial base verifier exit 1 is retained alongside its resumed
+exit 0. No group/full green reruns. Read-only malformed-registry recovery is
+the only Python production delta (+2 lines); all other native contracts remain
+accepted upstream evidence. Automatic type/import/heuristic diagnostics remain
+inconclusive or rejected against actual verifier semantics, not a type-clean
+claim. Cross-role provisioning/authorization and private AC6 remain unverified/
+deferred. The owned service and volume are retained, stopped as recorded below.
+
+The worker now commits/preserves the isolated candidate and reports exact
+commit/tree/ref/artifact identities in the existing RUN handoff. Parent alone
+owns independent final G5/integration-effects review and acceptance; issue #1,
+target integration, publication and release are NOT declared complete.
+
+**Historical r22 checkpoint:** parent-authorized installed identity-oracle correction.
+The final affected live node passed (1 pass, exit 0): live evidence is composed
+37 + 2 + 1, with cross-role policy unverified. Both final candidate wheels were
+built once and independently hash-matched by the parent. The first real base
+verifier stopped BEFORE member comparison/SDK author/query because uv 0.11.8
+records the exact local wheel URL with optional `archive_info: {}`. Parent
+rejected requiring its absent SHA-256 field as an unwritten installer oracle.
+Only the verifier helper changes: require the exact resolved archive URI and
+no directory/editable install; validate provided SHA-256 metadata, retaining
+computed archive SHA, every package ZIP/source/installed-byte match, METADATA,
+module/sys.prefix and forbidden-base-dependency checks. Scoped script Ruff/diff
+then ONE resumed real verifier in the unchanged base venv with unchanged
+retained wheels; no rebuild/reinstall, root-test or broad/live rerun. Continue
+only existing installed CI MCP/adapter seams after pass. Stop on any failure.
+The owned container is stopped and retained: stop command exit 0, container
+exit 137 after the ten-second stop timeout, not a graceful-shutdown claim;
+its volume and redacted runtime logs are retained. No production impact.
+All previous authority, clean result freeze and parent-owned review bounds bind.
+
+**Historical r21 checkpoint:** parent-authorized single live keyword-oracle delta.
+The exact live-three group ran once: onboarding and URL artifact nodes passed;
+agent journey failed only on G5's unwritten literal `conflict` requirement after
+the stale expected-current preview correctly exited 1. Parent read the full
+log and remaining node branches. Replace ONLY that assertion with fixture-known
+full v1/v2 identities, bounded expected/current mismatch disclosure and an actual
+unchanged-v2 pointer read. Keep all later orphan/rollback/history/fallback
+oracles. Scoped Ruff/diff only that changed test, then ONE serial agent node
+on the same owned service with fresh prefix/short base/sanitized live env.
+Reuse 37 + 2 unaffected live passes; no fresh whole-live green or new group/full
+budget. On pass resume unused final installed CI proof and committed handoff;
+any failure stops for the owner. No production changes or new service actions.
+
+**Historical r20 checkpoint:** parent-authorized three-node live co-switch.
+The r19 four-node delta passed (4 passes, exit 0). The one authorized live
+eight-file group then ran against the pinned native-arm64 owned service:
+37 passed, 3 failed, 1 cross-role skip, exit 1 (`RUN/logs/g5-live-pytest-a1.log`).
+Parent read the complete failures/image identity and verified the same owned
+container `619876a318c707221b597a159cbccae703a093a47538affd1a371062e86d593f`
+running/healthy, ownership labels and loopback `127.0.0.1:32924` binding.
+No new pull/restart/recreate or role provisioning.
+
+Only approved live corrections: onboarding smoke/quickstart distinguish
+explicitly authorized private exact-version metadata from optional retained raw
+bytes (inspect exact fixture version/Entity/Source/hash and not-retained;
+fetch must fail and create no output); the URL artifact node gets one explicit
+valid Entity ID while preserving its distinct Source ID; the native agent
+ingest oracle checks fixture-derived exact manifest bindings rather than old
+console padding. No production change or validation/authorization relaxation.
+Scoped formatting/Ruff only the two changed Python tests, changed-shell syntax
+and diff check, then ONE serial group of exactly those three failed live nodes
+on the SAME service with sanitized live environment, fresh short temp base and
+unique object prefixes. Reuse 37 unchanged passes; the prior live command
+remains exit 1 and cross-role authorization remains unverified. On pass resume
+only unused final candidate-wheel/installed CI/MCP proof. Stop on any failure;
+all previous report/freeze/ownership and integration/publication bounds remain.
+
+**Historical r19 checkpoint:** parent-authorized four-node fixture/oracle delta.
+The r18 exact-17 serial group ran once: 13 passed, 4 failed, exit 1
+(`RUN/logs/g5-integration17-pytest-a1.log`). Parent read its full output and
+actual CSV/LLM artifacts. Only three test files change now: isolate each
+`_PublishedS3Kb` fixture's XDG metadata state before admission while preserving
+within-fixture history; remove only the managed-CSV console converter assertion
+(the real conversion/provenance assertion remains); move the fake-provider
+title assertion from stdout to persisted page metadata using the input fixture.
+No production changes. Scoped format/Ruff/diff only those three files, then
+ONE serial group of the four failed selectors on a fresh short temporary base.
+Reuse the 13 passes and prior 1619 unchanged passes; neither the 17-group nor
+the full-suite command becomes a fresh green. On pass resume only unused
+pinned-image/service/live/installed budgets; any failure stops for the owner.
+Old receipts, temporary directories and all prior artifacts remain preserved.
+
+**Historical r18 checkpoint:** parent-authorized closure of 17 named G5 integration failures.
+The sole authorized four-worker suite ran once: 17 failed, 1619 passed,
+10 skipped, exit 1 (`RUN/logs/g5-full-pytest-a1.log`, complete 799-line output).
+No fresh full-suite green or new full-suite budget is implied. Parent read
+that evidence, actual callers/fixtures and Git history before this grant.
+
+Restore only the bounded, secret-free malformed-registry constructor-error
+branch in `cli.py::_source_coverage_registry` (G4 c245 regression); preserve
+OSError/no-store handling, no writes and existing lint/dream callers. Exact
+additional test repairs: `test_cli_open_actions.py`'s fake resolver gets its
+known store URI; `test_s3_publish.py::_fake_builder` gets real constant index
+bytes and independently hashed/sized inventory; the one MCP graph node uses
+an explicitly private transport kernel; the setup node no longer expects
+proposal-store creation; two optional-wheel nodes distinguish derived index
+state from forbidden proposal/private writes; the real AnyDoc CSV node keeps
+real conversion and positive valid native managed ingest of the original CSV;
+the duplicate-guide node removes only the retired staging phrase. Preserve all
+retained action/version/replay/CAS/index/health/tamper/citation/privacy oracles.
+No socket-test edits: use a collision-checked fresh SHORT temporary base to
+avoid AF_UNIX path limits. No other production, registry, schema or ABI change.
+
+Before the post-check, scoped formatting/Ruff only actually changed Python
+files plus diff check. Then ONE serial group of EXACTLY the 17 original failed
+selectors named in the parent grant, using short disposable TMPDIR/--basetemp
+and the original HOME/XDG/AWS/provider isolation. Reuse 1619 passes/10 skips
+only on unchanged relevant surfaces. Any affected additional check needs a
+named hypothesis and parent grant; any failure stops for disposition, not
+automatic repair/retry. After the 17 pass, resume only the unused pinned-image,
+one owned service, live group and final installed-wheel CI budgets. Final
+candidate wheels must include the new CLI bytes; old wheel tests are not final
+artifact identity. No review-budget reset or reopening settled G4 findings.
+
+Lint history remains composite: initial workspace Ruff exit 1 (I001); current
+reordered imports were observed before repair with provenance UNVERIFIED;
+first scoped check exit 1 (missing E402 annotation); the parent-authorized
+one-line annotation restoration then passed the second scoped check. Do not
+claim the original workspace command passed. All previous scope, ownership,
+report/ref preservation and separate integration/publication gates still bind.
+
+**Historical r17 checkpoint:** G5 public candidate execution authorized.
+G4 accepted at `6c333614fbcc1ea7a8d87142a3325f79d22f71c2`, tree
+`7c6b9f52eb26c92ed1debaefce2b7fb2fdd8d191`: initial M plus ONE direct
+F1/F2 delta PASS; settled G1–G4 findings are not reopened. The owner explicitly
+selected “G5 mit Sol/high (Recommended)”, for G5 only, and the parent accepted
+the fresh read-only preflight and granted the bounded execution below.
+
+Sole writer: Paseo/Pi `3bdf8ff1-770d-4109-89b1-33fa31216b7b`, workspace
+`wks_991a9016a880b9bc`, native Pi `01a14bb7-a781-76b8-aa45-59d861f8df8b`,
+verified `openai-codex/gpt-6.1-sol` / high. Physical registered checkout
+`/home/volker/.local/state/worktrees/0ast0lnx/lumio-git-g5-worker-a1`, branch
+`orchestrator/lumio-git-20261015/g5-worker-a1`, common Git
+`/home/volker/coding/lumio-wiki/.git`; clean accepted-6c startup. Pinned base
+`refs/heads/orchestrator/lumio-git-20261015/base/g5-a1`; sole future result
+`refs/heads/orchestrator/lumio-git-20261015/result/g5/a1` was absent.
+
+Own Python `/home/volker/.local/bin/python3.14` 3.14.8 and uv 0.11.8;
+`.venv` absent at preflight. Local Docker 27.4.1 uses only
+`unix:///var/run/docker.sock`, native Linux arm64. Exact CI image
+`chrislusf/seaweedfs:4.45@sha256:fc9f76fa993ad69966ffeb2f65d0318fcae39c6f8e20cf68ef7b3a5cb97769e5`
+is not cached; read-only registry metadata confirms native arm64. ONE pinned
+acquisition and ONE uniquely named/labelled owned container are authorized,
+using CI test credentials/bucket, loopback-only ephemeral port and bounded CI
+health wait. No cached-4.48 fallback, emulation, restart/recreate, existing
+service changes or removal. Stop the owned container after preserving logs;
+retain it and its artifacts. Cross-role provisioning is not supplied: report
+that case unverified, never invent roles.
+
+Owned files remain the G5 list below, plus exactly
+`packages/lumio-wiki/tests/test_s3_agent_journey_s3_compat.py` and
+`packages/lumio-lancedb/tests/test_publication_s3_compat.py` for actual retired
+consumer co-switches. Preserve index/health failure, pointer CAS, cleanup,
+rollback and retrieval oracles; private transport proofs are not native
+admission proofs. Co-switch the existing isolated research journey too.
+Refresh root AGENTS guidance without invoking setup against the shared KB.
+Leave already-correct guidance and `skill.py` bundle hashing unchanged unless
+an actual G5 job requires a change. No dependency/lock/pyproject/schema/ABI or
+unrelated version changes, blanket rewrites or new framework.
+
+All commands use disposable HOME/XDG/temp/cache and empty AWS configuration,
+without inherited Lumio/provider/cloud profile/container credentials or
+PYTHONPATH. Tests use only disposable KBs/private registries/artifact stores.
+Live settings name only the new loopback service/bucket/test credentials in
+both AWS and LUMIO_S3 forms. No configured shared KB, private app, real legacy
+store or production/provider endpoint is authorized.
+
+Exact budget/order: ONE `uv lock --check`, own `uv sync --locked` with explicit
+Python and declared workspace/dev dependencies; minimal implementation and
+scoped formatting before meaningful checks, changed-shell syntax/diff checks;
+ONE `uv run --locked ruff check .` (no broad fix); ONE
+`uv run --locked pytest -q -n 4` with live settings absent; ONE serial
+`uv run --locked pytest -q tests/test_onboarding_journey.py packages/lumio-wiki/tests/*s3_compat.py packages/lumio-lancedb/tests/*s3_compat.py`
+with a guarded explicit selection and isolated live settings; then existing
+CI installed-wheel proof ONCE from newly built retained candidate wiki/adapter
+wheels. Bind source/member hashes, wheel SHA-256 and installed bytes/import
+identity. The real existing verifier owns installed author/admit/query plus
+Git-free reads; existing installed MCP/adapter CI smokes run once where the
+full suite did not exercise that installed artifact. Do not duplicate green
+installed/live journeys, run baseline suites, or infer live proof from memory
+stores. Expectations come from fixture bytes/IDs/hashes, real Git commits,
+citations, exact expected-current and public/private prefix contracts.
+
+Any mandatory failure: preserve true exit/raw output, investigate only the
+named cause, then STOP for parent disposition. No automatic SDK fixes,
+assertion weakening, expanded tests or full-suite reruns. Prior G4 M167+1,
+co-switch19+1 and correction4 passes are reused only where applicable, not
+installed/live/type/CI certification. Known Pyright findings remain
+inconclusive; no LSP/config/runtime experiments.
+
+Commit intended G5 files, verify clean accepted-base ancestry/no merges and
+freeze ONLY the unique result ref above. Read back
+`RUN/g5-worker-report.md` and unique `RUN/logs/g5-*` evidence with actual
+exits, wheel/image/runtime identities and limitations, then relinquish writes.
+RUN/run.json, findings, budget, independent final candidate review and
+acceptance remain parent-owned. No delegation, memory/wiki/global skill work,
+private AC6/#2, real migration, target integration, push/PR/issue updates,
+publication/release/deploy or cleanup. Planning-contract v1; catalog revision
+unknown.
+
+**Historical r16 status:** G4 initial-M F1/F2 collective correction authorized
 in the fresh isolated checkout below; acceptance and the one direct delta
 review remain parent-owned. G3 accepted as an isolated component at
 `fb2bcf36…` (tree `da4f7351…`, result `result/g3/sol-a1`, closed review
@@ -963,16 +1180,17 @@ G5 checks the complete installed protocol. Both packaged Markdown files belong
 to `lumio_wiki.data.skill`; do not invent a second protocol file under
 `data/protocol/` or an unrelated distribution-version bump.
 
-- [ ] Replace current proposal workflow examples with native Git authoring,
+- [x] Replace current proposal workflow examples with native Git authoring,
   exact review/confirm admission, source privacy and explicit migration. Update
   assertions against installed skill bytes, not just repository Markdown. Do not
   refresh globally installed user skills or edit the real shared KB.
-- [ ] Run installed-wheel author/validate/query journey without Ariadne/model/
+- [x] Run installed-wheel author/validate/query journey without Ariadne/model/
   server/GitHub/LanceDB; additionally remove Git from the read/query subprocess
   PATH to prove plain reads still work. Use the new built candidate wheels,
   not the earlier baseline wheels or workspace imports. Reuse/update existing wheel
   isolation/verifier tests rather than building a second harness.
-- [ ] Run required CI checks below on exact candidate trees. Refresh canonical
+- [x] Run required CI checks below on exact candidate trees (composed evidence above;
+  original red exits preserved, no fresh whole-suite green claim). Refresh canonical
   onboarding and existing live S3-compatible checks against an isolated test
   service using the repository's pinned CI image/configuration. No production
   credentials/endpoints, no modification/restart of running services, no

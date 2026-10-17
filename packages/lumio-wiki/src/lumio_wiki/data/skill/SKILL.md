@@ -154,6 +154,9 @@ Git or infer adoption. Keep the selected Source Registry, raw originals,
 transcripts, and artifacts OUTSIDE the repository; use `--source-registry <dir>`
 or explicitly configure `LUMIO_SOURCE_REGISTRY`. Never stage private files.
 Helpers edit and validate the complete candidate; they never commit or publish.
+Git is needed for authoring/admission, not ordinary reads, queries or validation.
+The source-reference manifest is authoring input, excluded from public exports
+and Reader retrieval; only safe IDs/digests belong in it.
 
 ## Workflow: ingest (you are the Distiller)
 

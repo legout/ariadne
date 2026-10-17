@@ -51,6 +51,7 @@ class _PublishedS3Kb:
     """Publish exact Git revisions to an in-memory S3-compatible store."""
 
     def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
         self.store = obstore.store.MemoryStore()
         self.calls: list[tuple[str, str | None]] = []
         self.location = S3Location(self.store, "kb", store_uri="s3://bucket")
@@ -63,7 +64,7 @@ class _PublishedS3Kb:
 
         def _fake_resolve(uri: str, version: str | None = None):
             self.calls.append((uri, version))
-            return S3Location(self.store, "kb", version=version)
+            return S3Location(self.store, "kb", version=version, store_uri="s3://bucket")
 
         monkeypatch.setattr(cli, "_resolve_object_store_location", _fake_resolve)
         monkeypatch.chdir(tmp_path)

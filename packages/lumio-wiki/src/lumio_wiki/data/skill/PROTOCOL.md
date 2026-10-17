@@ -318,6 +318,11 @@ namespace and explicit `sources`/`bindings` maps. Managed references use exact
 private versions. Keep registry/raw/artifact/transcript paths outside Git and
 the public KB. Select the private registry with `--source-registry` or
 `LUMIO_SOURCE_REGISTRY`; neither filenames nor registry-latest infer identity.
+Git is required for authoring/admission, not ordinary reads, queries or validation.
+The source-reference manifest is excluded from public exports and Reader retrieval.
+To reactivate, explicitly select every still-declaring Entity with repeatable
+`source reactivate <kb> --source-id <id> --file <original> --entity <entity-id>`;
+this edits exact pins and lifecycle intent without committing or publishing.
 
 ## 8. Review and publish an Authoring Revision
 

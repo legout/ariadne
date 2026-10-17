@@ -1110,7 +1110,10 @@ def test_setup_creates_new_kb_and_config(tmp_path, monkeypatch, capsys):
 
     # KB created
     assert (kb_path / "lumio.yaml").exists()
-    assert (kb_path / ".lumio" / "ingest").is_dir()
+    assert (kb_path / ".lumio" / "index").is_dir()
+    assert not (kb_path / ".lumio" / "ingest").exists()
+    assert not (kb_path / ".lumio-authoring.yaml").exists()  # adoption is explicit
+    assert sorted(p.name for p in (kb_path / ".lumio").iterdir()) == ["index"]
 
     # .env written with absolute path
     env = (tmp_path / ".env").read_text()
@@ -1127,6 +1130,9 @@ def test_setup_creates_new_kb_and_config(tmp_path, monkeypatch, capsys):
     assert "lumio-wiki lint" in agents_md
     assert "lumio-wiki cross-link" in agents_md
     assert "lumio-wiki dream" in agents_md
+    assert "--revision" in agents_md and "--confirm" in agents_md
+    assert "operator authorizes" in agents_md
+    assert "maintainer (local worktree)" in capsys.readouterr().out
 
 
 def test_setup_uses_existing_kb(tmp_path, monkeypatch, capsys):

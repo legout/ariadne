@@ -3,7 +3,7 @@
 #
 # Executes EXACTLY the commands documented in docs/quickstart.md, in order:
 # local Maintainer setup -> ontology starter -> seed pages -> managed ingest ->
-# proposal review -> publish -> retrieval/citation/traversal -> Source Artifact
+# Git review/admission -> retrieval/citation/traversal -> Source Artifact
 # inspection -> (when an S3-compatible endpoint is configured) publication with and without
 # LanceDB -> read-only Reader project -> expected zero-index fallback.
 #
@@ -229,7 +229,7 @@ step "7. Source Artifact inspection: truthful unavailability (no store configure
 $LW source inspect ./kb --source-id support-runbook-2026 \
   | tee /dev/stderr | grep -E 'not retained' >/dev/null
 expect_fail "local source fetch without a Source Artifact Store" \
-  $LW source fetch ./kb --source-id support-runbook-2026 --output /tmp/should-not-exist.md
+  $LW source fetch ./kb --source-id support-runbook-2026 --output "$PROJ/should-not-exist.md"
 
 if [ "$S3_READY" != 1 ]; then
   echo
@@ -265,37 +265,11 @@ except Exception as exc:
     sys.exit(f"FAIL: cannot use bucket s3://{sys.argv[1]} at {endpoint}: {exc}; "
              f"start or configure 'weed mini' with S3_BUCKET={sys.argv[1]}")
 PYEOF
-# Build a disposable Git authoring tree from public control/page files only;
-# local ingest/source state stays outside the S3 candidate.
+# Publish the same reviewed Git revision, not a second reconstructed tree.
 S3_TMP=$(mktemp -d)
 trap 'rm -rf "$S3_TMP"' EXIT
-S3_KB="$S3_TMP/kb"
-mkdir -p "$S3_KB"
-${LUMIO_PYTHON:-python3} - "$S3_KB" <<'PYEOF'
-from pathlib import Path
-import shutil
-import sys
-
-source = Path("kb")
-target = Path(sys.argv[1])
-for path in source.rglob("*"):
-    if not path.is_file():
-        continue
-    relative = path.relative_to(source)
-    if relative.as_posix() != ".lumio-authoring.yaml" and any(part.startswith(".") for part in relative.parts):
-        continue
-    if relative.as_posix() not in {"lumio.yaml", ".lumio-authoring.yaml"} and path.suffix.lower() != ".md":
-        continue
-    destination = target / relative
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(path, destination)
-PYEOF
-git -C "$S3_KB" init -q
-git -C "$S3_KB" config user.email "smoke@example.com"
-git -C "$S3_KB" config user.name "Onboarding Smoke"
-git -C "$S3_KB" add -A
-git -C "$S3_KB" commit -qm "Reviewed onboarding Knowledge Base"
-REV1=$(git -C "$S3_KB" rev-parse HEAD)
+S3_KB="$PROJ/kb"
+REV1="$REV"
 S3_REGISTRY="$LUMIO_SOURCE_REGISTRY"
 export LUMIO_SOURCE_STORE="$S3_TMP/source-store"
 export LUMIO_ARTIFACT_RETENTION=disabled
@@ -323,8 +297,51 @@ READER=$(mktemp -d)
   $LW setup --from "s3://$BUCKET/$PREFIX"
   $LW search "password reset" --limit 2 | tee /dev/stderr | grep -E '^open:' >/dev/null
   $LW related "Aurora Helpdesk" --scope canonical | tee /dev/stderr | grep -E 'Starlight DB' >/dev/null
-  expect_fail "reader source inspect without a Source Artifact Store" \
-    $LW source inspect --source-id support-runbook-2026
+  # This same test principal is authorized for sealed PRIVATE publication metadata.
+  INSPECTION=$($LW source inspect --source-id support-runbook-2026 \
+    --entity-id entity:password-reset-runbook --published-version "$REV1")
+  INSPECT_REPORT="$INSPECTION" ${LUMIO_PYTHON:-python3} - \
+    "s3://$BUCKET/$PREFIX" "$REV1" "$HERE/sources/support-runbook.md" <<'PYEOF'
+import hashlib
+import os
+import sys
+from pathlib import Path
+
+from lumio_wiki import resolve_manifest_binding
+from lumio_wiki.artifact_store import local_publication_metadata_store
+from lumio_wiki.s3_location import effective_s3_destination_identity
+
+uri, version, original = sys.argv[1:]
+expected = hashlib.sha256(Path(original).read_bytes()).hexdigest()
+fields = dict(line.split(":", 1) for line in os.environ["INSPECT_REPORT"].splitlines())
+fields = {key: value.strip() for key, value in fields.items()}
+assert fields["source_id"] == "support-runbook-2026"
+assert fields["entity_id"] == "entity:password-reset-runbook"
+assert fields["bound_to"] == f"published version {version} (Source Binding Manifest)"
+assert fields["content_hash"] == f"{expected[:12]} (sha256, abbreviated)"
+assert fields["availability"] == "not retained (no Source Artifact Store configured)"
+assert fields["authorization"] == "granted (private publication metadata view)"
+# The CLI intentionally abbreviates digests; verify the FULL pin through its public SDK seam.
+endpoint = os.environ["LUMIO_S3_ENDPOINT"]
+config = {"aws_endpoint": endpoint}
+region = os.environ.get("LUMIO_S3_REGION") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+if region:
+    config["aws_region"] = region
+identity = effective_s3_destination_identity(uri, config=config,
+    client_options={"allow_http": endpoint.startswith("http://")})
+binding = resolve_manifest_binding(local_publication_metadata_store(identity), version,
+    "support-runbook-2026", entity_id="entity:password-reset-runbook")
+assert binding.content_hash == expected
+assert binding.published_version == version
+assert binding.entity_id == "entity:password-reset-runbook"
+assert binding.source_id == "support-runbook-2026"
+PYEOF
+  RAW_OUTPUT="$READER/unretained-source.md"
+  test ! -e "$RAW_OUTPUT"
+  expect_fail "raw fetch when originals were not retained" \
+    $LW source fetch --source-id support-runbook-2026 --published-version "$REV1" \
+      --output "$RAW_OUTPUT"
+  test ! -e "$RAW_OUTPUT"
 )
 
 step "10. Expected zero-index fallback (lancedb requested, index not published yet)"

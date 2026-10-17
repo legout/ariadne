@@ -261,4 +261,5 @@ def test_skill_routes_duplicate_candidates_to_merge_entity():
     assert "duplicate-identity candidates" in text
     assert "merge-entity" in text
     # The never-mutates guardrail must sit beside the routing instruction.
-    assert "nothing merges or stages automatically" in text
+    routing = text.split("4. Route duplicate-identity candidates:", 1)[1].split("\n5.", 1)[0]
+    assert "merge-entity" in routing and "nothing merges automatically" in routing

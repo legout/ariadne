@@ -43,6 +43,7 @@ from lumio_wiki.s3_location import (
     MANIFEST_OBJECT,
     S3Location,
     S3Manifest,
+    S3ManifestFile,
     S3Pointer,
 )
 from lumio_wiki.s3_publish import (
@@ -739,10 +740,19 @@ def _fake_builder(fingerprint=None, model=None, tables=None, exc=None):
         )
         if exc is not None:
             raise exc
+        index_bytes = b"fixture index object: 42 evidence rows, 7 pages"
+        obstore.put(store, f"{sidecar_prefix}/fixture-index.bin", index_bytes, mode="create")
         return RemoteIndexCompletion(
             fingerprint=override or fingerprint.digest,
             model=model,
             tables=tables if tables is not None else {"evidence": 42, "pages": 7},
+            objects=[
+                S3ManifestFile(
+                    path=f"{LANCE_DERIVED_DIR}/fixture-index.bin",
+                    digest=hashlib.sha256(index_bytes).hexdigest(),
+                    size=len(index_bytes),
+                )
+            ],
         )
 
     return _builder, calls

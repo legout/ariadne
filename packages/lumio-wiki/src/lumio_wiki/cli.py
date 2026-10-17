@@ -4522,6 +4522,8 @@ def _source_coverage_registry(args, kb: KnowledgeBase) -> tuple:
         local_registry = _local_source_registry(args, kb.root)
     except OSError:
         return (None, "not checked: no ingest store")
+    except Exception:
+        return (None, "unavailable: registry could not be read")
     if not local_registry.root.exists():
         return (None, "not checked: no ingest store")
     return (local_registry, None)

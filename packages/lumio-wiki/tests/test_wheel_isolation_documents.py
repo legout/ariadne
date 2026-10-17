@@ -138,12 +138,7 @@ def test_documents_extra_does_not_pull_other_capabilities(documents_wheel_env: P
 def test_isolated_documents_extra_converts_pdf_into_proposal(
     documents_wheel_env: Path, tmp_path: Path
 ) -> None:
-    """AC3: a real PDF → Ingest Proposal journey from the ``[documents]`` install.
-
-    Drives the full ``ingest`` CLI path against a minimal PDF with a text layer
-    and asserts the proposal carries the extracted page text. This is the
-    positive complement to ``test_wheel_isolation.py``'s missing-extra test.
-    """
+    """Real installed PDF conversion is preparation, not publication authority."""
     python = documents_wheel_env
 
     kb_root = tmp_path / "kb"
@@ -154,6 +149,10 @@ def test_isolated_documents_extra_converts_pdf_into_proposal(
     )
     assert init.returncode == 0, f"init failed:\n{init.stderr}"
 
+    metadata_before = {
+        p.relative_to(kb_root): p.read_bytes() if p.is_file() else None
+        for p in (kb_root / ".lumio").rglob("*")
+    }
     pdf_path = tmp_path / "source.pdf"
     pdf_path.write_bytes(_MINIMAL_PDF)
 
@@ -174,7 +173,11 @@ def test_isolated_documents_extra_converts_pdf_into_proposal(
     )
     assert result.returncode == 0, result.stderr
     assert "Hello Lumio World" in result.stdout
-    assert not (kb_root / ".lumio").exists()
+    assert not (kb_root / ".lumio" / "ingest").exists()
+    assert {
+        p.relative_to(kb_root): p.read_bytes() if p.is_file() else None
+        for p in (kb_root / ".lumio").rglob("*")
+    } == metadata_before
 
 
 def test_doctor_reports_documents_extra_installed(documents_wheel_env: Path):

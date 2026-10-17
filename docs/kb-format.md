@@ -12,6 +12,22 @@ Compiled Page, Source, or Claim *means*), see
 [`CONTEXT.md`](../CONTEXT.md) and
 [ADR-0021](adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md).
 
+## Git authoring metadata
+
+Git authoring additionally adopts `.lumio-authoring.yaml` version 1 beside
+`lumio.yaml`: a stable non-empty `namespace`, declared `sources` with
+`active`/`retired` intent, and `bindings` mapping stable Entity IDs and Source
+IDs to exact lowercase SHA-256 digests. The four top-level keys (`version`,
+`namespace`, `sources`, `bindings`) are required; maps may be empty. See the
+[normative shape and validation](../project/specs/2026-10-15-0008-git-native-knowledge-authoring.md#31-source-reference-manifest).
+
+This manifest is reviewed authoring input, not deployment configuration or
+Reader content. Keep the private Source Registry, raw originals, transcripts,
+object keys and credentials outside Git/public KB content. A new private
+Source Version never silently replaces a reviewed binding. The manifest is
+excluded from public exports/retrieval and bound separately to publication;
+plain filesystem/S3 reads and validation do not require Git.
+
 ## File shape
 
 Every Compiled Page is one `.md` file with a YAML frontmatter block delimited
@@ -106,9 +122,9 @@ object**: another Entity ID (`object`) **or** a typed literal (`value` plus
 | `predicate` | yes | string | A Predicate ID declared in the Control File's `ontology.predicates`. |
 | `object` | conditional | string | The object Entity ID. Must reference a live page's Entity. Forbidden when the Predicate declares `literal_kind`. |
 | `value` + `value_type` | conditional | scalar + string | A typed literal object. `value_type` must equal the Predicate's declared `literal_kind` (`string`, `number`, or `boolean`) and match the value's kind. |
-| `status` | yes | string | One of `accepted`, `disputed`, `superseded`. `proposed`/`rejected` exist only inside Ingest Proposals and are blocked on active pages. |
+| `status` | yes | string | One of `accepted`, `disputed`, `superseded`. `proposed`/`rejected` are invalid and cannot be admitted, even from an unadmitted Git revision. |
 | `confidence` | no | float | Optional reviewer confidence. |
-| `origin` | no | string | `authored` (default) or `migrated`. Model-assisted origins remain future proposal-only work. |
+| `origin` | no | string | `authored` (default) or `migrated`. Model-assisted origins require separately approved behavior. |
 | `valid_from` / `valid_to` | no | string | Optional ISO 8601 valid-time bounds. |
 | `evidence` | yes | list\[mapping\] | At least one **Claim Evidence** anchor into this page's published content (see below). |
 
@@ -253,9 +269,9 @@ Retired Entity IDs from reviewed **Entity Merges**, mapping each retired ID to
 its surviving Entity (`from_id -> to_id`). A redirect keeps old references
 resolvable (`lumio-wiki entity entity:legacy-wiki` resolves through the chain
 to the survivor) while validation guarantees acyclicity and that only retired
-IDs redirect. Merges are proposal-first: a merge proposal retargets Claims and
-exactly resolved links, records the redirect, and discloses the blast radius
-before publication.
+IDs redirect. An explicit Git worktree merge retargets Claims and exactly
+resolved links, records the redirect, and discloses the impact. Validate the
+complete candidate and review/commit it before separate Publication Admission.
 
 ### Extensible Content Category catalog (ADR-0009)
 

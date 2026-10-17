@@ -294,6 +294,19 @@ def test_built_wheel_skill_protects_canonical_first_run_and_relationship_parity(
     with zipfile.ZipFile(wheel_path) as zf:
         skill_text = zf.read("lumio_wiki/data/skill/SKILL.md").decode("utf-8")
         protocol_text = zf.read("lumio_wiki/data/skill/PROTOCOL.md").decode("utf-8")
+    python = isolated_wheel_env["python"]
+    installed = subprocess.check_output(
+        [
+            str(python),
+            "-I",
+            "-c",
+            "import json; from importlib.resources import files; "
+            "r=files('lumio_wiki.data.skill'); "
+            "print(json.dumps({n:r.joinpath(n).read_text() for n in ('SKILL.md','PROTOCOL.md')}))",
+        ],
+        text=True,
+    )
+    assert json.loads(installed) == {"SKILL.md": skill_text, "PROTOCOL.md": protocol_text}
     for name, text in (("SKILL.md", skill_text), ("PROTOCOL.md", protocol_text)):
         flat = " ".join(text.lower().split())
         # setup is the canonical first run; init is the lower-level KB-only op.
@@ -303,6 +316,12 @@ def test_built_wheel_skill_protects_canonical_first_run_and_relationship_parity(
         # ADR-0021 canonical edges are accepted, evidence-bearing Claims.
         assert "extracted reference" in flat, f"{name}: must name Extracted References"
         assert "evidence-bearing" in flat, f"{name}: must document evidence-bearing Claims"
+        # Spec 0008 §§3/4/7: exact admission is separate from ordinary Git edits.
+        assert ".lumio-authoring.yaml" in text and "namespace" in flat
+        assert "--source-registry" in text and "private" in flat
+        assert "--revision" in text and "--expected-current" in text and "--confirm" in text
+        assert "operator authoriz" in flat and "general coding" in flat
+        assert "legacy-proposals export" in flat and "unadmitted" in flat
         # The title-based relationship frontmatter input and its staging
         # command are gone; the shipped skill must not document them.
         assert "relationship stage" not in flat, (
@@ -1107,6 +1126,16 @@ def test_isolated_ingest_research_journey(isolated_wheel_env: dict, tmp_path: Pa
         encoding="utf-8",
     )
 
+    (kb_root / ".lumio-authoring.yaml").write_text(
+        "version: 1\nnamespace: isolated-research\nsources: {}\nbindings: {}\n"
+    )
+    subprocess.run(["git", "init", "-q", str(kb_root)], check=True)
+    subprocess.run(["git", "-C", str(kb_root), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(["git", "-C", str(kb_root), "config", "user.name", "T"], check=True)
+    subprocess.run(["git", "-C", str(kb_root), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(kb_root), "commit", "-qm", "Adopt research KB"], check=True)
+    registry = tmp_path / "private-registry"
+
     report = tmp_path / "research.md"
     report.write_text(
         "---\n"
@@ -1150,20 +1179,43 @@ def test_isolated_ingest_research_journey(isolated_wheel_env: dict, tmp_path: Pa
             str(manifest),
             "--source-id",
             "wheel-research-q3",
+            "--source-registry",
+            str(registry),
         ],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, f"ingest-research failed:\n{result.stderr}"
-    assert "Staged proposal" in result.stdout
+    assert "Ingested into the Git authoring worktree" in result.stdout
     assert "consulted:      1 sources" in result.stdout
-
-    proposals_dir = kb_root / ".lumio" / "ingest" / "proposals"
-    proposal_id = next(proposals_dir.glob("*.json")).stem
-    result = subprocess.run(
-        [str(script), "publish", str(kb_root), proposal_id],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, f"publish failed:\n{result.stderr}"
+    assert not (kb_root / ".lumio" / "ingest" / "proposals").exists()
     assert (kb_root / "concepts" / "wheel_research.md").is_file()
+    subprocess.run(
+        ["git", "-C", str(kb_root), "add", "concepts", ".lumio-authoring.yaml"], check=True
+    )
+    subprocess.run(["git", "-C", str(kb_root), "commit", "-qm", "Research"], check=True)
+    revision = subprocess.check_output(
+        ["git", "-C", str(kb_root), "rev-parse", "HEAD"], text=True
+    ).strip()
+    destination = tmp_path / "published"
+    args = [
+        str(script),
+        "publish",
+        str(kb_root),
+        "--revision",
+        revision,
+        "--to",
+        str(destination),
+        "--expected-current",
+        "none",
+        "--source-registry",
+        str(registry),
+        "--json",
+    ]
+    preview = subprocess.run(args, check=True, capture_output=True, text=True)
+    review = json.loads(preview.stdout)
+    assert not destination.exists()
+    confirmed = subprocess.run(
+        [*args, "--confirm", review["review_digest"]], check=True, capture_output=True, text=True
+    )
+    assert json.loads(confirmed.stdout)["revision"] == revision

@@ -83,7 +83,7 @@ export LUMIO_S3_ALLOW_HTTP=1               # plain HTTP is localhost-only
 ## 2. Maintainer: local project setup
 
 Create a fresh project directory and run the canonical bootstrap. It creates
-the Knowledge Base (seeded `lumio.yaml` + ingest store), writes project
+the Knowledge Base (seeded `lumio.yaml` + derived-index directory), writes project
 `.env`, writes the `AGENTS.md` protocol section, and records the S3
 publication destination:
 
@@ -391,18 +391,19 @@ under a version prefix, then advances the active pointer
 (`current.json`) — compare-and-swap guarded:
 
 ```bash
-lumio-wiki publish-s3 --version v1
+REV1=$(git -C ./kb rev-parse HEAD)
+lumio-wiki publish-s3 ./kb --revision "$REV1" --expected-current none \
+  --source-registry "$LUMIO_SOURCE_REGISTRY"  # preview only
+# Only after operator authorization of the displayed S3 review:
+lumio-wiki publish-s3 ./kb --revision "$REV1" --expected-current none \
+  --source-registry "$LUMIO_SOURCE_REGISTRY" --confirm <review-digest>
 ```
 
-```text
-Published v1: 7 canonical file(s)
-  fingerprint: 3d9475a1…
-  location:    s3://lumio-quickstart/helpdesk-kb@v1
-```
-
-The destination came from `.env` (`LUMIO_PUBLISH_TO`, recorded by `setup`);
-pass one explicitly to override. Published Versions are immutable — publishing
-the same version again fails; publish a new version instead.
+The destination comes from `.env` (`LUMIO_PUBLISH_TO`, recorded by `setup`);
+pass one explicitly to override. The Published Version identity is the full
+commit (`REV1` below), not an operator-chosen `v1` label. The immutable bytes
+and private exact bindings identify that captured revision. An identical
+confirmed retry returns its receipt without rewriting or reactivating history.
 
 ## 10. Reader: read-only project against S3
 
@@ -412,14 +413,20 @@ commands resolve the active Published Version — no local copy of the KB:
 ```bash
 mkdir ../helpdesk-reader && cd ../helpdesk-reader
 lumio-wiki setup --from s3://lumio-quickstart/helpdesk-kb
-lumio-wiki search "password reset" --limit 2     # pathless, reads v1
+lumio-wiki search "password reset" --limit 2     # pathless, reads REV1
 lumio-wiki related "Aurora Helpdesk" --scope canonical
 lumio-wiki source inspect --source-id support-runbook-2026
 ```
 
-The final command fails truthfully: a Reader of a Location with no private
-Source Artifact Store gets an actionable error naming
-`lumio-wiki setup --source-store`, never a fallback or a silent success.
+Private source metadata is not public Reader content. In this controlled
+same-principal walkthrough, the operator is also authorized to read the private
+publication metadata sealed during admission. `source inspect --published-version
+<REV1>` can therefore report the exact version, Entity/Source identity and digest
+abbreviation with `not retained (no Source Artifact Store configured)`.
+Metadata inspection does not grant access to raw bytes: `source fetch` must fail
+and create no output when originals were not retained. Unavailable or
+unauthorized private metadata remains a bounded refusal; it never falls back to
+registry-latest. This lab does not certify cross-role authorization policies.
 
 ## 11. LanceDB: expected zero-index fallback, then a healthy index
 
@@ -428,7 +435,7 @@ mode** (`lexical` | `semantic` | `hybrid`) are separate settings. Lexical
 works on every backend; semantic/hybrid additionally need an embedder.
 
 Request the LanceDB backend while the active version has no remote index
-(v1 was published zero-index) — `status` discloses the **expected zero-index
+(REV1 was published zero-index) — `status` discloses the **expected zero-index
 fallback** instead of hiding it:
 
 ```bash
@@ -439,16 +446,23 @@ lumio-wiki search "password reset" --limit 1    # still answers — zero-index
 ```text
 lancedb_requested:           true
 lancedb_healthy:             false
-lancedb_fallback:            LanceDB index missing at s3://lumio-quickstart/helpdesk-kb/v1/derived/lance; zero-index page search over the same Published Version — publish a fresh version with 'lumio-wiki publish-s3 --retrieval lancedb'
+lancedb_fallback:            LanceDB index missing ...; zero-index page search over the same Published Version
 ```
 
-Do exactly what the fallback says — publish `v2` with the remote index built
-and health-checked **before** the pointer advances (needs `lumio-lancedb`),
-using the CAS guard because `v1` is active:
+Create a new explicit Git revision (`REV2`) requesting the remote index,
+built and health-checked **before** activation (needs `lumio-lancedb`).
+Use the exact expected-current guard because `REV1` is active. Keep the
+captured `REV1` value from Part 9 in the Maintainer shell:
 
 ```bash
 cd ../helpdesk-project
-lumio-wiki publish-s3 --version v2 --expected-pointer-version v1 --retrieval lancedb
+git -C ./kb commit --allow-empty -m "Request version-bound LanceDB retrieval"
+REV2=$(git -C ./kb rev-parse HEAD)
+lumio-wiki publish-s3 ./kb --revision "$REV2" --expected-current "$REV1" \
+  --source-registry "$LUMIO_SOURCE_REGISTRY" --retrieval lancedb  # preview
+# Only after operator authorization of this new review:
+lumio-wiki publish-s3 ./kb --revision "$REV2" --expected-current "$REV1" \
+  --source-registry "$LUMIO_SOURCE_REGISTRY" --retrieval lancedb --confirm <review-digest>
 cd ../helpdesk-reader
 lumio-wiki setup --from s3://lumio-quickstart/helpdesk-kb --retrieval lancedb
 ```
@@ -482,11 +496,12 @@ lumio-wiki search "reset link expiry" --mode semantic
 lumio-wiki search "reset link expiry" --mode hybrid
 ```
 
-To revert a bad activation, `lumio-wiki rollback-s3
-s3://lumio-quickstart/helpdesk-kb --version v1 --expected-pointer-version v2`
-re-points to a prior complete version (never rebuilds it); `lumio-wiki
-cleanup-s3 s3://lumio-quickstart/helpdesk-kb` reports interrupted-build
-residue and deletes nothing.
+To revert a bad activation, preview `lumio-wiki rollback-s3
+s3://lumio-quickstart/helpdesk-kb --version "$REV1" --expected-current "$REV2"`
+in the Maintainer shell, then repeat with `--confirm <review-digest>` only
+after operator authorization. Rollback verifies historical bytes/bindings,
+never rebuilds them. `lumio-wiki cleanup-s3
+s3://lumio-quickstart/helpdesk-kb` reports residue and deletes nothing.
 
 ## 12. A grounded agent answer
 
@@ -518,7 +533,8 @@ in `.env` (setup writes locations, never credentials):
 ```bash
 export AWS_REGION=eu-west-1                    # standard resolution; no keys exported
 lumio-wiki setup ./kb --publish-to s3://example-public-kb/team-kb
-lumio-wiki publish-s3 --version v1
+lumio-wiki publish-s3 ./kb --revision <full-commit-id> --expected-current none \
+  --source-registry <private-dir>  # preview; confirm only after operator authorization
 lumio-wiki setup --from s3://example-public-kb/team-kb --retrieval lancedb
 ```
 
