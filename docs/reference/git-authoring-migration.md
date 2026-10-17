@@ -21,6 +21,25 @@ Examples and ingested pages are artifacts in the same candidate and admitted sna
 
 Ad-hoc `define-metric` results are ephemeral (`governed: false`, `persistence: {status: not_saved}`). To retain a definition, use an explicit revision-checked model/page edit in a Git proposal. `ariadne-ingest` likewise targets a selected proposal revision; it does not write a staging tree or admit the result.
 
+## Data Contracts and local bindings
+
+Typed `read`/`edit` also accept `contract` (`name`, with `content` for edits) and
+`contract_bindings` (`content` for edits, no name). Contracts live in
+`contracts/*.yaml` / `*.yml`; bindings live in fixed `contract_bindings.yaml`.
+Use an exact extension when a contract stem is ambiguous. These are ordinary
+revision-checked candidate artifacts, included in validation, bounded review,
+snapshot digest and human admission — not an arbitrary-path editor or a second
+contract store. Read an explicit proposal’s current candidate; use its returned
+revision as the next edit/validation’s expected revision. A newer candidate never
+replaces Analyst’s pinned admitted snapshot.
+
+A valid unbound document can be retained without live conformance evidence.
+A bound dataset needs complete applicable unexpired passing observations of all
+applicable requirements before human admission; static CLI success cannot
+supply that proof. See [Data Contracts](data-contracts.md) for the immutable pin,
+supported profile and blocking outcomes. No import, automatic ID repair,
+producer rewrite from observations, new approval tool or #76 identity is implied.
+
 ## Human-only operations
 
 The local operator remains responsible for:

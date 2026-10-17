@@ -120,7 +120,9 @@ def build_parser() -> _Parser:
     sub.add_parser("list-datasets", parents=[common], help="list queryable tables")
 
     discover = sub.add_parser(
-        "search", parents=[common], help="discover metrics, pages, terms and examples (read-only)"
+        "search",
+        parents=[common],
+        help="discover metrics, pages, terms, examples and contracts without opening sources",
     )
     discover.add_argument("query")
     discover.add_argument("--limit", type=int, default=5)

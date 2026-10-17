@@ -75,6 +75,21 @@ Remote-path support depends on the source type and DuckDB runtime configuration.
 
 A read-only attachment is not a sandbox, snapshot, or guarantee that a view is safe. It protects the catalog file from writes, but does not isolate filesystem/network access or freeze remote backing data. Ariadne does not repair publisher-supplied absolute paths or fully qualified URLs. See [How Ariadne works](../explanations/how-ariadne-works.md#source-access-is-not-metric-governance) for the authority distinction and [Docker MCP](../how-to/docker-mcp.md) for explicitly mounting external data.
 
+## Data Contracts do not grant access
+
+[Data Contracts](data-contracts.md) declare expected structure/quality separately
+from `contract_bindings.yaml`, which selects an existing exact approved asset
+and OSI dataset. A contract server address, variable or binding never registers
+a source, supplies credentials, changes an endpoint or expands S3 scopes.
+SQL-quality execution supports only an approved native DuckDB source, not every
+source type above. Native DuckDB’s trusted-backing boundary is unchanged.
+
+`discover` / `ariadne search` reads pinned admitted metadata without opening
+sources. `list_datasets` / `ariadne list-datasets` still constructs the approved
+live catalog, returns actual columns and retains ordinary admission/approval
+refusals. Its matching contract annotation comes from the pinned snapshot and
+adds no source read or second contract inspection; it is not a health check.
+
 ## Document inputs are different
 
 Documents supplied as authoring context are not query sources. Markdown and text are handled natively; the optional `ariadne-data[documents]` extra adds supported PDF, Office, and HTML converters. The `ariadne-ingest` command stages document-derived drafts; it does not serve them automatically. See the [CLI reference](cli.md#document-ingestion).

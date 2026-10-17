@@ -416,12 +416,60 @@ def test_authoring_git_flow_stops_at_every_human_gate(tmp_path):
         ]
         model = json.loads(edits[-1].result)
 
+        # Spec 0028 §§3/7: existing tools preserve producer bytes and typed
+        # identities; this unbound document makes no data-conformance claim.
+        contract_text = (
+            "apiVersion: v3.2.0\nkind: DataContract\n"
+            "id: agent-contract\nversion: producer-release-A\n"
+        )
+        provider.script(
+            turn(
+                calls=[
+                    (
+                        "edit_proposal",
+                        {
+                            "proposal": proposal,
+                            "expected_revision": model["revision"],
+                            "edit": {
+                                "kind": "contract",
+                                "name": "producer.yaml",
+                                "content": contract_text,
+                            },
+                        },
+                    )
+                ]
+            )
+        )
+        provider.script(
+            turn(
+                calls=[
+                    (
+                        "read_artifact",
+                        {
+                            "proposal": proposal,
+                            "kind": "contract",
+                            "name": "producer.yaml",
+                        },
+                    )
+                ]
+            )
+        )
+        provider.script(turn(text="producer document retained; no observation claimed"))
+        contract_events = asyncio.run(drive(session, "retain and read the producer contract"))
+        events += contract_events
+        contract_edit = result_of(contract_events, "edit_proposal")
+        contract_read = result_of(contract_events, "read_artifact")
+        assert contract_read["content"] == contract_text
+        assert contract_read["path"] == "contracts/producer.yaml"
+        assert contract_read["revision"] == contract_edit["revision"]
+        assert contract_read["complete"] is True
+
         provider.script(
             turn(
                 calls=[
                     (
                         "validate_proposal",
-                        {"proposal": proposal, "expected_revision": model["revision"]},
+                        {"proposal": proposal, "expected_revision": contract_edit["revision"]},
                     )
                 ]
             )
@@ -439,11 +487,13 @@ def test_authoring_git_flow_stops_at_every_human_gate(tmp_path):
         "inputs",
         "edit_proposal",
         "edit_proposal",
+        "edit_proposal",
+        "read_artifact",
         "validate_proposal",
         "review_proposal",
     ]
     assert all(event.is_error is False for event in activity)
-    _start, _propose, _inputs, _page, _model, validate, review = (
+    _start, _propose, _inputs, _page, _model, _contract, _read, validate, review = (
         json.loads(event.result) for event in activity
     )
 
@@ -579,7 +629,22 @@ def test_authoring_surface_has_no_approval_or_admission_and_no_runtime(tmp_path,
 
     model, system, _messages, tools = provider.calls[0]
     assert model == "fake-authoring"
-    names = {tool.name for tool in tools}
+    by_name = {tool.name: tool for tool in tools}
+    read_schema: Any = by_name["read_artifact"].parameters
+    assert set(read_schema["properties"]["kind"]["enum"]) == {
+        "model",
+        "graph",
+        "page",
+        "seed_notes",
+        "contract",
+        "contract_bindings",
+    }
+    # Edits retain the native discriminated object, not a second kind filter.
+    edit_schema: Any = by_name["edit_proposal"].parameters
+    assert edit_schema["properties"]["edit"]["type"] == "object"
+    for kind in ("contract", "contract_bindings"):
+        assert kind in by_name["edit_proposal"].description
+    names = set(by_name)
     assert names == AUTHORING_TOOLS, "the Authoring role gets the Git contract ops"
     assert not any(
         marker in name for name in names for marker in ("approve", "promot", "admit", "reconcil")

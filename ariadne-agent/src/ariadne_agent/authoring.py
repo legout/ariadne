@@ -206,11 +206,15 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
         "read_artifact": (
             "Read one artifact of the proposal's current candidate revision "
             "(inherited from the base when never edited) in bounded parts: "
-            "the revision, path, content part and completeness."
+            "the revision, path, content part and completeness. Kinds: model, graph, "
+            "page, seed_notes, contract (name; exact .yaml/.yml when ambiguous), "
+            "contract_bindings (fixed contract_bindings.yaml)."
         ),
         "edit_proposal": (
             "Apply one COMPLETE artifact edit — {kind: model|graph|page|"
-            "seed_notes, name?, section?, content} — requiring the expected "
+            "seed_notes|contract|contract_bindings, name?, section?, content} — "
+            "contract uses name; contract_bindings selects the fixed binding file — "
+            "requiring the expected "
             "candidate revision; a stale revision or competing writer is "
             "refused, an identical edit is a no-op. Labeled mapping "
             "hypotheses/evidence save AUTOMATICALLY through this seam — no "
@@ -307,7 +311,17 @@ def authoring_tools(project: Path, skill_roots: Sequence[Path] = ()) -> list[Age
             "type": "object",
             "properties": {
                 "proposal": {"type": "string"},
-                "kind": {"type": "string", "enum": ["model", "graph", "page", "seed_notes"]},
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "model",
+                        "graph",
+                        "page",
+                        "seed_notes",
+                        "contract",
+                        "contract_bindings",
+                    ],
+                },
                 "name": {"type": "string"},
                 "section": {"type": "string"},
                 "part": {"type": "integer", "minimum": 1},

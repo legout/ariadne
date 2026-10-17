@@ -20,6 +20,12 @@ The documentation follows [Diátaxis](https://diataxis.fr/):
 
 The [documentation index](docs/README.md) lists all guides and references for **Ariadne 0.3.0**.
 
+**Development candidate:** [Data Contracts](docs/reference/data-contracts.md) describes
+Core’s limited, pinned ODCS v3.2.0 consumer profile, separate Git bindings and
+as-of evidence. Source-free `ariadne search` includes a contracts group;
+`list-datasets` remains an approved live-catalog operation. This is not full
+ODCS compliance, a live health guarantee, or shared cross-layer identity (#76).
+
 ## Source development
 
 Work on Ariadne itself happens from the package checkout, not inside a data project:

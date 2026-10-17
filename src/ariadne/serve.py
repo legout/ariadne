@@ -491,10 +491,10 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         @app.tool()
         @_tool_errors
         async def discover(query: str, limit: int = 5) -> dict:
-            """Discover metrics, pages, terms and examples without opening sources.
+            """Discover metrics, pages, terms, examples and contracts without opening sources.
 
-            Four native groups, draft/history/freshness labels and bounded term
-            continuation; never executes an answer or authorizes a join.
+            Five native groups, snapshot-bound as-of contract evidence and bounded
+            term continuation; never executes an answer or authorizes a join.
             """
             discovery = DiscoveryRuntime.open_project(project)
             return await discovery.discover(query, limit=limit)
@@ -566,7 +566,11 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         @app.tool()
         @_tool_errors
         async def list_datasets() -> list[dict]:
-            """List every table in the attached database with its columns and types.
+            """List the approved live catalog with its actual columns and types.
+
+            Requires ordinary admission/source approval; this is not offline.
+            Matching contract annotations come from the pinned snapshot without
+            additional source reads or a second contract inspection.
 
             Pairs with define_metric: pick tables here, then define an ad-hoc metric
             for any question no governed metric answers. For bounded record
@@ -884,8 +888,9 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
 
             Args:
                 proposal: the proposal ID (authoring_start_proposal returned it).
-                kind: one of model, graph, page, seed_notes.
-                name: artifact name (model/page).
+                kind: one of model, graph, page, seed_notes, contract, contract_bindings.
+                name: artifact name (model/page/contract); contract accepts an exact
+                    .yaml/.yml filename, required to disambiguate extensions.
                 section: OKF page section (page).
                 part: which bounded part (default 1).
             """
@@ -913,8 +918,10 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     based on (the response of the previous edit/read).
                 edit: one discriminated JSON object — {kind: model, name,
                     content}, {kind: graph, content}, {kind: page, section,
-                    name, content}, or {kind: seed_notes, content}. Typed source
-                    proposals arrive through authoring_propose_sources.
+                    name, content}, {kind: seed_notes, content}, {kind: contract,
+                    name, content}, or {kind: contract_bindings, content} (the fixed
+                    contract_bindings.yaml). Typed source proposals arrive through
+                    authoring_propose_sources.
             """
             return authoring_api.edit_proposal(proposal, expected_revision, edit)
 
