@@ -478,6 +478,15 @@ def _export_input(store_root, proposal_id, kb_root, baseline, branch):
             source_id = record.provenance.source_id
             _validate_source_id(source_id)
             source_hash = record.provenance.source_hash
+            if captured.manifest.sources.get(source_id) == "retired" and not (
+                record.source_change
+                and (record.source_change.action, record.source_change.source_id)
+                == ("reactivate", source_id)
+            ):
+                diagnostics.append(
+                    f"source {source_id!r} is retired in the selected baseline; "
+                    "resolve the conflict with explicit verified reactivation intent"
+                )
             exact = _HistorySnapshot(state, proposal_id).find_version(source_id, source_hash)
             if exact is None:
                 diagnostics.append(
@@ -711,6 +720,23 @@ def export_legacy_proposal(store_root, proposal_id, *, kb_root, baseline, branch
                 if _artifacts(root) != identity["artifacts"]:
                     raise LegacyExportConflictError("private artifacts changed during export")
                 _git(worktree, "add", "-A")
+                required = [page.path for page in kb.pages] + [SOURCE_REFERENCE_MANIFEST_BASENAME]
+                if (kb_path / "lumio.yaml").is_file():
+                    required.append("lumio.yaml")
+                for relative in required:
+                    staged_path = (PurePosixPath(plan.kb_subtree) / relative).as_posix()
+                    if _git_exit(
+                        worktree,
+                        "--literal-pathspecs",
+                        "ls-files",
+                        "--error-unmatch",
+                        "--",
+                        staged_path,
+                    ):
+                        raise LegacyExportBlockedError(
+                            f"export destination {relative!r} is missing from the Git index; "
+                            "review and adjust ignore rules before exporting"
+                        )
                 safe_origin = (
                     record.provenance.origin
                     if record.provenance.origin

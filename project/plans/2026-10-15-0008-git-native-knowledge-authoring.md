@@ -1,11 +1,70 @@
 # Implementation plan 0008: Git-native Knowledge Authoring
 
-**Revision/status:** 15 — G3 accepted as an isolated component at
+**Revision/status:** 16 — G4 initial-M F1/F2 collective correction authorized
+in the fresh isolated checkout below; acceptance and the one direct delta
+review remain parent-owned. G3 accepted as an isolated component at
 `fb2bcf36…` (tree `da4f7351…`, result `result/g3/sol-a1`, closed review
 chain ending in `RUN/g3-sol-reviewer-report.md` PASS; the r13 "reviewed
 but NOT accepted" state is superseded by the parent's isolated G3
 acceptance). G4 execution authorized. Behavioral specification
 revision 3 (reactivation clarification only).
+
+**Parent-authorized G4 initial-M correction, 2026-10-17 (r16):** the parent
+read the complete `RUN/g4-reviewer-report.md`, accepted P2 F1/F2 as small
+in-scope defects, and granted this ONE collective correction under the
+existing G4 execution/quota-takeover authority, followed by ONE parent-owned
+direct delta review. This is not a new feature, budget, review round or G5.
+Sole writer: Paseo/Pi `db5c651f-f0e4-494e-9642-50eede7acdda`, workspace
+`wks_068e95a9b25d920f`, native Pi `01a14b94-a35a-7208-b622-a1c4d56d8f76`;
+startup/environment/host agree on `openai-codex/gpt-6.1-sol` / high.
+Physical registered checkout:
+`/home/volker/.local/state/worktrees/0ast0lnx/lumio-git-g4-fix-a1`, branch
+`orchestrator/lumio-git-20261015/g4-fix-a1`, common Git
+`/home/volker/coding/lumio-wiki/.git`. Clean base
+`refs/heads/orchestrator/lumio-git-20261015/base/g4-fix-a1` =
+`c2456a063920a67aaf32f81e30d53dc0774898f5`, tree
+`47e033b909399e1f97b24e633afc5f8399ef8a88`; sole future result
+`refs/heads/orchestrator/lumio-git-20261015/result/g4/fix-a1` was absent.
+Old worktree dirt has unverified origin; do not consume, clean or mutate it.
+Frozen prior refs/reports/recovery artifacts remain immutable.
+
+Owned source changes: ONLY this plan, `legacy_proposals.py`, and
+`test_legacy_proposal_export.py`. F1 uses ordinary non-forced staging, then
+refuses any effective candidate Compiled Page, present Control File or manifest
+missing from the index before commit/branch/receipt; absent optional controls
+remain supported. No force-add or private/unrelated-file staging. F2 blocks
+retired-baseline ordinary managed provenance in shared `_export_input` for
+preview and confirmation unless matching explicit reactivation passes the
+existing exact transition/history/provenance checks. No native/history/registry
+semantics, public interface, schema, module, dependency or G3 change.
+
+Exact validation: one serial pre-fix red group containing new
+`test_ignored_new_page_refuses_without_data_loss` and
+`test_ordinary_record_cannot_reactivate_retired_baseline`; independent original
+wire/preconditions/identity/raw hashes/Entity IDs and real Git refs prove the
+named failures, not parser/import errors. ONE serial post-fix group contains
+those two plus existing `test_export_journey` and
+`test_unknown_exact_binding_refuses_without_data_loss`, all in
+`packages/lumio-wiki/tests/test_legacy_proposal_export.py`. Preserve true exits
+with pipefail. Scoped Ruff/format/diff on the two owned Python files, format
+before post-fix tests. No duplicate green reruns after prose/format/commit;
+post-fix failure stops for named diagnosis and an affected-node proposal.
+Own locked environment setup is authorized with Python 3.14.8 at
+`/home/volker/.local/bin/python3.14`, uv 0.11.8 and declared dependencies only;
+no sibling environment or lock/config changes. Reuse prior M 167+1 and
+co-switch 19+1 only where applicable; no whole-module/group/full-suite,
+typecheck, installed/live/provider/G5 certification. Pyright family remains
+inconclusive, not type-clean evidence.
+
+Raw logs: unique `RUN/logs/g4-fix-*`; handoff:
+`RUN/g4-fix-worker-report.md` with actual commit/tree/base/ref, full porcelain,
+commands/exits/red quality and limits. `RUN/run.json` is parent-only. Commit
+exactly the three files, verify clean lineage and freeze ONLY the unique result
+ref above, then relinquish writes. Parent owns the one `c2456a0..fix` M delta;
+any surviving material same finding returns to the owner, never round three.
+No delegation, memory/wiki/global automation, private app, real/shared KB/store,
+integration, push, PR, issue update, release, deploy or cleanup authority.
+No new vocabulary or ADR; planning-contract v1, catalog revision unknown.
 
 **Owner-authorized G4 quota takeover, 2026-10-17 (r15):** after the original
 Pi/GLM-high writer stopped with provider 429/1308, the owner explicitly answered

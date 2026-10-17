@@ -263,6 +263,168 @@ def test_unknown_exact_binding_refuses_without_data_loss(tmp_path: Path):
     assert _tree_state(store) == before
 
 
+def _write_original_record(path: Path, record: dict) -> None:
+    # Original persisted review identity includes the historical page defaults.
+    for page in record["proposed_pages"]:
+        for key, value in {
+            "category": None,
+            "page_type": "",
+            "durability_rationale": "",
+            "compound_revision": False,
+            "move_from_path": None,
+            "rename_from": None,
+        }.items():
+            page.setdefault(key, value)
+    reviewed_fields = (
+        "affected_pages",
+        "body_link_repairs",
+        "control_file",
+        "entity_merges",
+        "proposed_pages",
+        "removed_pages",
+        "source_change",
+    )
+    payload = {key: record[key] for key in reviewed_fields}
+    record["reviewed_identity"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    ).hexdigest()
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+
+def _ordinary_store(tmp_path: Path) -> tuple[Path, dict, str]:
+    store = _store(tmp_path)
+    record = json.loads((store / "proposals" / "exportme0001.json").read_bytes())
+    record["source_change"] = None
+    raw_digest = hashlib.sha256(
+        (store / "raw" / "exportme0001" / "manual.txt").read_bytes()
+    ).hexdigest()
+    assert record["provenance"]["source_hash"] == raw_digest
+    registry_path = store / "source-registry" / "sources.json"
+    history = json.loads(registry_path.read_bytes())
+    version = history["pending_transitions"][0]["version"]
+    assert version["content_hash"] == raw_digest
+    history["sources"][0]["versions"].append(version)
+    history["sources"][0]["status"] = "active"
+    history["pending_transitions"] = []
+    registry_path.write_text(json.dumps(history), encoding="utf-8")
+    return store, record, raw_digest
+
+
+def test_ignored_new_page_refuses_without_data_loss(tmp_path: Path):
+    kb_path, _ = _baseline_repo(tmp_path)
+    repo = kb_path.parent
+    store, record, raw_digest = _ordinary_store(tmp_path)
+    (repo / ".gitignore").write_text("/kb/entities/ignored-new.md\n", encoding="utf-8")
+    (kb_path / ".lumio-authoring.yaml").write_text(
+        "version: 1\nnamespace: legacy-fixture-kb\nsources:\n"
+        "  manual-src:\n    status: active\nbindings:\n"
+        f"  'entity:export-fixture':\n    manual-src: {raw_digest}\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "active baseline with ignored new destination")
+    baseline = _git(repo, "rev-parse", "HEAD")
+    page = record["proposed_pages"][0]
+    page["relative_path"] = "entities/ignored-new.md"
+    page["title"] = "Ignored New Entity"
+    page["markdown"] = (
+        page["markdown"]
+        .replace("entity:export-fixture", "entity:ignored-new")
+        .replace("Export Fixture Entity", "Ignored New Entity")
+    )
+    record["affected_pages"] = ["Ignored New Entity"]
+    record["preconditions"] = [
+        {"path": "entities/ignored-new.md", "role": "creation", "kind": "absent", "digest": ""},
+        {
+            "path": "lumio.yaml",
+            "role": "control",
+            "kind": "file",
+            "digest": hashlib.sha256(BASELINE_CONTROL.encode()).hexdigest(),
+        },
+    ]
+    _write_original_record(store / "proposals" / "exportme0001.json", record)
+    assert not (kb_path / "entities" / "ignored-new.md").exists()
+    before = _tree_state(store, include_receipts=True)
+    plan = plan_legacy_export(
+        store, "exportme0001", kb_root=kb_path, baseline=baseline, branch="legacy/ignored-new"
+    )
+    assert plan.blocking_diagnostics == ()
+    with pytest.raises(LegacyExportBlockedError, match="entities/ignored-new.md"):
+        export_legacy_proposal(
+            store, "exportme0001", kb_root=kb_path, baseline=baseline, branch="legacy/ignored-new"
+        )
+    assert _git(repo, "for-each-ref", "refs/heads/legacy/ignored-new") == ""
+    assert _git(repo, "rev-parse", "HEAD") == baseline
+    assert not (kb_path / "entities" / "ignored-new.md").exists()
+    assert _tree_state(store, include_receipts=True) == before
+
+
+def test_ordinary_record_cannot_reactivate_retired_baseline(tmp_path: Path):
+    kb_path, _ = _baseline_repo(tmp_path)
+    repo = kb_path.parent
+    store, record, raw_digest = _ordinary_store(tmp_path)
+    other_digest = hashlib.sha256(b"independent supporting source\n").hexdigest()
+    manifest_path = kb_path / ".lumio-authoring.yaml"
+    active_manifest = (
+        "version: 1\nnamespace: legacy-fixture-kb\nsources:\n"
+        "  manual-src:\n    status: active\n  other-src:\n    status: active\n"
+        "bindings:\n  'entity:export-fixture':\n"
+        f"    manual-src: {raw_digest}\n    other-src: {other_digest}\n"
+    )
+    manifest_path.write_text(active_manifest, encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "active source when ordinary record was staged")
+    _write_original_record(store / "proposals" / "exportme0001.json", record)
+    page_before = (kb_path / "entities" / "export-fixture.md").read_bytes()
+    control_before = (kb_path / "lumio.yaml").read_bytes()
+    manifest_path.write_text(
+        active_manifest.replace(
+            "manual-src:\n    status: active", "manual-src:\n    status: retired"
+        ).replace(f"    manual-src: {raw_digest}\n", ""),
+        encoding="utf-8",
+    )
+    registry_path = store / "source-registry" / "sources.json"
+    history = json.loads(registry_path.read_bytes())
+    history["sources"][0]["status"] = "retired"
+    history["sources"].append(
+        {
+            "source_id": "other-src",
+            "status": "active",
+            "versions": [
+                {
+                    "source_id": "other-src",
+                    "content_hash": other_digest,
+                    "created_at": "2026-01-01T00:00:00Z",
+                }
+            ],
+        }
+    )
+    registry_path.write_text(json.dumps(history), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "explicit retirement retains other eligible support")
+    baseline = _git(repo, "rev-parse", "HEAD")
+    assert (kb_path / "entities" / "export-fixture.md").read_bytes() == page_before
+    assert (kb_path / "lumio.yaml").read_bytes() == control_before
+    before = _tree_state(tmp_path, include_receipts=True)
+    plan = plan_legacy_export(
+        store, "exportme0001", kb_root=kb_path, baseline=baseline, branch="legacy/retired-ordinary"
+    )
+    assert _tree_state(tmp_path, include_receipts=True) == before
+    assert all("manual-src" in d and "retired" in d for d in plan.blocking_diagnostics)
+    assert any("manual-src" in d and "retired" in d for d in plan.blocking_diagnostics)
+    with pytest.raises(LegacyExportBlockedError, match="manual-src.*retired"):
+        export_legacy_proposal(
+            store,
+            "exportme0001",
+            kb_root=kb_path,
+            baseline=baseline,
+            branch="legacy/retired-ordinary",
+        )
+    assert _git(repo, "for-each-ref", "refs/heads/legacy/retired-ordinary") == ""
+    assert _git(repo, "rev-parse", "HEAD") == baseline
+    assert _tree_state(tmp_path, include_receipts=True) == before
+
+
 def test_native_registry_writer_refuses_unresolved_legacy_pending(tmp_path: Path):
     """A native registry write never silently ignores legacy pending state."""
     root = _store(tmp_path) / "source-registry"
