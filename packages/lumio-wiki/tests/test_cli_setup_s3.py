@@ -11,6 +11,7 @@ lives in ``test_s3_location.py`` / S3-compatible integration).
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -29,6 +30,11 @@ from lumio_wiki.env_loader import (
     read_env_allowlist,
 )
 from lumio_wiki.location import FilesystemLocation
+from lumio_wiki.s3_location import S3Location
+from lumio_wiki.source_references import (
+    SourceReferenceManifest,
+    serialize_source_reference_manifest,
+)
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -87,6 +93,30 @@ def _env_value(project: Path, key: str) -> str | None:
         if line.startswith(f"{key}="):
             return line.split("=", 1)[1]
     return None
+
+
+def _init_git_kb(root: Path, registry: Path) -> str:
+    (root / ".lumio-authoring.yaml").write_bytes(
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(
+                version=1,
+                namespace="urn:uuid:0f6f0e3e-1d9a-4b2e-9d47-6c1f0f5f4f3e",
+            )
+        )
+    )
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Test Author"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "authoring revision"], check=True)
+    revision = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    registry.mkdir(parents=True, exist_ok=True)
+    return revision
 
 
 class _StubS3Location:
@@ -286,59 +316,99 @@ def test_fresh_process_maintainer_setup_makes_publication_config_usable(tmp_path
 
 
 def test_fresh_process_publish_s3_consumes_destination_from_env_file(tmp_path):
-    """Fresh process: publish-s3 with no destination reads LUMIO_PUBLISH_TO.
-
-    An invalid destination URI in .env makes the consumption observable
-    without any network or credential I/O: the actionable error names the
-    exact value the fresh process loaded.
-    """
+    """The fresh-process alias reads its destination before Git admission."""
     project = tmp_path / "publish-project"
     project.mkdir()
     shutil.copytree(FIXTURES / "valid", project / "kb")
+    registry = project / "registry"
+    revision = _init_git_kb(project / "kb", registry)
     (project / ".env").write_text(
         f"LUMIO_KB_PATH={project / 'kb'}\n{PUBLISH_TO_ENV_VAR}=not-a-uri\n",
         encoding="utf-8",
     )
-    result = _run_cli_in_subprocess(["publish-s3", "--version", "v1"], cwd=project)
+    result = _run_cli_in_subprocess(
+        [
+            "publish-s3",
+            "--revision",
+            revision,
+            "--expected-current",
+            "none",
+            "--source-registry",
+            str(registry),
+        ],
+        cwd=project,
+    )
     assert result.returncode == 2
-    assert "not an object-store destination URI: 'not-a-uri'" in result.stderr
-    assert "no publish destination given" not in result.stderr
+    assert "publish-s3 requires an s3:// destination" in result.stderr
+    assert "no S3 destination given" not in result.stderr
     assert "Traceback" not in result.stderr
 
 
 def test_publish_s3_without_destination_and_config_is_actionable(tmp_path, monkeypatch, capsys):
-    """publish-s3 with no destination and no LUMIO_PUBLISH_TO names the setup flow."""
+    """Missing destination guidance still applies after valid Git arguments."""
     monkeypatch.chdir(tmp_path)
     _clean_env(monkeypatch)
     shutil.copytree(FIXTURES / "valid", tmp_path / "kb")
+    registry = tmp_path / "registry"
+    revision = _init_git_kb(tmp_path / "kb", registry)
 
-    rc = cli.main(["publish-s3", "kb", "--version", "v1"])
+    rc = cli.main(
+        [
+            "publish-s3",
+            "kb",
+            "--revision",
+            revision,
+            "--expected-current",
+            "none",
+            "--source-registry",
+            str(registry),
+        ]
+    )
     assert rc == 2
     err = capsys.readouterr().err
-    assert "no publish destination given" in err
-    assert "setup <kb> --publish-to" in err
+    assert "no S3 destination given" in err
+    assert "pass <destination> or configure LUMIO_PUBLISH_TO" in err
 
 
 def test_publish_s3_reads_destination_default_from_project_env(tmp_path, monkeypatch, capsys):
-    """publish-s3 destination default flows into the publish store (in-memory)."""
+    """The Git-admitted CLI consumes the S3 destination from project .env."""
     store = obstore.store.MemoryStore()
-
-    def _fake_build(uri):
-        assert uri == "s3://public-bucket/team-kb"
-        return store, "team-kb"
-
-    monkeypatch.setattr(cli, "_build_publish_store", _fake_build)
+    location = S3Location(store, "team-kb", store_uri="s3://public-bucket")
+    monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (store, "team-kb"))
+    monkeypatch.setattr(
+        cli,
+        "_build_publish_location",
+        lambda uri: (location, location.effective_target_identity),
+    )
     monkeypatch.chdir(tmp_path)
     _clean_env(monkeypatch)
+    shutil.copytree(FIXTURES / "valid", tmp_path / "kb")
+    registry = tmp_path / "registry"
+    revision = _init_git_kb(tmp_path / "kb", registry)
     (tmp_path / ".env").write_text(
-        f"LUMIO_KB_PATH={tmp_path / 'kb'}\n{PUBLISH_TO_ENV_VAR}=s3://public-bucket/team-kb\n",
+        f"LUMIO_KB_PATH={tmp_path / 'kb'}\n"
+        f"{PUBLISH_TO_ENV_VAR}=s3://public-bucket/team-kb\n"
+        f"{SOURCE_STORE_ENV_VAR}={tmp_path / 'source-store'}\n",
         encoding="utf-8",
     )
-    shutil.copytree(FIXTURES / "valid", tmp_path / "kb")
 
-    rc = cli.main(["publish-s3", "--version", "v1"])
-    assert rc == 0
-    assert "location:    s3://public-bucket/team-kb@v1" in capsys.readouterr().out
+    args = [
+        "publish-s3",
+        "--revision",
+        revision,
+        "--expected-current",
+        "none",
+        "--source-registry",
+        str(registry),
+        "--json",
+    ]
+    assert cli.main(args) == 0
+    review = json.loads(capsys.readouterr().out)
+    assert cli.main([*args, "--confirm", review["review_digest"]]) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["destination"] == "s3://public-bucket/team-kb"
+    assert receipt["version"] == revision
+    assert location.resolve().published_version == revision
 
 
 # ---------------------------------------------------------------------------
@@ -684,18 +754,29 @@ def test_fresh_process_exported_publish_to_beats_env_file(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
     shutil.copytree(FIXTURES / "valid", project / "kb")
+    registry = project / "registry"
+    revision = _init_git_kb(project / "kb", registry)
     (project / ".env").write_text(
         f"LUMIO_KB_PATH={project / 'kb'}\n{PUBLISH_TO_ENV_VAR}=s3://file-value/kb\n",
         encoding="utf-8",
     )
     result = _run_cli_in_subprocess(
-        ["publish-s3", "kb", "--version", "v1"],
+        [
+            "publish-s3",
+            "kb",
+            "--revision",
+            revision,
+            "--expected-current",
+            "none",
+            "--source-registry",
+            str(registry),
+        ],
         cwd=project,
         env_overrides={PUBLISH_TO_ENV_VAR: "not-a-uri"},
     )
     assert result.returncode == 2
-    assert "not an object-store destination URI" in result.stderr
-    assert "not-a-uri" in result.stderr
+    assert "publish-s3 requires an s3:// destination" in result.stderr
+    assert "not-a-uri" not in result.stderr
 
 
 def test_read_env_allowlist_returns_only_allowlisted_keys(tmp_path):

@@ -255,7 +255,8 @@ def test_status_reader_lance_missing_shows_fallback_and_recovery(monkeypatch, tm
     assert status["lancedb_healthy"] is False
     assert "missing" in status["lancedb_fallback"]
     assert "zero-index" in status["lancedb_fallback"]
-    assert "publish-s3 --retrieval lancedb" in status["lancedb_fallback"]
+    assert "publish --revision <commit>" in status["lancedb_fallback"]
+    assert "--expected-current <version|none> --retrieval lancedb" in status["lancedb_fallback"]
     assert status["next_action"] == status["lancedb_fallback"]
 
 
@@ -290,7 +291,8 @@ def test_status_reader_no_remote_derived_index_descriptor(monkeypatch, tmp_path)
     assert status["published_version"] is None
     assert status["lancedb_healthy"] is None
     assert "no remote derived index" in status["lancedb_fallback"]
-    assert "publish-s3 --retrieval lancedb" in status["lancedb_fallback"]
+    assert "publish --revision <commit>" in status["lancedb_fallback"]
+    assert "--expected-current <version|none> --retrieval lancedb" in status["lancedb_fallback"]
 
 
 def test_status_output_never_contains_credentials(monkeypatch, tmp_path):

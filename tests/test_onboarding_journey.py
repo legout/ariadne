@@ -316,6 +316,7 @@ def test_s3_compat_smoke_journey_script(tmp_path):
     lumio_wiki = shutil.which("lumio-wiki") or str(Path(sys.executable).parent / "lumio-wiki")
     assert Path(lumio_wiki).exists(), "lumio-wiki console script not found"
     env = _scrubbed_env()
+    env["LUMIO_ARTIFACT_RETENTION"] = "disabled"
     env["LUMIO_S3_TEST_BUCKET"] = os.environ.get("LUMIO_S3_TEST_BUCKET", "lumio-quickstart")
     result = subprocess.run(
         ["bash", str(SCRIPT), str(tmp_path / "journey")],

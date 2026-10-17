@@ -113,6 +113,7 @@ from lumio_wiki.source_inspection import (
     DEFAULT_LINK_EXPIRES,
     OUTCOME_ABSENT_BINDING,
     OUTCOME_ACCESS_DENIED,
+    OUTCOME_AMBIGUOUS_BINDING,
     OUTCOME_CORRUPTION,
     OUTCOME_HISTORICAL_VERSION_MISMATCH,
     OUTCOME_UNAVAILABLE,
@@ -120,8 +121,9 @@ from lumio_wiki.source_inspection import (
     fetch_verified_artifact,
     parse_expires,
     read_binding_manifest,
+    resolve_local_published_binding,
     resolve_manifest_binding,
-    resolve_registry_binding,
+    resolve_source_reference_binding,
     safe_fetch_destination,
     validate_published_version,
 )
@@ -330,8 +332,8 @@ def _resolve_s3_snapshot(value: str, *, version: str | None = None) -> Any:
     return snapshot
 
 
-def _build_publish_store(uri: str) -> tuple[Any, str]:
-    """Build an ``(obstore ObjectStore, prefix)`` from a destination URI + env.
+def _build_publish_components(uri: str) -> tuple[Any, str, dict[str, str], dict[str, object]]:
+    """Build an S3 store and its exact resolved configuration without exposing secrets.
 
     Mirrors :meth:`S3Location.from_url` store construction but returns the raw
     store and prefix so the publisher can write under the version prefix.
@@ -356,7 +358,35 @@ def _build_publish_store(uri: str) -> tuple[Any, str]:
     except Exception as exc:
         raise CliError(f"could not build object store from {uri!r}: {exc}") from exc
     prefix = parsed.path.lstrip("/")
+    return store, prefix, config, client_options
+
+
+def _build_publish_store(uri: str) -> tuple[Any, str]:
+    """Build an ``(ObjectStore, prefix)`` for read-only S3 maintenance commands."""
+    store, prefix, _config, _client_options = _build_publish_components(uri)
     return store, prefix
+
+
+def _build_publish_location(uri: str) -> tuple[Any, str]:
+    """Build the exact S3Location plus a credential-free target identity."""
+    from urllib.parse import urlparse, urlunsplit
+
+    from lumio_wiki.s3_location import S3Location
+
+    store, prefix, config, client_options = _build_publish_components(uri)
+    parsed = urlparse(uri)
+    container_uri = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+    location = S3Location(
+        store,
+        prefix,
+        store_uri=container_uri,
+        target_config=config,
+        client_options=client_options,
+    )
+    identity = location.effective_target_identity
+    if identity is None:
+        raise CliError("could not resolve the S3 destination identity")
+    return location, identity
 
 
 def _kb_location_label(value: str | Path, kb: KnowledgeBase) -> str:
@@ -514,9 +544,10 @@ def _bind_remote_lancedb(snapshot) -> tuple[Any, Any]:
     descriptor = snapshot.remote_derived_index
     if descriptor is None:
         raise CliError(
-            "the resolved Snapshot has no remote derived index; publish the "
-            "Published Version with 'publish-s3 --retrieval lancedb' so this "
-            "version carries one, or use the zero-index backend"
+            "the resolved Snapshot has no remote derived index; publish an exact "
+            "Git revision with 'publish --revision <commit> --to <s3-uri> "
+            "--expected-current <version|none> --retrieval lancedb' and confirm "
+            "the review digest, or use the zero-index backend"
         )
     location = module.RemoteIndexLocation(
         descriptor.uri,
@@ -1476,8 +1507,9 @@ def _agents_md_s3_config(
     if publish_to is not None:
         lines.append(
             f"- Publication destination: `{publish_to}` (`LUMIO_PUBLISH_TO`); "
-            "publish with `lumio-wiki publish-s3 --version <v>` (destination "
-            "is read from `.env` when omitted)."
+            "publish an exact Git revision with `lumio-wiki publish --revision "
+            "<commit> --to <destination> --expected-current <version|none>` and "
+            "confirm the displayed review digest."
         )
     if retrieval is not None:
         lines.append(
@@ -3103,6 +3135,7 @@ def _print_publication_review(review) -> None:
     print(f"  fingerprint:      {review.fingerprint}")
     print(f"  manifest digest:  {review.manifest_digest}")
     print(f"  destination:      {review.destination}")
+    print(f"  destination identity: {review.destination_identity}")
     print(f"  expected current: {review.expected_current}")
     print(f"  observed current: {review.observed_current or '(none)'}")
     print(f"  adoption:         {review.adoption}")
@@ -3141,12 +3174,6 @@ def _cmd_publish_revision(args: argparse.Namespace) -> int:
 
     if not getattr(args, "to", None):
         raise CliError("--to <local-destination> is required with --revision", exit_code=2)
-    if _is_object_store_uri(args.to):
-        raise CliError(
-            "the Git route publishes to a LOCAL destination directory; S3 "
-            "destinations belong to the S3 publication capability",
-            exit_code=2,
-        )
     if not getattr(args, "expected_current", None):
         raise CliError(
             "--expected-current <published-version-or-none> is required: name "
@@ -3156,7 +3183,24 @@ def _cmd_publish_revision(args: argparse.Namespace) -> int:
         )
     registry = _git_source_registry(args)
     retention_required = _artifact_retention_required()
-    artifact_store = _artifact_store_from_env() if retention_required else None
+    artifact_store = _artifact_store_from_env()
+    if retention_required and artifact_store is None:
+        raise CliError(
+            "artifact retention is required but no Source Artifact Store is configured",
+            exit_code=1,
+        )
+    retrieval = getattr(args, "retrieval", "zero-index")
+    s3_location = None
+    destination_identity = None
+    index_builder = None
+    if _is_object_store_uri(args.to):
+        if not args.to.startswith("s3://"):
+            raise CliError("Git-native publication currently requires an s3:// destination")
+        s3_location, destination_identity = _build_publish_location(args.to)
+        if retrieval == "lancedb":
+            index_builder = _publication_index_builder(args.to)
+    elif retrieval != "zero-index":
+        raise CliError("version-bound LanceDB indexes require an s3:// destination")
     if not getattr(args, "confirm", None):
         try:
             review = preview_publication(
@@ -3167,8 +3211,18 @@ def _cmd_publish_revision(args: argparse.Namespace) -> int:
                 source_registry=registry,
                 artifact_store=artifact_store,
                 retention_required=retention_required,
+                s3_location=s3_location,
+                metadata_store=artifact_store,
+                destination_identity=destination_identity,
+                retrieval=retrieval,
             )
-        except GitAuthoringError as exc:
+        except Exception as exc:
+            from lumio_wiki.s3_publish import S3PublicationConflict
+
+            if isinstance(exc, S3PublicationConflict):
+                raise CliError(f"publication review conflict: {exc}", exit_code=1) from exc
+            if isinstance(exc, (GitAuthoringError, KnowledgeBaseError)):
+                raise CliError(f"publication review failed: {exc}", exit_code=1) from exc
             raise CliError(f"publication review failed: {exc}", exit_code=1) from exc
         if getattr(args, "json", False):
             print(json.dumps(json.loads(msgspec.json.encode(review)), indent=2))
@@ -3191,9 +3245,20 @@ def _cmd_publish_revision(args: argparse.Namespace) -> int:
             source_registry=registry,
             artifact_store=artifact_store,
             retention_required=retention_required,
+            s3_location=s3_location,
+            metadata_store=artifact_store,
+            destination_identity=destination_identity,
+            retrieval=retrieval,
+            index_builder=index_builder,
         )
-    except GitAuthoringError as exc:
-        raise CliError(f"publication refused: {exc}", exit_code=1) from exc
+    except Exception as exc:
+        from lumio_wiki.s3_publish import S3PublicationConflict
+
+        if isinstance(exc, S3PublicationConflict):
+            raise CliError(f"publication conflict (pointer not advanced): {exc}") from exc
+        if isinstance(exc, (GitAuthoringError, KnowledgeBaseError)):
+            raise CliError(f"publication refused: {exc}", exit_code=1) from exc
+        raise CliError(f"publication failed: {exc}", exit_code=1) from exc
     if getattr(args, "json", False):
         print(json.dumps(json.loads(msgspec.json.encode(receipt)), indent=2))
     else:
@@ -3208,7 +3273,7 @@ def _cmd_publish_revision(args: argparse.Namespace) -> int:
 
 
 def _cmd_rollback(args: argparse.Namespace) -> int:
-    """Preview or explicitly confirm one exact local Published Version rollback."""
+    """Preview or explicitly confirm one exact local or S3 Git-admitted rollback."""
     from lumio_wiki.git_authoring import (
         GitAuthoringError,
         preview_rollback,
@@ -3216,9 +3281,8 @@ def _cmd_rollback(args: argparse.Namespace) -> int:
     )
 
     retention_required = _artifact_retention_required()
-    artifact_store = None
+    artifact_store = _artifact_store_from_env()
     if retention_required:
-        artifact_store = _artifact_store_from_env()
         if artifact_store is None:
             raise CliError(
                 "artifact retention is required ("
@@ -3228,6 +3292,12 @@ def _cmd_rollback(args: argparse.Namespace) -> int:
                 exit_code=1,
             )
     expected_current = getattr(args, "expected_current", None)
+    s3_location = None
+    destination_identity = None
+    if _is_object_store_uri(args.destination):
+        if not args.destination.startswith("s3://"):
+            raise CliError("Git-native rollback currently requires an s3:// destination")
+        s3_location, destination_identity = _build_publish_location(args.destination)
     if not getattr(args, "confirm", None):
         try:
             review = preview_rollback(
@@ -3235,8 +3305,17 @@ def _cmd_rollback(args: argparse.Namespace) -> int:
                 args.version,
                 expected_current,
                 retention_required=retention_required,
+                s3_location=s3_location,
+                metadata_store=artifact_store,
+                destination_identity=destination_identity,
             )
-        except GitAuthoringError as exc:
+        except Exception as exc:
+            from lumio_wiki.s3_publish import S3PublicationConflict
+
+            if isinstance(exc, S3PublicationConflict):
+                raise CliError(f"rollback review conflict: {exc}", exit_code=1) from exc
+            if isinstance(exc, (GitAuthoringError, KnowledgeBaseError)):
+                raise CliError(f"rollback review failed: {exc}", exit_code=1) from exc
             raise CliError(f"rollback review failed: {exc}", exit_code=1) from exc
         if getattr(args, "json", False):
             print(json.dumps(json.loads(msgspec.json.encode(review)), indent=2))
@@ -3246,6 +3325,7 @@ def _cmd_rollback(args: argparse.Namespace) -> int:
             print(f"  fingerprint:    {review.fingerprint}")
             print(f"  namespace:      {review.namespace}")
             print(f"  destination:    {review.destination}")
+            print(f"  destination identity: {review.destination_identity}")
             print(f"  expected current: {review.expected_current}")
             print(f"  observed current: {review.observed_current}")
             print(f"  retention:      {review.retention}")
@@ -3265,9 +3345,18 @@ def _cmd_rollback(args: argparse.Namespace) -> int:
             args.confirm,
             artifact_store=artifact_store,
             retention_required=retention_required,
+            s3_location=s3_location,
+            metadata_store=artifact_store,
+            destination_identity=destination_identity,
         )
-    except GitAuthoringError as exc:
-        raise CliError(f"rollback refused: {exc}", exit_code=1) from exc
+    except Exception as exc:
+        from lumio_wiki.s3_publish import S3PublicationConflict
+
+        if isinstance(exc, S3PublicationConflict):
+            raise CliError(f"rollback conflict (pointer not advanced): {exc}") from exc
+        if isinstance(exc, (GitAuthoringError, KnowledgeBaseError)):
+            raise CliError(f"rollback refused: {exc}", exit_code=1) from exc
+        raise CliError(f"rollback failed: {exc}", exit_code=1) from exc
     if getattr(args, "json", False):
         print(json.dumps(json.loads(msgspec.json.encode(manifest)), indent=2))
     else:
@@ -3330,7 +3419,8 @@ def _publication_index_builder(destination: str):
         lumio_lancedb = require_lancedb()
     except OptionalCapabilityError as exc:
         raise CliError(
-            "publish-s3 --retrieval lancedb needs lumio-lancedb; install with:  "
+            "Git-admitted S3 publication with --retrieval lancedb needs "
+            "lumio-lancedb; install with:  "
             "pip install lumio-lancedb"
         ) from exc
     parsed = urlparse(destination)
@@ -3343,186 +3433,23 @@ def _publication_index_builder(destination: str):
 
 
 def _cmd_publish_s3(args: argparse.Namespace) -> int:
-    """Publish a local Knowledge Base as an immutable S3 Published Version.
-
-    Thin, model-free orchestration: validate + write canonical content and the
-    derived Discovery Graph under an immutable version prefix, then
-    conditionally advance the active pointer. Credentials/region/endpoint come
-    from the standard LUMIO_S3_* / AWS_* environment variables.
-    """
-    from lumio_wiki.s3_location import _require_obstore
-    from lumio_wiki.s3_publish import S3PublicationConflict, publish_s3_version
-
-    # A single object-store argument is the destination: the publication
-    # source is always a local directory, so shift a URI out of the path slot
-    # and resolve the source from the default KB path (issue #161).
-    if _is_object_store_uri(args.path):
-        if args.destination is not None:
-            raise CliError(
-                "publish-s3 needs a local Knowledge Base source directory; "
-                "two object-store URIs were given"
-            )
-        args.destination = args.path
-        args.path = _resolve_default_kb_path()
-        if args.path is None:
-            raise CliError(
-                "no Knowledge Base path provided. Pass <kb>, export "
-                "LUMIO_KB_PATH, or run 'lumio-wiki setup <kb>' to write .env."
-            )
-
-    root = Path(args.path)
-    if not root.is_dir():
-        raise CliError(f"Knowledge Base source is not a directory: {root}")
-    try:
-        _require_obstore()
-    except KnowledgeBaseError as exc:
-        raise CliError(str(exc)) from exc
+    """Compatibility alias for the Git-admitted S3 publication route."""
     destination = args.destination
     if destination is None:
-        # The destination default comes from the bounded .env allowlist with
-        # exported-process precedence (issue #161, ADR-0019).
         destination = load_project_config().get(PUBLISH_TO_ENV_VAR)
-        if destination is None:
-            raise CliError(
-                "no publish destination given. Pass <destination>, or record "
-                "one with 'lumio-wiki setup <kb> --publish-to <s3-uri>' "
-                "(written to .env as LUMIO_PUBLISH_TO)."
-            )
-    store, prefix = _build_publish_store(destination)
-    index_builder = None
-    if getattr(args, "retrieval", "zero-index") == "lancedb":
-        index_builder = _publication_index_builder(destination)
-    # Private Source Artifact retention (issue #164, ADR-0020): when a store
-    # is configured, the pre-activation hook writes the private Source
-    # Binding Manifest BEFORE the pointer advances; with retention REQUIRED
-    # it blocks activation while a referenced non-synthetic source lacks a
-    # verified artifact. Without a store, publication is unchanged.
-    from lumio_wiki.artifact_store import RetentionRequiredError, activation_binding_hook
-
-    retention_required = _artifact_retention_required()
-    before_activation = None
-    artifact_store = _artifact_store_from_env()
-    if retention_required and artifact_store is None:
-        # Fail closed (#164 review): required retention with no configured
-        # store can never verify coverage, so publication is refused rather
-        # than silently publishing ungated.
-        raise CliError(
-            "artifact retention is required (LUMIO_ARTIFACT_RETENTION=required) "
-            "but no Source Artifact Store is configured (LUMIO_SOURCE_STORE); "
-            "refusing to publish ungated — configure the store or set "
-            "retention to disabled",
-            exit_code=1,
-        )
-    if artifact_store is not None:
-        from lumio_wiki.ingest import IngestStore
-
-        registry = IngestStore(default_ingest_dir(root)).source_registry
-        before_activation = activation_binding_hook(
-            artifact_store=artifact_store,
-            registry=registry,
-            required=retention_required,
-        )
-    try:
-        manifest = publish_s3_version(
-            store,
-            prefix,
-            source_root=root,
-            version=args.version,
-            expected_pointer_version=args.expected_pointer_version,
-            index_builder=index_builder,
-            before_activation=before_activation,
-        )
-    except RetentionRequiredError as exc:
-        raise CliError(
-            f"publication blocked (artifact retention required): {exc}", exit_code=1
-        ) from exc
-    except S3PublicationConflict as exc:
-        raise CliError(f"publication conflict (pointer not advanced): {exc}") from exc
-    except KnowledgeBaseError as exc:
-        raise CliError(f"publication failed: {exc}") from exc
-    except Exception as exc:
-        # Object-store transport/credential failures (unreachable endpoint,
-        # IMDS probe) and a requested-but-failed LanceDB build/health check
-        # (issue #163: publication was blocked before activation) both surface
-        # as actionable errors, never a traceback.
-        raise CliError(f"publication failed: {exc}") from exc
-    print(f"Published {manifest.version}: {len(manifest.files)} canonical file(s)")
-    print(f"  fingerprint: {manifest.fingerprint}")
-    if index_builder is not None:
-        print("  lance:       built and health-checked under derived/lance/")
-    if artifact_store is not None:
-        print("  artifacts:   private Source Binding Manifest stored pre-activation")
-    print(f"  location:    {destination}@{manifest.version}")
-    return 0
+    if destination is None:
+        raise CliError("no S3 destination given; pass <destination> or configure LUMIO_PUBLISH_TO")
+    if not str(destination).startswith("s3://"):
+        raise CliError("publish-s3 requires an s3:// destination")
+    args.to = destination
+    return _cmd_publish_revision(args)
 
 
 def _cmd_rollback_s3(args: argparse.Namespace) -> int:
-    """CAS-activate an already complete immutable S3 Published Version."""
-    from lumio_wiki.artifact_store import (
-        RetentionRequiredError,
-        required_source_pairs,
-        verify_rollback_coverage,
-    )
-    from lumio_wiki.s3_publish import (
-        S3PublicationConflict,
-        list_cleanup_candidates,
-        rollback_s3_version,
-    )
-
-    store, prefix = _build_publish_store(args.destination)
-    # Rollback IS an activation (#164 review): under required retention the
-    # historical version's private binding manifest must still prove every
-    # referenced non-synthetic source has a verified artifact.
-    if _artifact_retention_required():
-        artifact_store = _artifact_store_from_env()
-        if artifact_store is None:
-            raise CliError(
-                "artifact retention is required (LUMIO_ARTIFACT_RETENTION="
-                "required) but no Source Artifact Store is configured "
-                "(LUMIO_SOURCE_STORE); refusing to activate ungated",
-                exit_code=1,
-            )
-        try:
-            # Inspect the immutable target before the private gate so required
-            # retention can compare every historical (page, source) pair and
-            # the manifest identity, rather than trusting its entry subset.
-            from lumio_wiki.s3_location import S3Location
-
-            target = S3Location(store, prefix, version=args.version).resolve()
-            required_pairs = required_source_pairs(target.pages)
-            verify_rollback_coverage(
-                artifact_store,
-                args.version,
-                required=True,
-                required_pairs=required_pairs,
-                expected_fingerprint=target.fingerprint.digest,
-            )
-        except RetentionRequiredError as exc:
-            raise CliError(
-                f"rollback blocked (artifact retention required): {exc}", exit_code=1
-            ) from exc
-    try:
-        manifest = rollback_s3_version(
-            store,
-            prefix,
-            version=args.version,
-            expected_pointer_version=args.expected_pointer_version,
-        )
-    except S3PublicationConflict as exc:
-        raise CliError(f"rollback conflict (pointer not advanced): {exc}") from exc
-    except KnowledgeBaseError as exc:
-        candidates = list_cleanup_candidates(store, prefix)
-        hint = (
-            f" Inactive incomplete prefixes (cleanup candidates): "
-            f"{', '.join(c.version for c in candidates)}."
-            if candidates
-            else ""
-        )
-        raise CliError(f"rollback failed: {exc}{hint}") from exc
-    print(f"Rolled back to {manifest.version}: {len(manifest.files)} canonical file(s)")
-    print(f"  fingerprint: {manifest.fingerprint}")
-    print(f"  location:    {args.destination}@{manifest.version}")
-    return 0
+    """Compatibility alias for Git-admitted S3 rollback."""
+    if not str(args.destination).startswith("s3://"):
+        raise CliError("rollback-s3 requires an s3:// destination")
+    return _cmd_rollback(args)
 
 
 def _cmd_cleanup_s3(args: argparse.Namespace) -> int:
@@ -3867,8 +3794,10 @@ def _lancedb_status_fields(
         if descriptor is None:
             fields["lancedb_fallback"] = (
                 "the resolved Published Version carries no remote derived index; "
-                "retrieval falls back to zero-index — publish it with "
-                "'lumio-wiki publish-s3 --retrieval lancedb'"
+                "retrieval falls back to zero-index — publish an exact Git revision "
+                "with 'lumio-wiki publish --revision <commit> --to <s3-uri> "
+                "--expected-current <version|none> --retrieval lancedb' and confirm "
+                "the review digest"
             )
             return fields
         location = module.RemoteIndexLocation(
@@ -3893,7 +3822,9 @@ def _lancedb_status_fields(
     fields["lancedb_fingerprint_matches"] = matches
     if note is not None:
         recovery = (
-            " — publish a fresh version with 'lumio-wiki publish-s3 --retrieval lancedb'"
+            " — publish an exact Git revision with 'lumio-wiki publish --revision "
+            "<commit> --to <s3-uri> --expected-current <version|none> "
+            "--retrieval lancedb' and confirm the review digest"
             if is_s3
             else " — the next semantic/hybrid search rebuilds it"
         )
@@ -4004,7 +3935,7 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
     elif status["graph_note"] is not None:
         status["next_action"] = (
             f"{status['graph_note']}; the Discovery Graph was derived in memory "
-            f"instead — republish the version ('lumio-wiki publish-s3') to "
+            f"instead — publish a new exact Git revision with expected-current to "
             f"refresh the published graph artifact"
         )
     elif not is_s3 and not status["graph_fresh"]:
@@ -5073,30 +5004,35 @@ def _source_discovery_hint(
     )
 
 
-def _resolve_source_binding(args: argparse.Namespace, source_id: str):
-    """Resolve ONE exact Source Version for inspect/fetch/link/resolve.
-
-    Returns ``(binding, artifact_store)`` where ``artifact_store`` may be
-    ``None`` (retention not configured). Raises :class:`CliError` with the
-    distinct #165 outcomes via :class:`SourceInspectionError`; an unknown
-    source id carries a bounded discovery hint (issue #176).
-    """
+def _resolve_source_binding(
+    args: argparse.Namespace, source_id: str, *, entity_id: str | None = None
+):
+    """Resolve exactly the Source Version pinned by this authoring/public view."""
+    path = str(args.path)
+    is_s3 = _is_object_store_uri(path)
+    is_local_published = not is_s3 and _is_local_published_layout(args.path)
     version = getattr(args, "published_version", None)
-    if version is None and _is_object_store_uri(str(args.path)):
-        version = _active_published_version(str(args.path))
+    if version is None and is_s3:
+        version = _active_published_version(path)
+    if version is None and is_local_published:
+        from lumio_wiki.location import PublishedFilesystemLocation
+
+        version = PublishedFilesystemLocation(args.path).read_pointer()
+        if version is None:
+            raise CliError("this local Published Knowledge Base has no active version", exit_code=1)
     if version is not None:
-        # Validate BEFORE any binding lookup or error echo: an unsafe label
-        # (traversal, secret-bearing text) is a usage error reported without
-        # echoing the value (#165 review).
         try:
             validate_published_version(version)
         except ValueError as exc:
             raise CliError(str(exc)) from None
     artifact_store = _artifact_store_from_env()
+    from lumio_wiki.source_references import (
+        SourceReferenceError,
+        load_source_reference_manifest,
+    )
+
     try:
-        if version is not None:
-            # An S3 Knowledge Base (active or --published-version history)
-            # resolves through the private Source Binding Manifest.
+        if is_s3:
             if artifact_store is None:
                 raise CliError(
                     "no private Source Artifact Store is configured "
@@ -5105,22 +5041,68 @@ def _resolve_source_binding(args: argparse.Namespace, source_id: str):
                     "--source-store <s3-uri|path>'",
                     exit_code=1,
                 )
+            if version is None:
+                raise CliError(
+                    "this S3 Knowledge Base has no active Published Version", exit_code=1
+                )
             return (
-                resolve_manifest_binding(artifact_store, version, source_id),
+                resolve_manifest_binding(artifact_store, version, source_id, entity_id=entity_id),
                 artifact_store,
             )
-        # Local worktree behavior: resolve through private registry state.
+        if is_local_published:
+            if version is None:
+                raise CliError(
+                    "this local Published Knowledge Base has no active version", exit_code=1
+                )
+            return (
+                resolve_local_published_binding(args.path, version, source_id, entity_id=entity_id),
+                artifact_store,
+            )
+        if version is not None:
+            from lumio_wiki.git_authoring import GitAuthoringError, capture_revision
+
+            try:
+                captured = capture_revision(args.path, version)
+            except GitAuthoringError as exc:
+                raise CliError(
+                    f"could not read exact authoring revision: {exc}", exit_code=1
+                ) from exc
+            registry = IngestStore(_resolve_ingest_dir(args, captured.kb_root)).source_registry
+            return (
+                resolve_source_reference_binding(
+                    registry,
+                    captured.manifest,
+                    source_id,
+                    entity_id=entity_id,
+                    published_version=version,
+                ),
+                artifact_store,
+            )
         kb, _report = _load_kb(args.path)
-        ingest_dir = _resolve_ingest_dir(args, kb.root)
-        registry = IngestStore(ingest_dir).source_registry
-        return resolve_registry_binding(registry, source_id), artifact_store
+        manifest = load_source_reference_manifest(kb.root)
+        if manifest is None:
+            raise SourceInspectionError(
+                OUTCOME_HISTORICAL_VERSION_MISMATCH,
+                "this Knowledge Base has no exact Source Reference Manifest; "
+                "refusing to substitute the registry's latest Source Version",
+            )
+        registry = IngestStore(_resolve_ingest_dir(args, kb.root)).source_registry
+        return (
+            resolve_source_reference_binding(registry, manifest, source_id, entity_id=entity_id),
+            artifact_store,
+        )
     except SourceInspectionError as exc:
         if exc.outcome == OUTCOME_ABSENT_BINDING:
-            # Issue #176: the unknown-source error points at the exact close
-            # id or the exact discovery command — never an unbounded dump.
             hint = _source_discovery_hint(args, source_id, version, artifact_store)
             raise CliError(f"{exc}{hint}", exit_code=1) from exc
+        if exc.outcome == OUTCOME_AMBIGUOUS_BINDING:
+            raise CliError(
+                f"{exc}; resolve the source from a specific Entity with 'source resolve'",
+                exit_code=1,
+            ) from exc
         raise CliError(str(exc), exit_code=1) from exc
+    except SourceReferenceError as exc:
+        raise CliError(f"the Source Reference Manifest is invalid: {exc}", exit_code=1) from exc
 
 
 def _binding_availability(artifact_store, binding) -> str:
@@ -6306,7 +6288,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Apply a proposal's pages to the KB root (legacy route), or — "
             "Git-native authoring (spec 0008) — preview and explicitly confirm "
-            "one exact Git revision as an immutable local Published Version. "
+            "one exact Git revision as an immutable local or S3 Published Version. "
             "--revision selects the Git route; a proposal id selects the "
             "legacy route."
         ),
@@ -6333,7 +6315,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--to",
         type=str,
         default=None,
-        help="Git-native route: local publication destination directory.",
+        help="Git-native route: local destination directory or credential-free s3:// URI.",
     )
     publish_parser.add_argument(
         "--expected-current",
@@ -6364,20 +6346,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     publish_parser.add_argument(
+        "--retrieval",
+        choices=["zero-index", "lancedb"],
+        default="zero-index",
+        help="Optional version-bound S3 retrieval artifacts (LanceDB requires lumio-lancedb).",
+    )
+    publish_parser.add_argument(
         "--json", action="store_true", help="Emit a stable machine-readable mutation result."
     )
     _add_ingest_dir_argument(publish_parser)
     publish_parser.set_defaults(func=_cmd_publish)
 
-    # publish-s3 (issue #121, ADR-0013)
+    # publish-s3 is a compatibility alias for Git-admitted S3 publication.
     publish_s3_parser = subparsers.add_parser(
         "publish-s3",
-        help="Publish a local Knowledge Base as an immutable S3 Published Version.",
+        help="Preview or confirm an exact Git revision to an S3 Published Version.",
         description=(
-            "Validate and publish a local Knowledge Base as an immutable S3 "
-            "Published Version (canonical content + Discovery Graph), then "
-            "conditionally advance the active pointer. Requires lumio-wiki[s3]. "
-            "Credentials/region/endpoint come from LUMIO_S3_* / AWS_* env vars."
+            "Compatibility alias for `publish --revision ... --to s3://...`: "
+            "requires an exact Git commit, explicit expected-current baseline, "
+            "and review digest confirmation. Requires lumio-wiki[s3]."
         ),
     )
     _add_kb_argument(publish_s3_parser)
@@ -6393,20 +6380,30 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     publish_s3_parser.add_argument(
-        "--version",
+        "--revision",
         required=True,
         type=str,
-        help="Immutable version label for the new Published Version.",
+        help="Full 40-hex Git commit id to review and publish.",
     )
     publish_s3_parser.add_argument(
-        "--expected-pointer-version",
+        "--expected-current",
+        required=True,
+        type=str,
+        help="Exact active version expected, or 'none' when no version is active.",
+    )
+    publish_s3_parser.add_argument(
+        "--confirm",
         default=None,
         type=str,
-        help=(
-            "Active version expected before advancing (compare-and-swap guard). "
-            "Omit for the first publication."
-        ),
+        help="Review digest to authorize publication; omit for a read-only preview.",
     )
+    publish_s3_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help="Explicit private Source Registry directory.",
+    )
+    publish_s3_parser.add_argument("--json", action="store_true")
     publish_s3_parser.add_argument(
         "--retrieval",
         choices=["zero-index", "lancedb"],
@@ -6422,15 +6419,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     publish_s3_parser.set_defaults(func=_cmd_publish_s3)
 
-    # rollback-s3 (issue #163, ADR-0019)
+    # rollback-s3 is a compatibility alias for Git-admitted S3 rollback.
     rollback_s3_parser = subparsers.add_parser(
         "rollback-s3",
-        help="CAS-activate an already complete S3 Published Version.",
+        help="Preview or confirm rollback to a Git-admitted S3 Published Version.",
         description=(
-            "Conditionally activate a prior complete immutable S3 Published "
-            "Version (compare-and-swap on the activation pointer). The target "
-            "version is validated complete and never rebuilt or overwritten; a "
-            "stale rollback fails closed. Requires lumio-wiki[s3]."
+            "Compatibility alias for `rollback`: the target must have a private "
+            "Git admission and activation receipt, and rollback requires exact "
+            "expected-current plus review-digest confirmation."
         ),
     )
     rollback_s3_parser.add_argument(
@@ -6445,14 +6441,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="The complete immutable version to activate.",
     )
     rollback_s3_parser.add_argument(
-        "--expected-pointer-version",
+        "--expected-current",
+        required=True,
+        type=str,
+        help="Exact active version expected, or 'none' when no version is active.",
+    )
+    rollback_s3_parser.add_argument(
+        "--confirm",
         default=None,
         type=str,
-        help=(
-            "Active version expected before rolling back (compare-and-swap "
-            "guard); omit to CAS against the currently observed pointer."
-        ),
+        help="Review digest to authorize rollback; omit for a read-only preview.",
     )
+    rollback_s3_parser.add_argument("--json", action="store_true")
     rollback_s3_parser.set_defaults(func=_cmd_rollback_s3)
 
     # rollback (Git-native local publication, spec 0008 §5)

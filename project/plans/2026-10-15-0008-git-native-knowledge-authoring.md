@@ -1,7 +1,38 @@
 # Implementation plan 0008: Git-native Knowledge Authoring
 
-**Revision/status:** 4 — G1 accepted; owner-authorized G1 integration and
-continued supervised public implementation. Behavioral specification unchanged.
+**Revision/status:** 6 — G1 accepted; G2 remains blocked pending one
+owner-authorized bounded follow-up. Behavioral specification unchanged.
+
+**G2 caller/test-surface amendment, 2026-10-16 (parent-authorized):** G2 routes
+`publish-s3`, `rollback-s3`, and public SDK publication/rollback through the same
+exact Git preview/confirm/expected-current gate or fails closed; no unadmitted
+working-tree bypass is retained. G2 ownership includes directly affected cases
+in `packages/lumio-wiki/tests/test_cli_s3.py`, `test_cli_setup_s3.py`,
+`test_cli_open_actions.py`, `test_cli_remote_lance_s3_compat.py`, and
+`test_cli_status.py`, plus only the S3-compatible portion of
+`tests/test_onboarding_journey.py` and minimal steps 8/11 fixture changes in
+`examples/onboarding-journey/smoke-journey.sh`. Preserve old-format read
+compatibility. Run the assigned six-file serial test command plus directly
+changed non-live CLI cases; migrate but do not run live/service-backed journey
+proof (G5). `bash -n` is allowed for the changed shell script. No broad
+onboarding/doc migration or full-suite expansion is authorized.
+
+**Owner-authorized G2 bounded follow-up, 2026-10-16:** after the worker's
+fix-first handback, the owner authorized one separate, bounded diagnosis/repair
+for only
+`packages/lumio-wiki/tests/test_artifact_store.py::test_rollback_cli_blocked_after_artifact_deletion`.
+The observed symptom is successor-B preview returning 0 and confirmation
+returning 1 with sanitized JSON `cli_error`; its underlying exception is
+unknown. Diagnose from this existing node, preserving JSON/error privacy and the
+legitimate A→B publication plus historical-A rollback/deletion refusal contract.
+Reuse still-applicable green evidence; one focused investigation execution with
+temporary, non-production instrumentation is permitted only if necessary, then
+one targeted post-fix node run and scoped Ruff/format/diff checks for changed
+files. No broader suite, third correction, new tests, weakened assertion,
+behavior/policy change, or run-state edit is authorized. Stop and ask if the
+cause is ambiguous or the same defect survives. G2 remains unaccepted; commit
+and freeze its reserved result ref only if the authorized fix passes the
+specified delta checks.
 
 **Integration/continuation authorization, 2026-10-16:** after the four-defect
 follow-up passed parent verification and independent scoped review at

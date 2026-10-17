@@ -237,11 +237,68 @@ except Exception as exc:
     sys.exit(f"FAIL: cannot use bucket s3://{sys.argv[1]} at {endpoint}: {exc}; "
              f"start or configure 'weed mini' with S3_BUCKET={sys.argv[1]}")
 PYEOF
-$LW publish-s3 --version v1
+# Build a disposable Git authoring tree from public control/page files only;
+# local ingest/source state stays outside the S3 candidate.
+S3_TMP=$(mktemp -d)
+trap 'rm -rf "$S3_TMP"' EXIT
+S3_KB="$S3_TMP/kb"
+mkdir -p "$S3_KB"
+${LUMIO_PYTHON:-python3} - "$S3_KB" <<'PYEOF'
+from pathlib import Path
+import shutil
+import sys
+
+source = Path("kb")
+target = Path(sys.argv[1])
+for path in source.rglob("*"):
+    if not path.is_file():
+        continue
+    relative = path.relative_to(source)
+    if any(part.startswith(".") for part in relative.parts):
+        continue
+    if relative.as_posix() != "lumio.yaml" and path.suffix.lower() != ".md":
+        continue
+    destination = target / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(path, destination)
+PYEOF
+cat > "$S3_KB/.lumio-authoring.yaml" <<'SOURCEEOF'
+version: 1
+namespace: "urn:uuid:0f6f0e3e-1d9a-4b2e-9d47-6c1f0f5f4f3e"
+sources: {}
+bindings: {}
+SOURCEEOF
+git -C "$S3_KB" init -q
+git -C "$S3_KB" config user.email "smoke@example.com"
+git -C "$S3_KB" config user.name "Onboarding Smoke"
+git -C "$S3_KB" add -A
+git -C "$S3_KB" commit -qm "Reviewed onboarding Knowledge Base"
+REV1=$(git -C "$S3_KB" rev-parse HEAD)
+S3_REGISTRY="$S3_TMP/source-registry"
+mkdir -p "$S3_REGISTRY"
+export LUMIO_SOURCE_STORE="$S3_TMP/source-store"
+export LUMIO_ARTIFACT_RETENTION=disabled
+
+publish_s3_revision() {
+  local revision=$1 expected_current=$2
+  shift 2
+  local -a options=("$@")
+  local review digest
+  review=$($LW publish-s3 "$S3_KB" --revision "$revision" \
+    --expected-current "$expected_current" --source-registry "$S3_REGISTRY" \
+    --json "${options[@]}")
+  digest=$(printf '%s' "$review" | ${LUMIO_PYTHON:-python3} -c \
+    'import json, sys; print(json.load(sys.stdin)["review_digest"])')
+  $LW publish-s3 "$S3_KB" --revision "$revision" \
+    --expected-current "$expected_current" --source-registry "$S3_REGISTRY" \
+    --confirm "$digest" --json "${options[@]}"
+}
+publish_s3_revision "$REV1" none
 
 step "9. Reader: read-only project against the S3 Location"
 READER=$(mktemp -d)
 ( cd "$READER"
+  unset LUMIO_SOURCE_STORE
   $LW setup --from "s3://$BUCKET/$PREFIX"
   $LW search "password reset" --limit 2 | tee /dev/stderr | grep -E '^open:' >/dev/null
   $LW related "Aurora Helpdesk" --scope canonical | tee /dev/stderr | grep -E 'Starlight DB' >/dev/null
@@ -252,14 +309,18 @@ READER=$(mktemp -d)
 step "10. Expected zero-index fallback (lancedb requested, index not published yet)"
 READER_LANCE=$(mktemp -d)
 ( cd "$READER_LANCE"
+  unset LUMIO_SOURCE_STORE
   $LW setup --from "s3://$BUCKET/$PREFIX" --retrieval lancedb \
     | tee /dev/stderr | grep -E 'zero-index page search over the same Published Version' >/dev/null
   $LW search "password reset" --limit 1 | tee /dev/stderr | grep -E '^open:' >/dev/null
 )
 
-step "11. Publish v2 WITH remote LanceDB (CAS guard), reader becomes healthy"
-$LW publish-s3 --version v2 --expected-pointer-version v1 --retrieval lancedb
+step "11. Publish next Git revision WITH remote LanceDB (CAS guard), reader becomes healthy"
+git -C "$S3_KB" commit --allow-empty -qm "Request the version-bound LanceDB index"
+REV2=$(git -C "$S3_KB" rev-parse HEAD)
+publish_s3_revision "$REV2" "$REV1" --retrieval lancedb
 ( cd "$READER_LANCE"
+  unset LUMIO_SOURCE_STORE
   $LW setup --from "s3://$BUCKET/$PREFIX" --retrieval lancedb \
     | tee /dev/stderr | grep -E 'lancedb_healthy: +true' >/dev/null
   # Retrieval MODE stays separate from the backend: lexical works everywhere;

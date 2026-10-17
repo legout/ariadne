@@ -85,7 +85,7 @@ def registry(tmp_path: Path) -> SourceRegistry:
 
 def test_resolve_registry_binding_unknown_id_is_absent_binding(registry: SourceRegistry):
     with pytest.raises(SourceInspectionError) as excinfo:
-        resolve_registry_binding(registry, "ghost")
+        resolve_registry_binding(registry, "ghost", artifact_content_hash(RAW))
     assert excinfo.value.outcome == OUTCOME_ABSENT_BINDING
 
 
@@ -93,7 +93,7 @@ def test_resolve_registry_binding_rejects_secret_bearing_id_without_echo(
     registry: SourceRegistry,
 ):
     with pytest.raises(SourceInspectionError) as excinfo:
-        resolve_registry_binding(registry, "token=abc123")
+        resolve_registry_binding(registry, "token=abc123", artifact_content_hash(RAW))
     assert excinfo.value.outcome == OUTCOME_ABSENT_BINDING
     assert "token=abc123" not in str(excinfo.value)
 

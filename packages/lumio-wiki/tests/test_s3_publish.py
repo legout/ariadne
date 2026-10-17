@@ -14,6 +14,8 @@ with no infrastructure.
 
 from __future__ import annotations
 
+import hashlib
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,8 +25,8 @@ import pytest
 from lumio_wiki.artifact_store import (
     InMemoryArtifactStore,
     SourceBindingManifest,
-    activation_binding_hook,
 )
+from lumio_wiki.git_authoring import preview_publication, publish_revision
 from lumio_wiki.graph_state import GRAPH_ARTIFACT_FILENAME, deserialize_graph
 from lumio_wiki.knowledge_base import (
     EXTRACTOR_VERSION,
@@ -50,8 +52,16 @@ from lumio_wiki.s3_publish import (
     RemoteIndexCompletion,
     S3PublicationConflict,
     list_cleanup_candidates,
-    publish_s3_version,
-    rollback_s3_version,
+)
+from lumio_wiki.s3_publish import (
+    _publish_s3_working_tree as publish_s3_version,
+)
+from lumio_wiki.s3_publish import (
+    _rollback_s3_version as rollback_s3_version,
+)
+from lumio_wiki.source_references import (
+    SourceReferenceManifest,
+    serialize_source_reference_manifest,
 )
 from lumio_wiki.source_registry import SourceRegistry
 
@@ -117,58 +127,151 @@ def test_s3_location_from_url_rejects_uri_credentials(uri):
 
 
 def test_s3_publish_uses_one_captured_candidate(tmp_path):
-    root = tmp_path / "kb"
-    import shutil
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test Author"], check=True)
+    root = repo / "kb"
+    root.mkdir()
+    control = """\
+version: 2
+mode: categorized
+categories:
+  - name: concepts
+ontology:
+  entity_types:
+    press: {}
+  predicates:
+    presses:
+      subject_types: [press]
+      object_types: [press]
+"""
+    (root / "lumio.yaml").write_text(control)
+    page_path = root / "concepts" / "press.md"
+    page_path.parent.mkdir()
+    page_path.write_text(
+        """\
+---
+id: "entity:press"
+title: "Press"
+entity_types:
+  - press
+tags: [test]
+summary: "Press summary."
+lifecycle: approved
+visibility: public
+sources:
+  - id: operator-manual
+    title: "Operator Manual"
+---
 
-    shutil.copytree(VALID, root)
-    captured_digest = fingerprint_sources(root).digest
+# Press
+
+## Overview
+
+The captured source supports this page.
+"""
+    )
+    source_a = b"captured source A"
+    digest_a = hashlib.sha256(source_a).hexdigest()
+    source_manifest = SourceReferenceManifest(
+        version=1,
+        namespace="urn:uuid:0f6f0e3e-1d9a-4b2e-9d47-6c1f0f5f4f3e",
+        sources={"operator-manual": "active"},
+        bindings={"entity:press": {"operator-manual": digest_a}},
+    )
+    source_manifest_raw = serialize_source_reference_manifest(source_manifest)
+    (root / ".lumio-authoring.yaml").write_bytes(source_manifest_raw)
     registry = SourceRegistry(tmp_path / "registry")
     registry.register_or_reuse(
-        "lumio-overview", b"captured source", filename="source.txt", content_type="text/plain"
+        "operator-manual", source_a, filename="source.txt", content_type="text/plain"
     )
-    artifact_store = InMemoryArtifactStore()
-    hook = activation_binding_hook(artifact_store=artifact_store, registry=registry, required=False)
+    subprocess.run(["git", "-C", str(repo), "add", "kb"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "captured A"], check=True)
+    revision = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
-    def builder(*, fingerprint, **_kwargs):
-        page = root / "overview.md"
-        page.write_text(
-            page.read_text(encoding="utf-8").replace('id: "lumio-overview"', 'id: "later-source"')
-            + "\nlater edit\n",
-            encoding="utf-8",
-        )
-        registry.register_or_reuse(
-            "later-source", b"later source", filename="later.txt", content_type="text/plain"
+    expected_fingerprint = fingerprint_sources(root).digest
+    store = _store()
+    destination = "s3://bucket/kb"
+    location = S3Location(store, "kb", store_uri="s3://bucket")
+    artifact_store = InMemoryArtifactStore()
+    target_identity = location.effective_target_identity
+    review = preview_publication(
+        root,
+        revision,
+        destination,
+        "none",
+        source_registry=registry,
+        s3_location=location,
+        destination_identity=target_identity,
+        metadata_store=artifact_store,
+        retrieval="lancedb",
+    )
+    assert "derived/lance" in review.requested_artifacts
+
+    def builder(*, fingerprint, pages, **_kwargs):
+        assert [page.id for page in pages] == ["entity:press"]
+        page_path.write_text(page_path.read_text() + "\nLater uncommitted change.\n")
+        registry.register_source(
+            "late-unreferenced-source",
+            b"late source registration",
+            filename="late-source.txt",
+            content_type="text/plain",
         )
         return RemoteIndexCompletion(fingerprint=fingerprint.digest)
 
-    store = _store()
-    manifest = publish_s3_version(
-        store,
-        "kb",
-        source_root=root,
-        version="v1",
+    receipt = publish_revision(
+        root,
+        revision,
+        destination,
+        "none",
+        review.review_digest,
+        source_registry=registry,
+        s3_location=location,
+        destination_identity=target_identity,
+        metadata_store=artifact_store,
+        retrieval="lancedb",
         index_builder=builder,
-        before_activation=hook,
     )
-    published = bytes(obstore.get(store, "kb/v1/overview.md").bytes())
+    manifest = _read_manifest(store, "kb", revision)
+    published = bytes(obstore.get(store, f"kb/{revision}/concepts/press.md").bytes())
     graph = deserialize_graph(
-        bytes(obstore.get(store, f"kb/v1/{DERIVED_DIR}/{GRAPH_ARTIFACT_FILENAME}").bytes())
+        bytes(obstore.get(store, f"kb/{revision}/{DERIVED_DIR}/{GRAPH_ARTIFACT_FILENAME}").bytes())
     )
     completion = msgspec.json.decode(
-        bytes(obstore.get(store, f"kb/v1/{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}").bytes()),
+        bytes(
+            obstore.get(
+                store, f"kb/{revision}/{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}"
+            ).bytes()
+        ),
         type=RemoteIndexCompletion,
     )
     binding = msgspec.json.decode(
-        artifact_store.get_binding_manifest("v1"), type=SourceBindingManifest
+        artifact_store.get_binding_manifest(revision), type=SourceBindingManifest
     )
 
-    assert b"later edit" not in published
-    assert b"lumio-overview" in published
-    assert manifest.fingerprint == captured_digest != fingerprint_sources(root).digest
-    assert graph is not None and graph.fingerprint_digest == captured_digest
-    assert completion.fingerprint == captured_digest
-    assert binding.fingerprint == captured_digest
-    assert {entry.source_id for entry in binding.entries} == {"lumio-overview"}
+    assert b"Later uncommitted change" not in published
+    assert b"captured source A" not in published
+    assert b"operator-manual" in published
+    assert manifest.revision == revision
+    assert manifest.source_reference_digest == hashlib.sha256(source_manifest_raw).hexdigest()
+    assert receipt.revision == revision and receipt.activated is True
+    assert graph is not None
+    assert manifest.fingerprint == expected_fingerprint
+    assert manifest.fingerprint == graph.fingerprint_digest == completion.fingerprint
+    assert binding.fingerprint == manifest.fingerprint
+    assert [(entry.source_id, entry.content_hash) for entry in binding.entries] == [
+        ("operator-manual", digest_a)
+    ]
+    assert registry.find_version("operator-manual", digest_a) is not None
+    assert _read_pointer(store, "kb").version == revision
+    assert S3Location(store, "kb", store_uri="s3://bucket").resolve().published_version == revision
 
 
 @pytest.mark.parametrize("root", [VALID, CATEGORIZED], ids=lambda p: p.name)

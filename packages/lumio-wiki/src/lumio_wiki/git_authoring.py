@@ -23,11 +23,22 @@ import re
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import msgspec
 
-from lumio_wiki.artifact_store import SourceArtifactStore, retain_artifact
+from lumio_wiki.artifact_store import (
+    ArtifactStoreError,
+    ArtifactUnavailable,
+    SourceArtifactStore,
+    SourceBindingEntry,
+    SourceBindingManifest,
+    build_binding_manifest,
+    local_publication_metadata_store,
+    required_source_pairs,
+    retain_artifact,
+    verify_rollback_coverage,
+)
 from lumio_wiki.graph_state import GRAPH_ARTIFACT_FILENAME
 from lumio_wiki.knowledge_base import (
     generate_hot_index,
@@ -40,8 +51,20 @@ from lumio_wiki.location import (
 )
 from lumio_wiki.mutation import MutationBackup, atomic_write_bytes, mutation_lock
 from lumio_wiki.publish import affected_mutation_paths, apply_proposed_pages
-from lumio_wiki.s3_location import build_published_manifest
-from lumio_wiki.s3_publish import _serialize_graph_bytes, _validate_graph_state
+from lumio_wiki.s3_location import S3Location, build_published_manifest
+from lumio_wiki.s3_publish import (
+    LANCE_COMPLETION_OBJECT,
+    LANCE_DERIVED_DIR,
+    IndexBuilder,
+    S3PublicationConflict,
+    _activate_existing_s3_version,
+    _load_complete_version,
+    _publish_s3_captured_revision,
+    _rollback_s3_version,
+    _serialize_graph_bytes,
+    _validate_graph_state,
+    observe_current_pointer,
+)
 from lumio_wiki.source_inspection import validate_published_version
 from lumio_wiki.source_references import (
     SOURCE_REFERENCE_MANIFEST_BASENAME,
@@ -387,6 +410,26 @@ class PublicationReceipt(msgspec.Struct, frozen=True):
     retention: str
     created_at: str
     activated: bool = False
+    destination_identity: str = ""
+    requested_artifacts: list[str] = msgspec.field(default_factory=list)
+    adoption: str = ""
+
+
+class S3PublicationRecord(msgspec.Struct, frozen=True):
+    """Private, immutable authorization and exact binding for one S3 version."""
+
+    receipt: PublicationReceipt
+    sealed: SealedSourceReferences
+    binding_manifest_digest: str
+
+
+class S3ActivationReceipt(msgspec.Struct, frozen=True):
+    """Write-once evidence that the private S3 admission became active."""
+
+    version: str
+    review_digest: str
+    expected_current: str
+    activated_at: str
 
 
 def _now() -> str:
@@ -477,6 +520,47 @@ def _sealed_source_versions(
                 registered_at=version.created_at,
             )
     return [sealed_versions[key] for key in sorted(sealed_versions)]
+
+
+def _captured_binding_entries(
+    captured: CapturedRevision, registry: SourceRegistry | None
+) -> list[SourceBindingEntry]:
+    if captured.manifest.bindings and registry is None:
+        raise GitAuthoringError(
+            "exact Source Binding Manifest entries require the selected private registry"
+        )
+    pages = {page.id: page for page in captured.kb.pages if getattr(page, "id", None)}
+    entries: list[SourceBindingEntry] = []
+    for entity_id, bindings in sorted(captured.manifest.bindings.items()):
+        page = pages.get(entity_id)
+        if page is None:
+            raise GitAuthoringError(
+                f"source binding refers to missing candidate entity {entity_id!r}"
+            )
+        for source_id, digest in sorted(bindings.items()):
+            version = registry.find_version(source_id, digest) if registry is not None else None
+            if version is None:
+                raise GitAuthoringError(
+                    f"bound Source Version {source_id!r}@{digest} cannot be resolved "
+                    "for the private binding record"
+                )
+            if not any(source.id == source_id for source in page.sources):
+                raise GitAuthoringError(
+                    f"source binding {source_id!r} is not cited by candidate entity {entity_id!r}"
+                )
+            entries.append(
+                SourceBindingEntry(
+                    entity_id=entity_id,
+                    page_title=page.title,
+                    source_id=source_id,
+                    content_hash=digest,
+                    content_type=version.content_type,
+                    filename=version.filename,
+                    size=version.size,
+                    synthetic_page=bool(getattr(page, "synthetic", False)),
+                )
+            )
+    return entries
 
 
 def _verify_sealed_state(destination: Path, receipt: PublicationReceipt) -> bytes:
@@ -570,6 +654,7 @@ class PublicationReview(msgspec.Struct, frozen=True):
     adoption: str
     retention: str
     registry_consulted: bool
+    destination_identity: str
     review_digest: str
 
 
@@ -927,14 +1012,16 @@ def _review_digest_payload(review: PublicationReview) -> bytes:
         "source_refs": sorted(review.source_refs),
         "bindings": sorted(review.bindings),
         "source_impact": sorted(
-            f"{item.source_id}|{item.change}|{item.entity_id}|{item.support}"
+            f"{item.source_id}|{item.change}|{item.entity_id}|{item.page_title}|{item.support}"
             for item in review.source_impact
         ),
         "page_mutations": sorted(review.page_mutations),
         "blocking_diagnostics": sorted(review.blocking_diagnostics),
         "requested_artifacts": sorted(review.requested_artifacts),
         "destination": review.destination,
+        "destination_identity": review.destination_identity,
         "expected_current": review.expected_current,
+        "adoption": review.adoption,
         "retention": review.retention,
     }
     return msgspec.json.encode(payload)
@@ -949,6 +1036,10 @@ def preview_publication(
     source_registry: SourceRegistry | None = None,
     artifact_store: SourceArtifactStore | None = None,
     retention_required: bool = False,
+    s3_location: S3Location | None = None,
+    metadata_store: SourceArtifactStore | None = None,
+    destination_identity: str | None = None,
+    retrieval: str = "zero-index",
 ) -> PublicationReview:
     """Produce the stateless Publication Review for one exact revision.
 
@@ -962,9 +1053,39 @@ def preview_publication(
     retention policy, and the validator contract identity (spec 0008 §4.1).
     """
     kb_path = Path(kb_root).resolve()
-    destination_path = Path(destination).resolve()
+    destination_path: Path | None = None
+    if s3_location is None:
+        if str(destination).startswith("s3://"):
+            raise GitAuthoringError(
+                "S3 publication requires an explicit S3Location and Git admission"
+            )
+        if retrieval != "zero-index":
+            raise GitAuthoringError("version-bound LanceDB indexes require an S3Location")
+        destination_path = Path(destination).resolve()
+        metadata_store = None
+        target_identity = str(destination_path)
+    else:
+        if not str(destination).startswith("s3://"):
+            raise GitAuthoringError("an S3Location requires a credential-free s3:// destination")
+        if s3_location.destination_uri is None or (
+            str(destination).rstrip("/") != s3_location.destination_uri.rstrip("/")
+        ):
+            raise GitAuthoringError("S3 destination URI does not match the selected S3Location")
+        target_identity = destination_identity or s3_location.effective_target_identity or ""
+        if destination_identity and s3_location.effective_target_identity not in {
+            None,
+            destination_identity,
+        }:
+            raise GitAuthoringError("S3 destination identity does not match the S3Location")
+        if not target_identity:
+            raise GitAuthoringError("an effective S3 destination identity is required")
+        metadata_store = metadata_store or local_publication_metadata_store(target_identity)
+    metadata_root = _local_store_root(metadata_store)
     _refuse_private_selection_inside_tree(
-        kb_path, _registry_root(source_registry), _local_store_root(artifact_store)
+        kb_path,
+        _registry_root(source_registry),
+        _local_store_root(artifact_store),
+        metadata_root,
     )
     captured = capture_revision(kb_path, revision)
     _refuse_tracked_private_paths(
@@ -972,13 +1093,18 @@ def preview_publication(
         "source registry/store",
         _registry_root(source_registry),
         _local_store_root(artifact_store),
+        metadata_root,
     )
     review = _review_from_capture(
         captured,
-        destination_path,
+        destination_path if destination_path is not None else destination,
         expected_current,
         source_registry=source_registry,
         retention_required=retention_required,
+        s3_location=s3_location,
+        metadata_store=metadata_store,
+        destination_identity=target_identity,
+        retrieval=retrieval,
     )
     return review
 
@@ -988,13 +1114,155 @@ def _local_store_root(artifact_store: SourceArtifactStore | None) -> Path | None
     return Path(root).resolve() if root is not None else None
 
 
+def _load_s3_publication_record(
+    store: SourceArtifactStore, version: str, manifest: Any
+) -> S3PublicationRecord | None:
+    try:
+        raw = store.get_publication_record(version)
+    except ArtifactUnavailable:
+        return None
+    try:
+        record = msgspec.json.decode(raw, type=S3PublicationRecord)
+    except msgspec.DecodeError as exc:
+        raise GitAuthoringError(
+            f"private Git admission record for S3 Published Version {version!r} is malformed"
+        ) from exc
+    receipt = record.receipt
+    sealed_digest = hashlib.sha256(msgspec.json.encode(record.sealed)).hexdigest()
+    if sealed_digest != receipt.source_references_digest:
+        raise GitAuthoringError(
+            f"private Source References for S3 Published Version {version!r} "
+            "do not match the admission receipt"
+        )
+    if (
+        receipt.version != version
+        or receipt.revision != manifest.revision
+        or receipt.subtree != manifest.subtree
+        or receipt.fingerprint != manifest.fingerprint
+        or receipt.manifest_digest != manifest.source_reference_digest
+        or record.sealed.published_version != version
+        or record.sealed.revision != receipt.revision
+        or record.sealed.fingerprint != receipt.fingerprint
+        or record.sealed.manifest_digest != receipt.manifest_digest
+    ):
+        raise GitAuthoringError(
+            f"private Git admission record for S3 Published Version {version!r} "
+            "does not match its public manifest"
+        )
+    try:
+        binding_raw = store.get_binding_manifest(version)
+    except ArtifactUnavailable as exc:
+        raise GitAuthoringError(
+            f"private Source Binding Manifest for S3 Published Version {version!r} is missing"
+        ) from exc
+    if hashlib.sha256(binding_raw).hexdigest() != record.binding_manifest_digest:
+        raise GitAuthoringError(
+            f"private Source Binding Manifest for S3 Published Version {version!r} "
+            "does not match its admission record"
+        )
+    try:
+        binding = msgspec.json.decode(binding_raw, type=SourceBindingManifest)
+    except msgspec.DecodeError as exc:
+        raise GitAuthoringError(
+            f"private Source Binding Manifest for S3 Published Version {version!r} is malformed"
+        ) from exc
+    actual_bindings: dict[str, dict[str, str]] = {}
+    for entry in binding.entries:
+        entity_bindings = actual_bindings.setdefault(entry.entity_id, {})
+        if entry.source_id in entity_bindings:
+            raise GitAuthoringError(
+                f"private Source Binding Manifest for {version!r} contains duplicate entries"
+            )
+        entity_bindings[entry.source_id] = entry.content_hash
+    requested_artifacts = [DERIVED_GRAPH_ARTIFACT]
+    if any(
+        item.path == f"{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}"
+        for item in manifest.derived_files
+    ):
+        requested_artifacts.append("derived/lance")
+    if (
+        receipt.requested_artifacts != requested_artifacts
+        or binding.published_version != version
+        or binding.fingerprint != receipt.fingerprint
+        or binding.revision != receipt.revision
+        or binding.subtree != receipt.subtree
+        or binding.source_reference_digest != receipt.manifest_digest
+        or actual_bindings != record.sealed.bindings
+    ):
+        raise GitAuthoringError(
+            f"private binding records for S3 Published Version {version!r} disagree"
+        )
+    return record
+
+
+def _legacy_s3_source_impact(
+    manifest: SourceReferenceManifest,
+    bindings: SourceBindingManifest | None,
+    pages: list[Any],
+    blocking: list[str],
+) -> list[PublicationSourceImpact]:
+    if bindings is None:
+        return []
+    current: dict[str, list[tuple[str, str, str]]] = {}
+    for page in pages:
+        entity_id = getattr(page, "id", "")
+        for source in getattr(page, "sources", ()):
+            if source.id:
+                current.setdefault(source.id, []).append(
+                    (entity_id, page.title, manifest.bindings.get(entity_id, {}).get(source.id, ""))
+                )
+    impacts: list[PublicationSourceImpact] = []
+    for previous in bindings.entries:
+        status = manifest.sources.get(previous.source_id)
+        candidates = current.get(previous.source_id, [])
+        if status is None:
+            blocking.append(
+                f"legacy S3 binding for {previous.source_id!r} is absent from the candidate "
+                "Source Reference Manifest; explicitly retain or retire it"
+            )
+            continue
+        if status == "retired":
+            impacts.append(
+                PublicationSourceImpact(
+                    source_id=previous.source_id,
+                    change="retired from legacy S3 binding",
+                    entity_id=previous.entity_id,
+                    page_title=previous.page_title,
+                    support="the legacy binding was explicitly retired",
+                )
+            )
+            continue
+        if not candidates:
+            blocking.append(
+                f"legacy S3 binding for active source {previous.source_id!r} has no candidate "
+                "Page support; explicitly resolve it before adoption"
+            )
+            continue
+        if not any(digest == previous.content_hash for _, _, digest in candidates):
+            entity_id, title, digest = candidates[0]
+            impacts.append(
+                PublicationSourceImpact(
+                    source_id=previous.source_id,
+                    change="replaced legacy binding",
+                    entity_id=entity_id,
+                    page_title=title,
+                    support=f"{previous.content_hash} -> {digest}",
+                )
+            )
+    return impacts
+
+
 def _review_from_capture(
     captured: CapturedRevision,
-    destination: Path,
+    destination: Path | str,
     expected_current: str | None,
     *,
     source_registry: SourceRegistry | None,
     retention_required: bool,
+    s3_location: S3Location | None = None,
+    metadata_store: SourceArtifactStore | None = None,
+    destination_identity: str | None = None,
+    retrieval: str = "zero-index",
 ) -> PublicationReview:
     """Build the review (and recompute its digest) from captured facts only."""
     manifest = captured.manifest
@@ -1005,10 +1273,6 @@ def _review_from_capture(
             for issue in captured.report.issues
             if issue.severity == "error"
         )
-    # Spec 0008 §6: publication (unlike ordinary validation) rejects DANGLING
-    # authored internal references in the selected candidate; ambiguous or
-    # escaping references stay non-blocking diagnostics that are never
-    # guessed repairs.
     blocking.extend(
         f"{issue.file}: {issue.field}: {issue.message}"
         for issue in captured.report.issues
@@ -1017,6 +1281,7 @@ def _review_from_capture(
         and issue.message.startswith("broken internal link")
     )
     registry_consulted = source_registry is not None
+    legacy_source_impact: list[PublicationSourceImpact] = []
     if manifest.bindings and source_registry is None:
         blocking.append(
             "the revision carries managed source bindings but no private source "
@@ -1024,69 +1289,95 @@ def _review_from_capture(
         )
     blocking.extend(validate_source_references(manifest, captured.kb, registry=source_registry))
 
-    location = PublishedFilesystemLocation(destination)
-    observed = location.read_pointer()
     expected = _normalize_expected(expected_current)
+    destination_path = Path(destination).resolve() if s3_location is None else None
+    if s3_location is None:
+        assert destination_path is not None
+        location = PublishedFilesystemLocation(destination_path)
+        observed = location.read_pointer()
+        active_manifest = location.read_manifest(observed) if observed is not None else None
+        admitted = _load_sealed(destination_path, observed) if observed is not None else None
+        target_identity = str(destination_path)
+    else:
+        target_identity = destination_identity or s3_location.effective_target_identity
+        if not target_identity:
+            raise GitAuthoringError(
+                "an effective, credential-free S3 destination identity is required"
+            )
+        metadata_store = metadata_store or local_publication_metadata_store(target_identity)
+        observed = observe_current_pointer(s3_location.store, s3_location.prefix).version
+        active_manifest = None
+        admitted = None
+        if observed is not None:
+            active_manifest, _content = s3_location.published_version_content(observed)
+            record = _load_s3_publication_record(metadata_store, observed, active_manifest)
+            if active_manifest.revision:
+                if record is None:
+                    raise GitAuthoringError(
+                        f"active S3 Published Version {observed!r} has Git provenance but no "
+                        "private admission record; repair private metadata before publication"
+                    )
+                admitted = record.sealed
+            else:
+                try:
+                    legacy_raw = metadata_store.get_binding_manifest(observed)
+                    legacy_bindings = msgspec.json.decode(legacy_raw, type=SourceBindingManifest)
+                except ArtifactUnavailable:
+                    legacy_bindings = None
+                except msgspec.DecodeError as exc:
+                    raise GitAuthoringError(
+                        f"legacy S3 Source Binding Manifest for {observed!r} is malformed"
+                    ) from exc
+                if legacy_bindings is not None:
+                    legacy_source_impact.extend(
+                        _legacy_s3_source_impact(
+                            manifest, legacy_bindings, captured.kb.pages, blocking
+                        )
+                    )
+        location = None
     _check_pointer_expectation(observed, expected_current, captured.revision)
 
-    admitted: SealedSourceReferences | None = None
-    active_manifest: Any = None
     adoption: str
     if observed is None:
         adoption = (
             "first Git publication at this destination: no prior admitted Published "
             "Version ancestry exists here"
         )
+    elif admitted is None:
+        adoption = (
+            f"adopt legacy Published Version {observed!r}: the exact active snapshot is shown "
+            "below; no native Git ancestry or admission record is fabricated"
+        )
     else:
-        active_manifest = location.read_manifest(observed)
-        admitted = _load_sealed(destination, observed)
         if admitted.namespace != manifest.namespace:
             raise GitAuthoringError(
                 f"an admitted namespace cannot change in an ordinary successor "
                 f"publication: destination admits {admitted.namespace!r}, the "
                 f"candidate declares {manifest.namespace!r}"
             )
-        # Spec 0008 §2: a branch based on an obsolete admitted revision must
-        # be reconciled using Git before ordinary admission — only a descendant
-        # of the admitted native revision is an ordinary successor; deliberate
-        # historical rollback is the separate rollback operation (finding 2).
         admitted_revision = admitted.revision
         if not _FULL_COMMIT_PATTERN.match(admitted_revision):
             raise GitAuthoringError(
-                f"the admitted Published Version {observed!r} does not record a "
-                f"native Git revision in its sealed provenance; explicit "
-                f"adoption or repair is required before an ordinary successor "
-                f"publication"
+                f"the admitted Published Version {observed!r} does not record a native Git "
+                "revision in its sealed provenance; explicit adoption or repair is required"
             )
         merge_base = (
             _git(captured.repo_root, "merge-base", admitted_revision, captured.revision)
             .decode()
             .strip()
         )
-        # The admitted commit is the merge base exactly when it is an ancestor
-        # of the candidate; divergence therefore requires Git reconciliation.
         if merge_base != admitted_revision:
             raise GitAuthoringError(
-                f"the candidate revision {captured.revision} is not a descendant "
-                f"of the admitted revision {admitted_revision}: a branch based "
-                f"on an obsolete admitted revision must be reconciled using Git "
-                f"(merge or rebase) before ordinary admission; deliberate "
-                f"historical rollback is the separate rollback operation"
+                f"the candidate revision {captured.revision} is not a descendant of the admitted "
+                f"revision {admitted_revision}; reconcile the Git branch before publication"
             )
         adoption = f"successor to admitted Published Version {observed!r}"
-        # Spec 0008 §3.1: once admitted as managed, a source entry is retained
-        # (possibly retired), never silently deleted to evade its support or
-        # retirement checks (finding 5).
         disappeared = sorted(set(admitted.sources) - set(manifest.sources))
         if disappeared:
             blocking.append(
-                "managed source identit"
-                + ("y" if len(disappeared) == 1 else "ies")
-                + " disappeared from the Source Reference Manifest: "
+                "managed source identities disappeared from the Source Reference Manifest: "
                 + ", ".join(disappeared)
-                + "; once admitted as managed, a source is retained (possibly "
-                + "retired) — an explicit reviewed reclassification or Page "
-                + "Removal is required"
+                + "; explicitly reclassify or remove supported Pages before publication"
             )
 
     derived = _derived_content(captured)
@@ -1095,8 +1386,8 @@ def _review_from_capture(
     ]
     bindings = [
         f"{entity_id} -> {source_id}:{digest}"
-        for entity_id, entity_bindings in sorted(manifest.bindings.items())
-        for source_id, digest in sorted(entity_bindings.items())
+        for entity_id, values in sorted(manifest.bindings.items())
+        for source_id, digest in sorted(values.items())
     ]
     public_only = sorted(
         {
@@ -1111,6 +1402,9 @@ def _review_from_capture(
         for page in captured.kb.pages
         if getattr(page, "id", None)
     }
+    requested = [DERIVED_GRAPH_ARTIFACT] if s3_location is not None else sorted(derived)
+    if retrieval == "lancedb":
+        requested.append("derived/lance")
     review = PublicationReview(
         validator_contract=VALIDATOR_CONTRACT_ID,
         kb_path=str(captured.kb_root),
@@ -1123,17 +1417,20 @@ def _review_from_capture(
         manifest_digest=captured.manifest_digest,
         source_refs=source_refs,
         bindings=bindings,
-        source_impact=_source_impact(manifest, admitted, page_sources, source_registry),
+        source_impact=(
+            _source_impact(manifest, admitted, page_sources, source_registry) + legacy_source_impact
+        ),
         page_mutations=_page_mutations(captured.content, active_manifest),
         blocking_diagnostics=sorted(blocking),
         public_only_sources=public_only,
-        requested_artifacts=sorted(derived),
-        destination=str(destination),
+        requested_artifacts=requested,
+        destination=str(destination_path) if destination_path is not None else str(destination),
         expected_current=expected,
         observed_current=observed,
         adoption=adoption,
         retention="required" if retention_required else "disabled",
         registry_consulted=registry_consulted,
+        destination_identity=target_identity,
         review_digest="",
     )
     digest = hashlib.sha256(_review_digest_payload(review)).hexdigest()
@@ -1143,6 +1440,392 @@ def _review_from_capture(
 # ---------------------------------------------------------------------------
 # Explicit confirmation, immutable versions, expected-current activation.
 # ---------------------------------------------------------------------------
+
+
+def _same_s3_binding_manifest(
+    actual: SourceBindingManifest, expected: SourceBindingManifest
+) -> bool:
+    return (
+        actual.published_version == expected.published_version
+        and actual.fingerprint == expected.fingerprint
+        and actual.entries == expected.entries
+        and actual.revision == expected.revision
+        and actual.subtree == expected.subtree
+        and actual.source_reference_digest == expected.source_reference_digest
+        and actual.validator_contract == expected.validator_contract
+    )
+
+
+def _persist_s3_binding_manifest(
+    store: SourceArtifactStore, expected: SourceBindingManifest
+) -> bytes:
+    raw = msgspec.json.encode(expected)
+    try:
+        existing = store.get_binding_manifest(expected.published_version)
+    except ArtifactUnavailable:
+        try:
+            store.put_binding_manifest(expected.published_version, raw)
+            existing = store.get_binding_manifest(expected.published_version)
+        except ArtifactStoreError:
+            existing = store.get_binding_manifest(expected.published_version)
+    try:
+        decoded = msgspec.json.decode(existing, type=SourceBindingManifest)
+    except msgspec.DecodeError as exc:
+        raise GitAuthoringError(
+            f"private Source Binding Manifest for {expected.published_version!r} is malformed"
+        ) from exc
+    if not _same_s3_binding_manifest(decoded, expected):
+        raise GitAuthoringError(
+            f"private Source Binding Manifest for {expected.published_version!r} "
+            "already exists with different immutable bindings"
+        )
+    return existing
+
+
+def _same_s3_publication_record(actual: S3PublicationRecord, expected: S3PublicationRecord) -> bool:
+    return (
+        msgspec.structs.replace(actual.receipt, created_at="")
+        == msgspec.structs.replace(expected.receipt, created_at="")
+        and msgspec.structs.replace(actual.sealed, created_at="")
+        == msgspec.structs.replace(expected.sealed, created_at="")
+        and actual.binding_manifest_digest == expected.binding_manifest_digest
+    )
+
+
+def _persist_s3_publication_record(
+    store: SourceArtifactStore, expected: S3PublicationRecord
+) -> S3PublicationRecord:
+    version = expected.receipt.version
+    try:
+        raw = store.get_publication_record(version)
+    except ArtifactUnavailable:
+        try:
+            store.put_publication_record(version, msgspec.json.encode(expected))
+            raw = store.get_publication_record(version)
+        except ArtifactStoreError:
+            raw = store.get_publication_record(version)
+    try:
+        actual = msgspec.json.decode(raw, type=S3PublicationRecord)
+    except msgspec.DecodeError as exc:
+        raise GitAuthoringError(
+            f"private Git admission record for {version!r} is malformed"
+        ) from exc
+    if not _same_s3_publication_record(actual, expected):
+        raise GitAuthoringError(
+            f"private Git admission record for {version!r} already binds a different review"
+        )
+    return actual
+
+
+def _persist_s3_activation(
+    store: SourceArtifactStore, receipt: PublicationReceipt
+) -> S3ActivationReceipt:
+    expected = S3ActivationReceipt(
+        version=receipt.version,
+        review_digest=receipt.review_digest,
+        expected_current=receipt.expected_current,
+        activated_at=_now(),
+    )
+    try:
+        raw = store.get_activation_receipt(receipt.version)
+    except ArtifactUnavailable:
+        try:
+            store.put_activation_receipt(receipt.version, msgspec.json.encode(expected))
+            raw = store.get_activation_receipt(receipt.version)
+        except ArtifactStoreError:
+            raw = store.get_activation_receipt(receipt.version)
+    try:
+        actual = msgspec.json.decode(raw, type=S3ActivationReceipt)
+    except msgspec.DecodeError as exc:
+        raise GitAuthoringError(
+            f"private activation receipt for {receipt.version!r} is malformed"
+        ) from exc
+    if (
+        actual.version != receipt.version
+        or actual.review_digest != receipt.review_digest
+        or actual.expected_current != receipt.expected_current
+    ):
+        raise GitAuthoringError(
+            f"private activation receipt for {receipt.version!r} binds a different review"
+        )
+    return actual
+
+
+def _expected_s3_pointer(expected_current: str) -> str:
+    return expected_current
+
+
+def _s3_manifest_matches_candidate(manifest: Any, captured: CapturedRevision) -> bool:
+    return (
+        manifest.version == captured.revision
+        and manifest.fingerprint == captured.fingerprint.digest
+        and manifest.revision == captured.revision
+        and manifest.subtree == captured.subtree
+        and manifest.source_reference_digest == captured.manifest_digest
+        and manifest.format_identity == VALIDATOR_CONTRACT_ID
+    )
+
+
+def _retry_s3_publication(
+    location: S3Location,
+    captured: CapturedRevision,
+    expected_current: str,
+    confirm_digest: str,
+    *,
+    artifact_store: SourceArtifactStore | None,
+    metadata_store: SourceArtifactStore,
+    retention_required: bool,
+    retrieval: str,
+    destination_identity: str,
+) -> PublicationReceipt | None:
+    version = captured.revision
+    try:
+        raw = metadata_store.get_publication_record(version)
+    except ArtifactUnavailable:
+        return None
+    try:
+        record = msgspec.json.decode(raw, type=S3PublicationRecord)
+    except msgspec.DecodeError as exc:
+        raise GitAuthoringError(
+            f"private Git admission record for {version!r} is malformed"
+        ) from exc
+    receipt = record.receipt
+    if receipt.review_digest != confirm_digest:
+        return None
+    requested = [DERIVED_GRAPH_ARTIFACT]
+    if retrieval == "lancedb":
+        requested.append("derived/lance")
+    if (
+        receipt.version != version
+        or receipt.revision != captured.revision
+        or receipt.subtree != captured.subtree
+        or receipt.fingerprint != captured.fingerprint.digest
+        or receipt.manifest_digest != captured.manifest_digest
+        or receipt.destination_identity != destination_identity
+        or receipt.expected_current != expected_current
+        or receipt.validator_contract != VALIDATOR_CONTRACT_ID
+        or receipt.retention != ("required" if retention_required else "disabled")
+        or receipt.requested_artifacts != requested
+    ):
+        raise ConfirmationRefused("stored S3 admission record binds different review inputs")
+    if retention_required:
+        if artifact_store is None:
+            raise PublicationRetentionError(
+                "artifact retention is required but no Source Artifact Store is configured"
+            )
+        _check_retention(artifact_store, captured.manifest)
+    import lumio_wiki.s3_publish as s3_publish
+
+    manifest = _load_complete_version(
+        s3_publish._require_obstore(), location.store, location.prefix, version
+    )
+    if not _s3_manifest_matches_candidate(manifest, captured):
+        raise GitAuthoringError(
+            f"S3 Published Version {version!r} does not match its captured Git candidate"
+        )
+    checked_record = _load_s3_publication_record(metadata_store, version, manifest)
+    if checked_record is None or not _same_s3_publication_record(checked_record, record):
+        raise GitAuthoringError(f"private S3 admission state for {version!r} changed")
+    try:
+        activation_raw = metadata_store.get_activation_receipt(version)
+    except ArtifactUnavailable:
+        activation_raw = None
+    if activation_raw is not None:
+        try:
+            activation = msgspec.json.decode(activation_raw, type=S3ActivationReceipt)
+        except msgspec.DecodeError as exc:
+            raise GitAuthoringError(
+                f"private activation receipt for {version!r} is malformed"
+            ) from exc
+        if (
+            activation.version != version
+            or activation.review_digest != receipt.review_digest
+            or activation.expected_current != receipt.expected_current
+        ):
+            raise GitAuthoringError(
+                f"private activation receipt for {version!r} binds a different review"
+            )
+        return msgspec.structs.replace(receipt, activated=True)
+
+    observed = observe_current_pointer(location.store, location.prefix).version
+    if observed == version:
+        _persist_s3_activation(metadata_store, receipt)
+        return msgspec.structs.replace(receipt, activated=True)
+    expected_pointer = _expected_s3_pointer(expected_current)
+    observed_baseline = None if expected_current == _EXPECTED_NONE else expected_current
+    if observed != observed_baseline:
+        raise S3PublicationConflict(
+            f"cannot recover S3 publication {version!r}: active pointer moved from "
+            f"{expected_current!r} to {observed!r}; it will not be reactivated"
+        )
+    _activate_existing_s3_version(location.store, location.prefix, version, expected_pointer)
+    _persist_s3_activation(metadata_store, receipt)
+    return msgspec.structs.replace(receipt, activated=True)
+
+
+def _publish_s3_revision(
+    kb_root: str | Path,
+    revision: str,
+    destination: str | Path,
+    expected_current: str | None,
+    confirm_digest: str,
+    *,
+    source_registry: SourceRegistry | None,
+    artifact_store: SourceArtifactStore | None,
+    retention_required: bool,
+    s3_location: S3Location,
+    metadata_store: SourceArtifactStore | None,
+    destination_identity: str | None,
+    retrieval: str,
+    index_builder: IndexBuilder | None,
+) -> PublicationReceipt:
+    if retrieval not in {"zero-index", "lancedb"}:
+        raise GitAuthoringError("retrieval must be 'zero-index' or 'lancedb'")
+    if retrieval == "lancedb" and index_builder is None:
+        raise GitAuthoringError("LanceDB retrieval requires a version-bound index builder")
+    target_identity = destination_identity or s3_location.effective_target_identity
+    if not target_identity:
+        raise GitAuthoringError("an effective S3 destination identity is required")
+    if destination_identity and s3_location.effective_target_identity not in {
+        None,
+        destination_identity,
+    }:
+        raise GitAuthoringError("S3 destination identity does not match the S3Location")
+    if s3_location.destination_uri is None or (
+        str(destination).rstrip("/") != s3_location.destination_uri.rstrip("/")
+    ):
+        raise GitAuthoringError("S3 destination URI does not match the selected S3Location")
+    private_store = (
+        metadata_store or artifact_store or local_publication_metadata_store(target_identity)
+    )
+    expected = _normalize_expected(expected_current)
+    kb_path = Path(kb_root).resolve()
+    roots = (
+        _registry_root(source_registry),
+        _local_store_root(artifact_store),
+        _local_store_root(private_store),
+    )
+    _refuse_private_selection_inside_tree(kb_path, *roots)
+    captured = capture_revision(kb_path, revision)
+    _refuse_tracked_private_paths(captured.repo_root, "source registry/store", *roots)
+    retried = _retry_s3_publication(
+        s3_location,
+        captured,
+        expected,
+        confirm_digest,
+        artifact_store=artifact_store,
+        metadata_store=private_store,
+        retention_required=retention_required,
+        retrieval=retrieval,
+        destination_identity=target_identity,
+    )
+    if retried is not None:
+        return retried
+    review = _review_from_capture(
+        captured,
+        destination,
+        expected_current,
+        source_registry=source_registry,
+        retention_required=retention_required,
+        s3_location=s3_location,
+        metadata_store=private_store,
+        destination_identity=target_identity,
+        retrieval=retrieval,
+    )
+    if review.review_digest != confirm_digest:
+        raise ConfirmationRefused(
+            "the confirmation no longer matches the recomputed S3 review; review the "
+            "current target and confirm its new digest"
+        )
+    if review.blocking_diagnostics:
+        raise GitAuthoringError(
+            "the reviewed revision has blocking diagnostics and can never be admitted: "
+            + "; ".join(review.blocking_diagnostics[:5])
+        )
+    if retention_required:
+        if artifact_store is None:
+            raise PublicationRetentionError(
+                "artifact retention is required but no Source Artifact Store is configured"
+            )
+        _check_retention(artifact_store, captured.manifest)
+
+    version = captured.revision
+    sealed = SealedSourceReferences(
+        published_version=version,
+        revision=captured.revision,
+        namespace=captured.manifest.namespace,
+        fingerprint=captured.fingerprint.digest,
+        manifest_digest=captured.manifest_digest,
+        sources=dict(captured.manifest.sources),
+        bindings={key: dict(value) for key, value in captured.manifest.bindings.items()},
+        source_versions=_sealed_source_versions(captured, source_registry),
+        created_at=_now(),
+    )
+    binding_manifest = build_binding_manifest(
+        published_version=version,
+        fingerprint=captured.fingerprint.digest,
+        registry=source_registry,
+        pages=captured.kb.pages,
+        now=_now(),
+        captured_entries=_captured_binding_entries(captured, source_registry),
+        revision=captured.revision,
+        subtree=captured.subtree,
+        source_reference_digest=captured.manifest_digest,
+        validator_contract=VALIDATOR_CONTRACT_ID,
+    )
+    receipt = PublicationReceipt(
+        revision=captured.revision,
+        version=version,
+        subtree=captured.subtree,
+        destination=str(destination),
+        fingerprint=captured.fingerprint.digest,
+        manifest_digest=captured.manifest_digest,
+        source_references_digest=hashlib.sha256(msgspec.json.encode(sealed)).hexdigest(),
+        review_digest=review.review_digest,
+        expected_current=review.expected_current,
+        validator_contract=VALIDATOR_CONTRACT_ID,
+        retention=review.retention,
+        created_at=_now(),
+        destination_identity=target_identity,
+        requested_artifacts=list(review.requested_artifacts),
+        adoption=review.adoption,
+    )
+
+    def before_activation(prepared: Any) -> None:
+        if (
+            prepared.version != version
+            or prepared.fingerprint != captured.fingerprint.digest
+            or prepared.manifest.revision != captured.revision
+            or prepared.manifest.source_reference_digest != captured.manifest_digest
+        ):
+            raise GitAuthoringError("S3 publisher changed the captured Git candidate")
+        raw_binding = _persist_s3_binding_manifest(private_store, binding_manifest)
+        record = S3PublicationRecord(
+            receipt=receipt,
+            sealed=sealed,
+            binding_manifest_digest=hashlib.sha256(raw_binding).hexdigest(),
+        )
+        _persist_s3_publication_record(private_store, record)
+
+    entries = _captured_binding_entries(captured, source_registry)
+
+    def capture_candidate(_pages: list[Any]) -> list[SourceBindingEntry]:
+        return list(entries)
+
+    cast(Any, before_activation).capture_candidate = capture_candidate
+    pointer_version = _expected_s3_pointer(review.expected_current)
+    published_manifest = _publish_s3_captured_revision(
+        s3_location.store,
+        s3_location.prefix,
+        captured=captured,
+        expected_pointer_version=pointer_version,
+        index_builder=index_builder if retrieval == "lancedb" else None,
+        before_activation=before_activation,
+    )
+    if not _s3_manifest_matches_candidate(published_manifest, captured):
+        raise GitAuthoringError("activated S3 manifest does not match the confirmed Git candidate")
+    _persist_s3_activation(private_store, receipt)
+    return msgspec.structs.replace(receipt, activated=True)
 
 
 def publish_revision(
@@ -1155,6 +1838,11 @@ def publish_revision(
     source_registry: SourceRegistry | None = None,
     artifact_store: SourceArtifactStore | None = None,
     retention_required: bool = False,
+    s3_location: S3Location | None = None,
+    metadata_store: SourceArtifactStore | None = None,
+    destination_identity: str | None = None,
+    retrieval: str = "zero-index",
+    index_builder: IndexBuilder | None = None,
 ) -> PublicationReceipt:
     """Confirm the reviewed revision and activate one immutable local version.
 
@@ -1175,6 +1863,28 @@ def publish_revision(
             "digest (--confirm); passing validation or committing never admits "
             "automatically"
         )
+    if s3_location is not None:
+        return _publish_s3_revision(
+            kb_root,
+            revision,
+            destination,
+            expected_current,
+            confirm_digest,
+            source_registry=source_registry,
+            artifact_store=artifact_store,
+            retention_required=retention_required,
+            s3_location=s3_location,
+            metadata_store=metadata_store,
+            destination_identity=destination_identity,
+            retrieval=retrieval,
+            index_builder=index_builder,
+        )
+    if str(destination).startswith("s3://"):
+        raise GitAuthoringError(
+            "S3 publication requires Git admission through an explicit S3Location"
+        )
+    if retrieval != "zero-index" or index_builder is not None:
+        raise GitAuthoringError("version-bound LanceDB indexes require an explicit S3Location")
     kb_path = Path(kb_root).resolve()
     destination_path = Path(destination).resolve()
     _refuse_private_selection_inside_tree(
@@ -1331,7 +2041,8 @@ def publish_revision(
 
 
 def _check_retention(
-    artifact_store: SourceArtifactStore, manifest: SourceReferenceManifest
+    artifact_store: SourceArtifactStore,
+    manifest: SourceReferenceManifest | SealedSourceReferences,
 ) -> None:
     """Required retention: every bound exact version needs a verified artifact."""
     missing = [
@@ -1534,6 +2245,7 @@ class RollbackReview(msgspec.Struct, frozen=True):
 
     validator_contract: str
     destination: str
+    destination_identity: str
     version: str
     revision: str
     fingerprint: str
@@ -1617,6 +2329,7 @@ def _rollback_review(
     review = RollbackReview(
         validator_contract=VALIDATOR_CONTRACT_ID,
         destination=str(destination),
+        destination_identity=str(destination),
         version=version,
         revision=receipt.revision,
         fingerprint=manifest.fingerprint,
@@ -1633,6 +2346,91 @@ def _rollback_review(
     payload = {
         "validator_contract": review.validator_contract,
         "destination": review.destination,
+        "destination_identity": review.destination_identity,
+        "version": review.version,
+        "revision": review.revision,
+        "fingerprint": review.fingerprint,
+        "namespace": review.namespace,
+        "source_reference_manifest_digest": review.source_reference_manifest_digest,
+        "sealed_source_references_digest": review.sealed_source_references_digest,
+        "canonical_files": review.canonical_files,
+        "derived_files": review.derived_files,
+        "expected_current": review.expected_current,
+        "retention": review.retention,
+    }
+    digest = hashlib.sha256(msgspec.json.encode(payload)).hexdigest()
+    return msgspec.structs.replace(review, review_digest=digest)
+
+
+def _s3_rollback_review(
+    location: S3Location,
+    destination: str,
+    version: str,
+    expected_current: str | None,
+    *,
+    retention_required: bool,
+    metadata_store: SourceArtifactStore,
+    destination_identity: str,
+) -> RollbackReview:
+    version = validate_published_version(version)
+    import lumio_wiki.s3_publish as s3_publish
+
+    manifest = _load_complete_version(
+        s3_publish._require_obstore(), location.store, location.prefix, version
+    )
+    if not manifest.revision or manifest.format_identity != VALIDATOR_CONTRACT_ID:
+        raise GitAuthoringError(
+            f"S3 Published Version {version!r} has no compatible Git admission; "
+            "legacy versions remain readable but are not rollback targets"
+        )
+    record = _load_s3_publication_record(metadata_store, version, manifest)
+    if record is None:
+        raise GitAuthoringError(
+            f"S3 Published Version {version!r} has no private Git admission record"
+        )
+    receipt = record.receipt
+    try:
+        activation_raw = metadata_store.get_activation_receipt(version)
+    except ArtifactUnavailable as exc:
+        raise GitAuthoringError(
+            f"S3 Published Version {version!r} has no evidence of prior Git-admitted activation"
+        ) from exc
+    try:
+        activation = msgspec.json.decode(activation_raw, type=S3ActivationReceipt)
+    except msgspec.DecodeError as exc:
+        raise GitAuthoringError(f"S3 activation receipt for {version!r} is malformed") from exc
+    if (
+        activation.version != version
+        or activation.review_digest != receipt.review_digest
+        or activation.expected_current != receipt.expected_current
+    ):
+        raise GitAuthoringError(
+            f"S3 activation receipt for {version!r} disagrees with its Git admission"
+        )
+    expected = _normalize_expected(expected_current)
+    observed = observe_current_pointer(location.store, location.prefix).version
+    _check_pointer_expectation(observed, expected_current, version)
+    review = RollbackReview(
+        validator_contract=VALIDATOR_CONTRACT_ID,
+        destination=destination,
+        destination_identity=destination_identity,
+        version=version,
+        revision=receipt.revision,
+        fingerprint=manifest.fingerprint,
+        namespace=record.sealed.namespace,
+        source_reference_manifest_digest=receipt.manifest_digest,
+        sealed_source_references_digest=receipt.source_references_digest,
+        canonical_files=len(manifest.files),
+        derived_files=len(manifest.derived_files),
+        expected_current=expected,
+        observed_current=observed,
+        retention="required" if retention_required else "disabled",
+        review_digest="",
+    )
+    payload = {
+        "validator_contract": review.validator_contract,
+        "destination": review.destination,
+        "destination_identity": review.destination_identity,
         "version": review.version,
         "revision": review.revision,
         "fingerprint": review.fingerprint,
@@ -1654,6 +2452,9 @@ def preview_rollback(
     expected_current: str | None = None,
     *,
     retention_required: bool = False,
+    s3_location: S3Location | None = None,
+    metadata_store: SourceArtifactStore | None = None,
+    destination_identity: str | None = None,
 ) -> RollbackReview:
     """Produce the stateless rollback review; mutate nothing (spec §5, F6).
 
@@ -1663,6 +2464,26 @@ def preview_rollback(
     expected/observed baseline, and returns the deterministic review digest
     whose explicit confirmation is the only path that may move the pointer.
     """
+    if s3_location is not None:
+        target_identity = destination_identity or s3_location.effective_target_identity
+        if not target_identity or s3_location.destination_uri is None:
+            raise GitAuthoringError(
+                "an exact S3 URI and effective destination identity are required"
+            )
+        if str(destination).rstrip("/") != s3_location.destination_uri.rstrip("/"):
+            raise GitAuthoringError("S3 destination URI does not match the selected S3Location")
+        private_store = metadata_store or local_publication_metadata_store(target_identity)
+        return _s3_rollback_review(
+            s3_location,
+            str(destination),
+            version,
+            expected_current,
+            retention_required=retention_required,
+            metadata_store=private_store,
+            destination_identity=target_identity,
+        )
+    if str(destination).startswith("s3://"):
+        raise GitAuthoringError("S3 rollback requires Git admission through an explicit S3Location")
     return _rollback_review(
         Path(destination).resolve(),
         version,
@@ -1679,6 +2500,9 @@ def rollback_publication(
     *,
     artifact_store: SourceArtifactStore | None = None,
     retention_required: bool = False,
+    s3_location: S3Location | None = None,
+    metadata_store: SourceArtifactStore | None = None,
+    destination_identity: str | None = None,
 ) -> Any:
     """Confirm the reviewed rollback and expected-current-activate history.
 
@@ -1695,6 +2519,77 @@ def rollback_publication(
             "review digest (--confirm); merely requesting the review never "
             "activates historical knowledge"
         )
+    if s3_location is not None:
+        target_identity = destination_identity or s3_location.effective_target_identity
+        if not target_identity or s3_location.destination_uri is None:
+            raise GitAuthoringError(
+                "an exact S3 URI and effective destination identity are required"
+            )
+        if str(destination).rstrip("/") != s3_location.destination_uri.rstrip("/"):
+            raise GitAuthoringError("S3 destination URI does not match the selected S3Location")
+        private_store = (
+            metadata_store or artifact_store or local_publication_metadata_store(target_identity)
+        )
+        review = _s3_rollback_review(
+            s3_location,
+            str(destination),
+            version,
+            expected_current,
+            retention_required=retention_required,
+            metadata_store=private_store,
+            destination_identity=target_identity,
+        )
+        if review.review_digest != confirm_digest:
+            raise ConfirmationRefused(
+                "the rollback confirmation no longer matches the recomputed S3 review"
+            )
+        if retention_required:
+            if artifact_store is None:
+                raise PublicationRetentionError(
+                    "artifact retention is required but no Source Artifact Store is configured"
+                )
+            import lumio_wiki.s3_publish as s3_publish
+
+            checked = _load_s3_publication_record(
+                private_store,
+                review.version,
+                _load_complete_version(
+                    s3_publish._require_obstore(),
+                    s3_location.store,
+                    s3_location.prefix,
+                    review.version,
+                ),
+            )
+            if checked is None:
+                raise GitAuthoringError("S3 rollback admission record disappeared")
+            container_uri = s3_location.destination_uri
+            if s3_location.prefix:
+                container_uri = container_uri[: -(len(s3_location.prefix) + 1)]
+            snapshot = S3Location(
+                s3_location.store,
+                s3_location.prefix,
+                version=review.version,
+                store_uri=container_uri,
+            ).resolve()
+            verify_rollback_coverage(
+                private_store,
+                review.version,
+                required=True,
+                required_pairs=required_source_pairs(snapshot.pages),
+                expected_fingerprint=review.fingerprint,
+                source_artifact_store=artifact_store,
+            )
+        manifest = _rollback_s3_version(
+            s3_location.store,
+            s3_location.prefix,
+            version=review.version,
+            expected_pointer_version=review.expected_current,
+        )
+        if manifest.version != review.version or manifest.revision != review.revision:
+            raise GitAuthoringError("S3 rollback activated a different reviewed version")
+        return manifest
+    if str(destination).startswith("s3://"):
+        raise GitAuthoringError("S3 rollback requires Git admission through an explicit S3Location")
     destination_path = Path(destination).resolve()
     with mutation_lock(destination_path):
         review = _rollback_review(

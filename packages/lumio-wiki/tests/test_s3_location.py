@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Any
 
 import msgspec
 import pytest
@@ -99,7 +100,7 @@ def _publish_version(
     return manifest
 
 
-def _store() -> object:
+def _store() -> Any:
     return obstore.store.MemoryStore()
 
 
@@ -136,6 +137,40 @@ def test_s3_location_describe_is_secret_free_and_stable(published_kb):
 def test_s3_location_describe_names_a_pinned_version(published_kb):
     location = S3Location(published_kb, "kb", version="v1")
     assert "@v1" in location.describe()
+
+
+def test_s3_destination_identity_is_exact_and_secret_free():
+    store = obstore.store.MemoryStore()
+    config = {
+        "aws_region": "us-east-1",
+        "aws_endpoint": "http://localhost:9000",
+        "aws_access_key_id": "test-access-key",
+        "aws_secret_access_key": "test-secret-key",
+    }
+    location = S3Location(
+        store,
+        "kb/",
+        store_uri="s3://bucket/",
+        target_config=config,
+        client_options={"allow_http": True},
+    )
+
+    assert location.destination_uri == "s3://bucket/kb"
+    identity = location.effective_target_identity
+    assert identity is not None
+    assert "test-access-key" not in identity
+    assert "test-secret-key" not in identity
+    other_identity = S3Location(
+        store,
+        "kb",
+        store_uri="s3://bucket",
+        target_config={**config, "aws_endpoint": "http://localhost:9001"},
+        client_options={"allow_http": True},
+    ).effective_target_identity
+    assert other_identity != identity
+
+    with pytest.raises(KnowledgeBaseError, match="credential-free"):
+        S3Location(store, "kb", store_uri="s3://user:password@bucket")
 
 
 # ---------------------------------------------------------------------------
