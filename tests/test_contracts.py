@@ -1215,7 +1215,7 @@ def test_contract_evidence_dependency_and_age_gate(tmp_path, monkeypatch, capsys
         {
             "kind": "contract",
             "name": "orders-contract",
-            "content": ORDERS_CONTRACT + "description: revised producer metadata\n",
+            "content": ORDERS_CONTRACT + "description: {purpose: revised producer metadata}\n",
         },
     )
     third = api.validate_proposal(started["proposal"], changed["revision"])
