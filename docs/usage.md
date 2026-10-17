@@ -5,7 +5,7 @@ inside a **coding-agent harness** (opencode, Claude Code, Codex, etc.).
 
 > New here? **[`docs/quickstart.md`](quickstart.md)** is the canonical
 > onboarding journey (issue #180): one linear path — Maintainer setup,
-> ontology starter, managed ingest, proposal review, S3 publication with and
+> ontology starter, managed ingest, Git review/admission, S3 publication with and
 > without LanceDB, read-only Reader setup, retrieval, traversal, citation
 > opening, Source Artifact inspection — ending with a grounded agent answer.
 > This guide is the reference the journey links into.
@@ -139,14 +139,16 @@ fail with a bounded error; nothing is configured unless the clone is valid.
 Update a cloned project with `git -C team-kb pull` (or re-run `setup --from`
 after removing the clone).
 
-The git workflow: each Maintainer clones the KB repository, works on a
-branch, and stages changes with `lumio-wiki ingest` (or authors a proposal by
-hand), then opens a pull request. CI runs `lumio-wiki validate` on the PR;
-merging to the default branch publishes the content **in git**. Publishing to
-S3 remains a separate, explicit step: an Owner (pointer/admin credentials)
-runs `lumio-wiki publish-s3`, which uploads the immutable version and
-activates it by advancing `current.json` — no git merge advances the pointer
-by itself.
+The Git workflow uses an explicitly selected registered branch/worktree.
+Adopt `.lumio-authoring.yaml` version 1 with a stable namespace and exact
+Entity/Source/SHA-256 bindings; keep the private Source Registry, originals,
+artifacts and transcripts outside Git/public content. Select the registry
+with `--source-registry` or `LUMIO_SOURCE_REGISTRY`. Setup neither initializes
+Git nor infers adoption. `ingest` edits ordinary files; review the full diff,
+validate and commit. GitHub/PRs are optional. A commit or merge is not a
+Published Version: preview the exact full commit, then confirm only after the
+operator authorizes that displayed review, destination and expected current
+version. Git is not required for plain reads, queries or validation.
 
 | Lumio role | Git host (e.g. GitHub) | Lumio app | S3 IAM |
 |---|---|---|---|
@@ -181,35 +183,31 @@ lumio-wiki paths <kb> "<src>" "<dst>"        # shortest typed path between two t
               [--scope canonical|discovery] [--max-depth N] [--trace]
 lumio-wiki hot <kb>                          # Maintainer-pinned Hot Index (retrieval ladder step 0)
 lumio-wiki index <kb> [dir]                  # generated Navigation Index (step 1)
-lumio-wiki ingest <kb> <file> [--distiller passthrough|llm]   # stage a Knowledge Source as a proposal
+lumio-wiki ingest <kb> <file> [--distiller passthrough|llm]   # ordinary Git worktree edits
 lumio-wiki ingest <kb> <source> --compiled-page <page.md> --source-id <id>  # managed host-Distiller ingest (bind original source + authored page, issue #149)
 lumio-wiki ingest-url <kb> <url> --compiled-page <page.md> --source-id <id> # safe URL ingestion (HTTPS-only, bounded, SSRF-safe; issue #178)
               [--max-bytes N] [--timeout S] [--max-redirects N]
               [--allow-http] [--allow-private-destination]   # explicit escape hatches for trusted local endpoints
 lumio-wiki ingest-research <kb> <report.md> --manifest <manifest.yaml> --source-id <id>  # bounded research bundle (consulted URLs = provenance; issue #178)
-lumio-wiki proposal list <kb>                # list staged proposals
-lumio-wiki proposal inspect <kb> <id> [--json]   # review a proposal (metadata + diff)
-lumio-wiki proposal validate <kb> <id> [--json] # validate a proposal
-lumio-wiki publish <kb> <id> [--json]      # publish a reviewed proposal
-lumio-wiki discard <kb> <id> [--json]      # discard a proposal
+lumio-wiki publish <kb> --revision <full-commit-id> --to <dest> --expected-current <version-or-none> [--json]  # preview only
+# Only after explicit operator authorization of that displayed review:
+lumio-wiki publish <kb> --revision <full-commit-id> --to <dest> --expected-current <version-or-none> --confirm <review-digest> [--json]
+lumio-wiki legacy-proposals inventory <kb> [--ingest-dir <private-store>]  # read-only inventory
+lumio-wiki legacy-proposals export <kb> <id> --baseline <full-commit-id> --branch <name> [--confirm]  # unadmitted export
 lumio-wiki cross-link <kb> [--stage]         # missing-link candidates (Extracted References); --stage repairs as links
 lumio-wiki dream <kb> [--stage] [--semantic] # read-only Dream Cycle reflection; Source Drift diagnostics are
                                              #   advisory (never staged, never blocking, no exit-code change)
 lumio-wiki source list [<kb>]                    # list private Source identities (ADR-0014)
-lumio-wiki source retire [<kb>] --source-id <id> # stage Source retirement
-lumio-wiki source reactivate [<kb>] --source-id <id> --file <path> # stage reactivation
+lumio-wiki source retire [<kb>] --source-id <id> # edit Git retirement intent; remaining support must validate
+lumio-wiki source reactivate [<kb>] --source-id <id> --file <path> --entity <entity-id> # explicitly select all still-declaring Entities
 lumio-wiki source resolve <kb> "<query>" [--published-version <v>] [--json]  # resolve a Source ID, Entity ID, page title, alias, or path to ONE registered Source (identity + availability; bounded candidates; never a signed URL)
 lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]  # secret-free metadata for the exact bound Source Version (ADR-0020)
 lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>  # byte-exact original, digest/size re-verified (private, optional)
 lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]  # short-lived exact-object signed GET URL (bearer secret; 1 h max)
-lumio-wiki publish-s3 <kb> [dest] --version <v>  # publish immutable S3 Published Version
-              [--expected-pointer-version <v>]    # (compare-and-swap guard; dest defaults to LUMIO_PUBLISH_TO)
-              [--retrieval lancedb]               # build+health-check remote LanceDB under
-                                                  #   <version>/derived/lance/ BEFORE activation;
-                                                  #   a build/health failure blocks the pointer
-                                                  #   advance (issue #163). Needs lumio-lancedb.
-lumio-wiki rollback-s3 <dest> --version <v>      # CAS-activate a prior complete version (never
-              [--expected-pointer-version <v>]    # rebuilds it; stale rollback fails closed)
+lumio-wiki publish-s3 <kb> [dest] --revision <full-commit-id> --expected-current <version-or-none>
+              [--confirm <review-digest>] [--retrieval lancedb] # same admission gate; build/health failure blocks activation
+lumio-wiki rollback-s3 <dest> --version <historical-version> --expected-current <active-version>
+              [--confirm <review-digest>]          # preview first; never rebuilds historical bytes
 lumio-wiki cleanup-s3 <dest>                     # report inactive incomplete version prefixes
                                                   #   (interrupted builds); deletes nothing
 lumio-wiki health <kb> [--rebuild]           # page counts, validation, Discovery Graph health
@@ -441,32 +439,27 @@ print(page.path)            # "technology.md"
 
 ### Ingest workflow (you are the Distiller)
 
+After explicitly adopting the Git authoring manifest and selecting the private
+registry outside the repository:
+
 ```python
-from lumio_wiki import (
-    load_knowledge_base,
-    create_proposal_without_provider,
-    IngestStore,
+from pathlib import Path
+from lumio_wiki import ingest_into_worktree
+from lumio_wiki.source_registry import SourceRegistry
+
+original = Path("/private/notes.md")  # not tracked by the KB repository
+result = ingest_into_worktree(
+    "my-kb", original.read_bytes(), "text/markdown", original.name,
+    "notes", authored_markdown,  # page declares sources[].id = notes
+    source_registry=SourceRegistry("/private/source-registry"),
+    raw_source_path=original,
 )
-from lumio_wiki.proposal_pipeline import ProposalPipeline
-
-kb, report = load_knowledge_base("my-kb")
-store = IngestStore(kb.root / ".lumio" / "ingest")
-pipeline = ProposalPipeline(kb, store=store)
-
-# Stage a proposal (model-free: you author the Compiled Page Markdown)
-proposal = create_proposal_without_provider(
-    kb,
-    source_path="path/to/notes.md",
-    page_markdown=authored_markdown,
-)
-
-# Validate before publish
-validation = pipeline.validate(proposal.id)
-if validation.is_valid:
-    pipeline.publish(proposal.id)
-else:
-    pipeline.discard(proposal.id)
 ```
+
+The helper registers exact private bytes and validates/writes ordinary page
+and manifest files. It never commits or publishes. Review with native Git,
+commit the complete candidate, then use separate preview/confirm admission.
+Registering B does not change an existing binding to A or historical Evidence.
 
 ### Use myKG as an experiment-only upstream extractor
 
@@ -474,7 +467,7 @@ Lumio can evaluate [myKG](https://github.com/SenolIsci/mykg) as an out-of-proces
 corpus-level extractor. This is an experiment harness, **not** a runtime
 integration: myKG is not a `lumio-wiki` dependency, its output is never
 canonical by itself, and every imported page or Claim still passes
-through Lumio's proposal and Maintainer-review gates.
+through complete-candidate validation and explicit Publication Admission.
 
 Before a real run, choose a private corpus, pin the myKG version and
 model/provider configuration, set a cost/time budget, and choose a private
@@ -501,54 +494,38 @@ Deterministic serialization: all Entity/Claim/Ontology records are frozen
 `lumio.yaml` (including its `ontology:` section) is written with sorted keys
 and a stable section order — identical canonical content always produces
 byte-identical files and therefore stable fingerprints.
-Stage the candidate pages through the ordinary external-import proposal path:
+Inspect the parsed candidate provenance and diagnostics before explicitly
+writing the selected Git worktree:
 
 ```python
-from lumio_wiki import (
-    IngestStore,
-    SourceProvenance,
-    import_external_compiled_markdown,
-    load_knowledge_base,
-    propose_external_import,
-)
-from lumio_wiki.proposal_pipeline import ProposalPipeline
+from lumio_wiki import import_external_compiled_markdown, write_pages_into_worktree
 
-kb, report = load_knowledge_base("my-kb")
 parsed = import_external_compiled_markdown("/tmp/mykg-candidates")
-proposal = propose_external_import(
-    parsed,
-    kb,
-    SourceProvenance(
-        original_filename="mykg-session",
-        content_type="application/x-mykg-session",
-        converted_by="mykg-experiment",
-    ),
-)
-store = IngestStore(kb.root / ".lumio" / "ingest")
-pipeline = ProposalPipeline(kb, store=store)
-pipeline.stage(proposal)
+# Review parsed diagnostics and each page's explicit Sources first.
+result = write_pages_into_worktree("my-kb", parsed.proposed_pages)
 ```
 
-Use `lumio-wiki proposal inspect`, `proposal validate`, and `publish` for the
-normal review flow. Review the private relationship sidecar separately; only
-publish the raw corpus, myKG session files, confidence values, source paths, or
-private sidecars into the Knowledge Base.
+Review the complete Git diff, validate and commit before separate admission.
+Review the private relationship sidecar separately; never publish the raw
+corpus, myKG session files, confidence values, source paths or private sidecars.
 
 ### Publishing to S3 (immutable Published Versions)
 
-```python
-from lumio_wiki.s3_publish import publish_s3_version
+Use the same exact-revision admission gate as local publication:
 
-manifest = publish_s3_version(
-    store,                    # obstore ObjectStore
-    prefix="kb",
-    source_root="my-kb",
-    version="2024-01-15",
-    expected_pointer_version="2024-01-10",  # compare-and-swap guard
-)
-# Writes canonical content + Discovery Graph under kb/2024-01-15/,
-# then conditionally advances current.json to the new version.
+```bash
+lumio-wiki publish my-kb --revision <full-commit-id> --to s3://bucket/kb \
+  --expected-current <version-or-none> --source-registry <private-dir>
+# Only after the operator authorizes the displayed review:
+lumio-wiki publish my-kb --revision <full-commit-id> --to s3://bucket/kb \
+  --expected-current <version-or-none> --source-registry <private-dir> \
+  --confirm <review-digest>
 ```
+
+The SDK equivalents are `preview_publication` / `publish_revision` with an
+explicit `S3Location`, effective target identity and private metadata store.
+All requested artifacts and exact historical bindings are verified before
+conditional activation; an index failure or CAS conflict preserves old readers.
 
 ### Reading from an S3 Location
 
@@ -585,12 +562,13 @@ from lumio_wiki import (
     FilesystemLocation, open_filesystem_knowledge_base,
     # S3 (requires lumio-wiki[s3])
     S3Location, open_s3_knowledge_base,
-    # Ingest
-    IngestProposal, IngestStore, ProposalPipeline,
+    # Git authoring and explicit publication admission
+    ingest_into_worktree, write_pages_into_worktree,
+    preview_publication, publish_revision, PublicationReview, PublicationReceipt,
     # Retrieval
     ZeroIndexRetrieval, RetrievalAdapter, default_retrieval_adapter,
     # Publish
-    publish_s3_version, S3PublicationConflict,
+    S3PublicationConflict,
     # Discovery Graph diagnostics
     StructuralGraphReport, GraphHealthReport,
     # Cross-link candidates
@@ -677,10 +655,11 @@ automatically when no `\u003ckb\u003e` argument is given).
 
 ### Ingest (you are the Distiller)
 
-1. Author a Compiled Page (YAML frontmatter + Markdown body) in a temp file.
-2. `lumio-wiki ingest \u003cfile\u003e` — stages a reviewable Ingest Proposal.
-3. `lumio-wiki proposal list` → `proposal inspect \u003cid\u003e` → `proposal validate \u003cid\u003e`.
-4. `lumio-wiki publish \u003cid\u003e` (or `lumio-wiki discard \u003cid\u003e`).
+1. Explicitly select/adopt a Git authoring worktree and private Source Registry.
+2. Author a Compiled Page, then `lumio-wiki ingest <file>` writes ordinary files.
+3. Review the full Git diff, validate the complete candidate and commit.
+4. Preview `publish --revision <full-commit-id> --to <dest> --expected-current
+   <version-or-none>`; confirm with its review digest only after operator authorization.
 
 ### Guardrails
 
@@ -688,8 +667,9 @@ automatically when no `\u003ckb\u003e` argument is given).
   passage). Unsupported claims return "not covered by this knowledge base."
 - **Connectivity is not support.** Graph reachability selects pages to inspect;
   it never manufactures Evidence.
-- **Proposal-first.** Validation always runs before publish. Never write `.md`
-  files directly to the KB root.
+- **Git authoring, explicit admission.** Validate the complete candidate and
+  review/commit with Git. A commit or general coding request never authorizes
+  confirmation of publication.
 
 ### Diagnostics
 
@@ -747,7 +727,7 @@ settings), and the `lumio-wiki` CLI resolves it automatically when no
 `\u003ckb\u003e` argument is given.
 
 **If the wiki doesn't exist yet:** run `lumio-wiki setup ./wiki`. It creates
-an empty categorized Knowledge Base (`lumio.yaml` + `.lumio/ingest` + `.lumio/index`)
+an empty categorized Knowledge Base (`lumio.yaml` + `.lumio/index`)
 writes `.env` and `AGENTS.md`, and installs no skill unless an explicit
 `--skill-scope` or `--agent` target is supplied. Add your first `.md` Compiled Pages under `./wiki`,
 then `lumio-wiki validate`. The setup is idempotent: re-running it on an
@@ -759,16 +739,14 @@ The host coding agent is the default **Distiller** — no model provider needed.
 Author the Compiled Page Markdown, write it to a temp file, then:
 
 ```bash
-# Stage
+# In an explicitly selected/adopted Git worktree:
 lumio-wiki ingest ./kb /tmp/new-page.md
-# → proposal abc123 staged (2 pages affected, not blocked)
-
-# Review
-lumio-wiki proposal inspect ./kb abc123
-lumio-wiki proposal validate ./kb abc123
-
-# Publish or discard
-lumio-wiki publish ./kb abc123
+git -C ./kb diff
+lumio-wiki validate ./kb
+git -C ./kb add <authored-paths> .lumio-authoring.yaml
+git -C ./kb commit -m "Review knowledge change"
+lumio-wiki publish ./kb --revision <full-commit-id> --to <dest> --expected-current <version-or-none>
+# Only after operator authorization: repeat with --confirm <review-digest>.
 ```
 
 For unattended distillation (no human-authored Markdown), install
@@ -780,8 +758,9 @@ For unattended distillation (no human-authored Markdown), install
   passage). Unsupported claims return "not covered."
 - **Connectivity ≠ support.** Graph reachability selects pages to inspect; it
   never manufactures Evidence.
-- **Proposal-first.** Validation always runs before publish. Never write `.md`
-  files directly to the KB root.
+- **Git authoring, explicit admission.** Validate the complete candidate and
+  review/commit with Git. A commit or general coding request never authorizes
+  confirmation of publication.
 - **Public surface only.** The protocol invokes only the public CLI and Python
   API. It never parses the private MessagePack graph artifact or starts the
   web application.

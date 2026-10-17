@@ -30,7 +30,6 @@ from typing import Literal
 import msgspec
 
 from lumio_wiki.artifact_store import SourceBindingManifest
-from lumio_wiki.ingest import IngestProposal, IngestStore, SourceProvenance
 from lumio_wiki.knowledge_base import (
     GRAPH_SCOPE_CANONICAL,
     GRAPH_SCOPE_DISCOVERY,
@@ -42,7 +41,6 @@ from lumio_wiki.knowledge_base import (
     load_knowledge_base,
 )
 from lumio_wiki.link_candidates import find_link_candidates
-from lumio_wiki.proposal_pipeline import ProposalPipeline
 from lumio_wiki.records import (
     CompiledPage,
     Entity,
@@ -307,67 +305,6 @@ def _revision_routing_fields(kb: KnowledgeBase, page_path: str) -> dict:
     }
 
 
-def _stage_revised_page(
-    kb: KnowledgeBase,
-    store: IngestStore,
-    revised_markdown: str,
-    source_path: str,
-) -> IngestProposal:
-    """Assemble and stage one compound-revision proposal through the pipeline.
-
-    Raw bytes are NOT persisted into the ingest store: the revised Markdown is
-    the KB's own page content (already on disk), and a raw ``.md`` saved under
-    the default in-KB ingest store would be scanned by the page loader. The
-    proposal JSON carries the full revised Markdown, which is everything the
-    review surface needs.
-    """
-    provenance = SourceProvenance(
-        original_filename=source_path,
-        content_type="text/markdown",
-        converted_by=_ORIGIN,
-        origin=_ORIGIN,
-    )
-    pipeline = ProposalPipeline(kb, store=store)
-    proposal = pipeline.assemble(revised_markdown, provenance, source_path)
-    return pipeline.stage(proposal)
-
-
-def _stage_cross_link_proposal_loaded(
-    kb: KnowledgeBase,
-    candidate: LinkCandidate,
-    *,
-    store: IngestStore,
-) -> IngestProposal:
-    """Stage one cross-link proposal from a loaded Knowledge Base view."""
-    source_path = Path(kb.root) / candidate.source_path
-    page_markdown = source_path.read_text(encoding="utf-8")
-    repaired = mark_compound_revision(
-        repair_mention(page_markdown, candidate),
-        **_revision_routing_fields(kb, candidate.source_path),
-    )
-    return _stage_revised_page(kb, store, repaired, candidate.source_path)
-
-
-def stage_cross_link_proposal(
-    kb_path: str | Path,
-    candidate: LinkCandidate,
-    *,
-    store: IngestStore,
-) -> IngestProposal:
-    """Stage a REVIEWABLE proposal that repairs one missing link.
-
-    Reads the source page's authored Markdown, wraps the candidate mention in
-    a Markdown link to its target, marks the page a compound revision, and
-    stages the result through the Proposal Pipeline. The Knowledge Base on
-    disk is NOT touched. Once a Maintainer publishes, the link becomes
-    authored Markdown and is derived as an Extracted Reference on the next
-    Discovery Graph derivation, with no second graph-specific approval
-    (ADR-0011).
-    """
-    kb, _report = load_knowledge_base(kb_path)
-    return _stage_cross_link_proposal_loaded(kb, candidate, store=store)
-
-
 # ---------------------------------------------------------------------------
 # Duplicate-identity candidates (t_3327f75e): read-only possible-duplicate
 # Entity candidates for the Dream report. Advisory always: the explicit
@@ -512,9 +449,7 @@ def find_duplicate_entity_candidates(
                     signals_rank=rank,
                 )
             )
-    found.sort(
-        key=lambda c: (-c.signals_rank, c.retired_entity_id, c.surviving_entity_id)
-    )
+    found.sort(key=lambda c: (-c.signals_rank, c.retired_entity_id, c.surviving_entity_id))
     return found
 
 
@@ -542,9 +477,9 @@ def find_synthesis_candidates(
     for page in live:
         for claim in page.claims:
             if claim.status == "accepted" and claim.object in index and claim.object != page.id:
-                predicates_by_object.setdefault(page.id, {}).setdefault(
-                    claim.object, []
-                ).append(claim.predicate)
+                predicates_by_object.setdefault(page.id, {}).setdefault(claim.object, []).append(
+                    claim.predicate
+                )
                 claimed_by.setdefault(claim.object, set()).add(page.id)
 
     signals_by_pair: dict[tuple[str, str], list[str]] = {}
@@ -654,9 +589,7 @@ def find_transitive_impact(
     resolution = kb.resolve_entity(name)
     entity = resolution.entity
     if entity is None:
-        return TransitiveImpactReport(
-            seed_title=name, entity_id=None, scope=scope, found=False
-        )
+        return TransitiveImpactReport(seed_title=name, entity_id=None, scope=scope, found=False)
     direct_in = tuple(
         sorted(
             kb.related_pages(
@@ -941,9 +874,7 @@ def run_source_coverage_check(
     could be resolved); it is honored only when ``registry`` is None.
     """
     if registry is None:
-        return SourceCoverageReport(
-            status=status or "not checked: no private Source Registry"
-        )
+        return SourceCoverageReport(status=status or "not checked: no private Source Registry")
     sources, error = _read_registry_sources(registry)
     if error is not None:
         return SourceCoverageReport(registry_checked=False, status=error)
@@ -1024,20 +955,6 @@ class DreamReport:
     @property
     def synthesis_count(self) -> int:
         return len(self.synthesis_candidates)
-
-
-@dataclass(frozen=True, slots=True)
-class DreamStagingResult:
-    """The outcome of staging Dream Cycle repairs.
-
-    ``staged`` carries the reviewable proposals created (one per repaired
-    candidate, in ranked order); ``skipped`` carries ``(candidate, reason)``
-    pairs for candidates whose repair could not be staged (e.g. the mention
-    moved since the candidate was found).
-    """
-
-    staged: tuple[IngestProposal, ...] = ()
-    skipped: tuple[tuple[LinkCandidate, str], ...] = ()
 
 
 def _run_dream_cycle_loaded(
@@ -1122,53 +1039,4 @@ def run_dream_cycle(
         coverage_status=coverage_status,
         impact_target=impact_target,
         impact_scope=impact_scope,
-    )
-
-
-def _stage_ranked_link_candidates_loaded(
-    kb: KnowledgeBase,
-    ranked_candidates: Sequence[RankedLinkCandidate],
-    *,
-    store: IngestStore,
-    limit: int,
-) -> DreamStagingResult:
-    """Stage a bounded candidate sequence from one loaded Knowledge Base view."""
-    staged: list[IngestProposal] = []
-    skipped: list[tuple[LinkCandidate, str]] = []
-    for ranked in ranked_candidates[:limit]:
-        candidate = ranked.candidate
-        try:
-            staged.append(_stage_cross_link_proposal_loaded(kb, candidate, store=store))
-        except (MaintenanceError, OSError) as exc:
-            skipped.append((candidate, str(exc)))
-    return DreamStagingResult(staged=tuple(staged), skipped=tuple(skipped))
-
-
-def stage_dream_repairs(
-    kb_path: str | Path,
-    *,
-    store: IngestStore,
-    limit: int = 5,
-    index_dir: str | Path | None = None,
-) -> DreamStagingResult:
-    """Stage reviewable repair proposals for the top-ranked Dream candidates.
-
-    Runs the read-only reflection, then stages ONE compound-revision proposal
-    per candidate in ranked order (highest Discovery Graph impact first),
-    bounded by ``limit``. Candidates that fail to stage (e.g. a stale
-    line/column) are skipped with a reason instead of aborting the batch.
-
-    Every staged proposal is ``staged`` and reviewable: the Knowledge Base on
-    disk is untouched until a Maintainer publishes through the Proposal
-    Pipeline.
-    """
-    if limit < 1:
-        raise MaintenanceError("limit must be >= 1")
-    kb, validation_report = load_knowledge_base(kb_path)
-    report = _run_dream_cycle_loaded(kb, validation_report, index_dir=index_dir)
-    return _stage_ranked_link_candidates_loaded(
-        kb,
-        report.ranked_candidates,
-        store=store,
-        limit=limit,
     )

@@ -25,12 +25,6 @@ from lumio_wiki.s3_location import (
     S3Location,
     S3Pointer,
 )
-from lumio_wiki.s3_publish import (
-    S3PublicationConflict,
-    list_cleanup_candidates,
-    publish_s3_version,
-    rollback_s3_version,
-)
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -45,6 +39,15 @@ if not _os.environ.get("LUMIO_S3_ENDPOINT"):  # pragma: no cover
         "LUMIO_S3_ENDPOINT not set; skipping S3 publish S3-compatible tests",
         allow_module_level=True,
     )
+
+# Private transport-kernel coverage, NOT public exact-revision admission.
+# Live Git-admission certification remains the separate G5 gate.
+from lumio_wiki.s3_publish import (  # noqa: E402
+    S3PublicationConflict,
+    _publish_s3_working_tree,
+    _rollback_s3_version,
+    list_cleanup_candidates,
+)
 
 
 def _s3_config() -> tuple[dict[str, str], dict[str, object]]:
@@ -106,7 +109,7 @@ def test_s3_compat_two_publishers_conditional_activation_fails_closed(kb_prefix)
     advanced the pointer in between — against a real S3-compatible backend
     with real conditional puts and ETags."""
     store, prefix = kb_prefix
-    publish_s3_version(store, prefix, source_root=VALID, version="v1")
+    _publish_s3_working_tree(store, prefix, source_root=VALID, version="v1")
     assert _pointer(store, prefix) == "v1"
 
     # Publisher B resolves the pointer (observes v1) from its own session.
@@ -115,14 +118,14 @@ def test_s3_compat_two_publishers_conditional_activation_fails_closed(kb_prefix)
     assert observed == "v1"
 
     # Publisher A wins the race and advances to v2.
-    publish_s3_version(
+    _publish_s3_working_tree(
         store, prefix, source_root=CATEGORIZED, version="v2", expected_pointer_version="v1"
     )
     assert _pointer(store, prefix) == "v2"
 
     # Publisher B's activation now fails closed: the pointer moved.
     with pytest.raises(S3PublicationConflict):
-        publish_s3_version(
+        _publish_s3_working_tree(
             publisher_b,
             prefix,
             source_root=VALID,
@@ -140,14 +143,14 @@ def test_s3_compat_two_publishers_conditional_activation_fails_closed(kb_prefix)
 def test_s3_compat_sequential_publications_and_rollback(kb_prefix):
     """Publish two versions then CAS-rollback to the first against S3-compatible."""
     store, prefix = kb_prefix
-    publish_s3_version(store, prefix, source_root=VALID, version="v1")
+    _publish_s3_working_tree(store, prefix, source_root=VALID, version="v1")
     v1_objects = _list(store, f"{prefix}/v1/")
-    publish_s3_version(
+    _publish_s3_working_tree(
         store, prefix, source_root=CATEGORIZED, version="v2", expected_pointer_version="v1"
     )
     assert _pointer(store, prefix) == "v2"
 
-    manifest = rollback_s3_version(store, prefix, version="v1", expected_pointer_version="v2")
+    manifest = _rollback_s3_version(store, prefix, version="v1", expected_pointer_version="v2")
     assert manifest.version == "v1"
     assert _pointer(store, prefix) == "v1"
     # No object under the target version was rewritten.
@@ -159,18 +162,18 @@ def test_s3_compat_sequential_publications_and_rollback(kb_prefix):
 
 def test_s3_compat_stale_rollback_fails_closed(kb_prefix):
     store, prefix = kb_prefix
-    publish_s3_version(store, prefix, source_root=VALID, version="v1")
-    publish_s3_version(
+    _publish_s3_working_tree(store, prefix, source_root=VALID, version="v1")
+    _publish_s3_working_tree(
         store, prefix, source_root=CATEGORIZED, version="v2", expected_pointer_version="v1"
     )
     with pytest.raises(S3PublicationConflict):
-        rollback_s3_version(store, prefix, version="v1", expected_pointer_version="v0")
+        _rollback_s3_version(store, prefix, version="v1", expected_pointer_version="v0")
     assert _pointer(store, prefix) == "v2"
 
 
 def test_s3_compat_cleanup_candidates_are_reported_not_deleted(kb_prefix):
     store, prefix = kb_prefix
-    publish_s3_version(store, prefix, source_root=VALID, version="v1")
+    _publish_s3_working_tree(store, prefix, source_root=VALID, version="v1")
     # Simulate an interrupted build: residue without a manifest.
     obstore.put(store, f"{prefix}/v2/overview.md", b"partial", mode="create")
     candidates = list_cleanup_candidates(store, prefix)
@@ -184,7 +187,7 @@ def test_s3_compat_cleanup_candidates_are_reported_not_deleted(kb_prefix):
 def test_s3_compat_reused_version_prefix_is_rejected(kb_prefix):
     """A retried build never mutates an existing immutable version."""
     store, prefix = kb_prefix
-    publish_s3_version(store, prefix, source_root=VALID, version="v1")
+    _publish_s3_working_tree(store, prefix, source_root=VALID, version="v1")
     with pytest.raises(Exception, match="already exists"):
-        publish_s3_version(store, prefix, source_root=CATEGORIZED, version="v1")
+        _publish_s3_working_tree(store, prefix, source_root=CATEGORIZED, version="v1")
     assert _pointer(store, prefix) == "v1"

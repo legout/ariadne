@@ -769,20 +769,20 @@ def test_full_tool_surface_never_writes_the_s3_store():
 def test_s3_health_reports_a_published_derived_graph(tmp_path):
     """MV3: the S3 "published artifact" branch reports real derived state.
 
-    Publishes the categorized fixture with the REAL ``publish_s3_version``
-    (which writes the graph artifact next to the canonical content, see
-    ``_write_canonical_and_graph``), then asserts ``health`` reports
+    Publishes the categorized fixture through the private transport kernel
+    (not Git admission), which writes the graph artifact next to canonical
+    content; then asserts ``health`` reports
     ``source: "derived"`` with the artifact's edge count — and that the full
     tool surface leaves the store's keys and bytes unchanged.
     """
     pytest.importorskip("mcp")
     from lumio_wiki.mcp_server import build_server, health_rows
-    from lumio_wiki.s3_publish import publish_s3_version
+    from lumio_wiki.s3_publish import _publish_s3_working_tree
 
     kb_copy = tmp_path / "kb"
     shutil.copytree(CATEGORIZED, kb_copy)
     store = obstore.store.MemoryStore()
-    publish_s3_version(store, "kb", source_root=kb_copy, version="v1")
+    _publish_s3_working_tree(store, "kb", source_root=kb_copy, version="v1")
 
     location = S3Location(store, "kb")
     snapshot = location.resolve()

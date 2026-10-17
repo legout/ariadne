@@ -75,6 +75,7 @@ from lumio_wiki.s3_location import (
     MANIFEST_OBJECT,
     S3Location,
     S3Manifest,
+    S3ManifestFile,
     S3Pointer,
     _join,
     _require_obstore,
@@ -94,8 +95,6 @@ __all__ = [
     "S3PublicationConflict",
     "list_cleanup_candidates",
     "observe_current_pointer",
-    "publish_s3_version",
-    "rollback_s3_version",
 ]
 
 # The relative path of the Discovery Graph artifact under a version prefix.
@@ -171,6 +170,9 @@ class RemoteIndexCompletion(msgspec.Struct, frozen=True):
     tables: dict[str, int] = msgspec.field(default_factory=dict)
     """Table name -> row count observed by the post-build health check."""
 
+    objects: list[S3ManifestFile] = msgspec.field(default_factory=list)
+    """Every actual LanceDB table/sidecar object, digest-bound in the manifest."""
+
 
 class PreparedVersion(msgspec.Struct, frozen=True):
     """A fully built, validated, not-yet-activated Published Version.
@@ -216,7 +218,7 @@ class CleanupCandidate(msgspec.Struct, frozen=True):
 # ---------------------------------------------------------------------------
 
 
-def publish_s3_version(
+def _publish_s3_working_tree(
     store: ObjectStore,
     prefix: str,
     *,
@@ -304,64 +306,178 @@ def publish_s3_version(
         )
     content = canonical_content(source)
 
-    # Let the optional private-binding composition capture registry identities
-    # before the expensive index builder runs. Other hooks simply ignore this
-    # optional protocol.
+    return _publish_s3_candidate(
+        obstore,
+        store,
+        clean_prefix,
+        version=version,
+        observed=observed,
+        expected_pointer_version=expected_pointer_version,
+        kb=kb,
+        report=report,
+        content=content,
+        fingerprint=fingerprint,
+        index_builder=index_builder,
+        before_activation=before_activation,
+    )
+
+
+def _publish_s3_captured_revision(
+    store: ObjectStore,
+    prefix: str,
+    *,
+    captured: Any,
+    expected_pointer_version: str | None,
+    index_builder: IndexBuilder | None,
+    before_activation: ActivationHook | None,
+) -> S3Manifest:
+    """Publish the already-captured Git candidate without reading its worktree."""
+    obstore = _require_obstore()
+    clean_prefix = str(prefix).strip("/")
+    version = captured.revision
+    observed = observe_current_pointer(store, clean_prefix)
+    _check_expectation(observed, expected_pointer_version, version)
+    existing = _list_keys(obstore, store, _join(clean_prefix, version, ""))
+    if existing:
+        manifest = _load_complete_version(obstore, store, clean_prefix, version)
+        if (
+            manifest.fingerprint != captured.fingerprint.digest
+            or manifest.revision != captured.revision
+            or manifest.subtree != captured.subtree
+            or manifest.source_reference_digest != captured.manifest_digest
+            or manifest.format_identity != "lumio-wiki/git-authoring/1"
+        ):
+            raise KnowledgeBaseError(
+                f"cannot reuse existing S3 Published Version {version!r}: its "
+                "immutable manifest differs from the captured Git candidate"
+            )
+        completion_path = f"{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}"
+        has_index = any(item.path == completion_path for item in manifest.derived_files)
+        if has_index != (index_builder is not None):
+            raise KnowledgeBaseError(
+                f"cannot reuse existing S3 Published Version {version!r}: its "
+                "requested index artifacts differ from this review"
+            )
+        if has_index:
+            completion = msgspec.json.decode(
+                bytes(obstore.get(store, _join(clean_prefix, version, completion_path)).bytes()),
+                type=RemoteIndexCompletion,
+            )
+            _verify_and_encode_completion(completion, captured.fingerprint, version)
+        binding_entries: list[Any] = []
+        if before_activation is not None:
+            capture_candidate = getattr(before_activation, "capture_candidate", None)
+            if callable(capture_candidate):
+                binding_entries = list(cast(list[Any], capture_candidate(list(captured.kb.pages))))
+            before_activation(
+                PreparedVersion(
+                    prefix=clean_prefix,
+                    version=version,
+                    fingerprint=captured.fingerprint.digest,
+                    manifest=manifest,
+                    pages=list(captured.kb.pages),
+                    binding_entries=binding_entries,
+                )
+            )
+        _activate_pointer(obstore, store, clean_prefix, version, observed, expected_pointer_version)
+        return manifest
+    return _publish_s3_candidate(
+        obstore,
+        store,
+        clean_prefix,
+        version=version,
+        observed=observed,
+        expected_pointer_version=expected_pointer_version,
+        kb=captured.kb,
+        report=captured.report,
+        content=captured.content,
+        fingerprint=captured.fingerprint,
+        index_builder=index_builder,
+        before_activation=before_activation,
+        revision=captured.revision,
+        subtree=captured.subtree,
+        source_reference_digest=captured.manifest_digest,
+        format_identity="lumio-wiki/git-authoring/1",
+    )
+
+
+def _publish_s3_candidate(
+    obstore: Any,
+    store: ObjectStore,
+    prefix: str,
+    *,
+    version: str,
+    observed: PointerObservation,
+    expected_pointer_version: str | None,
+    kb: Any,
+    report: Any,
+    content: dict[str, bytes],
+    fingerprint: Any,
+    index_builder: IndexBuilder | None,
+    before_activation: ActivationHook | None,
+    revision: str = "",
+    subtree: str = "",
+    source_reference_digest: str = "",
+    format_identity: str = "",
+) -> S3Manifest:
+    """Build and activate one validated candidate, never recapturing content."""
+    if not report.is_valid:
+        blocking = sum(1 for issue in report.issues if issue.severity == "error")
+        raise KnowledgeBaseError(
+            f"cannot publish {version!r}: captured Knowledge Base content has "
+            f"{blocking} blocking validation error(s)"
+        )
+
     binding_entries: list[Any] = []
     if before_activation is not None:
         capture_candidate = getattr(before_activation, "capture_candidate", None)
         if callable(capture_candidate):
-            captured = cast(list[Any], capture_candidate(list(kb.pages)))
-            binding_entries = list(captured)
+            binding_entries = list(cast(list[Any], capture_candidate(list(kb.pages))))
 
-    # Serialize and validate the derived Discovery Graph state (in memory,
-    # no managed local bytes — ADR-0013).
     graph_bytes = _serialize_graph_bytes(kb, fingerprint)
     _validate_graph_state(graph_bytes, fingerprint, version)
-
-    # 4. Build: canonical files + graph artifact under the immutable prefix.
-    _write_canonical_and_graph(obstore, store, clean_prefix, version, content, graph_bytes)
+    _write_canonical_and_graph(obstore, store, prefix, version, content, graph_bytes)
     derived: dict[str, bytes] = {_GRAPH_REL: graph_bytes}
 
-    # Requested remote LanceDB: build directly under <version>/derived/lance/,
-    # record completion metadata, and gate activation on its success. When no
-    # builder was requested, the index's absence remains valid (ADR-0019).
+    index_files: list[S3ManifestFile] = []
     if index_builder is not None:
+        index_prefix = _join(prefix, version, LANCE_DERIVED_DIR)
         completion = index_builder(
             store=store,
-            sidecar_prefix=_join(clean_prefix, version, LANCE_DERIVED_DIR),
+            sidecar_prefix=index_prefix,
             kb=kb,
             pages=list(kb.pages),
             fingerprint=fingerprint,
         )
+        index_files = _capture_s3_index_files(obstore, store, prefix, version)
+        completion = msgspec.structs.replace(completion, objects=index_files)
         completion_bytes = _verify_and_encode_completion(completion, fingerprint, version)
         completion_rel = f"{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}"
         _put_create_only(
             obstore,
             store,
-            _join(clean_prefix, version, completion_rel),
+            _join(prefix, version, completion_rel),
             completion_bytes,
             version,
         )
         derived[completion_rel] = completion_bytes
 
-    # 5. The manifest is written last: its presence marks a complete version
-    #    (this is what rollback validates and cleanup candidates lack).
     manifest = build_published_manifest(
         version,
         fingerprint.digest,
         content,
         derived_content=derived,
+        derived_manifest_files=index_files,
+        revision=revision,
+        subtree=subtree,
+        source_reference_digest=source_reference_digest,
+        format_identity=format_identity,
     )
-    _write_manifest(obstore, store, clean_prefix, version, manifest)
-
-    # Extension point for the private Source Binding Manifest (#164,
-    # ADR-0020): private state, written before activation, never in the
-    # public manifest. A raising hook blocks activation.
+    _write_manifest(obstore, store, prefix, version, manifest)
     if before_activation is not None:
         before_activation(
             PreparedVersion(
-                prefix=clean_prefix,
+                prefix=prefix,
                 version=version,
                 fingerprint=fingerprint.digest,
                 manifest=manifest,
@@ -369,13 +485,11 @@ def publish_s3_version(
                 binding_entries=binding_entries,
             )
         )
-
-    # 6. Activate: ONE conditional put against the originally observed pointer.
-    _activate_pointer(obstore, store, clean_prefix, version, observed, expected_pointer_version)
+    _activate_pointer(obstore, store, prefix, version, observed, expected_pointer_version)
     return manifest
 
 
-def rollback_s3_version(
+def _rollback_s3_version(
     store: ObjectStore,
     prefix: str,
     *,
@@ -492,7 +606,13 @@ def _check_expectation(observed: PointerObservation, expected: str | None, versi
     compare-and-swapped — both are raised *before* expensive preparation
     (issue #163).
     """
-    if expected is not None:
+    if expected == "none":
+        if observed.version is not None:
+            raise S3PublicationConflict(
+                f"cannot activate {version!r}: expected no active pointer but "
+                f"found {observed.version!r}"
+            )
+    elif expected is not None:
         if observed.version is None:
             raise S3PublicationConflict(
                 f"cannot activate {version!r}: expected to advance the pointer from "
@@ -631,6 +751,77 @@ def _write_manifest(
     )
 
 
+def _capture_s3_index_files(
+    obstore: Any, store: ObjectStore, prefix: str, version: str
+) -> list[S3ManifestFile]:
+    """Digest every actual LanceDB object after the builder's health check."""
+    version_prefix = _join(prefix, version)
+    index_prefix = _join(version_prefix, LANCE_DERIVED_DIR) + "/"
+    completion_path = f"{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}"
+    entries: list[S3ManifestFile] = []
+    for key in _list_keys(obstore, store, index_prefix):
+        if key.endswith("/"):
+            continue
+        relative = key[len(version_prefix) + 1 :]
+        if relative == completion_path:
+            continue
+        raw = bytes(obstore.get(store, key).bytes())
+        entries.append(
+            S3ManifestFile(
+                path=relative,
+                size=len(raw),
+                digest=hashlib.sha256(raw).hexdigest(),
+            )
+        )
+    return sorted(entries, key=lambda entry: entry.path)
+
+
+def _verify_lance_index_manifest(
+    manifest: S3Manifest, completion_raw: bytes | None, actual_paths: set[str]
+) -> None:
+    """Require the completion inventory, manifest, and stored index files to agree."""
+    lance_prefix = f"{LANCE_DERIVED_DIR}/"
+    completion_path = f"{lance_prefix}{LANCE_COMPLETION_OBJECT}"
+    manifest_entries = {
+        entry.path: entry for entry in manifest.derived_files if entry.path.startswith(lance_prefix)
+    }
+    if completion_raw is None:
+        if manifest_entries or actual_paths:
+            raise KnowledgeBaseError(
+                f"Published Version {manifest.version!r} has LanceDB artifacts without "
+                "a complete index record"
+            )
+        return
+    try:
+        completion = msgspec.json.decode(completion_raw, type=RemoteIndexCompletion)
+    except msgspec.DecodeError as exc:
+        raise KnowledgeBaseError(
+            f"Published Version {manifest.version!r} has malformed LanceDB completion metadata"
+        ) from exc
+    if completion.fingerprint != manifest.fingerprint:
+        raise KnowledgeBaseError(
+            f"Published Version {manifest.version!r} LanceDB fingerprint does not match "
+            "its canonical content"
+        )
+    recorded = {entry.path: entry for entry in completion.objects}
+    manifested = {
+        path: entry for path, entry in manifest_entries.items() if path != completion_path
+    }
+    present = actual_paths - {completion_path}
+    if (
+        not recorded
+        or len(recorded) != len(completion.objects)
+        or recorded != manifested
+        or set(recorded) != present
+        or completion_path not in manifest_entries
+        or completion_path not in actual_paths
+    ):
+        raise KnowledgeBaseError(
+            f"Published Version {manifest.version!r} has an incomplete or inconsistent "
+            "LanceDB index object inventory"
+        )
+
+
 def _verify_and_encode_completion(
     completion: RemoteIndexCompletion, fingerprint: SourceFingerprint, version: str
 ) -> bytes:
@@ -645,6 +836,22 @@ def _verify_and_encode_completion(
             f"cannot publish {version!r}: the remote LanceDB index completion "
             f"metadata fingerprint {completion.fingerprint!r} does not match the "
             f"Knowledge Base fingerprint {fingerprint.digest!r}"
+        )
+    paths = [item.path for item in completion.objects]
+    if (
+        not paths
+        or len(paths) != len(set(paths))
+        or any(
+            not item.path.startswith(f"{LANCE_DERIVED_DIR}/")
+            or item.path == f"{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}"
+            or item.size < 0
+            or len(item.digest) != 64
+            or any(char not in "0123456789abcdef" for char in item.digest)
+            for item in completion.objects
+        )
+    ):
+        raise KnowledgeBaseError(
+            f"cannot publish {version!r}: the LanceDB index object inventory is empty or invalid"
         )
     return msgspec.json.encode(completion)
 
@@ -718,6 +925,23 @@ def _load_complete_version(
                 f"cannot roll back to {version!r}: derived object {key!r} "
                 f"digest {actual} != manifest digest {entry.digest}"
             )
+    version_prefix = _join(prefix, version)
+    lance_prefix = _join(version_prefix, LANCE_DERIVED_DIR) + "/"
+    actual_lance_paths = {
+        key[len(version_prefix) + 1 :]
+        for key in present
+        if key.startswith(lance_prefix) and not key.endswith("/")
+    }
+    completion_path = f"{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}"
+    completion_entry = next(
+        (entry for entry in manifest.derived_files if entry.path == completion_path), None
+    )
+    completion_raw = (
+        bytes(obstore.get(store, _join(version_prefix, completion_path)).bytes())
+        if completion_entry is not None
+        else None
+    )
+    _verify_lance_index_manifest(manifest, completion_raw, actual_lance_paths)
     # Full read-only validation through the Reader seam: canonical digests,
     # the fingerprint, and canonical loading. A version Readers cannot
     # resolve is not a rollback target.
@@ -751,6 +975,19 @@ def _get_pointer_bytes(obstore: Any, store: ObjectStore, key: str) -> bytes:
     except Exception as exc:  # pragma: no cover - head proved existence
         raise KnowledgeBaseError(f"could not read activation pointer {key!r}: {exc}") from exc
     return bytes(result.bytes())
+
+
+def _activate_existing_s3_version(
+    store: ObjectStore, prefix: str, version: str, expected_pointer_version: str | None
+) -> S3Manifest:
+    """Activate one already-complete version against the exact observed pointer."""
+    obstore = _require_obstore()
+    clean_prefix = str(prefix).strip("/")
+    observed = observe_current_pointer(store, clean_prefix)
+    _check_expectation(observed, expected_pointer_version, version)
+    manifest = _load_complete_version(obstore, store, clean_prefix, version)
+    _activate_pointer(obstore, store, clean_prefix, version, observed, expected_pointer_version)
+    return manifest
 
 
 def _activate_pointer(

@@ -99,6 +99,7 @@ __all__ = [
     "S3ManifestFile",
     "S3Pointer",
     "build_published_manifest",
+    "effective_s3_destination_identity",
     "open_s3_knowledge_base",
 ]
 
@@ -201,12 +202,56 @@ class S3Pointer(msgspec.Struct, frozen=True):
     version: str
 
 
+def effective_s3_destination_identity(
+    uri: str,
+    *,
+    config: dict[str, str] | None = None,
+    client_options: dict[str, Any] | None = None,
+) -> str:
+    """Return canonical, credential-free identity for the effective S3 target."""
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(uri)
+    if (
+        parsed.scheme != "s3"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise KnowledgeBaseError(
+            "S3 destination must be a credential-free s3:// URI without query or fragment"
+        )
+    endpoint_identity = None
+    endpoint = (config or {}).get("aws_endpoint")
+    if endpoint:
+        try:
+            endpoint_url = urlsplit(endpoint)
+            hostname = endpoint_url.hostname
+            if not endpoint_url.scheme or not hostname:
+                raise ValueError
+            host = f"[{hostname}]" if ":" in hostname else hostname
+            port = f":{endpoint_url.port}" if endpoint_url.port is not None else ""
+            endpoint_identity = f"{endpoint_url.scheme.lower()}://{host.lower()}{port}"
+        except ValueError:
+            raise KnowledgeBaseError("configured S3 endpoint is invalid") from None
+    identity = {
+        "destination": f"s3://{parsed.netloc.lower()}/{parsed.path.lstrip('/')}".rstrip("/"),
+        "endpoint": endpoint_identity,
+        "region": (config or {}).get("aws_region"),
+        "allow_http": bool((client_options or {}).get("allow_http", False)),
+    }
+    return msgspec.json.encode(identity).decode("utf-8")
+
+
 def build_published_manifest(
     version: str,
     fingerprint_digest: str,
     content: dict[str, bytes],
     *,
     derived_content: dict[str, bytes] | None = None,
+    derived_manifest_files: list[S3ManifestFile] | None = None,
     revision: str = "",
     subtree: str = "",
     source_reference_digest: str = "",
@@ -235,15 +280,18 @@ def build_published_manifest(
         )
         for path, raw in sorted(content.items())
     ]
-    derived_files = []
-    for path, raw in sorted((derived_content or {}).items()):
-        derived_files.append(
-            S3ManifestFile(
-                path=path,
-                size=len(raw),
-                digest=hashlib.sha256(raw).hexdigest(),
-            )
+    derived_files = [
+        S3ManifestFile(
+            path=path,
+            size=len(raw),
+            digest=hashlib.sha256(raw).hexdigest(),
         )
+        for path, raw in sorted((derived_content or {}).items())
+    ]
+    derived_files.extend(derived_manifest_files or [])
+    derived_files.sort(key=lambda entry: entry.path)
+    if len({entry.path for entry in derived_files}) != len(derived_files):
+        raise KnowledgeBaseError("derived Published Version manifest paths must be unique")
     return S3Manifest(
         version=version,
         fingerprint=fingerprint_digest,
@@ -346,6 +394,8 @@ class S3Location:
         max_cached_versions: int = DEFAULT_MAX_CACHED_VERSIONS,
         max_cache_bytes: int = DEFAULT_MAX_CACHE_BYTES,
         store_uri: str | None = None,
+        target_config: dict[str, str] | None = None,
+        client_options: dict[str, Any] | None = None,
     ) -> None:
         self._store = store
         self._prefix = prefix.strip("/")
@@ -362,6 +412,25 @@ class S3Location:
         # the descriptor's connect URI is container + key prefix, never
         # reconstructed per caller and never coerced through ``Path``.
         self._store_uri = store_uri.rstrip("/") if store_uri else None
+        if self._store_uri is not None:
+            uri = f"{self._store_uri}/{self._prefix}" if self._prefix else self._store_uri
+            self._target_identity = effective_s3_destination_identity(
+                uri, config=target_config, client_options=client_options
+            )
+        else:
+            self._target_identity = None
+
+    @property
+    def effective_target_identity(self) -> str | None:
+        """The canonical destination and selected non-secret endpoint identity."""
+        return self._target_identity
+
+    @property
+    def destination_uri(self) -> str | None:
+        """Credential-free URI of the exact bucket prefix represented here."""
+        if self._store_uri is None:
+            return None
+        return f"{self._store_uri}/{self._prefix}" if self._prefix else self._store_uri
 
     # -- Location protocol --------------------------------------------------
 
@@ -454,7 +523,14 @@ class S3Location:
         )
         url_path = parsed.path.lstrip("/")
         chosen_prefix = prefix if prefix is not None else url_path
-        return cls(store, chosen_prefix, version=version, store_uri=container_uri)
+        return cls(
+            store,
+            chosen_prefix,
+            version=version,
+            store_uri=container_uri,
+            target_config=config,
+            client_options=client_options,
+        )
 
     # -- read internals -----------------------------------------------------
 

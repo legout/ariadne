@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,6 +29,11 @@ from lumio_wiki.citation_actions import (
     render_open_actions,
 )
 from lumio_wiki.cli import main
+from lumio_wiki.s3_location import S3Location
+from lumio_wiki.source_references import (
+    SourceReferenceManifest,
+    serialize_source_reference_manifest,
+)
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -42,45 +48,91 @@ obstore = pytest.importorskip("obstore", reason="obstore required for S3 journey
 
 
 class _PublishedS3Kb:
-    """The ``valid`` fixture published to an in-memory store under versions.
-
-    Real publication protocol (manifest + pointer) through the CLI's own
-    publish-s3 route, so the reader journeys exercise the exact production
-    resolution path — fully offline via ``obstore.store.MemoryStore``.
-    """
+    """Publish exact Git revisions to an in-memory S3-compatible store."""
 
     def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
         self.store = obstore.store.MemoryStore()
         self.calls: list[tuple[str, str | None]] = []
-
-        def _fake_build(uri: str):
-            assert cli._is_object_store_uri(uri)
-            return self.store, "kb"
-
-        monkeypatch.setattr(cli, "_build_publish_store", _fake_build)
+        self.location = S3Location(self.store, "kb", store_uri="s3://bucket")
+        monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (self.store, "kb"))
+        monkeypatch.setattr(
+            cli,
+            "_build_publish_location",
+            lambda uri: (self.location, self.location.effective_target_identity),
+        )
 
         def _fake_resolve(uri: str, version: str | None = None):
-            from lumio_wiki.s3_location import S3Location
-
             self.calls.append((uri, version))
-            # The container is a MemoryStore, so the whole journey is offline;
-            # version threading (pin vs. pointer) stays production-real.
-            return S3Location(self.store, "kb", version=version)
+            return S3Location(self.store, "kb", version=version, store_uri="s3://bucket")
 
         monkeypatch.setattr(cli, "_resolve_object_store_location", _fake_resolve)
-
         monkeypatch.chdir(tmp_path)
-        for var in ("LUMIO_KB_PATH", "LUMIO_READER_BASE_URL"):
+        for var in ("LUMIO_KB_PATH", "LUMIO_READER_BASE_URL", "LUMIO_ARTIFACT_RETENTION"):
             monkeypatch.delenv(var, raising=False)
         self.source_root = tmp_path / "source-kb"
         shutil.copytree(FIXTURES / "valid", self.source_root)
+        self.registry_root = tmp_path / "source-registry"
+        self.private_store = tmp_path / "source-store"
+        monkeypatch.setenv("LUMIO_SOURCE_STORE", str(self.private_store))
+        (self.source_root / ".lumio-authoring.yaml").write_bytes(
+            serialize_source_reference_manifest(
+                SourceReferenceManifest(
+                    version=1,
+                    namespace="urn:uuid:0f6f0e3e-1d9a-4b2e-9d47-6c1f0f5f4f3e",
+                )
+            )
+        )
+        subprocess.run(["git", "-C", str(self.source_root), "init", "-q"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.source_root), "config", "user.email", "test@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.source_root), "config", "user.name", "Test Author"],
+            check=True,
+        )
         self._body = "Lumio is a deployable chat platform for trusted knowledge and data."
+        self.versions: dict[str, str] = {}
+        self.current: str | None = None
         self.publish("v1")
 
-    def publish(self, version: str) -> None:
-        assert (
-            main(["publish-s3", str(self.source_root), "s3://bucket/kb", "--version", version]) == 0
+    def publish(self, label: str) -> None:
+        import contextlib
+        import io
+
+        subprocess.run(["git", "-C", str(self.source_root), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.source_root), "commit", "--allow-empty", "-qm", label],
+            check=True,
         )
+        revision = subprocess.run(
+            ["git", "-C", str(self.source_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        args = [
+            "publish-s3",
+            str(self.source_root),
+            "s3://bucket/kb",
+            "--revision",
+            revision,
+            "--expected-current",
+            self.current or "none",
+            "--source-registry",
+            str(self.registry_root),
+            "--json",
+        ]
+        preview_out = io.StringIO()
+        with contextlib.redirect_stdout(preview_out):
+            assert main(args) == 0
+        review = json.loads(preview_out.getvalue())
+        confirmed_out = io.StringIO()
+        with contextlib.redirect_stdout(confirmed_out):
+            assert main([*args, "--confirm", review["review_digest"]]) == 0
+        self.versions[label] = revision
+        self.current = revision
 
     def set_body(self, text: str) -> None:
         page = self.source_root / "overview.md"
@@ -99,6 +151,7 @@ def test_page_actions_pin_the_exact_resolved_published_version(
     kb = _PublishedS3Kb(tmp_path, monkeypatch)
     kb.set_body("v2 body sentinel")
     kb.publish("v2")  # pointer now at v2; a reader resolves exactly v2
+    revision_v2 = kb.versions["v2"]
 
     assert main(["page", "s3://bucket/kb", "Lumio Overview"]) == 0
     out = capsys.readouterr().out
@@ -107,11 +160,12 @@ def test_page_actions_pin_the_exact_resolved_published_version(
 
     # The exact resolved Published Version is pinned — never the bare pointer.
     assert open_line == (
-        'open:            lumio-wiki page "s3://bucket/kb" "Lumio Overview" --published-version v2'
+        'open:            lumio-wiki page "s3://bucket/kb" "Lumio Overview" '
+        f"--published-version {revision_v2}"
     )
     assert source_line == (
         'source-artifact: lumio-wiki source inspect "s3://bucket/kb" '
-        "--source-id lumio-overview --published-version v2"
+        f"--source-id lumio-overview --published-version {revision_v2}"
     )
     # Never a local materialization path and never a private artifact URL.
     assert str(tmp_path) not in out
@@ -123,7 +177,7 @@ def test_page_actions_pin_the_exact_resolved_published_version(
     assert main(shlex.split(open_line.split(":", 1)[1].strip())[1:]) == 0
     assert "v2 body sentinel" in capsys.readouterr().out
     # ...and the replay pinned v2 (never v3) through the real Location seam.
-    assert kb.calls[-1] == ("s3://bucket/kb", "v2")
+    assert kb.calls[-1] == ("s3://bucket/kb", revision_v2)
 
 
 def test_search_json_pins_the_resolved_published_version(
@@ -133,15 +187,16 @@ def test_search_json_pins_the_resolved_published_version(
     every copyable command; ``kb_location`` stays the original public S3 URI."""
     kb = _PublishedS3Kb(tmp_path, monkeypatch)
     kb.publish("v2")
+    revision_v2 = kb.versions["v2"]
     capsys.readouterr()
 
     assert main(["search", "s3://bucket/kb", "Lumio", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
-    assert data["published_version"] == "v2"
+    assert data["published_version"] == revision_v2
     assert data["results"], "fixture query must match"
     for entry in data["results"]:
         assert entry["kb_location"] == "s3://bucket/kb"
-        assert "--published-version v2" in entry["open_command"]
+        assert f"--published-version {revision_v2}" in entry["open_command"]
     assert str(tmp_path) not in json.dumps(data)
 
 
@@ -150,11 +205,12 @@ def test_page_json_pins_the_resolved_published_version(
 ):
     kb = _PublishedS3Kb(tmp_path, monkeypatch)
     kb.publish("v2")
+    revision_v2 = kb.versions["v2"]
     capsys.readouterr()
 
     assert main(["page", "s3://bucket/kb", "Lumio Overview", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
-    assert data["published_version"] == "v2"
+    assert data["published_version"] == revision_v2
     assert data["kb_location"] == "s3://bucket/kb"
     assert str(tmp_path) not in json.dumps(data)
 
@@ -164,10 +220,13 @@ def test_explicit_published_version_replays_a_historical_version(
 ):
     """``--published-version`` reads that exact version, pointer notwithstanding."""
     kb = _PublishedS3Kb(tmp_path, monkeypatch)
+    revision_v1 = kb.versions["v1"]
 
-    assert main(["page", "s3://bucket/kb", "Lumio Overview", "--published-version", "v1"]) == 0
+    assert (
+        main(["page", "s3://bucket/kb", "Lumio Overview", "--published-version", revision_v1]) == 0
+    )
     out = capsys.readouterr().out
-    assert kb.calls[-1] == ("s3://bucket/kb", "v1")
+    assert kb.calls[-1] == ("s3://bucket/kb", revision_v1)
     assert "v1 body sentinel" not in out
 
 

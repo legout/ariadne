@@ -1,7 +1,7 @@
 """S3-compatible integration: complete S3 publication with a remote LanceDB index.
 
 Issue #163. Proves the full publication journey against a real S3-compatible
-endpoint: ``publish_s3_version`` with ``lumio_lancedb.remote_publication_builder``
+endpoint: the private S3 transport kernel with ``lumio_lancedb.remote_publication_builder``
 builds the lexical index under ``{version}/derived/lance/``, health-checks it,
 the publisher records completion metadata, activation advances the pointer —
 and a Reader retrieves through the published remote index. Rollback
@@ -37,12 +37,19 @@ from lumio_lancedb import (  # noqa: E402
 )
 from lumio_wiki.knowledge_base import fingerprint_sources  # noqa: E402
 from lumio_wiki.s3_location import CURRENT_POINTER_OBJECT, S3Location, S3Pointer  # noqa: E402
+
+# These low-level index/failure/CAS tests exercise transport, NOT Git admission.
+# The native CLI agent journey supplies the separate live admission proof.
 from lumio_wiki.s3_publish import (  # noqa: E402
     LANCE_COMPLETION_OBJECT,
     LANCE_DERIVED_DIR,
-    list_cleanup_candidates,
-    publish_s3_version,
-    rollback_s3_version,
+    list_cleanup_candidates,  # noqa: E402
+)
+from lumio_wiki.s3_publish import (  # noqa: E402
+    _publish_s3_working_tree as publish_s3_version,
+)
+from lumio_wiki.s3_publish import (  # noqa: E402
+    _rollback_s3_version as rollback_s3_version,
 )
 
 FIXTURES = ROOT / "tests" / "fixtures"

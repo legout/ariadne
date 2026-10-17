@@ -121,8 +121,8 @@ class OpenAIDistiller:
     """Unattended OpenAI-compatible Distiller (issue #101, ``lumio-wiki[llm]``).
 
     Implements the shared :class:`Distiller` interface so provider-driven
-    ingestion feeds the same :class:`~lumio_wiki.proposal_pipeline.ProposalPipeline`
-    as host-agent and document-driven ingestion: provenance, category/type
+    ingestion produces the same page content as host-agent and document-driven
+    ingestion (spec 0008 §7: ordinary worktree edits): provenance, category/type
     routing, durability rationale, validation, diff, and blast radius are
     identical (AC3). The base ``lumio-wiki`` wheel never imports the OpenAI SDK
     at module load — ``openai`` is imported lazily inside ``__init__`` (when no

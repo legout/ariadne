@@ -120,7 +120,7 @@ def fresh_project(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_fresh_environment_local_journey(fresh_project):
+def test_fresh_environment_local_journey(fresh_project, monkeypatch):
     """The quickstart's local half, verbatim: setup -> ontology starter ->
     seed pages -> managed ingest -> proposal review -> publish -> retrieval
     with open actions -> traversal -> truthful Source-Artifact unavailability."""
@@ -161,7 +161,26 @@ def test_fresh_environment_local_journey(fresh_project):
     (entities / "starlight-db.md").write_text(RAW_PAGE_STARLIGHT, encoding="utf-8")
     assert "Knowledge base is valid" in _run_cli(["validate", "./kb"])
 
-    # Managed document ingest of the example's raw source.
+    # Managed document ingest of the example's raw source (G4: the native
+    # Git worktree route — the KB adopts the Source Reference Manifest and
+    # lives in a real repository; no staged proposal exists).
+    kb_root = fresh_project / "kb"
+    (kb_root / ".lumio-authoring.yaml").write_text(
+        "version: 1\n"
+        'namespace: "urn:uuid:onboard-2026-0000-0000-000000000001"\n'
+        "sources: {}\n"
+        "bindings: {}\n",
+        encoding="utf-8",
+    )
+    import subprocess as _sp
+
+    _sp.run(["git", "init", "-q"], cwd=kb_root, check=True)
+    _sp.run(["git", "config", "user.email", "t@example.com"], cwd=kb_root, check=True)
+    _sp.run(["git", "config", "user.name", "T"], cwd=kb_root, check=True)
+    _sp.run(["git", "add", "-A"], cwd=kb_root, check=True)
+    _sp.run(["git", "commit", "-qm", "kb"], cwd=kb_root, check=True)
+    registry = fresh_project / "registry"
+    monkeypatch.setenv("LUMIO_SOURCE_REGISTRY", str(registry))
     authored = fresh_project / "password-reset-page.md"
     authored.write_text(RAW_PAGE_RUNBOOK, encoding="utf-8")
     out = _run_cli(
@@ -173,13 +192,33 @@ def test_fresh_environment_local_journey(fresh_project):
             str(authored),
             "--source-id",
             "support-runbook-2026",
+            "--source-registry",
+            str(registry),
         ]
     )
-    proposal_id = re.search(r"Staged proposal ([0-9a-f]+)", out)
-    assert proposal_id, out
-    pid = proposal_id.group(1)
-    assert "Knowledge base is valid" in _run_cli(["proposal", "validate", "./kb", pid])
-    _run_cli(["publish", "./kb", pid])
+    assert "Ingested into the Git authoring worktree" in out
+
+    _sp.run(["git", "add", "-A"], cwd=kb_root, check=True)
+    _sp.run(["git", "commit", "-qm", "runbook"], cwd=kb_root, check=True)
+    revision = _sp.run(
+        ["git", "rev-parse", "HEAD"], cwd=kb_root, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    import json
+
+    args = [
+        "publish",
+        str(kb_root),
+        "--revision",
+        revision,
+        "--to",
+        str(fresh_project / "published"),
+        "--expected-current",
+        "none",
+        "--json",
+    ]
+    review = json.loads(_run_cli(args))
+    assert not (fresh_project / "published").exists()
+    assert json.loads(_run_cli([*args, "--confirm", review["review_digest"]]))["activated"]
 
     # Retrieval keeps an open action on every citation.
     out = _run_cli(["search", "password reset", "--limit", "2"])
@@ -316,6 +355,7 @@ def test_s3_compat_smoke_journey_script(tmp_path):
     lumio_wiki = shutil.which("lumio-wiki") or str(Path(sys.executable).parent / "lumio-wiki")
     assert Path(lumio_wiki).exists(), "lumio-wiki console script not found"
     env = _scrubbed_env()
+    env["LUMIO_ARTIFACT_RETENTION"] = "disabled"
     env["LUMIO_S3_TEST_BUCKET"] = os.environ.get("LUMIO_S3_TEST_BUCKET", "lumio-quickstart")
     result = subprocess.run(
         ["bash", str(SCRIPT), str(tmp_path / "journey")],

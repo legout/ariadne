@@ -10,7 +10,6 @@ from unittest.mock import MagicMock
 
 import lumio_wiki as lw
 import pytest
-from lumio_wiki.ingest import IngestStore
 from lumio_wiki.semantic_maintenance import (
     MissingSemanticExtraError,
     SemanticDreamReviewer,
@@ -37,12 +36,6 @@ def kb_root(tmp_path: Path) -> Path:
     root = tmp_path / "kb"
     shutil.copytree(FIXTURE, root)
     return root
-
-
-def _store(root: Path) -> IngestStore:
-    directory = root / ".lumio" / "ingest"
-    directory.mkdir(parents=True, exist_ok=True)
-    return IngestStore(directory)
 
 
 def test_reviewer_parses_findings_in_one_bounded_batch(monkeypatch, kb_root: Path):
@@ -127,11 +120,11 @@ def test_staging_produces_only_unblocked_reviewable_proposals(kb_root: Path):
     )
     kb, _ = lw.load_knowledge_base(kb_root)
     reviewer = SemanticDreamReviewer(kb, client=client)
-    result = reviewer.stage_findings(store=_store(kb_root))
+    edits, skipped = reviewer.worktree_edits()
 
-    assert len(result.staged) == 2
-    assert not result.skipped
-    assert all(proposal.status == "staged" and not proposal.blocked for proposal in result.staged)
+    assert len(edits) == 2
+    assert not skipped
+    assert {path for path, _ in edits} == {"entities/acme.md", "concepts/overview.md"}
     assert (
         not (kb_root / "concepts" / "overview.md")
         .read_text(encoding="utf-8")
@@ -169,7 +162,18 @@ def test_cli_semantic_review_reports_and_stages(monkeypatch, kb_root: Path, caps
     monkeypatch.setenv("LUMIO_PROVIDER_MODEL", "fake-model")
     monkeypatch.setattr(SemanticDreamReviewer, "_build_client", staticmethod(lambda: client))
 
+    import subprocess
+
     from lumio_wiki.cli import main
+
+    def _git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(kb_root), *args], check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "test@example.com")
+    _git("config", "user.name", "Test Author")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "authoring revision")
 
     rc = main(["dream", str(kb_root), "--semantic", "--stage"])
     out = capsys.readouterr().out
@@ -177,10 +181,12 @@ def test_cli_semantic_review_reports_and_stages(monkeypatch, kb_root: Path, caps
     assert rc == 0
     assert "# Semantic Dream Review" in out
     assert "semantic_summary: 1" in out
-    assert "semantic_staged_proposals: 1" in out
-    assert "Lumio is trusted knowledge chat." not in (
-        kb_root / "concepts" / "overview.md"
-    ).read_text(encoding="utf-8")
+    assert "semantic_applied_pages: 1" in out
+    # G3 (spec 0008 §6): the explicit apply edits the worktree — the
+    # reviewed replacement summary is now authored page content (uncommitted).
+    assert "Lumio is trusted knowledge chat." in (kb_root / "concepts" / "overview.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_contradiction_stages_body_callouts_on_both_pages(kb_root: Path):
@@ -199,10 +205,10 @@ def test_contradiction_stages_body_callouts_on_both_pages(kb_root: Path):
             }
         ),
     )
-    result = reviewer.stage_findings(store=_store(kb_root))
-    assert len(result.staged) == 2
-    for proposal in result.staged:
-        assert "Semantic Dream Cycle contradiction" in proposal.proposed_pages[0].markdown
+    edits, skipped = reviewer.worktree_edits()
+    assert len(edits) == 2
+    for _, markdown in edits:
+        assert "Semantic Dream Cycle contradiction" in markdown
 
 
 def test_invalid_findings_are_skipped_with_reasons_and_never_staged(kb_root: Path):
@@ -237,33 +243,103 @@ def test_invalid_findings_are_skipped_with_reasons_and_never_staged(kb_root: Pat
         ),
         max_pages=1,
     )
-    result = reviewer.stage_findings(store=_store(kb_root))
-    assert not result.staged
-    reasons = " ".join(reason for _, reason in result.skipped)
+    edits, skipped = reviewer.worktree_edits()
+    assert not edits
+    reasons = " ".join(reason for _, reason in skipped)
     assert "unknown finding kind" in reasons
     assert "not in the inspected page set" in reasons
     assert "illegal stale lifecycle" in reasons
     assert "unsupported finding fields" in reasons
 
 
-def test_blocked_semantic_candidate_is_skipped(kb_root: Path, monkeypatch):
+# The retired staging-wrapper mock is superseded by the real native candidate gate
+# in test_git_authoring.test_native_ingest_refuses_semantically_invalid_authored_page.
+
+
+# ---------------------------------------------------------------------------
+# G3 fix-a1 (plan 0008 r11): focused composition regression for the accepted
+# F8 finding.
+# ---------------------------------------------------------------------------
+
+
+def test_worktree_edits_compose_compatible_findings_per_page(kb_root: Path):
+    """F8: compatible semantic findings targeting the SAME page compose
+    against one original into ONE final markdown (at most one edit per
+    page) — two full-page writes for one page can never apply together."""
+    from lumio_wiki.semantic_maintenance import SemanticFinding, SemanticReviewReport
+
     kb, _ = lw.load_knowledge_base(kb_root)
-    reviewer = SemanticDreamReviewer(
-        kb,
-        client=_client(
-            {
-                "findings": [
-                    {
-                        "kind": "summary",
-                        "page": "concepts/overview.md",
-                        "reason": "rewrite",
-                        "summary": "A new summary",
-                    }
-                ]
-            }
+    report = SemanticReviewReport(
+        pages=tuple(kb.pages),
+        findings=(
+            SemanticFinding(
+                kind="stale",
+                pages=("entities/acme.md",),
+                reason="Superseded by a newer record.",
+                lifecycle="deprecated",
+            ),
+            SemanticFinding(
+                kind="summary",
+                pages=("entities/acme.md",),
+                reason="Rewrite for clarity.",
+                summary="Acme Corp manufactures industrial presses.",
+            ),
         ),
     )
-    monkeypatch.setattr(reviewer, "_assemble_unblocked", lambda *args: None)
-    result = reviewer.stage_findings(store=_store(kb_root))
-    assert not result.staged
-    assert "blocked" in result.skipped[0][1]
+    reviewer = SemanticDreamReviewer(kb, client=_client({"findings": []}), max_pages=2)
+
+    edits, skipped = reviewer.worktree_edits(report=report)
+
+    assert not skipped
+    assert len(edits) == 1
+    page_path, markdown = edits[0]
+    assert page_path == "entities/acme.md"
+    # BOTH findings applied to the SAME composed page: the lifecycle flip
+    # and the replaced summary coexist in one final markdown (structural
+    # check — YAML quoting style is not a contract).
+    import msgspec.yaml as yaml
+
+    composed = yaml.decode(markdown.split("---")[1])
+    assert composed["lifecycle"] == "deprecated"
+    assert composed["summary"] == "Acme Corp manufactures industrial presses."
+
+
+def test_conflicting_summary_replacements_are_diagnosed(kb_root: Path):
+    """D3 (G3-R): two summary findings proposing DIFFERENT replacements for
+    the same page are an explicit conflict diagnostic — the first applied
+    edit stands, the competing one is skipped with a reason; never a silent
+    last-string winner."""
+    from lumio_wiki.semantic_maintenance import SemanticFinding, SemanticReviewReport
+
+    kb, _ = lw.load_knowledge_base(kb_root)
+    report = SemanticReviewReport(
+        pages=tuple(kb.pages),
+        findings=(
+            SemanticFinding(
+                kind="summary",
+                pages=("entities/acme.md",),
+                reason="Rewrite for clarity.",
+                summary="First replacement summary.",
+            ),
+            SemanticFinding(
+                kind="summary",
+                pages=("entities/acme.md",),
+                reason="Rewrite for accuracy.",
+                summary="Second, competing summary.",
+            ),
+        ),
+    )
+    reviewer = SemanticDreamReviewer(kb, client=_client({"findings": []}), max_pages=2)
+
+    edits, skipped = reviewer.worktree_edits(report=report)
+
+    assert len(edits) == 1
+    page_path, markdown = edits[0]
+    assert page_path == "entities/acme.md"
+    import msgspec.yaml as yaml
+
+    composed = yaml.decode(markdown.split("---")[1])
+    assert composed["summary"] == "First replacement summary."
+    conflicts = [reason for finding, reason in skipped if "conflicting summary" in reason]
+    assert conflicts, skipped
+    assert "Second, competing summary." in conflicts[0]

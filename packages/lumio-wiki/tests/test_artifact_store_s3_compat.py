@@ -34,9 +34,7 @@ from lumio_wiki.artifact_store import (
     artifact_content_hash,
     retain_artifact,
 )
-from lumio_wiki.ingest import IngestStore
-from lumio_wiki.proposal_pipeline import ProposalPipeline
-from lumio_wiki.s3_publish import publish_s3_version
+from lumio_wiki.source_registry import SourceRegistry
 
 obstore = pytest.importorskip("obstore", reason="obstore required for S3-compatible integration")
 
@@ -45,6 +43,10 @@ if not _os.environ.get("LUMIO_S3_ENDPOINT"):  # pragma: no cover
         "LUMIO_S3_ENDPOINT not set; skipping Source Artifact S3-compatible tests",
         allow_module_level=True,
     )
+
+# Private transport-kernel coverage, NOT public exact-revision admission.
+# Live Git-admission certification remains the separate G5 gate.
+from lumio_wiki.s3_publish import _publish_s3_working_tree  # noqa: E402
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures" / "valid"
@@ -208,7 +210,7 @@ def test_s3_compat_publication_binds_artifacts_outside_public_prefix(tmp_path, p
     root = tmp_path / "kb"
     shutil.copytree(FIXTURES, root)
 
-    ingest = IngestStore(tmp_path / "ingest")
+    registry = SourceRegistry(tmp_path / "registry")
     import lumio_wiki as lw
 
     kb, report = lw.load_knowledge_base(root)
@@ -221,29 +223,34 @@ def test_s3_compat_publication_binds_artifacts_outside_public_prefix(tmp_path, p
             if not source.id:
                 continue
             fixture_bytes = f"fixture artifact for {source.id}".encode()
-            ingest.source_registry.register_or_reuse(
-                source.id, fixture_bytes, filename=None, content_type=None
-            )
+            registry.register_or_reuse(source.id, fixture_bytes, filename=None, content_type=None)
             retain_artifact(
                 artifacts,
-                ingest.source_registry,
+                registry,
                 source_id=source.id,
                 raw_bytes=fixture_bytes,
                 content_type="text/plain",
                 filename=f"{source.id}.txt",
             )
-    pipeline = ProposalPipeline(kb, store=ingest, artifact_store=artifacts)
-    proposal = pipeline.managed_ingest(
-        RAW, "application/pdf", "report.pdf", "s3_compat-report", _authored_page("s3_compat-report")
+    # Managed-source fixture setup (G4: the staged pipeline is retired; the
+    # authored page plus exact registry version is what retention evaluates).
+    (root / "artifact_page.md").write_text(_authored_page("s3_compat-report"), encoding="utf-8")
+    registry.register_version("s3_compat-report", RAW, filename="report.pdf")
+    retain_artifact(
+        artifacts,
+        registry,
+        source_id="s3_compat-report",
+        raw_bytes=RAW,
+        content_type="application/pdf",
+        filename="report.pdf",
     )
-    assert pipeline.publish(proposal.id).status == "published"
 
     hook = activation_binding_hook(
         artifact_store=artifacts,
-        registry=ingest.source_registry,
+        registry=registry,
         required=True,
     )
-    manifest = publish_s3_version(
+    manifest = _publish_s3_working_tree(
         store, kb_prefix, source_root=root, version="v1", before_activation=hook
     )
     assert manifest.version == "v1"
@@ -564,12 +571,14 @@ def test_s3_compat_url_ingest_retains_fetched_bytes_as_artifact(tmp_path, prefix
     retained artifact, binding, and provenance all describe the exact fetched
     content hash — never a page-body mutation of it.
     """
-    import shutil
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    import lumio_wiki as lw
+    from lumio_wiki.git_authoring import ingest_into_worktree
+    from lumio_wiki.private_provenance import write_observation_record
     from lumio_wiki.url_fetch import UrlFetchPolicy, fetch_url
+    from test_managed_ingest import _authored_page as managed_page
+    from test_managed_ingest import _kb as managed_kb
 
     class _Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
@@ -597,24 +606,54 @@ def test_s3_compat_url_ingest_retains_fetched_bytes_as_artifact(tmp_path, prefix
 
     store, _, artifact_prefix = prefixes
     artifacts = _artifact_store(store, artifact_prefix)
-    root = tmp_path / "kb"
-    shutil.copytree(FIXTURES, root)
-    kb, report = lw.load_knowledge_base(root)
-    assert report.is_valid, report
+    kb = managed_kb(tmp_path)
+    root = kb.root
+    registry = SourceRegistry(tmp_path / "registry")
+    authored = (
+        managed_page("s3_compat-url-report", title="S3 Compat Artifact Page")
+        .replace(
+            "Body authored by the host coding agent from the original source.",
+            "Body authored from the original source.",
+        )
+        .replace('id: "entity:s3_compat-url-report"', 'id: "entity:s3-compat-url-report"')
+    )
 
-    ingest = IngestStore(tmp_path / "ingest")
-    pipeline = ProposalPipeline(kb, store=ingest, artifact_store=artifacts)
-    proposal = pipeline.managed_ingest(
+    def persist_observation(source_id, content_hash):
+        write_observation_record(
+            registry.root,
+            "provenance",
+            source_id,
+            content_hash,
+            {
+                "kind": "url",
+                "source_url": url,
+                "final_url": result.final_url,
+                "retrieved_at": result.retrieved_at,
+                "media_type": result.media_type,
+            },
+        )
+
+    ingested = ingest_into_worktree(
+        root,
         result.body,
         result.media_type,
         result.filename,
         "s3_compat-url-report",
-        _authored_page("s3_compat-url-report"),
-        source_url=result.final_url,
-        retrieved_at=result.retrieved_at,
+        authored,
+        source_registry=registry,
+        artifact_store=artifacts,
+        persist_observation=persist_observation,
     )
-    assert proposal.provenance.source_url == url
-    assert proposal.provenance.source_hash == artifact_content_hash(result.body)
+    digest = artifact_content_hash(result.body)
+    assert ingested.content_hash == digest
+    observations = list(
+        (registry.root / "provenance" / "s3_compat-url-report" / digest).glob("*.json")
+    )
+    assert len(observations) == 1
+    provenance = json.loads(observations[0].read_text())
+    assert provenance["source_url"] == url
+    assert provenance["final_url"] == result.final_url
+    assert provenance["retrieved_at"] == result.retrieved_at
 
     # The exact fetched bytes are privately retained and digest-verified.
     retained = artifacts.get_artifact(
@@ -622,9 +661,10 @@ def test_s3_compat_url_ingest_retains_fetched_bytes_as_artifact(tmp_path, prefix
     )
     assert bytes(retained) == result.body
 
-    # The published page is the AUTHORED markdown, and the public prefix
-    # never sees the fetched bytes.
-    assert pipeline.publish(proposal.id).status == "published"
-    published = (root / "s3_compat_artifact_page.md").read_text(encoding="utf-8")
-    assert "Body authored from the original source." in published
-    assert "s3_compat url source page" not in published
+    # The ordinary authoring page contains only the authored markdown.
+    # Committing and exact-revision publication remain separate explicit acts.
+    authored_body = (root / "reports" / "s3_compat_artifact_page.md").read_text(encoding="utf-8")
+    assert "Body authored from the original source." in authored_body
+    assert "s3_compat url source page" not in authored_body
+    assert url not in authored_body
+    assert not (root / ".lumio" / "ingest").exists()

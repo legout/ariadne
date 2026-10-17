@@ -32,6 +32,7 @@ from lumio_wiki.artifact_store import (
     SourceArtifactStore,
     SourceBindingManifest,
 )
+from lumio_wiki.source_references import SourceReferenceManifest
 from lumio_wiki.source_registry import SourceRegistry, SourceRegistryError
 
 #: The caller is not authorized to read the private Source Artifact Store.
@@ -46,8 +47,11 @@ OUTCOME_UNAVAILABLE = "unavailable-artifact"
 #: Stored bytes (or the stored manifest) failed verification.
 OUTCOME_CORRUPTION = "corruption"
 
-#: The requested Published Version has no Source Binding Manifest.
+#: The requested Published Version has no exact private binding.
 OUTCOME_HISTORICAL_VERSION_MISMATCH = "historical-version-mismatch"
+
+#: The source identity is bound to multiple exact versions in the selected view.
+OUTCOME_AMBIGUOUS_BINDING = "ambiguous-binding"
 
 #: The configured store cannot issue signed GET URLs.
 OUTCOME_SIGNING_UNSUPPORTED = "signing-unsupported"
@@ -79,30 +83,87 @@ class ResolvedSourceBinding:
     filename: str | None
     content_type: str | None
     size: int | None
-    #: The Published Version whose manifest bound this hash, or ``None`` for
-    #: local registry resolution (the source's current version).
+    #: The Published Version whose exact manifest bound this hash.
     published_version: str | None
+    entity_id: str | None = None
 
 
-def resolve_registry_binding(registry: SourceRegistry, source_id: str) -> ResolvedSourceBinding:
-    """Resolve a source id to its current registry version (local worktrees).
-
-    The registry validates the id shape itself: a secret-bearing value is
-    rejected with a generic error that never echoes it, and only a
-    validated-but-unknown id may appear in the absent-binding message.
-    """
+def resolve_registry_binding(
+    registry: SourceRegistry,
+    source_id: str,
+    content_hash: str,
+    *,
+    published_version: str | None = None,
+    entity_id: str | None = None,
+) -> ResolvedSourceBinding:
+    """Resolve one exact pinned hash through append-only registry history."""
     try:
-        source = registry.get(source_id)
+        registry.get(source_id)
+        version = registry.find_version(source_id, content_hash)
     except SourceRegistryError as exc:
         raise SourceInspectionError(OUTCOME_ABSENT_BINDING, str(exc)) from exc
-    version = source.versions[-1]
+    if version is None:
+        raise SourceInspectionError(
+            OUTCOME_HISTORICAL_VERSION_MISMATCH,
+            "the exact Source Version pinned by this manifest is absent from registry history",
+        )
     return ResolvedSourceBinding(
         source_id=source_id,
         content_hash=version.content_hash,
         filename=version.filename,
         content_type=version.content_type,
         size=version.size,
-        published_version=None,
+        published_version=published_version,
+        entity_id=entity_id,
+    )
+
+
+def resolve_source_reference_binding(
+    registry: SourceRegistry,
+    manifest: SourceReferenceManifest,
+    source_id: str,
+    *,
+    entity_id: str | None = None,
+    published_version: str | None = None,
+) -> ResolvedSourceBinding:
+    """Resolve a Git authoring pin, never the registry's latest version."""
+    from lumio_wiki.source_registry import _validate_source_id
+
+    try:
+        _validate_source_id(source_id)
+    except SourceRegistryError as exc:
+        raise SourceInspectionError(OUTCOME_ABSENT_BINDING, str(exc)) from exc
+    matches = [
+        (page_id, digest)
+        for page_id, bindings in manifest.bindings.items()
+        for bound_id, digest in bindings.items()
+        if bound_id == source_id and (entity_id is None or page_id == entity_id)
+    ]
+    if not matches:
+        raise SourceInspectionError(
+            OUTCOME_ABSENT_BINDING,
+            "the selected authoring manifest does not bind this source id",
+        )
+    entity_ids = {page_id for page_id, _digest in matches}
+    if entity_id is None and len(entity_ids) > 1:
+        raise SourceInspectionError(
+            OUTCOME_AMBIGUOUS_BINDING,
+            "the selected authoring manifest binds this source id to multiple Entities; "
+            "resolve it from a specific Entity",
+        )
+    hashes = {digest for _, digest in matches}
+    if len(hashes) != 1:
+        raise SourceInspectionError(
+            OUTCOME_AMBIGUOUS_BINDING,
+            "the selected authoring manifest binds this source id to multiple exact "
+            "Source Versions; resolve it from a specific Entity",
+        )
+    return resolve_registry_binding(
+        registry,
+        source_id,
+        next(iter(hashes)),
+        published_version=published_version,
+        entity_id=entity_id or next(iter(entity_ids)),
     )
 
 
@@ -142,8 +203,7 @@ def read_binding_manifest(
     if manifest.published_version != version:
         raise SourceInspectionError(
             OUTCOME_CORRUPTION,
-            "the stored Source Binding Manifest does not match the requested "
-            "published version",
+            "the stored Source Binding Manifest does not match the requested published version",
         )
     return manifest
 
@@ -152,6 +212,9 @@ def resolve_manifest_binding(
     artifact_store: SourceArtifactStore,
     version: str,
     source_id: str,
+    *,
+    entity_id: str | None = None,
+    page_title: str | None = None,
 ) -> ResolvedSourceBinding:
     """Resolve a source id through ONE Published Version's binding manifest.
 
@@ -171,19 +234,131 @@ def resolve_manifest_binding(
     except SourceRegistryError as exc:
         raise SourceInspectionError(OUTCOME_ABSENT_BINDING, str(exc)) from exc
     manifest = read_binding_manifest(artifact_store, version)
-    for entry in manifest.entries:
-        if entry.source_id == source_id:
-            return ResolvedSourceBinding(
-                source_id=source_id,
-                content_hash=entry.content_hash,
-                filename=entry.filename,
-                content_type=entry.content_type,
-                size=entry.size,
-                published_version=version,
-            )
-    raise SourceInspectionError(
-        OUTCOME_ABSENT_BINDING,
-        f"published version {version!r} does not bind this source id",
+    entries = [entry for entry in manifest.entries if entry.source_id == source_id]
+    if entity_id is not None:
+        entries = [
+            entry
+            for entry in entries
+            if (entry.entity_id == entity_id if entry.entity_id else entry.page_title == page_title)
+        ]
+    elif len({entry.entity_id or entry.page_title for entry in entries}) > 1:
+        raise SourceInspectionError(
+            OUTCOME_AMBIGUOUS_BINDING,
+            "this Published Version binds the source id to multiple Entities; "
+            "resolve it from a specific Entity",
+        )
+    if not entries:
+        raise SourceInspectionError(
+            OUTCOME_ABSENT_BINDING,
+            f"published version {version!r} does not bind this source id",
+        )
+    if len({entry.content_hash for entry in entries}) != 1:
+        raise SourceInspectionError(
+            OUTCOME_AMBIGUOUS_BINDING,
+            "this Published Version binds the source id to multiple exact Source Versions; "
+            "resolve it from a specific Entity",
+        )
+    identities = {(entry.filename, entry.content_type, entry.size) for entry in entries}
+    if len(identities) != 1:
+        raise SourceInspectionError(
+            OUTCOME_CORRUPTION,
+            "the stored Source Binding Manifest disagrees on exact source metadata",
+        )
+    entry = entries[0]
+    return ResolvedSourceBinding(
+        source_id=source_id,
+        content_hash=entry.content_hash,
+        filename=entry.filename,
+        content_type=entry.content_type,
+        size=entry.size,
+        published_version=version,
+        entity_id=entry.entity_id
+        or (entity_id if entity_id is not None and entry.page_title == page_title else None),
+    )
+
+
+def read_local_published_bindings(destination: str | Path, version: str):
+    """Read one fully verified local Git admission's private source bindings."""
+    from lumio_wiki.git_authoring import GitAuthoringError, _verify_version_complete
+
+    version = validate_published_version(version)
+    try:
+        _manifest, receipt, sealed = _verify_version_complete(Path(destination), version)
+    except GitAuthoringError as exc:
+        outcome = (
+            OUTCOME_HISTORICAL_VERSION_MISMATCH
+            if not (Path(destination) / "versions" / version).exists()
+            else OUTCOME_CORRUPTION
+        )
+        raise SourceInspectionError(outcome, str(exc)) from exc
+    return receipt, sealed
+
+
+def resolve_local_published_binding(
+    destination: str | Path,
+    version: str,
+    source_id: str,
+    *,
+    entity_id: str | None = None,
+) -> ResolvedSourceBinding:
+    """Resolve local historical metadata from its verified sealed record."""
+    from lumio_wiki.source_registry import _validate_source_id
+
+    try:
+        _validate_source_id(source_id)
+    except SourceRegistryError as exc:
+        raise SourceInspectionError(OUTCOME_ABSENT_BINDING, str(exc)) from exc
+    receipt, sealed = read_local_published_bindings(destination, version)
+    matches = [
+        (page_id, digest)
+        for page_id, bindings in sealed.bindings.items()
+        for bound_id, digest in bindings.items()
+        if bound_id == source_id and (entity_id is None or page_id == entity_id)
+    ]
+    if not matches:
+        raise SourceInspectionError(
+            OUTCOME_ABSENT_BINDING,
+            f"published version {version!r} does not bind this source id",
+        )
+    entity_ids = {page_id for page_id, _digest in matches}
+    if entity_id is None and len(entity_ids) > 1:
+        raise SourceInspectionError(
+            OUTCOME_AMBIGUOUS_BINDING,
+            "this Published Version binds the source id to multiple Entities; "
+            "resolve it from a specific Entity",
+        )
+    hashes = {digest for _page_id, digest in matches}
+    if len(hashes) != 1:
+        raise SourceInspectionError(
+            OUTCOME_AMBIGUOUS_BINDING,
+            "this Published Version binds the source id to multiple exact Source Versions; "
+            "resolve it from a specific Entity",
+        )
+    content_hash = next(iter(hashes))
+    metadata = [
+        item
+        for item in sealed.source_versions
+        if item.source_id == source_id and item.content_hash == content_hash
+    ]
+    if len(metadata) != 1:
+        raise SourceInspectionError(
+            OUTCOME_CORRUPTION,
+            "the sealed historical record lacks unique exact inspection metadata",
+        )
+    item = metadata[0]
+    if receipt.version != version:
+        raise SourceInspectionError(
+            OUTCOME_CORRUPTION,
+            "the local admission receipt does not match the requested version",
+        )
+    return ResolvedSourceBinding(
+        source_id=source_id,
+        content_hash=content_hash,
+        filename=item.filename,
+        content_type=item.content_type,
+        size=item.size,
+        published_version=version,
+        entity_id=entity_id or next(iter(entity_ids)),
     )
 
 
@@ -222,8 +397,7 @@ def parse_expires(value: str | None) -> timedelta:
     match = _EXPIRES_PATTERN.match(text)
     if match is None:
         raise ValueError(
-            "invalid --expires value: use a duration like 30s, 5m, or 1h "
-            "(bare numbers are minutes)"
+            "invalid --expires value: use a duration like 30s, 5m, or 1h (bare numbers are minutes)"
         )
     unit = match.group(2) or "m"
     try:

@@ -11,10 +11,8 @@ from typing import Any
 
 import msgspec
 
-from lumio_wiki.ingest import IngestProposal, IngestStore, SourceProvenance
 from lumio_wiki.knowledge_base import GRAPH_SCOPE_DISCOVERY, KnowledgeBase
 from lumio_wiki.maintenance import _revision_routing_fields, mark_compound_revision
-from lumio_wiki.proposal_pipeline import ProposalPipeline
 from lumio_wiki.records import CompiledPage
 
 _SEMANTIC_KINDS = frozenset(("contradiction", "stale", "summary"))
@@ -70,12 +68,6 @@ class SemanticFinding:
 class SemanticReviewReport:
     pages: tuple[CompiledPage, ...]
     findings: tuple[SemanticFinding, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class SemanticStagingResult:
-    staged: tuple[IngestProposal, ...] = ()
-    skipped: tuple[tuple[SemanticFinding, str], ...] = ()
 
 
 class SemanticDreamReviewer:
@@ -290,33 +282,93 @@ class SemanticDreamReviewer:
             )
         )
 
-    def stage_findings(
-        self, *, store: IngestStore, report: SemanticReviewReport | None = None
-    ) -> SemanticStagingResult:
+    def worktree_edits(
+        self,
+        *,
+        report: SemanticReviewReport | None = None,
+        base_markdowns: dict[str, str] | None = None,
+    ) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[SemanticFinding, str], ...]]:
+        """Compute the explicit worktree edits for the report's findings (G3/D3).
+
+        Spec 0008 §6: an explicit apply operation edits the selected
+        authoring worktree rather than staging stored proposals. Returns
+        ``(edits, skipped)`` where ``edits`` are ``(page_path,
+        final_markdown)`` pairs — at most ONE per page — and ``skipped``
+        carries ``(finding, reason)``. F8/D3: compatible findings targeting
+        the same page compose sequentially into one final markdown;
+        ``base_markdowns`` seeds the composition with already-composed
+        candidate pages (e.g. deterministic link repairs computed from the
+        ORIGINAL coordinates — frontmatter normalization cannot shift
+        them). Two lifecycle-setting findings with DIFFERENT targets, or two
+        summary findings proposing DIFFERENT replacements, are explicit
+        conflict diagnostics — never a last-write-wins. Read-only: applying
+        the edits is the caller's explicit worktree operation.
+        """
         report = report or self.review()
         inspected = frozenset(page.path for page in report.pages)
-        staged: list[IngestProposal] = []
+        composed: dict[str, str] = dict(base_markdowns or {})
+        applied_lifecycle: dict[str, str] = {}
+        applied_summary: dict[str, str] = {}
         skipped: list[tuple[SemanticFinding, str]] = []
         for finding in report.findings:
+            lifecycle = self._stale_target_lifecycle(finding) if finding.kind == "stale" else None
+            if lifecycle is not None:
+                conflicts = sorted(
+                    page_path
+                    for page_path in finding.pages
+                    if page_path in applied_lifecycle and applied_lifecycle[page_path] != lifecycle
+                )
+                if conflicts:
+                    skipped.append(
+                        (
+                            finding,
+                            "conflicting lifecycle intent on page(s) "
+                            + ", ".join(conflicts)
+                            + f" (already set to {applied_lifecycle[conflicts[0]]!r}, "
+                            f"finding wants {lifecycle!r}); resolve explicitly",
+                        )
+                    )
+                    continue
+            if finding.kind == "summary" and finding.summary:
+                conflicts = sorted(
+                    page_path
+                    for page_path in finding.pages
+                    if page_path in applied_summary
+                    and applied_summary[page_path] != finding.summary
+                )
+                if conflicts:
+                    skipped.append(
+                        (
+                            finding,
+                            "conflicting summary replacement for page(s) "
+                            + ", ".join(conflicts)
+                            + f" (already set to {applied_summary[conflicts[0]]!r}, "
+                            f"finding proposes {finding.summary!r}); resolve explicitly",
+                        )
+                    )
+                    continue
             try:
-                edits = self._edits_for_finding(finding, inspected)
+                finding_edits = self._edits_for_finding(
+                    finding, inspected, for_worktree=True, base_markdowns=composed
+                )
             except (OSError, SemanticMaintenanceError, ValueError, msgspec.DecodeError) as exc:
                 skipped.append((finding, str(exc)))
                 continue
-            if not edits:
+            if not finding_edits:
                 skipped.append((finding, "finding has no actionable edit"))
                 continue
-            for page_path, edited in edits:
-                try:
-                    proposal = self._assemble_unblocked(store, page_path, edited)
-                except (OSError, SemanticMaintenanceError, ValueError, msgspec.DecodeError) as exc:
-                    skipped.append((finding, str(exc)))
-                    continue
-                if proposal is None:
-                    skipped.append((finding, "candidate validation blocked the proposal"))
-                else:
-                    staged.append(proposal)
-        return SemanticStagingResult(tuple(staged), tuple(skipped))
+            changed = False
+            for page_path, edited in finding_edits:
+                if composed.get(page_path) != edited:
+                    composed[page_path] = edited
+                    changed = True
+                if lifecycle is not None:
+                    applied_lifecycle[page_path] = lifecycle
+                if finding.kind == "summary" and finding.summary:
+                    applied_summary[page_path] = finding.summary
+            if not changed:
+                skipped.append((finding, "finding has no actionable edit"))
+        return tuple(sorted(composed.items())), tuple(skipped)
 
     @staticmethod
     def _stale_target_lifecycle(finding: SemanticFinding) -> str:
@@ -324,7 +376,12 @@ class SemanticDreamReviewer:
         return finding.lifecycle or "deprecated"
 
     def _edits_for_finding(
-        self, finding: SemanticFinding, inspected: frozenset[str]
+        self,
+        finding: SemanticFinding,
+        inspected: frozenset[str],
+        *,
+        for_worktree: bool = False,
+        base_markdowns: dict[str, str] | None = None,
     ) -> list[tuple[str, str]]:
         if finding.validation_errors:
             raise SemanticMaintenanceError("; ".join(finding.validation_errors))
@@ -341,7 +398,12 @@ class SemanticDreamReviewer:
         edits: list[tuple[str, str]] = []
         for page_path in finding.pages:
             source = Path(self.kb.root) / page_path
-            markdown = source.read_text(encoding="utf-8")
+            if base_markdowns is not None and page_path in base_markdowns:
+                # F8: compose against the already-composed candidate page,
+                # not a fresh read of the original.
+                markdown = base_markdowns[page_path]
+            else:
+                markdown = source.read_text(encoding="utf-8")
             page = next((p for p in self.kb.pages if p.path == page_path), None)
             if page is None:
                 raise SemanticMaintenanceError(f"page does not exist: {page_path}")
@@ -371,22 +433,15 @@ class SemanticDreamReviewer:
                     f"> Reason: {finding.reason}\n{note_lines}\n"
                 )
                 edited = markdown.rstrip("\n") + callout
-            edited = mark_compound_revision(edited, **_revision_routing_fields(self.kb, page_path))
+            if not for_worktree:
+                # The staged-proposal route marks revisions with proposal-only
+                # routing fields (stripped at publish); a direct worktree edit
+                # writes the final published form.
+                edited = mark_compound_revision(
+                    edited, **_revision_routing_fields(self.kb, page_path)
+                )
             edits.append((page_path, edited))
         return edits
-
-    def _assemble_unblocked(
-        self, store: IngestStore, page_path: str, edited: str
-    ) -> IngestProposal | None:
-        provenance = SourceProvenance(
-            original_filename=page_path,
-            content_type="text/markdown",
-            converted_by="semantic-dream",
-            origin="semantic-dream",
-        )
-        pipeline = ProposalPipeline(self.kb, store=store)
-        proposal = pipeline.assemble(edited, provenance, page_path)
-        return None if proposal.blocked else pipeline.stage(proposal)
 
 
 def _update_frontmatter(markdown: str, updates: dict[str, Any]) -> str:
@@ -407,5 +462,4 @@ __all__ = [
     "SemanticFinding",
     "SemanticMaintenanceError",
     "SemanticReviewReport",
-    "SemanticStagingResult",
 ]

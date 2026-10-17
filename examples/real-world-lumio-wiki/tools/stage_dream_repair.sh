@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Stage up to N reviewable repair proposals from the Dream Cycle.
+# Apply up to N Dream Cycle repairs as Git worktree edits.
 #
 # This is the script the coding agent can run after `run_maintenance.sh` to
-# convert the dream's ranked candidates into actual proposals. The agent is
-# expected to then walk proposal inspect → proposal validate → publish for
-# each staged id before any change reaches the Knowledge Base.
+# convert the dream's ranked candidates into authored Markdown-link repairs
+# in the Git authoring worktree. The agent is expected to review the diff
+# with Git, commit what is good, and publish the exact revision.
 set -euo pipefail
 
 EXAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,11 +29,10 @@ printf '\n=== dream --stage --limit %s ===\n' "$LIMIT"
 printf '$ %s dream --stage --limit %s %s\n' "$LUMIO" "$LIMIT" "$KB"
 "$LUMIO" dream --stage --limit "$LIMIT" "$KB"
 
-printf '\n=== proposal list ===\n'
-printf '$ %s proposal list %s\n' "$LUMIO" "$KB"
-"$LUMIO" proposal list "$KB"
+printf '\n=== git status (review the repairs) ===\n'
+printf '$ git -C %s status --short\n' "$KB"
+git -C "$KB" status --short
 
-printf '\nFor each staged proposal run, in order:\n'
-printf '  %s proposal inspect <id> %s\n' "$LUMIO" "$KB"
-printf '  %s proposal validate <id> %s\n' "$LUMIO" "$KB"
-printf '  %s publish <id> %s    # or: %s discard <id> %s\n' "$LUMIO" "$KB" "$LUMIO" "$KB"
+printf '\nReview the diff with Git; commit what is good and publish the exact\n'
+printf 'revision: %s publish %s --revision <full-commit-id> --to <destination> --expected-current <version-or-none>\n' "$LUMIO" "$KB"
+printf 'Preview first; add --confirm <review-digest> only after explicit operator authorization.\n'

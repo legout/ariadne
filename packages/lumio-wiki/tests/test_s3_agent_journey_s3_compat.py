@@ -10,9 +10,8 @@ relies on in-process state (issue #166 AC1/AC4):
    a project-scope Agent Skill install.
 2. A restarted harness (new process, no prior session context) discovers the
    KB and configuration from ``.env`` alone (pathless commands).
-3. Managed ingest of a mixed-format raw source (Markdown + binary), proposal
-   review (list/inspect/validate), publish, and private Source Artifact
-   retention.
+3. Managed ingest of a mixed-format raw source (Markdown + binary), native
+   Git review/commit and exact-revision preview/confirm with private retention.
 4. One complete immutable S3 version with a built and health-checked remote
    LanceDB index is published and activated.
 5. A separate read-only coding-agent project binds the S3 Location and
@@ -38,6 +37,8 @@ index is the lexical BM25 build (no embedder, no provider).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os as _os
 import re
 import subprocess
@@ -155,10 +156,33 @@ def _authored_page(title: str, source_id: str, body: str) -> str:
     )
 
 
-def _staged_proposal_id(out: str) -> str:
-    match = re.search(r"^Staged proposal (\S+)$", out, re.MULTILINE)
-    assert match, f"could not read staged proposal id from output:\n{out}"
-    return match.group(1)
+def _commit(kb: Path, message: str) -> str:
+    subprocess.run(
+        ["git", "-C", str(kb), "add", "lumio.yaml", "references", ".lumio-authoring.yaml"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(kb), "commit", "-qm", message], check=True)
+    return subprocess.check_output(["git", "-C", str(kb), "rev-parse", "HEAD"], text=True).strip()
+
+
+def _publish(maintainer: Path, revision: str, expected: str) -> tuple[list[str], str]:
+    args = [
+        "publish-s3",
+        "knowledge-base",
+        "--revision",
+        revision,
+        "--expected-current",
+        expected,
+        "--retrieval",
+        "lancedb",
+        "--json",
+    ]
+    review = json.loads(_run(*args, cwd=maintainer).stdout)
+    assert review["revision"] == revision and not review["blocking_diagnostics"]
+    # The test authorizes only this disposable fixture's displayed review.
+    receipt = json.loads(_run(*args, "--confirm", review["review_digest"], cwd=maintainer).stdout)
+    assert receipt["activated"] and receipt["revision"] == revision
+    return args, review["review_digest"]
 
 
 def test_s3_coding_agent_journey(tmp_path, _root_store):
@@ -235,12 +259,25 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
         encoding="utf-8",
     )
 
+    kb = maintainer / "knowledge-base"
+    (kb / ".lumio-authoring.yaml").write_text(
+        "version: 1\nnamespace: live-agent-journey\nsources: {}\nbindings: {}\n"
+    )
+    registry = tmp_path / "private-registry"
+    with (maintainer / ".env").open("a") as config:
+        config.write(f"LUMIO_SOURCE_REGISTRY={registry}\n")
+    subprocess.run(["git", "init", "-q", str(kb)], check=True)
+    subprocess.run(["git", "-C", str(kb), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(kb), "config", "user.name", "Test Maintainer"], check=True)
+    subprocess.run(["git", "-C", str(kb), "add", "lumio.yaml", ".lumio-authoring.yaml"], check=True)
+    subprocess.run(["git", "-C", str(kb), "commit", "-qm", "Adopt KB"], check=True)
+
     # --- Journey step 3: a restarted harness (fresh subprocess) discovers the
     # KB and configuration without prior session context.
     assert "Knowledge base is valid" in _run("validate", cwd=maintainer).stdout
 
     # --- Journey step 4: managed ingest of a mixed-format raw source — one
-    # text file and one binary — with proposal review and private retention.
+    # text file and one binary — with Git review and private retention.
     handbook_md = staging / "handbook.md"
     handbook_md.write_text("# Field Handbook\n\nRotate the sensors quarterly.\n", encoding="utf-8")
     report_pdf = staging / "field-report.pdf"
@@ -260,7 +297,6 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
         _authored_page("Field Report Digest", "report-src", "Digest of the field report."),
         encoding="utf-8",
     )
-    proposal_ids = []
     for source_file, page_file, source_id in (
         (handbook_md, handbook_page, "handbook-src"),
         (report_pdf, report_page, "report-src"),
@@ -275,24 +311,23 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
             source_id,
             cwd=maintainer,
         ).stdout
-        assert f"source_id:      {source_id}" in out
-        proposal_ids.append(_staged_proposal_id(out))
-    listed = _run("proposal", "list", "knowledge-base", cwd=maintainer).stdout
-    for proposal_id in proposal_ids:
-        assert proposal_id in listed
-        out = _run("proposal", "inspect", "knowledge-base", proposal_id, cwd=maintainer).stdout
-        assert proposal_id in out and "source_id" in out
-        assert (
-            "Knowledge base is valid"
-            in _run("proposal", "validate", "knowledge-base", proposal_id, cwd=maintainer).stdout
-        )
-        _run("publish", "knowledge-base", proposal_id, cwd=maintainer)
+        import msgspec
 
-    # --- Journey step 5: publish one complete immutable S3 version (with the
-    # remote LanceDB build) and activate it.
-    out = _run("publish-s3", "--version", "v1", "--retrieval", "lancedb", cwd=maintainer).stdout
-    assert "Published v1" in out
-    assert "lance:       built and health-checked under derived/lance/" in out
+        manifest = msgspec.yaml.decode((kb / ".lumio-authoring.yaml").read_bytes())
+        assert (
+            manifest["bindings"][f"entity:{source_id}"][source_id]
+            == hashlib.sha256(source_file.read_bytes()).hexdigest()
+        )
+        assert "Ingested into the Git authoring worktree" in out
+        _commit(kb, f"Review source {source_id}")
+    assert "Knowledge base is valid" in _run("validate", cwd=maintainer).stdout
+    assert not (kb / ".lumio/ingest/proposals").exists()
+    v1 = subprocess.check_output(["git", "-C", str(kb), "rev-parse", "HEAD"], text=True).strip()
+    assert not list(obstore.list(_root_store, prefix=kb_prefix))
+
+    # --- Journey step 5: exact-revision review/confirmation builds the remote
+    # LanceDB index and activates one complete captured version.
+    publish_v1, digest_v1 = _publish(maintainer, v1, "none")
 
     # --- Journey step 6: a separate read-only coding-agent project against
     # the S3 Location.
@@ -333,7 +368,7 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     # text original supports a bounded quote, the binary is byte-exact.
     out = _run("source", "inspect", "--source-id", "handbook-src", cwd=reader).stdout
     assert "source_id:       handbook-src" in out
-    assert "bound_to:        published version v1 (Source Binding Manifest)" in out
+    assert f"bound_to:        published version {v1} (Source Binding Manifest)" in out
     assert "authorization:   granted" in out
     fetched_text = reader / "handbook-original.md"
     _run(
@@ -364,9 +399,8 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
 
     # --- Journey step 10: a replacement Source Version publishes v2; the
     # historical v1 Published Version still fetches the historical bytes.
-    # The documented replacement workflow (#149 lifecycle): retire, reactivate
-    # with the new bytes, then managed-ingest the revised page (idempotent
-    # version reuse retains the replacement artifact for required retention).
+    # Replacement is an explicit managed binding edit, not registration-latest
+    # or a proposal transition. The active and historical v1 keep their bytes.
     report_v2_bytes = b"%PDF-1.4 journey source artifact bytes v2 (replacement)"
     report_pdf.write_bytes(report_v2_bytes)
     revised_page = staging / "report-page-v2.md"
@@ -379,21 +413,6 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
         encoding="utf-8",
     )
     out = _run(
-        "source", "retire", "knowledge-base", "--source-id", "report-src", cwd=maintainer
-    ).stdout
-    _run("publish", "knowledge-base", _staged_proposal_id(out), cwd=maintainer)
-    out = _run(
-        "source",
-        "reactivate",
-        "knowledge-base",
-        "--source-id",
-        "report-src",
-        "--file",
-        str(report_pdf),
-        cwd=maintainer,
-    ).stdout
-    _run("publish", "knowledge-base", _staged_proposal_id(out), cwd=maintainer)
-    out = _run(
         "ingest",
         "knowledge-base",
         str(report_pdf),
@@ -403,9 +422,12 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
         "report-src",
         cwd=maintainer,
     ).stdout
-    replacement_id = _staged_proposal_id(out)
-    _run("publish", "knowledge-base", replacement_id, cwd=maintainer)
-    _run("publish-s3", "--version", "v2", "--retrieval", "lancedb", cwd=maintainer)
+    assert "Ingested into the Git authoring worktree" in out
+    # B's private registration/worktree edit cannot alter the active A binding.
+    _run("source", "fetch", "--source-id", "report-src", "--output", str(fetched_pdf), cwd=reader)
+    assert fetched_pdf.read_bytes() == report_v1_bytes
+    v2 = _commit(kb, "Explicitly replace report binding with B")
+    _publish(maintainer, v2, v1)
     # The active Published Version (v2) serves the replacement bytes...
     _run("source", "fetch", "--source-id", "report-src", "--output", str(fetched_pdf), cwd=reader)
     assert fetched_pdf.read_bytes() == report_v2_bytes
@@ -417,23 +439,49 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
         "--source-id",
         "report-src",
         "--published-version",
-        "v1",
+        v1,
         "--output",
         str(historical),
         cwd=reader,
     )
     assert historical.read_bytes() == report_v1_bytes
     out = _run(
-        "source", "inspect", "--source-id", "report-src", "--published-version", "v1", cwd=reader
+        "source", "inspect", "--source-id", "report-src", "--published-version", v1, cwd=reader
     ).stdout
-    assert "bound_to:        published version v1 (Source Binding Manifest)" in out
+    assert f"bound_to:        published version {v1} (Source Binding Manifest)" in out
 
     # --- Journey step 11 legs: conflict, rollback, orphan reporting, and the
     # zero-index fallback — from the same real destination.
-    # Re-publishing an existing immutable version is refused outright.
-    result = _run("publish-s3", "--version", "v1", cwd=maintainer, expect_rc=2)
-    assert "already exists" in (result.stdout + result.stderr)
-    assert "cannot be overwritten" in (result.stdout + result.stderr)
+    # Identical retry preserves immutable bytes and never reactivates v1 over v2.
+    from lumio_wiki.s3_location import S3Location
+
+    def version_bytes():
+        return {
+            obj["path"]: hashlib.sha256(
+                bytes(obstore.get(_root_store, obj["path"]).bytes())
+            ).hexdigest()
+            for batch in obstore.list(_root_store, prefix=f"{kb_prefix}/{v1}/")
+            for obj in batch
+        }
+
+    before = version_bytes()
+    _run(*publish_v1, "--confirm", digest_v1, cwd=maintainer)
+    assert version_bytes() == before
+    assert S3Location(_root_store, kb_prefix).resolve().published_version == v2
+    stale = _run(
+        "publish-s3",
+        "knowledge-base",
+        "--revision",
+        v2,
+        "--expected-current",
+        v1,
+        cwd=maintainer,
+        expect_rc=1,
+    )
+    diagnostic = stale.stdout + stale.stderr
+    assert v1 in diagnostic and v2 in diagnostic
+    assert "expected" in diagnostic and "active" in diagnostic
+    assert S3Location(_root_store, kb_prefix).resolve().published_version == v2
     out = _run("cleanup-s3", destination, cwd=maintainer).stdout
     assert "No cleanup candidates" in out
     # An interrupted publication leaves an incomplete version prefix: the
@@ -441,11 +489,15 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     # object's nested path is copied from the OBSERVED listing of a real
     # published version, so the test never assumes private object-key layout
     # beyond what the public listing surface returns.
+    version_prefix = f"{kb_prefix}/{v1}/"
     published_keys = [
-        obj["path"] for batch in obstore.list(_root_store, prefix=kb_prefix) for obj in batch
+        obj["path"]
+        for batch in obstore.list(_root_store, prefix=version_prefix)
+        for obj in batch
+        if obj["path"].endswith(".md")
     ]
     assert published_keys
-    nested = min(published_keys, key=len)[len(kb_prefix) + 1 :].split("/", 1)[1]
+    nested = min(published_keys, key=len)[len(version_prefix) :]
     orphan_key = f"{kb_prefix}/v9-interrupted/{nested}"
     obstore.put(_root_store, orphan_key, b"orphaned bytes from an interrupted build")
     try:
@@ -454,9 +506,12 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     finally:
         obstore.delete(_root_store, orphan_key)
     # Rollback re-activates the prior complete version atomically...
-    _run("rollback-s3", destination, "--version", "v1", cwd=maintainer)
+    rollback = ["rollback-s3", destination, "--version", v1, "--expected-current", v2, "--json"]
+    review = json.loads(_run(*rollback, cwd=maintainer).stdout)
+    assert S3Location(_root_store, kb_prefix).resolve().published_version == v2
+    _run(*rollback, "--confirm", review["review_digest"], cwd=maintainer)
     out = _run("source", "inspect", "--source-id", "report-src", cwd=reader).stdout
-    assert "published version v1 (Source Binding Manifest)" in out
+    assert f"published version {v1} (Source Binding Manifest)" in out
     # ...and the zero-index backend still serves Evidence from the same S3
     # Location without any index (offline/local behavior stays green).
     zero_env = _hermetic_child_env()

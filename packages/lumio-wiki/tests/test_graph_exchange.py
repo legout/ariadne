@@ -4,8 +4,9 @@ Four test layers, matching the PRD-0005 testing decisions:
 
 * Semantic checks for both export formats over ``eval/fixture_kb`` (node/edge
   counts and typed-vs-untyped edge marking).
-* Round-trip test: ``export_graph`` -> ``import_graph`` -> one staged Ingest
-  Proposal that validates cleanly.
+* Round-trip test: ``export_graph`` -> ``assemble_graph_import`` -> one clean
+  stub-page candidate that validates (the native route applies it to the
+  authoring worktree; no proposal is staged).
 * Import tests: foreign wiki-export lineage ``graph.json``, malformed input,
   broken-link diagnostics.
 * Security test: ``restricted``/``internal`` page titles, summaries, and edges
@@ -22,7 +23,6 @@ from pathlib import Path
 import pytest
 from lumio_wiki import (
     export_graph,
-    import_graph,
     load_knowledge_base,
     seeded_control_file,
     write_control_file,
@@ -33,6 +33,7 @@ from lumio_wiki.graph_exchange import (
     EDGE_KIND_RELATIONSHIP,
     GraphExchangeExport,
     GraphImportError,
+    assemble_graph_import,
 )
 from lumio_wiki.okf import ExportVisibilityScope, select_export_pages
 from lumio_wiki.records import CompiledPage
@@ -212,8 +213,8 @@ def _fresh_categorized_kb(root: Path) -> Path:
     return root
 
 
-def test_round_trip_export_import_stages_one_clean_proposal(tmp_path: Path):
-    """export-graph -> import-graph yields one reviewable stub proposal that validates."""
+def test_round_trip_export_import_builds_one_clean_candidate(tmp_path: Path):
+    """export-graph -> import-graph yields one clean stub-page candidate that validates."""
     kb, _report = load_knowledge_base(CATEGORIZED_KB)
     export = export_graph(select_export_pages(kb.pages, ExportVisibilityScope.ALL))
 
@@ -222,9 +223,8 @@ def test_round_trip_export_import_stages_one_clean_proposal(tmp_path: Path):
 
     dest_root = _fresh_categorized_kb(tmp_path / "dest")
     dest_kb, _report = load_knowledge_base(dest_root)
-    proposal = import_graph(graph_path, dest_kb)
+    proposal = assemble_graph_import(graph_path, dest_kb)
 
-    assert not proposal.blocked
     assert proposal.validation_report.is_valid
     assert {page.title for page in proposal.proposed_pages} == {
         "Lumio Overview",
@@ -255,10 +255,10 @@ def test_round_trip_public_scope_stubs_carry_no_restricted_content(tmp_path: Pat
     graph_path = tmp_path / "graph.json"
     graph_path.write_text(export.graph_json, encoding="utf-8")
     dest_kb, _report = load_knowledge_base(_fresh_categorized_kb(tmp_path / "dest"))
-    proposal = import_graph(graph_path, dest_kb)
+    proposal = assemble_graph_import(graph_path, dest_kb)
 
     assert [page.title for page in proposal.proposed_pages] == ["Lumio Overview"]
-    assert not proposal.blocked
+    assert proposal.validation_report.is_valid
 
 
 # ---------------------------------------------------------------------------
@@ -312,9 +312,9 @@ def test_import_graph_accepts_wiki_export_lineage(tmp_path: Path):
     graph_path.write_text(json.dumps(WIKI_EXPORT_GRAPH), encoding="utf-8")
     kb, _report = load_knowledge_base(_fresh_categorized_kb(tmp_path / "dest"))
 
-    proposal = import_graph(graph_path, kb)
+    proposal = assemble_graph_import(graph_path, kb)
 
-    assert not proposal.blocked
+    assert proposal.validation_report.is_valid
     by_title = {page.title: page for page in proposal.proposed_pages}
     assert set(by_title) == {"Transformer Architecture", "Ashish Vaswani"}
     transformers = by_title["Transformer Architecture"]
@@ -324,7 +324,7 @@ def test_import_graph_accepts_wiki_export_lineage(tmp_path: Path):
     # The plain wikilink edge arrives as an unmarked link; the typed edge to a
     # node that does not exist is disclosed as a diagnostic and dropped.
     assert "[Ashish Vaswani](../entities/vaswani.md)" in transformers.markdown
-    diagnostics = proposal.okf_diagnostics
+    diagnostics = proposal.diagnostics
     assert any(d.kind == "broken-link" for d in diagnostics)
 
 
@@ -335,26 +335,26 @@ def test_import_graph_rejects_malformed_input(tmp_path: Path):
     not_json = tmp_path / "not_json.json"
     not_json.write_text("{nope", encoding="utf-8")
     with pytest.raises(GraphImportError):
-        import_graph(not_json, kb)
+        assemble_graph_import(not_json, kb)
 
     missing_nodes = tmp_path / "missing_nodes.json"
     missing_nodes.write_text(json.dumps({"links": []}), encoding="utf-8")
     with pytest.raises(GraphImportError):
-        import_graph(missing_nodes, kb)
+        assemble_graph_import(missing_nodes, kb)
 
     bad_nodes = tmp_path / "bad_nodes.json"
     bad_nodes.write_text(json.dumps({"nodes": ["nope"], "links": []}), encoding="utf-8")
     with pytest.raises(GraphImportError):
-        import_graph(bad_nodes, kb)
+        assemble_graph_import(bad_nodes, kb)
 
     no_id = tmp_path / "no_id.json"
     no_id.write_text(json.dumps({"nodes": [{"label": "No Id"}], "links": []}), encoding="utf-8")
     with pytest.raises(GraphImportError):
-        import_graph(no_id, kb)
+        assemble_graph_import(no_id, kb)
 
     missing_file = tmp_path / "absent.json"
     with pytest.raises(GraphImportError):
-        import_graph(missing_file, kb)
+        assemble_graph_import(missing_file, kb)
 
 
 def test_import_graph_rejects_duplicate_and_colliding_nodes(tmp_path: Path):
@@ -367,7 +367,7 @@ def test_import_graph_rejects_duplicate_and_colliding_nodes(tmp_path: Path):
         encoding="utf-8",
     )
     with pytest.raises(GraphImportError, match="duplicate node id"):
-        import_graph(duplicate_id, kb)
+        assemble_graph_import(duplicate_id, kb)
 
     colliding_paths = tmp_path / "colliding.json"
     colliding_paths.write_text(
@@ -383,7 +383,7 @@ def test_import_graph_rejects_duplicate_and_colliding_nodes(tmp_path: Path):
         encoding="utf-8",
     )
     with pytest.raises(GraphImportError, match="same stub path"):
-        import_graph(colliding_paths, kb)
+        assemble_graph_import(colliding_paths, kb)
 
 
 def test_import_graph_diagnoses_malformed_link_endpoints(tmp_path: Path):
@@ -400,12 +400,12 @@ def test_import_graph_diagnoses_malformed_link_endpoints(tmp_path: Path):
     )
     kb, _report = load_knowledge_base(_fresh_categorized_kb(tmp_path / "dest"))
 
-    proposal = import_graph(graph_path, kb)
+    proposal = assemble_graph_import(graph_path, kb)
 
-    assert not proposal.blocked
+    assert proposal.validation_report.is_valid
     assert any(
         d.kind == "broken-link" and "malformed link entry" in d.message
-        for d in proposal.okf_diagnostics
+        for d in proposal.diagnostics
     )
 
 
@@ -417,9 +417,9 @@ def test_import_graph_into_legacy_flat_mode(tmp_path: Path):
     dest_root.mkdir()
     kb, _report = load_knowledge_base(dest_root)
 
-    proposal = import_graph(graph_path, kb)
+    proposal = assemble_graph_import(graph_path, kb)
 
-    assert not proposal.blocked
+    assert proposal.validation_report.is_valid
     # Legacy Flat Mode: no category routing; stubs keep the source's
     # directory convention (foreign node ids are vault-relative paths).
     paths = {page.relative_path for page in proposal.proposed_pages}
@@ -448,18 +448,37 @@ def test_cli_export_graph_writes_both_artifacts(tmp_path: Path, capsys: pytest.C
     assert "graph.json" in out and "graph.graphml" in out
 
 
-def test_cli_import_graph_stages_reviewable_proposal(
+def test_cli_import_graph_edits_the_authoring_worktree(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
+    # G3 (spec 0008 §7): graph import writes the stub pages (and any Control
+    # File extension) into the selected Git authoring worktree as ordinary
+    # uncommitted files — no proposal is staged.
     kb, _report = load_knowledge_base(CATEGORIZED_KB)
     export = export_graph(select_export_pages(kb.pages, ExportVisibilityScope.ALL))
     graph_path = tmp_path / "graph.json"
     graph_path.write_text(export.graph_json, encoding="utf-8")
     dest_root = _fresh_categorized_kb(tmp_path / "dest")
+    import subprocess
+
+    def _git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(dest_root), *args], check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "test@example.com")
+    _git("config", "user.name", "Test Author")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "authoring revision")
 
     rc = main(["import-graph", str(dest_root), str(graph_path)])
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Staged proposal" in out
-    assert "proposal inspect" in out
+    assert "Imported graph stubs into the Git authoring worktree" in out
+    assert "Staged proposal" not in out
+    status = subprocess.run(
+        ["git", "-C", str(dest_root), "status", "--porcelain", "--untracked-files=all"],
+        check=True,
+        capture_output=True,
+    ).stdout.decode()
+    assert "concepts/overview.md" in status

@@ -468,6 +468,191 @@ def test_git_authoring_journey_publishes_exact_revision(tmp_path, capsys):
     assert PublishedFilesystemLocation(destination).read_pointer() == revision
 
 
+def test_local_lancedb_publication_read_and_rollback(tmp_path: Path, capsys) -> None:
+    lumio_lancedb = pytest.importorskip("lumio_lancedb")
+    repo = _init_repo(tmp_path)
+    pages = {
+        "concepts/hydraulic-press.md": _entity_page(
+            "Hydraulic Press",
+            "entity:hydraulic-press",
+            ["press"],
+            claims_yaml=_presses_claim(),
+            body_sections="## Overview\n\nA copper lens transfers force.\n",
+            sources_yaml="  []\n",
+        ).replace("sources:\n  []\n", "sources:\n  []\nsynthetic: true\n"),
+        "concepts/steel-blank.md": _entity_page(
+            "Steel Blank",
+            "entity:steel-blank",
+            ["material"],
+            sources_yaml="  []\n",
+        ).replace("sources:\n  []\n", "sources:\n  []\nsynthetic: true\n"),
+    }
+    kb = _write_kb(repo, pages=pages)
+    destination = tmp_path / "published"
+    revision_a = _commit(repo)
+
+    def publish(revision: str, expected_current: str) -> None:
+        args = [
+            "publish",
+            str(kb),
+            "--revision",
+            revision,
+            "--to",
+            str(destination),
+            "--expected-current",
+            expected_current,
+            "--retrieval",
+            "lancedb",
+            "--json",
+        ]
+        assert main(args) == 0
+        review = json.loads(capsys.readouterr().out)
+        assert "derived/lance" in review["requested_artifacts"]
+        confirm_args = [arg for arg in args if arg != "--json"]
+        rc = main([*confirm_args, "--confirm", review["review_digest"]])
+        confirmed = capsys.readouterr()
+        assert rc == 0, confirmed.err
+        assert f"Admitted Published Version {revision}" in confirmed.out
+        assert "activated:      True" in confirmed.out
+
+    publish(revision_a, "none")
+    revision_b_page = kb / "concepts" / "hydraulic-press.md"
+    revision_b_page.write_text(
+        revision_b_page.read_text(encoding="utf-8").replace("copper lens", "silver lens"),
+        encoding="utf-8",
+    )
+    revision_b = _commit(repo)
+    publish(revision_b, revision_a)
+
+    snapshot_b = PublishedFilesystemLocation(destination).resolve()
+    assert snapshot_b.published_version == revision_b
+    assert snapshot_b.index_dir == (destination / "versions" / revision_b / "derived" / "lance")
+    manifest_b = PublishedFilesystemLocation(destination).read_manifest(revision_b)
+    index_files = [
+        item for item in manifest_b.derived_files if item.path.startswith("derived/lance/")
+    ]
+    assert len(index_files) > 1
+    assert any(item.path.endswith("completion.json") for item in index_files)
+    for item in index_files:
+        raw = (destination / "versions" / revision_b / item.path).read_bytes()
+        assert len(raw) == item.size
+        assert hashlib.sha256(raw).hexdigest() == item.digest
+
+    adapter = lumio_lancedb.LanceDBRetrievalAdapter()
+    results_b = adapter.retrieve(
+        snapshot_b.pages,
+        "silver",
+        index_dir=snapshot_b.index_dir,
+        expected_fingerprint=snapshot_b.fingerprint,
+    )
+    assert any(result.citation.page_title == "Hydraulic Press" for result in results_b)
+
+    rollback_args = [
+        "rollback",
+        str(destination),
+        "--version",
+        revision_a,
+        "--expected-current",
+        revision_b,
+        "--json",
+    ]
+    assert main(rollback_args) == 0
+    rollback_review = json.loads(capsys.readouterr().out)
+    assert main([*rollback_args, "--confirm", rollback_review["review_digest"]]) == 0
+    capsys.readouterr()
+
+    snapshot_a = PublishedFilesystemLocation(destination).resolve()
+    assert snapshot_a.published_version == revision_a
+    assert snapshot_a.index_dir == (destination / "versions" / revision_a / "derived" / "lance")
+    results_a = adapter.retrieve(
+        snapshot_a.pages,
+        "copper",
+        index_dir=snapshot_a.index_dir,
+        expected_fingerprint=snapshot_a.fingerprint,
+    )
+    assert any(result.citation.page_title == "Hydraulic Press" for result in results_a)
+
+
+def test_local_published_source_inspection_uses_sealed_bindings_without_raw_store(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    source_id = "operator-manual"
+    raw = b"Private source bytes retained only in the authoring registry."
+    registry = SourceRegistry(tmp_path / "registry")
+    version, _action = registry.register_version(source_id, raw, filename="manual.txt")
+    manifest = SourceReferenceManifest(
+        version=1,
+        namespace=NAMESPACE,
+        sources={source_id: "active"},
+        bindings={"entity:hydraulic-press": {source_id: version.content_hash}},
+    )
+    pages = {
+        "concepts/hydraulic-press.md": _entity_page(
+            "Hydraulic Press",
+            "entity:hydraulic-press",
+            ["press"],
+            sources_yaml='  - id: "operator-manual"\n    title: "Manual"\n',
+        ),
+        "concepts/steel-blank.md": _entity_page(
+            "Steel Blank", "entity:steel-blank", ["material"], sources_yaml="  []\n"
+        ).replace("sources:\n  []\n", "sources:\n  []\nsynthetic: true\n"),
+    }
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo, manifest=manifest, pages=pages)
+    revision = _commit(repo)
+    destination = tmp_path / "published"
+    review = preview_publication(kb, revision, destination, "none", source_registry=registry)
+    publish_revision(
+        kb,
+        revision,
+        destination,
+        "none",
+        review.review_digest,
+        source_registry=registry,
+    )
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    assert (
+        main(
+            [
+                "source",
+                "inspect",
+                str(destination),
+                "--source-id",
+                source_id,
+                "--published-version",
+                revision,
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "entity_id:       entity:hydraulic-press" in out
+    assert f"local Published Version {revision} (sealed source bindings)" in out
+    assert "not retained (no Source Artifact Store configured)" in out
+    assert raw.decode() not in out
+
+    assert (
+        main(
+            [
+                "source",
+                "resolve",
+                str(destination),
+                "Hydraulic Press",
+                "--published-version",
+                revision,
+                "--json",
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["entity_id"] == "entity:hydraulic-press"
+    assert result["published_version"] == revision
+    assert "--entity-id" in result["next"]
+    assert revision in result["next"]
+
+
 # ---------------------------------------------------------------------------
 # Invalid authored content: specific collected blocking failures.
 # ---------------------------------------------------------------------------
@@ -1564,6 +1749,70 @@ def test_r3_post_activation_receipt_failure_cannot_replay_after_rollback(tmp_pat
     assert PublishedFilesystemLocation(destination).read_pointer() == revision_a
 
 
+def test_local_retry_recovers_after_private_binding_bookkeeping_failure(tmp_path, monkeypatch):
+    """D3: recovery after a post-version, pre-receipt private bookkeeping failure."""
+    from lumio_wiki.artifact_store import InMemoryArtifactStore
+    from lumio_wiki.location import published_version_path
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    destination = tmp_path / "dest"
+    revision_a = _commit(repo)
+    review_a = preview_publication(kb, revision_a, destination, "none")
+    publish_revision(kb, revision_a, destination, "none", review_a.review_digest)
+
+    page = kb / "concepts" / "steel-blank.md"
+    page.write_text(
+        _entity_page(
+            "Steel Blank",
+            "entity:steel-blank",
+            ["material"],
+            body_sections="## Overview\n\nB body.\n",
+        )
+    )
+    revision_b = _commit(repo)
+    review_b = preview_publication(kb, revision_b, destination, revision_a)
+
+    class _FailFirstBindingStore(InMemoryArtifactStore):
+        """Fails B's first binding-manifest write, after the version is complete."""
+
+        def __init__(self):
+            super().__init__()
+            self.failed = False
+
+        def put_binding_manifest(self, version, manifest):
+            if version == revision_b and not self.failed:
+                self.failed = True
+                raise OSError("injected private binding manifest failure")
+            return super().put_binding_manifest(version, manifest)
+
+    store = _FailFirstBindingStore()
+    with pytest.raises(OSError, match="private binding manifest failure"):
+        publish_revision(
+            kb, revision_b, destination, revision_a, review_b.review_digest, artifact_store=store
+        )
+    # The immutable version directory completed before the bookkeeping failure.
+    version_dir = published_version_path(destination, revision_b)
+    assert (version_dir / "manifest.json").is_file()
+    assert PublishedFilesystemLocation(destination).read_pointer() == revision_a
+
+    def tree_digests():
+        return {
+            str(path.relative_to(version_dir)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(version_dir.rglob("*"))
+            if path.is_file()
+        }
+
+    before = tree_digests()
+    receipt = publish_revision(
+        kb, revision_b, destination, revision_a, review_b.review_digest, artifact_store=store
+    )
+    assert receipt.activated is True
+    assert receipt.revision == revision_b
+    assert PublishedFilesystemLocation(destination).read_pointer() == revision_b
+    assert tree_digests() == before  # recovery rewrites no immutable bytes
+
+
 def test_f10_rollback_verifies_sealed_binding_identity(tmp_path):
     repo = _init_repo(tmp_path)
     kb = _write_kb(repo)
@@ -1983,3 +2232,1114 @@ def test_f6_rollback_requires_review_confirmation_and_current_baseline(tmp_path,
     assert PublishedFilesystemLocation(destination).read_pointer() == revision_b
     assert main([*fresh_args, "--confirm", digest]) == 0
     assert PublishedFilesystemLocation(destination).read_pointer() == revision_a
+
+
+def test_native_source_retirement_edits_git_lifecycle_intent(tmp_path, capsys):
+    """G3 (spec 0008 §3.2/§3.3): retirement intent is a reviewed Git manifest
+    edit, never a proposal-keyed pending transition.
+
+    A retirement with eligible support drops the retired source's binding and
+    keeps the page bound to its exact remaining source (independently derived
+    digest over known bytes); a sole-source retirement REFUSES with the
+    affected page named, leaving the manifest untouched.
+    """
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+
+    source_file = tmp_path / "manual.txt"
+    source_file.write_bytes(A_BYTES)
+    compiled = tmp_path / "press.md"
+    compiled.write_text(_authored_ingest_page("operator-manual"))
+    ingest_args = [
+        "ingest",
+        str(kb),
+        str(source_file),
+        "--compiled-page",
+        str(compiled),
+        "--source-id",
+        "operator-manual",
+        "--source-registry",
+        str(registry.root),
+    ]
+    assert main(ingest_args) == 0
+    _commit(repo)
+
+    # A second exact supporting source: the authored page declares both.
+    service_bytes = b"Service bulletin: verify the ram annually."
+    service_digest = hashlib.sha256(service_bytes).hexdigest()
+    second_page = _authored_ingest_page("operator-manual").replace(
+        '  - id: "operator-manual"\n    title: "Operator manual"\n',
+        '  - id: "operator-manual"\n    title: "Operator manual"\n'
+        '  - id: "service-manual"\n    title: "Service bulletin"\n',
+    )
+    service_file = tmp_path / "service.txt"
+    service_file.write_bytes(service_bytes)
+    compiled2 = tmp_path / "press2.md"
+    compiled2.write_text(second_page)
+    assert (
+        main(
+            [
+                "ingest",
+                str(kb),
+                str(service_file),
+                "--compiled-page",
+                str(compiled2),
+                "--source-id",
+                "service-manual",
+                "--source-registry",
+                str(registry.root),
+            ]
+        )
+        == 0
+    )
+    _commit(repo)
+
+    # --- Retire the operator manual: an ordinary manifest edit. ---
+    code = main(
+        [
+            "source",
+            "--source-registry",
+            str(registry.root),
+            "retire",
+            str(kb),
+            "--source-id",
+            "operator-manual",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "Retired Knowledge Source 'operator-manual'" in out
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest.sources["operator-manual"] == "retired"
+    assert manifest.sources["service-manual"] == "active"
+    # A retired source cannot keep supporting bindings: only the exact
+    # service digest remains (independent SHA-256 oracle over known bytes).
+    assert manifest.bindings["entity:workbench-press"] == {"service-manual": service_digest}
+    # No proposal lifecycle was created anywhere.
+    assert not (kb / ".lumio").exists()
+    # The intent edit never rewrites the authored page.
+    page_text = (kb / "concepts" / "workbench_press.md").read_text(encoding="utf-8")
+    assert "operator-manual" in page_text
+
+    # --- A sole-source retirement refuses and preserves the manifest. ---
+    code = main(
+        [
+            "source",
+            "--source-registry",
+            str(registry.root),
+            "retire",
+            str(kb),
+            "--source-id",
+            "service-manual",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "Workbench Press" in captured.err
+    manifest_after = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest_after.sources["service-manual"] == "active"
+    assert manifest_after.bindings["entity:workbench-press"] == {"service-manual": service_digest}
+
+
+# ---------------------------------------------------------------------------
+# G3 fix-a1 (plan 0008 r11): focused regressions for the accepted F1–F4/F7
+# findings. Expectations derive from the fixture bytes, hand-worked manifest
+# semantics, and the SHA-256 oracle — never from implementation output.
+# ---------------------------------------------------------------------------
+
+
+def _ingest_operator_manual(tmp_path, repo, kb, registry):
+    """One committed managed ingest of the operator manual (shared setup)."""
+    source_file = tmp_path / "manual.txt"
+    source_file.write_bytes(A_BYTES)
+    compiled = tmp_path / "press.md"
+    compiled.write_text(_authored_ingest_page("operator-manual"))
+    assert (
+        main(
+            [
+                "ingest",
+                str(kb),
+                str(source_file),
+                "--compiled-page",
+                str(compiled),
+                "--source-id",
+                "operator-manual",
+                "--source-registry",
+                str(registry.root),
+            ]
+        )
+        == 0
+    )
+    _commit(repo)
+
+
+def test_managed_body_edit_keeps_valid_binding(tmp_path):
+    """F1: a body edit that keeps a bound page's Entity and Sources is an
+    ordinary managed edit — the manifest cross-check must see the REVISED
+    page in the candidate view, not exclude it (a false dangling-binding
+    refusal blocks every native maintenance operation on managed pages)."""
+    from lumio_wiki.git_authoring import revise_pages_in_worktree
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+    _ingest_operator_manual(tmp_path, repo, kb, registry)
+
+    page_file = kb / "concepts" / "workbench_press.md"
+    original = page_file.read_text(encoding="utf-8")
+    revised = original.replace(
+        "Rated at five tons per the operator manual.",
+        "Rated at five tons per the operator manual. Verified annually.",
+    )
+    assert revised != original
+    result = revise_pages_in_worktree(kb, [("concepts/workbench_press.md", revised)])
+    assert result.written == ["concepts/workbench_press.md"]
+    assert page_file.read_text(encoding="utf-8") == revised
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest.bindings["entity:workbench-press"]["operator-manual"] == A_DIGEST
+
+
+def test_new_page_declaring_managed_source_requires_binding(tmp_path):
+    """F1 (converse): a NEW page declaring an already-managed active source
+    without its own exact binding must be refused by the complete-candidate
+    manifest gate — not written as a successful inconsistent candidate."""
+    from lumio_wiki.git_authoring import GitAuthoringError, write_pages_into_worktree
+    from lumio_wiki.ingest import ProposedPage
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+    _ingest_operator_manual(tmp_path, repo, kb, registry)
+
+    unbound = _entity_page(
+        "Unbound Notes",
+        "entity:unbound-notes",
+        ["material"],
+        sources_yaml='  - id: "operator-manual"\n    title: "Operator manual"\n',
+    )
+    with pytest.raises(GitAuthoringError, match="operator-manual"):
+        write_pages_into_worktree(
+            kb,
+            [
+                ProposedPage(
+                    relative_path="concepts/unbound-notes.md",
+                    title="Unbound Notes",
+                    markdown=unbound,
+                )
+            ],
+        )
+    assert not (kb / "concepts" / "unbound-notes.md").exists()
+
+
+def test_retirement_refuses_unregistered_replacement_digest(tmp_path, capsys):
+    """F2 (spec 0008 §3.3/AC4): additional support counts only when it
+    resolves to an exact registered Source Version in the selected private
+    history — a declared-but-unregistered digest is NOT eligible support, so
+    retiring the last real support must refuse instead of reporting
+    still-supported."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+    _ingest_operator_manual(tmp_path, repo, kb, registry)
+
+    # A second REAL managed ingest so the page genuinely declares two
+    # sources with valid bindings (the authored page carries the 2-space
+    # quoted frontmatter style before routing re-encodes it).
+    service_bytes = b"Service bulletin: verify the ram annually."
+    second_page = _authored_ingest_page("operator-manual").replace(
+        '  - id: "operator-manual"\n    title: "Operator manual"\n',
+        '  - id: "operator-manual"\n    title: "Operator manual"\n'
+        '  - id: "service-manual"\n    title: "Service bulletin"\n',
+    )
+    service_file = tmp_path / "service.txt"
+    service_file.write_bytes(service_bytes)
+    compiled2 = tmp_path / "press2.md"
+    compiled2.write_text(second_page)
+    assert (
+        main(
+            [
+                "ingest",
+                str(kb),
+                str(service_file),
+                "--compiled-page",
+                str(compiled2),
+                "--source-id",
+                "service-manual",
+                "--source-registry",
+                str(registry.root),
+            ]
+        )
+        == 0
+    )
+    _commit(repo)
+
+    # An allowed intermediate authoring state: the service-manual binding is
+    # hand-edited to a well-formed but NEVER registered SHA-256 digest. At
+    # the unfixed base this counted as eligible support; it must not.
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    hand_authored = SourceReferenceManifest(
+        version=manifest.version,
+        namespace=manifest.namespace,
+        sources=manifest.sources,
+        bindings={
+            "entity:workbench-press": {
+                "operator-manual": A_DIGEST,
+                "service-manual": ZERO_DIGEST,
+            }
+        },
+    )
+    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        serialize_source_reference_manifest(hand_authored)
+    )
+    _commit(repo)
+
+    code = main(
+        [
+            "source",
+            "--source-registry",
+            str(registry.root),
+            "retire",
+            str(kb),
+            "--source-id",
+            "operator-manual",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1, captured.out
+    assert "service-manual" in captured.err
+    manifest_after = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest_after.sources["operator-manual"] == "active"
+
+
+def test_entity_merge_transfers_source_provenance_union_and_pins(tmp_path):
+    """F3 (spec 0008 §6): a native Entity Merge transfers the retired
+    Entity's source list union and exact bindings to the survivor together
+    with the migrated knowledge — never silently discards them."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+    _ingest_operator_manual(tmp_path, repo, kb, registry)
+
+    code = main(["merge-entity", str(kb), "entity:workbench-press", "entity:hydraulic-press"])
+    assert code == 0
+    survivor = (kb / "concepts" / "hydraulic-press.md").read_text(encoding="utf-8")
+    # The survivor keeps its own source AND declares the migrated one
+    # (structural check: routing re-encodes frontmatter quoting).
+    import msgspec.yaml as yaml
+
+    survivor_data = yaml.decode(survivor.split("---")[1])
+    assert {source["id"] for source in survivor_data["sources"]} == {
+        "src-hydraulic-press",
+        "operator-manual",
+    }
+    # The migrated Claim keeps its stable id on the survivor.
+    assert "claim:workbench-rated" in survivor
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest.bindings["entity:hydraulic-press"]["operator-manual"] == A_DIGEST
+    assert "entity:workbench-press" not in manifest.bindings
+
+
+def test_entity_merge_refuses_incompatible_same_source_versions(tmp_path, capsys):
+    """F3 (spec 0008 §6): when both Entities select DIFFERENT versions of the
+    same source, the merge refuses with a conflict — it never picks one or
+    silently drops the other's provenance."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+    _ingest_operator_manual(tmp_path, repo, kb, registry)
+    # Register replacement bytes B under the same source identity and
+    # hand-bind the survivor Entity to B (an allowed intermediate state).
+    registry.register_version("operator-manual", B_BYTES)
+    survivor_file = kb / "concepts" / "hydraulic-press.md"
+    survivor_file.write_text(
+        survivor_file.read_text(encoding="utf-8").replace(
+            '  - id: "src-hydraulic-press"\n    title: "Hydraulic Press Source"\n',
+            '  - id: "src-hydraulic-press"\n    title: "Hydraulic Press Source"\n'
+            '  - id: "operator-manual"\n    title: "Operator manual"\n',
+        )
+    )
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    hand_authored = SourceReferenceManifest(
+        version=manifest.version,
+        namespace=manifest.namespace,
+        sources=manifest.sources,
+        bindings={
+            **manifest.bindings,
+            "entity:hydraulic-press": {"operator-manual": B_DIGEST},
+        },
+    )
+    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        serialize_source_reference_manifest(hand_authored)
+    )
+    _commit(repo)
+
+    code = main(["merge-entity", str(kb), "entity:workbench-press", "entity:hydraulic-press"])
+    captured = capsys.readouterr()
+    assert code == 1, captured.out
+    assert "operator-manual" in captured.err
+    assert "conflicting selected versions" in captured.err
+    manifest_after = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest_after.bindings["entity:hydraulic-press"] == {"operator-manual": B_DIGEST}
+    assert manifest_after.bindings["entity:workbench-press"] == {"operator-manual": A_DIGEST}
+
+
+def test_native_ingest_refuses_semantically_invalid_authored_page(tmp_path):
+    """F4 (spec 0008 §§2/6): the shared complete page/control/manifest
+    candidate gate runs BEFORE any private registration or page write — an
+    authored page with an unknown Claim predicate refuses instead of
+    returning success after writing it."""
+    from lumio_wiki.git_authoring import GitAuthoringError, ingest_into_worktree
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+    _commit(repo)
+
+    invalid_page = _authored_ingest_page("operator-manual").replace(
+        "predicate: rated-at", "predicate: totally-unknown-predicate"
+    )
+    with pytest.raises(GitAuthoringError) as excinfo:
+        ingest_into_worktree(
+            kb,
+            A_BYTES,
+            "text/plain",
+            "manual.txt",
+            "operator-manual",
+            invalid_page,
+            source_registry=registry,
+        )
+    assert "predicate" in str(excinfo.value)
+    assert not (kb / "concepts" / "workbench_press.md").exists()
+    assert all(source.source_id != "operator-manual" for source in registry.list())
+
+
+def test_worktree_mutation_reports_incomplete_rollback(tmp_path, monkeypatch):
+    """F7: when a native mutation fails and the automatic restoration cannot
+    fully restore the worktree, the error names every failed path and the
+    retained backup location — success is never claimed for a partial
+    rollback."""
+    from lumio_wiki import git_authoring
+    from lumio_wiki.mutation import MutationBackup, MutationRollbackError
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+
+    def _failing_apply(pages, root, **kwargs):
+        raise OSError("disk went away during apply")
+
+    def _failing_restore(self, root, **kwargs):
+        return ["concepts/hydraulic-press.md (restoration failed: disk went away)"]
+
+    monkeypatch.setattr(git_authoring, "apply_proposed_pages", _failing_apply)
+    monkeypatch.setattr(MutationBackup, "restore_all", _failing_restore)
+    with pytest.raises(MutationRollbackError) as excinfo:
+        git_authoring.remove_page_in_worktree(kb, "Hydraulic Press")
+    message = str(excinfo.value)
+    assert "concepts/hydraulic-press.md" in message
+    assert "retained" in message
+    assert excinfo.value.backup_dir is not None
+    assert Path(excinfo.value.backup_dir).exists()
+
+
+# ---------------------------------------------------------------------------
+# G3 fix-a1: the required native rename/category-move/explicit-alias
+# completion and the approved explicit-Entity reactivation (spec 0008 r3
+# §3.3). New interfaces — new behavior, no failing-first repro applies.
+# ---------------------------------------------------------------------------
+
+CONTROL_V2_TWO_CATEGORIES = CONTROL_V2.replace(
+    "categories:\n  - name: concepts",
+    "categories:\n  - name: concepts\n  - name: reference",
+)
+
+
+def _linked_kb_pages() -> dict[str, str]:
+    """Two pages with an incoming body link and a shared Evidence section."""
+    return {
+        "concepts/hydraulic-press.md": _entity_page(
+            "Hydraulic Press",
+            "entity:hydraulic-press",
+            ["press"],
+            claims_yaml=_presses_claim(),
+        ),
+        "concepts/steel-blank.md": _entity_page(
+            "Steel Blank",
+            "entity:steel-blank",
+            ["material"],
+            body_sections=(
+                "## Overview\n\nBlanked in-house; see [[Hydraulic Press]] for the pressing step.\n"
+            ),
+        ),
+    }
+
+
+def test_native_rename_moves_and_aliases_with_reference_repair(tmp_path):
+    """Required G3 completion (spec 0008 §6, ADR-0016): the native rename
+    primitive changes the Canonical Title, relocates the Content Category
+    atomically, applies the EXPLICIT alias choice, preserves the stable
+    Entity/Claim IDs and Sources, repairs the incoming exactly-resolved body
+    link and the Hot Index pin — and refuses a dirty target without
+    touching anything."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo, control=CONTROL_V2_TWO_CATEGORIES, pages=_linked_kb_pages())
+    # A Hot Index pin references the old title.
+    control = (kb / "lumio.yaml").read_text(encoding="utf-8")
+    control = control.rstrip("\n") + "\n"
+    control += "hot_index:\n  - title: Hydraulic Press\n    note: start here\n"
+    (kb / "lumio.yaml").write_text(control)
+    _commit(repo)
+
+    code = main(
+        [
+            "rename-page",
+            str(kb),
+            "Hydraulic Press",
+            "--to",
+            "Hydraulic Ram Press",
+            "--category",
+            "reference",
+            "--alias",
+            "Hydraulic Press",
+            "--alias",
+            "ram press",
+        ]
+    )
+    assert code == 0
+    # Title/aliases/IDs preserved-or-changed exactly as requested.
+    new_page = (kb / "reference" / "hydraulic-press.md").read_text(encoding="utf-8")
+    import msgspec.yaml as yaml
+
+    data = yaml.decode(new_page.split("---")[1])
+    assert data["title"] == "Hydraulic Ram Press"
+    assert data["id"] == "entity:hydraulic-press"
+    assert data["aliases"] == ["Hydraulic Press", "ram press"]
+    assert {source["id"] for source in data["sources"]} == {"src-hydraulic-press"}
+    assert "claim:press-presses" in new_page
+    assert not (kb / "concepts" / "hydraulic-press.md").exists()
+    # The incoming body link retargeted to the new title.
+    steel = (kb / "concepts" / "steel-blank.md").read_text(encoding="utf-8")
+    assert "[[Hydraulic Ram Press]]" in steel
+    assert "[[Hydraulic Press]]" not in steel
+    # The Hot Index pin follows the rename (structural check).
+    control_data = yaml.decode((kb / "lumio.yaml").read_text(encoding="utf-8"))
+    assert control_data["hot_index"][0]["title"] == "Hydraulic Ram Press"
+
+    # A rename over uncommitted unrelated edits at the target refuses and
+    # preserves the current bytes.
+    steel_file = kb / "concepts" / "steel-blank.md"
+    steel_file.write_text(steel.replace("Blanked in-house", "Blanked on site"))
+    import contextlib
+    import io
+
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(
+            [
+                "rename-page",
+                str(kb),
+                "Hydraulic Ram Press",
+                "--to",
+                "Hydraulic Press",
+                "--drop-old-title-alias",
+            ]
+        )
+    assert code == 1
+    assert "uncommitted author changes" in err.getvalue()
+    assert (kb / "reference" / "hydraulic-press.md").read_text(encoding="utf-8") == new_page
+
+    # An unknown title refuses actionably.
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(["rename-page", str(kb), "No Such Page", "--to", "Whatever"])
+    assert code == 1
+    assert "No Such Page" in err.getvalue()
+
+
+def test_reactivation_pins_explicitly_selected_entities(tmp_path):
+    """Spec 0008 r3 §3.3: reactivation registers the new bytes as one exact
+    immutable version and writes the lifecycle flip together with exact pins
+    for the EXPLICITLY selected Entities. Unknown/missing IDs refuse with the
+    computed declaring set; an empty selection is valid only when nothing
+    declares the source; a tracked private registry selection refuses
+    BEFORE any private write."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+    _ingest_operator_manual(tmp_path, repo, kb, registry)
+    # Second real support so operator-manual can retire with eligible help.
+    service_bytes = b"Service bulletin: verify the ram annually."
+    second_page = _authored_ingest_page("operator-manual").replace(
+        '  - id: "operator-manual"\n    title: "Operator manual"\n',
+        '  - id: "operator-manual"\n    title: "Operator manual"\n'
+        '  - id: "service-manual"\n    title: "Service bulletin"\n',
+    )
+    service_file = tmp_path / "service.txt"
+    service_file.write_bytes(service_bytes)
+    compiled2 = tmp_path / "press2.md"
+    compiled2.write_text(second_page)
+    assert (
+        main(
+            [
+                "ingest",
+                str(kb),
+                str(service_file),
+                "--compiled-page",
+                str(compiled2),
+                "--source-id",
+                "service-manual",
+                "--source-registry",
+                str(registry.root),
+            ]
+        )
+        == 0
+    )
+    _commit(repo)
+    assert (
+        main(
+            [
+                "source",
+                "--source-registry",
+                str(registry.root),
+                "retire",
+                str(kb),
+                "--source-id",
+                "operator-manual",
+            ]
+        )
+        == 0
+    )
+    _commit(repo)
+
+    replacement = tmp_path / "replacement.txt"
+    replacement.write_bytes(B_BYTES)
+    reactivate = [
+        "source",
+        "--source-registry",
+        str(registry.root),
+        "reactivate",
+        str(kb),
+        "--source-id",
+        "operator-manual",
+        "--file",
+        str(replacement),
+    ]
+
+    # Missing selection: the page still declares the source.
+    import contextlib
+    import io
+
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(reactivate)
+    assert code == 1
+    assert "entity:workbench-press" in err.getvalue() or out.getvalue()
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest.sources["operator-manual"] == "retired"
+
+    # Unknown selection: an Entity that does not declare the source.
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main([*reactivate, "--entity", "entity:steel-blank"])
+    assert code == 1
+
+    # The exact explicit selection pins the new version and flips lifecycle.
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main([*reactivate, "--entity", "entity:workbench-press"])
+    assert code == 0, err.getvalue()
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest.sources["operator-manual"] == "active"
+    # Independent SHA-256 oracle over the new bytes.
+    assert manifest.bindings["entity:workbench-press"]["operator-manual"] == B_DIGEST
+    assert (
+        manifest.bindings["entity:workbench-press"]["service-manual"]
+        == hashlib.sha256(service_bytes).hexdigest()
+    )
+    source = registry.get("operator-manual")
+    assert [version.content_hash for version in source.versions] == [A_DIGEST, B_DIGEST]
+    # The page content itself is untouched by the reactivation.
+    assert "Operator manual" in (kb / "concepts" / "workbench_press.md").read_text(encoding="utf-8")
+
+    # Empty selection on an undeclared source is valid; a Git-tracked
+    # registry selection refuses BEFORE any private write.
+    registry.register_source("unused-doc", b"never declared by any page")
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(
+                version=manifest.version,
+                namespace=manifest.namespace,
+                sources={**manifest.sources, "unused-doc": "retired"},
+                bindings=manifest.bindings,
+            )
+        )
+    )
+    _commit(repo)
+    tracked_registry = repo / "tracked-registry"
+    tracked_registry.mkdir()
+    (tracked_registry / "README.md").write_text("tracked registry placeholder\n")
+    _commit(repo)
+    unused_replacement = tmp_path / "unused-replacement.txt"
+    unused_replacement.write_bytes(b"replacement bytes for the unused doc")
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(
+            [
+                "source",
+                "--source-registry",
+                str(tracked_registry),
+                "reactivate",
+                str(kb),
+                "--source-id",
+                "unused-doc",
+                "--file",
+                str(unused_replacement),
+            ]
+        )
+    assert code == 1
+    assert "Git-tracked" in err.getvalue()
+    # No private history was extended by the refused preflight.
+    from lumio_wiki.source_registry import SourceRegistryError
+
+    with pytest.raises(SourceRegistryError):
+        SourceRegistry(tracked_registry).get("unused-doc")
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest.sources["unused-doc"] == "retired"
+
+    # The empty selection succeeds on the untracked registry: nothing
+    # declares the source, so there is nothing to pin.
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(
+            [
+                "source",
+                "--source-registry",
+                str(registry.root),
+                "reactivate",
+                str(kb),
+                "--source-id",
+                "unused-doc",
+                "--file",
+                str(unused_replacement),
+            ]
+        )
+    assert code == 0, err.getvalue()
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest.sources["unused-doc"] == "active"
+    unused_versions = registry.get("unused-doc").versions
+    assert [version.content_hash for version in unused_versions] == [
+        hashlib.sha256(b"never declared by any page").hexdigest(),
+        hashlib.sha256(b"replacement bytes for the unused doc").hexdigest(),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# G3-R (plan 0008 r12): focused residual regressions for the accepted D1–D7.
+# Expectations derive from fixture bytes, hand-worked manifests, structural
+# YAML, and the SHA-256 oracle — never from implementation output.
+# ---------------------------------------------------------------------------
+
+
+def test_compound_revision_keeps_retained_source_pin(tmp_path):
+    """D1 (spec 0008 §3.1/§6): an explicitly compound revision adds the new
+    source while the manifest view derives from the SAME effective
+    destination content apply/validation produce — the retained prior Source
+    and its exact pin stay valid; no pin is dropped and no prior Source must
+    be manually repeated."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+    _ingest_operator_manual(tmp_path, repo, kb, registry)
+
+    service_bytes = b"Service bulletin: verify the ram annually."
+    service_digest = hashlib.sha256(service_bytes).hexdigest()
+    compound = (
+        _authored_ingest_page("operator-manual")
+        .replace(
+            '  - id: "operator-manual"\n    title: "Operator manual"\n',
+            '  - id: "service-manual"\n    title: "Service bulletin"\n',
+        )
+        .replace(
+            "synthetic: false\n",
+            "synthetic: false\ncompound_revision: true\n",
+        )
+    )
+    service_file = tmp_path / "service.txt"
+    service_file.write_bytes(service_bytes)
+    compiled2 = tmp_path / "press2.md"
+    compiled2.write_text(compound)
+    code = main(
+        [
+            "ingest",
+            str(kb),
+            str(service_file),
+            "--compiled-page",
+            str(compiled2),
+            "--source-id",
+            "service-manual",
+            "--source-registry",
+            str(registry.root),
+        ]
+    )
+    assert code == 0
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    # The effective compound page declares BOTH sources; BOTH exact pins
+    # remain (the retained one untouched).
+    assert manifest.bindings["entity:workbench-press"]["operator-manual"] == A_DIGEST
+    assert manifest.bindings["entity:workbench-press"]["service-manual"] == service_digest
+    page_text = (kb / "concepts" / "workbench_press.md").read_text(encoding="utf-8")
+    import msgspec.yaml as yaml
+
+    effective = yaml.decode(page_text.split("---")[1])
+    assert {source["id"] for source in effective["sources"]} == {
+        "operator-manual",
+        "service-manual",
+    }
+
+
+def test_rename_move_preserves_exact_references_and_alias_disposition(tmp_path, capsys):
+    """D2 (spec 0008 §6, ADR-0016): a move-only edit retargets incoming
+    path-resolved links; a moved page's outbound relative link KEEPS its
+    pre-move target even when the new directory holds a same-basename
+    different Entity; the renamed page's own old-title references repair;
+    and the old-title keep/drop disposition is explicit and disclosed."""
+    pages = {
+        "concepts/hydraulic-press.md": _entity_page(
+            "Hydraulic Press",
+            "entity:hydraulic-press",
+            ["press"],
+            body_sections=(
+                "## Overview\n\n"
+                "See [[Hydraulic Press]] maintenance notes; the fixture detail is in "
+                "[the blank](b.md).\n"
+            ),
+        ).replace("tags:\n", "aliases: [press machine]\ntags:\n"),
+        "concepts/b.md": _entity_page("Concept Blank", "entity:concept-blank", ["material"]),
+        "reference/b.md": _entity_page("Reference Blank", "entity:reference-blank", ["material"]),
+        "concepts/press-guide.md": _entity_page(
+            "Press Guide",
+            "entity:press-guide",
+            ["press"],
+            body_sections=(
+                "## Overview\n\n"
+                "The machine is documented at [the press](concepts/hydraulic-press.md).\n"
+            ),
+        ),
+    }
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo, control=CONTROL_V2_TWO_CATEGORIES, pages=pages)
+    _commit(repo)
+
+    # --- Move-only: the incoming path link retargets, the outbound link
+    # keeps its pre-move target (Concept Blank), the guide's page is
+    # untouched beyond the retarget. ---
+    code = main(["rename-page", str(kb), "Hydraulic Press", "--category", "reference"])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    moved = (kb / "reference" / "hydraulic-press.md").read_text(encoding="utf-8")
+    assert "[the blank](concepts/b.md)" in moved
+    assert "[the blank](b.md)" not in moved
+    guide = (kb / "concepts" / "press-guide.md").read_text(encoding="utf-8")
+    assert "[the press](reference/hydraulic-press.md)" in guide
+    assert "[the press](concepts/hydraulic-press.md)" not in guide
+    assert not (kb / "concepts" / "hydraulic-press.md").exists()
+    _commit(repo)
+
+    # ADR-0016 requires the operator's choice, not a post-action default.
+    before = {p.relative_to(kb): p.read_bytes() for p in kb.rglob("*") if p.is_file()}
+    code = main(["rename-page", str(kb), "Hydraulic Press", "--to", "Hydraulic Ram Press"])
+    captured = capsys.readouterr()
+    assert code == 1, captured.out
+    assert "explicit" in captured.err
+    assert {p.relative_to(kb): p.read_bytes() for p in kb.rglob("*") if p.is_file()} == before
+    from lumio_wiki.git_authoring import rename_page_in_worktree
+
+    with pytest.raises(GitAuthoringError, match="explicit"):
+        rename_page_in_worktree(kb, "Hydraulic Press", new_title="Hydraulic Ram Press")
+
+    # Explicit drop preserves unrelated aliases and repairs self-references.
+    code = main(
+        [
+            "rename-page",
+            str(kb),
+            "Hydraulic Press",
+            "--to",
+            "Hydraulic Ram Press",
+            "--drop-old-title-alias",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "old title:" in out  # the ADR-0016 disposition is disclosed
+    assert "dropped" in out
+    renamed = (kb / "reference" / "hydraulic-press.md").read_text(encoding="utf-8")
+    assert "[[Hydraulic Ram Press]] maintenance notes" in renamed
+    assert "[[Hydraulic Press]]" not in renamed
+    import msgspec.yaml as yaml
+
+    assert yaml.decode(renamed.split("---")[1])["aliases"] == ["press machine"]
+    _commit(repo)
+
+    # --- The explicit KEEP keeps the old title reachable as an alias. ---
+    code = main(
+        [
+            "rename-page",
+            str(kb),
+            "Hydraulic Ram Press",
+            "--to",
+            "Hydraulic Shop Press",
+            "--keep-old-title-alias",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "kept as an alias" in out
+    data = yaml.decode(
+        (kb / "reference" / "hydraulic-press.md").read_text(encoding="utf-8").split("---")[1]
+    )
+    assert data["title"] == "Hydraulic Shop Press"
+    assert data["aliases"] == ["press machine", "Hydraulic Ram Press"]
+    _commit(repo)
+
+    # --- The explicit empty replacement set is expressible. ---
+    code = main(
+        ["rename-page", str(kb), "Hydraulic Shop Press", "--to", "Shop Press", "--clear-aliases"]
+    )
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "(explicitly cleared)" in out
+    data = yaml.decode(
+        (kb / "reference" / "hydraulic-press.md").read_text(encoding="utf-8").split("---")[1]
+    )
+    assert data["aliases"] == []
+
+
+def test_strict_manifest_error_is_bounded_cli_error(tmp_path, capsys):
+    """D7 (plan r12): an invalid intermediate manifest surfaces as the
+    command's bounded diagnostic through the native owner/CLI boundary —
+    never an escaping SourceReferenceError traceback."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    manifest_file = kb / SOURCE_REFERENCE_MANIFEST_BASENAME
+    manifest_file.write_text(
+        manifest_file.read_text(encoding="utf-8") + "  duplicate-key: also-here\n",
+        encoding="utf-8",
+    )
+    _commit(repo)
+
+    code = main(["remove-page", str(kb), "Hydraulic Press"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "invalid" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_incomplete_rollback_is_bounded_cli_error(tmp_path, capsys, monkeypatch):
+    """D7 (plan r12): the shared rollback error maps through the actual
+    remove-page CLI caller, retaining its failed paths and backup location."""
+    from lumio_wiki import git_authoring
+    from lumio_wiki.mutation import MutationBackup
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+
+    def _failing_apply(pages, root, **kwargs):
+        raise OSError("disk went away during apply")
+
+    def _failing_restore(self, root, **kwargs):
+        return ["concepts/hydraulic-press.md (restoration failed: disk went away)"]
+
+    monkeypatch.setattr(git_authoring, "apply_proposed_pages", _failing_apply)
+    monkeypatch.setattr(MutationBackup, "restore_all", _failing_restore)
+    code = main(["remove-page", str(kb), "Hydraulic Press"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "concepts/hydraulic-press.md" in captured.err
+    assert "retained" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_compound_move_refuses_before_private_registration(tmp_path, capsys):
+    """R1: compound+move must not approve pins absent from the applied page."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo, control=CONTROL_V2_TWO_CATEGORIES)
+    registry = SourceRegistry(tmp_path / "registry")
+    _ingest_operator_manual(tmp_path, repo, kb, registry)
+    before = {p.relative_to(kb): p.read_bytes() for p in kb.rglob("*") if p.is_file()}
+    private_before = {
+        p.relative_to(registry.root): p.read_bytes()
+        for p in registry.root.rglob("*")
+        if p.is_file()
+    }
+    new_bytes = b"Service bulletin: the ram needs an annual inspection."
+    new_digest = hashlib.sha256(new_bytes).hexdigest()
+    assert new_digest != A_DIGEST
+    raw = tmp_path / "service.txt"
+    raw.write_bytes(new_bytes)
+    compiled = tmp_path / "compound-move.md"
+    compiled.write_text(
+        _authored_ingest_page("service-manual")
+        .replace("category: concepts", "category: reference")
+        .replace(
+            "synthetic: false\n",
+            "synthetic: false\ncompound_revision: true\n"
+            "move_from_path: concepts/workbench_press.md\n",
+        )
+    )
+    code = main(
+        [
+            "ingest",
+            str(kb),
+            str(raw),
+            "--compiled-page",
+            str(compiled),
+            "--source-id",
+            "service-manual",
+            "--source-registry",
+            str(registry.root),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1, captured.out
+    assert "compound" in captured.err and "move" in captured.err
+    assert {p.relative_to(kb): p.read_bytes() for p in kb.rglob("*") if p.is_file()} == before
+    assert {
+        p.relative_to(registry.root): p.read_bytes()
+        for p in registry.root.rglob("*")
+        if p.is_file()
+    } == private_before
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest.bindings["entity:workbench-press"] == {"operator-manual": A_DIGEST}
+    import msgspec.yaml as yaml
+
+    page = yaml.decode((kb / "concepts/workbench_press.md").read_text().split("---")[1])
+    assert {source["id"] for source in page["sources"]} == {"operator-manual"}
+
+
+def test_move_preserves_resolver_precedence_and_reference_fragments(tmp_path):
+    """R2: preserve hand-assigned Entity targets, section destinations and labels."""
+    pages = {
+        "concepts/a.md": _entity_page(
+            "Hydraulic Press",
+            "entity:moving",
+            ["press"],
+            body_sections="## Overview\n\n[canonical](b.md#overview)\n"
+            "[alias](c.md#overview)\n[path detail](d.md#overview)\n"
+            "[[Hydraulic Press#overview|details]] and [[Hydraulic Press#overview]].\n",
+        ),
+        "concepts/detail.md": _entity_page("b", "entity:title-target", ["material"]),
+        "concepts/alias-detail.md": _entity_page(
+            "Alias Detail", "entity:alias-target", ["material"]
+        ).replace("tags:\n", "aliases: [c]\ntags:\n"),
+        "concepts/b.md": _entity_page("Path B", "entity:path-b", ["material"]),
+        "concepts/c.md": _entity_page("Path C", "entity:path-c", ["material"]),
+        "concepts/d.md": _entity_page("Path Detail", "entity:path-target", ["material"]),
+        "reference/d.md": _entity_page("Wrong Detail", "entity:wrong-target", ["material"]),
+    }
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo, control=CONTROL_V2_TWO_CATEGORIES, pages=pages)
+    _commit(repo)
+
+    def target_entities():
+        loaded, report = load_knowledge_base(kb)
+        assert report.is_valid, report
+        ids = {page.title: page.id for page in loaded.pages}
+        return {ids[ref.target_title] for ref in loaded.extracted_references("Hydraulic Press")}
+
+    expected = {"entity:title-target", "entity:alias-target", "entity:path-target"}
+    assert target_entities() == expected
+    assert main(["rename-page", str(kb), "Hydraulic Press", "--category", "reference"]) == 0
+    assert target_entities() == expected
+    moved = (kb / "reference/a.md").read_text()
+    assert "[canonical](b.md#overview)" in moved
+    assert "[alias](c.md#overview)" in moved
+    assert "[path detail](concepts/d.md#overview)" in moved
+    _commit(repo)
+    assert (
+        main(
+            [
+                "rename-page",
+                str(kb),
+                "Hydraulic Press",
+                "--to",
+                "Shop Press",
+                "--keep-old-title-alias",
+            ]
+        )
+        == 0
+    )
+    renamed = (kb / "reference/a.md").read_text()
+    assert "[[Shop Press#overview|details]]" in renamed
+    assert "[[Shop Press#overview]]" in renamed
+
+
+def test_passthrough_ingest_incomplete_rollback_is_bounded(tmp_path, capsys, monkeypatch):
+    """R5: the real non-managed ingest caller discloses incomplete compensation."""
+    from lumio_wiki import git_authoring
+    from lumio_wiki.mutation import MutationBackup
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    source = tmp_path / "revised-page.md"
+    source.write_text(
+        (kb / "concepts/hydraulic-press.md")
+        .read_text()
+        .replace(
+            "tags:\n",
+            "category: concepts\ntype: machine\n"
+            "durability_rationale: The workshop machine is maintained permanently.\ntags:\n",
+        )
+    )
+    backups = []
+
+    def failing_apply(pages, root, **kwargs):
+        raise OSError("test apply storage failure")
+
+    def incomplete_restore(self, root, **kwargs):
+        backups.append(self.directory)
+        return ["concepts/hydraulic-press.md (test restore storage failure)"]
+
+    monkeypatch.setattr(git_authoring, "apply_proposed_pages", failing_apply)
+    monkeypatch.setattr(MutationBackup, "restore_all", incomplete_restore)
+    code = main(["ingest", str(kb), str(source)])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "concepts/hydraulic-press.md" in captured.err
+    assert len(backups) == 1 and backups[0].is_dir()
+    assert str(backups[0]) in captured.err
+    assert "retained" in captured.err and "Traceback" not in captured.err

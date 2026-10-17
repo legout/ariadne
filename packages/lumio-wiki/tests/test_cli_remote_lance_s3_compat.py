@@ -11,12 +11,20 @@ the other S3-compatible suites.
 
 from __future__ import annotations
 
+import json
 import os as _os
+import shutil
+import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 
 import pytest
 from lumio_wiki import cli
+from lumio_wiki.source_references import (
+    SourceReferenceManifest,
+    serialize_source_reference_manifest,
+)
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -30,9 +38,6 @@ if not _os.environ.get("LUMIO_S3_ENDPOINT"):  # pragma: no cover
         "LUMIO_S3_ENDPOINT not set; skipping CLI remote LanceDB S3-compatible tests",
         allow_module_level=True,
     )
-
-from lumio_lancedb import remote_publication_builder  # noqa: E402
-from lumio_wiki.s3_publish import publish_s3_version  # noqa: E402
 
 
 def _s3_config():
@@ -83,21 +88,59 @@ def s3_compat_env():
 _RUN_PREFIXES: list[str] = []
 
 
-def _publish(store, bucket, storage_options, prefix: str, *, with_lance: bool):
-    """Publish the valid fixture KB (with or without a remote LanceDB index)."""
-    source = FIXTURES / "valid"
-    index_builder = None
-    if with_lance:
-        index_builder = remote_publication_builder(
-            store_uri=f"s3://{bucket}", storage_options=storage_options
+def _publish(monkeypatch, capsys, bucket, prefix: str, *, with_lance: bool):
+    """Publish one disposable Git revision through the actual CLI admission gate."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        source = Path(temp_dir) / "kb"
+        shutil.copytree(FIXTURES / "valid", source)
+        (source / ".lumio-authoring.yaml").write_bytes(
+            serialize_source_reference_manifest(
+                SourceReferenceManifest(
+                    version=1,
+                    namespace="urn:uuid:0f6f0e3e-1d9a-4b2e-9d47-6c1f0f5f4f3e",
+                )
+            )
         )
-    return publish_s3_version(
-        store,
-        prefix,
-        source_root=source,
-        version="v1",
-        index_builder=index_builder,
-    )
+        subprocess.run(["git", "-C", str(source), "init", "-q"], check=True)
+        subprocess.run(
+            ["git", "-C", str(source), "config", "user.email", "test@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(source), "config", "user.name", "Test Author"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(source), "commit", "-qm", "S3 candidate"], check=True)
+        revision = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        registry = Path(temp_dir) / "source-registry"
+        monkeypatch.setenv("LUMIO_SOURCE_STORE", str(Path(temp_dir) / "source-store"))
+        monkeypatch.delenv("LUMIO_ARTIFACT_RETENTION", raising=False)
+        args = [
+            "publish-s3",
+            str(source),
+            f"s3://{bucket}/{prefix}",
+            "--revision",
+            revision,
+            "--expected-current",
+            "none",
+            "--source-registry",
+            str(registry),
+            "--json",
+        ]
+        if with_lance:
+            args.extend(["--retrieval", "lancedb"])
+        assert cli.main(args) == 0
+        review = json.loads(capsys.readouterr().out)
+        rc = cli.main([*args, "--confirm", review["review_digest"]])
+        confirmed = capsys.readouterr()
+        assert rc == 0, confirmed.err
+        return json.loads(confirmed.out)
 
 
 def _run_search(monkeypatch, bucket: str, prefix: str, query: str) -> int:
@@ -110,10 +153,10 @@ def _run_search(monkeypatch, bucket: str, prefix: str, query: str) -> int:
 
 def test_cli_search_uses_published_remote_lancedb(monkeypatch, capsys, s3_compat_env):
     """Positive journey: BM25 lexical search over the published remote index."""
-    store, bucket, storage_options = s3_compat_env
+    _store, bucket, _storage_options = s3_compat_env
     run_prefix = f"s3-it/{uuid.uuid4().hex}"
     _RUN_PREFIXES.append(run_prefix)
-    manifest = _publish(store, bucket, storage_options, run_prefix, with_lance=True)
+    receipt = _publish(monkeypatch, capsys, bucket, run_prefix, with_lance=True)
 
     rc = _run_search(monkeypatch, bucket, run_prefix, "architecture")
     assert rc == 0
@@ -123,15 +166,15 @@ def test_cli_search_uses_published_remote_lancedb(monkeypatch, capsys, s3_compat
     # Healthy path: no fallback disclosure.
     assert "note:" not in out
     # The published version is the one that was resolved.
-    assert manifest.version == "v1"
+    assert len(receipt["version"]) == 40
 
 
 def test_cli_search_falls_back_when_no_index_was_published(monkeypatch, capsys, s3_compat_env):
     """Missing remote index: truthful zero-index fallback with a disclosed note."""
-    store, bucket, storage_options = s3_compat_env
+    _store, bucket, _storage_options = s3_compat_env
     run_prefix = f"s3-it/{uuid.uuid4().hex}"
     _RUN_PREFIXES.append(run_prefix)
-    _publish(store, bucket, storage_options, run_prefix, with_lance=False)
+    _publish(monkeypatch, capsys, bucket, run_prefix, with_lance=False)
 
     rc = _run_search(monkeypatch, bucket, run_prefix, "architecture")
     assert rc == 0
@@ -146,13 +189,13 @@ def test_cli_search_falls_back_on_fingerprint_mismatch(monkeypatch, capsys, s3_c
     from lumio_wiki.fingerprint_store import FINGERPRINT_FILE
     from lumio_wiki.records import SourceFingerprint
 
-    store, bucket, storage_options = s3_compat_env
+    store, bucket, _storage_options = s3_compat_env
     run_prefix = f"s3-it/{uuid.uuid4().hex}"
     _RUN_PREFIXES.append(run_prefix)
-    _publish(store, bucket, storage_options, run_prefix, with_lance=True)
+    receipt = _publish(monkeypatch, capsys, bucket, run_prefix, with_lance=True)
     # Fault injection: overwrite the freshness sidecar with a foreign
     # fingerprint (fault injection mirrors the S3 contract suite's pattern).
-    sidecar_key = f"{run_prefix}/v1/derived/lance/{FINGERPRINT_FILE}"
+    sidecar_key = f"{run_prefix}/{receipt['version']}/derived/lance/{FINGERPRINT_FILE}"
     obstore.put(store, sidecar_key, msgspec.json.encode(SourceFingerprint(digest="e" * 64)))
 
     rc = _run_search(monkeypatch, bucket, run_prefix, "architecture")
@@ -169,12 +212,10 @@ def test_cli_search_falls_back_on_fingerprint_mismatch(monkeypatch, capsys, s3_c
 
 def test_cli_status_reader_journey_with_lancedb(monkeypatch, capsys, s3_compat_env):
     """status explains a read-only S3 project: version, fingerprint, healthy lance."""
-    import json as _json
-
-    store, bucket, storage_options = s3_compat_env
+    _store, bucket, _storage_options = s3_compat_env
     run_prefix = f"s3-it/{uuid.uuid4().hex}"
     _RUN_PREFIXES.append(run_prefix)
-    manifest = _publish(store, bucket, storage_options, run_prefix, with_lance=True)
+    receipt = _publish(monkeypatch, capsys, bucket, run_prefix, with_lance=True)
 
     monkeypatch.setenv("LUMIO_RETRIEVAL_BACKEND", "lancedb")
     monkeypatch.setenv("LUMIO_RETRIEVAL_MODE", "hybrid")
@@ -186,11 +227,11 @@ def test_cli_status_reader_journey_with_lancedb(monkeypatch, capsys, s3_compat_e
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         assert cli.main(["status", f"s3://{bucket}/{run_prefix}", "--json"]) == 0
-    payload = _json.loads(buf.getvalue())
+    payload = json.loads(buf.getvalue())
     assert payload["role"] == "reader"
     assert payload["config_source"] == "argument"
-    assert payload["published_version"] == manifest.version
-    assert payload["fingerprint"] == manifest.fingerprint
+    assert payload["published_version"] == receipt["version"]
+    assert payload["fingerprint"] == receipt["fingerprint"]
     assert payload["retrieval_backend"] == "lancedb"
     assert payload["retrieval_mode"] == "hybrid"
     assert payload["lancedb_requested"] is True
@@ -203,10 +244,10 @@ def test_cli_status_reader_falls_back_when_no_index_was_published(
     monkeypatch, capsys, s3_compat_env
 ):
     """A version published without lance: status reports the truthful fallback."""
-    store, bucket, storage_options = s3_compat_env
+    _store, bucket, _storage_options = s3_compat_env
     run_prefix = f"s3-it/{uuid.uuid4().hex}"
     _RUN_PREFIXES.append(run_prefix)
-    _publish(store, bucket, storage_options, run_prefix, with_lance=False)
+    _publish(monkeypatch, capsys, bucket, run_prefix, with_lance=False)
 
     monkeypatch.setenv("LUMIO_RETRIEVAL_BACKEND", "lancedb")
     assert cli.main(["status", f"s3://{bucket}/{run_prefix}"]) == 0
@@ -216,4 +257,5 @@ def test_cli_status_reader_falls_back_when_no_index_was_published(
     assert "lancedb_healthy" in out
     assert "false" in out
     assert "missing" in out and "zero-index" in out
-    assert "publish-s3 --retrieval lancedb" in out
+    assert "publish --revision <commit>" in out
+    assert "--expected-current <version|none> --retrieval lancedb" in out

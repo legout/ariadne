@@ -73,6 +73,63 @@ def artifact_content_hash(raw_bytes: bytes) -> str:
 MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
 
 
+def _validate_record_version(version: str) -> None:
+    if (
+        not isinstance(version, str)
+        or not version
+        or version in {".", ".."}
+        or any(
+            ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+            for ch in version
+        )
+    ):
+        raise ArtifactStoreError("invalid version label")
+
+
+def _put_memory_record(records: dict[str, bytes], version: str, raw: bytes, label: str) -> None:
+    _validate_record_version(version)
+    existing = records.setdefault(version, raw)
+    if existing != raw:
+        raise ArtifactCorruption(f"an immutable {label} already exists for this version")
+
+
+def _get_memory_record(records: dict[str, bytes], version: str, label: str) -> bytes:
+    _validate_record_version(version)
+    try:
+        return records[version]
+    except KeyError:
+        raise ArtifactUnavailable(f"no {label} for version {version!r}") from None
+
+
+def _put_local_record(path: Path, raw: bytes, label: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        with path.open("xb") as record:
+            record.write(raw)
+    except FileExistsError:
+        try:
+            existing = path.read_bytes()
+        except PermissionError as exc:
+            raise ArtifactAccessDenied(
+                "access denied: cannot write the private Source Artifact Store"
+            ) from exc
+        if existing != raw:
+            raise ArtifactCorruption(
+                f"an immutable {label} already exists for this version"
+            ) from None
+
+
+def local_publication_metadata_store(destination_identity: str) -> LocalDirectoryArtifactStore:
+    """Return the private local operational store for one secret-free S3 target."""
+    import os
+
+    if not destination_identity:
+        raise ArtifactStoreError("a secret-free destination identity is required")
+    state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+    key = hashlib.sha256(destination_identity.encode("utf-8")).hexdigest()
+    return LocalDirectoryArtifactStore(state_home / "lumio-wiki" / "publications" / key)
+
+
 class SourceArtifactStore(Protocol):
     """Identity-oriented seam for private Source Artifact retention (#164).
 
@@ -127,6 +184,22 @@ class SourceArtifactStore(Protocol):
         """List Published Versions that have a stored binding manifest."""
         raise NotImplementedError
 
+    def put_publication_record(self, version: str, record: bytes) -> None:
+        """Create the immutable private Git admission record for a version."""
+        raise NotImplementedError
+
+    def get_publication_record(self, version: str) -> bytes:
+        """Read the private Git admission record for a version."""
+        raise NotImplementedError
+
+    def put_activation_receipt(self, version: str, receipt: bytes) -> None:
+        """Create immutable evidence that this version was actually activated."""
+        raise NotImplementedError
+
+    def get_activation_receipt(self, version: str) -> bytes:
+        """Read immutable activation evidence for a version."""
+        raise NotImplementedError
+
 
 class InMemoryArtifactStore:
     """Deterministic in-memory adapter: tests and no-storage local runs.
@@ -140,6 +213,8 @@ class InMemoryArtifactStore:
     def __init__(self) -> None:
         self._artifacts: dict[tuple[str, str], tuple[bytes, str | None, str | None]] = {}
         self._manifests: dict[str, bytes] = {}
+        self._publication_records: dict[str, bytes] = {}
+        self._activation_receipts: dict[str, bytes] = {}
 
     def put_artifact(
         self,
@@ -188,16 +263,25 @@ class InMemoryArtifactStore:
         raise SigningUnavailable("this Source Artifact Store adapter cannot issue signed URLs")
 
     def put_binding_manifest(self, version: str, manifest: bytes) -> None:
-        self._manifests[version] = manifest
+        _put_memory_record(self._manifests, version, manifest, "Source Binding Manifest")
 
     def get_binding_manifest(self, version: str) -> bytes:
-        raw = self._manifests.get(version)
-        if raw is None:
-            raise ArtifactUnavailable(f"no Source Binding Manifest for version {version!r}")
-        return raw
+        return _get_memory_record(self._manifests, version, "Source Binding Manifest")
 
     def list_binding_versions(self) -> list[str]:
         return sorted(self._manifests)
+
+    def put_publication_record(self, version: str, record: bytes) -> None:
+        _put_memory_record(self._publication_records, version, record, "publication record")
+
+    def get_publication_record(self, version: str) -> bytes:
+        return _get_memory_record(self._publication_records, version, "publication record")
+
+    def put_activation_receipt(self, version: str, receipt: bytes) -> None:
+        _put_memory_record(self._activation_receipts, version, receipt, "activation receipt")
+
+    def get_activation_receipt(self, version: str) -> bytes:
+        return _get_memory_record(self._activation_receipts, version, "activation receipt")
 
 
 class LocalDirectoryArtifactStore:
@@ -209,6 +293,8 @@ class LocalDirectoryArtifactStore:
         <root>/artifacts/<source_id>/<content_hash>       original bytes
         <root>/artifacts/<source_id>/<content_hash>.meta  safe metadata
         <root>/bindings/<version>.json                    binding manifests
+        <root>/publications/<version>.json                Git admission records
+        <root>/activations/<version>.json                  activation receipts
 
     The physical path is private adapter state: it never appears in public
     manifests, exports, or diagnostics. Signing is unavailable (local paths
@@ -309,17 +395,41 @@ class LocalDirectoryArtifactStore:
         raise SigningUnavailable("this Source Artifact Store adapter cannot issue signed URLs")
 
     def put_binding_manifest(self, version: str, manifest: bytes) -> None:
-        if "/" in version or version in {"", ".", ".."}:
-            raise ArtifactStoreError("invalid version label")
-        bindings = self.root / "bindings"
-        bindings.mkdir(parents=True, exist_ok=True)
-        (bindings / f"{version}.json").write_bytes(manifest)
+        _put_local_record(
+            self._record_path("bindings", version), manifest, "Source Binding Manifest"
+        )
+
+    def _record_path(self, directory: str, version: str) -> Path:
+        _validate_record_version(version)
+        return self.root / directory / f"{version}.json"
+
+    def _get_record(self, directory: str, version: str, label: str) -> bytes:
+        path = self._record_path(directory, version)
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            raise ArtifactUnavailable(f"no {label} for version {version!r}") from None
+        except PermissionError as exc:
+            raise ArtifactAccessDenied(
+                "access denied: cannot read the private Source Artifact Store"
+            ) from exc
+
+    def put_publication_record(self, version: str, record: bytes) -> None:
+        _put_local_record(self._record_path("publications", version), record, "publication record")
+
+    def get_publication_record(self, version: str) -> bytes:
+        return self._get_record("publications", version, "publication record")
+
+    def put_activation_receipt(self, version: str, receipt: bytes) -> None:
+        _put_local_record(self._record_path("activations", version), receipt, "activation receipt")
+
+    def get_activation_receipt(self, version: str) -> bytes:
+        return self._get_record("activations", version, "activation receipt")
 
     def get_binding_manifest(self, version: str) -> bytes:
         # Same label constraint as put_binding_manifest (defense in depth):
         # a read request can never traverse the private bindings directory.
-        if "/" in version or "\\" in version or version in {"", ".", ".."}:
-            raise ArtifactStoreError("invalid version label")
+        _validate_record_version(version)
         path = self.root / "bindings" / f"{version}.json"
         # Read-first: a permission failure is access denial, not a missing
         # manifest (#165).
@@ -468,27 +578,51 @@ class S3ArtifactStore:
             ) from exc
 
     def put_binding_manifest(self, version: str, manifest: bytes) -> None:
-        key = self._key("bindings", f"{version}.json")
-        self._obstore.put(self._store, key, manifest)
+        self._put_record("bindings", version, manifest, "Source Binding Manifest")
 
-    def get_binding_manifest(self, version: str) -> bytes:
+    def put_publication_record(self, version: str, record: bytes) -> None:
+        self._put_record("publications", version, record, "publication record")
+
+    def get_publication_record(self, version: str) -> bytes:
+        return self._get_record("publications", version, "publication record")
+
+    def put_activation_receipt(self, version: str, receipt: bytes) -> None:
+        self._put_record("activations", version, receipt, "activation receipt")
+
+    def get_activation_receipt(self, version: str) -> bytes:
+        return self._get_record("activations", version, "activation receipt")
+
+    def _put_record(self, directory: str, version: str, raw: bytes, label: str) -> None:
+        _validate_record_version(version)
+        from contextlib import suppress
+
+        from obstore.exceptions import AlreadyExistsError  # type: ignore[import-not-found]
+
+        key = self._key(directory, f"{version}.json")
+        with suppress(AlreadyExistsError):
+            self._obstore.put(self._store, key, raw, mode="create")
+        if self._get_record(directory, version, label) != raw:
+            raise ArtifactStoreError(f"an immutable {label} already exists for this version")
+
+    def _get_record(self, directory: str, version: str, label: str) -> bytes:
+        _validate_record_version(version)
         from obstore.exceptions import (  # type: ignore[import-not-found]
             PermissionDeniedError,
             UnauthenticatedError,
         )
 
-        key = self._key("bindings", f"{version}.json")
+        key = self._key(directory, f"{version}.json")
         try:
-            raw = bytes(self._obstore.get(self._store, key).bytes())
+            return bytes(self._obstore.get(self._store, key).bytes())
         except FileNotFoundError:
-            raise ArtifactUnavailable(
-                f"no Source Binding Manifest for version {version!r}"
-            ) from None
+            raise ArtifactUnavailable(f"no {label} for version {version!r}") from None
         except (PermissionDeniedError, UnauthenticatedError) as exc:
             raise ArtifactAccessDenied(
                 "access denied: credentials cannot read the private Source Artifact Store"
             ) from exc
-        return raw
+
+    def get_binding_manifest(self, version: str) -> bytes:
+        return self._get_record("bindings", version, "Source Binding Manifest")
 
     def list_binding_versions(self) -> list[str]:
         prefix = self._key("bindings", "")
@@ -548,6 +682,7 @@ class SourceBindingEntry(msgspec.Struct, frozen=True):
     filename: str | None = None
     size: int | None = None
     synthetic_page: bool = False
+    entity_id: str = ""
 
 
 class SourceBindingManifest(msgspec.Struct, frozen=True):
@@ -563,6 +698,10 @@ class SourceBindingManifest(msgspec.Struct, frozen=True):
     fingerprint: str
     created_at: str
     entries: list[SourceBindingEntry] = msgspec.field(default_factory=list)
+    revision: str = ""
+    subtree: str = ""
+    source_reference_digest: str = ""
+    validator_contract: str = ""
 
 
 def capture_binding_entries(registry: Any, pages: list[Any]) -> list[SourceBindingEntry]:
@@ -594,6 +733,7 @@ def capture_binding_entries(registry: Any, pages: list[Any]) -> list[SourceBindi
                     filename=current.filename,
                     size=current.size,
                     synthetic_page=bool(getattr(page, "synthetic", False)),
+                    entity_id=getattr(page, "id", "") or "",
                 )
             )
     return entries
@@ -607,6 +747,10 @@ def build_binding_manifest(
     pages: list[Any],
     now: str,
     captured_entries: list[SourceBindingEntry] | None = None,
+    revision: str = "",
+    subtree: str = "",
+    source_reference_digest: str = "",
+    validator_contract: str = "",
 ) -> SourceBindingManifest:
     """Build the manifest for the pages being published (#164, ADR-0020).
 
@@ -629,6 +773,10 @@ def build_binding_manifest(
         fingerprint=fingerprint,
         created_at=now,
         entries=entries,
+        revision=revision,
+        subtree=subtree,
+        source_reference_digest=source_reference_digest,
+        validator_contract=validator_contract,
     )
 
 
@@ -670,14 +818,22 @@ def required_coverage_missing(
     from lumio_wiki.source_registry import SourceRegistryError, _validate_source_id
 
     if captured_entries is not None:
-        required_pairs = required_source_pairs(pages)
+        required = {
+            (getattr(page, "id", None) or page.title, page.title, source.id)
+            for page in pages
+            if not bool(getattr(page, "synthetic", False))
+            for source in page.sources
+            if source.id
+        }
         bound_pairs = {
-            (entry.page_title, entry.source_id)
+            (entry.entity_id or entry.page_title, entry.source_id)
             for entry in captured_entries
             if not entry.synthetic_page
         }
         missing: list[str] = []
-        for title, source_id in sorted(required_pairs - bound_pairs):
+        for identity, title, source_id in sorted(required):
+            if (identity, source_id) in bound_pairs:
+                continue
             try:
                 _validate_source_id(source_id)
             except SourceRegistryError:
@@ -831,7 +987,7 @@ def activation_binding_hook(
                 )
         write_binding_manifest(artifact_store, manifest)
 
-    hook.capture_candidate = capture_candidate  # type: ignore[attr-defined]
+    cast(Any, hook).capture_candidate = capture_candidate
     return hook
 
 
@@ -848,6 +1004,7 @@ def verify_rollback_coverage(
     required: bool,
     required_pairs: set[tuple[str, str]] | None = None,
     expected_fingerprint: str | None = None,
+    source_artifact_store: SourceArtifactStore | None = None,
 ) -> None:
     """Gate ROLLBACK activation under required retention (#164, ADR-0020).
 
@@ -855,7 +1012,8 @@ def verify_rollback_coverage(
     verified artifact — rollback is an activation of an already complete
     Published Version, so its PRIVATE binding manifest (not the current
     registry state) defines coverage for that historical version. A version
-    with no stored manifest cannot prove coverage and fails closed.
+    with no stored manifest cannot prove coverage and fails closed. The
+    binding metadata and raw artifacts may be in separate stores.
     No-op when retention is not required.
     """
     if not required:
@@ -903,13 +1061,14 @@ def verify_rollback_coverage(
         for page_title, source_id in sorted(required_pairs or set())
         if (page_title, source_id) not in entries
     ]
+    artifact_bytes_store = source_artifact_store or artifact_store
     for entry in entries.values():
         source_id = safe_source_id(entry.source_id)
         if source_id == "<invalid source id>":
             missing.append(f"{entry.page_title}:{source_id}")
             continue
         try:
-            raw_bytes = artifact_store.get_artifact(
+            raw_bytes = artifact_bytes_store.get_artifact(
                 source_id=entry.source_id, content_hash=entry.content_hash
             )
         except ArtifactStoreError:

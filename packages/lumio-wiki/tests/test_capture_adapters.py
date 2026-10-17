@@ -291,8 +291,6 @@ def test_export_then_preview_composes_through_capture_contract(
 
     import lumio_wiki as lw
     from lumio_wiki.capture import capture_session, load_capture_manifest
-    from lumio_wiki.ingest import IngestStore
-    from lumio_wiki.proposal_pipeline import ProposalPipeline
 
     transcript = _make_codex(tmp_path, with_secret=True)
     (session,) = discover_sessions("codex", root=tmp_path)
@@ -306,8 +304,7 @@ def test_export_then_preview_composes_through_capture_contract(
     shutil.copytree(ROOT / "tests" / "fixtures" / "valid", kb_root)
     kb, report = lw.load_knowledge_base(kb_root)
     assert report.is_valid, report
-    store = IngestStore(tmp_path / "ingest")
-    pipeline = ProposalPipeline(kb, store=store)
+    before = {p.relative_to(kb_root): p.read_bytes() for p in kb_root.rglob("*") if p.is_file()}
 
     page = (
         "---\n"
@@ -326,8 +323,6 @@ def test_export_then_preview_composes_through_capture_contract(
         "# Commands\n\n- `uv run pytest -q` passed with 12 focused tests.\n"
     )
     outcome = capture_session(
-        pipeline,
-        store,
         compiled_page_markdown=page,
         manifest=manifest,
         manifest_bytes=raw,
@@ -336,11 +331,13 @@ def test_export_then_preview_composes_through_capture_contract(
         transcript_path=export.transcript_path,
         confirmed=False,
     )
-    assert outcome.proposal is None  # preview path: nothing registered/staged
+    assert outcome.worktree is None  # preview path: nothing registered/written
     assert outcome.preview.transcript_bound is True
     assert any("api-key" in w or "environment" in w for w in outcome.preview.warnings)
-    assert store.source_registry.list() == []
-    assert pipeline.list() == []
+    assert not (tmp_path / "ingest").exists()
+    assert {
+        p.relative_to(kb_root): p.read_bytes() for p in kb_root.rglob("*") if p.is_file()
+    } == before
 
 
 def test_formatting_never_contains_transcript_text(tmp_path: Path) -> None:

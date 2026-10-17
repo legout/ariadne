@@ -131,17 +131,30 @@ class TestRouting:
     def test_office_formats_route_to_anydoc(self):
         """The full office superset routes to AnyDoc (issue #154, ADR-0018)."""
         office_exts = (
-            ".doc", ".docx", ".docm",
-            ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
-            ".xls", ".xlsx", ".xlsm", ".xlsb",
-            ".odt", ".ods", ".odp",
-            ".rtf", ".epub", ".csv",
+            ".doc",
+            ".docx",
+            ".docm",
+            ".ppt",
+            ".pps",
+            ".pot",
+            ".pptx",
+            ".pptm",
+            ".ppsx",
+            ".ppsm",
+            ".xls",
+            ".xlsx",
+            ".xlsm",
+            ".xlsb",
+            ".odt",
+            ".ods",
+            ".odp",
+            ".rtf",
+            ".epub",
+            ".csv",
         )
         for ext in office_exts:
             proc = select_document_processor(f"file{ext}", None)
-            assert isinstance(proc, AnyDocSourceProcessor), (
-                f"{ext} should route to AnyDoc"
-            )
+            assert isinstance(proc, AnyDocSourceProcessor), f"{ext} should route to AnyDoc"
 
     def test_html_routes_to_markitdown(self):
         proc = select_document_processor("page.html", None)
@@ -151,9 +164,7 @@ class TestRouting:
         """HTML and the broad formats AnyDoc does not cover stay on MarkItDown."""
         for ext in (".html", ".htm", ".xml", ".json", ".rst"):
             proc = select_document_processor(f"file{ext}", None)
-            assert isinstance(proc, MarkItDownSourceProcessor), (
-                f"{ext} should route to MarkItDown"
-            )
+            assert isinstance(proc, MarkItDownSourceProcessor), f"{ext} should route to MarkItDown"
 
     def test_text_and_markdown_return_none(self):
         assert select_document_processor("note.md", None) is None
@@ -247,9 +258,7 @@ class TestPdfSourceProcessor:
         class EmptyResult:
             pages = [EmptyPage()]
 
-        proc = PdfSourceProcessor(
-            converter=lambda content: EmptyResult(), runner=_sync_runner
-        )
+        proc = PdfSourceProcessor(converter=lambda content: EmptyResult(), runner=_sync_runner)
         with pytest.raises(SourceProcessorError, match="no extractable text"):
             proc.process("blank.pdf", "application/pdf", _MINIMAL_PDF)
 
@@ -516,11 +525,10 @@ class TestBoundedExtraction:
 class TestTimeout:
     def test_timeout_raises_actionable_error(self):
         """A converter that exceeds the timeout is abandoned."""
-        proc = PdfSourceProcessor(
-            converter=_slow_converter, runner=run_conversion, timeout=0.5
-        )
+        proc = PdfSourceProcessor(converter=_slow_converter, runner=run_conversion, timeout=0.5)
         with pytest.raises(SourceProcessorError, match="timed out"):
             proc.process("slow.pdf", "application/pdf", _MINIMAL_PDF)
+
 
 # ---------------------------------------------------------------------------
 # Missing-extra error (AC4)
@@ -583,55 +591,23 @@ class TestMissingExtraError:
 
 class TestDocumentJourney:
     def test_pdf_flows_through_same_pipeline_as_markdown(self, tmp_path: Path):
-        """A PDF source produces a reviewable Ingest Proposal through the same
-        Distiller + Proposal Pipeline as text/Markdown (issue #100, AC3)."""
-        import shutil
+        """Real conversion prepares content; malformed raw text is not a Git write."""
+        from lumio_wiki.ingest import prepare_proposal_content
 
-        import lumio_wiki as lw
-
-        # Use the repo's valid fixture for a KB root.
-        root = Path(__file__).parents[3] / "tests" / "fixtures" / "valid"
-        kb_root = tmp_path / "kb"
-        shutil.copytree(root, kb_root)
-        kb, _report = lw.load_knowledge_base(kb_root)
-
-        from lumio_wiki.ingest import IngestStore
-
-        ingest_dir = tmp_path / "ingest"
-        store = IngestStore(ingest_dir)
-
-        proposal = lw.create_proposal_without_provider(
-            _MINIMAL_PDF,
-            "application/pdf",
-            "report.pdf",
-            kb,
-            store=store,
+        markdown, provenance = prepare_proposal_content(
+            _MINIMAL_PDF, "application/pdf", "report.pdf"
         )
-
-        assert proposal.provenance.converted_by == "liteparse"
-        assert proposal.status == "staged"
-        assert len(proposal.proposed_pages) >= 1
-        assert "Hello Lumio World" in proposal.proposed_pages[0].markdown
+        assert provenance.converted_by == "liteparse"
+        assert "Hello Lumio World" in markdown
 
     def test_docx_flows_through_same_pipeline_as_markdown(self, tmp_path: Path):
-        import shutil
+        from lumio_wiki.ingest import prepare_proposal_content
 
-        import lumio_wiki as lw
-
-        root = Path(__file__).parents[3] / "tests" / "fixtures" / "valid"
-        kb_root = tmp_path / "kb"
-        shutil.copytree(root, kb_root)
-        kb, _report = lw.load_knowledge_base(kb_root)
-
-        proposal = lw.create_proposal_without_provider(
-            _make_docx("Markdown content from DOCX"),
-            None,
-            "doc.docx",
-            kb,
+        markdown, provenance = prepare_proposal_content(
+            _make_docx("Markdown content from DOCX"), None, "doc.docx"
         )
-
-        assert proposal.provenance.converted_by == "anydoc"
-        assert len(proposal.proposed_pages) >= 1
+        assert provenance.converted_by == "anydoc"
+        assert "Markdown content from DOCX" in markdown
 
 
 # ---------------------------------------------------------------------------

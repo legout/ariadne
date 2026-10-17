@@ -22,8 +22,8 @@ Contract highlights (issue #179 rules):
 - Declarative knowledge only. A page that looks like a raw conversational
   transcript is refused with an actionable message; capture targets
   decisions, verified findings, commands/results, and citations.
-- Never auto-publish. Capture stages a proposal; review and publish stay
-  explicit (``proposal inspect`` / ``validate`` / ``publish``).
+- Never auto-publish. Capture edits the selected Git authoring worktree;
+  review, commit, and publication stay explicit (spec 0008 §7).
 - Vendor-neutral core. The manifest contract is client-agnostic; thin
   opt-in adapters (Pi, Codex, Claude Code, Hermes) export a transcript plus
   a manifest through the same seam, and unsupported clients write a manual
@@ -41,14 +41,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import msgspec  # type: ignore[import-not-found]
 
 if TYPE_CHECKING:
-    from lumio_wiki.ingest import IngestProposal
+    from lumio_wiki.git_authoring import WorktreeIngestResult
 
 # Boundaries keeping the capture manifest small and reviewable.
 MAX_MANIFEST_BYTES = 64 * 1024
@@ -200,10 +201,14 @@ class CapturePreview(msgspec.Struct, frozen=True):
 
 
 class CaptureOutcome(msgspec.Struct, frozen=True):
-    """Preview-mode result; ``proposal`` is set only on a confirmed capture."""
+    """Preview-mode result; ``worktree`` is set on a confirmed capture.
+
+    The confirmed capture is an ordinary-file Git worktree edit
+    (spec 0008 §7); nothing is staged and no proposal exists.
+    """
 
     preview: CapturePreview
-    proposal: IngestProposal | None = None
+    worktree: WorktreeIngestResult | None = None
 
 
 def load_capture_manifest(path: str | Path) -> tuple[CaptureManifest, bytes]:
@@ -331,12 +336,17 @@ def _resolve_transcript_bytes(
     manifest_path: Path,
     manifest_bytes: bytes,
     transcript_path: Path | None,
-) -> tuple[bytes, str | None, str, str | None, list[str]]:
+) -> tuple[bytes, str | None, str, str | None, Path | None, list[str]]:
     """Resolve the original capture source bytes.
 
-    Returns ``(raw_bytes, digest, filename, content_type, warnings)``. In
-    order: an explicit ``--transcript`` path; the manifest's transcript path;
-    a digest-only reference (the export is not local — the manifest itself is
+    Returns ``(raw_bytes, digest, filename, content_type,
+    transcript_source_path, warnings)``. ``transcript_source_path`` is the
+    actually resolved original transcript file — the explicit path, or the
+    manifest-named path — so the native route's tracked-input safety guards
+    the ORIGINAL, not merely the manifest that names it (F6); it is ``None``
+    when the manifest itself is the private capture record. In order: an
+    explicit ``--transcript`` path; the manifest's transcript path; a
+    digest-only reference (the export is not local — the manifest itself is
     the private capture record, and the limitation is reported, not
     fabricated). A named transcript that cannot be read is an error.
     """
@@ -355,7 +365,10 @@ def _resolve_transcript_bytes(
             raw = explicit.read_bytes()
         except OSError as exc:
             raise CaptureError(f"capture transcript not readable: {explicit} ({exc})") from exc
-        return _checked_transcript(raw, explicit.name, named)
+        checked, digest, filename, content_type, checked_warnings = _checked_transcript(
+            raw, explicit.name, named
+        )
+        return checked, digest, filename, content_type, explicit, checked_warnings
 
     if named is not None and not _DIGEST_REFERENCE.match(named):
         path = Path(named) if Path(named).is_absolute() else manifest_path.parent / named
@@ -369,7 +382,10 @@ def _resolve_transcript_bytes(
             raw = path.read_bytes()
         except OSError as exc:
             raise CaptureError(f"capture transcript not readable: {path} ({exc})") from exc
-        return _checked_transcript(raw, path.name, None)
+        checked, digest, filename, content_type, checked_warnings = _checked_transcript(
+            raw, path.name, None
+        )
+        return checked, digest, filename, content_type, path, checked_warnings
 
     if named is not None:
         # Digest-only reference: the export is not locally available. Register
@@ -383,7 +399,7 @@ def _resolve_transcript_bytes(
         warnings.append(
             "no transcript bound; the manifest is registered as the private capture record"
         )
-    return manifest_bytes, None, manifest_path.name, "application/yaml", warnings
+    return manifest_bytes, None, manifest_path.name, "application/yaml", None, warnings
 
 
 def _checked_transcript(
@@ -411,19 +427,38 @@ def _checked_transcript(
     return redacted_bytes, digest, filename, content_type, warnings
 
 
-def _write_capture_record(
-    store, source_id: str, manifest: CaptureManifest, transcript_digest: str | None
-) -> None:
-    """Persist the manifest as private ingest provenance (never in the KB)."""
-    captures = Path(store.root) / "captures"
-    captures.mkdir(parents=True, exist_ok=True)
-    record = {
-        "source_id": source_id,
-        "captured_at": datetime.now(UTC).isoformat(),
-        "manifest": msgspec.to_builtins(manifest),
-        "transcript_digest": transcript_digest,
-    }
-    (captures / f"{source_id}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+def write_versioned_capture_record(
+    root: str | Path,
+    source_id: str,
+    content_hash: str,
+    manifest: CaptureManifest,
+    transcript_digest: str | None,
+) -> Path:
+    """Persist one exact-version-bound immutable private Capture Manifest (F5).
+
+    The native Git route's capture record: bound to the exact registered
+    Source Version (``content_hash``) AND content-addressed by the manifest
+    itself, so repeated captures with changed bytes or changed metadata
+    under one Source ID accumulate distinct immutable records instead of
+    overwriting each other — including when raw artifact retention is
+    disabled. An identical retry converges to the existing record (no
+    volatile timestamp participates in the record identity). The legacy
+    flat record above stays untouched for the non-adopted route (G4 owns
+    its disposition).
+    """
+    from lumio_wiki.private_provenance import write_observation_record
+
+    return write_observation_record(
+        root,
+        "captures",
+        source_id,
+        content_hash,
+        {
+            "kind": "capture",
+            "manifest": msgspec.to_builtins(manifest),
+            "transcript_digest": transcript_digest,
+        },
+    )
 
 
 def _redact_manifest(
@@ -468,8 +503,6 @@ def _merged_counts(target: dict[str, int], extra: dict[str, int]) -> dict[str, i
 
 
 def capture_session(
-    pipeline,
-    store,
     *,
     compiled_page_markdown: str,
     manifest: CaptureManifest,
@@ -478,16 +511,17 @@ def capture_session(
     source_id: str,
     transcript_path: str | Path | None = None,
     confirmed: bool = False,
+    ingest: Callable[..., WorktreeIngestResult] | None = None,
 ) -> CaptureOutcome:
-    """Preview (and on confirmation stage) ONE capture proposal (issue #179).
+    """Preview (and on confirmation apply) ONE session capture (issue #179).
 
-    With ``confirmed=False`` nothing is registered and nothing is staged:
+    With ``confirmed=False`` nothing is registered and nothing is written:
     the returned outcome carries only the preview (included sections and
     redaction counts) for explicit confirmation. With ``confirmed=True`` the
-    REDACTED capture source bytes (transcript, or the manifest itself when
-    no transcript is bound) are registered under ``source_id`` and the
-    redacted Compiled Page is staged as a single reviewable proposal through
-    the managed host-Distiller contract. Never publishes.
+    caller's ``ingest`` callback writes the redacted page and the exact
+    source binding into the selected Git authoring worktree and records the
+    private capture record outside it (spec 0008 §7; the legacy staged
+    proposal route is retired — G4). Never publishes.
     """
     from lumio_wiki.ingest import _authored_page_declares_source
 
@@ -519,9 +553,17 @@ def capture_session(
     #    itself as the private record). Reports limitations; never fabricates
     #    a transcript. The returned bytes are REDACTED transcript bytes; the
     #    registry hash and provenance cover exactly what is registered.
-    capture_source_bytes, transcript_digest, filename, content_type, transcript_warnings = (
-        _resolve_transcript_bytes(manifest, manifest_path, manifest_bytes, transcript_path)
-    )
+    #    ``transcript_source_path`` carries the actually resolved original
+    #    transcript so the native route's tracked-input guard checks the
+    #    ORIGINAL, not merely the manifest that names it (F6).
+    (
+        capture_source_bytes,
+        transcript_digest,
+        filename,
+        content_type,
+        transcript_source_path,
+        transcript_warnings,
+    ) = _resolve_transcript_bytes(manifest, manifest_path, manifest_bytes, transcript_path)
 
     # 4. The authored page must declare the source identity — checked BEFORE
     #    registration so an inconsistent capture leaves no registry state.
@@ -543,18 +585,25 @@ def capture_session(
         warnings=transcript_warnings,
     )
     if not confirmed:
-        return CaptureOutcome(preview=preview, proposal=None)
+        return CaptureOutcome(preview=preview)
 
-    # 6. Confirmed: register + stage through the ONE managed contract.
-    proposal = pipeline.managed_ingest(
+    # Confirmed native Git route (spec 0008 §7): the caller's ingest writes
+    # the redacted page and the exact source binding into the selected
+    # authoring worktree (and records the private capture record outside
+    # Git). No proposal is staged; the legacy staged route is retired (G4).
+    if ingest is None:
+        raise CaptureError("capture confirmation requires the Git authoring worktree ingest route")
+    worktree_result = ingest(
         capture_source_bytes,
         content_type,
         filename,
         source_id,
         redacted_markdown,
+        safe_manifest,
+        transcript_digest,
+        transcript_source_path,
     )
-    _write_capture_record(store, source_id, safe_manifest, transcript_digest)
-    return CaptureOutcome(preview=preview, proposal=proposal)
+    return CaptureOutcome(preview=preview, worktree=worktree_result)
 
 
 def format_capture_preview(preview: CapturePreview) -> str:

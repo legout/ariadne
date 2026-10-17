@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import importlib
 import importlib.metadata
 import importlib.util
+import json
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import zipfile
@@ -17,6 +22,10 @@ FORBIDDEN = {
     "liteparse",
     "markitdown",
     "anydoc",
+    "ariadne",
+    "duckdb",
+    "sqlglot",
+    "lumio",
 }
 
 
@@ -39,20 +48,77 @@ def _python_roots(wheel: Path) -> set[str]:
     return roots
 
 
+def assert_installed_wheel(wheel: Path) -> None:
+    """Bind a candidate archive to source members and the actual installation."""
+    wheel = wheel.resolve()
+    name = wheel.name.split("-", 1)[0].replace("_", "-")
+    root = name.replace("-", "_")
+    distribution = importlib.metadata.distribution(name)
+    installed_root = Path(distribution.locate_file(root)).resolve()
+    assert installed_root.is_relative_to(Path(sys.prefix).resolve()), installed_root
+    module = importlib.import_module(root)
+    assert Path(module.__file__).resolve() == installed_root / "__init__.py"
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    direct = json.loads(distribution.read_text("direct_url.json") or "{}")
+    assert direct.get("url") == wheel.as_uri() and "dir_info" not in direct, direct
+    archive_info = direct.get("archive_info", {})
+    hashes = archive_info.get("hashes", {})
+    if "sha256" in hashes:
+        assert hashes["sha256"] == digest, direct
+    legacy_hash = archive_info.get("hash", "")
+    if legacy_hash.startswith("sha256="):
+        assert legacy_hash == f"sha256={digest}", direct
+    source = Path(__file__).resolve().parents[1] / "packages" / name / "src"
+    members = {}
+    with zipfile.ZipFile(wheel) as archive:
+        for member in archive.namelist():
+            if member.startswith(f"{root}/") and not member.endswith("/"):
+                raw = archive.read(member)
+                assert (source / member).read_bytes() == raw, f"stale source member: {member}"
+                assert Path(distribution.locate_file(member)).read_bytes() == raw, member
+                members[member] = hashlib.sha256(raw).hexdigest()
+        metadata = next(p for p in archive.namelist() if p.endswith(".dist-info/METADATA"))
+        assert distribution.read_text("METADATA").encode() == archive.read(metadata)
+    assert members
+    print(
+        "wheel_identity:",
+        json.dumps(
+            {
+                "wheel": str(wheel),
+                "sha256": digest,
+                "distribution": name,
+                "installed_root": str(installed_root),
+                "members": members,
+            },
+            sort_keys=True,
+        ),
+    )
+
+
+def _cli(*args: str, cwd: Path, env: dict[str, str] | None = None) -> str:
+    result = subprocess.run(
+        [sys.executable, "-I", "-m", "lumio_wiki.cli", *args],
+        cwd=cwd,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout
+
+
 def main() -> int:
-    """Verify the installed lumio-wiki wheel in isolation (ADR-0025: the app
-    wheel is private and out of scope; the optional LANCEDB_WHEEL argument
-    carries its own bounded-range check)."""
+    """Verify the candidate base wheel, native admission and Git-free reads."""
     if len(sys.argv) not in (3, 4):
         raise SystemExit(
-            "usage: verify_lumio_wiki_wheel.py WIKI_WHEEL VALID_FIXTURE "
-            "[CATEGORIZED_FIXTURE]"
+            "usage: verify_lumio_wiki_wheel.py WIKI_WHEEL VALID_FIXTURE [CATEGORIZED_FIXTURE]"
         )
     wiki_wheel = Path(sys.argv[1])
     valid_fixture = Path(sys.argv[2])
     categorized_fixture = Path(sys.argv[3]) if len(sys.argv) == 4 else valid_fixture
 
     assert _python_roots(wiki_wheel) == {"lumio_wiki"}
+    assert_installed_wheel(wiki_wheel)
 
     requirements = importlib.metadata.requires("lumio-wiki") or []
     # Core (unconditional) runtime deps only — exclude optional extras gated
@@ -122,6 +188,92 @@ def main() -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         assert lumio_wiki.import_okf_profile1(bundle).proposed_pages
+
+        authoring = Path(temporary) / "authoring"
+        shutil.copytree(categorized_fixture, authoring, ignore=shutil.ignore_patterns(".lumio"))
+        (authoring / ".lumio-authoring.yaml").write_text(
+            "version: 1\nnamespace: installed-wheel-proof\nsources: {}\nbindings: {}\n"
+        )
+        subprocess.run(["git", "init", "-q", str(authoring)], check=True)
+        for key, value in (("user.name", "Wheel verifier"), ("user.email", "wheel@example.com")):
+            subprocess.run(["git", "-C", str(authoring), "config", key, value], check=True)
+        subprocess.run(["git", "-C", str(authoring), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(authoring), "commit", "-qm", "Adopt KB"], check=True)
+        original = Path(temporary) / "original.txt"
+        original.write_bytes(b"Private wheel source A.\n")
+        authored = Path(temporary) / "compiled.md"
+        authored.write_text(
+            "---\nid: entity:wheel-proof\ntitle: Wheel Proof\nentity_types: [concept]\n"
+            "tags: [wheel]\nsummary: Portable compiled knowledge.\n"
+            "category: references\ntype: source-digest\n"
+            "durability_rationale: Stable installation reference.\n"
+            "lifecycle: approved\nvisibility: public\n"
+            "sources:\n  - id: wheel-source\n    title: Wheel source\n---\n\n"
+            "# Wheel Proof\n\nWheel sources remain private; compiled knowledge is portable.\n"
+        )
+        registry = Path(temporary) / "private-registry"
+        _cli(
+            "ingest",
+            str(authoring),
+            str(original),
+            "--compiled-page",
+            str(authored),
+            "--source-id",
+            "wheel-source",
+            "--source-registry",
+            str(registry),
+            cwd=authoring,
+        )
+        _cli("validate", str(authoring), cwd=authoring)
+        assert not (authoring / ".lumio/ingest/proposals").exists()
+        subprocess.run(
+            ["git", "-C", str(authoring), "add", "references", ".lumio-authoring.yaml"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(authoring), "commit", "-qm", "Authored knowledge"], check=True
+        )
+        revision = subprocess.check_output(
+            ["git", "-C", str(authoring), "rev-parse", "HEAD"],
+            text=True,
+        ).strip()
+        destination = Path(temporary) / "published"
+        args = (
+            "publish",
+            str(authoring),
+            "--revision",
+            revision,
+            "--to",
+            str(destination),
+            "--expected-current",
+            "none",
+            "--source-registry",
+            str(registry),
+            "--json",
+        )
+        review = json.loads(_cli(*args, cwd=authoring))
+        assert review["revision"] == revision and not review["blocking_diagnostics"]
+        assert not destination.exists(), "preview must not prepare or activate a version"
+        # This verifier authorizes only its own disposable fixture publication.
+        receipt = json.loads(_cli(*args, "--confirm", review["review_digest"], cwd=authoring))
+        assert receipt["activated"] and receipt["revision"] == revision
+        snapshot = lumio_wiki.open_knowledge_base(lumio_wiki.FilesystemLocation(destination))
+        page = snapshot.knowledge_base.lookup_by_title("Wheel Proof")[0]
+        assert "Wheel sources remain private; compiled knowledge is portable." in page.body
+        assert not any(p.name == ".lumio-authoring.yaml" for p in destination.rglob("*"))
+        assert not any(p.name == "original.txt" for p in destination.rglob("*"))
+
+        no_git = Path(temporary) / "empty-path"
+        no_git.mkdir()
+        read_env = {**os.environ, "PATH": str(no_git)}
+        assert shutil.which("git", path=read_env["PATH"]) is None
+        _cli("validate", str(authoring), cwd=no_git, env=read_env)
+        query = _cli("search", str(destination), "compiled knowledge", cwd=no_git, env=read_env)
+        assert "Wheel Proof" in query and "references/wheel_proof.md" in query
+        raw = _cli("page", str(destination), "Wheel Proof", "--raw", cwd=no_git, env=read_env)
+        assert "Wheel sources remain private; compiled knowledge is portable." in raw
+        print(
+            "installed Git author/admit/query and Git-free validation/read/query passed:", revision
+        )
 
     imported_forbidden = {
         name.split(".", 1)[0] for name in sys.modules if name.split(".", 1)[0] in FORBIDDEN

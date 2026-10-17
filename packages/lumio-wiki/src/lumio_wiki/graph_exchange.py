@@ -48,23 +48,18 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import uuid
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
-from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import msgspec
 
 from lumio_wiki.ingest import (
-    IngestProposal,
     ProposedPage,
-    SourceProvenance,
     _compute_diff,
     _existing_page_markdown,
     _validate_page_routing,
-    compute_blast_radius,
     import_page_category,
 )
 from lumio_wiki.knowledge_base import (
@@ -429,8 +424,25 @@ def _extend_control_file_ontology(
     )
 
 
-def import_graph(graph_path: str | Path, kb) -> IngestProposal:
-    """Stage stub Compiled Pages from a graph.json as ONE reviewable proposal.
+class GraphImportCandidate(msgspec.Struct, frozen=True):
+    """One assembled graph-import mutation shared by both authoring routes.
+
+    G3 (spec 0008 §7): the deterministic stub-page/Control-File computation
+    is route-independent; native Git authoring applies it as ordinary
+    worktree file edits. Never a persisted proposal wrapper itself.
+    """
+
+    proposed_pages: list
+    control_file: Any
+    diagnostics: list
+    validation_report: Any
+    diff: str
+    source_hash: str
+    source_path: str
+
+
+def assemble_graph_import(graph_path: str | Path, kb) -> GraphImportCandidate:
+    """Assemble stub Compiled Pages from a graph.json (#PRD-0005).
 
     Accepts Lumio exports and foreign wiki-export lineage: nodes resolve by
     ``id`` (Entity ID or path), titles by ``label``/``title``, categories by
@@ -631,22 +643,12 @@ def import_graph(graph_path: str | Path, kb) -> IngestProposal:
         proposed_pages, kb, extra_categories=extension_categories
     )
     validation_report = ValidationReport(issues=list(page_validation.issues) + routing_issues)
-    return IngestProposal(
-        id=uuid.uuid4().hex,
-        status="staged",
-        created_at=datetime.now(UTC).isoformat(),
-        provenance=SourceProvenance(
-            original_filename=str(Path(graph_path)),
-            content_type="application/json",
-            converted_by="graph-exchange",
-            source_hash=hashlib.sha256(raw).hexdigest(),
-        ),
+    return GraphImportCandidate(
         proposed_pages=proposed_pages,
-        affected_pages=[page.title for page in proposed_pages],
-        diff=diff,
-        validation_report=validation_report,
-        blocked=not validation_report.is_valid,
-        blast_radius=compute_blast_radius(proposed_pages, kb),
-        okf_diagnostics=diagnostics,
         control_file=extension_control_file,
+        diagnostics=diagnostics,
+        validation_report=validation_report,
+        diff=diff,
+        source_hash=hashlib.sha256(raw).hexdigest(),
+        source_path=str(Path(graph_path)),
     )

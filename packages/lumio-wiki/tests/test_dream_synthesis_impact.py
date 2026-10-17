@@ -58,12 +58,6 @@ def _claims(
     )
 
 
-def _store(kb_root: Path) -> lw.IngestStore:
-    ingest_dir = kb_root / ".ingest"
-    ingest_dir.mkdir(parents=True, exist_ok=True)
-    return lw.IngestStore(ingest_dir)
-
-
 @pytest.fixture
 def kb_root(tmp_path: Path) -> Path:
     """Copy the categorized fixture into a writable Knowledge Base root."""

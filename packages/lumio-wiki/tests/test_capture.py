@@ -38,8 +38,6 @@ from lumio_wiki.capture import (
     load_capture_manifest,
     redact_capture_text,
 )
-from lumio_wiki.ingest import IngestStore
-from lumio_wiki.proposal_pipeline import ProposalPipeline
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -65,17 +63,78 @@ SECRET_FIXTURES = [
 ]
 
 
+CAPTURE_CONTROL_V2 = """\
+version: 2
+mode: "categorized"
+categories:
+  - name: concepts
+ontology:
+  entity_types:
+    session-note: {}
+  predicates: {}
+  redirects: {}
+"""
+
+
 def _kb(tmp_path: Path):
-    root = tmp_path / "kb"
-    shutil.copytree(FIXTURES / "valid", root)
+    """A manifest-adopted Git authoring KB (native managed ingest route)."""
+    from lumio_wiki.source_references import SourceReferenceManifest
+
+    repo = _init_repo(tmp_path)
+    root = _write_kb(
+        repo,
+        manifest=SourceReferenceManifest(
+            version=1, namespace="urn:uuid:0f9c2b7a-capture-4b1e-9c2d-capturekb000001"
+        ),
+        control=CAPTURE_CONTROL_V2,
+        # ``pages={}`` is falsy in ``_write_kb`` (defaults would apply); one
+        # seed page keeps the dict truthy without colliding with test titles.
+        pages={"concepts/seed-note.md": _page("seed", title="Seed Note")},
+    )
     kb, report = lw.load_knowledge_base(root)
     assert report.is_valid, report
     return kb
 
 
-def _pipeline(kb, tmp_path: Path) -> tuple[ProposalPipeline, IngestStore]:
-    store = IngestStore(tmp_path / "ingest")
-    return ProposalPipeline(kb, store=store), store
+def _capture_registry(tmp_path: Path):
+    from lumio_wiki.source_registry import SourceRegistry
+
+    return SourceRegistry(tmp_path / "registry")
+
+
+def _worktree_ingest(kb_root: Path, registry, manifest_path):
+    """The native confirmed-capture route (mirrors the CLI's callback)."""
+    from lumio_wiki.capture import write_versioned_capture_record
+    from lumio_wiki.git_authoring import ingest_into_worktree
+
+    def _ingest(
+        raw_bytes,
+        content_type,
+        filename,
+        source_id,
+        redacted_markdown,
+        safe_manifest,
+        transcript_digest,
+        transcript_source_path=None,
+    ):
+        def _persist(source_id, content_hash):
+            write_versioned_capture_record(
+                registry.root, source_id, content_hash, safe_manifest, transcript_digest
+            )
+
+        return ingest_into_worktree(
+            kb_root,
+            raw_bytes,
+            content_type,
+            filename,
+            source_id,
+            redacted_markdown,
+            source_registry=registry,
+            raw_source_path=transcript_source_path or manifest_path,
+            persist_observation=_persist,
+        )
+
+    return _ingest
 
 
 def _page(source_id: str, *, title: str = "Session Findings", body: str = "") -> str:
@@ -87,8 +146,12 @@ def _page(source_id: str, *, title: str = "Session Findings", body: str = "") ->
     )
     return (
         "---\n"
+        f'id: "entity:{source_id}"\n'
         f'title: "{title}"\n'
-        "aliases: []\n"
+        "entity_types:\n  - session-note\n"
+        "category: concepts\n"
+        'type: "session note"\n'
+        'durability_rationale: "The captured session documents verified findings."\n'
         'tags:\n  - "session-notes"\n'
         'summary: "Verified findings from a captured coding-agent session."\n'
         'lifecycle: "draft"\n'
@@ -193,7 +256,6 @@ def test_plain_prose_is_untouched():
 
 def test_session_page_with_chat_turns_is_refused(tmp_path: Path):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
     manifest, raw = load_capture_manifest(CAPTURE_FIXTURES / "pi.yaml")
     manifest_path, manifest_bytes = CAPTURE_FIXTURES / "pi.yaml", raw
     page = _page(
@@ -208,8 +270,6 @@ def test_session_page_with_chat_turns_is_refused(tmp_path: Path):
     )
     with pytest.raises(CaptureError, match="raw conversational transcript"):
         capture_session(
-            pipeline,
-            store,
             compiled_page_markdown=page,
             manifest=manifest,
             manifest_bytes=manifest_bytes,
@@ -217,6 +277,7 @@ def test_session_page_with_chat_turns_is_refused(tmp_path: Path):
             source_id="session-pi",
             transcript_path=CAPTURE_FIXTURES / "pi-session.jsonl",
             confirmed=True,
+            ingest=_worktree_ingest(kb.root, _capture_registry(tmp_path), manifest_path),
         )
 
 
@@ -235,14 +296,11 @@ def test_two_turn_page_is_refused_as_raw_transcript():
 # ---------------------------------------------------------------------------
 
 
-def test_unconfirmed_capture_registers_and_stages_nothing(tmp_path: Path):
+def test_unconfirmed_capture_registers_and_writes_nothing(tmp_path: Path):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
     manifest, raw = load_capture_manifest(CAPTURE_FIXTURES / "pi.yaml")
 
     outcome = capture_session(
-        pipeline,
-        store,
         compiled_page_markdown=_page("session-preview"),
         manifest=manifest,
         manifest_bytes=raw,
@@ -252,27 +310,21 @@ def test_unconfirmed_capture_registers_and_stages_nothing(tmp_path: Path):
         confirmed=False,
     )
 
-    assert outcome.proposal is None
+    assert outcome.worktree is None
     assert outcome.preview.client == "pi"
     assert outcome.preview.source_id == "session-preview"
     assert "Decisions" in outcome.preview.sections and "Commands" in outcome.preview.sections
-    assert not (Path(store.root) / "captures").exists()
-    assert store.source_registry.list() == []
-    assert pipeline.list() == []
+    assert not (tmp_path / "registry").exists()
     # The KB itself is untouched.
     assert not any("Session Findings" in p.title for p in kb.pages)
 
 
 def test_preview_text_lists_sections_and_redaction_counts(tmp_path: Path):
-    kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
     manifest, raw = load_capture_manifest(CAPTURE_FIXTURES / "pi.yaml")
     page = _page("session-preview2").replace(
         "passed with 12 focused tests", "used key sk-ant-0123456789abcdef0123"
     )
     outcome = capture_session(
-        pipeline,
-        store,
         compiled_page_markdown=page,
         manifest=manifest,
         manifest_bytes=raw,
@@ -291,14 +343,12 @@ def test_preview_text_lists_sections_and_redaction_counts(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_confirmed_capture_stages_single_reviewable_proposal(tmp_path: Path):
+def test_confirmed_capture_edits_the_worktree_once(tmp_path: Path):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
+    registry = _capture_registry(tmp_path)
     manifest, raw = load_capture_manifest(CAPTURE_FIXTURES / "pi.yaml")
 
     outcome = capture_session(
-        pipeline,
-        store,
         compiled_page_markdown=_page("session-2026-pi"),
         manifest=manifest,
         manifest_bytes=raw,
@@ -306,33 +356,29 @@ def test_confirmed_capture_stages_single_reviewable_proposal(tmp_path: Path):
         source_id="session-2026-pi",
         transcript_path=CAPTURE_FIXTURES / "pi-session.jsonl",
         confirmed=True,
+        ingest=_worktree_ingest(kb.root, registry, CAPTURE_FIXTURES / "pi.yaml"),
     )
 
-    proposal = outcome.proposal
-    assert proposal is not None
-    assert proposal.status == "staged"
-    assert [p.id for p in pipeline.list()] == [proposal.id]
-    assert proposal.affected_pages == ["Session Findings"]
-    assert proposal.provenance.source_id == "session-2026-pi"
-    # Declarative page content, not transcript bytes.
-    assert "Verified findings" in proposal.proposed_pages[0].markdown
-    assert "Retrieval found no Evidence" not in proposal.proposed_pages[0].markdown
-    # Private manifest record under the ingest store only.
-    record = json.loads((Path(store.root) / "captures" / "session-2026-pi.json").read_text())
-    assert record["manifest"]["client"] == "pi"
-    assert record["transcript_digest"] is not None
-    # Not published: the KB still has no captured page.
-    assert not any(p.title == "Session Findings" for p in kb.pages)
+    result = outcome.worktree
+    assert result is not None
+    assert result.source_id == "session-2026-pi"
+    assert len(result.page_paths) == 1
+    # Declarative page content, not transcript bytes, landed in the worktree.
+    written = (Path(kb.root) / result.page_paths[0]).read_text(encoding="utf-8")
+    assert "Verified findings" in written
+    assert "Retrieval found no Evidence" not in written
+    # The private source registration and versioned capture record live in
+    # the private registry root, never inside the Knowledge Base.
+    assert registry.get("session-2026-pi").status == "active"
+    assert _all_private_capture_contents(registry.root), "no capture record written"
 
 
 def test_confirmed_capture_binds_transcript_as_source_bytes(tmp_path: Path):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
+    registry = _capture_registry(tmp_path)
     manifest, raw = load_capture_manifest(CAPTURE_FIXTURES / "codex.yaml")
 
     capture_session(
-        pipeline,
-        store,
         compiled_page_markdown=_page("session-2026-codex"),
         manifest=manifest,
         manifest_bytes=raw,
@@ -340,9 +386,10 @@ def test_confirmed_capture_binds_transcript_as_source_bytes(tmp_path: Path):
         source_id="session-2026-codex",
         transcript_path=CAPTURE_FIXTURES / "codex-session.jsonl",
         confirmed=True,
+        ingest=_worktree_ingest(kb.root, registry, CAPTURE_FIXTURES / "codex.yaml"),
     )
 
-    sources = store.source_registry.list()
+    sources = registry.list()
     assert [s.source_id for s in sources] == ["session-2026-codex"]
     assert sources[0].status == "active"
     # The registered bytes are the REDACTED transcript bytes.
@@ -361,9 +408,9 @@ def test_confirmed_capture_binds_transcript_as_source_bytes(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_secrets_never_reach_proposal_or_capture_record(tmp_path: Path):
+def test_secrets_never_reach_written_page_or_capture_record(tmp_path: Path):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
+    registry = _capture_registry(tmp_path)
     manifest, raw = load_capture_manifest(CAPTURE_FIXTURES / "pi.yaml")
     page = _page(
         "session-secrets",
@@ -376,8 +423,6 @@ def test_secrets_never_reach_proposal_or_capture_record(tmp_path: Path):
     )
 
     outcome = capture_session(
-        pipeline,
-        store,
         compiled_page_markdown=page,
         manifest=manifest,
         manifest_bytes=raw,
@@ -385,22 +430,24 @@ def test_secrets_never_reach_proposal_or_capture_record(tmp_path: Path):
         source_id="session-secrets",
         transcript_path=CAPTURE_FIXTURES / "pi-session.jsonl",
         confirmed=True,
+        ingest=_worktree_ingest(kb.root, registry, CAPTURE_FIXTURES / "pi.yaml"),
     )
 
-    proposal = outcome.proposal
-    assert proposal is not None
-    markdown = proposal.proposed_pages[0].markdown
+    result = outcome.worktree
+    assert result is not None
+    markdown = (Path(kb.root) / result.page_paths[0]).read_text(encoding="utf-8")
     assert "sk-ant-998877665544332211" not in markdown
     assert "X-Amz-Signature" not in markdown
     assert "[REDACTED]" in markdown
-    record_text = (Path(store.root) / "captures" / "session-secrets.json").read_text()
-    assert "sk-ant-998877665544332211" not in record_text
-    assert "deadbeef" not in record_text
+    for record_bytes in _all_private_capture_contents(registry.root):
+        record_text = record_bytes.decode("utf-8")
+        assert "sk-ant-998877665544332211" not in record_text
+        assert "deadbeef" not in record_text
 
 
 def test_secret_bearing_transcript_is_registered_redacted(tmp_path: Path):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
+    registry = _capture_registry(tmp_path)
     transcript = tmp_path / "secret-session.jsonl"
     transcript.write_text(
         '{"role":"assistant","text":"deploy token: ghp_abc123abc123abc123abc123 done"}\n'
@@ -409,8 +456,6 @@ def test_secret_bearing_transcript_is_registered_redacted(tmp_path: Path):
     manifest_path, manifest_bytes = _manifest_bytes(tmp_path, manifest)
 
     capture_session(
-        pipeline,
-        store,
         compiled_page_markdown=_page("session-secret-transcript"),
         manifest=manifest,
         manifest_bytes=manifest_bytes,
@@ -418,6 +463,7 @@ def test_secret_bearing_transcript_is_registered_redacted(tmp_path: Path):
         source_id="session-secret-transcript",
         transcript_path=transcript,
         confirmed=True,
+        ingest=_worktree_ingest(kb.root, registry, manifest_path),
     )
 
     # The secret never entered the registered source identity either: the
@@ -425,17 +471,17 @@ def test_secret_bearing_transcript_is_registered_redacted(tmp_path: Path):
     # are hash-only in the registry, ADR-0014 — nothing is written out).
     import hashlib
 
-    source = store.source_registry.get("session-secret-transcript")
+    source = registry.get("session-secret-transcript")
     redacted_bytes = redact_capture_text(transcript.read_text())[0].encode()
     assert source.versions[-1].content_hash == hashlib.sha256(redacted_bytes).hexdigest()
-    assert "ghp_" not in json.dumps(json.loads(json.dumps(_registry_state(store))), default=str)
+    assert "ghp_" not in json.dumps(_registry_state(registry), default=str)
 
 
-def _registry_state(store) -> dict:
+def _registry_state(registry) -> dict:
     """The registry's persisted private state as plain data (for asserts)."""
     import msgspec  # type: ignore[import-not-found]
 
-    return msgspec.to_builtins(store.source_registry._read())
+    return msgspec.to_builtins(registry._read())
 
 
 # ---------------------------------------------------------------------------
@@ -445,23 +491,24 @@ def _registry_state(store) -> dict:
 
 def test_manual_manifest_without_transcript_registers_manifest_record(tmp_path: Path):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
+    registry = _capture_registry(tmp_path)
     manifest, raw = load_capture_manifest(CAPTURE_FIXTURES / "manual.yaml")
 
     outcome = capture_session(
-        pipeline,
-        store,
         compiled_page_markdown=_page("session-manual-only"),
         manifest=manifest,
         manifest_bytes=raw,
         manifest_path=CAPTURE_FIXTURES / "manual.yaml",
         source_id="session-manual-only",
         confirmed=True,
+        ingest=_worktree_ingest(kb.root, registry, CAPTURE_FIXTURES / "manual.yaml"),
     )
 
-    assert outcome.proposal is not None
-    assert outcome.proposal.provenance.original_filename == "manual.yaml"
-    assert outcome.proposal.provenance.content_type == "application/yaml"
+    # The manifest bytes themselves became the private registered source and
+    # the versioned capture record exists under the registry root.
+    assert outcome.worktree is not None
+    assert outcome.worktree.source_id == "session-manual-only"
+    assert _all_private_capture_contents(registry.root)
 
 
 # ---------------------------------------------------------------------------
@@ -471,48 +518,44 @@ def test_manual_manifest_without_transcript_registers_manifest_record(tmp_path: 
 
 def test_missing_named_transcript_is_reported_not_fabricated(tmp_path: Path):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
     manifest = CaptureManifest(client="codex", transcript="vanished.jsonl")
     manifest_path, manifest_bytes = _manifest_bytes(tmp_path, manifest)
 
     with pytest.raises(CaptureError, match="transcript not found"):
         capture_session(
-            pipeline,
-            store,
             compiled_page_markdown=_page("session-gone"),
             manifest=manifest,
             manifest_bytes=manifest_bytes,
             manifest_path=manifest_path,
             source_id="session-gone",
             confirmed=True,
+            ingest=_worktree_ingest(kb.root, _capture_registry(tmp_path), manifest_path),
         )
 
 
 def test_digest_only_manifest_reports_limitation_and_registers_manifest(tmp_path: Path):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
+    registry = _capture_registry(tmp_path)
     manifest = CaptureManifest(client="pi", transcript="sha256:" + "0" * 64)
     manifest_path, manifest_bytes = _manifest_bytes(tmp_path, manifest)
 
     outcome = capture_session(
-        pipeline,
-        store,
         compiled_page_markdown=_page("session-digest-only"),
         manifest=manifest,
         manifest_bytes=manifest_bytes,
         manifest_path=manifest_path,
         source_id="session-digest-only",
         confirmed=True,
+        ingest=_worktree_ingest(kb.root, registry, manifest_path),
     )
 
     assert any("digest only" in w for w in outcome.preview.warnings)
-    assert outcome.proposal is not None
-    assert outcome.proposal.provenance.original_filename == manifest_path.name
+    assert outcome.worktree is not None
+    assert _all_private_capture_contents(registry.root)
 
 
 def test_digest_mismatch_refuses_staging(tmp_path: Path):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
     transcript = tmp_path / "t.jsonl"
     transcript.write_text('{"role":"user","text":"hello"}\n')
     manifest = CaptureManifest(client="pi", transcript="sha256:" + "f" * 64)
@@ -520,8 +563,6 @@ def test_digest_mismatch_refuses_staging(tmp_path: Path):
 
     with pytest.raises(CaptureError, match="do not match the digest"):
         capture_session(
-            pipeline,
-            store,
             compiled_page_markdown=_page("session-mismatch"),
             manifest=manifest,
             manifest_bytes=manifest_bytes,
@@ -529,20 +570,18 @@ def test_digest_mismatch_refuses_staging(tmp_path: Path):
             source_id="session-mismatch",
             transcript_path=transcript,
             confirmed=True,
+            ingest=_worktree_ingest(kb.root, _capture_registry(tmp_path), manifest_path),
         )
-    assert pipeline.list() == []
+    assert not (tmp_path / "registry").exists()
 
 
 def test_page_must_declare_source_id_before_any_registration(tmp_path: Path):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
     manifest, raw = load_capture_manifest(CAPTURE_FIXTURES / "pi.yaml")
     page = _page("different-id")
 
     with pytest.raises(CaptureError, match="must declare source_id"):
         capture_session(
-            pipeline,
-            store,
             compiled_page_markdown=page,
             manifest=manifest,
             manifest_bytes=raw,
@@ -550,9 +589,12 @@ def test_page_must_declare_source_id_before_any_registration(tmp_path: Path):
             source_id="session-mismatched",
             transcript_path=CAPTURE_FIXTURES / "pi-session.jsonl",
             confirmed=True,
+            ingest=_worktree_ingest(
+                kb.root, _capture_registry(tmp_path), CAPTURE_FIXTURES / "pi.yaml"
+            ),
         )
-    assert store.source_registry.list() == []
-    assert pipeline.list() == []
+    assert not (tmp_path / "registry").exists()
+    assert not any("Session Findings" in p.title for p in kb.pages)
 
 
 # ---------------------------------------------------------------------------
@@ -561,17 +603,26 @@ def test_page_must_declare_source_id_before_any_registration(tmp_path: Path):
 
 
 def test_ordinary_managed_ingest_still_works_alongside_capture(tmp_path: Path):
+    from lumio_wiki.git_authoring import ingest_into_worktree
+
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
+    registry = _capture_registry(tmp_path)
     source = tmp_path / "plain.md"
     source.write_text("# Plain Source\n\nordinary bytes\n")
     page = _page("plain-source", title="Plain Captured Note")
-    proposal = pipeline.managed_ingest(
-        source.read_bytes(), "text/markdown", "plain.md", "plain-source", page
+    result = ingest_into_worktree(
+        kb.root,
+        source.read_bytes(),
+        "text/markdown",
+        "plain.md",
+        "plain-source",
+        page,
+        source_registry=registry,
     )
-    assert proposal.status == "staged"
+    assert result.source_id == "plain-source"
+    assert len(result.page_paths) == 1
     # Registry holds the ordinary source; no capture record was created.
-    assert not (Path(store.root) / "captures").exists()
+    assert not _all_private_capture_contents(registry.root)
 
 
 # ---------------------------------------------------------------------------
@@ -623,22 +674,20 @@ def test_cli_preview_mode_stages_nothing(tmp_path: Path, capsys):
     assert "Staged proposal" not in out
     kb, report = lw.load_knowledge_base(kb_root)
     assert report.is_valid
-    store = IngestStore(kb_root / ".lumio" / "ingest")
-    assert store.source_registry.list() == []
     assert not any(p.title == "Session Findings" for p in kb.pages)
 
 
-def test_cli_yes_stages_reviewable_proposal(tmp_path: Path):
-    kb_root = tmp_path / "kb"
-    shutil.copytree(FIXTURES / "valid", kb_root)
+def test_cli_yes_edits_the_authoring_worktree(tmp_path: Path):
+    kb = _kb(tmp_path)
     page = tmp_path / "page.md"
     page.write_text(_page("session-cli-yes"))
+    registry = _capture_registry(tmp_path)
 
     code, out = _run_cli(
         tmp_path,
         "capture",
         "session",
-        kb_root,
+        kb.root,
         "--compiled-page",
         page,
         "--manifest",
@@ -647,29 +696,26 @@ def test_cli_yes_stages_reviewable_proposal(tmp_path: Path):
         "session-cli-yes",
         "--transcript",
         CAPTURE_FIXTURES / "pi-session.jsonl",
+        "--source-registry",
+        registry.root,
         "--yes",
     )
 
     assert code == 0
-    assert "Staged proposal" in out
-    assert "affected_pages: Session Findings" in out
-    # Preview prints BEFORE staging (issue #179 AC2 + Spec review): the
-    # sections list is on screen before any "Staged proposal" line, even
-    # when --yes is given up front.
-    assert out.index("sections:") < out.index("Staged proposal")
-    assert out.index("redactions applied:") < out.index("Staged proposal")
-    store = IngestStore(kb_root / ".lumio" / "ingest")
-    assert [s.source_id for s in store.source_registry.list()] == ["session-cli-yes"]
-    # Proposals persist on disk, not in memory (Plan 02 / P3 removed the
-    # in-memory proposal cache; durable state is the only authority).
-    staged_files = list((kb_root / ".lumio" / "ingest" / "proposals").glob("*.json"))
-    assert len(staged_files) == 1
-    assert not list((kb_root / ".lumio" / "ingest" / "proposals").glob("*.tmp"))
+    assert "Captured into the Git authoring worktree" in out
+    assert "source:   session-cli-yes" in out
+    # Preview prints BEFORE the apply (issue #179 AC2 + Spec review): the
+    # sections list is on screen before the worktree outcome, even when
+    # --yes is given up front.
+    assert out.index("sections:") < out.index("Captured into")
+    assert out.index("redactions applied:") < out.index("Captured into")
+    assert [s.source_id for s in registry.list()] == ["session-cli-yes"]
+    assert _all_private_capture_contents(registry.root)
 
 
 def test_cli_manifest_secret_fields_are_redacted_in_output(tmp_path: Path):
-    kb_root = tmp_path / "kb"
-    shutil.copytree(FIXTURES / "valid", kb_root)
+    kb = _kb(tmp_path)
+    registry = _capture_registry(tmp_path)
     page = tmp_path / "page.md"
     page.write_text(_page("session-cli-mf-secret"))
     manifest = tmp_path / "manifest.yaml"
@@ -688,7 +734,7 @@ def test_cli_manifest_secret_fields_are_redacted_in_output(tmp_path: Path):
         tmp_path,
         "capture",
         "session",
-        kb_root,
+        kb.root,
         "--compiled-page",
         page,
         "--manifest",
@@ -697,32 +743,34 @@ def test_cli_manifest_secret_fields_are_redacted_in_output(tmp_path: Path):
         "session-cli-mf-secret",
         "--transcript",
         transcript,
+        "--source-registry",
+        registry.root,
         "--yes",
     )
 
     assert code == 0
     assert "sk-ant-" not in out
     assert "[REDACTED]" in out
-    # The private capture record is redacted too.
-    record = (kb_root / ".lumio" / "ingest" / "captures" / "session-cli-mf-secret.json").read_text()
-    assert "sk-ant-" not in record
+    # The private versioned capture records are redacted too.
+    for record_bytes in _all_private_capture_contents(registry.root):
+        assert "sk-ant-" not in record_bytes.decode("utf-8")
 
 
 def test_cli_secret_in_page_is_redacted_in_output(tmp_path: Path):
-    kb_root = tmp_path / "kb"
-    shutil.copytree(FIXTURES / "valid", kb_root)
+    kb = _kb(tmp_path)
     page = tmp_path / "page.md"
     page.write_text(
         _page("session-cli-secret").replace(
             "passed with 12 focused tests", "used key sk-ant-0123456789abcdef0123"
         )
     )
+    registry = _capture_registry(tmp_path)
 
     code, out = _run_cli(
         tmp_path,
         "capture",
         "session",
-        kb_root,
+        kb.root,
         "--compiled-page",
         page,
         "--manifest",
@@ -731,6 +779,8 @@ def test_cli_secret_in_page_is_redacted_in_output(tmp_path: Path):
         "session-cli-secret",
         "--transcript",
         CAPTURE_FIXTURES / "pi-session.jsonl",
+        "--source-registry",
+        registry.root,
         "--yes",
     )
 
@@ -763,7 +813,7 @@ def test_cli_missing_manifest_errors_cleanly(tmp_path: Path):
 
 def test_quoted_json_credentials_are_redacted_before_capture_staging(tmp_path: Path):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
+    registry = _capture_registry(tmp_path)
     manifest, raw = load_capture_manifest(CAPTURE_FIXTURES / "pi.yaml")
     page = _page(
         "session-json-secret",
@@ -775,8 +825,6 @@ def test_quoted_json_credentials_are_redacted_before_capture_staging(tmp_path: P
     )
 
     outcome = capture_session(
-        pipeline,
-        store,
         compiled_page_markdown=page,
         manifest=manifest,
         manifest_bytes=raw,
@@ -784,9 +832,198 @@ def test_quoted_json_credentials_are_redacted_before_capture_staging(tmp_path: P
         source_id="session-json-secret",
         transcript_path=CAPTURE_FIXTURES / "pi-session.jsonl",
         confirmed=True,
+        ingest=_worktree_ingest(kb.root, registry, CAPTURE_FIXTURES / "pi.yaml"),
     )
 
-    assert outcome.proposal is not None
-    staged = outcome.proposal.proposed_pages[0].markdown
-    assert "synthetic-json-credential-value" not in staged
-    assert "[REDACTED]" in staged
+    result = outcome.worktree
+    assert result is not None
+    written = (Path(kb.root) / result.page_paths[0]).read_text(encoding="utf-8")
+    assert "synthetic-json-credential-value" not in written
+    assert "[REDACTED]" in written
+
+
+# ---------------------------------------------------------------------------
+# G3 fix-a1 (plan 0008 r11): focused native-route capture regressions for the
+# accepted F5/F6 findings. Expectations derive from the fixture bytes and the
+# SHA-256 oracle — never from implementation output.
+# ---------------------------------------------------------------------------
+
+from test_git_authoring import (  # noqa: E402
+    _authored_ingest_page,
+    _commit,
+    _init_repo,
+    _write_kb,
+)
+
+
+def _run_capture(kb, page, manifest_path, source_id, *, registry, transcript=None):
+    import contextlib
+    import io
+
+    from lumio_wiki.cli import main
+
+    args = [
+        "capture",
+        "session",
+        str(kb),
+        "--compiled-page",
+        str(page),
+        "--manifest",
+        str(manifest_path),
+        "--source-id",
+        source_id,
+        "--source-registry",
+        str(registry),
+        "--yes",
+    ]
+    if transcript is not None:
+        args.extend(["--transcript", str(transcript)])
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(args)
+    return code, out.getvalue(), err.getvalue()
+
+
+def _all_private_capture_contents(registry_root):
+    """Every capture-record JSON byte under the registry root (layout-free)."""
+    root = Path(registry_root)
+    contents = []
+    for path in sorted(root.rglob("*.json")):
+        if "captures" in path.relative_to(root).parts[:1]:
+            contents.append(path.read_bytes())
+    return contents
+
+
+def test_native_capture_preserves_distinct_manifests_per_version(tmp_path):
+    """F5: repeated captures under one Source ID retain their Capture
+    Manifests immutably — changed bytes AND changed metadata for the SAME
+    bytes each keep their own record; nothing is overwritten, even with raw
+    retention disabled."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    registry = tmp_path / "registry"
+
+    one = tmp_path / "one"
+    one.mkdir()
+    first = _manifest_bytes(one, CaptureManifest(client="pi", project="alpha"))[0]
+    two = tmp_path / "two"
+    two.mkdir()
+    second = _manifest_bytes(two, CaptureManifest(client="pi", project="beta"))[0]
+    three = tmp_path / "three"
+    three.mkdir()
+    third = _manifest_bytes(three, CaptureManifest(client="pi", project="gamma"))[0]
+    transcript_a = tmp_path / "a.jsonl"
+    transcript_a.write_bytes(b"session one findings\n")
+    transcript_b = tmp_path / "b.jsonl"
+    transcript_b.write_bytes(b"session TWO findings, different bytes\n")
+    page = tmp_path / "page.md"
+    page.write_text(_authored_ingest_page("pi-session"))
+
+    # Capture 1: transcript A, manifest alpha.
+    code, _out, err = _run_capture(
+        kb, page, first, "pi-session", registry=registry, transcript=transcript_a
+    )
+    assert code == 0, err
+    _commit(repo)
+    # Capture 2: transcript B (changed bytes), manifest beta.
+    page2 = tmp_path / "page2.md"
+    page2.write_text(_authored_ingest_page("pi-session"))
+    code, _out, err = _run_capture(
+        kb, page2, second, "pi-session", registry=registry, transcript=transcript_b
+    )
+    assert code == 0, err
+    _commit(repo)
+    # Capture 3: transcript A AGAIN (identical registered bytes), a
+    # DIFFERENT manifest (gamma) — same version, distinct observation.
+    page3 = tmp_path / "page3.md"
+    page3.write_text(_authored_ingest_page("pi-session"))
+    code, _out, err = _run_capture(
+        kb, page3, third, "pi-session", registry=registry, transcript=transcript_a
+    )
+    assert code == 0, err
+
+    records = _all_private_capture_contents(registry)
+    joined = b"\n".join(records).decode("utf-8", "replace")
+    # All three observations survive: two distinct manifests for the SAME
+    # registered bytes (alpha/gamma) plus the changed-bytes manifest (beta).
+    assert "alpha" in joined
+    assert "beta" in joined
+    assert "gamma" in joined
+    assert len(records) >= 3
+
+
+def test_native_capture_refuses_git_tracked_manifest_named_transcript(tmp_path, capsys):
+    """F6: the tracked-input safety guard must check the ACTUALLY resolved
+    original transcript (the manifest-named path), not merely the manifest
+    that names it — a Git-tracked transcript inside the authoring repository
+    refuses before any registration or write."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    # The transcript is Git-tracked inside the authoring repository; the
+    # manifest lives OUTSIDE the repo and names the transcript by ABSOLUTE
+    # path, so only a guard that checks the ACTUALLY resolved original
+    # transcript refuses (a manifest-only check passes).
+    transcript = repo / "tracked-session.jsonl"
+    transcript.write_bytes(b"tracked session findings\n")
+    _commit(repo)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    manifest_path = _manifest_bytes(
+        outside, CaptureManifest(client="pi", transcript=str(transcript))
+    )[0]
+    page = tmp_path / "page.md"
+    page.write_text(_authored_ingest_page("pi-session"))
+
+    code, _out, err = _run_capture(
+        kb, page, manifest_path, "pi-session", registry=tmp_path / "registry"
+    )
+    captured = capsys.readouterr()
+    assert code == 1, captured.out + err
+    assert "Git-tracked" in captured.err + err
+    # No private version was registered and no page was written.
+    from lumio_wiki.source_registry import SourceRegistry
+
+    assert all(s.source_id != "pi-session" for s in SourceRegistry(tmp_path / "registry").list())
+    assert not (kb / "concepts" / "workbench_press.md").exists()
+
+
+def test_native_capture_observation_failure_leaves_worktree_unchanged(tmp_path, monkeypatch):
+    """R4: required private Capture Manifest storage is part of the native refusal gate."""
+    import hashlib
+
+    from lumio_wiki.source_registry import SourceRegistry
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    before = {p.relative_to(kb): p.read_bytes() for p in kb.rglob("*") if p.is_file()}
+    manifest_path, _raw = _manifest_bytes(tmp_path, CaptureManifest(client="pi", project="safety"))
+    transcript = tmp_path / "session.txt"
+    transcript_bytes = b"Verified workshop findings without credentials.\n"
+    transcript.write_bytes(transcript_bytes)
+    page = tmp_path / "page.md"
+    page.write_text(_authored_ingest_page("capture-safety"))
+    registry = tmp_path / "registry"
+    attempted = []
+
+    def failing_write(path, data):
+        attempted.append(path)
+        raise OSError("capture record storage unavailable")
+
+    monkeypatch.setattr("lumio_wiki.private_provenance.atomic_write_bytes", failing_write)
+    code, out, err = _run_capture(
+        kb, page, manifest_path, "capture-safety", registry=registry, transcript=transcript
+    )
+    assert code == 1, out
+    assert "private provenance observation" in err
+    assert "immutable registration may remain" in err
+    assert "Traceback" not in err
+    assert len(attempted) == 1 and attempted[0].is_relative_to(registry / "captures")
+    assert {p.relative_to(kb): p.read_bytes() for p in kb.rglob("*") if p.is_file()} == before
+    sources = SourceRegistry(registry).list()
+    assert [(s.source_id, [v.content_hash for v in s.versions]) for s in sources] == [
+        ("capture-safety", [hashlib.sha256(transcript_bytes).hexdigest()])
+    ]
+    assert _all_private_capture_contents(registry) == []

@@ -21,6 +21,7 @@ import lumio_wiki as lw
 import pytest  # type: ignore[import-not-found]
 from lumio_wiki import GRAPH_ARTIFACT_FILENAME
 from lumio_wiki.cli import default_index_dir, main
+from lumio_wiki.source_registry import SourceRegistry as _SR
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -526,13 +527,80 @@ _MANAGED_PAGE = (
 )
 
 
+MANAGED_CONTROL_V2 = """\
+version: 2
+mode: "categorized"
+categories:
+  - name: reports
+ontology:
+  entity_types:
+    report: {}
+  predicates: {}
+  redirects: {}
+"""
+
+_MANAGED_PAGE_V2 = (
+    "---\n"
+    'id: "entity:annual-impact-report"\n'
+    'title: "Managed Impact Report"\n'
+    "entity_types:\n  - report\n"
+    "category: reports\n"
+    'type: "impact report"\n'
+    'durability_rationale: "The impact report documents durable findings."\n'
+    "aliases: []\n"
+    'tags:\n  - "managed"\n'
+    'summary: "Authored by the host agent from the original PDF."\n'
+    'lifecycle: "draft"\n'
+    'visibility: "internal"\n'
+    "sources:\n"
+    '  - id: "annual-impact-report"\n'
+    '    title: "Impact report source"\n'
+    "synthetic: false\n"
+    "---\n\n"
+    "# Managed Impact Report\n\n"
+    "Body authored from the original PDF.\n"
+)
+
+
+def _managed_kb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An adopted Git-authoring KB for the native managed ingest CLI route."""
+    import subprocess as _sp
+
+    from lumio_wiki.source_references import (
+        SourceReferenceManifest,
+        serialize_source_reference_manifest,
+    )
+
+    repo = tmp_path / "mrepo"
+    repo.mkdir()
+    _sp.run(["git", "init", "-q"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
+    root = repo / "kb"
+    root.mkdir()
+    (root / "lumio.yaml").write_text(MANAGED_CONTROL_V2, encoding="utf-8")
+    (root / ".lumio-authoring.yaml").write_bytes(
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(
+                version=1,
+                namespace="urn:uuid:3c4d5e6f-managed-0000-0000-clikb0000001",
+            )
+        )
+    )
+    _sp.run(["git", "add", "-A"], cwd=repo, check=True)
+    _sp.run(["git", "commit", "-qm", "kb"], cwd=repo, check=True)
+    monkeypatch.setenv("LUMIO_SOURCE_REGISTRY", str(tmp_path / "mregistry"))
+    return root
+
+
 def test_managed_ingest_binds_source_and_authored_page(
-    kb_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
+    kb_root = _managed_kb(tmp_path, monkeypatch)
     source = tmp_path / "2025-impact-report.pdf"
     source.write_bytes(b"%PDF-1.4 original impact report bytes")
     page = tmp_path / "authored.md"
-    page.write_text(_MANAGED_PAGE, encoding="utf-8")
+    page.write_text(_MANAGED_PAGE_V2, encoding="utf-8")
 
     rc = main(
         [
@@ -547,13 +615,13 @@ def test_managed_ingest_binds_source_and_authored_page(
     )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Staged proposal" in out
-    assert "source_id:      annual-impact-report" in out
-    assert "converted_by:   liteparse" in out
-    assert "source_hash:" in out
+    assert "Ingested into the Git authoring worktree" in out
+    # (The converter-name derivation contract is pinned in test_managed_ingest.)
     # The private Source identity was registered with an immutable version.
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    registered = store.source_registry.get("annual-impact-report")
+    from lumio_wiki.source_registry import SourceRegistry
+
+    registry = SourceRegistry(tmp_path / "mregistry")
+    registered = registry.get("annual-impact-report")
     assert registered.status == "active"
     assert len(registered.versions) == 1
     import hashlib
@@ -576,17 +644,18 @@ def test_managed_ingest_binds_source_and_authored_page(
     ],
 )
 def test_managed_ingest_infers_original_content_type(
-    kb_root: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     suffix: str,
     expected_content_type: str,
     expected_converter: str,
 ):
+    kb_root = _managed_kb(tmp_path, monkeypatch)
     source = tmp_path / f"report{suffix}"
     source.write_bytes(b"original source bytes")
     page = tmp_path / "authored.md"
-    page.write_text(_MANAGED_PAGE, encoding="utf-8")
+    page.write_text(_MANAGED_PAGE_V2, encoding="utf-8")
 
     rc = main(
         [
@@ -602,13 +671,20 @@ def test_managed_ingest_infers_original_content_type(
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert f"content_type:    {expected_content_type}" in out
-    assert f"converted_by:   {expected_converter}" in out
+    assert "Ingested into the Git authoring worktree" in out
+    # The registered version records the ORIGINAL filename (routing-derived
+    # converter identity never invokes a converter; the name contract is
+    # pinned natively in test_managed_ingest.py).
+    from lumio_wiki.source_registry import SourceRegistry
+
+    version = SourceRegistry(tmp_path / "mregistry").get("annual-impact-report").versions[-1]
+    assert version.filename == f"report{suffix}"
 
 
 def test_managed_ingest_compiled_page_and_source_id_are_required_together(
-    kb_root: Path, tmp_path: Path
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    kb_root = _managed_kb(tmp_path, monkeypatch)
     source = tmp_path / "report.pdf"
     source.write_bytes(b"%PDF-1.4")
     page = tmp_path / "authored.md"
@@ -620,9 +696,8 @@ def test_managed_ingest_compiled_page_and_source_id_are_required_together(
     # Only --source-id (no --compiled-page) must fail.
     rc = main(["ingest", str(kb_root), str(source), "--source-id", "annual-impact-report"])
     assert rc != 0
-    # Nothing was staged by the rejected invocations.
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    assert store.list() == []
+    # Nothing was registered by the rejected invocations.
+    assert not (tmp_path / "mregistry").exists()
 
 
 def test_managed_ingest_missing_source_id_in_page_blocks_with_actionable_error(
@@ -650,124 +725,12 @@ def test_managed_ingest_missing_source_id_in_page_blocks_with_actionable_error(
     assert rc != 0
 
 
-def test_managed_ingest_inspect_distinguishes_provenance_from_authored_content(
-    kb_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-):
-    source = tmp_path / "2025-impact-report.pdf"
-    source.write_bytes(b"%PDF-1.4 original")
-    page = tmp_path / "authored.md"
-    page.write_text(_MANAGED_PAGE, encoding="utf-8")
-    main(
-        [
-            "ingest",
-            str(kb_root),
-            str(source),
-            "--compiled-page",
-            str(page),
-            "--source-id",
-            "annual-impact-report",
-        ]
-    )
-    capsys.readouterr()  # drain ingest output.
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    pid = store.list()[0].id
-    rc = main(["proposal", "inspect", str(kb_root), pid])
-    assert rc == 0
-    out = capsys.readouterr().out
-    # Raw-source provenance block.
-    assert "source_id:       annual-impact-report" in out
-    assert "source_hash:" in out
-    assert "converted_by:    liteparse" in out
-    # Authored Compiled Page content (the diff).
-    assert "Body authored from the original PDF" in out
-
-
-def test_proposal_inspect_json_redacts_private_reviewed_metadata(
-    kb_root: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
-):
-    # Plan 02 / P4 remediation (BLOCKER): ``proposal inspect --json`` used to
-    # serialize the complete IngestProposal, exposing the private reviewed
-    # preconditions (affected paths, roles, SHA-256 byte digests) and the
-    # reviewed content identity. Those are DURABLE metadata consumed by
-    # publish — never an inspection surface (see ``PathPrecondition``) — so
-    # the JSON view redacts both fields while staying valid JSON with every
-    # public field intact.
-    main(["ingest", str(kb_root), str(source_file)])
-    capsys.readouterr()  # drain ingest output.
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    pid = store.list()[0].id
-    durable = store.get(pid)
-    assert durable is not None
-    assert durable.preconditions and durable.reviewed_identity
-
-    rc = main(["proposal", "inspect", str(kb_root), pid, "--json"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    payload = json.loads(out)  # valid JSON
-    # No private metadata key survives anywhere in the payload: the two
-    # reviewed-state fields themselves, and the ``role``/``digest`` field
-    # names only precondition records use (public ``path``/``kind`` keys
-    # exist on OkfImportDiagnostic and stay).
-    keys: set[str] = set()
-    stack: list[object] = [payload]
-    while stack:
-        node = stack.pop()
-        if isinstance(node, dict):
-            keys.update(node)
-            stack.extend(node.values())
-        elif isinstance(node, list):
-            stack.extend(node)
-    assert not keys & {"preconditions", "reviewed_identity", "role", "digest"}
-    # And none of their values leak through any other field: reviewed byte
-    # digests, the identity, and precondition roles are all absent.
-    for item in durable.preconditions:
-        if item.digest:
-            assert item.digest not in out
-        assert json.dumps(item.role) not in out
-    assert durable.reviewed_identity not in out
-    # The public inspection surface is unchanged.
-    assert payload["id"] == pid
-    assert payload["status"] == "staged"
-    assert payload["proposed_pages"]
-    assert payload["diff"]
-    assert payload["validation_report"]
-    assert payload["provenance"]["source_hash"]
-
-
-def test_publish_writes_page_and_marks_terminal(
-    kb_root: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
-):
-    main(["ingest", str(kb_root), str(source_file)])
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    pid = store.list()[0].id
-    rc = main(["publish", str(kb_root), pid])
-    assert rc == 0
-    # The page was actually written to the KB root.
-    assert (kb_root / "cli_page.md").is_file()
-    # The proposal is now terminal.
-    store2 = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    published = store2.get(pid)
-    assert published is not None
-    assert published.status == "published"
-    # KB remains valid after publish.
-    assert lw.validate(kb_root).is_valid
-
-
-def test_discard_marks_proposal_terminal(kb_root: Path, source_file: Path):
-    main(["ingest", str(kb_root), str(source_file)])
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    pid = store.list()[0].id
-    rc = main(["discard", str(kb_root), pid])
-    assert rc == 0
-    store2 = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    discarded = store2.get(pid)
-    assert discarded is not None
-    assert discarded.status == "discarded"
-
-
-def test_publish_unknown_proposal_returns_1(kb_root: Path):
-    rc = main(["publish", str(kb_root), "nonexistent-id"])
-    assert rc == 1
+def test_publish_without_revision_returns_guidance_error(kb_root: Path, capsys):
+    # G4: the legacy proposal publish route is retired; only the exact
+    # --revision admission route exists.
+    rc = main(["publish", str(kb_root)])
+    assert rc == 2
+    assert "legacy-proposals" in capsys.readouterr().err
 
 
 def test_lumio_dot_dir_does_not_pollute_fingerprint(kb_root: Path, source_file: Path):
@@ -806,11 +769,12 @@ def test_ingest_distiller_llm_without_extra_fails_actionably(
 
 def test_ingest_distiller_llm_with_fake_provider_stages_proposal(
     kb_root: Path,
+    tmp_path: Path,
     source_file: Path,
     monkeypatch,
     capsys: pytest.CaptureFixture[str],
 ):
-    """AC2/AC3: ``--distiller llm`` with a fake provider stages a proposal."""
+    """AC2/AC3: ``--distiller llm`` with a fake provider writes the worktree."""
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
@@ -847,11 +811,23 @@ def test_ingest_distiller_llm_with_fake_provider_stages_proposal(
 
     monkeypatch.setattr(lumio_wiki, "OpenAIDistiller", _StubDistiller)
     monkeypatch.setenv("LUMIO_PROVIDER_MODEL", "fake-model")
-    rc = main(["ingest", str(kb_root), str(source_file), "--distiller", "llm"])
+    # G4: every ingest route writes the authoring worktree (Git required).
+    import shutil as _sh
+    import subprocess as _sp
+
+    repo_kb = tmp_path / "repo" / "kb"
+    repo_kb.parent.mkdir(parents=True)
+    _sh.copytree(kb_root, repo_kb)
+    _sp.run(["git", "init", "-q"], cwd=repo_kb.parent, check=True)
+    _sp.run(["git", "config", "user.email", "t@example.com"], cwd=repo_kb.parent, check=True)
+    _sp.run(["git", "config", "user.name", "T"], cwd=repo_kb.parent, check=True)
+    _sp.run(["git", "add", "-A"], cwd=repo_kb.parent, check=True)
+    _sp.run(["git", "commit", "-qm", "kb"], cwd=repo_kb.parent, check=True)
+    rc = main(["ingest", str(repo_kb), str(source_file), "--distiller", "llm"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Staged proposal" in out
-    assert "LLM CLI Page" in out
+    assert "Ingested into the Git authoring worktree" in out
+    assert "llm_cli_page.md" in out
 
 
 # ---------------------------------------------------------------------------
@@ -1134,7 +1110,10 @@ def test_setup_creates_new_kb_and_config(tmp_path, monkeypatch, capsys):
 
     # KB created
     assert (kb_path / "lumio.yaml").exists()
-    assert (kb_path / ".lumio" / "ingest").is_dir()
+    assert (kb_path / ".lumio" / "index").is_dir()
+    assert not (kb_path / ".lumio" / "ingest").exists()
+    assert not (kb_path / ".lumio-authoring.yaml").exists()  # adoption is explicit
+    assert sorted(p.name for p in (kb_path / ".lumio").iterdir()) == ["index"]
 
     # .env written with absolute path
     env = (tmp_path / ".env").read_text()
@@ -1151,6 +1130,9 @@ def test_setup_creates_new_kb_and_config(tmp_path, monkeypatch, capsys):
     assert "lumio-wiki lint" in agents_md
     assert "lumio-wiki cross-link" in agents_md
     assert "lumio-wiki dream" in agents_md
+    assert "--revision" in agents_md and "--confirm" in agents_md
+    assert "operator authorizes" in agents_md
+    assert "maintainer (local worktree)" in capsys.readouterr().out
 
 
 def test_setup_uses_existing_kb(tmp_path, monkeypatch, capsys):
@@ -1338,7 +1320,7 @@ def test_subprocess_setup_then_validate_reads_env(tmp_path: Path):
 def test_subprocess_journey_reads_env_for_path_commands(tmp_path: Path):
     """AC2: each path-bearing command resolves LUMIO_KB_PATH from .env.
 
-    After setup, validate, search, page, proposal list, lint, and health all
+    After setup, validate, search, page, lint, and health all
     run with no positional <kb> and no exported variable in a fresh process.
     """
     project = tmp_path / "project"
@@ -1352,7 +1334,7 @@ def test_subprocess_journey_reads_env_for_path_commands(tmp_path: Path):
         (["validate"], None),
         (["search", "Technology"], "Technology Stack"),
         (["page", "Technology Stack"], "Technology Stack"),
-        (["proposal", "list"], None),
+        (["legacy-proposals", "inventory"], None),
         (["lint"], None),
         (["health"], None),
     ]
@@ -1430,11 +1412,27 @@ SOURCE_POLICY_PAGE_MD = textwrap.dedent(
 
 
 @pytest.fixture
-def source_kb(tmp_path: Path) -> Path:
-    """A Knowledge Base whose ``CLI Page`` declares the ``policy`` source id."""
-    root = tmp_path / "kb"
+def source_kb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A Git-hosted Knowledge Base whose ``CLI Page`` declares ``policy``.
+
+    G4: source commands are native Git-authoring operations — the private
+    registry is selected explicitly (exported process value) and the
+    tracked-input guard requires a real repository around the Knowledge
+    Base.
+    """
+    import subprocess as _sp
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _sp.run(["git", "init", "-q"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
+    root = repo / "kb"
     shutil.copytree(FIXTURES / "valid", root)
     (root / "cli_page.md").write_text(SOURCE_POLICY_PAGE_MD, encoding="utf-8")
+    _sp.run(["git", "add", "-A"], cwd=repo, check=True)
+    _sp.run(["git", "commit", "-qm", "kb"], cwd=repo, check=True)
+    monkeypatch.setenv("LUMIO_SOURCE_REGISTRY", str(tmp_path / "registry"))
     return root
 
 
@@ -1451,24 +1449,17 @@ def _register_policy(kb: Path, source_file: Path) -> int:
 
 
 def test_source_retire_requires_explicit_registered_source_id(
-    kb_root: Path, capsys: pytest.CaptureFixture[str]
+    kb_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setenv("LUMIO_SOURCE_REGISTRY", str(tmp_path / "registry"))
     rc = main(["source", "retire", str(kb_root), "--source-id", "unknown"])
     assert rc == 1
-    assert "unknown Knowledge Source" in capsys.readouterr().err
-
-
-def test_source_retire_stages_safe_page_impact_output(
-    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    # ``source_kb`` contains ``sources: [{id: policy, ...}]`` for CLI Page.
-    assert _register_policy(source_kb, source_file) == 0
-    assert main(["source", "retire", str(source_kb), "--source-id", "policy"]) == 0
-    output = capsys.readouterr().out
-    assert "Staged proposal" in output
-    assert "source_id:      policy" in output
-    assert "sole-source-lost: CLI Page" in output
-    assert str(source_file) not in output
+    # A non-adopted Knowledge Base refuses retirement with adoption guidance
+    # (lifecycle intent is reviewed in the Git manifest, spec 0008 §3.2).
+    assert "requires adopting" in capsys.readouterr().err
 
 
 def test_source_register_requires_explicit_source_id_and_file(source_kb: Path) -> None:
@@ -1487,7 +1478,9 @@ def test_source_register_then_list_shows_active_identity(
     assert main(["source", "list", str(source_kb)]) == 0
     out = capsys.readouterr().out
     assert "policy" in out
-    assert "active" in out
+    # Native list discloses Git manifest lifecycle intent; without a manifest
+    # the source is truthfully 'unmanaged' (registry status is not authority).
+    assert "unmanaged" in out
     # The listing never discloses raw bytes or the local source path.
     assert str(source_file) not in out
 
@@ -1495,6 +1488,9 @@ def test_source_register_then_list_shows_active_identity(
 def test_source_candidate_leaves_source_active_without_staging(
     source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    before_authored = {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    }
     _register_policy(source_kb, source_file)
     capsys.readouterr()  # drain register output
     rc = main(
@@ -1514,14 +1510,21 @@ def test_source_candidate_leaves_source_active_without_staging(
     assert "object store unavailable" in out
     assert "pending" in out
     # Candidate-only behavior: the source stays active and no proposal stages.
-    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert store.source_registry.get("policy").status == "active"
-    assert store.list() == []
+    store = _SR(source_kb.parent.parent / "registry")
+    assert store.get("policy").status == "active"
+    assert {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    } == before_authored
+    assert not (source_kb / ".lumio").exists()
+    assert [s.source_id for s in _SR(source_kb.parent.parent / "registry").list()] == ["policy"]
 
 
 def test_source_dismiss_candidate_records_decision_without_staging(
     source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    before_authored = {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    }
     _register_policy(source_kb, source_file)
     capsys.readouterr()  # drain register output
     main(
@@ -1552,9 +1555,13 @@ def test_source_dismiss_candidate_records_decision_without_staging(
     dismiss_out = capsys.readouterr().out
     assert "dismissed" in dismiss_out
     # Dismiss records a decision without staging any proposal.
-    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert store.source_registry.get_candidate(candidate_id).status == "dismissed"
-    assert store.list() == []
+    store = _SR(source_kb.parent.parent / "registry")
+    assert store.get_candidate(candidate_id).status == "dismissed"
+    assert {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    } == before_authored
+    assert not (source_kb / ".lumio").exists()
+    assert [s.source_id for s in _SR(source_kb.parent.parent / "registry").list()] == ["policy"]
 
 
 def test_source_dismiss_candidate_requires_explicit_source_id(
@@ -1577,6 +1584,9 @@ def test_source_dismiss_candidate_requires_explicit_source_id(
 def test_source_dismiss_candidate_refuses_mismatched_source_id(
     source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    before_authored = {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    }
     _register_policy(source_kb, source_file)
     capsys.readouterr()  # drain register output
     main(
@@ -1608,9 +1618,13 @@ def test_source_dismiss_candidate_refuses_mismatched_source_id(
     err = capsys.readouterr().err
     assert "does not belong" in err
     # A mismatch must be safe: the candidate stays pending and nothing stages.
-    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert store.source_registry.get_candidate(candidate_id).status == "pending"
-    assert store.list() == []
+    store = _SR(source_kb.parent.parent / "registry")
+    assert store.get_candidate(candidate_id).status == "pending"
+    assert {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    } == before_authored
+    assert not (source_kb / ".lumio").exists()
+    assert [s.source_id for s in _SR(source_kb.parent.parent / "registry").list()] == ["policy"]
 
 
 # --- #133 final review: secret-bearing invalid source/candidate ids at the CLI ---
@@ -1626,6 +1640,9 @@ _SECRET_CANDIDATE_ID = "/var/lib/lumio/secret.key"
 def test_source_retire_rejects_secret_bearing_source_id(
     source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    before_authored = {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    }
     _register_policy(source_kb, source_file)
     capsys.readouterr()  # drain register output
     rc = main(["source", "retire", str(source_kb), "--source-id", _SECRET_SOURCE_ID])
@@ -1634,12 +1651,19 @@ def test_source_retire_rejects_secret_bearing_source_id(
     assert _SECRET_SOURCE_ID not in (combined.out + combined.err)
     assert "secret.key" not in combined.err
     # No mutation: no proposal staged.
-    assert lw.IngestStore(source_kb / ".lumio" / "ingest").list() == []
+    assert {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    } == before_authored
+    assert not (source_kb / ".lumio").exists()
+    assert [s.source_id for s in _SR(source_kb.parent.parent / "registry").list()] == ["policy"]
 
 
 def test_source_reactivate_rejects_secret_bearing_source_id(
     source_kb: Path, source_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    before_authored = {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    }
     _register_policy(source_kb, source_file)
     capsys.readouterr()  # drain register output
     replacement = tmp_path / "replacement.md"
@@ -1658,7 +1682,11 @@ def test_source_reactivate_rejects_secret_bearing_source_id(
     assert rc == 1
     combined = capsys.readouterr()
     assert _SECRET_SOURCE_ID not in (combined.out + combined.err)
-    assert lw.IngestStore(source_kb / ".lumio" / "ingest").list() == []
+    assert {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    } == before_authored
+    assert not (source_kb / ".lumio").exists()
+    assert [s.source_id for s in _SR(source_kb.parent.parent / "registry").list()] == ["policy"]
 
 
 def test_source_dismiss_rejects_secret_bearing_candidate_id(
@@ -1682,13 +1710,16 @@ def test_source_dismiss_rejects_secret_bearing_candidate_id(
     combined = capsys.readouterr()
     assert _SECRET_CANDIDATE_ID not in (combined.out + combined.err)
     # No mutation: the real candidate stays pending.
-    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert store.source_registry.get_candidate(candidate_id).status == "pending"
+    store = _SR(source_kb.parent.parent / "registry")
+    assert store.get_candidate(candidate_id).status == "pending"
 
 
 def test_source_confirm_rejects_secret_bearing_candidate_id(
     source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    before_authored = {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    }
     _register_policy(source_kb, source_file)
     capsys.readouterr()
     candidate_id = _record_candidate_cli(source_kb, capsys)
@@ -1706,9 +1737,13 @@ def test_source_confirm_rejects_secret_bearing_candidate_id(
     assert rc == 1
     combined = capsys.readouterr()
     assert _SECRET_CANDIDATE_ID not in (combined.out + combined.err)
-    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert store.source_registry.get_candidate(candidate_id).status == "pending"
-    assert store.list() == []
+    store = _SR(source_kb.parent.parent / "registry")
+    assert store.get_candidate(candidate_id).status == "pending"
+    assert {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    } == before_authored
+    assert not (source_kb / ".lumio").exists()
+    assert [s.source_id for s in _SR(source_kb.parent.parent / "registry").list()] == ["policy"]
 
 
 def test_source_dismiss_rejects_secret_bearing_source_id(
@@ -1731,13 +1766,16 @@ def test_source_dismiss_rejects_secret_bearing_source_id(
     assert rc == 1
     combined = capsys.readouterr()
     assert _SECRET_SOURCE_ID not in (combined.out + combined.err)
-    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert store.source_registry.get_candidate(candidate_id).status == "pending"
+    store = _SR(source_kb.parent.parent / "registry")
+    assert store.get_candidate(candidate_id).status == "pending"
 
 
 def test_source_confirm_rejects_secret_bearing_source_id(
     source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    before_authored = {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    }
     _register_policy(source_kb, source_file)
     capsys.readouterr()
     candidate_id = _record_candidate_cli(source_kb, capsys)
@@ -1755,9 +1793,13 @@ def test_source_confirm_rejects_secret_bearing_source_id(
     assert rc == 1
     combined = capsys.readouterr()
     assert _SECRET_SOURCE_ID not in (combined.out + combined.err)
-    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert store.source_registry.get_candidate(candidate_id).status == "pending"
-    assert store.list() == []
+    store = _SR(source_kb.parent.parent / "registry")
+    assert store.get_candidate(candidate_id).status == "pending"
+    assert {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    } == before_authored
+    assert not (source_kb / ".lumio").exists()
+    assert [s.source_id for s in _SR(source_kb.parent.parent / "registry").list()] == ["policy"]
 
 
 def _record_candidate_cli(source_kb: Path, capsys: pytest.CaptureFixture[str]) -> str:
@@ -1775,128 +1817,6 @@ def _record_candidate_cli(source_kb: Path, capsys: pytest.CaptureFixture[str]) -
     )
     candidate_out = capsys.readouterr().out
     return candidate_out.split("candidate_id:")[1].split()[0]
-
-
-def test_source_retire_impacts_only_pages_declaring_the_source_id(
-    source_kb: Path, source_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    # A renamed copy of the fixture source, registered under ``policy``, cannot
-    # create support: only a Compiled Page whose ``sources[].id: policy`` is
-    # impacted. The renamed filename and its bytes (which declare a different
-    # source id) never influence page-level support.
-    renamed = tmp_path / "renamed-policy-source.md"
-    shutil.copyfile(source_file, renamed)
-    assert (
-        main(
-            [
-                "source",
-                "register",
-                str(source_kb),
-                "--source-id",
-                "policy",
-                "--file",
-                str(renamed),
-            ]
-        )
-        == 0
-    )
-    capsys.readouterr()  # drain register output
-    assert main(["source", "retire", str(source_kb), "--source-id", "policy"]) == 0
-    out = capsys.readouterr().out
-    assert "sole-source-lost: CLI Page" in out
-    # The other fixture pages declare different source ids — never impacted.
-    assert "Lumio Overview" not in out
-    assert "Architecture" not in out
-    assert "Technology Stack" not in out
-    # The renamed file path never leaks into the output.
-    assert str(renamed) not in out
-
-
-def test_source_reactivate_stages_new_version_under_existing_id(
-    source_kb: Path, source_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _register_policy(source_kb, source_file)
-    capsys.readouterr()  # drain register output
-    assert main(["source", "retire", str(source_kb), "--source-id", "policy"]) == 0
-    retire_id = _extract_proposal_id(capsys.readouterr().out)
-    assert main(["publish", str(source_kb), retire_id]) == 0
-    capsys.readouterr()  # drain publish output
-    assert (
-        lw.IngestStore(source_kb / ".lumio" / "ingest").source_registry.get("policy").status
-        == "retired"
-    )
-
-    replacement = tmp_path / "replacement.md"
-    replacement.write_text("# replacement policy bytes\n", encoding="utf-8")
-    rc = main(
-        [
-            "source",
-            "reactivate",
-            str(source_kb),
-            "--source-id",
-            "policy",
-            "--file",
-            str(replacement),
-        ]
-    )
-    assert rc == 0
-    reactivate_out = capsys.readouterr().out
-    assert "Staged proposal" in reactivate_out
-    assert "source_id:      policy" in reactivate_out
-    # Safe output: the replacement path and bytes never appear.
-    assert str(replacement) not in reactivate_out
-    reactivate_id = _extract_proposal_id(reactivate_out)
-
-    # The source stays retired until the reactivation proposal publishes.
-    assert (
-        lw.IngestStore(source_kb / ".lumio" / "ingest").source_registry.get("policy").status
-        == "retired"
-    )
-    assert main(["publish", str(source_kb), reactivate_id]) == 0
-    active = lw.IngestStore(source_kb / ".lumio" / "ingest").source_registry.get("policy")
-    assert active.status == "active"
-    assert len(active.versions) == 2
-    assert active.versions[0].source_id == active.versions[1].source_id == "policy"
-    assert active.versions[0].content_hash != active.versions[1].content_hash
-
-
-def test_source_reactivation_impact_counts_reactivated_source_as_support(
-    source_kb: Path, source_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    # #133 final review: reactivation evaluates support AFTER including the
-    # reactivated source, so the sole-source ``CLI Page`` is still-supported
-    # (not sole-source-lost, which is the retirement outcome for the same page).
-    _register_policy(source_kb, source_file)
-    capsys.readouterr()  # drain register output
-    assert main(["source", "retire", str(source_kb), "--source-id", "policy"]) == 0
-    retire_id = _extract_proposal_id(capsys.readouterr().out)
-    assert main(["publish", str(source_kb), retire_id]) == 0
-    capsys.readouterr()  # drain publish output
-
-    replacement = tmp_path / "replacement.md"
-    replacement.write_text("# replacement policy bytes\n", encoding="utf-8")
-    rc = main(
-        [
-            "source",
-            "reactivate",
-            str(source_kb),
-            "--source-id",
-            "policy",
-            "--file",
-            str(replacement),
-        ]
-    )
-    assert rc == 0
-    out = capsys.readouterr().out
-    # Action-aware: the reactivated source itself restores support, so the
-    # sole-source CLI Page renders still-supported.
-    assert "still-supported: CLI Page" in out
-    assert "sole-source-lost" not in out
-
-
-# ---------------------------------------------------------------------------
-# source file reads: safe errors with no path or traceback leakage
-# ---------------------------------------------------------------------------
 
 
 def test_source_register_missing_file_reports_generic_error_without_path(
@@ -1956,9 +1876,12 @@ def test_source_register_missing_registered_source_reports_generic_error(
     # public listing (an invariant the static type cannot prove is non-None),
     # the CLI must fail with a generic, path/secret-free error (rc=1) and never
     # leak a traceback from an unguarded ``None`` dereference.
-    from lumio_wiki.proposal_pipeline import ProposalPipeline
+    from lumio_wiki.source_registry import SourceRegistryError
 
-    monkeypatch.setattr(ProposalPipeline, "list_sources", lambda self: [])
+    def _raise_get(self, source_id):
+        raise SourceRegistryError(f"unknown Knowledge Source {source_id!r}")
+
+    monkeypatch.setattr(_SR, "get", _raise_get)
 
     rc = _register_policy(source_kb, source_file)
 
@@ -1973,14 +1896,10 @@ def test_source_register_missing_registered_source_reports_generic_error(
 def test_source_reactivate_missing_file_reports_generic_error_without_path(
     source_kb: Path, source_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # ``--file`` is read through the same safe helper for reactivate.
+    # ``--file`` is read through the same safe helper for reactivate (the
+    # registry state check is scenary; the missing-file guard fires first).
     _register_policy(source_kb, source_file)
     capsys.readouterr()  # drain register output
-    retire_rc = main(["source", "retire", str(source_kb), "--source-id", "policy"])
-    retire_id = _extract_proposal_id(capsys.readouterr().out)
-    assert retire_rc == 0
-    assert main(["publish", str(source_kb), retire_id]) == 0
-    capsys.readouterr()  # drain publish output
 
     missing = tmp_path / "absent-replacement.md"
     rc = main(
@@ -2027,8 +1946,8 @@ def test_source_candidate_rejects_trigger_outside_vocabulary_safely(
     assert secret not in captured.out
     assert secret not in captured.err
     # No candidate was persisted.
-    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert store.source_registry.list_candidates() == []
+    store = _SR(source_kb.parent.parent / "registry")
+    assert store.list_candidates() == []
 
 
 def test_source_candidate_help_lists_controlled_trigger_choices(
@@ -2074,41 +1993,12 @@ def _capture_candidate_output(kb: Path) -> str:
     """Read the pending candidate id from the private registry (test only)."""
     import json
 
-    registry = kb / ".lumio" / "ingest" / "source-registry" / "sources.json"
+    registry = kb.parent.parent / "registry" / "sources.json"
     state = json.loads(registry.read_text())
     for candidate in state.get("candidates", []):
         if candidate["source_id"] == "policy":
             return f"candidate_id: {candidate['id']}"
     raise AssertionError("no candidate recorded for policy")
-
-
-def test_source_confirm_candidate_stages_retirement_proposal(
-    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _register_policy(source_kb, source_file)
-    capsys.readouterr()  # drain register output
-    candidate_id = _record_candidate(source_kb)
-    capsys.readouterr()  # drain candidate output
-
-    rc = main(
-        [
-            "source",
-            "confirm-candidate",
-            str(source_kb),
-            "--source-id",
-            "policy",
-            "--candidate-id",
-            candidate_id,
-        ]
-    )
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Staged proposal" in out
-    assert "source_id:      policy" in out
-    # The candidate is marked confirmed and the source stays active until publish.
-    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert store.source_registry.get_candidate(candidate_id).status == "confirmed"
-    assert store.source_registry.get("policy").status == "active"
 
 
 def test_source_confirm_candidate_requires_explicit_ids(source_kb: Path) -> None:
@@ -2122,6 +2012,9 @@ def test_source_confirm_candidate_requires_explicit_ids(source_kb: Path) -> None
 def test_source_confirm_candidate_refuses_mismatched_source_id(
     source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    before_authored = {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    }
     _register_policy(source_kb, source_file)
     capsys.readouterr()  # drain register output
     candidate_id = _record_candidate(source_kb)
@@ -2142,69 +2035,34 @@ def test_source_confirm_candidate_refuses_mismatched_source_id(
     err = capsys.readouterr().err
     assert "does not belong" in err
     # A mismatch is safe: the candidate stays pending and no proposal stages.
-    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert store.source_registry.get_candidate(candidate_id).status == "pending"
-    assert store.source_registry.get("policy").status == "active"
-    assert store.list() == []
-
-
-def test_source_confirm_candidate_leaves_source_active_until_publish(
-    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _register_policy(source_kb, source_file)
-    capsys.readouterr()  # drain register output
-    candidate_id = _record_candidate(source_kb)
-    capsys.readouterr()  # drain candidate output
-    assert (
-        main(
-            [
-                "source",
-                "confirm-candidate",
-                str(source_kb),
-                "--source-id",
-                "policy",
-                "--candidate-id",
-                candidate_id,
-            ]
-        )
-        == 0
-    )
-    confirm_out = capsys.readouterr().out
-    proposal_id = _extract_proposal_id(confirm_out)
-
-    # The source is still active before the staged proposal publishes.
-    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert store.source_registry.get("policy").status == "active"
-    assert main(["publish", str(source_kb), proposal_id]) == 0
-    # Re-read from disk (each CLI command builds its own store instance, so the
-    # in-memory state above is stale after the publish wrote the file).
-    published_store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert published_store.source_registry.get("policy").status == "retired"
-
-
-# ---------------------------------------------------------------------------
-# register boundary: no duplicate creation, safe label contract (#133 final fix)
-# ---------------------------------------------------------------------------
+    store = _SR(source_kb.parent.parent / "registry")
+    assert store.get_candidate(candidate_id).status == "pending"
+    assert store.get("policy").status == "active"
+    assert {
+        p.relative_to(source_kb): p.read_bytes() for p in source_kb.rglob("*") if p.is_file()
+    } == before_authored
+    assert not (source_kb / ".lumio").exists()
+    assert [s.source_id for s in _SR(source_kb.parent.parent / "registry").list()] == ["policy"]
 
 
 def test_source_duplicate_register_is_refused_without_mutation(
     source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # A second registration of an existing active id is refused generically and
-    # never appends a version (#133 final review).
+    # G4 (D5): identical bytes converge on the same immutable version with
+    # truthful reuse disclosure; the version count never grows.
     assert _register_policy(source_kb, source_file) == 0
     capsys.readouterr()  # drain first register
-    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    versions_before = len(store.source_registry.get("policy").versions)
+    store = _SR(source_kb.parent.parent / "registry")
+    versions_before = len(store.get("policy").versions)
 
     rc = main(
         ["source", "register", str(source_kb), "--source-id", "policy", "--file", str(source_file)]
     )
-    assert rc != 0
-    err = capsys.readouterr().err
-    assert "replacement is not available" in err
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "reused" in out
     # No mutation: the version count is unchanged and no second version appears.
-    source = store.source_registry.get("policy")
+    source = store.get("policy")
     assert len(source.versions) == versions_before
     assert source.status == "active"
 
@@ -2230,8 +2088,8 @@ def test_source_register_rejects_invalid_source_id_safely(
     captured = capsys.readouterr()
     combined = captured.out + captured.err
     assert invalid_id not in combined
-    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert all(s.source_id != invalid_id for s in store.source_registry.list())
+    store = _SR(source_kb.parent.parent / "registry")
+    assert all(s.source_id != invalid_id for s in store.list())
 
 
 # ---------------------------------------------------------------------------
@@ -2245,8 +2103,8 @@ def _retained_policy_source(
     kb: Path, store_root: Path, *, filename: str | None = "policy.pdf"
 ) -> lw.LocalDirectoryArtifactStore:
     """Register + retain the ``policy`` source through the public seams."""
-    ingest = lw.IngestStore(kb / ".lumio" / "ingest")
-    ingest.source_registry.register_source(
+    registry = _SR(kb.parent.parent / "registry")
+    registry.register_source(
         "policy",
         INSPECTION_RAW,
         filename=filename,
@@ -2255,7 +2113,7 @@ def _retained_policy_source(
     store = lw.LocalDirectoryArtifactStore(store_root)
     lw.retain_artifact(
         store,
-        ingest.source_registry,
+        registry,
         source_id="policy",
         raw_bytes=INSPECTION_RAW,
         content_type="application/pdf",
@@ -2289,8 +2147,8 @@ def test_source_inspect_registry_mode_reports_verified_artifact(
 def test_source_inspect_without_store_reports_not_retained(
     source_kb: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    ingest.source_registry.register_source("policy", INSPECTION_RAW, filename="p.pdf")
+    ingest = _SR(source_kb.parent.parent / "registry")
+    ingest.register_source("policy", INSPECTION_RAW, filename="p.pdf")
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
 
     assert main(["source", "inspect", str(source_kb), "--source-id", "policy"]) == 0
@@ -2454,8 +2312,8 @@ def test_source_fetch_rejects_corruption(
 def test_source_fetch_without_store_fails_closed(
     source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    ingest.source_registry.register_source("policy", INSPECTION_RAW, filename="policy.pdf")
+    ingest = _SR(source_kb.parent.parent / "registry")
+    ingest.register_source("policy", INSPECTION_RAW, filename="policy.pdf")
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
     rc = main(
         [
@@ -2538,13 +2396,13 @@ def test_source_link_signing_store_prints_url_with_secret_handling_note(
     from lumio_wiki import cli
 
     store = _SigningInMemoryStore()
-    ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    ingest.source_registry.register_source(
+    ingest = _SR(source_kb.parent.parent / "registry")
+    ingest.register_source(
         "policy", INSPECTION_RAW, filename="policy.pdf", content_type="application/pdf"
     )
     lw.retain_artifact(
         store,
-        ingest.source_registry,
+        ingest,
         source_id="policy",
         raw_bytes=INSPECTION_RAW,
         content_type="application/pdf",
@@ -2594,15 +2452,15 @@ def test_source_inspect_rejects_unsafe_published_version_without_echo(
 
 
 def test_source_s3_uri_resolves_active_published_version_once(
-    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+    source_kb: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from lumio_wiki import cli
+    from lumio_wiki.artifact_store import InMemoryArtifactStore
     from lumio_wiki.s3_publish import PointerObservation
 
-    store_root = tmp_path / "artifact-store"
-    store = _retained_policy_source(source_kb, store_root)
+    metadata_store = InMemoryArtifactStore()
     lw.write_binding_manifest(
-        store,
+        metadata_store,
         lw.SourceBindingManifest(
             published_version="v-active",
             fingerprint="fp",
@@ -2616,7 +2474,8 @@ def test_source_s3_uri_resolves_active_published_version_once(
             ],
         ),
     )
-    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    monkeypatch.setattr(cli, "_publication_metadata_store_for_s3", lambda _uri: metadata_store)
     monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (object(), "kb-prefix"))
     monkeypatch.setattr(
         "lumio_wiki.s3_publish.observe_current_pointer",
@@ -2626,6 +2485,8 @@ def test_source_s3_uri_resolves_active_published_version_once(
     assert main(["source", "inspect", "s3://bucket/kb", "--source-id", "policy"]) == 0
     out = capsys.readouterr().out
     assert "bound_to:        published version v-active (Source Binding Manifest)" in out
+    assert "availability:    not retained (no Source Artifact Store configured)" in out
+    assert "authorization:   granted (private publication metadata view)" in out
 
 
 def test_source_s3_uri_without_active_version_fails(
@@ -2643,6 +2504,108 @@ def test_source_s3_uri_without_active_version_fails(
 
     assert main(["source", "inspect", "s3://bucket/kb", "--source-id", "policy"]) == 1
     assert "no active Published Version" in capsys.readouterr().err
+
+
+def test_source_s3_uri_reads_legacy_store_binding_for_legacy_version(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D1: a legacy S3 version's exact binding stays readable from the
+    configured private Source Artifact Store; a native version never falls
+    back around missing new metadata."""
+    from types import SimpleNamespace
+
+    from lumio_wiki import cli
+    from lumio_wiki.artifact_store import InMemoryArtifactStore, LocalDirectoryArtifactStore
+    from lumio_wiki.s3_location import S3Location
+    from lumio_wiki.s3_publish import PointerObservation
+
+    metadata_store = InMemoryArtifactStore()  # native operational store: nothing sealed
+    legacy_store = LocalDirectoryArtifactStore(tmp_path / "legacy-source-store")
+    lw.write_binding_manifest(
+        legacy_store,
+        lw.SourceBindingManifest(
+            published_version="v-active",
+            fingerprint="fp",
+            created_at="2025-11-01T00:00:00Z",
+            entries=[
+                lw.SourceBindingEntry(
+                    page_title="CLI Page",
+                    source_id="policy",
+                    content_hash=lw.artifact_content_hash(INSPECTION_RAW),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(tmp_path / "legacy-source-store"))
+    monkeypatch.setattr(cli, "_publication_metadata_store_for_s3", lambda _uri: metadata_store)
+    monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (object(), "kb-prefix"))
+    monkeypatch.setattr(
+        "lumio_wiki.s3_publish.observe_current_pointer",
+        lambda store_arg, prefix: PointerObservation(version="v-active", e_tag="e"),
+    )
+    monkeypatch.setattr(
+        S3Location, "_read_manifest", lambda self, version: SimpleNamespace(revision="")
+    )
+
+    assert main(["source", "inspect", "s3://bucket/kb", "--source-id", "policy"]) == 0
+    out = capsys.readouterr().out
+    assert "bound_to:        published version v-active (Source Binding Manifest)" in out
+    assert f"content_hash:    {lw.artifact_content_hash(INSPECTION_RAW)[:12]}" in out
+
+    # Fail-closed bound: once the public manifest carries Git provenance, the
+    # absent native metadata is corruption/loss, never a legacy fallback.
+    monkeypatch.setattr(
+        S3Location, "_read_manifest", lambda self, version: SimpleNamespace(revision="a" * 40)
+    )
+    assert main(["source", "inspect", "s3://bucket/kb", "--source-id", "policy"]) == 1
+    failure = capsys.readouterr()
+    assert "no Source Binding Manifest for published version 'v-active'" in failure.err
+
+
+def test_source_legacy_store_denial_maps_to_cli_and_json_refusals(
+    tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D1-B: a permission-denied legacy binding read surfaces as the mapped
+    actionable refusal — exit 1 for inspect, structured JSON for resolve
+    --json — never an uncaught traceback."""
+    import obstore
+    from lumio_wiki import cli
+    from lumio_wiki.artifact_store import ArtifactAccessDenied, InMemoryArtifactStore
+    from lumio_wiki.s3_location import S3Location
+    from lumio_wiki.s3_publish import _publish_s3_working_tree
+
+    legacy_kb = tmp_path / "legacy-kb"
+    shutil.copytree(FIXTURES / "valid", legacy_kb)
+    store = obstore.store.MemoryStore()
+    _publish_s3_working_tree(store, "kb", source_root=legacy_kb, version="v-active")
+
+    class _DeniedLegacyStore(InMemoryArtifactStore):
+        """The configured private store denies reads of the binding object."""
+
+        def get_binding_manifest(self, version):
+            raise ArtifactAccessDenied("credentials cannot read the legacy Source Binding Manifest")
+
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    monkeypatch.setattr(cli, "_artifact_store_from_env", lambda: _DeniedLegacyStore())
+    monkeypatch.setattr(
+        cli, "_publication_metadata_store_for_s3", lambda _uri: InMemoryArtifactStore()
+    )
+    monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (store, "kb"))
+    published = S3Location(store, "kb", version="v-active", store_uri="s3://bucket")
+    monkeypatch.setattr(
+        cli, "_resolve_object_store_location", lambda value, version=None: published
+    )
+
+    denial = "credentials cannot read the legacy Source Binding Manifest"
+    assert main(["source", "inspect", "s3://bucket/kb", "--source-id", "policy"]) == 1
+    failure = capsys.readouterr()
+    assert denial in failure.err
+    assert "Traceback" not in failure.err
+
+    assert main(["source", "resolve", "s3://bucket/kb", "Lumio Overview", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "cli_error"
 
 
 # ---------------------------------------------------------------------------
@@ -2750,10 +2713,8 @@ def test_source_resolve_ambiguous_page_lists_bounded_candidates(
     source_kb: Path, source_file: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert _register_policy(source_kb, source_file) == 0
-    ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    ingest.source_registry.register_source(
-        "atlas-heatworks-product-catalog", b"atlas bytes", filename="atlas.pdf"
-    )
+    ingest = _SR(source_kb.parent.parent / "registry")
+    ingest.register_source("atlas-heatworks-product-catalog", b"atlas bytes", filename="atlas.pdf")
     (source_kb / "dual_page.md").write_text(DUAL_SOURCE_PAGE_MD, encoding="utf-8")
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
 
@@ -2777,10 +2738,8 @@ def test_source_resolve_title_shaped_query_without_page_yields_bounded_hint(
     source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The reader-trial AC (#176): a failed lookup points at the exact id."""
-    ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    ingest.source_registry.register_source(
-        "atlas-heatworks-product-catalog", b"atlas bytes", filename="atlas.pdf"
-    )
+    ingest = _SR(source_kb.parent.parent / "registry")
+    ingest.register_source("atlas-heatworks-product-catalog", b"atlas bytes", filename="atlas.pdf")
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
 
     # No page carries this title: resolution is by exact surfaces only (no
@@ -2840,14 +2799,244 @@ def test_source_resolve_published_version_resolves_manifest_binding(
     )
 
 
+def test_source_resolve_replay_carries_the_explicit_registry(
+    tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D4: the replay command preserves the explicitly selected registry, so
+    it re-resolves the same exact pin with no registry environment."""
+    import hashlib
+    import shlex
+
+    from lumio_wiki.source_references import (
+        SourceReferenceManifest,
+        serialize_source_reference_manifest,
+    )
+    from lumio_wiki.source_registry import SourceRegistry
+
+    kb = tmp_path / "authoring-kb"
+    shutil.copytree(FIXTURES / "valid", kb)
+    (kb / "cli_page.md").write_text(
+        textwrap.dedent(
+            """\
+            ---
+            title: "CLI Page"
+            id: "entity:cli"
+            aliases: []
+            tags: ["cli"]
+            summary: "A Compiled Page backed by the policy Knowledge Source."
+            lifecycle: "approved"
+            visibility: "internal"
+            sources:
+              - id: "policy"
+                title: "Policy Knowledge Source"
+            synthetic: false
+            ---
+
+            # CLI Page
+            """
+        ),
+        encoding="utf-8",
+    )
+    policy_raw = b"explicitly registered policy source bytes"
+    policy_digest = hashlib.sha256(policy_raw).hexdigest()
+    registry_root = tmp_path / "private-registry"
+    registry = SourceRegistry(registry_root)
+    registry.register_source("policy", policy_raw, filename="policy.txt", content_type="text/plain")
+    (kb / ".lumio-authoring.yaml").write_bytes(
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(
+                version=1,
+                namespace="urn:uuid:3f2a8c1e-6b7d-4e2f-9a3c-5d8e7f1a2b3c",
+                sources={"policy": "active"},
+                bindings={"entity:cli": {"policy": policy_digest}},
+            )
+        )
+    )
+    monkeypatch.delenv("LUMIO_SOURCE_REGISTRY", raising=False)
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    assert (
+        main(["source", "resolve", str(kb), "CLI Page", "--source-registry", str(registry_root)])
+        == 0
+    )
+    out = capsys.readouterr().out
+    next_line = next(line for line in out.splitlines() if line.startswith("next:"))
+    command = next_line.partition(":")[2].strip()
+    assert command.startswith("lumio-wiki source inspect")
+    assert "--entity-id entity:cli" in command
+    assert (
+        f"--source-registry {registry_root}" in command
+        or f'--source-registry "{registry_root}"' in command
+    )
+
+    # Replaying the printed command with NO registry environment resolves the
+    # same exact pin (the registry flag travels with the command, D4).
+    assert main(shlex.split(command)[1:]) == 0
+    replayed = capsys.readouterr().out
+    assert f"content_hash:    {policy_digest[:12]}" in replayed
+
+
+def test_source_resolution_scopes_published_bindings_to_entity(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from lumio_wiki import cli
+
+    for entity_id, title in (("entity-one", "Entity One"), ("entity-two", "Entity Two")):
+        page = source_kb / f"{entity_id}.md"
+        page.write_text(
+            textwrap.dedent(
+                f'''\
+                ---
+                title: "{title}"
+                id: "{entity_id}"
+                aliases: []
+                tags: []
+                sources:
+                  - id: "policy"
+                    title: "Policy Knowledge Source"
+                synthetic: false
+                ---
+
+                # {title}
+                '''
+            ),
+            encoding="utf-8",
+        )
+
+    store = _SigningInMemoryStore()
+    digest = lw.artifact_content_hash(INSPECTION_RAW)
+    store.put_artifact(
+        source_id="policy",
+        content_hash=digest,
+        raw_bytes=INSPECTION_RAW,
+        content_type="application/pdf",
+        filename="policy.pdf",
+    )
+    lw.write_binding_manifest(
+        store,
+        lw.SourceBindingManifest(
+            published_version="v2026",
+            fingerprint="fp",
+            created_at="2026-08-21T00:00:00Z",
+            entries=[
+                lw.SourceBindingEntry(
+                    page_title=title,
+                    source_id="policy",
+                    content_hash=digest,
+                    filename=f"{entity_id}.pdf",
+                    size=len(INSPECTION_RAW),
+                    entity_id=entity_id,
+                )
+                for entity_id, title in (("entity-one", "Entity One"), ("entity-two", "Entity Two"))
+            ],
+        ),
+    )
+    monkeypatch.setattr(cli, "_artifact_store_from_env", lambda: store)
+
+    assert (
+        main(
+            [
+                "source",
+                "resolve",
+                str(source_kb),
+                "Entity Two",
+                "--published-version",
+                "v2026",
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "entity_id:       entity-two" in out
+    assert (
+        f'next:            lumio-wiki source inspect "{source_kb.resolve()}" '
+        "--source-id policy --entity-id entity-two --published-version v2026" in out
+    )
+
+    assert (
+        main(
+            [
+                "source",
+                "inspect",
+                str(source_kb),
+                "--source-id",
+                "policy",
+                "--published-version",
+                "v2026",
+            ]
+        )
+        == 1
+    )
+    assert "multiple Entities" in capsys.readouterr().err
+
+    assert (
+        main(
+            [
+                "source",
+                "inspect",
+                str(source_kb),
+                "--source-id",
+                "policy",
+                "--entity-id",
+                "entity-two",
+                "--published-version",
+                "v2026",
+            ]
+        )
+        == 0
+    )
+    inspect_out = capsys.readouterr().out
+    assert "entity_id:       entity-two" in inspect_out
+    assert "filename:        entity-two.pdf" in inspect_out
+
+    fetch_path = tmp_path / "entity-two.pdf"
+    assert (
+        main(
+            [
+                "source",
+                "fetch",
+                str(source_kb),
+                "--source-id",
+                "policy",
+                "--entity-id",
+                "entity-two",
+                "--published-version",
+                "v2026",
+                "--output",
+                str(fetch_path),
+            ]
+        )
+        == 0
+    )
+    assert fetch_path.read_bytes() == INSPECTION_RAW
+
+    assert (
+        main(
+            [
+                "source",
+                "link",
+                str(source_kb),
+                "--source-id",
+                "policy",
+                "--entity-id",
+                "entity-two",
+                "--published-version",
+                "v2026",
+                "--expires",
+                "1h",
+            ]
+        )
+        == 0
+    )
+    assert "https://objects.example/artifacts/policy/" in capsys.readouterr().out
+
+
 def test_source_inspect_unknown_id_error_names_close_id_and_command(
     source_kb: Path, source_file: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Issue #176 AC: the failed lookup error points at the exact id or command."""
-    ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    ingest.source_registry.register_source(
-        "atlas-heatworks-product-catalog", b"atlas bytes", filename="atlas.pdf"
-    )
+    ingest = _SR(source_kb.parent.parent / "registry")
+    ingest.register_source("atlas-heatworks-product-catalog", b"atlas bytes", filename="atlas.pdf")
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
 
     # A title-shaped --source-id (the reader-trial failure shape): the error
@@ -2874,8 +3063,8 @@ def test_source_fetch_unavailable_artifact_error_explains_retention_step(
 ) -> None:
     """Issue #174/#176: unavailable explains retention; unknown does not reach fetch."""
     # Registered but NOT retained: an empty store directory is configured.
-    ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    ingest.source_registry.register_source("policy", INSPECTION_RAW, filename="policy.pdf")
+    ingest = _SR(source_kb.parent.parent / "registry")
+    ingest.register_source("policy", INSPECTION_RAW, filename="policy.pdf")
     store_root = tmp_path / "artifact-store"
     store_root.mkdir()
     monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
@@ -3006,3 +3195,444 @@ def test_fence_aware_sections_align_page_reads_validation_and_zero_index(
         for result in results
     )
     assert any(result.citation.section_title == "Actual" for result in results)
+
+
+# ---------------------------------------------------------------------------
+# G3 fix-a1 (plan 0008 r11): selected-registry lifecycle regression for the
+# accepted F9 finding.
+# ---------------------------------------------------------------------------
+
+
+def _git(args, repo: Path):
+    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr.decode()
+    return result.stdout.decode().strip()
+
+
+def test_source_confirm_candidate_uses_selected_registry(tmp_path, capsys):
+    """F9 (spec 0008 §3.2): on an adopted Knowledge Base, the candidate
+    register/dismiss/confirm lifecycle operates on the EXPLICITLY selected
+    shared private registry — a candidate recorded through the public
+    registry API in the selected registry is found and confirmed, never
+    searched for in a legacy ingest store."""
+    from lumio_wiki.source_registry import SourceRegistry
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _git(["config", "user.email", "t@example.com"], repo)
+    _git(["config", "user.name", "T"], repo)
+    kb = repo / "kb"
+    kb.mkdir()
+    (kb / "page.md").write_text(
+        "---\n"
+        'title: "Registry Page"\n'
+        "aliases: []\n"
+        'tags:\n  - "t"\n'
+        'summary: "s."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "sources:\n"
+        '  - title: "Registry Source"\n'
+        "synthetic: false\n"
+        "---\n\nBody.\n",
+        encoding="utf-8",
+    )
+    (kb / ".lumio-authoring.yaml").write_text(
+        'version: 1\nnamespace: "urn:uuid:11111111-2222-3333-4444-555555555555"\n'
+        "sources:\n  archived-doc:\n    status: active\nbindings: {}\n",
+        encoding="utf-8",
+    )
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "base"], repo)
+
+    registry_root = tmp_path / "selected-registry"
+    registry = SourceRegistry(registry_root)
+    registry.register_source("archived-doc", b"archived document bytes")
+    candidate = registry.record_retirement_candidate("archived-doc", "watched file missing")
+
+    code = main(
+        [
+            "source",
+            "--source-registry",
+            str(registry_root),
+            "confirm-candidate",
+            str(kb),
+            "--candidate-id",
+            candidate.id,
+            "--source-id",
+            "archived-doc",
+        ]
+    )
+    out = capsys.readouterr()
+    assert code == 0, out.out + out.err
+    assert "Retired Knowledge Source 'archived-doc'" in out.out
+    # The Git manifest carries the retirement intent; the legacy ingest
+    # store was never consulted or created.
+    manifest_text = (kb / ".lumio-authoring.yaml").read_text(encoding="utf-8")
+    assert "retired" in manifest_text
+    assert not (kb / ".lumio").exists()
+    decided = registry.get_candidate(candidate.id)
+    assert decided.status == "confirmed"
+
+
+# ---------------------------------------------------------------------------
+# G3 fix-a1 (plan 0008 r11): the composed semantic+link dream apply (F8).
+# New behavior — no failing-first repro applies.
+# ---------------------------------------------------------------------------
+
+
+def test_dream_semantic_stage_composes_link_repairs_into_one_apply(tmp_path, monkeypatch, capsys):
+    """F8: `dream --semantic --stage` composes the semantic finding AND the
+    deterministic link repair targeting the SAME page against one original
+    into ONE checked apply — both edits land in one page revision, and the
+    command succeeds instead of refusing its own first edit as unrelated."""
+    import contextlib
+    import io
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _git(["config", "user.email", "t@example.com"], repo)
+    _git(["config", "user.name", "T"], repo)
+    kb_dir = repo / "kb"
+    kb_dir.mkdir()
+    (kb_dir / "page.md").write_text(
+        "---\n"
+        'title: "Notes Page"\n'
+        "aliases: []\n"
+        'tags:\n  - "t"\n'
+        'summary: "Original summary."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        'sources:\n  - title: "Notes source"\n'
+        "synthetic: false\n"
+        "---\n\n"
+        "# Notes Page\n\n"
+        "The Target Page carries the detail.\n",
+        encoding="utf-8",
+    )
+    (kb_dir / "target.md").write_text(
+        "---\n"
+        'title: "Target Page"\n'
+        "aliases: []\n"
+        'tags:\n  - "t"\n'
+        'summary: "Target summary."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        'sources:\n  - title: "Target source"\n'
+        "synthetic: false\n"
+        "---\n\n"
+        "# Target Page\n\n"
+        "Body.\n",
+        encoding="utf-8",
+    )
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "base"], repo)
+
+    from lumio_wiki.semantic_maintenance import (
+        SemanticDreamReviewer,
+        SemanticFinding,
+        SemanticReviewReport,
+    )
+
+    hand_report = None
+
+    def _stub_review(self):
+        nonlocal hand_report
+        import lumio_wiki as lw
+
+        kb, _report = lw.load_knowledge_base(kb_dir)
+        hand_report = SemanticReviewReport(
+            pages=tuple(kb.pages),
+            findings=(
+                SemanticFinding(
+                    kind="stale",
+                    pages=("page.md",),
+                    reason="Superseded by a newer record.",
+                    lifecycle="deprecated",
+                ),
+            ),
+        )
+        return hand_report
+
+    monkeypatch.setattr(SemanticDreamReviewer, "review", _stub_review)
+    # The reviewer constructor configures the provider before review() runs;
+    # stub the client builder like the existing semantic CLI tests do.
+    monkeypatch.setenv("LUMIO_PROVIDER_MODEL", "fake-model")
+    monkeypatch.setattr(SemanticDreamReviewer, "_build_client", staticmethod(lambda: object()))
+
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(
+            [
+                "dream",
+                str(kb_dir),
+                "--semantic",
+                "--stage",
+                "--limit",
+                "4",
+            ]
+        )
+    assert code in (0, 1), err.getvalue()  # exit 1 only if lint flags residue
+    stdout = out.getvalue()
+    assert "semantic_applied_pages: 1" in stdout
+
+    edited = (kb_dir / "page.md").read_text(encoding="utf-8")
+    import msgspec.yaml as yaml
+
+    data = yaml.decode(edited.split("---")[1])
+    # BOTH the semantic lifecycle flip AND the deterministic link repair are
+    # present in ONE page revision.
+    assert data["lifecycle"] == "deprecated"
+    # The deterministic mention repair links the target page (markdown
+    # path-link form) in the SAME single revision.
+    assert "[Target Page](target.md)" in edited
+    assert "The Target Page carries" not in edited
+
+
+# ---------------------------------------------------------------------------
+# G3-R (plan 0008 r12): native source-writer safety/registration residuals
+# (D4/D5) and the composed link-before-frontmatter dream repair (D3).
+# ---------------------------------------------------------------------------
+
+
+def _residual_git_kb(tmp_path: Path) -> tuple[Path, Path]:
+    """A committed manifest-bearing Git worktree KB plus its repo root."""
+    from test_git_authoring import _commit, _init_repo, _write_kb
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    return repo, kb
+
+
+def test_native_source_writers_refuse_unsafe_private_selections(tmp_path, capsys):
+    """D4 (spec 0008 §3.2): the native register/candidate/dismiss/confirm
+    writers reuse the repository-relative tracked-original/tracked-registry
+    and inside-KB refusal BEFORE any private byte is written."""
+    from lumio_wiki.source_registry import SourceRegistry
+
+    repo, kb = _residual_git_kb(tmp_path)
+    tracked_registry = repo / "tracked-private"
+    tracked_registry.mkdir()
+    SourceRegistry(tracked_registry).register_source("unsafe-doc", b"seed bytes")
+    from test_git_authoring import _commit
+
+    _commit(repo)
+    original = tmp_path / "original.txt"
+    original.write_bytes(b"operator original bytes")
+
+    code = main(
+        [
+            "source",
+            "--source-registry",
+            str(tracked_registry),
+            "register",
+            str(kb),
+            "--file",
+            str(original),
+            "--source-id",
+            "unsafe-doc",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1, captured.out
+    assert "Git-tracked" in captured.err
+    # No private write happened: the registry still holds only the seed.
+    assert len(SourceRegistry(tracked_registry).get("unsafe-doc").versions) == 1
+
+    # A Git-tracked --file original is refused too (untracked registry).
+    untracked_registry = tmp_path / "untracked-registry"
+    tracked_original = repo / "tracked-original.txt"
+    tracked_original.write_bytes(b"tracked original bytes")
+    _commit(repo)
+    code = main(
+        [
+            "source",
+            "--source-registry",
+            str(untracked_registry),
+            "register",
+            str(kb),
+            "--file",
+            str(tracked_original),
+            "--source-id",
+            "fresh-doc",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1, captured.out
+    assert "Git-tracked" in captured.err
+    assert all(s.source_id != "fresh-doc" for s in SourceRegistry(untracked_registry).list())
+
+    # A registry inside the KB subtree is refused before any write.
+    inside_registry = kb / "inside-registry"
+    code = main(
+        [
+            "source",
+            "--source-registry",
+            str(inside_registry),
+            "register",
+            str(kb),
+            "--file",
+            str(original),
+            "--source-id",
+            "another-doc",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1, captured.out
+    assert "OUTSIDE the authoring Knowledge Base subtree" in captured.err
+    assert not inside_registry.exists()
+
+
+def test_native_register_converges_and_extends_history(tmp_path, capsys):
+    """D5 (spec 0008 §3.2): native register uses the exact-version
+    primitive — an identical retry converges (reused), different bytes
+    extend the immutable history, and Git lifecycle intent/pins stay
+    untouched until an explicit authoring change."""
+    import hashlib
+
+    from lumio_wiki.source_references import parse_source_reference_manifest
+    from lumio_wiki.source_registry import SourceRegistry
+    from test_git_authoring import SOURCE_REFERENCE_MANIFEST_BASENAME
+
+    repo, kb = _residual_git_kb(tmp_path)
+    registry_root = tmp_path / "registry"
+    original = tmp_path / "doc.txt"
+    original.write_bytes(b"first bytes")
+
+    def _register() -> str:
+        code = main(
+            [
+                "source",
+                "--source-registry",
+                str(registry_root),
+                "register",
+                str(kb),
+                "--file",
+                str(original),
+                "--source-id",
+                "native-doc",
+            ]
+        )
+        out = capsys.readouterr()
+        assert code == 0, out.out + out.err
+        return out.out
+
+    out = _register()
+    assert "registered" in out
+    # Identical retry converges.
+    out = _register()
+    assert "reused" in out
+    # Different bytes extend the immutable history without Git intent change.
+    original.write_bytes(b"second, different bytes")
+    out = _register()
+    assert "registered" in out
+    source = SourceRegistry(registry_root).get("native-doc")
+    assert [version.content_hash for version in source.versions] == [
+        hashlib.sha256(b"first bytes").hexdigest(),
+        hashlib.sha256(b"second, different bytes").hexdigest(),
+    ]
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert "native-doc" not in manifest.sources
+    assert not manifest.bindings
+
+
+def test_dream_composes_link_repairs_before_frontmatter_shifts_coordinates(
+    tmp_path, monkeypatch, capsys
+):
+    """D3: a semantic frontmatter edit (inline YAML normalizes to block
+    style, shifting body lines) must not lose the compatible selected link
+    repair — the deterministic mention repair composes FIRST from the
+    ORIGINAL coordinates and the semantic edit composes on top; ONE apply
+    carries both."""
+    import contextlib
+    import io
+
+    from lumio_wiki.semantic_maintenance import (
+        SemanticDreamReviewer,
+        SemanticFinding,
+        SemanticReviewReport,
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _git(["config", "user.email", "t@example.com"], repo)
+    _git(["config", "user.name", "T"], repo)
+    kb_dir = repo / "kb"
+    kb_dir.mkdir()
+    # Inline flow-sequence frontmatter: block-style normalization on the
+    # semantic edit SHIFTS the body's absolute line numbers.
+    (kb_dir / "page.md").write_text(
+        "---\n"
+        'title: "Notes Page"\n'
+        "aliases: []\n"
+        "tags: [t]\n"
+        'summary: "Original summary."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        'sources:\n  - title: "Notes source"\n'
+        "synthetic: false\n"
+        "---\n\n"
+        "# Notes Page\n\n"
+        "The Target Page carries the detail.\n",
+        encoding="utf-8",
+    )
+    (kb_dir / "target.md").write_text(
+        "---\n"
+        'title: "Target Page"\n'
+        "aliases: []\n"
+        'tags:\n  - "t"\n'
+        'summary: "Target summary."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        'sources:\n  - title: "Target source"\n'
+        "synthetic: false\n"
+        "---\n\n"
+        "# Target Page\n\n"
+        "Body.\n",
+        encoding="utf-8",
+    )
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "base"], repo)
+
+    def _stub_review(self):
+        import lumio_wiki as lw
+
+        kb, _report = lw.load_knowledge_base(kb_dir)
+        return SemanticReviewReport(
+            pages=tuple(kb.pages),
+            findings=(
+                SemanticFinding(
+                    kind="summary",
+                    pages=("page.md",),
+                    reason="Rewrite for clarity.",
+                    summary="Composed page summary.",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(SemanticDreamReviewer, "review", _stub_review)
+    monkeypatch.setenv("LUMIO_PROVIDER_MODEL", "fake-model")
+    monkeypatch.setattr(SemanticDreamReviewer, "_build_client", staticmethod(lambda: object()))
+
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(["dream", str(kb_dir), "--semantic", "--stage", "--limit", "4"])
+    assert code in (0, 1), err.getvalue()
+    stdout = out.getvalue()
+    assert "semantic_applied_pages: 1" in stdout
+
+    import msgspec.yaml as yaml
+
+    edited = (kb_dir / "page.md").read_text(encoding="utf-8")
+    data = yaml.decode(edited.split("---")[1])
+    # BOTH the semantic summary replacement AND the deterministic mention
+    # repair (from the ORIGINAL coordinates) landed in ONE page revision.
+    assert data["summary"] == "Composed page summary."
+    assert "[Target Page](target.md)" in edited
+    assert "The Target Page carries" not in edited

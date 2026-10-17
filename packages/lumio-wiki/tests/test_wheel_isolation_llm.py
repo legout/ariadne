@@ -230,12 +230,7 @@ def test_base_wheel_llm_distiller_fails_actionably(llm_wheel_env: dict, tmp_path
 
 
 def test_llm_extra_smoke_ingest_with_fake_provider(llm_wheel_env: dict, tmp_path: Path):
-    """AC2/AC6: a smoke ingest→proposal succeeds with the [llm] extra + FAKE provider.
-
-    The fake provider is injected by monkeypatching ``OpenAIDistiller`` so no
-    real API call is ever made. The proposal carries the same provenance,
-    routing, and validation as a host-agent proposal.
-    """
+    """Installed [llm] prepares a valid native worktree edit using a fake provider."""
     python = llm_wheel_env["llm_python"]
     bin_dir = python.parent
     script = bin_dir / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
@@ -254,7 +249,18 @@ def test_llm_extra_smoke_ingest_with_fake_provider(llm_wheel_env: dict, tmp_path
     )
     source = tmp_path / "source.txt"
     source.write_text("some source text for the fake provider", encoding="utf-8")
+    metadata_before = {
+        p.relative_to(kb_root): p.read_bytes() if p.is_file() else None
+        for p in (kb_root / ".lumio").rglob("*")
+    }
 
+    subprocess.run(["git", "-C", str(kb_root), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(kb_root), "config", "user.email", "test@example.com"], check=True
+    )
+    subprocess.run(["git", "-C", str(kb_root), "config", "user.name", "Test Author"], check=True)
+    subprocess.run(["git", "-C", str(kb_root), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(kb_root), "commit", "-qm", "baseline"], check=True)
     driver = tmp_path / "drive_fake_distiller.py"
     driver.write_text(_FAKE_DISTILLER_DRIVER, encoding="utf-8")
 
@@ -270,20 +276,24 @@ def test_llm_extra_smoke_ingest_with_fake_provider(llm_wheel_env: dict, tmp_path
         text=True,
     )
     assert result.returncode == 0, f"fake-provider ingest failed:\n{result.stderr}"
-    assert "Staged proposal" in result.stdout
-    assert "LLM Wheel Page" in result.stdout
+    assert not (kb_root / ".lumio" / "ingest").exists()
+    assert {
+        p.relative_to(kb_root): p.read_bytes() if p.is_file() else None
+        for p in (kb_root / ".lumio").rglob("*")
+    } == metadata_before
+    assert "converted_by:   text" in result.stdout
+    page_text = (kb_root / "concepts" / "llm_wheel_page.md").read_text()
+    import msgspec
 
-    # The staged proposal validates (same proposal shape as host-agent ingest).
-    proposals_dir = kb_root / ".lumio" / "ingest" / "proposals"
-    proposal_files = list(proposals_dir.glob("*.json"))
-    assert len(proposal_files) == 1
-    proposal_id = proposal_files[0].stem
-    result = subprocess.run(
-        [str(script), "proposal", "validate", str(kb_root), proposal_id],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, f"proposal validate failed:\n{result.stderr}"
+    metadata = msgspec.yaml.decode(page_text.split("---", 2)[1].encode())
+    assert metadata["title"] == "LLM Wheel Page"
+    assert metadata["id"] == "entity:llm-wheel-page"
+    assert metadata["entity_types"] == ["page"]
+    assert metadata["sources"] == [{"id": "llm", "title": "Fake provider source"}]
+    assert "Body distilled by the fake provider." in page_text
+
+    result = subprocess.run([str(script), "validate", str(kb_root)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_all_extra_installs_documents_and_llm_without_lancedb(

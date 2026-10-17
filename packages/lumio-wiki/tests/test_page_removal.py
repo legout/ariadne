@@ -1,53 +1,13 @@
-"""Issue #135: publish explicit Page Removals with dependency repair.
-
-These tests exercise the Page Removal mutation through the PUBLIC Proposal
-Pipeline seam (assemble -> stage -> review/inspect -> validate -> publish ->
-discard) and cover every acceptance criterion:
-
-* AC1 — the same Proposal Pipeline as page creates/revisions.
-* AC2 — a removal is explicit, never inferred from an omitted page.
-* AC3 — page-level (sole-source-lost) invalidation proposes a removal.
-* AC4 — inspect shows removed title, lost-support reason, diff, blast radius.
-* AC5 — every canonical Relationship to the removed page is repaired;
-  unresolved canonical dependencies block publication.
-* AC6 — exactly-resolved internal body links are stripped to their readable
-  text in the same proposal; ambiguous destinations are never guessed and
-  remain visible.
-* AC7 — publication removes the page atomically, regenerates reserved
-  artifacts, and records the Activity Log transition.
-* AC9 — a blocked/failed publish leaves the Knowledge Base unchanged.
-* AC10 — coverage of removal, partial removal that keeps the page, repair,
-  body links, reserved artifacts, and rollback.
-
-Per ADR-0014 the claim-level lineage design is deferred (#137), so
-"material Claim / eligible support" (AC3) is exercised at the PAGE level via
-the ``sole-source-lost`` classification produced by a source retirement.
-"""
-
-from __future__ import annotations
+"""Retained removal/Claim/link/pin oracles, migrated from the original tests."""
 
 import re
 from pathlib import Path
 
 import lumio_wiki as lw
-import msgspec
-import pytest
-from lumio_wiki.ingest import (
-    IngestProposal,
-    IngestStore,
-    PageRemoval,
-    SourceProvenance,
-)
+from lumio_wiki.git_authoring import remove_page_in_worktree
 from lumio_wiki.knowledge_base import load_knowledge_base
-from lumio_wiki.proposal_pipeline import (
-    ProposalBlockedError,
-    ProposalPipeline,
-    ProposalPreconditionError,
-)
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+from lumio_wiki.publish import assemble_page_removal_candidate
+from test_entity_merge import _git_authoring_worktree
 
 
 def _slug(text: str) -> str:
@@ -142,82 +102,8 @@ def _categorized_kb(tmp_path: Path, *, hot_pins: list[str] | None = None) -> Pat
     return root
 
 
-def _pipeline(root: Path, tmp_path: Path) -> tuple[lw.KnowledgeBase, ProposalPipeline]:
-    kb, report = load_knowledge_base(root)
-    assert report.is_valid, report
-    store = IngestStore(tmp_path / "ingest")
-    pipeline = ProposalPipeline(kb, store=store)
-    assert pipeline._store is not None  # populated by construction; narrows the type
-    return kb, pipeline
-
-
-# ---------------------------------------------------------------------------
-# AC1 + AC2: explicit mutation through the public pipeline; never inferred
-# ---------------------------------------------------------------------------
-
-
-def test_page_removal_is_public_and_never_inferred(tmp_path):
-    root = _categorized_kb(tmp_path)
-    _write(
-        root,
-        "concepts/alpha.md",
-        _page("Alpha", relationships=[{"target": "Beta", "type": "depends-on"}]),
-    )
-    _write(root, "concepts/beta.md", _page("Beta"))
-    kb, pipeline = _pipeline(root, tmp_path)
-
-    proposal = pipeline.propose_page_removal("Beta", reason="sole-source-lost")
-
-    # AC1: persisted, reviewable, through the same pipeline.
-    assert proposal.status == "staged"
-    assert pipeline.review(proposal.id) is not None
-    assert proposal.id in [p.id for p in pipeline.list()]
-    assert proposal.removed_pages == [
-        PageRemoval(title="Beta", lost_support_reason="sole-source-lost")
-    ]
-    # AC2: a removal is explicit. An ordinary revision proposal that simply
-    # omits Beta carries NO removed_pages — Beta is never inferred removed.
-    revision = pipeline.assemble(
-        _page("Alpha", relationships=[{"target": "Beta", "type": "depends-on"}]),
-        SourceProvenance(None, None, "text"),
-        "alpha.md",
-    )
-    assert revision.removed_pages == []
-    assert "Beta" in [p.title for p in kb.pages]  # untouched
-
-
-def test_page_removal_unknown_title_is_refused(tmp_path):
-    root = _categorized_kb(tmp_path)
-    _write(root, "concepts/alpha.md", _page("Alpha"))
-    _kb, pipeline = _pipeline(root, tmp_path)
-    with pytest.raises(Exception, match="no Compiled Page"):
-        pipeline.propose_page_removal("Does Not Exist")
-
-
-def test_page_removal_serializes_and_round_trips(tmp_path):
-    """AC1: removed_pages + body_link_repairs persist through msgspec JSON."""
-    root = _categorized_kb(tmp_path)
-    _write(
-        root,
-        "concepts/alpha.md",
-        _page("Alpha", body="see [[Beta]]", relationships=[{"target": "Beta", "type": "see"}]),
-    )
-    _write(root, "concepts/beta.md", _page("Beta"))
-    _kb, pipeline = _pipeline(root, tmp_path)
-    proposal = pipeline.propose_page_removal("Beta", reason="lost")
-    encoded = msgspec.json.encode(proposal)
-    decoded = msgspec.json.decode(encoded, type=IngestProposal)
-    assert decoded.removed_pages == proposal.removed_pages
-    assert decoded.body_link_repairs == proposal.body_link_repairs
-
-
-# ---------------------------------------------------------------------------
-# AC5 + AC6: relationship repair + location-bearing body-link candidates
-# ---------------------------------------------------------------------------
-
-
 def test_relationship_repair_drops_edges_and_repairs_exactly_resolved_links(tmp_path):
-    root = _categorized_kb(tmp_path)
+    root = _categorized_kb(tmp_path, hot_pins=["Beta"])
     _write(
         root,
         "concepts/alpha.md",
@@ -232,16 +118,19 @@ def test_relationship_repair_drops_edges_and_repairs_exactly_resolved_links(tmp_
     )
     _write(root, "concepts/beta.md", _page("Beta"))
     _write(root, "concepts/gamma.md", _page("Gamma"))
-    _kb, pipeline = _pipeline(root, tmp_path)
+    kb, _ = load_knowledge_base(root)
 
-    proposal = pipeline.propose_page_removal("Beta")
+    proposal = assemble_page_removal_candidate(kb, "Beta")
 
     # AC5: Alpha gets ONE repair revision that drops the depends-on edge.
     assert [p.title for p in proposal.proposed_pages] == ["Alpha"]
     repair = proposal.proposed_pages[0]
     # The dropped edge surfaces in the blast radius (review disclosure).
     assert proposal.blast_radius is not None
-    assert any("Beta" in c for c in proposal.blast_radius.relationship_changes)
+    assert any(
+        c.claim_id == "claim:alpha-beta-0" and c.change == "removed"
+        for c in proposal.blast_radius.claim_changes
+    )
     # The repair markdown no longer claims the removed page's Entity.
     _data, _body, _ = lw.parse_frontmatter(repair.markdown, Path("concepts/alpha.md"))
     assert all(c.get("object") != "entity:beta" for c in _data.get("claims", []))
@@ -259,19 +148,13 @@ def test_relationship_repair_drops_edges_and_repairs_exactly_resolved_links(tmp_
         if c.source_title == "Alpha" and c.target_title == "Beta"
     ]
     assert len(alpha_beta) == 1
-
-
-def test_body_only_page_without_claims_is_proposed_and_repaired(tmp_path):
-    """A page with ONLY a body link to the removed page still gets a revision."""
-    root = _categorized_kb(tmp_path)
-    _write(root, "concepts/alpha.md", _page("Alpha", body="See [the notes](beta.md)."))
-    _write(root, "concepts/beta.md", _page("Beta"))
-    _kb, pipeline = _pipeline(root, tmp_path)
-
-    proposal = pipeline.propose_page_removal("Beta")
-    assert [p.title for p in proposal.proposed_pages] == ["Alpha"]
-    assert "See the notes." in proposal.proposed_pages[0].markdown
-    assert not proposal.blocked
+    _git_authoring_worktree(root)
+    remove_page_in_worktree(root, "Beta")
+    after, report = load_knowledge_base(root)
+    assert report.is_valid, report
+    assert {p.title for p in after.pages} == {"Alpha", "Gamma"}
+    assert after.control is not None
+    assert after.control.hot_index == []
 
 
 def test_external_images_code_and_ambiguous_links_are_untouched(tmp_path):
@@ -284,7 +167,7 @@ def test_external_images_code_and_ambiguous_links_are_untouched(tmp_path):
             "Alpha",
             body=(
                 "Web at [site](https://example.com/beta) and ![alt](beta.md) and "
-                "code `[[Beta]]` plus [x](beta.md \"title\") end."
+                'code `[[Beta]]` plus [x](beta.md "title") end.'
             ),
         ),
     )
@@ -294,485 +177,23 @@ def test_external_images_code_and_ambiguous_links_are_untouched(tmp_path):
         "concepts/zeta.md",
         _page("BETA").replace('id: "entity:beta"', 'id: "entity:beta-shadow"'),
     )
-    _kb, pipeline = _pipeline(root, tmp_path)
+    kb, _ = load_knowledge_base(root)
 
-    proposal = pipeline.propose_page_removal("Beta")
+    proposal = assemble_page_removal_candidate(kb, "Beta")
 
     # Nothing staged: the only internal link is ambiguous (Beta AND BETA),
     # never guessed. The removal itself still stages (diagnostic, not blocking).
     assert proposal.proposed_pages == []
-    assert not proposal.blocked
+    assert proposal.validation_report.is_valid
 
     # With the case collision gone, exactly-resolved links unwrap while the
     # external URL, image, and inline-code span stay verbatim.
     (root / "concepts/zeta.md").unlink()
     kb2, _ = load_knowledge_base(root)
-    pipeline2 = ProposalPipeline(kb2, store=IngestStore(root.parent / "ingest2"))
-    proposal2 = pipeline2.propose_page_removal("Beta")
+    proposal2 = assemble_page_removal_candidate(kb2, "Beta")
     assert [p.title for p in proposal2.proposed_pages] == ["Alpha"]
     markdown = proposal2.proposed_pages[0].markdown
     assert "[site](https://example.com/beta)" in markdown
     assert "![alt](beta.md)" in markdown
     assert "`[[Beta]]`" in markdown
     assert "code `[[Beta]]` plus x end." in markdown
-
-
-def test_published_kb_has_no_broken_link_warning_for_repaired_links(tmp_path):
-    root = _categorized_kb(tmp_path)
-    _write(
-        root,
-        "concepts/alpha.md",
-        _page("Alpha", body="Details in [[Beta]] and [backup docs](beta.md)."),
-    )
-    _write(root, "concepts/beta.md", _page("Beta"))
-    _kb, pipeline = _pipeline(root, tmp_path)
-
-    proposal = pipeline.propose_page_removal("Beta")
-    pipeline.publish(proposal.id)
-
-    kb2, report2 = load_knowledge_base(root)
-    assert report2.is_valid, report2
-    assert "Beta" not in [p.title for p in kb2.pages]
-    assert not [
-        i
-        for i in report2.issues
-        if i.severity == "warning" and "internal link" in i.message and "Beta" in i.message
-    ], "repaired links must not leave broken-link warnings"
-
-
-def test_unresolved_canonical_dependency_blocks_publication(tmp_path):
-    """AC5: a relationship the proposal does NOT repair blocks publication.
-
-    A Maintainer who strips the repair revision from the staged proposal leaves
-    an unresolved Relationship target; candidate validation blocks publication
-    and the Knowledge Base is left unchanged.
-    """
-    root = _categorized_kb(tmp_path)
-    _write(
-        root,
-        "concepts/alpha.md",
-        _page("Alpha", relationships=[{"target": "Beta", "type": "depends-on"}]),
-    )
-    _write(root, "concepts/beta.md", _page("Beta"))
-    _kb, pipeline = _pipeline(root, tmp_path)
-    proposal = pipeline.propose_page_removal("Beta")
-
-    # Sabotage: drop the repair so the removal would leave a dangling edge.
-    sabotaged = msgspec.structs.replace(proposal, proposed_pages=[])
-    assert pipeline._store is not None
-    pipeline._store.save_proposal(sabotaged)
-
-    # P4 review: the altering save over the reviewable record STRIPS the
-    # reviewed claim — an altered proposal can no longer publish against its
-    # old reviewed base — so publication refuses at the precondition gate.
-    saved = pipeline._store.get(proposal.id)
-    assert saved is not None and saved.preconditions is None
-    with pytest.raises(ProposalPreconditionError):
-        pipeline.publish(proposal.id)
-
-    # The full-candidate gate still blocks the same dangling edge when the
-    # sabotaged content is properly re-staged against a fresh reviewed base.
-    restaged = pipeline.stage(
-        msgspec.structs.replace(
-            proposal, proposed_pages=[], preconditions=None, reviewed_identity=None
-        )
-    )
-    with pytest.raises(ProposalBlockedError):
-        pipeline.publish(restaged.id)
-
-    # AC9: unchanged — Beta still on disk and resolvable.
-    kb2, _ = load_knowledge_base(root)
-    assert "Beta" in [p.title for p in kb2.pages]
-
-
-# ---------------------------------------------------------------------------
-# AC3: page-level (sole-source-lost) invalidation proposes a removal
-# ---------------------------------------------------------------------------
-
-
-def test_retirement_sole_source_lost_offers_page_removal(tmp_path):
-    """AC3: a sole-source-lost page can be removed through the same pipeline.
-
-    ADR-0014 maps "no material Claim retains eligible support" to the
-    page-level ``sole-source-lost`` classification. Retiring the only source of
-    a page classifies it sole-source-lost; the Maintainer then stages an
-    explicit Page Removal from that signal.
-    """
-    root = _categorized_kb(tmp_path)
-    _write(
-        root,
-        "concepts/policy.md",
-        _page("Policy", sources=[{"id": "handbook", "title": "Handbook"}]),
-    )
-    kb, pipeline = _pipeline(root, tmp_path)
-
-    pipeline.register_source("handbook", b"handbook-v1")
-    retire = pipeline.retire_source("handbook")
-    assert retire.source_change is not None
-    impacts = {i.page_title: i.status for i in retire.source_change.impacts}
-    assert impacts == {"Policy": "sole-source-lost"}
-
-    # The Maintainer turns the sole-source-lost signal into an explicit removal.
-    removal = pipeline.propose_page_removal(
-        "Policy", reason="sole-source-lost: no active support remains"
-    )
-    assert removal.removed_pages[0].lost_support_reason.startswith("sole-source-lost")
-    assert not removal.blocked
-    pipeline.publish(removal.id)
-
-    kb2, _ = load_knowledge_base(root)
-    assert "Policy" not in [p.title for p in kb2.pages]
-
-
-def test_partial_support_removal_keeps_the_page(tmp_path):
-    """AC10: a page that retains other active support is NOT removed.
-
-    Retiring ONE of two active sources leaves the page still-supported; no
-    Page Removal is inferred. (Partial Claim removal that keeps the page.)
-    """
-    root = _categorized_kb(tmp_path)
-    _write(
-        root,
-        "concepts/policy.md",
-        _page(
-            "Policy",
-            sources=[
-                {"id": "handbook", "title": "Handbook"},
-                {"id": "guide", "title": "Guide"},
-            ],
-        ),
-    )
-    kb, pipeline = _pipeline(root, tmp_path)
-    pipeline.register_source("handbook", b"h")
-    pipeline.register_source("guide", b"g")
-
-    retire = pipeline.retire_source("handbook")
-    assert retire.source_change is not None
-    impacts = {i.page_title: i.status for i in retire.source_change.impacts}
-    assert impacts == {"Policy": "still-supported"}
-
-    # Publishing the retirement does NOT remove the page.
-    pipeline.publish(retire.id)
-    kb2, _ = load_knowledge_base(root)
-    assert "Policy" in [p.title for p in kb2.pages]
-
-
-def test_unresolved_body_link_surfaces_as_nonblocking_diagnostic(tmp_path):
-    """AC10: a body link left un-repaired surfaces as a non-blocking
-    broken-internal-link diagnostic after publish — never silent.
-
-    Exactly-resolved links are repaired by the proposal, so a Maintainer who
-    publishes the default removal sees a clean KB. A link that resolves
-    NOWHERE (never exactly the removed page, so never repairable) still
-    surfaces as a visible, non-blocking warning rather than a silent break or
-    a blocking failure.
-    """
-    root = _categorized_kb(tmp_path)
-    _write(
-        root,
-        "concepts/alpha.md",
-        _page("Alpha", body="Details in [[Beta]] and [notes](missing-page.md)."),
-    )
-    _write(root, "concepts/beta.md", _page("Beta"))
-    kb, pipeline = _pipeline(root, tmp_path)
-    proposal = pipeline.propose_page_removal("Beta")
-    # [[Beta]] is exactly resolved and repaired; the broken link is untouched.
-    assert any(c.target_title == "Beta" for c in proposal.body_link_repairs)
-    pipeline.publish(proposal.id)
-    kb2, report2 = load_knowledge_base(root)
-    assert report2.is_valid, report2
-    alpha = next(p for p in kb2.pages if p.title == "Alpha")
-    assert "[notes](missing-page.md)" in (kb2.root / alpha.path).read_text(encoding="utf-8")
-    link_warnings = [
-        i
-        for i in report2.issues
-        if i.severity == "warning" and "internal link" in i.message
-    ]
-    assert any("missing-page" in i.message for i in link_warnings), (
-        "expected a broken-internal-link warning for the unresolvable link"
-    )
-
-
-# ---------------------------------------------------------------------------
-# AC4: inspect shows removed title, reason, diff, blast radius
-# ---------------------------------------------------------------------------
-
-
-def test_inspect_carries_removed_title_reason_diff_and_blast_radius(tmp_path):
-    root = _categorized_kb(tmp_path)
-    _write(
-        root,
-        "concepts/alpha.md",
-        _page("Alpha", relationships=[{"target": "Beta", "type": "depends-on"}]),
-    )
-    _write(root, "concepts/beta.md", _page("Beta"))
-    _kb, pipeline = _pipeline(root, tmp_path)
-
-    proposal = pipeline.propose_page_removal(
-        "Beta", reason="sole-source-lost", affected_claim_notes=["policy section unsupported"]
-    )
-
-    # Removed title + lost-support reason + affected notes (AC4).
-    rm = proposal.removed_pages[0]
-    assert rm.title == "Beta"
-    assert rm.lost_support_reason == "sole-source-lost"
-    assert rm.affected_claim_notes == ["policy section unsupported"]
-    # Unified diff includes a deletion block for the removed page (AC4).
-    assert "deleted file" in proposal.diff and "Beta" in proposal.diff
-    # Blast radius discloses the relationship repair (AC4).
-    assert proposal.blast_radius is not None
-    assert proposal.blast_radius.relationship_changes
-
-
-# ---------------------------------------------------------------------------
-# AC7: atomic publication, reserved-artifact regeneration, activity log
-# ---------------------------------------------------------------------------
-
-
-def test_publish_removes_page_regenerates_artifacts_and_logs_activity(tmp_path):
-    root = _categorized_kb(tmp_path)
-    _write(
-        root,
-        "concepts/alpha.md",
-        _page("Alpha", relationships=[{"target": "Beta", "type": "depends-on"}]),
-    )
-    _write(root, "concepts/beta.md", _page("Beta"))
-    kb, pipeline = _pipeline(root, tmp_path)
-    proposal = pipeline.propose_page_removal("Beta")
-
-    published = pipeline.publish(proposal.id)
-    assert published.status == "published"
-
-    kb2, report2 = load_knowledge_base(root)
-    assert report2.is_valid, report2
-    assert "Beta" not in [p.title for p in kb2.pages]
-    # The repaired Alpha no longer claims Beta.
-    alpha = next(p for p in kb2.pages if p.title == "Alpha")
-    assert all(claim.object != "entity:beta" for claim in alpha.claims)
-
-    # AC7: Navigation Index regenerated and excludes Beta.
-    index = (root / "index.md").read_text(encoding="utf-8")
-    assert "Alpha" in index and "Beta" not in index
-
-    # AC7: Activity Log records the page-removal transition, no Claim Lineage.
-    log = (root / "log.md").read_text(encoding="utf-8")
-    assert "page-removal" in log and "Beta" in log
-    assert "claim" not in log.lower()
-
-
-def test_publish_drops_a_pinned_hot_index_entry_atomically(tmp_path):
-    """AC7: a Hot Index pin on the removed page is dropped in the same proposal."""
-    root = _categorized_kb(tmp_path, hot_pins=["Beta"])
-    _write(root, "concepts/beta.md", _page("Beta"))
-    kb, pipeline = _pipeline(root, tmp_path)
-
-    proposal = pipeline.propose_page_removal("Beta")
-    assert proposal.control_file is not None  # pin-drop proposed atomically
-    assert [p.title for p in proposal.control_file.hot_index] == []
-    assert not proposal.blocked
-
-    pipeline.publish(proposal.id)
-    kb2, report2 = load_knowledge_base(root)
-    assert report2.is_valid, report2  # no unresolved pin remains
-    assert kb2.control is not None
-    assert [p.title for p in kb2.control.hot_index] == []
-
-
-def test_reserved_artifacts_are_regenerated_not_removed(tmp_path):
-    """AC7/AC10: publishing a removal regenerates reserved artifacts; the removed
-    page disappears from the Navigation Index while the artifacts stay present.
-
-    Reserved artifacts (Navigation Index, Hot Index, Activity Log) carry no
-    Canonical Title, so they are unreachable by a Page Removal (which targets a
-    title). The basename guard in ``apply_proposed_pages`` is defense-in-depth;
-    here we verify the public behavior: a removal publish regenerates the
-    reserved artifacts and never deletes them.
-    """
-    root = _categorized_kb(tmp_path, hot_pins=["Alpha"])
-    _write(root, "concepts/alpha.md", _page("Alpha"))
-    _write(root, "concepts/beta.md", _page("Beta"))
-    kb, pipeline = _pipeline(root, tmp_path)
-    pipeline.publish(pipeline.propose_page_removal("Beta").id)
-
-    # Reserved artifacts are present and regenerated.
-    for name in ("index.md", "log.md"):
-        assert (root / name).is_file(), f"{name} should be regenerated, not removed"
-    index = (root / "index.md").read_text(encoding="utf-8")
-    assert "Alpha" in index and "Beta" not in index
-
-    # Defense-in-depth: the basename guard refuses a removal whose resolved
-    # path is a reserved artifact (exercised directly at the apply step).
-    from lumio_wiki.publish import _reserved_basenames
-
-    assert {"index.md", "hot.md", "log.md"} <= _reserved_basenames()
-
-
-# ---------------------------------------------------------------------------
-# AC9: rollback / atomicity through the public seam
-# ---------------------------------------------------------------------------
-
-
-def test_blocked_removal_leaves_knowledge_base_unchanged(tmp_path):
-    """AC9: a removal that fails candidate validation leaves the KB unchanged."""
-    root = _categorized_kb(tmp_path)
-    _write(
-        root,
-        "concepts/alpha.md",
-        _page("Alpha", relationships=[{"target": "Beta", "type": "depends-on"}]),
-    )
-    _write(root, "concepts/beta.md", _page("Beta"))
-    kb, pipeline = _pipeline(root, tmp_path)
-
-    proposal = pipeline.propose_page_removal("Beta")
-    # Remove the repair so publication must block.
-    sabotaged = msgspec.structs.replace(proposal, proposed_pages=[])
-    assert pipeline._store is not None
-    pipeline._store.save_proposal(sabotaged)
-    snapshot_before = {p.title: (kb.root / p.path).read_text() for p in kb.pages}
-
-    # P4 review: the altering save strips the reviewed claim, so publication
-    # of the altered record refuses at the precondition gate...
-    with pytest.raises(ProposalPreconditionError):
-        pipeline.publish(proposal.id)
-
-    # ...and the full-candidate gate still blocks the same dangling edge
-    # when the sabotaged content is properly re-staged.
-    restaged = pipeline.stage(
-        msgspec.structs.replace(
-            proposal, proposed_pages=[], preconditions=None, reviewed_identity=None
-        )
-    )
-    with pytest.raises(ProposalBlockedError):
-        pipeline.publish(restaged.id)
-
-    kb2, _ = load_knowledge_base(root)
-    for title, text in snapshot_before.items():
-        page = next(p for p in kb2.pages if p.title == title)
-        assert (kb2.root / page.path).read_text() == text  # byte-unchanged
-
-
-def test_discard_transitions_a_page_removal_proposal(tmp_path):
-    """AC1: discard works through the same pipeline as creates/revisions."""
-    root = _categorized_kb(tmp_path)
-    _write(root, "concepts/beta.md", _page("Beta"))
-    _kb, pipeline = _pipeline(root, tmp_path)
-    proposal = pipeline.propose_page_removal("Beta")
-
-    discarded = pipeline.discard(proposal.id)
-    assert discarded is not None and discarded.status == "discarded"
-    # A discarded proposal cannot be published.
-    from lumio_wiki.proposal_pipeline import ProposalPipelineError
-
-    with pytest.raises(ProposalPipelineError):
-        pipeline.publish(proposal.id)
-    kb2, _ = load_knowledge_base(root)
-    assert "Beta" in [p.title for p in kb2.pages]
-
-
-def test_removal_publish_checks_captured_control_and_path_preconditions(tmp_path):
-    # Plan 02 / P4 (B03/B04): a Page Removal captures the reviewed base of
-    # every affected path — the removed page's bytes, each repaired dependent
-    # page's bytes, and the Control File whose Hot Index pin the proposal
-    # drops. Publishing re-checks them under the mutation lock: a dependent
-    # page or the Control File that drifted after review refuses publication
-    # with restage guidance, preserves the newer bytes, and leaves the
-    # proposal reviewable; with every reviewed input intact it still publishes.
-    from lumio_wiki.proposal_pipeline import ProposalPreconditionError
-
-    root = _categorized_kb(tmp_path, hot_pins=["Beta"])
-    _write(
-        root,
-        "concepts/alpha.md",
-        _page("Alpha", relationships=[{"target": "Beta", "type": "see"}]),
-    )
-    _write(root, "concepts/beta.md", _page("Beta"))
-    kb, pipeline = _pipeline(root, tmp_path)
-
-    proposal = pipeline.propose_page_removal("Beta")
-    assert not proposal.blocked, proposal.validation_report
-    assert proposal.preconditions  # durable private reviewed base captured
-    assert any(item.path == "concepts/beta.md" for item in proposal.preconditions)
-    assert any(item.path == "concepts/alpha.md" for item in proposal.preconditions)
-    assert any(item.path == "lumio.yaml" for item in proposal.preconditions)
-
-    # A repaired dependent page drifts after review (an external editor that
-    # ignores advisory locks): publish refuses and preserves the newer bytes.
-    alpha_path = root / "concepts/alpha.md"
-    original_alpha = alpha_path.read_text(encoding="utf-8")
-    drifted_alpha = original_alpha.replace("Body.", "Newer independent content.")
-    alpha_path.write_text(drifted_alpha, encoding="utf-8")
-    with pytest.raises(ProposalPreconditionError) as excinfo:
-        pipeline.publish(proposal.id)
-    assert "concepts/alpha.md" in str(excinfo.value)
-    assert "restage" in str(excinfo.value).lower()
-    assert alpha_path.read_text(encoding="utf-8") == drifted_alpha
-
-    # Restored dependent bytes, but a Control File drift (the reviewed pin
-    # state) is rejected the same way.
-    alpha_path.write_text(original_alpha, encoding="utf-8")
-    control_path = root / "lumio.yaml"
-    original_control = control_path.read_text(encoding="utf-8")
-    control_path.write_text(original_control + "\n# drifted after review\n", encoding="utf-8")
-    with pytest.raises(ProposalPreconditionError):
-        pipeline.publish(proposal.id)
-    control_path.write_text(original_control, encoding="utf-8")
-
-    # With every reviewed input intact the removal still publishes atomically.
-    published = pipeline.publish(proposal.id)
-    assert published.status == "published"
-    assert not (root / "concepts/beta.md").exists()
-    control_yaml = control_path.read_text(encoding="utf-8")
-    assert 'title: "Beta"' not in control_yaml  # pin dropped with the removal
-    # The rewritten Control File preserves the reviewed ontology: only the
-    # Hot Index pin changed (a pin-drop that erased the ontology would be
-    # exactly the silent loss the reviewed preconditions exist to prevent).
-    assert "predicates:" in control_yaml and "depends-on:" in control_yaml
-    kb2, report2 = load_knowledge_base(root)
-    assert report2.is_valid, report2
-    alpha_markdown = alpha_path.read_text(encoding="utf-8")
-    assert "entity:beta" not in alpha_markdown  # dependent edge repaired
-
-
-def test_page_removal_assembly_binds_its_reviewed_snapshot(tmp_path):
-    # Plan 02 / P4 review (stale-assembly defense): the Page Removal route
-    # assembles under the staging locks, and the ASSEMBLY OUTPUT itself now
-    # binds the reviewed snapshot — removed bytes, repair destinations, and
-    # the Control File state — so the persisted record and its reviewed base
-    # are ONE consistent snapshot and stage-time capture can never describe
-    # a newer state than the review does. The durable proposal carries
-    # exactly the assembly snapshot (identical paths, roles, kinds, and
-    # digests), and publishing still refuses when a reviewed input drifts.
-    from lumio_wiki.proposal_pipeline import ProposalPreconditionError
-
-    root = _categorized_kb(tmp_path, hot_pins=["Beta"])
-    _write(
-        root,
-        "concepts/alpha.md",
-        _page("Alpha", relationships=[{"target": "Beta", "type": "see"}]),
-    )
-    _write(root, "concepts/beta.md", _page("Beta"))
-    kb, pipeline = _pipeline(root, tmp_path)
-
-    assembled = pipeline._assemble_page_removal("Beta", reason="", affected_claim_notes=[])
-    assert assembled.preconditions
-    assert assembled.reviewed_identity is None  # identity binds only at staging
-    snapshot = {(item.path, item.role, item.kind) for item in assembled.preconditions}
-    assert ("concepts/beta.md", "removal", "file") in snapshot
-    assert ("concepts/alpha.md", "revision", "file") in snapshot
-    assert ("lumio.yaml", "control", "file") in snapshot
-
-    proposal = pipeline.propose_page_removal("Beta")
-    assert not proposal.blocked, proposal.validation_report
-    assert proposal.preconditions == assembled.preconditions
-
-    # A repaired page drifting after the reviewed snapshot still refuses
-    # publication with restage guidance, preserving the newer bytes.
-    alpha_path = root / "concepts/alpha.md"
-    drifted_alpha = alpha_path.read_text(encoding="utf-8").replace(
-        "Body.", "Newer independent content."
-    )
-    alpha_path.write_text(drifted_alpha, encoding="utf-8")
-    with pytest.raises(ProposalPreconditionError) as excinfo:
-        pipeline.publish(proposal.id)
-    assert "concepts/alpha.md" in str(excinfo.value)
-    assert alpha_path.read_text(encoding="utf-8") == drifted_alpha

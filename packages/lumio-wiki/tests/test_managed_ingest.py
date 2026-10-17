@@ -1,26 +1,34 @@
-"""Managed host-Distiller ingest (issue #149).
+"""Managed host-Distiller ingest (issue #149) on the native worktree route.
 
-Exercises the ONE deep operation that binds an original raw Knowledge Source
-(PDF/DOCX/HTML/Markdown/TXT) and a host-agent-authored Compiled Page into a
-single staged proposal, preserving raw-source lineage that ordinary
-``ingest <temp-markdown>`` loses. Covers the eight acceptance criteria in
-issue #149: the single journey, per-format provenance + immutable Source
-Version, private isolation, inspect distinction, identical-byte reuse,
-changed-byte rejection, export/privacy, and the authored-page source-id
-contract.
+G4 (spec 0008 §7): the persisted staged-proposal route is retired. The ONE
+deep operation that binds an original raw Knowledge Source
+(PDF/DOCX/HTML/Markdown/TXT) and a host-agent-authored Compiled Page now
+writes ordinary files plus exact source bindings into the selected Git
+authoring worktree through ``ingest_into_worktree``. Covers the retained
+issue #149 acceptance criteria on that route: the single journey, per-format
+provenance + immutable Source Version, identical-byte reuse, the
+authored-page source-id contract, compound provenance, and private raw
+isolation. Legacy staging semantics (changed-byte staging refusal, proposal
+inspect, staged publish) were retired with the pipeline; changed-byte
+registration and publication privacy are pinned natively in
+``test_git_authoring.py``.
+
+The retired-source case is pinned by ``test_git_authoring``'s retirement
+suite: a retired managed source cannot carry supporting bindings
+(``validate_source_references``), and native retirement is a Git manifest
+edit.
 """
 
 from __future__ import annotations
 
-import hashlib
-import shutil
 from pathlib import Path
 
 import lumio_wiki as lw
 import pytest
-from lumio_wiki.ingest import IngestStore, ManagedIngestError
-from lumio_wiki.proposal_pipeline import ProposalPipeline
-from lumio_wiki.source_registry import SourceRegistryError
+from lumio_wiki.git_authoring import ingest_into_worktree
+from lumio_wiki.ingest import ManagedIngestError
+from lumio_wiki.source_references import SourceReferenceManifest
+from lumio_wiki.source_registry import SourceRegistry
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures" / "valid"
@@ -36,19 +44,52 @@ FORMAT_PROVENANCE = [
     ("2025-impact-report.txt", "text/plain", "text"),
 ]
 
+CONTROL_V2 = """\
+version: 2
+mode: "categorized"
+categories:
+  - name: reports
+ontology:
+  entity_types:
+    report: {}
+  predicates: {}
+  redirects: {}
+"""
+
 
 def _kb(tmp_path: Path):
-    root = tmp_path / "kb"
-    shutil.copytree(FIXTURES, root)
+    """A manifest-adopted Git authoring KB (native managed ingest route)."""
+    from test_git_authoring import _init_repo, _write_kb
+
+    repo = _init_repo(tmp_path)
+    root = _write_kb(
+        repo,
+        manifest=SourceReferenceManifest(
+            version=1, namespace="urn:uuid:1a2b3c4d-managed-0000-0000-managedkb0001"
+        ),
+        control=CONTROL_V2,
+        pages={"reports/seed-report.md": _authored_page("seed-report", title="Seed Report")},
+    )
     kb, report = lw.load_knowledge_base(root)
     assert report.is_valid, report
     return kb
 
 
-def _authored_page(source_id: str, *, title: str = "Impact Report") -> str:
+def _registry(tmp_path: Path) -> SourceRegistry:
+    return SourceRegistry(tmp_path / "registry")
+
+
+def _authored_page(
+    source_id: str, *, title: str = "Impact Report", entity: str | None = None
+) -> str:
     return (
         "---\n"
+        f'id: "entity:{entity or source_id}"\n'
         f'title: "{title}"\n'
+        "entity_types:\n  - report\n"
+        "category: reports\n"
+        'type: "impact report"\n'
+        'durability_rationale: "The impact report documents durable findings."\n'
         "aliases: []\n"
         'tags:\n  - "report"\n'
         'summary: "Authored by the host agent from the original source."\n'
@@ -59,42 +100,36 @@ def _authored_page(source_id: str, *, title: str = "Impact Report") -> str:
         f'    title: "{source_id} source"\n'
         "synthetic: false\n"
         "---\n\n"
-        f"# {title}\n\n"
+        "# Impact Report\n\n"
         "Body authored by the host coding agent from the original source.\n"
     )
 
 
-def _pipeline(kb, tmp_path: Path):
-    store = IngestStore(tmp_path / "ingest")
-    return ProposalPipeline(kb, store=store), store
-
-
-# ---------------------------------------------------------------------------
-# AC1 — one journey binds the original source and authored page.
-# ---------------------------------------------------------------------------
-
-
-def test_managed_ingest_binds_source_and_authored_page_into_one_staged_proposal(
+def test_managed_ingest_binds_source_and_authored_page_into_one_worktree_edit(
     tmp_path: Path,
 ):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
+    registry = _registry(tmp_path)
     raw = b"%PDF-1.4 original impact report bytes"
 
-    proposal = pipeline.managed_ingest(
+    result = ingest_into_worktree(
+        kb.root,
         raw,
         "application/pdf",
         "2025-impact-report.pdf",
         "annual-impact-report",
         _authored_page("annual-impact-report"),
+        source_registry=registry,
     )
 
-    assert proposal.status == "staged"
-    assert proposal.affected_pages == ["Impact Report"]
-    # One staged proposal (not a registry proposal plus a separate page proposal).
-    assert [p.id for p in pipeline.list()] == [proposal.id]
-    # The authored Markdown — not distilled text — is the proposed page content.
-    assert "Body authored by the host coding agent" in proposal.proposed_pages[0].markdown
+    assert result.source_id == "annual-impact-report"
+    assert len(result.page_paths) == 1
+    # The authored Markdown — not distilled text — is the written page content.
+    written = (Path(kb.root) / result.page_paths[0]).read_text(encoding="utf-8")
+    assert "Body authored by the host coding agent" in written
+    # ONE worktree edit carries the exact binding into the manifest.
+    assert Path(result.manifest_path).is_file()
+    assert "annual-impact-report" in Path(result.manifest_path).read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -104,138 +139,112 @@ def test_managed_ingest_binds_source_and_authored_page_into_one_staged_proposal(
 
 def test_managed_ingest_never_requires_the_documents_extra(tmp_path: Path):
     # No document converter runs (the host agent authored the page). The
-    # processor is never invoked, so a PDF/DOCX/HTML source reaches a staged
-    # proposal without LiteParse/MarkItDown installed.
+    # processor is never invoked, so a PDF/DOCX/HTML source reaches the
+    # worktree without LiteParse/MarkItDown installed.
     kb = _kb(tmp_path)
-    pipeline, _store = _pipeline(kb, tmp_path)
+    registry = _registry(tmp_path)
     for filename, content_type, _ in FORMAT_PROVENANCE:
         if content_type is None:
             continue
-        proposal = pipeline.managed_ingest(
+        # Slug-safe UNIQUE id per format (entity ids forbid raw dots and
+        # two formats must not collapse onto one page destination).
+        source_id = "src-" + filename.replace(".", "-").replace(" ", "-").lower()
+        result = ingest_into_worktree(
+            kb.root,
             b"raw",
             content_type,
             filename,
-            f"src-{filename}",
-            _authored_page(f"src-{filename}", title=f"Page {filename}"),
+            source_id,
+            _authored_page(source_id, title=f"Page {source_id}"),
+            source_registry=registry,
         )
-        assert proposal.status == "staged"
-
-
-# ---------------------------------------------------------------------------
-# AC5 — repeating with identical bytes reuses the Source Version.
-# ---------------------------------------------------------------------------
+        assert result.source_id == source_id
+        assert result.page_paths
 
 
 def test_managed_ingest_repeats_with_identical_bytes_reusing_source_version(
     tmp_path: Path,
 ):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
+    registry = _registry(tmp_path)
     raw = b"%PDF-1.4 identical bytes"
 
-    first = pipeline.managed_ingest(
+    first = ingest_into_worktree(
+        kb.root,
         raw,
         "application/pdf",
         "r.pdf",
         "annual-impact-report",
         _authored_page("annual-impact-report"),
+        source_registry=registry,
     )
-    second = pipeline.managed_ingest(
+    # The retry registers the SAME bytes under a SECOND authored page (the
+    # first edit is still uncommitted; the dirty guard correctly refuses
+    # overwriting it, so the reuse contract is pinned across distinct pages).
+    second = ingest_into_worktree(
+        kb.root,
         raw,
         "application/pdf",
         "r.pdf",
         "annual-impact-report",
-        _authored_page("annual-impact-report"),
-    )
-
-    source = store.source_registry.get("annual-impact-report")
-    assert len(source.versions) == 1  # no duplicate Source Version
-    # Each retry is a fresh reviewable proposal; the identity is reused.
-    assert first.id != second.id
-    assert {p.id for p in pipeline.list()} == {first.id, second.id}
-
-
-# ---------------------------------------------------------------------------
-# AC6 — changed bytes fail without mutation; retired blocks until reactivation.
-# ---------------------------------------------------------------------------
-
-
-def test_managed_ingest_changed_bytes_fail_without_mutation_directing_to_workflow(
-    tmp_path: Path,
-):
-    kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
-    raw = b"%PDF-1.4 v1"
-    pipeline.managed_ingest(
-        raw,
-        "application/pdf",
-        "r.pdf",
-        "annual-impact-report",
-        _authored_page("annual-impact-report"),
-    )
-    source = store.source_registry.get("annual-impact-report")
-    first_hash = source.versions[-1].content_hash
-
-    with pytest.raises(SourceRegistryError, match="retire and reactivate"):
-        pipeline.managed_ingest(
-            b"%PDF-1.4 CHANGED",
-            "application/pdf",
-            "r.pdf",
+        _authored_page(
             "annual-impact-report",
-            _authored_page("annual-impact-report"),
-        )
-
-    # No registry or proposal mutation: the single immutable version is intact
-    # and no extra proposal was staged.
-    source = store.source_registry.get("annual-impact-report")
-    assert [v.content_hash for v in source.versions] == [first_hash]
-    assert len(pipeline.list()) == 1
-
-
-def test_managed_ingest_retired_source_blocks_until_reactivation(tmp_path: Path):
-    kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
-    pipeline.managed_ingest(
-        b"v1", "text/plain", "r.txt", "annual-impact-report", _authored_page("annual-impact-report")
+            title="Impact Report Follow-Up",
+            entity="annual-impact-report-follow-up",
+        ),
+        source_registry=registry,
     )
-    retirement = pipeline.retire_source("annual-impact-report")
-    pipeline.publish(retirement.id)
-    assert store.source_registry.get("annual-impact-report").status == "retired"
 
-    with pytest.raises(SourceRegistryError, match="retired"):
-        pipeline.managed_ingest(
-            b"v1",
+    source = registry.get("annual-impact-report")
+    assert len(source.versions) == 1  # no duplicate Source Version
+    # The identical retry converges on the same content-addressed version
+    # with truthful reuse disclosure (D5).
+    assert first.content_hash == second.content_hash == source.versions[0].content_hash
+    assert second.registration == "reused"
+
+
+# ---------------------------------------------------------------------------
+# Authored-page source-id contract — a missing/mismatched id blocks the write.
+# ---------------------------------------------------------------------------
+
+
+def test_managed_ingest_missing_source_id_blocks_the_write(tmp_path: Path):
+    kb = _kb(tmp_path)
+    registry = _registry(tmp_path)
+    page = _authored_page("some-other-id")  # does NOT cite the chosen id
+
+    with pytest.raises(ManagedIngestError, match=r"sources\[\].id"):
+        ingest_into_worktree(
+            kb.root,
+            b"raw",
             "text/plain",
             "r.txt",
             "annual-impact-report",
-            _authored_page("annual-impact-report"),
+            page,
+            source_registry=registry,
         )
-
-
-# ---------------------------------------------------------------------------
-# Authored-page source-id contract — a missing/mismatched id blocks staging.
-# ---------------------------------------------------------------------------
-
-
-def test_managed_ingest_missing_source_id_blocks_staging(tmp_path: Path):
-    kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
-    page = _authored_page("some-other-id")  # does NOT cite the chosen id
-
-    with pytest.raises(ManagedIngestError, match="sources\\[\\].id"):
-        pipeline.managed_ingest(b"raw", "text/plain", "r.txt", "annual-impact-report", page)
-    # Nothing was staged.
-    assert pipeline.list() == []
+    # Nothing was registered or written.
+    assert registry.list() == []
+    assert not any(page.title == "Impact Report" for page in kb.pages)
 
 
 def test_managed_ingest_compound_revision_may_retain_additional_sources(tmp_path: Path):
     # The chosen source_id only needs to appear once; compound revisions may
     # retain additional existing Sources on the same page.
     kb = _kb(tmp_path)
-    pipeline, _store = _pipeline(kb, tmp_path)
+    registry = _registry(tmp_path)
     page = (
         "---\n"
+        'id: "entity:compound-page"\n'
         'title: "Compound Page"\n'
+        "entity_types:\n  - report\n"
+        "category: reports\n"
+        'type: "compound report"\n'
+        'durability_rationale: "Compound provenance is durable."\n'
+        'tags:\n  - "report"\n'
+        'summary: "Compound provenance page."\n'
+        'lifecycle: "draft"\n'
+        'visibility: "internal"\n'
         "sources:\n"
         '  - id: "existing-source"\n'
         '    title: "existing"\n'
@@ -244,118 +253,45 @@ def test_managed_ingest_compound_revision_may_retain_additional_sources(tmp_path
         "---\n\n# Compound Page\n\nBody.\n"
     )
 
-    proposal = pipeline.managed_ingest(
-        b"raw", "application/pdf", "r.pdf", "annual-impact-report", page
+    result = ingest_into_worktree(
+        kb.root,
+        b"raw",
+        "application/pdf",
+        "r.pdf",
+        "annual-impact-report",
+        page,
+        source_registry=registry,
     )
-    assert proposal.status == "staged"
-    assert "existing-source" in proposal.proposed_pages[0].markdown
-    assert "annual-impact-report" in proposal.proposed_pages[0].markdown
+    written = (Path(kb.root) / result.page_paths[0]).read_text(encoding="utf-8")
+    assert "existing-source" in written
+    assert "annual-impact-report" in written
 
 
 # ---------------------------------------------------------------------------
-# AC3 — the raw source is isolated in private ingest state, never under the KB.
+# AC3 — the raw source is isolated in private state, never under the KB.
 # ---------------------------------------------------------------------------
 
 
 def test_managed_ingest_keeps_raw_source_in_private_state_not_under_kb_root(tmp_path: Path):
     kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
+    registry = _registry(tmp_path)
     raw = b"%PDF-1.4 private raw bytes"
 
-    pipeline.managed_ingest(
+    ingest_into_worktree(
+        kb.root,
         raw,
         "application/pdf",
         "2025-impact-report.pdf",
         "annual-impact-report",
         _authored_page("annual-impact-report"),
+        source_registry=registry,
     )
 
-    # The registry lives in the ingest store, OUTSIDE the Knowledge Base root,
-    # and retains only identity/version hashes — not the raw bytes.
-    assert (store.root / "source-registry").exists()
-    assert (store.root / "source-registry").is_dir()
-    assert not (kb.root / "source-registry").exists()
+    # The registry lives OUTSIDE the Knowledge Base root and retains only
+    # identity/version hashes — not the raw bytes.
+    assert registry.root.is_dir()
+    assert not (Path(kb.root) / "source-registry").exists()
     # No raw bytes are written under the KB root (page-discovery risk).
-    for path in kb.root.rglob("*"):
+    for path in Path(kb.root).rglob("*"):
         if path.is_file():
             assert raw not in path.read_bytes(), f"raw bytes leaked into KB: {path}"
-
-
-# ---------------------------------------------------------------------------
-# AC4 — inspect distinguishes raw-source provenance from authored content.
-# ---------------------------------------------------------------------------
-
-
-def test_managed_ingest_inspect_distinguishes_provenance_from_authored_content(
-    tmp_path: Path,
-):
-    kb = _kb(tmp_path)
-    pipeline, _store = _pipeline(kb, tmp_path)
-    raw = b"%PDF-1.4 original"
-    proposal = pipeline.managed_ingest(
-        raw,
-        "application/pdf",
-        "2025-impact-report.pdf",
-        "annual-impact-report",
-        _authored_page("annual-impact-report"),
-    )
-
-    reviewed = pipeline.review(proposal.id)
-    provenance = reviewed.provenance
-    # Raw-source provenance: original filename, content type, converter, hash,
-    # and the bound source identity.
-    assert provenance.original_filename == "2025-impact-report.pdf"
-    assert provenance.content_type == "application/pdf"
-    assert provenance.converted_by == "liteparse"
-    assert provenance.source_hash == hashlib.sha256(raw).hexdigest()
-    assert provenance.source_id == "annual-impact-report"
-    # Authored Compiled Page content: the proposed page Markdown body.
-    body = reviewed.proposed_pages[0].markdown
-    assert "Body authored by the host coding agent" in body
-    # The private hash does not appear in the authored page content.
-    assert provenance.source_hash not in body
-
-
-# ---------------------------------------------------------------------------
-# AC7 — no raw bytes, filesystem paths, registry state, or private metadata
-# leak into the published KB, export, or canonical fingerprint.
-# ---------------------------------------------------------------------------
-
-
-def test_managed_ingest_publish_never_leaks_raw_bytes_or_registry_state(tmp_path: Path):
-    kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
-    raw = b"%PDF-1.4 SUPERSECRETRAWBYTES"
-    proposal = pipeline.managed_ingest(
-        raw,
-        "application/pdf",
-        "2025-impact-report.pdf",
-        "annual-impact-report",
-        _authored_page("annual-impact-report"),
-    )
-
-    published = pipeline.publish(proposal.id)
-    assert published.status == "published"
-
-    page_path = kb.root / "impact_report.md"
-    assert page_path.exists()
-    page = page_path.read_text(encoding="utf-8")
-    # The PUBLIC source id is intentionally part of the page's sources[].
-    assert "annual-impact-report" in page
-    # The private raw bytes, content hash, original filename, and converter
-    # never reach the published page.
-    assert b"SUPERSECRETRAWBYTES" not in page_path.read_bytes()
-    content_hash = hashlib.sha256(raw).hexdigest()
-    assert content_hash not in page
-    assert "2025-impact-report.pdf" not in page
-    assert "liteparse" not in page
-
-    # The canonical fingerprint and KB export are over authored content only;
-    # the private registry state (outside the KB root) is never included.
-    fingerprint = lw.fingerprint_sources(kb.root)
-    bundle = lw.export_bundle(kb)
-    for artifact in (bundle, getattr(fingerprint, "digest", ""), repr(fingerprint)):
-        assert content_hash not in artifact
-        assert "SUPERSECRETRAWBYTES" not in artifact
-    # The registry is private state under the ingest store, not the KB.
-    assert not (kb.root / "source-registry").exists()

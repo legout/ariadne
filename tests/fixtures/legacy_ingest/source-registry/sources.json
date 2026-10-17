@@ -1,0 +1,33 @@
+{
+  "sources": [
+    {
+      "source_id": "manual-src",
+      "status": "retired",
+      "created_at": "2026-01-01T00:00:00Z",
+      "versions": [
+        {
+          "source_id": "manual-src",
+          "content_hash": "b5679b404c4f7001be5e6c681eea853015c65940e4c28aedf23de9eb2f94437a",
+          "filename": "manual.txt",
+          "artifact_available": false,
+          "created_at": "2026-01-01T00:00:00Z"
+        }
+      ]
+    }
+  ],
+  "candidates": [],
+  "pending_transitions": [
+    {
+      "proposal_id": "exportme0001",
+      "action": "reactivate",
+      "source_id": "manual-src",
+      "version": {
+        "source_id": "manual-src",
+        "content_hash": "c1de271387ed173d21e1d0e8a89412103cbca389083b8b8bbfe45859d5a6255c",
+        "filename": "manual.txt",
+        "artifact_available": false,
+        "created_at": "2026-02-02T00:00:00Z"
+      }
+    }
+  ]
+}

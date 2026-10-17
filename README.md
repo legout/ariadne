@@ -3,7 +3,7 @@
 > Portable, model-free Knowledge Base foundation for
 > [Lumio](CONTEXT.md) — a compiled Markdown knowledge base your coding agents
 > can load, validate, search, traverse, ingest, and publish, with citations
-> and proposal-first review. The deployable Lumio web application (chat UI,
+> and Git-native authoring with explicit Publication Admission. The deployable Lumio web application (chat UI,
 > auth, roles, providers) lives in a separate private repository and consumes
 > these published wheels.
 
@@ -14,10 +14,11 @@ For the *why* and the vision, read the domain docs — this README documents
 
 > **Two trust models, one Knowledge Base.** The **`lumio-wiki` CLI** (and the
 > library behind it) has no accounts or roles: a coding agent with filesystem
-> access *is* the Distiller and Maintainer — it authors Compiled Pages, stages
-> Ingest Proposals, validates them deterministically, and publishes, with no
-> human step enforced. A web app can add human governance over the same
-> artifact; proposal-first is the shared seam.
+> access authors Compiled Pages in a selected Git worktree and validates the
+> complete candidate. Publication is separate: preview an exact commit, then
+> confirm only after the operator authorizes the displayed review, destination
+> and expected current version. A commit, passing validation or general coding
+> request is not permission to publish. Hosted clients enforce their own roles.
 
 - [`CONTEXT.md`](CONTEXT.md) — ubiquitous language (glossary).
 - [`project/specs/0002-core-sdk.md`](project/specs/0002-core-sdk.md) — Core SDK PRD.
@@ -81,13 +82,14 @@ lumio-wiki search <kb-path> "<query>"            # lexical search over titles, a
 lumio-wiki page [<kb-path>] "<title>" [--raw|--json] # lossless or bounded Compiled Page read
 lumio-wiki related <kb-path> "<title>"           # list pages related to a title
 lumio-wiki paths <kb-path> "<src>" "<dst>"       # shortest typed path between two titles
-lumio-wiki ingest <kb-path> <source> [--distiller passthrough|llm]   # stage a Knowledge Source as a proposal
+lumio-wiki ingest <kb-path> <source> [--distiller passthrough|llm]   # edit the selected Git worktree
 lumio-wiki ingest-url <kb-path> <url> --compiled-page <page.md> --source-id <id>  # safe URL ingestion (HTTPS-only, bounded, SSRF-safe)
 lumio-wiki ingest-research <kb-path> <report.md> --manifest <manifest.yaml> --source-id <id>  # research bundle (consulted URLs = provenance)
-lumio-wiki proposal list <kb-path>                 # list staged proposals
-lumio-wiki proposal inspect <kb-path> <id>         # inspect one proposal
-lumio-wiki proposal validate <kb-path> <id>        # validate one proposal
-lumio-wiki publish <kb-path> <id>                  # publish a reviewed proposal
+lumio-wiki publish <kb-path> --revision <full-commit-id> --to <destination> --expected-current <version-or-none>  # preview only
+# Only after explicit operator authorization of that displayed review:
+lumio-wiki publish <kb-path> --revision <full-commit-id> --to <destination> --expected-current <version-or-none> --confirm <review-digest>
+lumio-wiki legacy-proposals inventory <kb-path>    # read-only migration inventory
+lumio-wiki legacy-proposals export <kb-path> <id> --baseline <full-commit-id> --branch <name>  # preview unadmitted export
 lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]  # secret-free metadata for the exact bound Source Version
 lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>  # byte-exact original, digest re-verified
 lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]   # short-lived signed GET URL (max 1h; bearer secret)
@@ -100,6 +102,16 @@ lumio-wiki skill install --scope user              # explicit skill installation
 lumio-wiki skill status --scope user               # inspect installed skill drift
 lumio-wiki skill update --scope user               # explicitly refresh the skill
 ```
+
+Git is required for authoring and admission, not ordinary reads, queries or
+validation. Before ingest, select a registered branch/worktree and adopt
+`.lumio-authoring.yaml` version 1 with a stable namespace and exact source
+bindings. Keep originals, private Source Registry/history and artifacts outside
+Git/public KB content; select `--source-registry <private-dir>` explicitly for
+managed ingest/publication. Setup does not initialize Git or infer adoption.
+Legacy export needs explicit `--confirm` using the preview's captured baseline;
+it preserves the original store and creates an unadmitted branch, never a
+publication. See the [quickstart](docs/quickstart.md).
 
 `ingest --distiller llm` requires `lumio-wiki[llm]`; PDF/DOCX/image sources
 require `lumio-wiki[documents]`. Both fail with actionable guidance if the
@@ -189,7 +201,7 @@ Quick reference (full contract in [`docs/packaging.md`](docs/packaging.md)):
 
 - **`lumio-wiki`** owns the canonical Knowledge Base model, loading,
   validation, Navigation/Hot Indexes, deterministic zero-index retrieval, typed
-  traversal, Evidence/citations, ingestion interfaces, the proposal pipeline,
+  traversal, Evidence/citations, Git authoring and exact-revision admission,
   the `lumio-wiki` CLI, and the packaged Agent Skill. No downward dependency.
 - **`lumio-lancedb`** depends only on `lumio-wiki`. It owns LanceDB index
   lifecycle and BM25/semantic/hybrid ranking, returning the same
@@ -204,11 +216,11 @@ application lives in a separate private repository (ADR-0025).
   File), lexical/frontmatter/graph index, retrieve with citations + retrieval
   trace, source-fingerprint freshness, Markdown export.
 - **Entity-claim ontology** — one stable Entity per Compiled Page;
-  evidence-bearing Claims; proposal-first Entity Merge with redirects;
+  evidence-bearing Claims; reviewed Git Entity Merge with redirects;
   deterministic entity resolution; model-free evaluation (`lumio-wiki eval`,
   `lumio-wiki eval-ontology`).
 - **Ingest & publish** — managed ingest with private Source Registry and
-  Artifact Store (S3-compatible), proposal pipeline, Page Removal with claim and
+  Artifact Store (S3-compatible), exact source bindings, Page Removal with claim and
   body-link repair, Published Versions with binding manifests, OKF
   interchange.
 - **Maintenance** — lint, cross-link candidates, Dream Cycle diagnostics

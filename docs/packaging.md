@@ -4,7 +4,7 @@ This document is the certified packaging contract for the Lumio workspace:
 what each distribution owns, how dependencies flow, how optional capabilities
 are expressed, how to migrate off the temporary compatibility surface, and
 how the assembled product is verified. It is the authoritative companion to
-[ADR-0010](adr/0010-uv-workspace-and-progressive-packaging.md) and the
+[ADR-0010](../project/adr/0010-uv-workspace-and-progressive-packaging.md) and the
 certification in `tests/test_workspace_certification.py` /
 `tests/test_adapter_selection_contract.py`.
 
@@ -46,11 +46,11 @@ The standalone, model-free LLM Wiki toolkit. Owns the canonical contracts:
 - Deterministic metadata/body search, accepted-Claim graph traversal,
   shortest paths, deterministic entity resolution, and the always-available
   zero-index retrieval implementation.
-- Knowledge Sources, Source provenance, Proposed Pages, Ingest Proposals,
-  blast radius, proposal persistence, review, validation, publication.
-- The `lumio-wiki` CLI (`init`, `validate`, `search`, `page`, `related`,
-  `paths`, `ingest`, `proposal`, `publish`, `discard`, `health`, `doctor`,
-  `skill`).
+- Knowledge Sources, private immutable Source Versions, exact source bindings,
+  Git authoring, complete-candidate validation and explicit Publication Admission.
+- The `lumio-wiki` CLI (`setup`, `init`, `validate`, `search`, `page`, `related`,
+  `paths`, `ingest`, `publish`, `legacy-proposals`, `health`, `doctor`, `skill`).
+  Git is needed for authoring/admission, not plain reads, queries or validation.
 - A short coding-agent protocol and a packaged Agent Skill, both shipped as
   wheel data and resolvable via `lumio-wiki skill`.
 
@@ -261,7 +261,7 @@ re-exports so external consumers continue to work during migration.
 | `lumio.core.fingerprint_store` | `lumio_wiki.fingerprint_store` |
 | `lumio.core.okf` | `lumio_wiki.okf` |
 | `lumio.core.embeddings` | `lumio_wiki.embeddings` |
-| `lumio.proposal_pipeline` | `lumio_wiki.proposal_pipeline` |
+| `lumio.proposal_pipeline` | Retired: Git authoring and `preview_publication` / `publish_revision`; legacy records use explicit inventory/export only |
 | `lumio.source_processor` | `lumio_wiki.source_processor` |
 
 ## Build and release
@@ -270,7 +270,6 @@ re-exports so external consumers continue to work during migration.
 uv lock --check                              # verify the workspace lockfile is current
 uv build --package lumio-wiki --wheel        # build one member wheel
 uv build --package lumio-lancedb --wheel
-uv build --package lumio --wheel
 ```
 
 Each member builds from the workspace without its siblings having to be
@@ -279,27 +278,30 @@ resolves the sibling from PyPI (or from a local wheel index) at install time.
 
 CI certifies every release:
 
-1. `ci.yml` (`workspace` job) — lint + fast suite against the workspace
-   environment.
-2. `ci.yml` (`isolated-lumio-wiki-wheel` job) — builds the `lumio-wiki` and
-   `lumio` wheels, installs `lumio-wiki` alone in a fresh venv, and runs
-   `scripts/verify_lumio_wiki_wheel.py` to prove no heavyweight dependency
-   leaked into the base install.
+1. `ci.yml` (`workspace` job) — locked lint and full suite with four workers.
+2. `ci.yml` (`isolated-lumio-wiki-wheel` job) — builds the two public wheels,
+   installs `lumio-wiki` alone in a fresh venv, and runs
+   `scripts/verify_lumio_wiki_wheel.py`: candidate wheel/member/installed-byte
+   identity, lightweight dependencies, native author/admit/query and Git-free
+   reading. Installed MCP gets a separate optional-extra smoke.
 3. `lumio-lancedb-wheel.yml` — builds the `lumio-lancedb` and `lumio-wiki`
    wheels, installs them alone in a fresh venv, asserts the app-only deps
    are absent, and runs the adapter smoke.
-4. `lumio-assembled-product.yml` (issue #104) — builds all three wheels,
-   installs the assembled `lumio` wheel from a local wheel index into a
-   fresh venv, and runs the full application suite plus the deployment
-   smoke and the view smoke against the wheel-built product.
-5. The full application suite runs against the assembled `lumio` member.
+4. `ci.yml` (`onboarding-s3-compat-journey` job) — canonical onboarding and
+   both packages' existing live S3-compatible checks against the pinned
+   disposable SeaweedFS service. Cross-role policy checks require separately
+   supplied test roles and otherwise remain unverified.
+
+The private application is not tested or certified here (ADR-0025). Its known
+proposal-facing incompatibility remains a separate integration/release decision.
+No public candidate validation authorizes target integration or publication.
 
 ### Releases
 
 `release.yml` (issue #181) turns a pushed `vX.Y.Z` tag into a certified
 publication. One pipeline, no rebuilds:
 
-1. **Build once** — `build-wheels` builds all three wheels from the tagged
+1. **Build once** — `build-wheels` builds both public wheels from the tagged
    commit, asserts the lockstep version, records SHA-256 hashes (workflow
    summary + artifact) and SLSA build provenance bound to the tag.
 2. **TestPyPI** — `publish-testpypi` uploads the hash-verified wheels via
@@ -313,9 +315,6 @@ publication. One pipeline, no rebuilds:
      (`examples/onboarding-journey/smoke-journey.sh`) against SeaweedFS
      `weed mini`: local Maintainer journey, S3 publication with and without
      LanceDB, remote LanceDB reader, zero-index fallback.
-   - `verify-testpypi-app` — the assembled `lumio` application installs
-     with its full closure, imports all members, and exposes its entry
-     point.
 4. **Human-gated promotion** — `promote-pypi` runs only after the `pypi`
    environment's required reviewers approve. It re-downloads the wheels
    TestPyPI is actually serving, proves them byte-identical to the build
@@ -330,9 +329,9 @@ PR-triggered workflows.
 
 **One-time owner setup** (the issue #181 human gate):
 
-1. Configure **pending trusted publishers** for `lumio-wiki`,
-   `lumio-lancedb`, and `lumio` on both TestPyPI and PyPI, scoped to the
-   `legout/lumio` repository, workflow `release.yml`, and environment
+1. Configure **pending trusted publishers** for `lumio-wiki` and
+   `lumio-lancedb` on both TestPyPI and PyPI, scoped to the
+   `legout/lumio-wiki` repository, workflow `release.yml`, and environment
    names `testpypi` / `pypi`.
 2. Create GitHub environments **`testpypi`** (no approval required) and
    **`pypi`** (required reviewers = repository owners; this approval is the
