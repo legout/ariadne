@@ -143,10 +143,12 @@ history must still match. Export is never publication.
 ### Source Artifact inspection (authorized, not Evidence)
 
 1. `lumio-wiki source inspect [<kb>] --source-id <id> [--published-version <v>]`
-   — secret-free metadata for the ONE exact Source Version bound to the id
-   (the registry's current version locally; the private Source Binding
-   Manifest for S3 KBs or explicit history). Never falls back to the latest
-   version when a binding is absent.
+   — secret-free metadata for the ONE exact Source Version bound to the id:
+   native worktrees use the exact Entity/Source pin in the Source Reference
+   Manifest (use `--entity-id` when ambiguous); published local/S3 versions
+   use sealed, version-specific private Source Binding Manifests. Only legacy
+   local KBs without a Source Reference Manifest use the registry's current
+   version. Missing native or historical bindings never fall back to latest.
 2. `lumio-wiki source fetch [<kb>] --source-id <id> [--published-version <v>]
    --output <path>` — byte-exact original, digest and size re-verified, to an
    explicit destination. Prefer verified `fetch` over `link` (signed URLs can
