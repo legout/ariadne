@@ -12,11 +12,11 @@ outside the agent, so no test path may route it through a tool.
 
 Real regressions named by the tickets:
 
-(a) Authoring cannot start before admission, or exposes approval/admission
-    somewhere — covered by opening Authoring on projects where Analyst raises
-    the missing-catalog/admission error, and by asserting the registered tool
-    surface contains no approval/admission/Promotion tool (and no runtime is
-    constructed);
+(a) Authoring cannot work before admission, or exposes approval/admission
+    somewhere — covered by opening Authoring on a project where the Analyst's
+    query tools surface the honest no-admission refusal, and by asserting the
+    registered tool surface contains no approval/admission tool (and no
+    runtime is constructed);
 (b) reads a model-selected path outside a trusted skill root (``../`` escape)
     — covered by the bounded reference reader refusing traversal while a
     declared reference under a host-declared root stays readable;
@@ -25,7 +25,9 @@ Real regressions named by the tickets:
     proposal record shows exactly that candidate revision once, unchanged;
 (d) G6: the native flow drives a Git page AND model edit plus revision review
     through the native tools with verbatim envelopes, stopping at every human
-    gate (source approval, admission).
+    gate (source approval via the operator's approve-sources seam, admission
+    via ariadne-admit). Document originals are external operator-managed
+    inputs placed inside the allowed input roots — never uploaded.
 """
 
 import asyncio
@@ -37,7 +39,6 @@ from pathlib import Path
 from typing import Any
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-import pytest
 import yaml  # pyright: ignore[reportMissingImports] — analysis env
 from tau_agent.messages import (
     AssistantMessage,
@@ -81,7 +82,6 @@ AUTHORING_TOOLS = {
     "edit_proposal",
     "propose_sources",
     "inputs",
-    "upload_document",
     "validate_proposal",
     "refresh_schema",
     "inspect_mapping",  # K3 (issue #43): bounded mapping inspection + receipts
@@ -165,9 +165,7 @@ class FlowProvider(FakeProvider):
     def script(self, stream: list | Callable[[list], list]) -> None:
         self._turns.append(stream)
 
-    def stream_response(
-        self, *, model, system, messages, tools, signal=None, session_id=None
-    ):
+    def stream_response(self, *, model, system, messages, tools, signal=None, session_id=None):
         if not self._turns:
             raise AssertionError("the scripted flow ran out of turns")
         stream = self._turns.pop(0)
@@ -206,9 +204,7 @@ class EditThenIdleProvider(FakeProvider):
         self._first = first
         self._second = True
 
-    def stream_response(
-        self, *, model, system, messages, tools, signal=None, session_id=None
-    ):
+    def stream_response(self, *, model, system, messages, tools, signal=None, session_id=None):
         if self._first is not None:
             first, self._first = self._first, None
             self.calls.append((model, system, list(messages), list(tools)))
@@ -250,8 +246,7 @@ def _extra_parquet(project: Path) -> Path:
     (the root fixtures' writer)."""
     path = project / "data" / "extra_notes.parquet"
     duckdb.connect().execute(
-        f"COPY (SELECT * FROM (VALUES (1, 'n1')) t(id, note)) "
-        f"TO '{path}' (FORMAT PARQUET)"
+        f"COPY (SELECT * FROM (VALUES (1, 'n1')) t(id, note)) TO '{path}' (FORMAT PARQUET)"
     ).close()
     return path
 
@@ -259,17 +254,35 @@ def _extra_parquet(project: Path) -> Path:
 # --- the ticket's scripted flows ----------------------------------------------
 
 
-def test_authoring_opens_where_analyst_cannot_before_any_promotion(tmp_path):
-    """Acceptance 2, first half: an Authoring session opens on an empty
-    project — even one with NO registry at all — while Analyst's missing-
-    catalog error stays session-local and never blocks the open."""
+def test_authoring_opens_where_analyst_query_refuses_before_any_admission(tmp_path):
+    """Acceptance 2, first half (Git-only core): an Authoring session opens on
+    an empty project — even one with NO registry at all — while the Analyst's
+    first query tool call surfaces the honest no-admission refusal as
+    session-local guidance; the refusal never blocks the Authoring open."""
     empty = tmp_path / "empty-project"
     empty.mkdir()
 
-    with pytest.raises(RuntimeError, match="promote|configure"):
-        open_session(
-            role="analyst", project=empty, model="fake-authoring", provider=FakeProvider([])
-        )
+    analyst = open_session(
+        role="analyst",
+        project=empty,
+        model="fake-authoring",
+        provider=FakeProvider(
+            [
+                turn(calls=[("get_metric", {"name": "event_count"})]),
+                turn(text="refused: admission is human-only"),
+            ]
+        ),
+    )
+    try:
+        events = asyncio.run(drive(analyst, "how many events?"))
+    finally:
+        analyst.close()
+    refused = next(
+        event for event in events if isinstance(event, ToolActivity) and event.tool == "get_metric"
+    )
+    assert refused.is_error is True
+    assert "no valid admission" in refused.result
+    assert "ariadne-admit" in refused.result and "human" in refused.result.lower()
 
     session = open_session(
         role="authoring",
@@ -287,28 +300,31 @@ def test_authoring_opens_where_analyst_cannot_before_any_promotion(tmp_path):
 
 
 def test_authoring_git_flow_stops_at_every_human_gate(tmp_path):
-    """(d) The G6 migration's own regression: the fake-provider path drives a
-    Git PAGE and MODEL edit plus revision review through the native tools —
-    the complete-bundle submission is gone — retaining verbatim envelopes and
-    stopping at the source-approval and admission gates. The operator's
-    approval runs in this test harness between the runs, outside the agent."""
+    """(d) The G6 migration's own regression over the Git-only core: the
+    fake-provider path drives a Git PAGE and MODEL edit plus revision review
+    through the native tools — retaining verbatim envelopes and stopping at
+    the source-approval (operator's approve-sources seam) and admission
+    (ariadne-admit) gates. The evidence document is an external
+    operator-managed original placed in the allowed input root (data/docs/)
+    and read by reference — there is no upload tool. The operator's approval
+    runs in this test harness between the runs, outside the agent."""
     project = complete_bundle_project(tmp_path / "proj")
     extra_parquet = _extra_parquet(project)
+    # the OPERATOR places the evidence document (never an agent upload)
+    docs = project / "data" / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    (docs / "spec.md").write_text(SPEC_CONTENT, encoding="utf-8")
     api = AuthoringProject(project)
     provider = FlowProvider()
     session = open_session(
         role="authoring", project=project, model="fake-authoring", provider=provider
     )
     try:
-        # Run 1: start the proposal and upload the evidence document.
+        # Run 1: start the proposal; the operator's document is already in place.
         provider.script(turn(calls=[("start_proposal", {})]))
-        provider.script(
-            turn(calls=[("upload_document", {"name": "spec.md", "content": SPEC_CONTENT})])
-        )
         provider.script(turn(text="proposal started; ready to propose sources"))
         events = asyncio.run(drive(session, "set up a proposal with the extra source"))
         started = result_of(events, "start_proposal")
-        upload = result_of(events, "upload_document")
         proposal = started["proposal"]
         assert set(started) == {"proposal", "base_revision", "candidate_revision"}
 
@@ -344,9 +360,7 @@ def test_authoring_git_flow_stops_at_every_human_gate(tmp_path):
 
         # Run 2: measured inputs, the page and model edits, validation at the
         # exact final revision, review — then stop WITHOUT admission.
-        provider.script(
-            turn(calls=[("inputs", {"proposal": proposal, "documents": ["spec.md"]})])
-        )
+        provider.script(turn(calls=[("inputs", {"proposal": proposal, "documents": ["spec.md"]})]))
         provider.script(
             turn(
                 calls=[
@@ -421,7 +435,6 @@ def test_authoring_git_flow_stops_at_every_human_gate(tmp_path):
     activity = [event for event in events if isinstance(event, ToolActivity)]
     assert [event.tool for event in activity] == [
         "start_proposal",
-        "upload_document",
         "propose_sources",
         "inputs",
         "edit_proposal",
@@ -430,7 +443,7 @@ def test_authoring_git_flow_stops_at_every_human_gate(tmp_path):
         "review_proposal",
     ]
     assert all(event.is_error is False for event in activity)
-    _start, _upload, _propose, _inputs, _page, _model, validate, review = (
+    _start, _propose, _inputs, _page, _model, validate, review = (
         json.loads(event.result) for event in activity
     )
 
@@ -440,10 +453,13 @@ def test_authoring_git_flow_stops_at_every_human_gate(tmp_path):
     assert len(proposed["source_digest"]) == 64
     assert "extra_notes" in {entry["name"] for entry in proposed["sources"]}
     assert inputs["profile"]["sources"][0]["name"] == "events"  # the approved registry
-    assert inputs["documents"][0]["digest"] == upload["digest"]
+    # the operator-placed document is read BY REFERENCE from the input root:
+    # the envelope reports the RESOLVED location under data/docs/ with the
+    # content's exact sha256 — never an upload receipt.
+    assert len(inputs["documents"]) == 1
+    assert inputs["documents"][0]["resource"].endswith("data/docs/spec.md")
     assert (
-        inputs["documents"][0]["digest"]
-        == hashlib.sha256(SPEC_CONTENT.encode("utf-8")).hexdigest()
+        inputs["documents"][0]["digest"] == hashlib.sha256(SPEC_CONTENT.encode("utf-8")).hexdigest()
     )
     assert inputs["seed_notes"]["complete"] is True
     assert page["changed"] is True and model["changed"] is True
@@ -458,7 +474,7 @@ def test_authoring_git_flow_stops_at_every_human_gate(tmp_path):
     assert review["revision"] == validate["revision"]
     assert review["report"]["ok"] is True
 
-    # stop WITHOUT admission: no admission descriptor, no served snapshot
+    # stop WITHOUT admission: no admission descriptor, no admitted snapshot
     assert not (project / ".ariadne" / "current.json").exists()
     assert not (project / ".ariadne" / "snapshots").exists()
 
@@ -543,9 +559,7 @@ def test_cancel_after_edit_never_replays_it(tmp_path):
         session.close()
 
 
-def test_authoring_surface_has_no_approval_or_admission_and_no_runtime(
-    tmp_path, monkeypatch
-):
+def test_authoring_surface_has_no_approval_or_admission_and_no_runtime(tmp_path, monkeypatch):
     """Regression (a): the Authoring tool surface is exactly the AuthoringProject
     Git contract plus the bounded reference reader — no approval, no
     admission, no Promotion anywhere in the registered tools — and opening the
@@ -951,9 +965,9 @@ def test_mapping_hypothesis_is_saved_without_prompt_and_reused_after_session_res
                         "edit_proposal",
                         {
                             "proposal": proposal,
-                            "expected_revision": last_result(
-                                messages, "inspect_mapping"
-                            )["revision"],
+                            "expected_revision": last_result(messages, "inspect_mapping")[
+                                "revision"
+                            ],
                             "edit": {
                                 **REFERENCE_EDIT,
                                 "content": reference_page(
@@ -975,9 +989,7 @@ def test_mapping_hypothesis_is_saved_without_prompt_and_reused_after_session_res
                         "validate_proposal",
                         {
                             "proposal": proposal,
-                            "expected_revision": last_result(messages, "edit_proposal")[
-                                "revision"
-                            ],
+                            "expected_revision": last_result(messages, "edit_proposal")["revision"],
                         },
                     )
                 ]
@@ -1019,9 +1031,7 @@ def test_mapping_hypothesis_is_saved_without_prompt_and_reused_after_session_res
     evidence_path = Path(inspected["evidence"])  # the retained receipt
     assert evidence_path.is_file()  # ...outlives the session that measured it
     assert not (project / ".ariadne" / "current.json").exists()  # no admission
-    answer = " ".join(
-        [e.text for e in events if isinstance(e, AssistantText)][-1].split()
-    )
+    answer = " ".join([e.text for e in events if isinstance(e, AssistantText)][-1].split())
     assert "no per-save prompt" in answer and "automatically" in answer
 
     # ---------------- the restart: a SECOND session, NO chat memory ---------
@@ -1042,17 +1052,11 @@ def test_mapping_hypothesis_is_saved_without_prompt_and_reused_after_session_res
                 ]
             )
         )
-        provider2.script(
-            turn(text="the saved hypothesis and its cited receipt are already there")
-        )
-        events2 = asyncio.run(
-            drive(session2, "what do we already know about the order numbers?")
-        )
+        provider2.script(turn(text="the saved hypothesis and its cited receipt are already there"))
+        events2 = asyncio.run(drive(session2, "what do we already know about the order numbers?"))
 
         # identical rediscovery: read the saved page, re-save it unchanged
-        provider2.script(
-            turn(calls=[("read_artifact", {"proposal": proposal, **REFERENCE_EDIT})])
-        )
+        provider2.script(turn(calls=[("read_artifact", {"proposal": proposal, **REFERENCE_EDIT})]))
         provider2.script(
             lambda messages: turn(
                 calls=[
@@ -1060,26 +1064,18 @@ def test_mapping_hypothesis_is_saved_without_prompt_and_reused_after_session_res
                         "edit_proposal",
                         {
                             "proposal": proposal,
-                            "expected_revision": last_result(messages, "read_artifact")[
-                                "revision"
-                            ],
+                            "expected_revision": last_result(messages, "read_artifact")["revision"],
                             "edit": {
                                 **REFERENCE_EDIT,
-                                "content": last_result(messages, "read_artifact")[
-                                    "content"
-                                ],
+                                "content": last_result(messages, "read_artifact")["content"],
                             },
                         },
                     )
                 ]
             )
         )
-        provider2.script(
-            turn(text="identical re-save: a no-op on the same mapping identity")
-        )
-        events2 += asyncio.run(
-            drive(session2, "re-record the same finding to be sure it sticks")
-        )
+        provider2.script(turn(text="identical re-save: a no-op on the same mapping identity"))
+        events2 += asyncio.run(drive(session2, "re-record the same finding to be sure it sticks"))
 
         # stale-revision refusal: the pre-save revision is long stale by now
         read_result = next(
@@ -1107,9 +1103,7 @@ def test_mapping_hypothesis_is_saved_without_prompt_and_reused_after_session_res
         provider2.script(
             turn(text="refused: stale revision — I re-read instead of replaying the write")
         )
-        events2 += asyncio.run(
-            drive(session2, "and save it once more at the original revision")
-        )
+        events2 += asyncio.run(drive(session2, "and save it once more at the original revision"))
     finally:
         session2.close()
 
@@ -1227,9 +1221,7 @@ def test_propose_sources_tool_forwards_storage_definitions(tmp_path):
     assert result["sources"][-1]["storage"]["name"] == "local"
     assert result["sources"][-1]["storage"]["endpoint_url_env"] == "AGENT_S3_ENDPOINT"
     doc = yaml.safe_load(
-        (
-            project / ".ariadne" / "worktrees" / started["proposal"] / "ariadne.yaml"
-        ).read_text()
+        (project / ".ariadne" / "worktrees" / started["proposal"] / "ariadne.yaml").read_text()
     )
     assert doc["storages"]["local"]["endpoint_url_env"] == "AGENT_S3_ENDPOINT"
     assert doc["sources"][-1]["storage"] == "local"

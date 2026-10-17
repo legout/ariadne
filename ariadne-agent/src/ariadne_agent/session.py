@@ -18,8 +18,8 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from ariadne.discovery import DiscoveryRuntime
-from ariadne.query import DeferredQueryRuntime, QueryRuntime
+from ariadne.discovery import DiscoveryRuntime, _DiscoverySession
+from ariadne.query import DeferredQueryRuntime, QueryRuntime, _QueryRuntimeSession
 from tau_agent.events import (
     AgentEndEvent,
     MessageEndEvent,
@@ -46,17 +46,21 @@ _ANALYST_RULES = """\
 You answer questions about this one configured project through its native
 tools only.
 
-- Discover promoted metrics (`list_metrics`) before choosing a route; if a
-  governed metric answers the question, query it governed (`get_metric`).
-- For a novel business question, search the served Context Layer first
+- Discover the admitted governed metrics (`list_metrics`) before choosing
+  a route; if a governed metric answers the question, query it governed
+  (`get_metric`).
+- For a novel business question, search the admitted Context Layer first
   (`search_context`) and restate the guidance it returns.
 - Report governed values with the actual metric/Policy paths and every caveat
   the tool returned, including pending attestation when present. Say
-  `governed: true` and mean Promoted, not independently value-attested.
+  `governed: true` and mean human-admitted through Git Review Admission, not
+  independently value-attested.
 - If no metric fits, inspect the registered datasets (`list_datasets`) and
   send a definition through the compile gate (`define_metric`). Report
-  `governed: false` and the staged proposal status; never claim a Context
-  Layer page alone makes an ad-hoc calculation governed.
+  `governed: false` and the not-saved persistence status — ad-hoc execution
+  is ephemeral and never becomes governed without human Git authoring and
+  admission; never claim a Context Layer page alone makes an ad-hoc
+  calculation governed.
 - Resolve shared terminology before novel definitions (`resolve_term`): it
   returns the documented concept/representation alternatives with their exact
   field bindings, required scope and mapping claim/confirmation status — a
@@ -67,7 +71,10 @@ tools only.
 - A context-only admitted project (schemas/References, no metrics yet) still
   serves discovery: search the context and resolve terms; metric tools then
   report the specific missing-catalog error. You cannot confirm mappings,
-  approve sources, promote, bypass the compile gate, or run SQL yourself.
+  approve sources, admit, bypass the compile gate, or run SQL yourself.
+- Before the first human Git Review Admission (ariadne-admit), query tools
+  refuse honestly: report that refusal to the user — admission is human-only
+  and the Analyst cannot query, define, or admit its way past it.
 """
 
 # The Authoring flow over the Git proposal contract (spec 2026-10-02-0009
@@ -182,73 +189,29 @@ class RunCompleted:
 AgentSessionEvent = AssistantText | ToolActivity | SessionError | RunCompleted
 
 
-def _missing_served_catalog(exc: BaseException) -> bool:
-    """The runtime's promoted-catalog startup errors. The message text is owned
-    by ariadne-data's query.py (QueryRuntime; formerly runtime.py).
-    ariadne.serve holds the same predicate but is the optional server transport
-    — importing it here would defeat this package's no-server guarantee, so the
-    two substrings are restated."""
-    message = str(exc)
-    return "promote staging/semantic_layer/ first" in message or (
-        "no governed metrics found under" in message
-    )
-
-
 def _open_runtime(
     project: Path,
     *,
-    runtime_type: type[QueryRuntime] | type[DiscoveryRuntime] = QueryRuntime,
-    discovery: DiscoveryRuntime | None = None,
-) -> QueryRuntime | DiscoveryRuntime:
-    """Build the session's runtime from the host-selected project root only.
-
-    A MANAGED Git data project — one carrying Ariadne's operator state (the
-    ignored ``.ariadne/`` directory its Git proposals/admissions create, plan
-    §2; never mere ``.git`` presence, which a legacy checkout also has) —
-    resolves through :meth:`QueryRuntime.open_project` (issue #38/G6): its
-    pinned human-admitted snapshot and approved source identity, refusing a
-    project with no valid admission instead of falling back to mutable
-    files. An explicit legacy artifact-root project (no Ariadne state) keeps
-    the legacy construction and its behavior exactly."""
-    managed = (
-        discovery._managed is not None if discovery is not None else (project / ".ariadne").exists()
-    )
-    if managed:
-        try:
-            if discovery is not None:
-                return QueryRuntime.open_project(project, discovery=discovery)
-            return runtime_type.open_project(project)
-        except Exception as exc:
-            raise RuntimeError(
-                f"analyst session for {project} cannot query the managed Git "
-                f"project — {exc}. Report this to the operator; admission is "
-                "human-only and the Analyst cannot query, define, or admit its "
-                "way past it."
-            ) from exc
-    registry = project / "ariadne.yaml"
-    db = project / "demo.db"
-    if not registry.is_file() and not db.is_file():
-        raise RuntimeError(
-            f"project {project} has neither {registry.name} nor {db.name} — the "
-            "host must configure the project before opening a session"
-        )
+    pinned: _DiscoverySession | None = None,
+) -> _QueryRuntimeSession:
+    """Build the session's query runtime from the host-selected project root
+    only, through the project-bound factory (issue #73: the Git-only core has
+    no legacy artifact-root construction). A query session requires a valid
+    human Git Review Admission; without one the core's honest refusal is
+    surfaced as session-local guidance pointing to ``ariadne-admit`` — never
+    a fallback to proposal worktrees or mutable project files, and never a
+    "promote" step. An already-admitted discovery session is passed through
+    so the session stays PINNED to the admission it first resolved (the
+    serve.py DeferredQueryRuntime pattern); an unadmitted discovery
+    placeholder is never cached for query construction."""
     try:
-        return runtime_type(
-            project / "semantic_layer",
-            project / "context_layer",
-            db,
-            staging_dir=project / "staging",
-            sources=registry if registry.is_file() else None,
-        )
-    except RuntimeError as exc:
-        if _missing_served_catalog(exc):
-            raise RuntimeError(
-                f"analyst session for {project} has no promoted catalog to query "
-                f"— {exc}. A human must promote the staged catalog; promotion is "
-                "human-only and the Analyst cannot query, define, or promote its "
-                "way past an empty catalog. Report this to the operator."
-            ) from exc
-        raise
+        return QueryRuntime.open_project(project, discovery=pinned)
+    except Exception as exc:
+        raise RuntimeError(
+            f"analyst session for {project} cannot query the Git project — {exc}. "
+            "Report this to the operator; admission is human-only (ariadne-admit) "
+            "and the Analyst cannot query, define, or admit its way past it."
+        ) from exc
 
 
 class AgentSession:
@@ -443,9 +406,9 @@ def open_session(
         )
     root = Path(project).resolve()
     if role == "authoring":
-        # Authoring works in a project with nothing Promoted yet and builds NO
+        # Authoring works in a project with nothing admitted yet and builds NO
         # query runtime (spec 2026-09-29-0006 acceptance 2): the Analyst's
-        # missing-catalog failure is session-local and never blocks this open.
+        # admission refusal is session-local and never blocks this open.
         roots = [Path(extra).resolve() for extra in skill_roots]
         tools = authoring_tools(root, roots)
         session_mcp = _attach_mcp(mcp_settings, role, tools)
@@ -458,14 +421,21 @@ def open_session(
             )
         )
         return AgentSession(role=role, project=root, model=model, harness=harness, mcp=session_mcp)
-    discovery = _open_runtime(root, runtime_type=DiscoveryRuntime)
 
-    def query_runtime() -> QueryRuntime:
-        runtime = _open_runtime(root, discovery=discovery)
-        assert isinstance(runtime, QueryRuntime)
-        return runtime
+    # The serve.py DeferredQueryRuntime pattern (Git-only core, issue #73):
+    # discovery is artifact-only and re-resolves until the FIRST real
+    # admission is cached; the query factory drops an unadmitted discovery
+    # placeholder (QueryRuntime.open_project re-resolves admission itself, so
+    # a project admitted after session open is picked up on the first query
+    # call) and an already-admitted session stays pinned to its admission.
+    def _new_discovery() -> _DiscoverySession:
+        return DiscoveryRuntime.open_project(root)
 
-    runtime = DeferredQueryRuntime(query_runtime, discovery)
+    def _query_runtime() -> _QueryRuntimeSession:
+        discovery = runtime.discovery
+        return _open_runtime(root, pinned=discovery if discovery._managed is not None else None)
+
+    runtime = DeferredQueryRuntime(_query_runtime, _new_discovery)
     system = analyst_guidance() + _ANALYST_RULES
     tools = analyst_tools(runtime)
     session_mcp = _attach_mcp(mcp_settings, role, tools)
