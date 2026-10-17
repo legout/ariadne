@@ -1438,6 +1438,20 @@ def _review_from_capture(
                         raise GitAuthoringError(
                             f"legacy S3 Source Binding Manifest for {observed!r} is malformed"
                         ) from exc
+                    if (
+                        legacy_bindings.published_version != observed
+                        or legacy_bindings.fingerprint != active_manifest.fingerprint
+                    ):
+                        # D1-A: a misplaced/restored manifest, or another KB's
+                        # version under the same legacy label, is NOT this
+                        # version's history — refuse with a repair diagnostic
+                        # instead of comparing or treating it as absent.
+                        raise GitAuthoringError(
+                            f"the legacy S3 Source Binding Manifest for {observed!r} does "
+                            "not match the active Published Version's identity "
+                            "(published_version/fingerprint); repair the private "
+                            "legacy store entry before adoption"
+                        )
                 if legacy_bindings is not None:
                     container_uri = s3_location.destination_uri
                     if container_uri is None:

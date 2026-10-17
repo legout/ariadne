@@ -5041,6 +5041,11 @@ def _s3_binding_manifest_store(path: str, version: str, metadata_store, artifact
             artifact_store.get_binding_manifest(version)
         except ArtifactUnavailable:
             return metadata_store
+        except ArtifactAccessDenied:
+            # A denied legacy read must surface through the existing mapped
+            # inspection outcome on the returned store — never escape this
+            # probe uncaught (D1-B).
+            return artifact_store
         return artifact_store
     except ArtifactAccessDenied:
         return metadata_store  # the mapped access-denied outcome must surface

@@ -511,19 +511,24 @@ def test_cli_rollback_s3_recovers_from_a_damaged_active_index(tmp_path, monkeypa
     assert msgspec_pointer(store) == revision_a
 
 
-def test_cli_publish_s3_adopts_legacy_indexed_version_from_legacy_store(
-    tmp_path, monkeypatch, capsys
+def _legacy_indexed_adoption_fixture(
+    tmp_path, monkeypatch, *, embedded_version="v-legacy", embedded_fingerprint=None
 ):
-    """D1+D2: first native adoption over a legacy indexed S3 version whose
-    exact binding manifest lives only in the configured legacy private store."""
+    """D1 fixture: a legacy indexed S3 active version plus a native candidate.
+
+    The exact legacy binding manifest is stored under the ``v-legacy`` key of
+    the configured private Source Artifact Store; ``embedded_version`` /
+    ``embedded_fingerprint`` override the manifest's own identity fields for
+    the D1-A mismatched-identity negative cases.
+    """
     import hashlib
+    from types import SimpleNamespace
 
     import msgspec
     from lumio_wiki.artifact_store import (
         LocalDirectoryArtifactStore,
         SourceBindingEntry,
         SourceBindingManifest,
-        write_binding_manifest,
     )
     from lumio_wiki.s3_location import S3ManifestFile
     from lumio_wiki.s3_publish import _publish_s3_working_tree
@@ -595,25 +600,23 @@ The captured source supports this page.
     source_b = b"successor operator manual bytes"
     digest_b = hashlib.sha256(source_b).hexdigest()
     legacy_store = LocalDirectoryArtifactStore(tmp_path / "legacy-source-store")
-    write_binding_manifest(
-        legacy_store,
-        SourceBindingManifest(
-            published_version="v-legacy",
-            fingerprint=legacy_manifest.fingerprint,
-            created_at="2025-12-01T00:00:00Z",
-            entries=[
-                SourceBindingEntry(
-                    entity_id="entity:press",
-                    page_title="Press",
-                    source_id="operator-manual",
-                    content_hash=digest_a,
-                    content_type="text/plain",
-                    filename="manual.txt",
-                    size=len(source_a),
-                )
-            ],
-        ),
+    binding_manifest = SourceBindingManifest(
+        published_version=embedded_version,
+        fingerprint=embedded_fingerprint or legacy_manifest.fingerprint,
+        created_at="2025-12-01T00:00:00Z",
+        entries=[
+            SourceBindingEntry(
+                entity_id="entity:press",
+                page_title="Press",
+                source_id="operator-manual",
+                content_hash=digest_a,
+                content_type="text/plain",
+                filename="manual.txt",
+                size=len(source_a),
+            )
+        ],
     )
+    legacy_store.put_binding_manifest("v-legacy", msgspec.json.encode(binding_manifest))
     monkeypatch.setenv("LUMIO_SOURCE_STORE", str(tmp_path / "legacy-source-store"))
 
     repo = tmp_path / "repo"
@@ -658,7 +661,19 @@ The captured source supports this page.
         str(registry.root),
         "--json",
     ]
-    assert cli.main(args) == 0
+    return SimpleNamespace(
+        store=store, args=args, revision=revision, digest_a=digest_a, digest_b=digest_b
+    )
+
+
+def test_cli_publish_s3_adopts_legacy_indexed_version_from_legacy_store(
+    tmp_path, monkeypatch, capsys
+):
+    """D1+D2: first native adoption over a legacy indexed S3 version whose
+    exact binding manifest lives only in the configured legacy private store."""
+    fixture = _legacy_indexed_adoption_fixture(tmp_path, monkeypatch)
+
+    assert cli.main(fixture.args) == 0
     review = json.loads(capsys.readouterr().out)
     assert "adopt legacy Published Version 'v-legacy'" in review["adoption"]
     replacements = [
@@ -667,13 +682,38 @@ The captured source supports this page.
         if impact["source_id"] == "operator-manual"
         and impact["change"] == "replaced legacy binding"
     ]
-    assert replacements and replacements[0]["support"] == f"{digest_a} -> {digest_b}"
+    assert (
+        replacements and replacements[0]["support"] == f"{fixture.digest_a} -> {fixture.digest_b}"
+    )
     assert replacements[0]["entity_id"] == "entity:press"
 
-    assert cli.main([*args, "--confirm", review["review_digest"]]) == 0
+    assert cli.main([*fixture.args, "--confirm", review["review_digest"]]) == 0
     confirmed = capsys.readouterr()
     assert json.loads(confirmed.out)["activated"] is True
-    assert msgspec_pointer(store) == revision
+    assert msgspec_pointer(fixture.store) == fixture.revision
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    [
+        pytest.param({"embedded_version": "v-other"}, id="published-version"),
+        pytest.param({"embedded_fingerprint": "0" * 64}, id="fingerprint"),
+    ],
+)
+def test_cli_publish_s3_refuses_mismatched_legacy_binding_identity(
+    tmp_path, monkeypatch, capsys, mismatch
+):
+    """D1-A: a legacy binding manifest whose embedded identity does not match
+    the observed active public manifest blocks adoption with an explicit
+    repair diagnostic — never an absent/latest baseline."""
+    fixture = _legacy_indexed_adoption_fixture(tmp_path, monkeypatch, **mismatch)
+    preview_args = [arg for arg in fixture.args if arg != "--json"]
+
+    assert cli.main(preview_args) == 1
+    failure = capsys.readouterr()
+    assert "the legacy S3 Source Binding Manifest for 'v-legacy' does not match" in failure.err
+    assert "repair" in failure.err
+    assert msgspec_pointer(fixture.store) == "v-legacy"
 
 
 def test_cli_rollback_s3_reports_conflicts(tmp_path, monkeypatch, capsys):

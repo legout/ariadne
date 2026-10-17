@@ -1,8 +1,27 @@
 # Implementation plan 0008: Git-native Knowledge Authoring
 
-**Revision/status:** 8 — G1 accepted; G2 fix-first corrections and local
+**Revision/status:** 9 — G1 accepted; G2 fix-first corrections and local
 LanceDB completion are owner-authorized for one isolated candidate. Behavioral
 specification unchanged.
+
+**Owner-authorized D1 residual follow-up, 2026-10-17 (r9):** after the
+independent `8b034283…c393114e` delta review closed D2–D5 and returned two
+accepted D1 residuals, the owner answered “Gezielt beheben” to resume the
+same GLM/high worker for only those two repairs in the same candidate (base
+pin `base/g2-fix-a3` = `c393114e…`, sole future result `result/g2/fix-a3`):
+D1-A — the adoption legacy-store fallback must verify the selected binding
+manifest's embedded `published_version` and `fingerprint` against the
+observed active public manifest before any impact or admission, refusing
+mismatches with an explicit repair diagnostic (never absent/latest); D1-B —
+`_s3_binding_manifest_store`'s legacy probe must route `ArtifactAccessDenied`
+into the existing mapped source-inspection refusal for inspect/fetch/link
+and `source resolve --json`, with no traceback and no new error framework.
+Budget: repro cases written before the production fix (red observed at the
+unfixed `c393114e` baseline, no shared stash/ref manipulation), one small
+post-fix selected group (the two negative cases plus the direct positive
+legacy adoption/inspection controls), scoped Ruff/format/diff once, then one
+parent-only Sol/high `c393114e…fixed` delta review. No design/spec/ADR/
+AGENTS changes, no D2–D5 reopening, no broader suite or third round.
 
 **Owner-authorized D1–D5 delta correction, 2026-10-17 (r8):** after the
 independent fix-delta review returned findings D1–D5 unresolved on `8b034283`,

@@ -2704,6 +2704,52 @@ def test_source_s3_uri_reads_legacy_store_binding_for_legacy_version(
     assert "no Source Binding Manifest for published version 'v-active'" in failure.err
 
 
+def test_source_legacy_store_denial_maps_to_cli_and_json_refusals(
+    tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D1-B: a permission-denied legacy binding read surfaces as the mapped
+    actionable refusal — exit 1 for inspect, structured JSON for resolve
+    --json — never an uncaught traceback."""
+    import obstore
+    from lumio_wiki import cli
+    from lumio_wiki.artifact_store import ArtifactAccessDenied, InMemoryArtifactStore
+    from lumio_wiki.s3_location import S3Location
+    from lumio_wiki.s3_publish import _publish_s3_working_tree
+
+    legacy_kb = tmp_path / "legacy-kb"
+    shutil.copytree(FIXTURES / "valid", legacy_kb)
+    store = obstore.store.MemoryStore()
+    _publish_s3_working_tree(store, "kb", source_root=legacy_kb, version="v-active")
+
+    class _DeniedLegacyStore(InMemoryArtifactStore):
+        """The configured private store denies reads of the binding object."""
+
+        def get_binding_manifest(self, version):
+            raise ArtifactAccessDenied("credentials cannot read the legacy Source Binding Manifest")
+
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    monkeypatch.setattr(cli, "_artifact_store_from_env", lambda: _DeniedLegacyStore())
+    monkeypatch.setattr(
+        cli, "_publication_metadata_store_for_s3", lambda _uri: InMemoryArtifactStore()
+    )
+    monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (store, "kb"))
+    published = S3Location(store, "kb", version="v-active", store_uri="s3://bucket")
+    monkeypatch.setattr(
+        cli, "_resolve_object_store_location", lambda value, version=None: published
+    )
+
+    denial = "credentials cannot read the legacy Source Binding Manifest"
+    assert main(["source", "inspect", "s3://bucket/kb", "--source-id", "policy"]) == 1
+    failure = capsys.readouterr()
+    assert denial in failure.err
+    assert "Traceback" not in failure.err
+
+    assert main(["source", "resolve", "s3://bucket/kb", "Lumio Overview", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "cli_error"
+
+
 # ---------------------------------------------------------------------------
 # Source identity resolution (issue #176): `source resolve` maps a Source ID,
 # Entity ID, Canonical Page Title, alias, or page path to ONE registered
