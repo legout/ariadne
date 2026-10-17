@@ -1,10 +1,77 @@
 # Implementation plan 0008: Git-native Knowledge Authoring
 
-**Revision/status:** 12 — G1 accepted and integrated; G2 accepted as an
+**Revision/status:** 13 — G3-S R1–R5 correction authorized; G1 accepted and integrated; G2 accepted as an
 isolated component at `69cbd715…` (tree `1c0c5775…`, result
 `result/g2/fix-a3`); G3 executed and delta-corrected; the frozen G3 fix
 result `4eee870…` is reviewed but NOT accepted. Behavioral specification
 revision 3 (reactivation clarification only).
+
+**Owner-authorized G3-S correction, 2026-10-17 (r13):** after G3-R's
+correction and one review exhausted its budget, the parent accepted the five
+source-traced residuals R1–R5 and the owner selected **“Frischer Sol/high-Worker”**.
+This separately bounded authority creates one fresh, sole Pi
+`openai-codex/gpt-6.1-sol`/high candidate; it does not change global worker
+defaults or restart the original review. Base
+`refs/heads/orchestrator/lumio-git-20261015/base/g3-sol-a1` is
+`a1f3ac22883023fbb343c755101dc4fc9824725a` (tree
+`7f2e89bd509752329c4a1833474a58f8d26c09f7`); sole future result is
+`refs/heads/orchestrator/lumio-git-20261015/result/g3/sol-a1`.
+The sole writer is Paseo `3041b2a8-78b7-47de-9dba-d2c3998d1c41`, workspace
+`wks_cb0b0df4fd54932a`, physical registered checkout
+`/home/volker/.local/state/worktrees/0ast0lnx/lumio-git-g3-sol-a1`, branch
+`orchestrator/lumio-git-20261015/g3-sol-a1`; native Pi
+`01a14ad4-3792-74fb-86a8-bf91a3e8ae49`. Host, startup and environment verified
+that exact model/thinking and clean base; common Git is
+`/home/volker/coding/lumio-wiki/.git`.
+
+Owned files are this plan, `src/lumio_wiki/{git_authoring,proposal_pipeline,cli}.py`
+and `tests/{test_git_authoring,test_capture}.py` under `packages/lumio-wiki`.
+R1 refuses actual compound+move directives in the shared candidate view,
+computed before private registration and reused for manifest validation;
+ordinary compound Sources/pins remain additive. R2 uses the existing full
+link resolver's title/alias/path precedence and preserves supported fragments
+and labels in exact repairs (small private helper closure only). R3 requires
+an explicit keep/drop/replacement choice for actual title renames through a
+tri-state SDK argument and mutually exclusive CLI selectors; move-only is
+exempt, unrelated aliases survive unless explicitly replaced, and the contrary
+omitted-choice test oracle is corrected. R4 feeds the actual capture record
+through the existing pre-apply observation hook and bounded storage-error
+mapping. R5 maps the existing rollback error at the actual passthrough ingest
+caller, preserving failed paths and recovery location. No publication/move
+redesign, module, dependency, schema, adapter or G4 work is authorized.
+
+Exact validation budget: one red group of five residual tests (compound+move
+pre-private refusal with independent S1/S2 digests and pins; original canonical/
+alias-over-path Entity targets plus section/label preservation; amended
+`test_rename_move_preserves_exact_references_and_alias_disposition` beginning
+with missing-choice refusal, then explicit drop/keep/empty/move-only; actual
+capture atomic-write failure with unchanged KB and truthful private history;
+actual non-managed CLI ingest incomplete compensation with paths/location).
+New-selector parser errors are not semantic reds. One post-fix group contains
+those five plus exactly `test_compound_revision_keeps_retained_source_pin`,
+`test_native_rename_moves_and_aliases_with_reference_repair`,
+`test_native_capture_preserves_distinct_manifests_per_version`, and execution-only
+`test_entity_merge_repairs_alias_links_and_prefers_title_over_alias`: nine nodes.
+Scoped Ruff/format/diff once; failures authorize only named diagnosis and
+relevant nodes after a delta, not broader suites or weaker assertions. Reuse
+unchanged D3/D4/D5, URL/research and G1/G2 evidence only at matching surfaces;
+no blanket 26/375, type-clean, installed/live/full-suite claim. Own locked
+`.venv` setup is explicitly authorized using uv 0.11.8 and
+`/home/volker/.local/bin/python3.14` (3.14.8), existing declared dependencies
+only. Pyright import/venv/frozen-Struct findings remain inconclusive, without
+configuration experiments.
+
+Commit the six intended files, freeze only the reserved result with Git-handoff
+guards, report exact endpoints/raw evidence in `RUN/g3-sol-worker-report.md`
+and `RUN/logs/g3-sol-*`, then relinquish writes. Parent alone dispositions and
+launches ONE independent Sol/high direct `a1f3ac2..fixed` delta review; a surviving
+material item returns to the owner, with no automatic extra round. Prior G3
+and G3-R budgets remain exhausted. No integration/publication/private-app/shared
+KB/other-worktree/run-state authority is granted. Capture checkpoint: no new
+vocabulary or architecture; specification 0008 r3 and accepted ADR-0016 already
+own behavior. Planning-contract v1 SHA-256
+`5adbbd63616169df00774d926e0daea2074b90c9cf213b508aea62e84942c200`, installed
+catalog commit unknown.
 
 **Owner-authorized G3-R residual correction, 2026-10-17 (r12):** after the
 one Sol/high `b5e470b…4eee870` delta review returned residuals D1–D7 (all

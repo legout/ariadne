@@ -2751,7 +2751,16 @@ def test_native_rename_moves_and_aliases_with_reference_repair(tmp_path):
 
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        code = main(["rename-page", str(kb), "Hydraulic Ram Press", "--to", "Hydraulic Press"])
+        code = main(
+            [
+                "rename-page",
+                str(kb),
+                "Hydraulic Ram Press",
+                "--to",
+                "Hydraulic Press",
+                "--drop-old-title-alias",
+            ]
+        )
     assert code == 1
     assert "uncommitted author changes" in err.getvalue()
     assert (kb / "reference" / "hydraulic-press.md").read_text(encoding="utf-8") == new_page
@@ -3034,7 +3043,7 @@ def test_rename_move_preserves_exact_references_and_alias_disposition(tmp_path, 
                 "See [[Hydraulic Press]] maintenance notes; the fixture detail is in "
                 "[the blank](b.md).\n"
             ),
-        ),
+        ).replace("tags:\n", "aliases: [press machine]\ntags:\n"),
         "concepts/b.md": _entity_page("Concept Blank", "entity:concept-blank", ["material"]),
         "reference/b.md": _entity_page("Reference Blank", "entity:reference-blank", ["material"]),
         "concepts/press-guide.md": _entity_page(
@@ -3066,9 +3075,29 @@ def test_rename_move_preserves_exact_references_and_alias_disposition(tmp_path, 
     assert not (kb / "concepts" / "hydraulic-press.md").exists()
     _commit(repo)
 
-    # --- Rename with an explicit keep/drop disposition: the own old-title
-    # self-reference repairs, and the disposition is disclosed. ---
+    # ADR-0016 requires the operator's choice, not a post-action default.
+    before = {p.relative_to(kb): p.read_bytes() for p in kb.rglob("*") if p.is_file()}
     code = main(["rename-page", str(kb), "Hydraulic Press", "--to", "Hydraulic Ram Press"])
+    captured = capsys.readouterr()
+    assert code == 1, captured.out
+    assert "explicit" in captured.err
+    assert {p.relative_to(kb): p.read_bytes() for p in kb.rglob("*") if p.is_file()} == before
+    from lumio_wiki.git_authoring import rename_page_in_worktree
+
+    with pytest.raises(GitAuthoringError, match="explicit"):
+        rename_page_in_worktree(kb, "Hydraulic Press", new_title="Hydraulic Ram Press")
+
+    # Explicit drop preserves unrelated aliases and repairs self-references.
+    code = main(
+        [
+            "rename-page",
+            str(kb),
+            "Hydraulic Press",
+            "--to",
+            "Hydraulic Ram Press",
+            "--drop-old-title-alias",
+        ]
+    )
     out = capsys.readouterr().out
     assert code == 0, out
     assert "old title:" in out  # the ADR-0016 disposition is disclosed
@@ -3076,6 +3105,9 @@ def test_rename_move_preserves_exact_references_and_alias_disposition(tmp_path, 
     renamed = (kb / "reference" / "hydraulic-press.md").read_text(encoding="utf-8")
     assert "[[Hydraulic Ram Press]] maintenance notes" in renamed
     assert "[[Hydraulic Press]]" not in renamed
+    import msgspec.yaml as yaml
+
+    assert yaml.decode(renamed.split("---")[1])["aliases"] == ["press machine"]
     _commit(repo)
 
     # --- The explicit KEEP keeps the old title reachable as an alias. ---
@@ -3092,13 +3124,11 @@ def test_rename_move_preserves_exact_references_and_alias_disposition(tmp_path, 
     out = capsys.readouterr().out
     assert code == 0, out
     assert "kept as an alias" in out
-    import msgspec.yaml as yaml
-
     data = yaml.decode(
         (kb / "reference" / "hydraulic-press.md").read_text(encoding="utf-8").split("---")[1]
     )
     assert data["title"] == "Hydraulic Shop Press"
-    assert "Hydraulic Ram Press" in data["aliases"]
+    assert data["aliases"] == ["press machine", "Hydraulic Ram Press"]
     _commit(repo)
 
     # --- The explicit empty replacement set is expressible. ---
@@ -3159,3 +3189,157 @@ def test_incomplete_rollback_is_bounded_cli_error(tmp_path, capsys, monkeypatch)
     assert "concepts/hydraulic-press.md" in captured.err
     assert "retained" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_compound_move_refuses_before_private_registration(tmp_path, capsys):
+    """R1: compound+move must not approve pins absent from the applied page."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo, control=CONTROL_V2_TWO_CATEGORIES)
+    registry = SourceRegistry(tmp_path / "registry")
+    _ingest_operator_manual(tmp_path, repo, kb, registry)
+    before = {p.relative_to(kb): p.read_bytes() for p in kb.rglob("*") if p.is_file()}
+    private_before = {
+        p.relative_to(registry.root): p.read_bytes()
+        for p in registry.root.rglob("*")
+        if p.is_file()
+    }
+    new_bytes = b"Service bulletin: the ram needs an annual inspection."
+    new_digest = hashlib.sha256(new_bytes).hexdigest()
+    assert new_digest != A_DIGEST
+    raw = tmp_path / "service.txt"
+    raw.write_bytes(new_bytes)
+    compiled = tmp_path / "compound-move.md"
+    compiled.write_text(
+        _authored_ingest_page("service-manual")
+        .replace("category: concepts", "category: reference")
+        .replace(
+            "synthetic: false\n",
+            "synthetic: false\ncompound_revision: true\n"
+            "move_from_path: concepts/workbench_press.md\n",
+        )
+    )
+    code = main(
+        [
+            "ingest",
+            str(kb),
+            str(raw),
+            "--compiled-page",
+            str(compiled),
+            "--source-id",
+            "service-manual",
+            "--source-registry",
+            str(registry.root),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1, captured.out
+    assert "compound" in captured.err and "move" in captured.err
+    assert {p.relative_to(kb): p.read_bytes() for p in kb.rglob("*") if p.is_file()} == before
+    assert {
+        p.relative_to(registry.root): p.read_bytes()
+        for p in registry.root.rglob("*")
+        if p.is_file()
+    } == private_before
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest.bindings["entity:workbench-press"] == {"operator-manual": A_DIGEST}
+    import msgspec.yaml as yaml
+
+    page = yaml.decode((kb / "concepts/workbench_press.md").read_text().split("---")[1])
+    assert {source["id"] for source in page["sources"]} == {"operator-manual"}
+
+
+def test_move_preserves_resolver_precedence_and_reference_fragments(tmp_path):
+    """R2: preserve hand-assigned Entity targets, section destinations and labels."""
+    pages = {
+        "concepts/a.md": _entity_page(
+            "Hydraulic Press",
+            "entity:moving",
+            ["press"],
+            body_sections="## Overview\n\n[canonical](b.md#overview)\n"
+            "[alias](c.md#overview)\n[path detail](d.md#overview)\n"
+            "[[Hydraulic Press#overview|details]] and [[Hydraulic Press#overview]].\n",
+        ),
+        "concepts/detail.md": _entity_page("b", "entity:title-target", ["material"]),
+        "concepts/alias-detail.md": _entity_page(
+            "Alias Detail", "entity:alias-target", ["material"]
+        ).replace("tags:\n", "aliases: [c]\ntags:\n"),
+        "concepts/b.md": _entity_page("Path B", "entity:path-b", ["material"]),
+        "concepts/c.md": _entity_page("Path C", "entity:path-c", ["material"]),
+        "concepts/d.md": _entity_page("Path Detail", "entity:path-target", ["material"]),
+        "reference/d.md": _entity_page("Wrong Detail", "entity:wrong-target", ["material"]),
+    }
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo, control=CONTROL_V2_TWO_CATEGORIES, pages=pages)
+    _commit(repo)
+
+    def target_entities():
+        loaded, report = load_knowledge_base(kb)
+        assert report.is_valid, report
+        ids = {page.title: page.id for page in loaded.pages}
+        return {ids[ref.target_title] for ref in loaded.extracted_references("Hydraulic Press")}
+
+    expected = {"entity:title-target", "entity:alias-target", "entity:path-target"}
+    assert target_entities() == expected
+    assert main(["rename-page", str(kb), "Hydraulic Press", "--category", "reference"]) == 0
+    assert target_entities() == expected
+    moved = (kb / "reference/a.md").read_text()
+    assert "[canonical](b.md#overview)" in moved
+    assert "[alias](c.md#overview)" in moved
+    assert "[path detail](concepts/d.md#overview)" in moved
+    _commit(repo)
+    assert (
+        main(
+            [
+                "rename-page",
+                str(kb),
+                "Hydraulic Press",
+                "--to",
+                "Shop Press",
+                "--keep-old-title-alias",
+            ]
+        )
+        == 0
+    )
+    renamed = (kb / "reference/a.md").read_text()
+    assert "[[Shop Press#overview|details]]" in renamed
+    assert "[[Shop Press#overview]]" in renamed
+
+
+def test_passthrough_ingest_incomplete_rollback_is_bounded(tmp_path, capsys, monkeypatch):
+    """R5: the real non-managed ingest caller discloses incomplete compensation."""
+    from lumio_wiki import git_authoring
+    from lumio_wiki.mutation import MutationBackup
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    source = tmp_path / "revised-page.md"
+    source.write_text(
+        (kb / "concepts/hydraulic-press.md")
+        .read_text()
+        .replace(
+            "tags:\n",
+            "category: concepts\ntype: machine\n"
+            "durability_rationale: The workshop machine is maintained permanently.\ntags:\n",
+        )
+    )
+    backups = []
+
+    def failing_apply(pages, root, **kwargs):
+        raise OSError("test apply storage failure")
+
+    def incomplete_restore(self, root, **kwargs):
+        backups.append(self.directory)
+        return ["concepts/hydraulic-press.md (test restore storage failure)"]
+
+    monkeypatch.setattr(git_authoring, "apply_proposed_pages", failing_apply)
+    monkeypatch.setattr(MutationBackup, "restore_all", incomplete_restore)
+    code = main(["ingest", str(kb), str(source)])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "concepts/hydraulic-press.md" in captured.err
+    assert len(backups) == 1 and backups[0].is_dir()
+    assert str(backups[0]) in captured.err
+    assert "retained" in captured.err and "Traceback" not in captured.err

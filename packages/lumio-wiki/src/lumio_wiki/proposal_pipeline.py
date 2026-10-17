@@ -340,58 +340,42 @@ def _retarget_claim_objects(data: dict, from_id: str, to_id: str) -> bool:
     return changed
 
 
-def _classify_retired_link(dest: str, pages, source_dir: str, retired_title: str) -> str | None:
-    """Classify a body-link destination against the retired page.
-
-    Mirrors the shared resolver's lookup precedence (Canonical Title, then
-    alias, then path stem) so "exactly resolved" means exactly what the
-    resolver means. Returns ``"title"``/``"alias"``/``"path"`` when the
-    destination resolves to exactly the retired page through that key
-    (repair it), ``"ambiguous"`` when it matches the retired page AND
-    another page through the same key (never guess — block the merge), or
-    ``None`` when it resolves elsewhere or not at all (leave it alone).
-    Titles are the set identity because CompiledPage records are unhashable;
-    a valid Knowledge Base has unique titles.
-    """
-    from lumio_wiki.knowledge_base import _destination_stem
-
-    stem = _destination_stem(dest).casefold().lstrip("/")
-    if not stem:
-        return None
-    title_matches = {page.title for page in pages if page.title and page.title.casefold() == stem}
-    if title_matches:
-        if retired_title not in title_matches:
-            return None
-        # A unique Canonical-Title match wins over any alias or path match —
-        # exactly like the resolver — so a same-named alias on another page
-        # must not make this repair ambiguous. Case-colliding titles
-        # (``Beta``/``BETA``) casefold onto this one stem: never guess.
-        return "title" if len(title_matches) == 1 else "ambiguous"
-    alias_matches = {
-        page.title for page in pages for alias in page.aliases if alias and alias.casefold() == stem
-    }
-    if alias_matches:
-        if retired_title not in alias_matches:
-            return None
-        return "alias" if len(alias_matches) == 1 else "ambiguous"
-    # Path stems, mirroring the resolver: source-dir-relative first, then
-    # global. Each lookup keys a unique page path, so a match is never
-    # ambiguous by itself.
-    by_path: dict[str, str] = {}
+def _link_target_maps(pages):
+    """Build the existing resolver's title, alias and path-stem inputs."""
+    by_title, by_alias, by_path = {}, {}, {}
     for page in pages:
+        if page.title:
+            by_title.setdefault(page.title, []).append(page)
+        for alias in page.aliases:
+            if alias:
+                by_alias.setdefault(alias, []).append(page)
         if page.path:
-            pstem = page.path
-            if pstem.lower().endswith(".md"):
-                pstem = pstem[: -len(".md")]
-            by_path.setdefault(pstem.casefold(), page.title)
-    target: str | None = None
-    if source_dir:
-        target = by_path.get(f"{source_dir.casefold()}/{stem}")
-    if target is None:
-        target = by_path.get(stem)
-    if target is None:
+            stem = page.path[:-3] if page.path.lower().endswith(".md") else page.path
+            by_path.setdefault(stem.casefold(), page)
+    return by_title, by_alias, by_path
+
+
+def _classify_retired_link(dest: str, pages, source_dir: str, retired_title: str) -> str | None:
+    """Classify only the shared resolver's actual target; never guess a repair."""
+    from lumio_wiki.knowledge_base import _destination_stem, _resolve_link_target
+
+    by_title, by_alias, by_path = _link_target_maps(pages)
+    target, reason = _resolve_link_target(dest, by_title, by_alias, by_path, source_dir)
+    stem = _destination_stem(dest).casefold()
+    title_matches = [
+        page for key, matches in by_title.items() if key.casefold() == stem for page in matches
+    ]
+    alias_matches = [
+        page for key, matches in by_alias.items() if key.casefold() == stem for page in matches
+    ]
+    if reason == "ambiguous":
+        matches = title_matches or alias_matches
+        return "ambiguous" if any(page.title == retired_title for page in matches) else None
+    if target is None or target.title != retired_title:
         return None
-    return "path" if target == retired_title else None
+    if title_matches:
+        return "title"
+    return "alias" if alias_matches else "path"
 
 
 def _repair_body_links_for_merge(
@@ -436,7 +420,10 @@ def _repair_body_links_for_merge(
         # Title/alias resolutions rewrite to the surviving Canonical Title;
         # path resolutions rewrite to a root-absolute surviving path (which
         # resolves from every source directory).
-        rel = surviving_path if kind == "path" else surviving_title
+        suffix_match = re.search(r"[?#].*", dest)
+        suffix = suffix_match.group() if suffix_match else ""
+        title_target = surviving_title + suffix
+        rel = (surviving_path if kind == "path" else surviving_title) + suffix
         lo = max(line_start - body_start_line, 0)
         hi = min(line_end - body_start_line, len(body_lines) - 1)
         # Wikilinks always rewrite to the surviving title; Markdown links use
@@ -444,8 +431,8 @@ def _repair_body_links_for_merge(
         # shared prefix (``[[beta`` inside ``[[beta2]]``) is never rewritten
         # by accident.
         replacements = (
-            (f"[[{dest}]]", f"[[{surviving_title}]]"),
-            (f"[[{dest}|", f"[[{surviving_title}|"),
+            (f"[[{dest}]]", f"[[{title_target}]]"),
+            (f"[[{dest}|", f"[[{title_target}|"),
             (f"]({dest})", f"]({rel})"),
             (f"]({dest} ", f"]({rel} "),
         )
@@ -844,34 +831,26 @@ def _pin_outbound_path_targets(
     A relative link that resolved EXACTLY against the pre-move directory is
     rewritten to its resolved target's root-absolute path, so the move (even
     into a directory holding a same-basename DIFFERENT Entity) cannot
-    silently misroute it. Mirrors the shared resolver's path convention
-    (source-dir-relative first, then global) — a dest that resolves through
-    no path key is left untouched, never guessed.
+    silently misroute it. The shared resolver selects the original target;
+    title/alias resolutions are left alone, and ambiguous or escaping
+    destinations are never guessed.
     """
-    from lumio_wiki.knowledge_base import _destination_stem, _scan_body_links
+    from lumio_wiki.knowledge_base import _resolve_link_target, _scan_body_links
 
-    by_path: dict[str, str] = {}
-    for candidate in pages:
-        if not candidate.path or candidate.title == exclude_title:
-            # The moving page's own old path is not a stable target: the
-            # incoming-link repair and the atomic move own those rewires.
-            continue
-        stem = candidate.path
-        if stem.lower().endswith(".md"):
-            stem = stem[: -len(".md")]
-        by_path.setdefault(stem.casefold(), candidate.path)
+    by_title, by_alias, by_path = _link_target_maps(pages)
     source_dir = str(PurePosixPath(source_path).parent) if "/" in source_path else ""
     lines = markdown.splitlines(keepends=True)
     for dest, line_start, line_end in _scan_body_links(markdown, 1):
-        stem = _destination_stem(dest).casefold().lstrip("/")
-        if not stem or stem in {"..", "."} or dest.startswith(("http://", "https://", "/")):
+        target, reason = _resolve_link_target(dest, by_title, by_alias, by_path, source_dir)
+        if reason != "ok" or target is None or target.title == exclude_title:
             continue
-        target_path: str | None = None
-        if source_dir:
-            target_path = by_path.get(f"{source_dir.casefold()}/{stem}")
-        if target_path is None:
-            target_path = by_path.get(stem)
-        if target_path is None or target_path == dest:
+        # Title/alias resolutions do not depend on the moving page's directory.
+        named_target, _reason = _resolve_link_target(dest, by_title, by_alias, {}, source_dir)
+        if named_target is not None:
+            continue
+        suffix = re.search(r"[?#].*", dest)
+        target_path = target.path + (suffix.group() if suffix else "")
+        if target_path == dest:
             continue
         lo = max(line_start - 1, 0)
         hi = max(min(line_end, len(lines)), lo)
@@ -893,7 +872,7 @@ def assemble_page_rename_candidate(
     new_title: str | None = None,
     new_category: str | None = None,
     aliases: list[str] | None = None,
-    keep_old_title_alias: bool = False,
+    keep_old_title_alias: bool | None = None,
 ) -> MutationCandidate:
     """Assemble a reviewed title rename / category move / alias edit (G3/D2).
 
@@ -920,6 +899,11 @@ def assemble_page_rename_candidate(
         raise ProposalPipelineError(f"no Compiled Page found for title {resolved_title!r}")
     resolved_new_title = (new_title or "").strip() or resolved_title
     renaming = resolved_new_title != resolved_title
+    if renaming and keep_old_title_alias is None and aliases is None:
+        raise ProposalPipelineError(
+            "a title rename requires an explicit old-title alias choice: keep, "
+            "drop, or a replacement alias set (including an empty set)"
+        )
     new_relative = page.path
     moving = False
     if new_category is not None:
@@ -956,6 +940,10 @@ def assemble_page_rename_candidate(
         if any(not alias for alias in cleaned_aliases):
             raise ProposalPipelineError("aliases must be non-empty strings")
         data["aliases"] = cleaned_aliases
+    if keep_old_title_alias is False and renaming:
+        data["aliases"] = [
+            alias for alias in (data.get("aliases") or []) if alias != resolved_title
+        ]
     if keep_old_title_alias and renaming:
         # ADR-0016: the old title stays reachable as an EXPLICIT alias choice,
         # added to whatever alias set this edit produces.
@@ -974,15 +962,14 @@ def assemble_page_rename_candidate(
         renamed_markdown = _pin_outbound_path_targets(
             renamed_markdown, page.path, kb.pages, exclude_title=resolved_title
         )
-    if renaming:
-        # D2: the renamed page's OWN old-title references repair too (labels
-        # preserved by the shared replacement patterns).
+    if renaming or moving:
+        # Resolve own references in their original directory before the move.
         _own_data, _own_body, own_body_start = parse_frontmatter(
             renamed_markdown, Path(new_relative)
         )
         renamed_markdown, _changed, _ambiguous = _repair_body_links_for_merge(
             renamed_markdown,
-            new_relative,
+            page.path,
             own_body_start,
             resolved_title,
             resolved_new_title,

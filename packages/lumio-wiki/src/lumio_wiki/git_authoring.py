@@ -3106,6 +3106,7 @@ def ingest_into_worktree(
         mutation_paths,
         allow_untracked=frozenset({SOURCE_REFERENCE_MANIFEST_BASENAME}),
     )
+    candidate_view = _candidate_pages_view(kb, pages)
     # The exact binding digest is computed from the supplied bytes up front
     # (registration converges on the same content-addressed version).
     digest = hashlib.sha256(raw_bytes).hexdigest()
@@ -3135,7 +3136,7 @@ def ingest_into_worktree(
     # ingest leaves only the convergent immutable history, no page bytes.
     _refuse_manifest_drift(
         updated_manifest,
-        _candidate_pages_view(kb, pages),
+        candidate_view,
         "managed ingest",
         registry=source_registry,
     )
@@ -3237,7 +3238,8 @@ def _candidate_page_record(page, existing_markdown: str | None = None):
     page content is the additive provenance merge — computed by the very
     function apply/validation use (``merge_compound_sources``) — so the
     manifest view sees the retained prior Sources together with the incoming
-    ones. No parallel source-merge algorithm exists here.
+    ones. Compound+move is refused: the destination owner prioritizes moves
+    without merging Sources, so a synthetic union would approve absent pins.
     """
     from types import SimpleNamespace
 
@@ -3245,6 +3247,11 @@ def _candidate_page_record(page, existing_markdown: str | None = None):
     from lumio_wiki.knowledge_base import _parse_frontmatter
     from lumio_wiki.publish import merge_compound_sources
 
+    if getattr(page, "compound_revision", False) and getattr(page, "move_from_path", None):
+        raise GitAuthoringError(
+            "compound_revision and move_from_path cannot be combined: compound "
+            "and move require separate authoring edits; no authoring files were written"
+        )
     effective_markdown = page.markdown
     if existing_markdown is not None and getattr(page, "compound_revision", False):
         effective_markdown = merge_compound_sources(page.markdown, existing_markdown)
@@ -3993,14 +4000,15 @@ def rename_page_in_worktree(
     new_title: str | None = None,
     new_category: str | None = None,
     aliases: Sequence[str] | None = None,
-    keep_old_title_alias: bool = False,
+    keep_old_title_alias: bool | None = None,
 ) -> WorktreeMutationResult:
     """Rename, recategorize, and/or re-alias one Compiled Page as worktree edits.
 
     Required G3 completion (spec 0008 §6, ADR-0016): the reviewed title
     rename primitive with optional Content Category move and an explicit
-    alias choice; ``keep_old_title_alias`` keeps the old title reachable as
-    an explicit ADR-0016 disposition. Stable Entity/Claim IDs, Sources, and
+    alias choice: an actual title rename requires ``keep_old_title_alias``
+    True/False or an explicit replacement ``aliases`` set (including empty).
+    Move-only edits need no choice. Stable Entity/Claim IDs, Sources, and
     provenance are preserved; exactly-resolved incoming body links retarget
     on renames AND moves; the moved page's outbound path-resolved links
     keep their pre-move targets; a stale Hot Index pin updates; ambiguous

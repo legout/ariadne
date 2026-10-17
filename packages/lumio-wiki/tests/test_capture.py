@@ -937,3 +937,43 @@ def test_native_capture_refuses_git_tracked_manifest_named_transcript(tmp_path, 
 
     assert all(s.source_id != "pi-session" for s in SourceRegistry(tmp_path / "registry").list())
     assert not (kb / "concepts" / "workbench_press.md").exists()
+
+
+def test_native_capture_observation_failure_leaves_worktree_unchanged(tmp_path, monkeypatch):
+    """R4: required private Capture Manifest storage is part of the native refusal gate."""
+    import hashlib
+
+    from lumio_wiki.source_registry import SourceRegistry
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    before = {p.relative_to(kb): p.read_bytes() for p in kb.rglob("*") if p.is_file()}
+    manifest_path, _raw = _manifest_bytes(tmp_path, CaptureManifest(client="pi", project="safety"))
+    transcript = tmp_path / "session.txt"
+    transcript_bytes = b"Verified workshop findings without credentials.\n"
+    transcript.write_bytes(transcript_bytes)
+    page = tmp_path / "page.md"
+    page.write_text(_authored_ingest_page("capture-safety"))
+    registry = tmp_path / "registry"
+    attempted = []
+
+    def failing_write(path, data):
+        attempted.append(path)
+        raise OSError("capture record storage unavailable")
+
+    monkeypatch.setattr("lumio_wiki.private_provenance.atomic_write_bytes", failing_write)
+    code, out, err = _run_capture(
+        kb, page, manifest_path, "capture-safety", registry=registry, transcript=transcript
+    )
+    assert code == 1, out
+    assert "private provenance observation" in err
+    assert "immutable registration may remain" in err
+    assert "Traceback" not in err
+    assert len(attempted) == 1 and attempted[0].is_relative_to(registry / "captures")
+    assert {p.relative_to(kb): p.read_bytes() for p in kb.rglob("*") if p.is_file()} == before
+    sources = SourceRegistry(registry).list()
+    assert [(s.source_id, [v.content_hash for v in s.versions]) for s in sources] == [
+        ("capture-safety", [hashlib.sha256(transcript_bytes).hexdigest()])
+    ]
+    assert _all_private_capture_contents(registry) == []

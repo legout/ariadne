@@ -2342,6 +2342,7 @@ def _cmd_ingest_worktree_passthrough(
         _validate_page_routing,
         prepare_proposal_content,
     )
+    from lumio_wiki.mutation import MutationRollbackError
     from lumio_wiki.source_processor import (
         MissingDocumentExtraError,
         SourceProcessorError,
@@ -2379,7 +2380,7 @@ def _cmd_ingest_worktree_passthrough(
         raise CliError("; ".join(f"{issue.file}: {issue.message}" for issue in routing_issues))
     try:
         result = write_pages_into_worktree(kb.root, pages, operation="ingest")
-    except GitAuthoringError as exc:
+    except (GitAuthoringError, MutationRollbackError) as exc:
         raise CliError(str(exc), exit_code=1) from exc
     print("Ingested into the Git authoring worktree (nothing committed):")
     print(f"  pages:          {', '.join(result.written)}")
@@ -2677,7 +2678,13 @@ def _cmd_capture_session(args: argparse.Namespace) -> int:
                     "Source Registry: pass --source-registry <dir> or set "
                     f"{SOURCE_REGISTRY_ENV_VAR}"
                 )
+            from lumio_wiki.capture import write_versioned_capture_record
             from lumio_wiki.mutation import MutationRollbackError
+
+            def persist_capture_observation(source_id, content_hash):
+                write_versioned_capture_record(
+                    registry.root, source_id, content_hash, safe_manifest, transcript_digest
+                )
 
             try:
                 result = ingest_into_worktree(
@@ -2693,14 +2700,7 @@ def _cmd_capture_session(args: argparse.Namespace) -> int:
                     # resolved original transcript (explicit or manifest-named),
                     # never merely the manifest that names it.
                     raw_source_path=transcript_source_path or args.manifest,
-                )
-                from lumio_wiki.capture import write_versioned_capture_record
-
-                # F5: the Capture Manifest is retained per exact Source
-                # Version and per observation (content-addressed), never
-                # overwritten — including with raw retention disabled.
-                write_versioned_capture_record(
-                    registry.root, source_id, result.content_hash, safe_manifest, transcript_digest
+                    persist_observation=persist_capture_observation,
                 )
             except (
                 GitAuthoringError,
@@ -3369,7 +3369,13 @@ def _cmd_rename_page(args: argparse.Namespace) -> int:
     from lumio_wiki.git_authoring import GitAuthoringError, rename_page_in_worktree
     from lumio_wiki.mutation import MutationRollbackError
 
-    explicit_aliases = list(args.alias) if args.alias else None
+    explicit_aliases = (
+        []
+        if args.clear_aliases
+        else [alias.strip() for alias in args.alias]
+        if args.alias
+        else None
+    )
     if args.clear_aliases and args.alias:
         raise CliError(
             "--clear-aliases and --alias are mutually exclusive "
@@ -3381,7 +3387,7 @@ def _cmd_rename_page(args: argparse.Namespace) -> int:
             args.title,
             new_title=args.to,
             new_category=args.category,
-            aliases=[] if args.clear_aliases else explicit_aliases,
+            aliases=explicit_aliases,
             keep_old_title_alias=args.keep_old_title_alias,
         )
     except (GitAuthoringError, MutationRollbackError) as exc:
@@ -3391,24 +3397,27 @@ def _cmd_rename_page(args: argparse.Namespace) -> int:
         details.append(f"  new title:      {args.to}")
     if args.category:
         details.append(f"  category:       {args.category}")
-    if args.clear_aliases:
+    old_title = args.title.strip()
+    renaming = bool(args.to and args.to.strip() != old_title)
+    effective_aliases = (
+        list(explicit_aliases)
+        if explicit_aliases is not None
+        else list(next(page for page in kb.pages if page.title == old_title).aliases)
+    )
+    if renaming:
+        if args.keep_old_title_alias is True and old_title not in effective_aliases:
+            effective_aliases.append(old_title)
+        elif args.keep_old_title_alias is False:
+            effective_aliases = [alias for alias in effective_aliases if alias != old_title]
+    if args.clear_aliases and not effective_aliases:
         details.append("  aliases:        (explicitly cleared)")
-    elif args.alias:
-        details.append(f"  aliases:        {', '.join(args.alias)}")
-    if args.to:
-        # ADR-0016: the old title's disposition is explicit and disclosed.
-        if args.keep_old_title_alias:
-            details.append(f"  old title:      kept as an alias ({args.title})")
-        elif args.alias or args.clear_aliases:
-            details.append(
-                f"  old title:      {args.title!r} replaced by the explicit alias set "
-                "(pass --keep-old-title-alias to keep it)"
-            )
+    elif explicit_aliases is not None or renaming:
+        details.append(f"  aliases:        {', '.join(effective_aliases) or '(empty)'}")
+    if renaming:
+        if old_title in effective_aliases:
+            details.append(f"  old title:      kept as an alias ({old_title})")
         else:
-            details.append(
-                f"  old title:      dropped ({args.title!r} is no longer reachable; "
-                "pass --keep-old-title-alias to keep it)"
-            )
+            details.append(f"  old title:      dropped ({old_title!r} is no longer reachable)")
     _print_worktree_mutation(
         result,
         title=f"Renamed page {args.title!r} in the Git authoring worktree (nothing committed):",
@@ -7615,14 +7624,21 @@ def build_parser() -> argparse.ArgumentParser:
             "exclusive with --alias; ADR-0016's explicit empty selection)"
         ),
     )
-    rename_page_parser.add_argument(
+    old_title_choice = rename_page_parser.add_mutually_exclusive_group()
+    old_title_choice.add_argument(
         "--keep-old-title-alias",
-        action="store_true",
-        help=(
-            "On a title rename, keep the old title reachable as an explicit "
-            "alias (ADR-0016 keep/drop choice; without it the old title is "
-            "dropped and the disposition is disclosed)"
-        ),
+        dest="keep_old_title_alias",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Keep the old title as an alias on a title rename (explicit ADR-0016 choice)",
+    )
+    old_title_choice.add_argument(
+        "--drop-old-title-alias",
+        dest="keep_old_title_alias",
+        action="store_const",
+        const=False,
+        help="Drop the old title on a title rename, preserving unrelated aliases",
     )
     rename_page_parser.set_defaults(func=_cmd_rename_page)
 
