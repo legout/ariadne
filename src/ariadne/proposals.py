@@ -545,6 +545,7 @@ def _assert_scope(rel: str) -> None:
         raise ValueError(
             f"artifact path {rel!r} is outside the proposal artifact scope (ariadne.yaml, "
             "data/seed_notes.md, semantic_layer/models/*.yml, semantic_layer/graph.yml, "
+            "contracts/*.ya?ml, contract_bindings.yaml, "
             "context_layer/{datasets,tables,references,references/joins,policies,"
             "metrics,skills}/*.md)"
         )
@@ -566,8 +567,13 @@ def _in_user_scope(rel: str) -> bool:
     ):
         return False
     parts = pure.parts
-    if rel in ("ariadne.yaml", "data/seed_notes.md", "semantic_layer/graph.yml"):
-        return True
+    if rel in (
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "semantic_layer/graph.yml",
+        "contract_bindings.yaml",
+    ):
+        return True  # spec 0028 §3: the fixed native binding document is a typed root
     if (
         len(parts) == 3
         and parts[:2] == ("semantic_layer", "models")
