@@ -22,8 +22,8 @@ Contract highlights (issue #179 rules):
 - Declarative knowledge only. A page that looks like a raw conversational
   transcript is refused with an actionable message; capture targets
   decisions, verified findings, commands/results, and citations.
-- Never auto-publish. Capture stages a proposal; review and publish stay
-  explicit (``proposal inspect`` / ``validate`` / ``publish``).
+- Never auto-publish. Capture edits the selected Git authoring worktree;
+  review, commit, and publication stay explicit (spec 0008 §7).
 - Vendor-neutral core. The manifest contract is client-agnostic; thin
   opt-in adapters (Pi, Codex, Claude Code, Hermes) export a transcript plus
   a manifest through the same seam, and unsupported clients write a manual
@@ -42,7 +42,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -50,7 +50,6 @@ import msgspec  # type: ignore[import-not-found]
 
 if TYPE_CHECKING:
     from lumio_wiki.git_authoring import WorktreeIngestResult
-    from lumio_wiki.ingest import IngestProposal
 
 # Boundaries keeping the capture manifest small and reviewable.
 MAX_MANIFEST_BYTES = 64 * 1024
@@ -202,15 +201,13 @@ class CapturePreview(msgspec.Struct, frozen=True):
 
 
 class CaptureOutcome(msgspec.Struct, frozen=True):
-    """Preview-mode result; ``proposal`` is set only on a confirmed capture.
+    """Preview-mode result; ``worktree`` is set on a confirmed capture.
 
-    G3 (spec 0008 §7): a confirmed native Git capture sets ``worktree``
-    instead — the ordinary-file worktree edit result — and stages no
-    proposal.
+    The confirmed capture is an ordinary-file Git worktree edit
+    (spec 0008 §7); nothing is staged and no proposal exists.
     """
 
     preview: CapturePreview
-    proposal: IngestProposal | None = None
     worktree: WorktreeIngestResult | None = None
 
 
@@ -430,30 +427,6 @@ def _checked_transcript(
     return redacted_bytes, digest, filename, content_type, warnings
 
 
-def write_capture_record(
-    root: str | Path, source_id: str, manifest: CaptureManifest, transcript_digest: str | None
-) -> Path:
-    """Persist the manifest as private ingest provenance (never in the KB).
-
-    G3: the root is caller-selected — the legacy staged route passes the
-    ingest store root; the native Git route passes a private root OUTSIDE
-    the authoring worktree (a Git-tracked capture record would publish
-    private provenance). Legacy format and route are retained unchanged
-    until G4.
-    """
-    captures = Path(root) / "captures"
-    captures.mkdir(parents=True, exist_ok=True)
-    record = {
-        "source_id": source_id,
-        "captured_at": datetime.now(UTC).isoformat(),
-        "manifest": msgspec.to_builtins(manifest),
-        "transcript_digest": transcript_digest,
-    }
-    record_path = captures / f"{source_id}.json"
-    record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
-    return record_path
-
-
 def write_versioned_capture_record(
     root: str | Path,
     source_id: str,
@@ -486,12 +459,6 @@ def write_versioned_capture_record(
             "transcript_digest": transcript_digest,
         },
     )
-
-
-def _write_capture_record(
-    store, source_id: str, manifest: CaptureManifest, transcript_digest: str | None
-) -> None:
-    write_capture_record(store.root, source_id, manifest, transcript_digest)
 
 
 def _redact_manifest(
@@ -536,8 +503,6 @@ def _merged_counts(target: dict[str, int], extra: dict[str, int]) -> dict[str, i
 
 
 def capture_session(
-    pipeline,
-    store,
     *,
     compiled_page_markdown: str,
     manifest: CaptureManifest,
@@ -548,21 +513,15 @@ def capture_session(
     confirmed: bool = False,
     ingest: Callable[..., WorktreeIngestResult] | None = None,
 ) -> CaptureOutcome:
-    """Preview (and on confirmation stage) ONE capture proposal (issue #179).
+    """Preview (and on confirmation apply) ONE session capture (issue #179).
 
-    With ``confirmed=False`` nothing is registered and nothing is staged:
+    With ``confirmed=False`` nothing is registered and nothing is written:
     the returned outcome carries only the preview (included sections and
     redaction counts) for explicit confirmation. With ``confirmed=True`` the
-    REDACTED capture source bytes (transcript, or the manifest itself when
-    no transcript is bound) are registered under ``source_id`` and the
-    redacted Compiled Page is staged as a single reviewable proposal through
-    the managed host-Distiller contract. Never publishes.
-
-    G3 (spec 0008 §7): when ``ingest`` is supplied (the native Git route),
-    confirmation applies the same redacted page and private registration
-    through the caller's worktree-edit ingest — no proposal is staged —
-    and the caller records the private capture record OUTSIDE the Git
-    worktree.
+    caller's ``ingest`` callback writes the redacted page and the exact
+    source binding into the selected Git authoring worktree and records the
+    private capture record outside it (spec 0008 §7; the legacy staged
+    proposal route is retired — G4). Never publishes.
     """
     from lumio_wiki.ingest import _authored_page_declares_source
 
@@ -626,35 +585,25 @@ def capture_session(
         warnings=transcript_warnings,
     )
     if not confirmed:
-        return CaptureOutcome(preview=preview, proposal=None)
+        return CaptureOutcome(preview=preview)
 
-    if ingest is not None:
-        # 6a. Confirmed native Git route (spec 0008 §7): the caller's
-        # ingest writes the redacted page and the exact source binding into
-        # the selected authoring worktree (and records the private capture
-        # record outside Git); no proposal is staged.
-        worktree_result = ingest(
-            capture_source_bytes,
-            content_type,
-            filename,
-            source_id,
-            redacted_markdown,
-            safe_manifest,
-            transcript_digest,
-            transcript_source_path,
-        )
-        return CaptureOutcome(preview=preview, worktree=worktree_result)
-
-    # 6. Confirmed: register + stage through the ONE managed contract.
-    proposal = pipeline.managed_ingest(
+    # Confirmed native Git route (spec 0008 §7): the caller's ingest writes
+    # the redacted page and the exact source binding into the selected
+    # authoring worktree (and records the private capture record outside
+    # Git). No proposal is staged; the legacy staged route is retired (G4).
+    if ingest is None:
+        raise CaptureError("capture confirmation requires the Git authoring worktree ingest route")
+    worktree_result = ingest(
         capture_source_bytes,
         content_type,
         filename,
         source_id,
         redacted_markdown,
+        safe_manifest,
+        transcript_digest,
+        transcript_source_path,
     )
-    _write_capture_record(store, source_id, safe_manifest, transcript_digest)
-    return CaptureOutcome(preview=preview, proposal=proposal)
+    return CaptureOutcome(preview=preview, worktree=worktree_result)
 
 
 def format_capture_preview(preview: CapturePreview) -> str:

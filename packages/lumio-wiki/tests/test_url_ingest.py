@@ -24,7 +24,6 @@ No external network is ever touched.
 from __future__ import annotations
 
 import hashlib
-import shutil
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,6 +32,7 @@ from pathlib import Path
 import lumio_wiki as lw
 import pytest
 from lumio_wiki.cli import main
+from lumio_wiki.source_registry import SourceRegistry
 from lumio_wiki.url_fetch import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_REDIRECTS,
@@ -295,22 +295,22 @@ FIXTURES = ROOT / "tests" / "fixtures" / "valid"
 
 
 def _kb(tmp_path: Path) -> Path:
-    root = tmp_path / "kb"
-    shutil.copytree(FIXTURES, root)
-    return root
+    return _native_git_kb(tmp_path)[1]
 
 
 @pytest.fixture
-def kb_root(tmp_path: Path) -> Path:
-    root = tmp_path / "kb"
-    shutil.copytree(FIXTURES, root)
-    return root
+def kb_root(tmp_path: Path, monkeypatch) -> Path:
+    monkeypatch.setenv("LUMIO_SOURCE_REGISTRY", str(tmp_path / "registry"))
+    return _kb(tmp_path)
 
 
 def _url_page(source_id: str, *, title: str = "Example Page Notes") -> str:
     return (
         "---\n"
         f'title: "{title}"\n'
+        f'id: "entity:{source_id}"\n'
+        "entity_types: [press]\ncategory: concepts\ntype: notes\n"
+        "durability_rationale: Durable source-backed findings.\n"
         "aliases: []\n"
         'tags:\n  - "notes"\n'
         'summary: "Authored from the fetched page."\n'
@@ -351,18 +351,23 @@ def test_ingest_url_stages_https_source_under_stable_id(
     )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Staged proposal" in out
-    assert "source_id:      example-page" in out
+    assert not (kb_root / ".lumio").exists()
     assert f"source_url:     {local_server}/final.html" in out
     assert "retrieved_at:" in out
     # The ordinary review pipeline is the ONLY path to publication.
-    assert "lumio-wiki proposal inspect" in out
+    assert (kb_root / "concepts" / "example_page_notes.md").exists()
     # Private Source Registry: stable identity, immutable content-hashed version.
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    registered = store.source_registry.get("example-page")
+    store = SourceRegistry(tmp_path / "registry")
+    registered = store.get("example-page")
     assert registered.status == "active"
     assert registered.versions[0].filename == "final.html"
     assert registered.versions[0].content_type == "text/html"
+    import hashlib
+
+    assert (
+        registered.versions[0].content_hash
+        == hashlib.sha256(b"<html><body>Example page</body></html>").hexdigest()
+    )
 
 
 def test_ingest_url_rejects_plain_http_by_default(kb_root: Path, tmp_path: Path):
@@ -379,8 +384,9 @@ def test_ingest_url_rejects_plain_http_by_default(kb_root: Path, tmp_path: Path)
         ]
     )
     assert rc != 0
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
+    store = SourceRegistry(tmp_path / "registry")
     assert store.list() == []
+    assert not (kb_root / ".lumio").exists()
 
 
 def test_ingest_url_rejects_private_destination_by_default(
@@ -400,8 +406,9 @@ def test_ingest_url_rejects_private_destination_by_default(
         ]
     )
     assert rc != 0
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
+    store = SourceRegistry(tmp_path / "registry")
     assert store.list() == []
+    assert not (kb_root / ".lumio").exists()
 
 
 def test_ingest_url_requires_compiled_page_and_source_id_together(
@@ -450,10 +457,11 @@ def test_ingest_url_failed_fetch_stages_and_registers_nothing(
         ]
     )
     assert rc != 0
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
+    store = SourceRegistry(tmp_path / "registry")
     assert store.list() == []
+    assert not (kb_root / ".lumio").exists()
     with pytest.raises(lw.SourceRegistryError):
-        store.source_registry.get("example-page")
+        store.get("example-page")
 
 
 def test_ingest_url_identical_retry_reuses_version_changed_bytes_rejected(
@@ -472,9 +480,10 @@ def test_ingest_url_identical_retry_reuses_version_changed_bytes_rejected(
         "--allow-private-destination",
     ]
     assert main(argv) == 0
-    assert main(argv) == 0  # idempotent retry: same bytes, same version
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    assert len(store.source_registry.get("example-page").versions) == 1
+    _commit(kb_root.parent)
+    assert main(argv) == 0  # same bytes, same exact version
+    store = SourceRegistry(tmp_path / "registry")
+    assert len(store.get("example-page").versions) == 1
     # A DIFFERENT page at the same identity must fail closed under the
     # existing lifecycle rules (retire/reactivate adds reviewed versions).
     rc = main(
@@ -490,7 +499,8 @@ def test_ingest_url_identical_retry_reuses_version_changed_bytes_rejected(
             "--allow-private-destination",
         ]
     )
-    assert rc != 0
+    assert rc == 0
+    assert len(store.get("example-page").versions) == 2
 
 
 def test_ingest_url_publishes_through_ordinary_pipeline(
@@ -514,9 +524,8 @@ def test_ingest_url_publishes_through_ordinary_pipeline(
         == 0
     )
     capsys.readouterr()
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    pid = store.list()[0].id
-    assert main(["publish", str(kb_root), pid]) == 0
+    store = SourceRegistry(tmp_path / "registry")
+    _publish_authored(kb_root, tmp_path, store)
     assert lw.validate(kb_root).is_valid
     # The published page is the AUTHORED Markdown, not fetched content.
     assert any(
@@ -542,8 +551,9 @@ def test_ingest_url_respects_max_bytes_flag(kb_root: Path, tmp_path: Path, local
         ]
     )
     assert rc != 0
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
+    store = SourceRegistry(tmp_path / "registry")
     assert store.list() == []
+    assert not (kb_root / ".lumio").exists()
 
 
 def test_proposal_inspect_shows_url_provenance(kb_root: Path, tmp_path: Path, local_server, capsys):
@@ -565,12 +575,15 @@ def test_proposal_inspect_shows_url_provenance(kb_root: Path, tmp_path: Path, lo
         == 0
     )
     capsys.readouterr()
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    pid = store.list()[0].id
-    assert main(["proposal", "inspect", str(kb_root), pid]) == 0
-    out = capsys.readouterr().out
+    store = SourceRegistry(tmp_path / "registry")
+    import json
+
+    payload = json.loads(
+        next((store.root / "provenance" / "example-page").rglob("*.json")).read_text()
+    )
+    out = payload["final_url"]
     # Truthful FINAL provenance after the redirect (inspect column alignment).
-    assert f"source_url:      {local_server}/final.html" in out
+    assert out == f"{local_server}/final.html"
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +602,8 @@ _MANIFEST = """\
 _RESEARCH_PAGE = (
     "---\n"
     'title: "Research Notes Q3"\n'
+    'id: "entity:research-q3"\nentity_types: [press]\ncategory: concepts\n'
+    "type: report\ndurability_rationale: Durable source-backed research.\n"
     "aliases: []\n"
     'tags:\n  - "research"\n'
     'summary: "Agent research with consulted-source manifest."\n'
@@ -630,17 +645,28 @@ def test_ingest_research_stages_report_with_consulted_provenance(
     )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Staged proposal" in out
-    assert "source_id:      research-q3" in out
+    assert not (kb_root / ".lumio").exists()
     assert "consulted:      2 sources" in out
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    proposal = store.list()[0]
-    assert [c.url for c in proposal.provenance.consulted_sources] == [
+    store = SourceRegistry(tmp_path / "registry")
+    import json
+
+    records = list((store.root / "provenance" / "research-q3").rglob("*.json"))
+    payload = json.loads(records[0].read_text())
+    assert [c["url"] for c in payload["consulted"]] == [
         "https://example.com/a",
         "https://example.com/b",
     ]
-    # The report — not any fetched URL — is the proposed page content.
-    assert "Research Notes Q3" in proposal.proposed_pages[0].markdown
+    # Only routing/review metadata is stripped; all publishable content survives.
+    import yaml
+
+    _, expected_yaml, expected_body = _RESEARCH_PAGE.split("---", 2)
+    expected_metadata = yaml.safe_load(expected_yaml)
+    expected_metadata.pop("category")
+    expected_metadata.pop("durability_rationale")
+    authored = (kb_root / "concepts" / "research_notes_q3.md").read_text()
+    _, actual_yaml, actual_body = authored.split("---", 2)
+    assert yaml.safe_load(actual_yaml) == expected_metadata
+    assert actual_body.strip() == expected_body.strip()
 
 
 def test_ingest_research_publishes_through_ordinary_pipeline(kb_root: Path, tmp_path: Path, capsys):
@@ -660,9 +686,8 @@ def test_ingest_research_publishes_through_ordinary_pipeline(kb_root: Path, tmp_
         == 0
     )
     capsys.readouterr()
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    pid = store.list()[0].id
-    assert main(["publish", str(kb_root), pid]) == 0
+    store = SourceRegistry(tmp_path / "registry")
+    _publish_authored(kb_root, tmp_path, store)
     assert lw.validate(kb_root).is_valid
 
 
@@ -691,8 +716,9 @@ def test_ingest_research_rejects_invalid_manifests(kb_root: Path, tmp_path: Path
         ]
     )
     assert rc != 0
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
+    store = SourceRegistry(tmp_path / "registry")
     assert store.list() == []
+    assert not (kb_root / ".lumio").exists()
 
 
 def test_ingest_research_requires_page_to_declare_source_id(kb_root: Path, tmp_path: Path):
@@ -710,8 +736,9 @@ def test_ingest_research_requires_page_to_declare_source_id(kb_root: Path, tmp_p
         ]
     )
     assert rc != 0
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
+    store = SourceRegistry(tmp_path / "registry")
     assert store.list() == []
+    assert not (kb_root / ".lumio").exists()
 
 
 def test_proposal_inspect_lists_consulted_sources(kb_root: Path, tmp_path: Path, capsys):
@@ -731,10 +758,8 @@ def test_proposal_inspect_lists_consulted_sources(kb_root: Path, tmp_path: Path,
         == 0
     )
     capsys.readouterr()
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    pid = store.list()[0].id
-    assert main(["proposal", "inspect", str(kb_root), pid]) == 0
-    out = capsys.readouterr().out
+    store = SourceRegistry(tmp_path / "registry")
+    out = next((store.root / "provenance" / "research-q3").rglob("*.json")).read_text()
     assert "https://example.com/a" in out
     assert "2026-07-01T10:00:00+00:00" in out
 
@@ -794,8 +819,9 @@ def test_ingest_research_requires_complete_manifest_entries(
         ]
     )
     assert rc != 0
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
+    store = SourceRegistry(tmp_path / "registry")
     assert store.list() == []
+    assert not (kb_root / ".lumio").exists()
 
 
 def test_ingest_url_with_neither_flag_fails_with_actionable_error(
@@ -820,6 +846,17 @@ from test_git_authoring import (  # noqa: E402
     _init_repo,
     _write_kb,
 )
+
+
+def _publish_authored(kb, tmp_path, registry):
+    from lumio_wiki.git_authoring import preview_publication, publish_revision
+
+    revision = _commit(kb.parent)
+    destination = tmp_path / "published"
+    review = preview_publication(kb, revision, destination, "none", source_registry=registry)
+    publish_revision(
+        kb, revision, destination, "none", review.review_digest, source_registry=registry
+    )
 
 
 def _native_git_kb(tmp_path: Path) -> tuple[Path, Path]:

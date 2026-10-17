@@ -36,9 +36,7 @@ from lumio_wiki.artifact_store import (
     verify_rollback_coverage,
     write_binding_manifest,
 )
-from lumio_wiki.ingest import IngestStore, ManagedIngestError
 from lumio_wiki.knowledge_base import fingerprint_sources
-from lumio_wiki.proposal_pipeline import ProposalPipeline
 from lumio_wiki.source_references import (
     SourceReferenceManifest,
     serialize_source_reference_manifest,
@@ -91,9 +89,54 @@ def _authored_page(source_id: str, *, title: str = "Artifact Page", synthetic: b
     )
 
 
-def _pipeline(kb, tmp_path: Path, artifact_store=None) -> tuple[ProposalPipeline, IngestStore]:
-    store = IngestStore(tmp_path / "ingest")
-    return ProposalPipeline(kb, store=store, artifact_store=artifact_store), store
+def _mark_registry_retired(registry, source_id: str) -> None:
+    """Flip one source to retired in the private registry (test setup).
+
+    Native retirement records lifecycle intent in the Git Source Reference
+    Manifest (spec 0008 §3.2); the proposal-keyed transition API is retired.
+    This fixture setup reproduces the durable registry outcome.
+    """
+    import msgspec as _msgspec
+
+    state = registry._reload()
+    sources = [
+        _msgspec.structs.replace(s, status="retired") if s.source_id == source_id else s
+        for s in state.sources
+    ]
+    registry._commit(_msgspec.structs.replace(state, sources=sources))
+    assert registry.get(source_id).status == "retired"
+
+
+def _authored_page_rel(*, synthetic: bool = False) -> str:
+    """The authored page's destination path (title slug, root-level)."""
+    return "artifact_page.md"
+
+
+def _managed_source(kb, tmp_path: Path, artifact_store, *, synthetic: bool = False):
+    """Fixture setup: write the managed-source page and register its version.
+
+    The native managed-ingest journey is pinned in test_git_authoring; these
+    gate tests need only the authored page in the KB plus the exact registry
+    version and (optionally) retained artifact that retention evaluates.
+    """
+    from lumio_wiki.source_registry import SourceRegistry
+
+    registry = SourceRegistry(tmp_path / "registry")
+    page_rel = _authored_page_rel(synthetic=synthetic)
+    page_path = Path(kb.root) / page_rel
+    page_path.parent.mkdir(parents=True, exist_ok=True)
+    page_path.write_text(_authored_page("annual-report", synthetic=synthetic), encoding="utf-8")
+    registry.register_version("annual-report", RAW, filename="report.pdf")
+    if artifact_store is not None:
+        retain_artifact(
+            artifact_store,
+            registry,
+            source_id="annual-report",
+            raw_bytes=RAW,
+            content_type="application/pdf",
+            filename="report.pdf",
+        )
+    return registry
 
 
 _GIT_CONTROL = """\
@@ -480,40 +523,67 @@ def test_saga_registry_failure_leaves_sweepable_orphan(store, tmp_path):
     assert registry.get("annual-report").versions[-1].artifact_available is True
 
 
-def test_managed_ingest_retains_artifacts_through_the_pipeline(tmp_path):
-    kb = _kb(tmp_path)
-    store = InMemoryArtifactStore()
-    pipeline, ingest = _pipeline(kb, tmp_path, artifact_store=store)
-    pipeline.managed_ingest(
-        RAW, "application/pdf", "report.pdf", "annual-report", _authored_page("annual-report")
-    )
-    version = ingest.source_registry.get("annual-report").versions[-1]
-    assert version.artifact_available is True
-    assert store.get_artifact(source_id="annual-report", content_hash=version.content_hash) == RAW
-
-
-def test_managed_ingest_wraps_store_failure_actionably(tmp_path):
-    kb = _kb(tmp_path)
-    store = InMemoryArtifactStore()
-
-    def _fail_put(**kwargs):
-        raise ArtifactStoreError("endpoint unreachable")
-
-    store.put_artifact = _fail_put  # type: ignore[method-assign]
-    pipeline, ingest = _pipeline(kb, tmp_path, artifact_store=store)
-    with pytest.raises(ManagedIngestError, match="retry the ingest to recover"):
-        pipeline.managed_ingest(
-            RAW, "application/pdf", "report.pdf", "annual-report", _authored_page("annual-report")
-        )
-    registry = ingest.source_registry
-    assert registry.get("annual-report").versions[-1].artifact_available is False
-    # Nothing was staged: the failed retention is not publishable.
-    assert pipeline.list() == []
-
-
 # ---------------------------------------------------------------------------
 # Source Binding Manifest + required-retention activation gate.
 # ---------------------------------------------------------------------------
+
+
+def _native_ingest_fixture(tmp_path):
+    from lumio_wiki.git_authoring import ingest_into_worktree
+    from test_managed_ingest import _authored_page as managed_page
+    from test_managed_ingest import _kb as managed_kb
+
+    kb = managed_kb(tmp_path)
+    registry = SourceRegistry(tmp_path / "registry")
+    return kb, registry, managed_page("annual-report"), ingest_into_worktree
+
+
+def test_managed_ingest_retains_artifacts_through_the_pipeline(tmp_path):
+    kb, registry, page, ingest = _native_ingest_fixture(tmp_path)
+    store = InMemoryArtifactStore()
+    ingest(
+        kb.root,
+        RAW,
+        "application/pdf",
+        "report.pdf",
+        "annual-report",
+        page,
+        source_registry=registry,
+        artifact_store=store,
+    )
+    digest = artifact_content_hash(RAW)
+    version = registry.find_version("annual-report", digest)
+    assert version is not None and version.artifact_available
+    assert store.get_artifact(source_id="annual-report", content_hash=digest) == RAW
+
+
+def test_managed_ingest_wraps_store_failure_actionably(tmp_path):
+    from lumio_wiki.git_authoring import GitAuthoringError
+
+    kb, registry, page, ingest = _native_ingest_fixture(tmp_path)
+    before = {p.relative_to(kb.root): p.read_bytes() for p in kb.root.rglob("*") if p.is_file()}
+    store = InMemoryArtifactStore()
+
+    def fail_put(**kwargs):
+        raise ArtifactStoreError("endpoint unreachable")
+
+    store.put_artifact = fail_put
+    with pytest.raises(GitAuthoringError, match="retry the ingest to recover"):
+        ingest(
+            kb.root,
+            RAW,
+            "application/pdf",
+            "report.pdf",
+            "annual-report",
+            page,
+            source_registry=registry,
+            artifact_store=store,
+        )
+    version = registry.find_version("annual-report", artifact_content_hash(RAW))
+    assert version is not None and not version.artifact_available
+    assert {
+        p.relative_to(kb.root): p.read_bytes() for p in kb.root.rglob("*") if p.is_file()
+    } == before
 
 
 def _published_kb_with_source(tmp_path, *, retain: bool, synthetic: bool = False):
@@ -527,8 +597,9 @@ def _published_kb_with_source(tmp_path, *, retain: bool, synthetic: bool = False
     """
     kb = _kb(tmp_path)
     artifact_store = InMemoryArtifactStore()
-    pipeline, ingest = _pipeline(kb, tmp_path, artifact_store=artifact_store if retain else None)
-    registry = ingest.source_registry
+    registry = _managed_source(
+        kb, tmp_path, artifact_store if retain else None, synthetic=synthetic
+    )
     for page in kb.pages:
         for source in page.sources:
             if not source.id:
@@ -543,14 +614,6 @@ def _published_kb_with_source(tmp_path, *, retain: bool, synthetic: bool = False
                 content_type="text/plain",
                 filename=f"{source.id}.txt",
             )
-    proposal = pipeline.managed_ingest(
-        RAW,
-        "application/pdf",
-        "report.pdf",
-        "annual-report",
-        _authored_page("annual-report", synthetic=synthetic),
-    )
-    assert pipeline.publish(proposal.id).status == "published"
     return kb, registry, artifact_store
 
 
@@ -663,12 +726,10 @@ def test_historical_manifest_survives_new_source_version(tmp_path):
     # A later reviewed retirement + reactivation registers a NEW Source
     # Version; the historical manifest still identifies the historical
     # artifact.
-    retire = registry.stage_retirement("annual-report")
-    registry.bind_pending(retire, "retire-proposal")
-    registry.apply_transition("retire-proposal")
-    transition = registry.stage_reactivation("annual-report", b"NEW report bytes")
-    registry.bind_pending(transition, "later-proposal")
-    registry.apply_transition("later-proposal")
+    _mark_registry_retired(registry, "annual-report")
+    # The later reviewed reactivation registers a NEW Source Version
+    # (registration extends immutable history; status returns to active).
+    registry.register_version("annual-report", b"NEW report bytes", filename="r2.pdf")
     new_hash = registry.get("annual-report").versions[-1].content_hash
     assert new_hash != old_hash
 
@@ -715,10 +776,7 @@ def test_retirement_preserves_historical_artifacts(store, tmp_path):
     )
     digest = registry.get("annual-report").versions[-1].content_hash
 
-    transition = registry.stage_retirement("annual-report")
-    registry.bind_pending(transition, "retire-proposal")
-    registry.apply_transition("retire-proposal")
-    assert registry.get("annual-report").status == "retired"
+    _mark_registry_retired(registry, "annual-report")
 
     # Retirement did NOT delete or unbind the historical artifact.
     assert store.get_artifact(source_id="annual-report", content_hash=digest) == RAW
@@ -781,12 +839,40 @@ def _pages_citing(source_id: str):
 
 def test_cli_managed_ingest_retains_artifacts_from_env(tmp_path, monkeypatch, capsys):
     from lumio_wiki import cli
+    from lumio_wiki.source_references import SourceReferenceManifest
+    from test_git_authoring import _init_repo, _write_kb
 
-    kb_root = tmp_path / "kb"
-    shutil.copytree(FIXTURES, kb_root)
+    repo = _init_repo(tmp_path)
+    kb_root = _write_kb(
+        repo,
+        manifest=SourceReferenceManifest(
+            version=1, namespace="urn:uuid:2b3c4d5e-cli-0000-0000-clikb00000001"
+        ),
+        pages={},
+    )
+    registry_root = tmp_path / "registry"
     store_root = tmp_path / "artifact-store"
     compiled = tmp_path / "page.md"
-    compiled.write_text(_authored_page("annual-report"), encoding="utf-8")
+    compiled.write_text(
+        "---\n"
+        'id: "entity:annual-report"\n'
+        'title: "Artifact Page"\n'
+        "entity_types:\n  - press\n"
+        "category: concepts\n"
+        'type: "artifact page"\n'
+        'durability_rationale: "The report documents durable findings."\n'
+        "aliases: []\n"
+        'tags:\n  - "artifacts"\n'
+        'summary: "Authored page for the artifact suite."\n'
+        'lifecycle: "draft"\n'
+        'visibility: "internal"\n'
+        "sources:\n"
+        '  - id: "annual-report"\n'
+        '    title: "annual-report source"\n'
+        "synthetic: false\n"
+        "---\n\n# Artifact Page\n\nBody authored from the original source.\n",
+        encoding="utf-8",
+    )
     source = tmp_path / "report.pdf"
     source.write_bytes(RAW)
 
@@ -800,11 +886,13 @@ def test_cli_managed_ingest_retains_artifacts_from_env(tmp_path, monkeypatch, ca
             str(compiled),
             "--source-id",
             "annual-report",
+            "--source-registry",
+            str(registry_root),
         ]
     )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Staged proposal" in out
+    assert "Ingested into the Git authoring worktree" in out
 
     local = LocalDirectoryArtifactStore(store_root)
     digest = artifact_content_hash(RAW)
@@ -1295,8 +1383,7 @@ def test_required_retention_never_echoes_secret_bearing_source_ids(tmp_path):
     into the blocking error (registry boundary convention, ADR-0020)."""
     kb = _kb(tmp_path)
     artifact_store = InMemoryArtifactStore()
-    pipeline, ingest = _pipeline(kb, tmp_path, artifact_store=artifact_store)
-    registry = ingest.source_registry
+    registry = _managed_source(kb, tmp_path, artifact_store)
     secret_id = "sk-live-example-secret"
     authored = _authored_page("annual-report").replace(
         '  - id: "annual-report"\n    title: "annual-report source"\n',
@@ -1306,10 +1393,8 @@ def test_required_retention_never_echoes_secret_bearing_source_ids(tmp_path):
         '    title: "Pasted credential"\n',
     )
     assert secret_id in authored
-    proposal = pipeline.managed_ingest(
-        RAW, "application/pdf", "report.pdf", "annual-report", authored
-    )
-    assert pipeline.publish(proposal.id).status == "published"
+    page_rel = _authored_page_rel()
+    (Path(kb.root) / page_rel).write_text(authored, encoding="utf-8")
 
     store = obstore.store.MemoryStore()
     hook = activation_binding_hook(

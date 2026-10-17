@@ -23,7 +23,7 @@ Version** to object storage; a **Reader** project reads that version
 read-only. One loop, two roles:
 
 ```text
-setup → status → ingest → proposal review → publish
+setup → status → ingest → Git review → exact-revision publish
       → publish-s3 → reader setup → search/page/related → open citation/source
 ```
 
@@ -263,8 +263,22 @@ Requests without a secondary email escalate to Support Ops on-call; reset
 volume is tracked in [Starlight DB](../entities/starlight-db.md).
 EOF
 
+# Adopt an explicitly selected Git authoring tree; private state stays OUTSIDE it.
+# Configure your own Git author identity before committing.
+cat > kb/.lumio-authoring.yaml <<'YAML'
+version: 1
+namespace: "urn:uuid:4ba0be10-04a1-4d36-bbe6-54bf7d0b0320"
+sources: {}
+bindings: {}
+YAML
+git -C ./kb init -q
+git -C ./kb add lumio.yaml entities .lumio-authoring.yaml
+git -C ./kb commit -m "Adopt the helpdesk Knowledge Base"
+export LUMIO_SOURCE_REGISTRY="$PWD/private-source-registry"
+
 lumio-wiki ingest ./kb support-runbook.md \
-  --compiled-page password-reset-page.md --source-id support-runbook-2026
+  --compiled-page password-reset-page.md --source-id support-runbook-2026 \
+  --source-registry "$LUMIO_SOURCE_REGISTRY"
 ```
 
 The authored page declares `category`, a free-form `type`, and a
@@ -272,16 +286,31 @@ The authored page declares `category`, a free-form `type`, and a
 `support-runbook-2026` id in `sources[].id` — that is the binding. Raw bytes
 never enter the Knowledge Base; they are registered privately.
 
-## 6. Proposal review: inspect → validate → publish
+## 6. Git review: diff → commit → exact-revision publish
 
-Proposal-first is the write mode — validation always runs before publish:
+Git owns the review; publication is a separate explicit admission of one
+exact commit:
 
 ```bash
-lumio-wiki proposal list ./kb
-lumio-wiki proposal inspect ./kb <id>      # provenance, blast radius, diff
-lumio-wiki proposal validate ./kb <id>     # must end "Knowledge base is valid."
-lumio-wiki publish ./kb <id>
+git -C ./kb diff                          # the worktree changes from ingest
+git -C ./kb add procedures/password_reset_runbook.md .lumio-authoring.yaml
+git -C ./kb commit -m "Add password-reset runbook"
+REV=$(git -C ./kb rev-parse HEAD)
+lumio-wiki validate ./kb
+lumio-wiki publish ./kb --revision "$REV" --to ./published \
+  --expected-current none --source-registry "$LUMIO_SOURCE_REGISTRY"  # preview only
+# Only after the operator authorizes that displayed review:
+lumio-wiki publish ./kb --revision "$REV" --to ./published \
+  --expected-current none --source-registry "$LUMIO_SOURCE_REGISTRY" \
+  --confirm <review-digest>
 ```
+
+A commit alone never publishes. Legacy stores from the retired proposal
+pipeline migrate with `lumio-wiki legacy-proposals inventory` and
+`legacy-proposals export` (never publication). Preview can resolve an explicit
+ref; confirm using the captured full baseline commit printed by preview, not
+the floating ref. The baseline must carry the operator-adopted namespace;
+unknown exact history or stale original assumptions block conversion.
 
 ## 7. Retrieval, citations with open actions, traversal
 

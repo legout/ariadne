@@ -228,7 +228,7 @@ class RetirementCandidate(msgspec.Struct, frozen=True):
     created_at: str
 
 
-class PendingSourceTransition(msgspec.Struct, frozen=True):
+class _LegacyPendingSourceTransition(msgspec.Struct, frozen=True):
     """A lifecycle change held until its Ingest Proposal publishes."""
 
     proposal_id: str
@@ -240,64 +240,32 @@ class PendingSourceTransition(msgspec.Struct, frozen=True):
 class _RegistryState(msgspec.Struct, frozen=True):
     sources: list[KnowledgeSource] = msgspec.field(default_factory=list)
     candidates: list[RetirementCandidate] = msgspec.field(default_factory=list)
-    pending_transitions: list[PendingSourceTransition] = msgspec.field(default_factory=list)
+    pending_transitions: list[_LegacyPendingSourceTransition] = msgspec.field(default_factory=list)
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _ensure_no_pending_transition(state: _RegistryState, source_id: str) -> None:
-    """Raise when ``source_id`` already has a pending lifecycle transition.
+def _refuse_legacy_pending(state: _RegistryState) -> None:
+    """Refuse native registry writes while unresolved legacy pending state exists.
 
-    Operates on an explicit (freshly reloaded) ``_RegistryState`` so callers
-    inside the mutation lock validate the state they read under the lock.
+    G4 (spec 0008 §7): the proposal-keyed pending-transition API is retired,
+    but historical stores may still decode proposal-bound transitions. A
+    native writer must never silently ignore that state (or clear it as a
+    side effect): it refuses actionably, pointing at the legacy migration
+    reader, until the operator resolves it explicitly.
     """
-    if any(transition.source_id == source_id for transition in state.pending_transitions):
-        raise SourceRegistryError(
-            f"Knowledge Source {source_id!r} already has a pending transition"
+    if state.pending_transitions:
+        proposal_ids = ", ".join(
+            sorted({transition.proposal_id for transition in state.pending_transitions})
         )
-
-
-def _require_transition_preconditions(
-    state: _RegistryState, transition: PendingSourceTransition
-) -> None:
-    """Raise when a staged transition no longer matches the source's durable state.
-
-    Called under the mutation lock with freshly reloaded ``state``: staging
-    validated the source's status OUTSIDE the bind critical section, so a
-    concurrent retirement/reactivation that published between stage and bind
-    must be caught here — never bound as a transition whose publication would
-    fail and strand a permanent pending transition (mirrors the status checks
-    in :meth:`apply_transition`).
-    """
-    source = next((item for item in state.sources if item.source_id == transition.source_id), None)
-    if source is None:
         raise SourceRegistryError(
-            f"Knowledge Source {transition.source_id!r} is missing from the registry; "
-            f"the staged {transition.action!r} transition is stale"
+            "the source registry still holds legacy pending transition(s) bound to "
+            f"proposal(s) {proposal_ids}; resolve them explicitly (see "
+            "'lumio-wiki legacy-proposals inventory') before changing source "
+            "history"
         )
-    if transition.action == "retire":
-        if source.status != "active":
-            raise SourceRegistryError(
-                f"Knowledge Source {transition.source_id!r} is no longer active; "
-                f"the staged retirement is stale — stage it again from the current "
-                f"registry state"
-            )
-    elif transition.action == "reactivate":
-        if source.status != "retired":
-            raise SourceRegistryError(
-                f"Knowledge Source {transition.source_id!r} is no longer retired; "
-                f"the staged reactivation is stale — stage it again from the current "
-                f"registry state"
-            )
-        if transition.version is None or transition.version.source_id != transition.source_id:
-            raise SourceRegistryError(
-                f"the staged reactivation of Knowledge Source {transition.source_id!r} "
-                f"carries no valid new Source Version"
-            )
-    else:
-        raise SourceRegistryError(f"unknown source transition action {transition.action!r}")
 
 
 def _source_version(
@@ -323,8 +291,7 @@ class SourceRegistry:
     Durability contract (Plan 02 / P3, B02): every read AND every mutation
     goes through the per-registry interprocess mutation lock
     (:func:`lumio_wiki.mutation.mutation_lock`, keyed on this registry's
-    normalized root, so a standalone instance and an
-    :class:`~lumio_wiki.ingest.IngestStore`-owned instance share one lock).
+    normalized root, so every instance opened on that root shares one lock).
     Each mutation reloads the durable state UNDER the lock, recomputes the
     prospective state from that fresh read, validates against it, and
     persists atomically (:func:`lumio_wiki.mutation.atomic_write_bytes`), so
@@ -365,6 +332,10 @@ class SourceRegistry:
     def _commit(self, state: _RegistryState) -> None:
         """Swap in-memory state and persist; restore the durable state on failure.
 
+        G4 guard: any prospective state that would silently carry, drop, or
+        mutate unresolved legacy pending transitions refuses instead — native
+        writers never ignore legacy proposal-bound state (spec 0008 §7).
+
         Every mutating method builds the prospective ``_RegistryState`` from
         the state re-read under the mutation lock and routes it through here,
         so a persistence failure can never leave the live instance diverged
@@ -373,12 +344,18 @@ class SourceRegistry:
         in-memory state to that same prior (freshly reloaded) state.
         """
         previous = self._state
+        _refuse_legacy_pending(state)
         self._state = state
         try:
             self._write()
         except Exception:
             self._state = previous
             raise
+
+    def _require_native_writable(self) -> None:
+        """Refuse unresolved legacy intent before any native authoring write."""
+        with mutation_lock(self.root):
+            _refuse_legacy_pending(self._reload())
 
     def snapshot_state_bytes(self) -> bytes | None:
         """Return the durable registry file's exact bytes (P5 rollback snapshot).
@@ -455,6 +432,7 @@ class SourceRegistry:
         _validate_source_id(source_id)
         with mutation_lock(self.root):
             state = self._reload()
+            _refuse_legacy_pending(state)
             if any(source.source_id == source_id for source in state.sources):
                 raise SourceRegistryError(
                     "Knowledge Source already registered; replacement is not "
@@ -508,6 +486,7 @@ class SourceRegistry:
         new_hash = hashlib.sha256(raw_bytes).hexdigest()
         with mutation_lock(self.root):
             state = self._reload()
+            _refuse_legacy_pending(state)
             existing = next(
                 (source for source in state.sources if source.source_id == source_id),
                 None,
@@ -559,6 +538,7 @@ class SourceRegistry:
         )
         with mutation_lock(self.root):
             state = self._reload()
+            _refuse_legacy_pending(state)
             source_index = next(
                 (i for i, item in enumerate(state.sources) if item.source_id == source_id),
                 None,
@@ -610,6 +590,7 @@ class SourceRegistry:
         _validate_source_id(source_id)
         with mutation_lock(self.root):
             state = self._reload()
+            _refuse_legacy_pending(state)
             source_index = next(
                 (i for i, item in enumerate(state.sources) if item.source_id == source_id),
                 None,
@@ -642,6 +623,7 @@ class SourceRegistry:
         _validate_source_id(source_id)
         with mutation_lock(self.root):
             state = self._reload()
+            _refuse_legacy_pending(state)
             source_index = next(
                 (i for i, item in enumerate(state.sources) if item.source_id == source_id),
                 None,
@@ -664,135 +646,6 @@ class SourceRegistry:
                 f"Knowledge Source {source_id!r} has no Source Version {content_hash!r}"
             )
 
-    def stage_retirement(self, source_id: str) -> PendingSourceTransition:
-        """Validate and prepare a retirement without changing source status."""
-        _validate_source_id(source_id)
-        with mutation_lock(self.root):
-            state = self._reload()
-            source = next((item for item in state.sources if item.source_id == source_id), None)
-            if source is None:
-                raise SourceRegistryError(f"unknown Knowledge Source {source_id!r}")
-            if source.status != "active":
-                raise SourceRegistryError(
-                    f"Knowledge Source {source_id!r} must be active to retire"
-                )
-            _ensure_no_pending_transition(state, source_id)
-            return PendingSourceTransition("", "retire", source_id)
-
-    def stage_reactivation(self, source_id: str, raw_bytes: bytes) -> PendingSourceTransition:
-        """Prepare a fresh version for a retired source without activating it."""
-        _validate_source_id(source_id)
-        with mutation_lock(self.root):
-            state = self._reload()
-            source = next((item for item in state.sources if item.source_id == source_id), None)
-            if source is None:
-                raise SourceRegistryError(f"unknown Knowledge Source {source_id!r}")
-            if source.status != "retired":
-                raise SourceRegistryError(
-                    f"Knowledge Source {source_id!r} must be retired to reactivate"
-                )
-            _ensure_no_pending_transition(state, source_id)
-            return PendingSourceTransition(
-                "", "reactivate", source_id, _source_version(source_id, raw_bytes)
-            )
-
-    def bind_pending(self, transition: PendingSourceTransition, proposal_id: str) -> None:
-        """Persist a prepared transition under its staged proposal identity.
-
-        The transition's precondition and the no-pending-transition rule are
-        both re-checked here against the durable state re-read under the
-        mutation lock (Plan 02 / P3): the stage→assemble→bind sequence spans
-        separate critical sections, so a concurrent process can retire or
-        reactivate the source between them. A transition whose precondition
-        no longer holds — a retirement whose source is no longer active, a
-        reactivation whose source is no longer retired — is refused BEFORE
-        any mutation, so no stale transition is bound and (in the pipeline's
-        bind/persist boundary) no proposal is persisted over it; the caller
-        re-stages to observe the new durable state.
-        """
-        _validate_source_id(transition.source_id)
-        with mutation_lock(self.root):
-            state = self._reload()
-            _require_transition_preconditions(state, transition)
-            _ensure_no_pending_transition(state, transition.source_id)
-            bound = msgspec.structs.replace(transition, proposal_id=proposal_id)
-            self._commit(
-                msgspec.structs.replace(
-                    state, pending_transitions=[*state.pending_transitions, bound]
-                )
-            )
-
-    def cancel_transition(self, proposal_id: str) -> None:
-        """Remove a pending transition when its proposal is discarded."""
-        with mutation_lock(self.root):
-            state = self._reload()
-            pending = [
-                transition
-                for transition in state.pending_transitions
-                if transition.proposal_id != proposal_id
-            ]
-            if len(pending) == len(state.pending_transitions):
-                raise SourceRegistryError(
-                    f"proposal {proposal_id!r} has no pending source transition"
-                )
-            self._commit(msgspec.structs.replace(state, pending_transitions=pending))
-
-    def apply_transition(self, proposal_id: str) -> None:
-        """Apply and remove the source transition bound to a published proposal."""
-        with mutation_lock(self.root):
-            state = self._reload()
-            transition = next(
-                (
-                    pending
-                    for pending in state.pending_transitions
-                    if pending.proposal_id == proposal_id
-                ),
-                None,
-            )
-            if transition is None:
-                raise SourceRegistryError(
-                    f"proposal {proposal_id!r} has no pending source transition"
-                )
-            sources = list(state.sources)
-            source_index = next(
-                (
-                    index
-                    for index, source in enumerate(sources)
-                    if source.source_id == transition.source_id
-                ),
-                None,
-            )
-            if source_index is None:
-                raise SourceRegistryError(
-                    f"Knowledge Source {transition.source_id!r} is missing from the "
-                    f"registry; proposal {proposal_id!r} cannot apply its transition"
-                )
-            source = sources[source_index]
-            if transition.action == "retire":
-                if source.status != "active":
-                    raise SourceRegistryError(
-                        f"Knowledge Source {source.source_id!r} must be active to retire"
-                    )
-                sources[source_index] = msgspec.structs.replace(source, status="retired")
-            elif transition.action == "reactivate":
-                if source.status != "retired" or transition.version is None:
-                    raise SourceRegistryError(
-                        f"Knowledge Source {source.source_id!r} cannot be reactivated"
-                    )
-                sources[source_index] = msgspec.structs.replace(
-                    source,
-                    status="active",
-                    versions=[*source.versions, transition.version],
-                )
-            else:
-                raise SourceRegistryError(f"unknown source transition action {transition.action!r}")
-            pending = [
-                item for item in state.pending_transitions if item.proposal_id != proposal_id
-            ]
-            self._commit(
-                msgspec.structs.replace(state, sources=sources, pending_transitions=pending)
-            )
-
     def record_retirement_candidate(self, source_id: str, trigger: str) -> RetirementCandidate:
         """Record a missing-source signal without changing source support."""
         _validate_source_id(source_id)
@@ -806,6 +659,7 @@ class SourceRegistry:
         )
         with mutation_lock(self.root):
             state = self._reload()
+            _refuse_legacy_pending(state)
             source = next((item for item in state.sources if item.source_id == source_id), None)
             if source is None:
                 raise SourceRegistryError(f"unknown Knowledge Source {source_id!r}")
@@ -848,6 +702,7 @@ class SourceRegistry:
         _validate_candidate_id(candidate_id)
         with mutation_lock(self.root):
             state = self._reload()
+            _refuse_legacy_pending(state)
             candidates = list(state.candidates)
             for index, candidate in enumerate(candidates):
                 if candidate.id != candidate_id:

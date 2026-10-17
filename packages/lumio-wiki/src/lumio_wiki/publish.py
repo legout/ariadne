@@ -74,22 +74,34 @@ and no removal that was not declared.
 
 from __future__ import annotations
 
-import hashlib
 import os
+import re
 import shutil
 import stat
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
+import msgspec
 import msgspec.yaml as yaml
 
+from lumio_wiki.ingest import (
+    BodyLinkRepairCandidate,
+    EntityMerge,
+    ProposedPage,
+    _compute_diff,
+    _configured_category_names,
+    _existing_page_markdown,
+    _relative_path_for_category,
+    compute_blast_radius,
+)
 from lumio_wiki.knowledge_base import (
     ACTIVITY_LOG_BASENAME,
     CONTROL_FILE_BASENAME,
     HOT_INDEX_BASENAME,
     NAV_INDEX_BASENAME,
+    HotIndexPin,
     KnowledgeBaseControlFile,
     load_knowledge_base,
     validate,
@@ -99,9 +111,18 @@ from lumio_wiki.knowledge_base import (
     _as_sources as as_sources,
 )
 from lumio_wiki.knowledge_base import (
+    _extract_references as _extract_references,
+)
+from lumio_wiki.knowledge_base import (
     _parse_frontmatter as parse_frontmatter,
 )
-from lumio_wiki.records import Source, ValidationIssue, ValidationReport
+from lumio_wiki.records import (
+    EntityRedirect,
+    Ontology,
+    Source,
+    ValidationIssue,
+    ValidationReport,
+)
 
 
 class PublishError(Exception):
@@ -572,237 +593,6 @@ def _reject_occupied_target(
         f"untracked file: {relative_path}",
         file=relative_path,
     )
-
-
-@dataclass(frozen=True)
-class _PathExpectation:
-    """One expected pre-mutation path state produced by precondition capture.
-
-    Internal capture shape; :meth:`ProposalPipeline._bind_reviewed_state`
-    converts these into the durable :class:`lumio_wiki.ingest.PathPrecondition`
-    records. ``kind`` is ``"file"`` (``digest`` carries the reviewed SHA-256)
-    or ``"absent"``; ``role`` is the stable restage-guidance vocabulary from
-    the ``PathPrecondition`` docstring.
-    """
-
-    relative_path: str
-    role: str
-    kind: str
-    digest: str = ""
-
-
-def _file_digest(path: Path) -> str | None:
-    """Return the SHA-256 of a readable regular file's bytes, else ``None``.
-
-    A path that is absent, a directory, a dangling or unreadable entry is not
-    a regular file, so it carries no reviewed bytes (drift, never a crash).
-    """
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError:
-        return None
-
-
-def _expect_path(root: Path, relative_path: str, role: str) -> _PathExpectation:
-    """Capture the current state of one path as a reviewed expectation."""
-    path = root / relative_path
-    digest = _file_digest(path)
-    if digest is not None:
-        return _PathExpectation(relative_path, role, "file", digest)
-    return _PathExpectation(relative_path, role, "absent")
-
-
-def _expect_write_destination(root: Path, relative_path: str) -> _PathExpectation:
-    """Capture a non-move destination with its contract-correct role (P4).
-
-    A destination that currently holds a readable regular file is reviewed by
-    its bytes (role ``revision`` — a replaced page, a compound merge base, or
-    a reviewed rename's old file). An absent destination is a genuinely NEW
-    page destination (a new page, a compound fallback, or a recorded file
-    that is already gone) and is reviewed as expected-absent (role
-    ``creation``): the ``PathPrecondition`` role contract reserves
-    ``revision`` for existing/replaced/compound/rename destinations, so an
-    ordinary new-page capture is never mislabeled as a revision.
-    """
-    expectation = _expect_path(root, relative_path, "revision")
-    if expectation.kind == "absent":
-        return _PathExpectation(relative_path, "creation", "absent")
-    return expectation
-
-
-def _capture_mutation_preconditions(
-    proposed_pages: list,
-    working_dir: str | Path,
-    *,
-    removed_titles: list[str] | None = None,
-) -> list[_PathExpectation]:
-    """Capture the reviewed pre-mutation state of every affected path (P4).
-
-    The staging-side half of B03/B04: for a proposal about to be persisted,
-    record the CURRENT state of exactly the paths the reviewed mutation was
-    authoritatively told it would touch — never a whole-Knowledge-Base digest,
-    so disjoint proposals stay publishable after intervening disjoint
-    changes. The Control File (category catalog, Hot Index pins, ontology
-    redirects) is always captured, because every proposal either consumes it
-    (routing, pin and redirect state) or rewrites it.
-
-    Destination and removal paths come from the SAME resolution live
-    application uses (:func:`_resolve_proposed_destinations`,
-    :func:`_resolve_removal_destinations`), so the captured base covers
-    precisely the paths the checked write branches will consume: a
-    revision/compound/rename destination's reviewed bytes, a move's source
-    bytes and expected-absent target, a new page's expected-absent
-    destination, a declared removal's reviewed bytes. When resolution raises a
-    :class:`DestinationConflict` the proposal is (or will be) blocked anyway —
-    publication refuses blocked proposals before preconditions are consulted —
-    so capture degrades to the Control File expectation alone instead of
-    breaking staging.
-    """
-    root = Path(working_dir).resolve()
-    expectations: list[_PathExpectation] = [_expect_path(root, CONTROL_FILE_BASENAME, "control")]
-    existing_by_title = _existing_paths_by_title(root)
-    removal_expectations: list[_PathExpectation] = []
-    if removed_titles:
-        try:
-            removals = _resolve_removal_destinations(removed_titles, root, existing_by_title)
-        except DestinationConflict:
-            removals = []
-        removal_expectations = [
-            _expect_path(root, normalized, "removal") for _title, normalized in removals
-        ]
-    try:
-        destinations = _resolve_proposed_destinations(proposed_pages, root, existing_by_title)
-    except DestinationConflict:
-        # Blocked proposal: never publishable, so the reviewed base that
-        # matters is the Control File state (and any resolvable removals).
-        return expectations + removal_expectations
-    for destination in destinations:
-        if destination.kind == "move":
-            source = destination.source_relative_path
-            if source is not None and source != destination.relative_path:
-                # An existing move source is reviewed by bytes; a MISSING one
-                # is reviewed as absence, so a file the reviewer never saw
-                # appearing later refuses publication too.
-                expectations.append(_expect_path(root, source, "move-source"))
-                # The move's target must still be absent when it is applied.
-                expectations.append(_expect_path(root, destination.relative_path, "creation"))
-            else:
-                # A self-move overwrites its own recorded path in place.
-                expectations.append(_expect_path(root, destination.relative_path, "revision"))
-        else:
-            # write/compound/rename: an occupied destination (the page's own
-            # recorded file, a compound merge base, or a reviewed rename's
-            # old file) is reviewed by its bytes; an absent destination is a
-            # genuinely new page destination reviewed as a creation.
-            expectations.append(_expect_write_destination(root, destination.relative_path))
-    expectations.extend(removal_expectations)
-    unique: dict[str, _PathExpectation] = {}
-    for expectation in expectations:
-        unique.setdefault(expectation.relative_path, expectation)
-    return list(unique.values())
-
-
-def _precondition_drift(preconditions, root: str | Path) -> list[str]:
-    """Compare reviewed preconditions against the current state (P4, B03/B04).
-
-    The publish-side half: every record must still hold — a ``file`` record's
-    path must still be a readable regular file with the reviewed digest, and
-    an ``absent`` record's path must still be lexically free (a dangling
-    symlink counts as occupied). Returns one human-readable drift finding per
-    violated record; an empty list means the current state still matches what
-    the Maintainer reviewed. Records are duck-typed durable
-    :class:`lumio_wiki.ingest.PathPrecondition` rows (``path``/``role``/
-    ``kind``/``digest``), so no ingest-module import is needed here.
-    """
-    root = Path(root).resolve()
-    drift: list[str] = []
-    for record in preconditions:
-        path = root / record.path
-        # Records come from the durable private store, so their paths are
-        # trusted-but-verified like every reviewed relative path: anything
-        # escaping the Knowledge Base root is drift (a read-only check, and
-        # the P2 destination resolution escape-guards every real write).
-        if not Path(os.path.realpath(path, strict=False)).is_relative_to(root):
-            drift.append(
-                f"reviewed {record.role} precondition {record.path} no longer "
-                "resolves inside the Knowledge Base"
-            )
-            continue
-        if record.kind == "file":
-            digest = _file_digest(path)
-            if digest is None:
-                drift.append(
-                    f"reviewed {record.role} base for {record.path} is gone "
-                    "(the path is now absent or no longer a readable regular file)"
-                )
-            elif digest != record.digest:
-                drift.append(
-                    f"{record.path} changed since review "
-                    f"(reviewed {record.role} base no longer matches)"
-                )
-        elif os.path.lexists(path):
-            drift.append(
-                f"{record.path} is now occupied, but the reviewed {record.role} expected it absent"
-            )
-    return drift
-
-
-def _expected_precondition_pairs(
-    proposed_pages: list,
-    working_dir: str | Path,
-    *,
-    removed_titles: list[str] | None = None,
-) -> list[tuple[str, str]]:
-    """Freshly resolve the (path, role) set a proposal must carry (P4).
-
-    The structural half of the durable-tampering defense: the affected-path
-    set is resolved from the proposal's OWN content against the CURRENT
-    title→path map with the SAME resolution live capture uses, so stored
-    precondition records can be held to exactly the paths the durable
-    proposal still touches — changed destinations, removals, or moves can
-    never retain records captured for the original structure. Never raises
-    for resolvable-but-conflicting content: a ``DestinationConflict``
-    degrades to the Control File expectation exactly like capture does (a
-    proposal in that state can never publish anyway).
-    """
-    expectations = _capture_mutation_preconditions(
-        proposed_pages, working_dir, removed_titles=removed_titles
-    )
-    return sorted((expectation.relative_path, expectation.role) for expectation in expectations)
-
-
-def _precondition_set_mismatch(
-    stored: list,
-    expected_pairs: list[tuple[str, str]],
-) -> list[str]:
-    """Compare stored precondition records with a freshly resolved set (P4).
-
-    ``stored`` rows are duck-typed durable
-    :class:`lumio_wiki.ingest.PathPrecondition` records. Compares the exact
-    (path, role) multisets — ``kind``/``digest`` depend on the current bytes
-    and belong to the drift check. One human-readable finding per divergent
-    record; an empty list means the durable metadata still describes exactly
-    the proposal's own affected paths.
-    """
-    stored_pairs = sorted((record.path, record.role) for record in stored)
-    expected = sorted(expected_pairs)
-    if stored_pairs == expected:
-        return []
-    expected_set = set(expected)
-    stored_set = set(stored_pairs)
-    findings = [
-        f"no reviewed {role} precondition for {path} is recorded, but the "
-        "durable proposal still affects that path"
-        for path, role in expected
-        if (path, role) not in stored_set
-    ]
-    findings.extend(
-        f"durable metadata still carries a reviewed {role} record for {path}, "
-        "which the durable proposal no longer touches"
-        for path, role in stored_pairs
-        if (path, role) not in expected_set
-    )
-    return findings
 
 
 def _resolve_proposed_destinations(
@@ -1344,75 +1134,6 @@ def _reject_unusable_control_file_path(
             f"publishing user before publishing this proposal",
             file=CONTROL_FILE_BASENAME,
         )
-
-
-def _reject_unsafe_activity_log_path(root: Path) -> None:
-    """Reject a non-regular Activity Log destination BEFORE any live byte (P5).
-
-    The local publish appends the transition to the root ``log.md`` in place
-    (:func:`~lumio_wiki.knowledge_base.append_activity_log_entry`), which opens
-    an EXISTING log with follow-the-link ``open("a")`` semantics. An existing
-    SYMLINK occupant is therefore written THROUGH: the appended entry lands in
-    the link's referent (possibly outside the Knowledge Base), and a later
-    failure's rollback restores only the link while the appended bytes stay in
-    the target — the pre-mutation Activity Log can never be fully restored.
-    An existing FIFO (or socket/device) would block that append's open until a
-    writer appears, and a directory occupant fails only AFTER the page and
-    Control File writes have already landed.
-
-    While S1 keeps the Activity Log a plain append-only regular file, the
-    publish gate therefore requires the path to be ABSENT (the append creates
-    it normally) or a REGULAR non-symlink file (snapshotted, appended, and
-    restored). The classification runs on non-following ``lstat`` metadata —
-    ``lstat(2)`` never opens the entry, so a FIFO is rejected without ever
-    being opened and a symlink (a DANGLING one included) is classified as a
-    link without ever being followed. It runs under the publish mutation
-    locks AFTER the reviewed preconditions (the P4 stale-base gate) and
-    BEFORE the candidate gate — the candidate's throwaway tree mirrors the
-    live tree and materializes a link's read-through content by OPENING its
-    referent (``shutil.copyfile``), so an unsafe ``log.md`` occupant is
-    classified before any candidate mirroring can touch its target — and
-    also before the pre-mutation backup and the first live write.
-    """
-    log_path = root / ACTIVITY_LOG_BASENAME
-    try:
-        info = os.lstat(log_path)
-    except FileNotFoundError:
-        return  # absent: the Activity Log append creates it normally
-    except OSError as exc:
-        raise DestinationConflict(
-            f"Activity Log destination {ACTIVITY_LOG_BASENAME} could not be "
-            f"inspected before the publish ({exc}); resolve the error so the "
-            f"existing entry can be classified as a regular file",
-            file=ACTIVITY_LOG_BASENAME,
-        ) from exc
-    mode = info.st_mode
-    if stat.S_ISREG(mode):
-        return
-    if stat.S_ISLNK(mode):
-        raise DestinationConflict(
-            f"Activity Log destination is a symlink that must not be followed "
-            f"by the proposed {ACTIVITY_LOG_BASENAME} append: an append writes "
-            f"through the link into its (possibly external) target, and a "
-            f"later publish failure restores only the link while the appended "
-            f"entry stays in the target. Replace the {ACTIVITY_LOG_BASENAME} "
-            f"symlink with a regular file before publishing this proposal",
-            file=ACTIVITY_LOG_BASENAME,
-        )
-    if stat.S_ISDIR(mode):
-        raise DestinationConflict(
-            f"Activity Log destination is an existing directory and cannot be "
-            f"appended to by the proposed {ACTIVITY_LOG_BASENAME}: remove or "
-            f"rename the directory before publishing this proposal",
-            file=ACTIVITY_LOG_BASENAME,
-        )
-    raise DestinationConflict(
-        f"Activity Log destination is occupied by a special file (FIFO, "
-        f"socket, or device) that must not be opened by the proposed "
-        f"{ACTIVITY_LOG_BASENAME} append: remove or replace the special "
-        f"entry with a regular file before publishing this proposal",
-        file=ACTIVITY_LOG_BASENAME,
-    )
 
 
 def _reject_non_directory_ancestors(
@@ -2028,9 +1749,901 @@ def validate_candidate_knowledge_base(
         return validate(candidate)
 
 
+# ---------------------------------------------------------------------------
+# Pure mutation-candidate assemblies (G4, spec 0008 §7)
+#
+# Relocated from the retired ``proposal_pipeline.py``: the deterministic
+# removal/merge/rename computations are route-independent pure behavior the
+# native Git worktree mutation routes consume. The legacy staged-proposal
+# route is gone; nothing here persists or reviews a proposal.
+# ---------------------------------------------------------------------------
+
+
+class MutationCandidateError(Exception):
+    """A mutation-candidate assembly failed.
+
+    G4 (spec 0008 §7): the pure mutation assemblies relocated here from the
+    retired Proposal Pipeline; ``publish.py`` is the native apply/validation
+    owner the worktree mutation routes already consume. This base replaces
+    the retired ``ProposalPipelineError`` for the relocated pure behavior; it
+    never stages, persists, or reviews a proposal."""
+
+
+def _drop_claims_for_entity(data: dict, removed_entity_id: str) -> bool:
+    """Drop frontmatter Claims whose object is ``removed_entity_id``.
+
+    The default, reviewed repair for a Page Removal (issue #135, AC5, as
+    revised by ADR-0021): every canonical Claim whose object Entity would
+    otherwise dangle is removed in the same proposal. Body links are repaired
+    separately (AC6): exactly-resolved links are unwrapped and ambiguous ones
+    are never guessed. Returns whether any Claim was dropped.
+    """
+    changed = False
+    claims = data.get("claims")
+    if isinstance(claims, list):
+        kept: list = []
+        for claim in claims:
+            if (
+                isinstance(claim, dict)
+                and str(claim.get("object", "")).strip() == removed_entity_id
+            ):
+                changed = True
+                continue
+            kept.append(claim)
+        if changed:
+            data["claims"] = kept
+    return changed
+
+
+def _repair_page_for_removal(
+    markdown: str,
+    removed_entity_id: str,
+    source_path: str,
+    body_start_line: int,
+    retired_title: str,
+    pages,
+) -> tuple[str, bool, list[str]]:
+    """Return a page's Markdown repaired for a Page Removal (issue #135).
+
+    Two reviewed repairs in one revision (ADR-0021): Claims whose object
+    Entity would dangle are dropped, and every internal body link that
+    resolves — with the shared resolver's precedence — EXACTLY to the removed
+    page is unwrapped to its readable text (``[[T]]``/``[[T|L]]`` -> ``T``/``L``,
+    ``[L](t.md)`` -> ``L``). External URLs, images, inline-code spans,
+    unresolved links, and ambiguous destinations are never touched: an
+    ambiguous destination (the removed page AND another page through the same
+    resolution key) is reported, never guessed. Returns
+    ``(rewritten_markdown, changed, ambiguous)``.
+    """
+    try:
+        data, body, _ = parse_frontmatter(markdown, Path(source_path))
+    except Exception:
+        return markdown, False, []
+    changed = _drop_claims_for_entity(data, removed_entity_id)
+
+    # Unwrap exactly-resolved body links against the ORIGINAL body spans, so
+    # repeated links on one line are each repaired exactly once.
+    from lumio_wiki.knowledge_base import _scan_body_links
+
+    source_dir = str(PurePosixPath(source_path).parent) if "/" in source_path else ""
+    body_lines = body.splitlines(keepends=True)
+    ambiguous: list[str] = []
+    for dest, line_start, line_end in _scan_body_links(body, body_start_line):
+        kind = _classify_retired_link(dest, pages, source_dir, retired_title)
+        if kind is None:
+            continue
+        if kind == "ambiguous":
+            ambiguous.append(
+                f"{source_path}: line {line_start}: '{dest}' matches the removed "
+                f"page and another page; leaving it unresolved"
+            )
+            continue
+        lo = max(line_start - body_start_line, 0)
+        hi = min(line_end - body_start_line, len(body_lines) - 1)
+        # Delimiter-bounded patterns (like the Entity Merge repair) so a shared
+        # prefix is never rewritten by accident; group 1 carries the readable
+        # label/alias, and the ``!`` lookbehind keeps images untouched. The
+        # Markdown pattern also matches the optional ``"title"`` tail the
+        # scanner excludes from ``dest``.
+        escaped = re.escape(dest)
+        patterns = (
+            re.compile(r"\[\[" + escaped + r"\]\]"),
+            re.compile(r"\[\[" + escaped + r"\|([^\]]*)\]\]"),
+            re.compile(r"(?<!\!)\[([^\]]*)\]\(" + escaped + r"(?:\s+\"[^\"]*\")?\)"),
+        )
+        for index in range(lo, hi + 1):
+            line = body_lines[index]
+            for pattern in patterns:
+                if pattern.search(line):
+                    replacement = dest if pattern.groups == 0 else lambda m: m.group(1)
+                    body_lines[index] = pattern.sub(replacement, line, count=1)
+                    changed = True
+                    break
+    body = "".join(body_lines)
+
+    if not changed:
+        return markdown, False, ambiguous
+    frontmatter = yaml.encode(data).decode("utf-8").strip()
+    return f"---\n{frontmatter}\n---\n{body}", True, ambiguous
+
+
+def _compute_removal_diff(
+    removed_title: str,
+    removed_page_path: str,
+    removed_page_markdown: str,
+    proposed_pages: list,
+    existing_pages: dict[str, str],
+) -> str:
+    """Unified diff for a Page Removal: a deletion block plus repair diffs.
+
+    The removed page is rendered as a unified-diff deletion (every line
+    prefixed ``-``) so a Maintainer sees exactly what is excluded from the
+    next Published Version, followed by the ordinary diffs of the dependent
+    pages whose Relationships were repaired.
+    """
+    lines: list[str] = [
+        f"deleted file: {removed_page_path}",
+        f"--- a/{removed_page_path}",
+    ]
+    for line in removed_page_markdown.splitlines():
+        lines.append(f"-{line}")
+    lines.append("")
+    repair_diff = _compute_diff(proposed_pages, existing_pages)
+    if repair_diff:
+        lines.append(repair_diff)
+    return "\n".join(lines)
+
+
+def _retarget_claim_objects(data: dict, from_id: str, to_id: str) -> bool:
+    """Rewrite Claim objects pointing at ``from_id`` to ``to_id`` in place.
+
+    The reviewed Entity Merge repair (issue #169, ADR-0021): every Claim on a
+    page whose object Entity is being retired is retargeted to the surviving
+    Entity ID in the same proposal. Returns whether any Claim was rewritten.
+    """
+    claims = data.get("claims")
+    changed = False
+    if isinstance(claims, list):
+        for claim in claims:
+            if isinstance(claim, dict) and str(claim.get("object", "")).strip() == from_id:
+                claim["object"] = to_id
+                changed = True
+    return changed
+
+
+def _link_target_maps(pages):
+    """Build the existing resolver's title, alias and path-stem inputs."""
+    by_title, by_alias, by_path = {}, {}, {}
+    for page in pages:
+        if page.title:
+            by_title.setdefault(page.title, []).append(page)
+        for alias in page.aliases:
+            if alias:
+                by_alias.setdefault(alias, []).append(page)
+        if page.path:
+            stem = page.path[:-3] if page.path.lower().endswith(".md") else page.path
+            by_path.setdefault(stem.casefold(), page)
+    return by_title, by_alias, by_path
+
+
+def _classify_retired_link(dest: str, pages, source_dir: str, retired_title: str) -> str | None:
+    """Classify only the shared resolver's actual target; never guess a repair."""
+    from lumio_wiki.knowledge_base import _destination_stem, _resolve_link_target
+
+    by_title, by_alias, by_path = _link_target_maps(pages)
+    target, reason = _resolve_link_target(dest, by_title, by_alias, by_path, source_dir)
+    stem = _destination_stem(dest).casefold()
+    title_matches = [
+        page for key, matches in by_title.items() if key.casefold() == stem for page in matches
+    ]
+    alias_matches = [
+        page for key, matches in by_alias.items() if key.casefold() == stem for page in matches
+    ]
+    if reason == "ambiguous":
+        matches = title_matches or alias_matches
+        return "ambiguous" if any(page.title == retired_title for page in matches) else None
+    if target is None or target.title != retired_title:
+        return None
+    if title_matches:
+        return "title"
+    return "alias" if alias_matches else "path"
+
+
+def _repair_body_links_for_merge(
+    markdown: str,
+    source_path: str,
+    body_start_line: int,
+    retired_title: str,
+    surviving_title: str,
+    surviving_path: str,
+    pages,
+) -> tuple[str, bool, list[str]]:
+    """Rewrite exactly-resolved body links targeting the retired page (issue #169).
+
+    A reviewed Entity Merge repairs exactly resolved links in the same
+    proposal (ADR-0021): every internal link that resolves — with the shared
+    resolver's precedence — to exactly the retired page is rewritten to
+    target the surviving page (wikilinks and title-resolved links to the
+    surviving Canonical Title, path-resolved links to a root-absolute
+    surviving path). A destination that matches the retired page AND another
+    page through the same resolution key is an AMBIGUOUS repair: it is never
+    guessed, reported verbatim, and blocks staging. Returns
+    ``(rewritten_markdown, changed, ambiguous)``.
+    """
+    from lumio_wiki.knowledge_base import _scan_body_links
+
+    source_dir = str(PurePosixPath(source_path).parent) if "/" in source_path else ""
+    body_lines = markdown.splitlines(keepends=True)
+    ambiguous: list[str] = []
+    changed = False
+    # Split once: repairs shift no characters on their own line, so scan the
+    # ORIGINAL body and apply one exact substring replacement per scanned link.
+    for dest, line_start, line_end in _scan_body_links(markdown, body_start_line):
+        kind = _classify_retired_link(dest, pages, source_dir, retired_title)
+        if kind is None:
+            continue
+        if kind == "ambiguous":
+            ambiguous.append(
+                f"{source_path}: line {line_start}: '{dest}' matches the retired "
+                f"page and another page; refusing to guess a repair target"
+            )
+            continue
+        # Title/alias resolutions rewrite to the surviving Canonical Title;
+        # path resolutions rewrite to a root-absolute surviving path (which
+        # resolves from every source directory).
+        suffix_match = re.search(r"[?#].*", dest)
+        suffix = suffix_match.group() if suffix_match else ""
+        title_target = surviving_title + suffix
+        rel = (surviving_path if kind == "path" else surviving_title) + suffix
+        lo = max(line_start - body_start_line, 0)
+        hi = min(line_end - body_start_line, len(body_lines) - 1)
+        # Wikilinks always rewrite to the surviving title; Markdown links use
+        # the resolution-derived destination. Delimiter-bounded patterns so a
+        # shared prefix (``[[beta`` inside ``[[beta2]]``) is never rewritten
+        # by accident.
+        replacements = (
+            (f"[[{dest}]]", f"[[{title_target}]]"),
+            (f"[[{dest}|", f"[[{title_target}|"),
+            (f"]({dest})", f"]({rel})"),
+            (f"]({dest} ", f"]({rel} "),
+        )
+        for index in range(lo, hi + 1):
+            line = body_lines[index]
+            for old, new in replacements:
+                if old in line:
+                    body_lines[index] = line.replace(old, new, 1)
+                    changed = True
+                    break
+    return "".join(body_lines), changed, ambiguous
+
+
+class MutationCandidate(msgspec.Struct, frozen=True):
+    """One assembled deterministic Knowledge Base mutation (G3, spec 0008 §2/§7).
+
+    Route-independent output of the shared removal/merge assembly: native Git
+    authoring applies its pages/repairs as ordinary worktree file edits.
+    It is a computation result — never a persisted proposal wrapper,
+    queue entry, or review state.
+    """
+
+    proposed_pages: list
+    control_file: Any
+    removed_titles: list[str]
+    removed_paths: list[str]
+    removed_markdowns: list[str]
+    removal_reasons: list[str]
+    entity_merges: list
+    diff: str
+    blast_radius: Any
+    validation_report: Any
+    body_link_repairs: list
+
+
+def assemble_page_removal_candidate(
+    kb,
+    title: str,
+    *,
+    reason: str = "",
+    affected_claim_notes: list[str] | None = None,
+) -> MutationCandidate:
+    """Assemble an explicit Page Removal and its dependent repairs (#135).
+
+    The deterministic computation shared by the staged-proposal route and
+    native Git worktree edits: resolves the page by Canonical Title, drops
+    canonical Relationships to the removed title, unwraps exactly-resolved
+    body links (ambiguous destinations are disclosed, never guessed), drops
+    a stale Hot Index pin atomically through a proposed Control File, and
+    validates the removal + repairs as ONE candidate Knowledge Base.
+    """
+    title = title.strip()
+    if not title:
+        raise MutationCandidateError("page removal requires a Canonical Page Title")
+    target_page = None
+    for page in kb.pages:
+        if page.title == title:
+            target_page = page
+            break
+    if target_page is None or not target_page.path:
+        raise MutationCandidateError(f"no Compiled Page found for Canonical Title {title!r}")
+    removed_entity_id = target_page.id
+
+    _refs, diagnostics = _extract_references(kb.pages)
+    proposed_pages: list[ProposedPage] = []
+    body_link_repairs: list[BodyLinkRepairCandidate] = []
+    validation_issues: list = []
+    for page in kb.pages:
+        if page.title == title or not page.path:
+            continue
+        try:
+            page_markdown = (Path(kb.root) / page.path).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        _data, _body, body_start_line = parse_frontmatter(page_markdown, Path(kb.root) / page.path)
+        repaired, changed, ambiguous = _repair_page_for_removal(
+            page_markdown,
+            removed_entity_id,
+            page.path,
+            body_start_line,
+            title,
+            kb.pages,
+        )
+        for note in ambiguous:
+            validation_issues.append(
+                ValidationIssue(
+                    file=page.path,
+                    field="body-links",
+                    message=note,
+                    severity="warning",
+                )
+            )
+        if not changed:
+            continue
+        proposed_pages.append(
+            ProposedPage(relative_path=page.path, title=page.title, markdown=repaired)
+        )
+
+    for ref in _refs:
+        if ref.target_title == title and ref.source_title != title:
+            body_link_repairs.append(
+                BodyLinkRepairCandidate(
+                    source_title=ref.source_title,
+                    source_path=ref.source_path,
+                    target_title=ref.target_title,
+                    origin=ref.origin,
+                    line_start=ref.line_start,
+                    line_end=ref.line_end,
+                )
+            )
+
+    control_file: KnowledgeBaseControlFile | None = None
+    kb_control = getattr(kb, "control", None)
+    if kb_control is not None and any(pin.title == title for pin in kb_control.hot_index):
+        kept_pins = [
+            HotIndexPin(title=pin.title, note=pin.note)
+            for pin in kb_control.hot_index
+            if pin.title != title
+        ]
+        control_file = KnowledgeBaseControlFile(
+            version=kb_control.version,
+            categories=list(kb_control.categories),
+            hot_index=kept_pins,
+            mode=kb_control.mode,
+            path=kb_control.path,
+            ontology=kb_control.ontology,
+        )
+
+    page_validation = validate_candidate_knowledge_base(
+        proposed_pages,
+        kb.root,
+        removed_titles=[title],
+        control_file=control_file,
+    )
+    validation_report = ValidationReport(issues=list(page_validation.issues) + validation_issues)
+
+    existing_pages = _existing_page_markdown(kb)
+    removed_markdown: str = existing_pages.get(title) or target_page.body
+    diff = _compute_removal_diff(
+        title, target_page.path, removed_markdown, proposed_pages, existing_pages
+    )
+    blast_radius = compute_blast_radius(proposed_pages, kb)
+    return MutationCandidate(
+        proposed_pages=proposed_pages,
+        control_file=control_file,
+        removed_titles=[title],
+        removed_paths=[target_page.path],
+        removed_markdowns=[removed_markdown],
+        removal_reasons=[reason],
+        entity_merges=[],
+        diff=diff,
+        blast_radius=blast_radius,
+        validation_report=validation_report,
+        body_link_repairs=body_link_repairs,
+    )
+
+
+def _union_source_records(surviving_sources, retired_sources):
+    """Union two frontmatter ``sources`` lists by Source identity (F3).
+
+    Returns the merged plain-dict list, or ``None`` when neither side
+    declares sources. Records keep their recorded order: survivor first,
+    then the retired Entity's additions whose identity is not already
+    present. Pure data — no I/O.
+    """
+    from lumio_wiki.knowledge_base import _as_sources as as_sources
+
+    surviving = as_sources(surviving_sources)
+    retired = as_sources(retired_sources)
+    if not surviving and not retired:
+        return None
+
+    def _key(source) -> str:
+        return source.id or f"title:{source.title}\nurl:{source.url or ''}"
+
+    merged = list(surviving)
+    seen = {_key(source) for source in surviving}
+    for source in retired:
+        if _key(source) not in seen:
+            seen.add(_key(source))
+            merged.append(source)
+    return [
+        {
+            **({"id": source.id} if source.id else {}),
+            "title": source.title,
+            **({"url": source.url} if source.url else {}),
+        }
+        for source in merged
+    ]
+
+
+def assemble_entity_merge_candidate(
+    kb,
+    retired_entity_id: str,
+    surviving_entity_id: str,
+    *,
+    reason: str = "",
+) -> MutationCandidate:
+    """Assemble an Entity Merge and its dependent repairs (#169).
+
+    The deterministic computation shared by the staged-proposal route and
+    native Git worktree edits: the surviving Entity keeps its stable ID and
+    page while absorbing the retired Entity's Claims; Claim objects and
+    exactly-resolved body links targeting the retired page are retargeted;
+    the retired ID is recorded as an ontology redirect; the retired page is
+    excluded from the next Published Version. Automatic or ambiguous merges
+    remain forbidden (ADR-0021).
+    """
+    retired_entity_id = retired_entity_id.strip()
+    surviving_entity_id = surviving_entity_id.strip()
+    if not retired_entity_id or not surviving_entity_id:
+        raise MutationCandidateError("entity merge requires two Entity IDs")
+    if retired_entity_id == surviving_entity_id:
+        raise MutationCandidateError("cannot merge an entity into itself")
+    control = getattr(kb, "control", None)
+    if control is None:
+        raise MutationCandidateError(
+            "entity merge requires a version-2 Knowledge Base with a Control File "
+            "(Legacy Flat Mode has no ontology redirects)"
+        )
+    page_by_entity = {page.id: page for page in kb.pages if page.id}
+    retired_page = page_by_entity.get(retired_entity_id)
+    surviving_page = page_by_entity.get(surviving_entity_id)
+    if retired_page is None or not retired_page.path:
+        raise MutationCandidateError(
+            f"no Compiled Page found for retired Entity {retired_entity_id!r}"
+        )
+    if surviving_page is None or not surviving_page.path:
+        raise MutationCandidateError(
+            f"no Compiled Page found for surviving Entity {surviving_entity_id!r}"
+        )
+    retired_title = retired_page.title
+    surviving_title = surviving_page.title
+
+    try:
+        retired_markdown = (Path(kb.root) / retired_page.path).read_text(encoding="utf-8")
+        surviving_markdown = (Path(kb.root) / surviving_page.path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise MutationCandidateError(f"could not read a merge page: {exc}") from exc
+
+    all_pages = [page for page in kb.pages if page.path]
+    ambiguous_links: list[str] = []
+    proposed_pages: list[ProposedPage] = []
+
+    def _merge_page_markdown(markdown: str, path: str) -> tuple[str, bool]:
+        """Retarget Claim objects + repair exactly-resolved body links."""
+        data, body, body_start = parse_frontmatter(markdown, Path(path))
+        claims_changed = _retarget_claim_objects(data, retired_entity_id, surviving_entity_id)
+        repaired_body, links_changed, ambiguous = _repair_body_links_for_merge(
+            body,
+            path,
+            body_start,
+            retired_title,
+            surviving_title,
+            surviving_page.path,
+            all_pages,
+        )
+        ambiguous_links.extend(ambiguous)
+        if not claims_changed and not links_changed:
+            return markdown, False
+        frontmatter = yaml.encode(data).decode("utf-8").strip()
+        return f"---\n{frontmatter}\n---\n{repaired_body}", True
+
+    for page in all_pages:
+        if page.title in (retired_title, surviving_title):
+            continue
+        try:
+            markdown = (Path(kb.root) / page.path).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        merged, changed = _merge_page_markdown(markdown, page.path)
+        if changed:
+            proposed_pages.append(
+                ProposedPage(relative_path=page.path, title=page.title, markdown=merged)
+            )
+    if ambiguous_links:
+        raise MutationCandidateError(
+            "ambiguous link repair blocks this entity merge "
+            "(never guessed; resolve the collision and retry): " + "; ".join(ambiguous_links)
+        )
+
+    surviving_data, surviving_body, surviving_line = parse_frontmatter(
+        surviving_markdown, Path(surviving_page.path)
+    )
+    _retarget_claim_objects(surviving_data, retired_entity_id, surviving_entity_id)
+    merged_claims = list(surviving_data.get("claims") or [])
+    retired_data, _retired_body, _retired_line = parse_frontmatter(
+        retired_markdown, Path(retired_page.path)
+    )
+    if isinstance(retired_data.get("claims"), list):
+        _retarget_claim_objects(retired_data, retired_entity_id, surviving_entity_id)
+        merged_claims.extend(retired_data["claims"])
+    # F3 (spec 0008 §6): the survivor's source list is the UNION with the
+    # retired Entity's sources — migrated knowledge keeps its provenance.
+    # Deduplication keys on the Source id (or title+url when id-less), the
+    # same identity compound revision uses; conflicting same-id records keep
+    # the survivor's existing record.
+    merged_sources = _union_source_records(
+        surviving_data.get("sources"), retired_data.get("sources")
+    )
+    if merged_sources is not None:
+        surviving_data["sources"] = merged_sources
+    repaired_survivor_body, links_changed, ambiguous = _repair_body_links_for_merge(
+        surviving_body,
+        surviving_page.path,
+        surviving_line,
+        retired_title,
+        surviving_title,
+        surviving_page.path,
+        all_pages,
+    )
+    if ambiguous:
+        raise MutationCandidateError(
+            "ambiguous link repair blocks this entity merge "
+            "(never guessed; resolve the collision and retry): " + "; ".join(ambiguous)
+        )
+    if merged_claims:
+        surviving_data["claims"] = merged_claims
+    frontmatter = yaml.encode(surviving_data).decode("utf-8").strip()
+    merged_markdown = f"---\n{frontmatter}\n---\n{repaired_survivor_body}"
+    if merged_markdown != surviving_markdown:
+        proposed_pages.insert(
+            0,
+            ProposedPage(
+                relative_path=surviving_page.path,
+                title=surviving_title,
+                markdown=merged_markdown,
+            ),
+        )
+
+    ontology = control.ontology or Ontology()
+    redirects = [
+        redirect for redirect in ontology.redirects if redirect.from_id != retired_entity_id
+    ]
+    redirects.append(EntityRedirect(from_id=retired_entity_id, to_id=surviving_entity_id))
+    new_ontology = Ontology(
+        entity_types=ontology.entity_types,
+        predicates=ontology.predicates,
+        redirects=redirects,
+    )
+    kept_pins = [
+        HotIndexPin(title=pin.title, note=pin.note)
+        for pin in control.hot_index
+        if pin.title != retired_title
+    ]
+    control_file = KnowledgeBaseControlFile(
+        version=control.version,
+        categories=list(control.categories),
+        hot_index=kept_pins,
+        mode=control.mode,
+        path=control.path,
+        ontology=new_ontology,
+    )
+
+    page_validation = validate_candidate_knowledge_base(
+        proposed_pages,
+        kb.root,
+        removed_titles=[retired_title],
+        control_file=control_file,
+    )
+    validation_report = ValidationReport(issues=list(page_validation.issues))
+
+    existing_pages = _existing_page_markdown(kb)
+    diff = _compute_removal_diff(
+        retired_title, retired_page.path, retired_markdown, proposed_pages, existing_pages
+    )
+    blast_radius = compute_blast_radius(proposed_pages, kb)
+    return MutationCandidate(
+        proposed_pages=proposed_pages,
+        control_file=control_file,
+        removed_titles=[retired_title],
+        removed_paths=[retired_page.path],
+        removed_markdowns=[retired_markdown],
+        removal_reasons=[reason or f"merged into {surviving_title}"],
+        entity_merges=[
+            EntityMerge(
+                retired_entity_id=retired_entity_id,
+                surviving_entity_id=surviving_entity_id,
+                retired_title=retired_title,
+                surviving_title=surviving_title,
+            )
+        ],
+        diff=diff,
+        blast_radius=blast_radius,
+        validation_report=validation_report,
+        body_link_repairs=[],
+    )
+
+
+def _pin_outbound_path_targets(
+    markdown: str, source_path: str, pages, *, exclude_title: str
+) -> str:
+    """Rewrite a moved page's path-resolved outbound links to stable targets (D2).
+
+    A relative link that resolved EXACTLY against the pre-move directory is
+    rewritten to its resolved target's root-absolute path, so the move (even
+    into a directory holding a same-basename DIFFERENT Entity) cannot
+    silently misroute it. The shared resolver selects the original target;
+    title/alias resolutions are left alone, and ambiguous or escaping
+    destinations are never guessed.
+    """
+    from lumio_wiki.knowledge_base import _resolve_link_target, _scan_body_links
+
+    by_title, by_alias, by_path = _link_target_maps(pages)
+    source_dir = str(PurePosixPath(source_path).parent) if "/" in source_path else ""
+    lines = markdown.splitlines(keepends=True)
+    for dest, line_start, line_end in _scan_body_links(markdown, 1):
+        target, reason = _resolve_link_target(dest, by_title, by_alias, by_path, source_dir)
+        if reason != "ok" or target is None or target.title == exclude_title:
+            continue
+        # Title/alias resolutions do not depend on the moving page's directory.
+        named_target, _reason = _resolve_link_target(dest, by_title, by_alias, {}, source_dir)
+        if named_target is not None:
+            continue
+        suffix = re.search(r"[?#].*", dest)
+        target_path = target.path + (suffix.group() if suffix else "")
+        if target_path == dest:
+            continue
+        lo = max(line_start - 1, 0)
+        hi = max(min(line_end, len(lines)), lo)
+        for index in range(lo, hi):
+            line = lines[index]
+            for old, new in (
+                (f"]({dest})", f"]({target_path})"),
+                (f"]({dest} ", f"]({target_path} "),
+            ):
+                if old in line:
+                    lines[index] = line.replace(old, new, 1)
+    return "".join(lines)
+
+
+def assemble_page_rename_candidate(
+    kb,
+    title: str,
+    *,
+    new_title: str | None = None,
+    new_category: str | None = None,
+    aliases: list[str] | None = None,
+    keep_old_title_alias: bool | None = None,
+) -> MutationCandidate:
+    """Assemble a reviewed title rename / category move / alias edit (G3/D2).
+
+    The required native rename primitive (spec 0008 §6, ADR-0016): the
+    page's stable Entity ID, Claims, Sources, and provenance are preserved
+    while its Canonical Title changes (``rename_from``), its Content
+    Category path relocates atomically (``move_from_path``), and its alias
+    list is the operator's explicit choice (``keep_old_title_alias`` keeps
+    the old title reachable; ADR-0016's keep/drop decision is explicit, and
+    the caller discloses it). Exactly-resolved incoming body links retarget
+    on BOTH title renames and category moves; the renamed page's own
+    old-title references repair with labels preserved; a moved page's
+    path-resolved OUTBOUND links keep their pre-move targets (rewritten to
+    the target's root-absolute path, immune to the new directory); a stale
+    Hot Index pin updates; an ambiguous link repair and any path/alias
+    collision refuse. A pure computation shared by any route — never a
+    persisted proposal.
+    """
+    resolved_title = (title or "").strip()
+    if not resolved_title:
+        raise MutationCandidateError("page rename requires the current Canonical Page Title")
+    page = next((p for p in kb.pages if p.title == resolved_title and p.path), None)
+    if page is None:
+        raise MutationCandidateError(f"no Compiled Page found for title {resolved_title!r}")
+    resolved_new_title = (new_title or "").strip() or resolved_title
+    renaming = resolved_new_title != resolved_title
+    if renaming and keep_old_title_alias is None and aliases is None:
+        raise MutationCandidateError(
+            "a title rename requires an explicit old-title alias choice: keep, "
+            "drop, or a replacement alias set (including an empty set)"
+        )
+    new_relative = page.path
+    moving = False
+    if new_category is not None:
+        control = getattr(kb, "control", None)
+        if control is None:
+            raise MutationCandidateError(
+                "a category move requires a version-2 Knowledge Base with a Control File"
+            )
+        if new_category not in _configured_category_names(kb):
+            raise MutationCandidateError(
+                f"target category {new_category!r} is not configured in the Control "
+                "File; an unconfigured category never creates a category path "
+                "(issue #78)"
+            )
+        new_relative = _relative_path_for_category(
+            None, new_category, PurePosixPath(page.path).name
+        )
+        moving = new_relative != page.path
+    if not renaming and not moving and aliases is None and not keep_old_title_alias:
+        raise MutationCandidateError(
+            "page rename requires a new title, a target category, or an explicit "
+            "alias choice (nothing to change)"
+        )
+    try:
+        page_markdown = (Path(kb.root) / page.path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise MutationCandidateError(f"could not read the page: {exc}") from exc
+    data, body, body_start = parse_frontmatter(page_markdown, Path(page.path))
+    if renaming:
+        data["title"] = resolved_new_title
+    cleaned_aliases: list[str] = []
+    if aliases is not None:
+        cleaned_aliases = [str(alias).strip() for alias in aliases]
+        if any(not alias for alias in cleaned_aliases):
+            raise MutationCandidateError("aliases must be non-empty strings")
+        data["aliases"] = cleaned_aliases
+    if keep_old_title_alias is False and renaming:
+        data["aliases"] = [
+            alias for alias in (data.get("aliases") or []) if alias != resolved_title
+        ]
+    if keep_old_title_alias and renaming:
+        # ADR-0016: the old title stays reachable as an EXPLICIT alias choice,
+        # added to whatever alias set this edit produces.
+        effective = list(data.get("aliases") or [])
+        if resolved_title not in effective:
+            effective.append(resolved_title)
+        data["aliases"] = effective
+    frontmatter = yaml.encode(data).decode("utf-8").strip()
+    renamed_markdown = f"---\n{frontmatter}\n---\n{body}"
+    if moving:
+        # D2: a moved page's path-resolved OUTBOUND links keep their pre-move
+        # targets — rewritten to the resolved target's root-absolute path so
+        # the new directory (even with a same-basename different Entity)
+        # cannot silently misroute them. Mirrors the shared path-resolution
+        # convention (source-dir-relative first, then global; never guessed).
+        renamed_markdown = _pin_outbound_path_targets(
+            renamed_markdown, page.path, kb.pages, exclude_title=resolved_title
+        )
+    if renaming or moving:
+        # Resolve own references in their original directory before the move.
+        _own_data, _own_body, own_body_start = parse_frontmatter(
+            renamed_markdown, Path(new_relative)
+        )
+        renamed_markdown, _changed, _ambiguous = _repair_body_links_for_merge(
+            renamed_markdown,
+            page.path,
+            own_body_start,
+            resolved_title,
+            resolved_new_title,
+            new_relative,
+            kb.pages,
+        )
+    proposed_pages: list[ProposedPage] = [
+        ProposedPage(
+            relative_path=new_relative,
+            title=resolved_new_title,
+            markdown=renamed_markdown,
+            rename_from=resolved_title if renaming else None,
+            move_from_path=page.path if moving else None,
+        )
+    ]
+    # Repair exactly-resolved incoming body links on BOTH renames and moves
+    # — the same never-guess resolver the Entity Merge uses (ADR-0021). On a
+    # move-only edit the title stays stable, so exactly the path-resolved
+    # incoming links retarget to the new location.
+    ambiguous_links: list[str] = []
+    if renaming or moving:
+        for other in kb.pages:
+            if not other.path or other.title == resolved_title:
+                continue
+            try:
+                markdown = (Path(kb.root) / other.path).read_text(encoding="utf-8")
+            except OSError:
+                continue
+            _other_data, _other_body, other_body_start = parse_frontmatter(
+                markdown, Path(other.path)
+            )
+            repaired, changed, ambiguous = _repair_body_links_for_merge(
+                markdown,
+                other.path,
+                other_body_start,
+                resolved_title,
+                resolved_new_title,
+                new_relative,
+                kb.pages,
+            )
+            ambiguous_links.extend(ambiguous)
+            if changed and repaired != markdown:
+                proposed_pages.append(
+                    ProposedPage(relative_path=other.path, title=other.title, markdown=repaired)
+                )
+    if ambiguous_links:
+        raise MutationCandidateError(
+            "ambiguous link repair blocks this rename (never guessed; resolve "
+            "the collision and retry): " + "; ".join(ambiguous_links)
+        )
+    control = getattr(kb, "control", None)
+    control_file = None
+    if control is not None:
+        kept_pins = [
+            HotIndexPin(
+                title=(
+                    resolved_new_title if renaming and pin.title == resolved_title else pin.title
+                ),
+                note=pin.note,
+            )
+            for pin in control.hot_index
+        ]
+        control_file = KnowledgeBaseControlFile(
+            version=control.version,
+            categories=list(control.categories),
+            hot_index=kept_pins,
+            mode=control.mode,
+            path=control.path,
+            ontology=control.ontology,
+        )
+    page_validation = validate_candidate_knowledge_base(
+        proposed_pages, kb.root, control_file=control_file
+    )
+    validation_report = ValidationReport(issues=list(page_validation.issues))
+    changes = []
+    if renaming:
+        changes.append(f"title: {resolved_title} -> {resolved_new_title}")
+    if moving:
+        changes.append(f"path: {page.path} -> {new_relative}")
+    if aliases is not None:
+        changes.append(f"aliases: {', '.join(cleaned_aliases) or '(none)'}")
+    return MutationCandidate(
+        proposed_pages=proposed_pages,
+        control_file=control_file,
+        removed_titles=[],
+        removed_paths=[],
+        removed_markdowns=[],
+        removal_reasons=[],
+        entity_merges=[],
+        diff="; ".join(changes),
+        blast_radius=compute_blast_radius(proposed_pages, kb),
+        validation_report=validation_report,
+        body_link_repairs=[],
+    )
+
+
 __all__ = [
     "DestinationConflict",
+    "MutationCandidate",
+    "MutationCandidateError",
     "PublishError",
+    "assemble_entity_merge_candidate",
+    "assemble_page_removal_candidate",
+    "assemble_page_rename_candidate",
     "apply_compound_revision",
     "apply_proposed_pages",
     "merge_compound_sources",

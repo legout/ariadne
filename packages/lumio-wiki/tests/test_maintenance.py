@@ -21,7 +21,6 @@ from lumio_wiki.artifact_store import (
     build_binding_manifest,
 )
 from lumio_wiki.cli import main
-from lumio_wiki.ingest import IngestStore
 from lumio_wiki.knowledge_base import KnowledgeBase
 from lumio_wiki.publish import merge_compound_sources
 from lumio_wiki.records import CompiledPage
@@ -92,17 +91,6 @@ def _git_authoring_worktree(root: Path) -> Path:
     _git("add", "-A")
     _git("commit", "-q", "-m", "authoring revision")
     return root
-
-
-def _store(kb_root: Path) -> IngestStore:
-    store_dir = kb_root / ".lumio" / "ingest"
-    store_dir.mkdir(parents=True, exist_ok=True)
-    return IngestStore(store_dir)
-
-
-# ---------------------------------------------------------------------------
-# lint
-# ---------------------------------------------------------------------------
 
 
 def test_run_lint_reports_both_scopes(kb_root: Path):
@@ -187,38 +175,19 @@ def test_category_for_page_path(kb_root: Path):
 
 
 def test_stage_cross_link_proposal_is_publishable(kb_with_candidate: Path):
-    """A staged repair validates clean against a categorized KB.
-
-    Regression: compound revisions of pages with id-less sources were falsely
-    blocked (merged sources came back empty), and categorized revisions were
-    blocked for missing category / durability rationale routing fields.
-    """
-    kb_root = kb_with_candidate
-    # Strip the source id so the page carries id-less provenance (valid).
-    acme = kb_root / "entities" / "acme.md"
-    acme.write_text(
-        acme.read_text(encoding="utf-8").replace('  - id: "acme"\n', "  - "),
-        encoding="utf-8",
-    )
-    kb, _report = lw.load_knowledge_base(kb_root)
-    candidates = lw.find_link_candidates(kb.pages)
-    assert len(candidates) == 1
-
-    proposal = lw.stage_cross_link_proposal(kb_root, candidates[0], store=_store(kb_root))
-
-    assert proposal.status == "staged"
-    assert not proposal.blocked, [
-        f"{i.file}: {i.field}: {i.message}"
-        for i in proposal.validation_report.issues
-        if i.severity == "error"
-    ]
-    # The Knowledge Base on disk is untouched (proposal-first).
-    assert "[Acme Corp]" not in (kb_root / "concepts" / "overview.md").read_text(encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
-# Dream Cycle
-# ---------------------------------------------------------------------------
+    """Retain id-less compound provenance and categorized repair validation."""
+    root = kb_with_candidate
+    acme = root / "entities" / "acme.md"
+    acme.write_text(acme.read_text().replace('  - id: "acme"\n', "  - "))
+    before, _ = lw.load_knowledge_base(root)
+    old_sources = next(p.sources for p in before.pages if p.title == "Acme Corp")
+    _git_authoring_worktree(root)
+    assert main(["cross-link", str(root), "--stage", "--limit", "1"]) == 0
+    kb, report = lw.load_knowledge_base(root)
+    assert report.is_valid, report
+    assert "[Acme Corp]" in (root / "concepts" / "overview.md").read_text()
+    assert next(p.sources for p in kb.pages if p.title == "Acme Corp") == old_sources
+    assert not (root / ".lumio").exists()
 
 
 def test_run_dream_cycle_reflects_without_writing(kb_with_candidate: Path):
@@ -252,29 +221,15 @@ def test_cli_dream_with_staging_loads_knowledge_base_once(kb_with_candidate: Pat
     assert load_count == 1
 
 
-def test_stage_dream_repairs_stages_bounded_proposals(kb_with_candidate: Path):
-    result = lw.stage_dream_repairs(kb_with_candidate, store=_store(kb_with_candidate), limit=1)
-    assert len(result.staged) == 1
-    assert not result.skipped
-    assert result.staged[0].status == "staged"
-    assert not result.staged[0].blocked
-
-
-def test_stage_dream_repairs_rejects_bad_limit(kb_with_candidate: Path):
-    with pytest.raises(lw.MaintenanceError):
-        lw.stage_dream_repairs(kb_with_candidate, store=_store(kb_with_candidate), limit=0)
-
-
-# ---------------------------------------------------------------------------
-# Source Drift diagnostic (issue #196, ADR-0014 / ADR-0020)
-#
-# A read-only, model-free Dream Cycle diagnostic over two scopes: the current
-# working copy (non-synthetic pages whose declared source is retired) and the
-# active Published Version's private Source Binding Manifest (entries bound to
-# a retired source or superseded by the registry's current hash). The
-# manifest tier describes the Published Version only — it is never joined to
-# the current worktree by title.
-# ---------------------------------------------------------------------------
+def _retired_history_fixture(registry, source_id):
+    state = msgspec.structs.replace(
+        registry._state,
+        sources=[
+            msgspec.structs.replace(s, status="retired") if s.source_id == source_id else s
+            for s in registry.list()
+        ],
+    )
+    registry.restore_state_bytes(msgspec.json.encode(state))
 
 
 def _drift_registry(tmp_path: Path) -> tuple[SourceRegistry, str]:
@@ -286,9 +241,7 @@ def _drift_registry(tmp_path: Path) -> tuple[SourceRegistry, str]:
     registry = SourceRegistry(tmp_path / "source-registry")
     registry.register_source("acme-active", b"active source bytes")
     retired_version = registry.register_source("acme-retired", DRIFT_RAW)
-    transition = registry.stage_retirement("acme-retired")
-    registry.bind_pending(transition, "proposal-retire")
-    registry.apply_transition("proposal-retire")
+    _retired_history_fixture(registry, "acme-retired")
     return registry, retired_version.content_hash
 
 
@@ -513,8 +466,8 @@ def test_cli_dream_reports_retired_source_finding(
     kb_root: Path, tmp_path: Path, monkeypatch, capsys
 ):
     registry, _hash = _drift_registry(tmp_path)
-    ingest = IngestStore(kb_root / ".lumio" / "ingest")
-    shutil.copytree(tmp_path / "source-registry", ingest.source_registry.root, dirs_exist_ok=True)
+    registry_root = kb_root / ".lumio" / "ingest" / "source-registry"
+    shutil.copytree(tmp_path / "source-registry", registry_root, dirs_exist_ok=True)
     # Declare the retired source on the overview page (id must be registered).
     overview = kb_root / "concepts" / "overview.md"
     overview.write_text(
@@ -559,8 +512,8 @@ def test_cli_dream_without_artifact_store_reports_registry_only_tier(
     kb_root: Path, tmp_path: Path, monkeypatch, capsys
 ):
     registry, _hash = _drift_registry(tmp_path)
-    ingest = IngestStore(kb_root / ".lumio" / "ingest")
-    shutil.copytree(tmp_path / "source-registry", ingest.source_registry.root, dirs_exist_ok=True)
+    registry_root = kb_root / ".lumio" / "ingest" / "source-registry"
+    shutil.copytree(tmp_path / "source-registry", registry_root, dirs_exist_ok=True)
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
     rc = main(["dream", str(kb_root)])
     out = capsys.readouterr().out
@@ -574,8 +527,8 @@ def test_cli_dream_manifest_tier_incomplete_without_active_version(
 ):
     """A configured store with no active Published Version skips the tier."""
     registry, _hash = _drift_registry(tmp_path)
-    ingest = IngestStore(kb_root / ".lumio" / "ingest")
-    shutil.copytree(tmp_path / "source-registry", ingest.source_registry.root, dirs_exist_ok=True)
+    registry_root = kb_root / ".lumio" / "ingest" / "source-registry"
+    shutil.copytree(tmp_path / "source-registry", registry_root, dirs_exist_ok=True)
     monkeypatch.setenv("LUMIO_SOURCE_STORE", str(tmp_path / "store"))
     rc = main(["dream", str(kb_root)])
     out = capsys.readouterr().out
@@ -595,8 +548,8 @@ def test_cli_dream_reports_manifest_tier_from_active_version(
     store_root = tmp_path / "store"
     store = lw.LocalDirectoryArtifactStore(store_root)
     registry, retired_hash = _drift_registry(tmp_path)
-    ingest = IngestStore(kb_root / ".lumio" / "ingest")
-    shutil.copytree(tmp_path / "source-registry", ingest.source_registry.root, dirs_exist_ok=True)
+    registry_root = kb_root / ".lumio" / "ingest" / "source-registry"
+    shutil.copytree(tmp_path / "source-registry", registry_root, dirs_exist_ok=True)
     kb, _report = lw.load_knowledge_base(kb_root)
     manifest = build_binding_manifest(
         published_version="v2026",
@@ -630,8 +583,8 @@ def test_cli_dream_store_failure_is_bounded_and_secret_free(
     store_root = tmp_path / "store"
     store_root.mkdir()
     registry, _hash = _drift_registry(tmp_path)
-    ingest = IngestStore(kb_root / ".lumio" / "ingest")
-    shutil.copytree(tmp_path / "source-registry", ingest.source_registry.root, dirs_exist_ok=True)
+    registry_root = kb_root / ".lumio" / "ingest" / "source-registry"
+    shutil.copytree(tmp_path / "source-registry", registry_root, dirs_exist_ok=True)
     monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
     monkeypatch.setenv("LUMIO_PUBLISH_TO", "s3://bucket/kb")
     monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (object(), "kb-prefix"))
@@ -651,18 +604,14 @@ def test_cli_dream_store_failure_is_bounded_and_secret_free(
     assert "current" not in out.split("source_drift_manifest")[1].splitlines()[0]
 
 
-@pytest.mark.parametrize(
-    "constructor", [IngestStore, SourceRegistry, lw.LocalDirectoryArtifactStore]
-)
+@pytest.mark.parametrize("constructor", [SourceRegistry, lw.LocalDirectoryArtifactStore])
 def test_store_construction_is_read_only(tmp_path: Path, constructor):
     root = tmp_path / constructor.__name__
     constructor(root)
     assert not root.exists()
 
 
-@pytest.mark.parametrize(
-    "constructor", [IngestStore, SourceRegistry, lw.LocalDirectoryArtifactStore]
-)
+@pytest.mark.parametrize("constructor", [SourceRegistry, lw.LocalDirectoryArtifactStore])
 def test_store_construction_rejects_file_root(tmp_path: Path, constructor):
     root = tmp_path / constructor.__name__
     root.write_text("not a directory", encoding="utf-8")
@@ -673,8 +622,8 @@ def test_store_construction_rejects_file_root(tmp_path: Path, constructor):
 def test_cli_dream_missing_local_store_creates_nothing(kb_root, tmp_path, monkeypatch, capsys):
     """A nonexistent local store path is never created by a read-only dream."""
     registry, _hash = _drift_registry(tmp_path)
-    ingest = IngestStore(kb_root / ".lumio" / "ingest")
-    shutil.copytree(tmp_path / "source-registry", ingest.source_registry.root, dirs_exist_ok=True)
+    registry_root = kb_root / ".lumio" / "ingest" / "source-registry"
+    shutil.copytree(tmp_path / "source-registry", registry_root, dirs_exist_ok=True)
     missing = tmp_path / "missing-store"
     monkeypatch.setenv("LUMIO_SOURCE_STORE", str(missing))
     monkeypatch.delenv("LUMIO_PUBLISH_TO", raising=False)
@@ -729,9 +678,7 @@ def test_source_coverage_sample_is_sorted_bounded_and_truncated(tmp_path: Path):
 def test_source_coverage_retired_sources_still_reported(tmp_path: Path):
     """Retirement is lifecycle state, not distillation: still unreferenced."""
     registry = _coverage_registry(tmp_path)
-    transition = registry.stage_retirement("stranded-src")
-    registry.bind_pending(transition, "proposal-retire")
-    registry.apply_transition("proposal-retire")
+    _retired_history_fixture(registry, "stranded-src")
     report = lw.run_source_coverage_check(_drift_kb([_page_declaring("supported-src")]), registry)
     assert report.unreferenced == 1
     assert report.sample == ("stranded-src",)
@@ -767,8 +714,11 @@ def test_dream_report_carries_coverage(kb_root: Path, tmp_path: Path):
 
 def test_cli_dream_reports_source_coverage(kb_root: Path, tmp_path: Path, monkeypatch, capsys):
     _coverage_registry(tmp_path)
-    ingest = IngestStore(kb_root / ".lumio" / "ingest")
-    shutil.copytree(tmp_path / "coverage-registry", ingest.source_registry.root, dirs_exist_ok=True)
+    shutil.copytree(
+        tmp_path / "coverage-registry",
+        kb_root / ".lumio" / "ingest" / "source-registry",
+        dirs_exist_ok=True,
+    )
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
     rc = main(["dream", str(kb_root)])
     out = capsys.readouterr().out
@@ -781,8 +731,11 @@ def test_cli_dream_reports_source_coverage(kb_root: Path, tmp_path: Path, monkey
 
 def test_cli_lint_reports_source_coverage(kb_root: Path, tmp_path: Path, monkeypatch, capsys):
     _coverage_registry(tmp_path)
-    ingest = IngestStore(kb_root / ".lumio" / "ingest")
-    shutil.copytree(tmp_path / "coverage-registry", ingest.source_registry.root, dirs_exist_ok=True)
+    shutil.copytree(
+        tmp_path / "coverage-registry",
+        kb_root / ".lumio" / "ingest" / "source-registry",
+        dirs_exist_ok=True,
+    )
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
     rc = main(["lint", str(kb_root)])
     out = capsys.readouterr().out

@@ -255,6 +255,13 @@ def test_llm_extra_smoke_ingest_with_fake_provider(llm_wheel_env: dict, tmp_path
     source = tmp_path / "source.txt"
     source.write_text("some source text for the fake provider", encoding="utf-8")
 
+    subprocess.run(["git", "-C", str(kb_root), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(kb_root), "config", "user.email", "test@example.com"], check=True
+    )
+    subprocess.run(["git", "-C", str(kb_root), "config", "user.name", "Test Author"], check=True)
+    subprocess.run(["git", "-C", str(kb_root), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(kb_root), "commit", "-qm", "baseline"], check=True)
     driver = tmp_path / "drive_fake_distiller.py"
     driver.write_text(_FAKE_DISTILLER_DRIVER, encoding="utf-8")
 
@@ -270,20 +277,11 @@ def test_llm_extra_smoke_ingest_with_fake_provider(llm_wheel_env: dict, tmp_path
         text=True,
     )
     assert result.returncode == 0, f"fake-provider ingest failed:\n{result.stderr}"
-    assert "Staged proposal" in result.stdout
+    assert not (kb_root / ".lumio").exists()
     assert "LLM Wheel Page" in result.stdout
 
-    # The staged proposal validates (same proposal shape as host-agent ingest).
-    proposals_dir = kb_root / ".lumio" / "ingest" / "proposals"
-    proposal_files = list(proposals_dir.glob("*.json"))
-    assert len(proposal_files) == 1
-    proposal_id = proposal_files[0].stem
-    result = subprocess.run(
-        [str(script), "proposal", "validate", str(kb_root), proposal_id],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, f"proposal validate failed:\n{result.stderr}"
+    result = subprocess.run([str(script), "validate", str(kb_root)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_all_extra_installs_documents_and_llm_without_lancedb(

@@ -38,4 +38,4 @@ run_step "cross-link --limit 5 (read-only)" "$LUMIO" cross-link --limit 5 "$KB"
 run_step "dream --limit 5 (read-only)" "$LUMIO" dream --limit 5 "$KB"
 run_step "source list" "$LUMIO" source list "$KB"
 
-printf '\nMaintenance pass complete (no proposals staged).\n'
+printf '\nMaintenance pass complete (read-only reflection; repairs apply via dream --stage worktree edits).\n'

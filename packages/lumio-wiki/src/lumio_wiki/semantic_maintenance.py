@@ -11,10 +11,8 @@ from typing import Any
 
 import msgspec
 
-from lumio_wiki.ingest import IngestProposal, IngestStore, SourceProvenance
 from lumio_wiki.knowledge_base import GRAPH_SCOPE_DISCOVERY, KnowledgeBase
 from lumio_wiki.maintenance import _revision_routing_fields, mark_compound_revision
-from lumio_wiki.proposal_pipeline import ProposalPipeline
 from lumio_wiki.records import CompiledPage
 
 _SEMANTIC_KINDS = frozenset(("contradiction", "stale", "summary"))
@@ -70,12 +68,6 @@ class SemanticFinding:
 class SemanticReviewReport:
     pages: tuple[CompiledPage, ...]
     findings: tuple[SemanticFinding, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class SemanticStagingResult:
-    staged: tuple[IngestProposal, ...] = ()
-    skipped: tuple[tuple[SemanticFinding, str], ...] = ()
 
 
 class SemanticDreamReviewer:
@@ -290,34 +282,6 @@ class SemanticDreamReviewer:
             )
         )
 
-    def stage_findings(
-        self, *, store: IngestStore, report: SemanticReviewReport | None = None
-    ) -> SemanticStagingResult:
-        report = report or self.review()
-        inspected = frozenset(page.path for page in report.pages)
-        staged: list[IngestProposal] = []
-        skipped: list[tuple[SemanticFinding, str]] = []
-        for finding in report.findings:
-            try:
-                edits = self._edits_for_finding(finding, inspected)
-            except (OSError, SemanticMaintenanceError, ValueError, msgspec.DecodeError) as exc:
-                skipped.append((finding, str(exc)))
-                continue
-            if not edits:
-                skipped.append((finding, "finding has no actionable edit"))
-                continue
-            for page_path, edited in edits:
-                try:
-                    proposal = self._assemble_unblocked(store, page_path, edited)
-                except (OSError, SemanticMaintenanceError, ValueError, msgspec.DecodeError) as exc:
-                    skipped.append((finding, str(exc)))
-                    continue
-                if proposal is None:
-                    skipped.append((finding, "candidate validation blocked the proposal"))
-                else:
-                    staged.append(proposal)
-        return SemanticStagingResult(tuple(staged), tuple(skipped))
-
     def worktree_edits(
         self,
         *,
@@ -479,19 +443,6 @@ class SemanticDreamReviewer:
             edits.append((page_path, edited))
         return edits
 
-    def _assemble_unblocked(
-        self, store: IngestStore, page_path: str, edited: str
-    ) -> IngestProposal | None:
-        provenance = SourceProvenance(
-            original_filename=page_path,
-            content_type="text/markdown",
-            converted_by="semantic-dream",
-            origin="semantic-dream",
-        )
-        pipeline = ProposalPipeline(self.kb, store=store)
-        proposal = pipeline.assemble(edited, provenance, page_path)
-        return None if proposal.blocked else pipeline.stage(proposal)
-
 
 def _update_frontmatter(markdown: str, updates: dict[str, Any]) -> str:
     if not markdown.startswith("---"):
@@ -511,5 +462,4 @@ __all__ = [
     "SemanticFinding",
     "SemanticMaintenanceError",
     "SemanticReviewReport",
-    "SemanticStagingResult",
 ]

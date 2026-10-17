@@ -87,7 +87,7 @@ from lumio_wiki.source_references import (
     upsert_binding,
     validate_source_references,
 )
-from lumio_wiki.source_registry import SourceRegistry
+from lumio_wiki.source_registry import SourceRegistry, SourceRegistryError
 
 __all__ = [
     "ConfirmationRefused",
@@ -3013,7 +3013,7 @@ def ingest_into_worktree(
     Page is written as an ordinary file through the checked destination
     resolution, and the Source Reference Manifest gains the exact
     ``(entity, source, digest)`` binding. Nothing is committed — authors
-    invoke Git explicitly — and no proposal files are created. Every check
+    invoke Git explicitly — and no proposal files are created. All
     worktree-safety and routing checks run before private registration or
     authoring-file writes, so a refused target preserves the author's files;
     a mid-write failure restores them through the mutation backup. The CLI
@@ -3038,8 +3038,8 @@ def ingest_into_worktree(
     if manifest is None:
         raise GitAuthoringError(
             f"no {SOURCE_REFERENCE_MANIFEST_BASENAME} beside the Knowledge Base: "
-            "managed Git authoring requires adopting the Source Reference Manifest "
-            "first (the legacy proposal route stays selected by its own callers)"
+            "managed Git authoring requires explicitly adopting a stable namespace "
+            "and Source Reference Manifest first"
         )
     repo_root, _subtree = resolve_repository(kb_path)
     _refuse_private_selection_inside_tree(
@@ -3121,14 +3121,21 @@ def ingest_into_worktree(
             "inconsistent provenance"
         )
     if artifact_store is not None:
-        retain_artifact(
-            artifact_store,
-            source_registry,
-            source_id=source_id,
-            raw_bytes=raw_bytes,
-            content_type=content_type,
-            filename=filename,
-        )
+        try:
+            retain_artifact(
+                artifact_store,
+                source_registry,
+                source_id=source_id,
+                raw_bytes=raw_bytes,
+                content_type=content_type,
+                filename=filename,
+            )
+        except (ArtifactStoreError, OSError) as exc:
+            raise GitAuthoringError(
+                "Source Artifact retention failed; the immutable registration may "
+                "remain hash-only, but authoring files were not written — "
+                "retry the ingest to recover"
+            ) from exc
     # F1: the rewritten manifest is validated against the fully applied
     # candidate view (the new page included) with exact selected-registry
     # resolution, AFTER registration (the new binding resolves to the just
@@ -3400,6 +3407,11 @@ def _refuse_manifest_drift(
     registry=None,
 ) -> None:
     """Fail closed when the rewritten manifest disagrees with the candidate pages."""
+    if registry is not None:
+        try:
+            registry._require_native_writable()
+        except SourceRegistryError as exc:
+            raise GitAuthoringError(str(exc)) from exc
     issues = validate_source_references(manifest, view, registry=registry)
     if issues:
         details = "; ".join(issues)
@@ -3490,8 +3502,8 @@ def remove_page_in_worktree(
     Manifest's bindings for the removed Entity) validates before anything is
     written. Ambiguous destinations are disclosed, never guessed.
     """
-    from lumio_wiki.proposal_pipeline import (
-        ProposalPipelineError,
+    from lumio_wiki.publish import (
+        MutationCandidateError,
         assemble_page_removal_candidate,
     )
 
@@ -3499,7 +3511,7 @@ def remove_page_in_worktree(
     kb = _load_valid_authoring_kb(kb_path)
     try:
         candidate = assemble_page_removal_candidate(kb, title, reason=reason)
-    except ProposalPipelineError as exc:
+    except MutationCandidateError as exc:
         raise GitAuthoringError(str(exc)) from exc
     _refuse_invalid_candidate(candidate.validation_report, "page removal")
     excluded = frozenset(candidate.removed_titles)
@@ -3543,8 +3555,8 @@ def merge_entities_in_worktree(
     retired Entity's Source Reference Manifest bindings drop atomically with
     the merge. Ambiguous link repair refuses (never guessed).
     """
-    from lumio_wiki.proposal_pipeline import (
-        ProposalPipelineError,
+    from lumio_wiki.publish import (
+        MutationCandidateError,
         assemble_entity_merge_candidate,
     )
 
@@ -3554,7 +3566,7 @@ def merge_entities_in_worktree(
         candidate = assemble_entity_merge_candidate(
             kb, retired_entity_id, surviving_entity_id, reason=reason
         )
-    except ProposalPipelineError as exc:
+    except MutationCandidateError as exc:
         raise GitAuthoringError(str(exc)) from exc
     _refuse_invalid_candidate(candidate.validation_report, "entity merge")
     excluded = frozenset(candidate.removed_titles)
@@ -3758,9 +3770,8 @@ def retire_source_in_worktree(
     if manifest is None:
         raise GitAuthoringError(
             f"native source retirement requires adopting the "
-            f"{SOURCE_REFERENCE_MANIFEST_BASENAME} first (lifecycle intent is "
-            "reviewed in Git; the legacy proposal-keyed route stays selected by "
-            "its own callers)"
+            f"{SOURCE_REFERENCE_MANIFEST_BASENAME} first; lifecycle intent is "
+            "reviewed in Git, not a proposal-keyed pending transition"
         )
     if source_id not in manifest.sources:
         raise GitAuthoringError(
@@ -3875,9 +3886,8 @@ def reactivate_source_in_worktree(
     if manifest is None:
         raise GitAuthoringError(
             f"native source reactivation requires adopting the "
-            f"{SOURCE_REFERENCE_MANIFEST_BASENAME} first (lifecycle intent is "
-            "reviewed in Git; the legacy proposal-keyed route stays selected by "
-            "its own callers)"
+            f"{SOURCE_REFERENCE_MANIFEST_BASENAME} first; lifecycle intent is "
+            "reviewed in Git, not a proposal-keyed pending transition"
         )
     if source_id not in manifest.sources:
         raise GitAuthoringError(
@@ -4016,8 +4026,8 @@ def rename_page_in_worktree(
     (pages, Control File, Source Reference Manifest) validates before
     anything is written.
     """
-    from lumio_wiki.proposal_pipeline import (
-        ProposalPipelineError,
+    from lumio_wiki.publish import (
+        MutationCandidateError,
         assemble_page_rename_candidate,
     )
 
@@ -4032,7 +4042,7 @@ def rename_page_in_worktree(
             aliases=list(aliases) if aliases is not None else None,
             keep_old_title_alias=keep_old_title_alias,
         )
-    except ProposalPipelineError as exc:
+    except MutationCandidateError as exc:
         raise GitAuthoringError(str(exc)) from exc
     _refuse_invalid_candidate(candidate.validation_report, "page rename")
     manifest = _load_authoring_manifest(kb_path)

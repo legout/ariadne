@@ -1,26 +1,25 @@
-"""Ingest pipeline: raw Knowledge Source -> staged Ingest Proposal (issue #97).
+"""Ingest: raw Knowledge Source -> extracted Compiled Pages (issue #97).
 
-The canonical proposal model, page-extraction / diff / validation / blast-radius
-glue, the model-free ingestion entry point, and the filesystem-backed
-:class:`IngestStore` live here so a ``lumio-wiki``-only environment can run the
-full ingestion -> distill -> propose -> validate -> review -> publish -> discard
-journey. This module never imports LiteParse, MarkItDown, or an OpenAI provider
-at the module level. Source-processor routing (including document formats via
-the ``[documents]`` extra) is handled by :func:`select_source_processor` (issue
-#100); the actual converter implementations live in
-:mod:`lumio_wiki.source_processor`. An OpenAI-compatible Distiller is an
-adapter in the full application (``lumio.distiller``).
+Page-extraction / routing / diff / validation / blast-radius glue and the
+model-free ingestion entry points live here. G4 (spec 0008 §7) retired the
+persisted Ingest-Proposal pipeline; ingestion output is ordinary page content
+written into the selected authoring worktree, and the original persisted wire
+format survives only in the private migration reader
+:mod:`lumio_wiki.legacy_proposals`. This module never imports LiteParse,
+MarkItDown, or an OpenAI provider at the module level. Source-processor
+routing (including document formats via the ``[documents]`` extra) is
+handled by :func:`select_source_processor` (issue #100); the actual
+converter implementations live in :mod:`lumio_wiki.source_processor`. An
+OpenAI-compatible Distiller is an adapter in the full application
+(``lumio.distiller``).
 """
 
 from __future__ import annotations
 
 import difflib
 import hashlib
-import json
 import tempfile
-import uuid
 from collections.abc import Iterable
-from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -36,9 +35,7 @@ from lumio_wiki.knowledge_base import (
     extend_control_file_categories,
     validate,
 )
-from lumio_wiki.mutation import atomic_write_bytes, mutation_lock
 from lumio_wiki.okf import (
-    OKF_PROFILE1_QUERY,
     OkfImportDiagnostic,
     OkfImportPage,
     OkfProfile1Import,
@@ -49,7 +46,6 @@ from lumio_wiki.records import (
     ValidationIssue,
     ValidationReport,
 )
-from lumio_wiki.source_registry import SourceRegistry
 
 if TYPE_CHECKING:
     from lumio_wiki.distiller import Distiller
@@ -205,8 +201,7 @@ def compute_claim_changes(
 
     Pure data: renders :class:`ClaimChange` records covering additions,
     removals, lifecycle (status) transitions, and edits — the Claim-level
-    before/after surface proposal inspection reports without dumping full
-    page bodies.
+    before/after mutation-review surface without dumping full page bodies.
     """
     existing_by_id = {claim.id: claim for claim in existing_claims}
     proposed_by_id = {claim.id: claim for claim in proposed_claims}
@@ -307,45 +302,6 @@ class BlastRadius(msgspec.Struct, frozen=True):
     claim_changes: list[ClaimChange] = msgspec.field(default_factory=list)
 
 
-class SourceChangeImpact(msgspec.Struct, frozen=True):
-    """A page-level support result for a staged source lifecycle action."""
-
-    page_title: str
-    status: str
-
-
-class SourceLifecycleChange(msgspec.Struct, frozen=True):
-    """Private source action disclosed on an otherwise ordinary proposal."""
-
-    action: str
-    source_id: str
-    trigger: str
-    impacts: list[SourceChangeImpact] = msgspec.field(default_factory=list)
-
-
-class PageRemoval(msgspec.Struct, frozen=True):
-    """An explicit, reviewed removal of one Compiled Page (issue #135).
-
-    A Page Removal is an explicit Ingest Proposal mutation that excludes a
-    Compiled Page from the next Published Version and repairs every canonical
-    Relationship that would otherwise become invalid in the SAME proposal. It
-    is never inferred from an omitted page (ADR-0014): a page that simply does
-    not appear in a proposal's proposed output is untouched.
-
-    Per ADR-0014 the claim-level lineage design is deferred (issue #137), so
-    ``lost_support_reason`` is recorded at the PAGE level — the page-level
-    support classification (``sole-source-lost``) produced by a source
-    lifecycle change, or a Maintainer-supplied rationale for a direct removal.
-    ``affected_claim_notes`` carries optional, Maintainer-authored page-level
-    notes about which knowledge on the page lost support; it never embeds raw
-    source excerpts, source bytes, or Claim Lineage (which is not modeled).
-    """
-
-    title: str
-    lost_support_reason: str = ""
-    affected_claim_notes: list[str] = msgspec.field(default_factory=list)
-
-
 class BodyLinkRepairCandidate(msgspec.Struct, frozen=True):
     """Location-bearing disclosure of a body-link repair in a Page Removal (#135).
 
@@ -384,8 +340,8 @@ SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED = "source lifecycle change"
 def safe_lifecycle_trigger_display(action: str) -> str:
     """Return a display-safe, content-free label for a source lifecycle trigger.
 
-    The label is derived ONLY from the controlled ``action`` field of a
-    :class:`SourceLifecycleChange` — never from its persisted ``trigger``
+    The label is derived ONLY from the controlled ``action`` field of a legacy
+    source-lifecycle change — never from its persisted ``trigger``
     string, which may carry a content hash or secret-bearing detail on a legacy
     or future proposal. ``retire`` and ``reactivate`` map to two fixed
     descriptive labels; every other value (including a future action that
@@ -449,108 +405,6 @@ def safe_lifecycle_impact_status_display(status: str) -> str:
     return SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED
 
 
-class PathPrecondition(msgspec.Struct, frozen=True):
-    """One reviewed expected pre-mutation path state (Plan 02 / P4, B03/B04).
-
-    Private, durable proposal metadata captured at staging/review: the state
-    of every Knowledge Base path the reviewed proposal was authoritatively
-    told it would replace, merge, rename in place, move, create, or remove,
-    plus the Control File state the proposal consumed or rewrites. It is the
-    reviewed base a publication is checked against immediately before any
-    candidate is constructed — never page Markdown, never inspection prose.
-
-    ``kind`` is ``"file"`` — ``digest`` then carries the SHA-256 of the
-    reviewed regular-file bytes (the existence/type expectation: a path that
-    is absent, a directory, a symlink, or otherwise not a readable regular
-    file no longer matches) — or ``"absent"`` (the reviewed destination must
-    not exist, lexically, when the proposal is applied). ``role`` is a stable,
-    content-free vocabulary used only for restage guidance: ``revision`` (a
-    page this proposal replaces, compound-merges, or renames in place),
-    ``creation`` (a new destination expected to stay absent), ``move-source``
-    (the bytes a move relocates), ``removal`` (the bytes a declared removal
-    deletes), and ``control`` (the Knowledge Base Control File: category
-    catalog, Hot Index pins, ontology redirects). Preconditions serialize
-    only inside the private durable proposal record; they never enter page
-    Markdown or the human-readable inspection surfaces.
-    """
-
-    path: str
-    role: str
-    kind: str
-    digest: str = ""
-
-
-class IngestProposal(msgspec.Struct, frozen=True):
-    """A staged set of proposed Markdown changes with validation gate.
-
-    ``control_file`` (issue #81) carries a proposed Knowledge Base Control
-    File to establish alongside the page changes — used by a Legacy Flat Mode
-    migration, which establishes the Control File and moves every page into its
-    Content Category path as ONE atomic, reviewable proposal. It is ``None``
-    for ordinary ingest/move proposals, which never touch the Control File.
-    """
-
-    id: str
-    status: str
-    created_at: str
-    provenance: SourceProvenance
-    proposed_pages: list[ProposedPage]
-    affected_pages: list[str]
-    diff: str
-    validation_report: ValidationReport
-    blocked: bool
-    raw_source_path: str | None = None
-    blast_radius: BlastRadius | None = None
-    control_file: KnowledgeBaseControlFile | None = None
-    okf_diagnostics: list[OkfImportDiagnostic] = msgspec.field(default_factory=list)
-    source_change: SourceLifecycleChange | None = None
-    # issue #135: explicit, reviewed Page Removals and their location-bearing
-    # body-link repair candidates. A removal is never inferred from an omitted
-    # page (ADR-0014): it is a declared mutation persisted, inspected,
-    # validated, published, and discarded through this same pipeline.
-    removed_pages: list[PageRemoval] = msgspec.field(default_factory=list)
-    body_link_repairs: list[BodyLinkRepairCandidate] = msgspec.field(default_factory=list)
-    # issue #169: explicit, reviewed Entity Merges (ADR-0021). The retired
-    # Entity's page removal is declared in ``removed_pages``; ``entity_merges``
-    # discloses the merge itself (retired/surviving ids and titles) for
-    # inspection and the Activity Log.
-    entity_merges: list[EntityMerge] = msgspec.field(default_factory=list)
-    # Plan 02 / P4 (B03/B04): the private reviewed pre-mutation state of every
-    # affected path, captured at staging/review and compared against the
-    # current filesystem/control state under the mutation lock immediately
-    # before a publish constructs or applies the candidate. ``None`` marks a
-    # proposal staged before reviewed preconditions existed (or assembled by
-    # hand without staging): publication refuses such proposals with restage
-    # guidance — the current files are never guessed as the reviewed base.
-    # Source-lifecycle proposals bind the Control File bytes (or its reviewed
-    # absence in legacy-flat mode) because their impacts consume its mode and
-    # ontology, while deliberately omitting disjoint page paths. Serialized
-    # compatibility is preserved: older proposal records decode with
-    # ``preconditions=None`` and remain inspectable, but they must be
-    # re-staged before they can publish.
-    preconditions: list[PathPrecondition] | None = None
-    # Plan 02 / P4 review (durable-tampering defense): the deterministic
-    # private content identity of the reviewed mutation — one SHA-256 over a
-    # canonical JSON payload covering EVERY publish-relevant proposal field
-    # (proposed pages with their paths and Markdown, declared removals,
-    # entity merges/moves, body-link repairs, the proposed Control File with
-    # categories, Hot Index pins, and the full ontology, the source-lifecycle
-    # change, and the affected titles). Deliberately EXCLUDED: ``id``,
-    # ``status``, ``created_at``, ``raw_source_path``, provenance, and every
-    # derived review surface (diff, validation report, blast radius, OKF
-    # diagnostics) — none of them alter what publication writes. The pipeline
-    # computes the identity ONLY at the reviewed staging boundary, next to
-    # the reviewed preconditions, so durable mutation content and its
-    # reviewed metadata cannot be separated afterwards: publication
-    # recomputes the identity from the DURABLE record under the mutation lock
-    # and refuses a mismatch (or a missing identity) with restage guidance.
-    # ``None`` marks a proposal whose content identity was never bound
-    # (staged before this field existed, or altered afterwards); such
-    # records stay decodable and inspectable but must be re-staged before
-    # they can publish.
-    reviewed_identity: str | None = None
-
-
 class ExternalImportCategoryMapping(msgspec.Struct, frozen=True):
     """Category-mapping result for an external-vault import (issue #87, ADR-0009).
 
@@ -566,109 +420,6 @@ class ExternalImportCategoryMapping(msgspec.Struct, frozen=True):
     proposed_pages: list[ProposedPage] = msgspec.field(default_factory=list)
     extension_control_file: KnowledgeBaseControlFile | None = None
     diagnostics: list[OkfImportDiagnostic] = msgspec.field(default_factory=list)
-
-
-def _mutation_content_payload(proposal: IngestProposal) -> dict:
-    """Canonical payload over every publish-relevant mutation field (P4).
-
-    The input of the reviewed content identity: exactly the fields a
-    publication consumes or applies — proposed pages (paths, titles,
-    Markdown, routing/compound/move/rename markers), declared removals,
-    entity merges, body-link repairs, the proposed Control File (including
-    its category catalog, Hot Index pins, and full ontology with redirects),
-    the source-lifecycle change, and the affected titles. Derived review
-    surfaces (diff, validation report, blast radius, diagnostics),
-    provenance, and lifecycle/state fields are deliberately excluded: they
-    never alter what publication writes.
-    """
-    return {
-        "affected_pages": list(proposal.affected_pages),
-        "body_link_repairs": [msgspec.to_builtins(repair) for repair in proposal.body_link_repairs],
-        "control_file": (
-            msgspec.to_builtins(proposal.control_file)
-            if proposal.control_file is not None
-            else None
-        ),
-        "entity_merges": [msgspec.to_builtins(merge) for merge in proposal.entity_merges],
-        "proposed_pages": [msgspec.to_builtins(page) for page in proposal.proposed_pages],
-        "removed_pages": [msgspec.to_builtins(removal) for removal in proposal.removed_pages],
-        "source_change": (
-            msgspec.to_builtins(proposal.source_change)
-            if proposal.source_change is not None
-            else None
-        ),
-    }
-
-
-def _recomputed_mutation_identity(proposal: IngestProposal) -> str:
-    """Recompute the deterministic content identity of one proposal (P4).
-
-    SHA-256 over the canonical (key-sorted, whitespace-free) JSON encoding of
-    :func:`_mutation_content_payload`, so the value is stable across
-    processes, dict insertion orders, and JSON decode/encode round-trips.
-    The pipeline binds it at the reviewed staging boundary; publication
-    recomputes it from the DURABLE record under the mutation lock and fails
-    closed when the stored identity differs or is missing.
-    """
-    canonical = json.dumps(
-        msgspec.to_builtins(_mutation_content_payload(proposal)),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def _is_self_consistent_restage(proposal: IngestProposal) -> bool:
-    """Whether a proposal carries its OWN freshly bound reviewed metadata (P4).
-
-    The staging pipeline binds ``preconditions`` and ``reviewed_identity``
-    together under the staging locks; a self-consistent record's identity
-    field matches its own content and it carries a captured (non-``None``)
-    precondition set. Anything else — notably an altered copy of a previously
-    reviewed proposal that RETAINED the original metadata — is not a restage.
-
-    This shape check is the ProposalPipeline's PRIVATE staging seam guard
-    (:meth:`ProposalPipeline._save_reviewed_proposal`): the pipeline calls it
-    on the record it just bound under the staging locks, immediately before
-    the authorized reviewed write. It is deliberately NOT a bypass in the
-    public :meth:`IngestStore.save_proposal` — recomputing the deterministic
-    identity is something ANY caller can do for ANY content, so caller-side
-    self-consistency alone is never evidence of a freshly reviewed binding.
-    """
-    return (
-        proposal.reviewed_identity is not None
-        and proposal.reviewed_identity == _recomputed_mutation_identity(proposal)
-        and proposal.preconditions is not None
-    )
-
-
-TERMINAL_PROPOSAL_STATUSES = frozenset({"discarded", "published"})
-
-
-def is_reviewable_proposal(proposal: IngestProposal) -> bool:
-    """Return whether a proposal may still receive a maintainer decision."""
-    return proposal.status not in TERMINAL_PROPOSAL_STATUSES
-
-
-class ProposalTerminalStateError(RuntimeError):
-    """An ordinary proposal write would create or replace terminal state.
-
-    Raised by :meth:`IngestStore.save_proposal` when the durable proposal
-    re-read under the store mutation lock is already ``published`` or
-    ``discarded``: that terminal decision is the durable authority, and a
-    stale caller re-saving an old staged object must never resurrect it
-    (Plan 02 / P3 review). The same guard refuses an ordinary save whose
-    INCOMING status is already terminal — whether or not a durable record
-    exists yet — because only the store's locked ``publish``/``discard``
-    transitions (and the explicit reviewable-restore rollback inside the
-    Proposal Pipeline's publish/discard compensation,
-    :meth:`IngestStore._restore_reviewable`) may move a proposal to or past
-    terminal state; a public save that wrote ``published``/``discarded``
-    would mark the proposal decided without applying its Knowledge Base or
-    registry effects (Plan 02 / P3 terminal-status guard). Ordinary saves
-    and re-staging are refused instead.
-    """
 
 
 def _provenance_for(normalized, filename, content_type):
@@ -819,83 +570,6 @@ def prepare_proposal_content(
     if normalized.converted_by in ("liteparse", "anydoc", "markitdown"):
         distilled = _ensure_page_frontmatter(distilled, filename)
     return distilled, provenance
-
-
-def create_proposal_without_provider(
-    raw_bytes: bytes,
-    content_type: str | None,
-    filename: str | None,
-    kb,
-    *,
-    store: IngestStore | None = None,
-) -> IngestProposal:
-    """Model-free ingestion for text, Markdown, and document Knowledge Sources.
-
-    Routes the source through :func:`select_source_processor` (text/Markdown →
-    :class:`TextMarkdownSourceProcessor`; documents → LiteParse/AnyDoc/MarkItDown
-    via the ``[documents]`` extra) and distills through the
-    :class:`PassthroughMarkdownDistiller` so a source reaches a reviewable
-    Ingest Proposal without an OpenAI-compatible provider (issue #95, AC4;
-    document support added by issue #100). When ``store`` is given, the
-    proposal and raw bytes are staged for review (raw bytes isolated from the
-    Knowledge Base). The host coding agent authors the Compiled Page Markdown;
-    this entry packages it through the same Proposal Pipeline.
-    """
-    from lumio_wiki.proposal_pipeline import ProposalPipeline
-
-    distilled, provenance = prepare_proposal_content(
-        raw_bytes,
-        content_type,
-        filename,
-    )
-    pipeline = ProposalPipeline(kb, store=store)
-    proposal = pipeline.assemble(distilled, provenance, filename)
-    if store is not None:
-        proposal = pipeline.stage(proposal, raw_bytes=raw_bytes, filename=filename)
-    return proposal
-
-
-def create_managed_ingest_proposal(
-    raw_bytes: bytes,
-    content_type: str | None,
-    filename: str | None,
-    source_id: str,
-    authored_markdown: str,
-    kb,
-    *,
-    store: IngestStore,
-) -> IngestProposal:
-    """Bind an original raw Knowledge Source and an authored page (issue #149).
-
-    The ONE deep, proposal-first host-Distiller operation over the Source
-    Processor, Source Registry, and Proposal Pipeline. It accepts both the
-    original raw source bytes (e.g. a PDF/DOCX/HTML/Markdown/TXT file) and the
-    host agent's authored Compiled Page Markdown, and stages a single
-    reviewable Ingest Proposal that binds them:
-
-    * records the original filename, content type, converter, and content hash
-      in private proposal provenance (the converter name is derived from
-      routing; the ``[documents]`` extra is never required and no converter
-      runs, because the host agent already authored the page);
-    * resolves the explicit ``source_id`` against the private Source Registry
-      — a new id registers the bytes immediately, an active id with identical
-      bytes is reused idempotently, and an active id with changed bytes (or a
-      retired id) is rejected without mutation and names the explicit
-      retirement/reactivation workflow;
-    * blocks staging unless the authored page declares ``source_id`` in
-      ``sources[].id``; and
-    * assembles the proposal from the AUTHORED Markdown (not distilled text)
-      and stages it. Raw bytes are never written under the Knowledge Base
-      root — the registry retains identity/version hashes privately
-      (ADR-0014), so a retry with identical bytes is always safe.
-
-    The ``store`` is required: the private Source Registry lives in the ingest
-    store (``<store>/source-registry``), independent of publication.
-    """
-    from lumio_wiki.proposal_pipeline import ProposalPipeline
-
-    pipeline = ProposalPipeline(kb, store=store)
-    return pipeline.managed_ingest(raw_bytes, content_type, filename, source_id, authored_markdown)
 
 
 def _extract_title(markdown: str) -> str | None:
@@ -1388,76 +1062,6 @@ def map_external_import_categories(
     )
 
 
-def propose_external_import(
-    parsed: OkfProfile1Import,
-    kb,
-    provenance: SourceProvenance,
-    *,
-    declined_categories: Iterable[str] = (),
-    approve_profile: str | None = None,
-) -> IngestProposal:
-    """Assemble an external-vault import as a staged Ingest Proposal (issue #87).
-
-    Maps the parsed import's categories against the destination catalog
-    (pass-through for shared/seeded/declared categories, a Control File
-    extension proposal for unmapped categories, and a lossy-with-disclosure
-    drop for declined categories), then runs the ordinary diff / validation
-    / blast-radius assembly. The extension Control File travels on
-    ``IngestProposal.control_file`` so it is published as ONE reviewed
-    proposal alongside the pages — never auto-created (ADR-0009). The
-    mapping diagnostics travel on ``okf_diagnostics``.
-
-    Routing validates against the EXTENDED catalog (the live configured
-    categories plus the proposed extension) so a yet-to-be-published
-    extension category does not spuriously block the atomic proposal. The
-    ordinary free-form ``type`` and ``durability_rationale`` review gates
-    (issue #78) still apply to every categorized page.
-    """
-    mapping = map_external_import_categories(parsed, kb, declined_categories=declined_categories)
-    proposed_pages = mapping.proposed_pages
-    existing_pages = _existing_page_markdown(kb)
-    diff = _compute_diff(proposed_pages, existing_pages)
-    page_validation = _validate_proposed_pages(proposed_pages)
-    # The effective catalog includes the proposed extension so the atomic
-    # proposal is not blocked by a category it simultaneously proposes.
-    configured = _configured_category_names(kb)
-    extension_names = (
-        {c.name for c in mapping.extension_control_file.categories} - configured
-        if mapping.extension_control_file is not None
-        else set()
-    )
-    routing_issues = _validate_page_routing(proposed_pages, kb, extra_categories=extension_names)
-    profile_approved = approve_profile == OKF_PROFILE1_QUERY
-    okf_blocking_issues = [
-        ValidationIssue(
-            file=diag.path,
-            field="okf-import",
-            severity="error",
-            message=diag.message,
-        )
-        for diag in parsed.diagnostics
-        if diag.severity == "blocking" and not (profile_approved and diag.kind == "profile")
-    ]
-    validation_report = ValidationReport(
-        issues=list(page_validation.issues) + routing_issues + okf_blocking_issues
-    )
-    blast_radius = compute_blast_radius(proposed_pages, kb)
-    return IngestProposal(
-        id=uuid.uuid4().hex,
-        status="staged",
-        created_at=datetime.now(UTC).isoformat(),
-        provenance=provenance,
-        proposed_pages=proposed_pages,
-        affected_pages=[page.title for page in proposed_pages],
-        diff=diff,
-        validation_report=validation_report,
-        blocked=not validation_report.is_valid,
-        blast_radius=blast_radius,
-        control_file=mapping.extension_control_file,
-        okf_diagnostics=mapping.diagnostics,
-    )
-
-
 def _compute_diff(
     proposed_pages: Iterable[ProposedPage],
     existing_pages: dict[str, str],
@@ -1709,337 +1313,18 @@ def _existing_page_text(kb, existing: CompiledPage) -> str | None:
         return existing.body
 
 
-class IngestStore:
-    """Filesystem-backed store for raw sources and staged proposals.
-
-    Raw bytes are kept in a separate tree from the compiled Knowledge Base so
-    they never appear in a public or published export.
-
-    Durability contract (Plan 02 / P3, B03): durable proposal state is the
-    ONLY authority. There is no in-memory proposal cache — every
-    :meth:`get`/:meth:`list` (and therefore every pipeline review surface)
-    re-reads the durable proposal under the per-store interprocess mutation
-    lock (:func:`lumio_wiki.mutation.mutation_lock`), and every write —
-    staging or a terminal publish/discard transition — persists atomically
-    through a uniquely named temp file
-    (:func:`lumio_wiki.mutation.atomic_write_bytes`) while holding the same
-    lock through read/check/mutate. A terminal ``published``/``discarded``
-    status therefore cannot be resurrected by a stale instance, and a
-    concurrently discarded proposal can never be published by another one.
-    Ordinary writes are terminal-safe too: :meth:`save_proposal` re-reads the
-    durable proposal under the lock and refuses (with
-    :class:`ProposalTerminalStateError`) any save that would replace a
-    ``published``/``discarded`` proposal — and equally any save whose
-    INCOMING status is already terminal, so an ordinary save can never mark a
-    proposal decided by itself (a terminal write applies Knowledge Base and
-    registry effects only through the store's locked ``publish``/``discard``
-    transitions). Only the explicit :meth:`_restore_reviewable` rollback
-    compensation inside the Proposal Pipeline's publish/discard failure
-    handling may deliberately restore a reviewable proposal over terminal
-    state, and it runs inside the very critical section that created that
-    terminal state.
-    """
-
-    def __init__(self, root: str | Path) -> None:
-        self.root = Path(root).resolve()
-        if self.root.exists() and not self.root.is_dir():
-            raise NotADirectoryError(self.root)
-        self.raw_dir = self.root / "raw"
-        self.proposals_dir = self.root / "proposals"
-        self.source_registry = SourceRegistry(self.root / "source-registry")
-
-    def _proposal_path(self, proposal_id: str) -> Path:
-        return self.proposals_dir / f"{proposal_id}.json"
-
-    def save_raw(self, proposal_id: str, raw_bytes: bytes, filename: str) -> Path:
-        """Persist one staged raw source atomically under the store lock.
-
-        A direct raw writer holds the same per-store interprocess mutation
-        lock as the proposal writers (nested acquisition from
-        :meth:`ProposalPipeline.stage`, which already holds it, reenters),
-        and the bytes land through a uniquely named temp file so a failed
-        write can never leave torn raw bytes behind.
-
-        EVERY raw mutation — the raw directory creation, the safe-name/path
-        derivation, and the atomic byte write — happens inside the critical
-        section: a direct raw writer whose lock acquisition fails (or that
-        loses to a terminal-state refusal) mutates no filesystem state at
-        all, exactly like the proposal writers (Plan 02 / P3).
-        """
-        with mutation_lock(self.root):
-            dir_path = self.raw_dir / proposal_id
-            dir_path.mkdir(parents=True, exist_ok=True)
-            safe_name = Path(filename).name
-            path = dir_path / safe_name
-            atomic_write_bytes(path, raw_bytes)
-        return path
-
-    def _write_proposal(self, proposal: IngestProposal) -> None:
-        """Persist one proposal atomically; the caller holds the store lock."""
-        self.proposals_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write_bytes(self._proposal_path(proposal.id), msgspec.json.encode(proposal))
-
-    def save_proposal(self, proposal: IngestProposal, raw_path: Path | None = None) -> None:
-        """Persist one proposal atomically under the store lock.
-
-        Terminal state is guarded on BOTH sides (Plan 02 / P3). The durable
-        proposal is re-read under the lock BEFORE the write: if it already
-        reached a terminal ``published``/``discarded`` state, the save is
-        refused with :class:`ProposalTerminalStateError` — a stale caller
-        re-saving an old staged object must never overwrite a decided
-        proposal back to ``staged`` (from which it could then be published).
-        Symmetrically, an INCOMING terminal status is refused too, before any
-        write and whether or not a durable record exists yet: an ordinary
-        save carries a reviewable status only. A save that wrote
-        ``published``/``discarded`` itself would mark the proposal decided
-        WITHOUT applying its Knowledge Base changes or pending registry
-        transition — stranding the lifecycle decision behind a terminal
-        record no pipeline decision path can reach. The authorized terminal
-        writers are the store's own locked :meth:`publish`/:meth:`discard`
-        transitions and the Proposal Pipeline's explicit rollback
-        compensation (:meth:`_restore_reviewable`); none of them route
-        through this method, so the refusals never block a legitimate
-        decision or rollback.
-
-        Plan 02 / P4 review (durable-tampering defense, final): an ordinary
-        save NEVER carries a reviewed claim along. For an EXISTING
-        reviewable proposal the reviewed metadata survives only when the
-        incoming mutation content is identical AND the incoming reviewed
-        metadata is byte-for-byte the durable record's (the exact
-        ``preconditions`` list — same records, same order, same digests —
-        AND the exact ``reviewed_identity``): preconditions are deliberately
-        EXCLUDED from the content identity, so a save that kept only the
-        content and identity verbatim could otherwise swap the stored
-        precondition digests for the digests of current intervening bytes
-        and let the next publish pass drift and overwrite newer content
-        (Plan 02 / P4 final review). Any divergence — altered content,
-        forged or reordered precondition records, a replaced identity, or
-        new metadata over an unbound record — STRIPS both reviewed fields
-        from the persisted record. For a NEW proposal id (no durable
-        record) the strip is unconditional: a public save never binds
-        reviewed metadata to a fresh record either, however self-consistent
-        the caller made it look. In both cases the saved content stays
-        inspectable and discardable, but publication refuses it until a
-        real re-stage binds it to a freshly reviewed base. Legitimate
-        content-identical saves of existing records (attaching raw-byte
-        path metadata, persisting a status-carrying object) keep the record
-        as-is — the reviewed claim still describes exactly the durable
-        content, and publication re-verifies the claim against the
-        filesystem under the publish lock. The authorized
-        :meth:`_restore_reviewable` rollback and the pipeline's locked
-        staging seam (:meth:`ProposalPipeline._save_reviewed_proposal` →
-        :meth:`_write_reviewed_proposal`) remain the only writers of a
-        reviewed record.
-        """
-        proposal_with_path = (
-            msgspec.structs.replace(proposal, raw_source_path=str(raw_path))
-            if raw_path is not None
-            else proposal
-        )
-        with mutation_lock(self.root):
-            # Plan 02 / P3 (incoming terminal-status guard): the durable
-            # terminal transition is the store's EXCLUSIVE authority. An
-            # ordinary save carries a reviewable status only — an incoming
-            # ``published``/``discarded`` status is refused BEFORE any write,
-            # whether or not a durable record exists yet. Writing terminal
-            # status here would mark the proposal decided without applying
-            # its Knowledge Base changes or pending registry transition,
-            # stranding the lifecycle decision behind a terminal record no
-            # pipeline decision path can reach. The authorized terminal
-            # writers — the locked :meth:`publish`/:meth:`discard`
-            # transitions and the :meth:`_restore_reviewable` rollback — do
-            # not route through this method.
-            if proposal_with_path.status in TERMINAL_PROPOSAL_STATUSES:
-                raise ProposalTerminalStateError(
-                    f"proposal {proposal.id!r} carries terminal status "
-                    f"{proposal_with_path.status!r}; an ordinary save cannot "
-                    "create or move terminal state — decide it through the "
-                    "Proposal Pipeline's publish/discard path instead"
-                )
-            durable = self._load(proposal.id)
-            if durable is not None and not is_reviewable_proposal(durable):
-                raise ProposalTerminalStateError(
-                    f"proposal {proposal.id!r} is already {durable.status!r} in the "
-                    "durable ingest store; terminal proposals cannot be replaced by "
-                    "an ordinary save"
-                )
-            if (
-                durable is None
-                or _recomputed_mutation_identity(proposal_with_path)
-                != _recomputed_mutation_identity(durable)
-                or proposal_with_path.preconditions != durable.preconditions
-                or proposal_with_path.reviewed_identity != durable.reviewed_identity
-            ):
-                # A NEW record (no durable state): the public save never
-                # binds reviewed metadata to it — only the Proposal
-                # Pipeline's locked staging seam creates a reviewed record.
-                # An EXISTING reviewable record: any divergence — altered
-                # mutation content, forged or reordered precondition
-                # records, a replaced identity, or new metadata over an
-                # unbound record — also strips the claim. No caller-supplied
-                # identity or precondition set ever survives an ordinary
-                # save — the deterministic identity is trivially
-                # recomputable by any caller and proves nothing, and the
-                # precondition digests are durable reviewed state, never a
-                # caller-swappable value (Plan 02 / P4 final review
-                # blockers). The saved content stays inspectable and
-                # discardable; publication fails closed until a real
-                # re-stage binds a freshly reviewed base.
-                proposal_with_path = msgspec.structs.replace(
-                    proposal_with_path, preconditions=None, reviewed_identity=None
-                )
-            self._write_proposal(proposal_with_path)
-
-    def _write_reviewed_proposal(self, proposal: IngestProposal) -> None:
-        """Authorized staging write: persist reviewed proposal metadata verbatim.
-
-        The private counterpart of :meth:`_restore_reviewable` (P4 final
-        review): the Proposal Pipeline's locked staging seam
-        (:meth:`ProposalPipeline._save_reviewed_proposal`) is the ONLY caller,
-        and it invokes this after binding and verifying the reviewed state
-        under the Knowledge Base + store mutation locks. The record is
-        written exactly as handed over — the strip guard of ordinary
-        :meth:`save_proposal` does not apply, because the pipeline already
-        bound the reviewed claim to the content it verified.
-
-        Terminal safety matches :meth:`save_proposal`: the durable proposal
-        is re-read under the store lock and a save over terminal
-        ``published``/``discarded`` state is refused with
-        :class:`ProposalTerminalStateError`. The store lock reenters when
-        the pipeline already holds it (every staging path does).
-        """
-        with mutation_lock(self.root):
-            durable = self._load(proposal.id)
-            if durable is not None and not is_reviewable_proposal(durable):
-                raise ProposalTerminalStateError(
-                    f"proposal {proposal.id!r} is already {durable.status!r} in the "
-                    "durable ingest store; terminal proposals cannot be replaced by "
-                    "a reviewed staging write"
-                )
-            self._write_proposal(proposal)
-
-    def _restore_reviewable(self, proposal: IngestProposal) -> None:
-        """Rollback compensation ONLY: restore a reviewable proposal verbatim.
-
-        The narrowly authorized exception to terminal protection (Plan 02 /
-        P3 review): the Proposal Pipeline's discard failure handling calls
-        this when a source-transition cancellation fails AFTER the proposal
-        was already marked discarded, to restore the reviewable proposal for
-        retry. The restored object is the very proposal that was re-read
-        from durable state and verified reviewable at the start of the SAME
-        critical section this write runs in, so it is a deliberate rollback —
-        never a path a stale caller can use to resurrect terminal state.
-        Ordinary :meth:`save_proposal` and re-staging remain refused; the
-        caller holds the store mutation lock. (The publish path's rollback
-        no longer routes here: Plan 02 / P5 restores the EXACT snapshotted
-        proposal bytes through :meth:`restore_proposal_bytes` instead.)
-        """
-        self._write_proposal(proposal)
-
-    def snapshot_proposal_bytes(self, proposal_id: str) -> bytes | None:
-        """Return the durable proposal's exact bytes (``None`` when absent).
-
-        Plan 02 / P5 (B05): the publish rollback's pre-mutation snapshot of
-        the durable proposal record. Read under the store mutation lock, so
-        the bytes describe one consistent durable state.
-        """
-        with mutation_lock(self.root):
-            path = self._proposal_path(proposal_id)
-            return path.read_bytes() if path.exists() else None
-
-    def restore_proposal_bytes(self, proposal_id: str, data: bytes) -> None:
-        """Restore snapshotted durable proposal bytes verbatim (P5 rollback ONLY).
-
-        The publish rollback seam: an ordinary publish failure calls this —
-        inside the same critical section that performed the failed mutation —
-        to put the durable proposal record back to the exact pre-mutation
-        bytes returned by :meth:`snapshot_proposal_bytes`, so a publish that
-        did not complete leaves a reviewable proposal and never a partial
-        published marker. Like :meth:`_restore_reviewable`, this is a
-        deliberately authorized terminal-protection exception, unreachable
-        from ordinary saves; the bytes come from the store's own pre-mutation
-        snapshot, never from a caller-supplied record.
-        """
-        with mutation_lock(self.root):
-            self.proposals_dir.mkdir(parents=True, exist_ok=True)
-            atomic_write_bytes(self._proposal_path(proposal_id), data)
-
-    def _load(self, proposal_id: str) -> IngestProposal | None:
-        """Read one durable proposal; the caller holds the store lock."""
-        path = self._proposal_path(proposal_id)
-        if not path.exists():
-            return None
-        return msgspec.json.decode(path.read_bytes(), type=IngestProposal)
-
-    def get(self, proposal_id: str) -> IngestProposal | None:
-        with mutation_lock(self.root):
-            return self._load(proposal_id)
-
-    def list(self) -> list[IngestProposal]:
-        proposals: list[IngestProposal] = []
-        with mutation_lock(self.root):
-            for path in sorted(self.proposals_dir.glob("*.json")):
-                proposal = self._load(path.stem)
-                if proposal is not None:
-                    proposals.append(proposal)
-        return proposals
-
-    def _update_status(self, proposal: IngestProposal, status: str) -> IngestProposal:
-        updated = msgspec.structs.replace(proposal, status=status)
-        with mutation_lock(self.root):
-            self._write_proposal(updated)
-        return updated
-
-    def publish(self, proposal_id: str) -> IngestProposal | None:
-        """Mark a successfully published proposal as terminal.
-
-        The terminal decision is made against the DURABLE proposal re-read
-        under the store lock — never against a stale in-memory view — so a
-        proposal another instance already discarded or published keeps its
-        terminal status.
-        """
-        with mutation_lock(self.root):
-            proposal = self._load(proposal_id)
-            if proposal is None or not is_reviewable_proposal(proposal):
-                return proposal
-            return self._update_status(proposal, "published")
-
-    def discard(self, proposal_id: str) -> IngestProposal | None:
-        """Mark a reviewable proposal as discarded.
-
-        Like :meth:`publish`, the transition re-reads durable state under the
-        store lock before writing, so terminal state always wins.
-        """
-        with mutation_lock(self.root):
-            proposal = self._load(proposal_id)
-            if proposal is None or not is_reviewable_proposal(proposal):
-                return proposal
-            return self._update_status(proposal, "discarded")
-
-
 __all__ = [
     "BlastRadius",
     "BodyLinkRepairCandidate",
     "ExternalImportCategoryMapping",
-    "IngestProposal",
-    "IngestStore",
-    "PageRemoval",
-    "PathPrecondition",
-    "ProposalTerminalStateError",
     "ProposedPage",
     "SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED",
     "SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED",
-    "SourceChangeImpact",
-    "SourceLifecycleChange",
     "SourceProvenance",
-    "TERMINAL_PROPOSAL_STATUSES",
     "compute_blast_radius",
-    "create_proposal_without_provider",
     "prepare_proposal_content",
     "import_page_category",
-    "is_reviewable_proposal",
     "map_external_import_categories",
-    "propose_external_import",
     "safe_lifecycle_trigger_display",
     "safe_lifecycle_impact_status_display",
 ]

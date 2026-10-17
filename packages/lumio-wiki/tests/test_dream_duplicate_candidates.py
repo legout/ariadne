@@ -40,12 +40,6 @@ A duplicate-flavored page used by the Dream duplicate-candidate tests.
 """
 
 
-def _store(kb_root: Path) -> lw.IngestStore:
-    ingest_dir = kb_root / ".ingest"
-    ingest_dir.mkdir(parents=True, exist_ok=True)
-    return lw.IngestStore(ingest_dir)
-
-
 @pytest.fixture
 def kb_root(tmp_path: Path) -> Path:
     """Copy the categorized fixture into a writable Knowledge Base root."""
@@ -57,9 +51,7 @@ def kb_root(tmp_path: Path) -> Path:
 def _add_page(kb_root: Path, name: str, entity_id: str, title: str) -> Path:
     path = kb_root / "entities" / name
     path.write_text(
-        DUP_PAGE.format(
-            id=entity_id, title=title, entity_type="organization", source_id=entity_id
-        ),
+        DUP_PAGE.format(id=entity_id, title=title, entity_type="organization", source_id=entity_id),
         encoding="utf-8",
     )
     return path
@@ -68,9 +60,7 @@ def _add_page(kb_root: Path, name: str, entity_id: str, title: str) -> Path:
 def _add_alias(kb_root: Path, page_name: str, alias: str) -> None:
     path = kb_root / "entities" / page_name
     text = path.read_text(encoding="utf-8")
-    text = text.replace(
-        'type: "entity"', f'aliases:\n  - "{alias}"\ntype: "entity"', 1
-    )
+    text = text.replace('type: "entity"', f'aliases:\n  - "{alias}"\ntype: "entity"', 1)
     path.write_text(text, encoding="utf-8")
 
 
@@ -109,8 +99,7 @@ def test_token_overlap_signal_without_alias(kb_root: Path):
     candidate = next(
         c
         for c in report.duplicate_candidates
-        if {c.retired_entity_id, c.surviving_entity_id}
-        == {"entity:acme-corp", "entity:acme-near"}
+        if {c.retired_entity_id, c.surviving_entity_id} == {"entity:acme-corp", "entity:acme-near"}
     )
     assert candidate.signals_rank == 1
     assert candidate.signals == ("token-overlap: acme corp",)
@@ -204,14 +193,14 @@ def test_discovery_never_writes_and_merge_path_still_works(kb_root: Path):
     # The candidate feeds the EXISTING explicit preview/proposal path (no new
     # staging seam): proposing a merge is unchanged and reviewable.
     from lumio_wiki.knowledge_base import load_knowledge_base
-    from lumio_wiki.proposal_pipeline import ProposalPipeline
 
     kb, _ = load_knowledge_base(kb_root)
-    proposal = ProposalPipeline(kb, store=_store(kb_root)).propose_entity_merge(
-        "entity:acme-dup", "entity:acme-corp", reason="reviewed duplicate candidate"
+    candidate = lw.assemble_entity_merge_candidate(
+        kb, "entity:acme-dup", "entity:acme-corp", reason="reviewed duplicate candidate"
     )
-    assert proposal.status == "staged"
-    assert not proposal.blocked
+    assert candidate.validation_report.is_valid
+    assert candidate.removed_titles == ["Acme Corporation"]
+    assert {p: p.read_bytes() for p in kb_root.rglob("*.md")} == before
 
 
 def test_dream_report_field_defaults_to_empty():

@@ -1,10 +1,157 @@
 # Implementation plan 0008: Git-native Knowledge Authoring
 
-**Revision/status:** 13 — G3-S R1–R5 correction authorized; G1 accepted and integrated; G2 accepted as an
-isolated component at `69cbd715…` (tree `1c0c5775…`, result
-`result/g2/fix-a3`); G3 executed and delta-corrected; the frozen G3 fix
-result `4eee870…` is reviewed but NOT accepted. Behavioral specification
+**Revision/status:** 15 — G3 accepted as an isolated component at
+`fb2bcf36…` (tree `da4f7351…`, result `result/g3/sol-a1`, closed review
+chain ending in `RUN/g3-sol-reviewer-report.md` PASS; the r13 "reviewed
+but NOT accepted" state is superseded by the parent's isolated G3
+acceptance). G4 execution authorized. Behavioral specification
 revision 3 (reactivation clarification only).
+
+**Owner-authorized G4 quota takeover, 2026-10-17 (r15):** after the original
+Pi/GLM-high writer stopped with provider 429/1308, the owner explicitly answered
+“Sol/high übernimmt”. The parent accepted the read-only takeover audit and
+issued a limited repair/finish grant to fresh Paseo/Pi
+`7c00a714-90ce-4025-a2f6-a3dff150a888` / native Pi `01a14b51…`, verified
+`openai-codex/gpt-6.1-sol` / high in the SAME workspace, branch, common Git,
+accepted G3 base `fb2bcf36…`, and reserved future `result/g4/a1` below.
+This finishes the initial G4 implementation; it is not a new feature, validation
+unit, review round, or budget reset. Old writer is error/no active turn and
+has no further write authority. No initial independent M review has occurred.
+
+The approved dirty input is preserved in `RUN/g4-provider-stop.patch`
+(SHA-256 `cb8836eacc884426aca52803e7bf084210823ba7dc072f498160e90b72c7c964`)
+and `RUN/g4-provider-stop-untracked.tar`
+(SHA-256 `235aba1ded904b11ee29c5afc20ee11776d03177e56721f57a4afa473a7d3490`);
+40 tracked files (2689 insertions/11430 deletions) and seven untracked files
+matched those artifacts before takeover. Recovery artifacts remain immutable.
+The predecessor's repeated/broadened tests, broad Ruff fixes, deleted retained
+oracles, and unauthorized onboarding execution remain process violations;
+its piped summaries are observations, not certified pytest exit statuses.
+
+Parent-authorized repairs: restore the original private wire `kind/digest`;
+bind the captured baseline and original reviewed preconditions/content identity;
+verify exact private history/raw/version/transition consistency; preserve
+namespace and explicit mutation/source intent; make receipts match the complete
+export identity and retained artifacts; report history/decode/integrity errors
+without preview writes; refuse unresolved pending state at native writer
+preflight including reuse. Restore retained permission/compensation/Claim/link/
+pin/redirect/source/privacy oracles, not retired staging wrappers. Complete the
+approved current CLI/packaged/example co-switch, including the generated block
+in `examples/real-world-lumio-wiki/AGENTS.md`; root `AGENTS.md` stays G5-owned.
+Restore only the four formatting-only production files `link_candidates.py`,
+`page_search.py`, `source_processor.py`, `source_resolution.py` to exact base.
+Retain `git_authoring.py`'s three relocated-assembly consumers. Additional actual
+test caller source migrations are limited to `test_capture_adapters.py`,
+`test_semantic_maintenance.py`, `test_dream_duplicate_candidates.py`,
+`test_url_ingest.py`, `test_documents_extra.py`, `test_plan04_agent_workflows.py`,
+`test_ingest_journey_isolation.py`, `test_wheel_isolation_documents.py`, and
+`test_wheel_isolation_llm.py`. Parent additionally approved SOURCE-ONLY closure
+in `test_artifact_store_s3_compat.py` and `test_s3_publish_s3_compat.py`:
+real native URL worktree ingestion preserves fetched-byte/artifact/page privacy
+oracles; low-level transport tests explicitly call the private S3 transport
+kernels, NOT public Git admission. Live certification stays G5-owned; no
+HTTP/S3 execution, collection, smoke, or added check budget. Delete ONLY the
+unused `_store` helper in `test_dream_synthesis_impact.py`; no unrelated cleanup
+or module run. No new production module/dependency/schema;
+no changes to spec/ADR/CONTEXT, `skill.py`, wheel verifier, or global guidance.
+
+Takeover execution exception: Sol accidentally submitted selector-free
+`uv run --no-sync pytest -q` while preparing the twenty-node command. The shell
+timed out after one second without output; whether any test body ran is unknown.
+The parent rejected this invocation as assigned evidence and independently
+confirmed no surviving own-cwd pytest process. No restart, environment change,
+new check budget, or full-suite result follows. The assigned M command produced
+167 passes and one invalid-manifest diagnostic-wording failure; restoring the
+strict "never a fallback" diagnostic (without changing the assertion) made that
+single affected node pass. Parent accepted reuse of 167+1 and forbade another
+M-group run. Resume the unrun twenty-selector selection once, with argv guards;
+source-only closure/static checks and all other limits below remain unchanged.
+The guarded selection then produced 19 passes and one overly strict migrated
+research-page byte-comparison failure. Parent approved correcting ONLY that
+oracle against the ORIGINAL fixture: independently parsed publishable YAML
+minus the documented `category`/`durability_rationale` review/routing fields,
+and exact stripped-body equality. Its sole affected-node recheck passed; reuse
+M 167+1 and co-switch 19+1, never group reruns. Scoped Ruff/format, changed-script
+syntax and diff checks passed; raw evidence and actual-role disposition belong
+in the existing `RUN/g4-worker-report.md`. Independent M review and G5 remain
+parent-owned gates; these worker results are not feature acceptance.
+
+Exact remaining check authority (serial, own existing locked Python 3.14.8 /
+uv 0.11.8 environment; no sync/install):
+
+- ONE meaningful red: `test_legacy_proposal_export.py::test_export_journey`,
+  after independently restoring the original-wire fixture, BEFORE decoder fix.
+- ONE post-migration M command, not previously executed: `uv run pytest -q`
+  with `test_legacy_proposal_export.py`, `test_git_authoring.py`,
+  `test_ingest_journey.py`, `test_source_lifecycle.py` under
+  `packages/lumio-wiki/tests/`.
+- ONE additional selection of exactly these twenty existing/restored functions
+  (same test directory; retain names or report exact old-to-new mapping):
+  `test_page_removal.py::{test_relationship_repair_drops_edges_and_repairs_exactly_resolved_links,test_external_images_code_and_ambiguous_links_are_untouched}`;
+  `test_entity_merge.py::{test_entity_merge_publishes_one_atomic_candidate,test_entity_merge_collision_blocks_publication,test_entity_merge_invalid_resulting_ontology_blocks_publication,test_claim_changes_report_additions_edits_lifecycle_and_removals}`;
+  `test_artifact_store.py::{test_managed_ingest_retains_artifacts_through_the_pipeline,test_managed_ingest_wraps_store_failure_actionably}`;
+  `test_maintenance.py::{test_stage_cross_link_proposal_is_publishable,test_cli_dream_reports_source_coverage,test_cli_lint_reports_source_coverage}`;
+  `test_semantic_maintenance.py::test_cli_semantic_review_reports_and_stages`;
+  `test_capture_adapters.py::test_export_then_preview_composes_through_capture_contract`;
+  `test_url_ingest.py::{test_ingest_url_stages_https_source_under_stable_id,test_ingest_research_stages_report_with_consulted_provenance}`;
+  `test_dream_duplicate_candidates.py::test_discovery_never_writes_and_merge_path_still_works`;
+  `test_plan04_agent_workflows.py::{test_machine_mutation_errors_are_stable_and_private,test_copyable_actions_replay_original_kb}`;
+  `test_cli.py::{test_source_candidate_leaves_source_active_without_staging,test_source_dismiss_candidate_records_decision_without_staging}`.
+- Scoped Ruff/format/diff on changed owned Python files; final actual-role
+  inventory. Reuse predecessor `bash -n` results unless a script changes,
+  then syntax-check only changed approved scripts. Never execute examples.
+
+Keep full raw command output and true pytest exit statuses in `RUN/logs/g4-*`.
+Parent clarification during takeover: preview may resolve an explicit ref once
+and display a copyable confirmation command using that captured full commit.
+Confirmed CLI/SDK export requires that captured full commit (`plan.baseline`),
+refusing floating confirmation input before locks/writes. No persisted preview,
+new token, or new approval workflow is introduced; direct explicit full-commit
+confirmation is sufficient operator selection, never publication admission.
+A failure authorizes only named diagnosis and affected nodes after a real delta;
+never widen modules, relax assertions, or repeat unrelated greens. Optional
+converter/wheel/isolation source co-switch is not execution authority. No full
+suite, whole CLI, onboarding, live services/providers/S3, MCP, wheels, G5,
+private app, shared/real KB, integration/push/release, cleanup, delegation,
+shared memory, or `run.json` writes. Commit/clean/freeze only `result/g4/a1`,
+report to `RUN/g4-worker-report.md`, and relinquish writes before the parent's
+ONE initial independent Sol/high M review. Standard subsequent collective fix
+and delta recheck budgets remain unchanged. Planning-contract v1 SHA-256
+`5adbbd63616169df00774d926e0daea2074b90c9cf213b508aea62e84942c200`;
+installed catalog commit unknown. No new vocabulary or architectural decision.
+
+**Owner-authorized G4 start, 2026-10-17 (r14):** the parent accepted
+isolated G3 (`fb2bcf36cef5093e4b1bdc1a856260f0babc166e`, run-state
+`g3Acceptance`) and, after the preflight readback, explicitly selected
+"G4 mit GLM/high": sole worker Pi `zai/glm-5.3`/high, Paseo workspace
+`wks_a810d2418d7f4c65`, physical checkout
+`/home/volker/.local/state/worktrees/0ast0lnx/lumio-git-g4-worker-a1`,
+branch `orchestrator/lumio-git-20261015/g4-worker-a1`, common Git
+`/home/volker/coding/lumio-wiki/.git`. Frozen base
+`refs/heads/orchestrator/lumio-git-20261015/base/g4-a1` = `fb2bcf36…`;
+sole future result `refs/heads/orchestrator/lumio-git-20261015/result/g4/a1`.
+Scope is G4 below unchanged in behavior, with these execution-decisions
+recorded: pure mutation assemblies relocate to the EXISTING `publish.py`
+(no new module) with `git_authoring.py`'s three native consumers;
+`graph_exchange.py` + `test_graph_exchange.py` join the owned surface for
+the legacy `import_graph` staged-producer closure; `distiller.py` may take
+docstring-only cleanup of retired surfaces; the four real current callers
+in `examples/real-world-lumio-wiki/` (`README.md`, `tools/stage_dream_repair.sh`,
+`tools/run_maintenance.sh`, `tools/smoke_lumio.sh`) co-switch with G4;
+`scripts/verify_lumio_wiki_wheel.py` and `test_skill_public_surface.py`
+stay untouched unless an actual delta requires it. Check budget: unit M
+new-test journey plus the four-file serial M command, co-migrated test
+nodes only where a retired import/actual contract requires it (named
+selection approved by the parent before execution), scoped Ruff/format/diff,
+`bash -n` on the four co-switched shell scripts, and the `rg` role
+inventory disposition. Locked worktree `.venv` (Python 3.14.8, uv 0.11.8,
+declared dependencies only) is authorized. No full suite, live services,
+wheels, MCP, G5 certification, private app, shared KB, integration, push,
+or release. Review is ONE parent-dispatched independent M delta on
+`openai-codex/gpt-6.1-sol`/high before G5, never worker-launched. No new
+ADR/vocabulary; spec 0008 r3 owns behavior; planning-contract v1 SHA-256
+`5adbbd63616169df00774d926e0daea2074b90c9cf213b508aea62e84942c200`,
+installed catalog commit unknown.
 
 **Owner-authorized G3-S correction, 2026-10-17 (r13):** after G3-R's
 correction and one review exhausted its budget, the parent accepted the five

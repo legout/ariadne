@@ -48,23 +48,18 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import uuid
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
-from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import msgspec
 
 from lumio_wiki.ingest import (
-    IngestProposal,
     ProposedPage,
-    SourceProvenance,
     _compute_diff,
     _existing_page_markdown,
     _validate_page_routing,
-    compute_blast_radius,
     import_page_category,
 )
 from lumio_wiki.knowledge_base import (
@@ -433,8 +428,7 @@ class GraphImportCandidate(msgspec.Struct, frozen=True):
     """One assembled graph-import mutation shared by both authoring routes.
 
     G3 (spec 0008 §7): the deterministic stub-page/Control-File computation
-    is route-independent — the legacy staged-proposal route persists it as an
-    ``IngestProposal`` while native Git authoring applies it as ordinary
+    is route-independent; native Git authoring applies it as ordinary
     worktree file edits. Never a persisted proposal wrapper itself.
     """
 
@@ -657,33 +651,4 @@ def assemble_graph_import(graph_path: str | Path, kb) -> GraphImportCandidate:
         diff=diff,
         source_hash=hashlib.sha256(raw).hexdigest(),
         source_path=str(Path(graph_path)),
-    )
-
-
-def import_graph(graph_path: str | Path, kb) -> IngestProposal:
-    """Stage stub Compiled Pages from a graph.json as ONE reviewable proposal.
-
-    G3 (spec 0008 §7): the deterministic computation lives in
-    :func:`assemble_graph_import` and is shared with native Git worktree
-    edits; this legacy route persists it as a staged ``IngestProposal``.
-    """
-    candidate = assemble_graph_import(graph_path, kb)
-    return IngestProposal(
-        id=uuid.uuid4().hex,
-        status="staged",
-        created_at=datetime.now(UTC).isoformat(),
-        provenance=SourceProvenance(
-            original_filename=candidate.source_path,
-            content_type="application/json",
-            converted_by="graph-exchange",
-            source_hash=candidate.source_hash,
-        ),
-        proposed_pages=candidate.proposed_pages,
-        affected_pages=[page.title for page in candidate.proposed_pages],
-        diff=candidate.diff,
-        validation_report=candidate.validation_report,
-        blocked=not candidate.validation_report.is_valid,
-        blast_radius=compute_blast_radius(candidate.proposed_pages, kb),
-        okf_diagnostics=candidate.diagnostics,
-        control_file=candidate.control_file,
     )

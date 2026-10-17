@@ -72,47 +72,37 @@ _CHILD = textwrap.dedent(
 
     sys.meta_path.insert(0, _Blocker())
 
+    import subprocess
     from lumio_wiki import load_knowledge_base
-    from lumio_wiki.ingest import IngestStore, create_proposal_without_provider
-    from lumio_wiki.proposal_pipeline import ProposalPipeline
+    from lumio_wiki.cli import main
+    from lumio_wiki.git_authoring import preview_publication, publish_revision
 
     root = Path(tempfile.mkdtemp()) / "kb"
     shutil.copytree(FIXTURES, root)
+    (root / ".lumio-authoring.yaml").write_text(
+        "version: 1\\nnamespace: isolation-kb\\nsources: {}\\nbindings: {}\\n"
+    )
+    def git(*args):
+        return subprocess.run(["git", "-C", str(root), *args], check=True,
+                              capture_output=True, text=True).stdout.strip()
+    git("init", "-q")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test Author")
+    git("add", "-A")
+    git("commit", "-qm", "baseline")
+    assert main(["ingest", str(root), str(MARKDOWN_PATH)]) == 0
+    assert (root / "isolation_page.md").exists()
+    assert not (root / ".lumio").exists()
     kb, report = load_knowledge_base(root)
     assert report.is_valid, report
-
-    markdown = MARKDOWN_PATH.read_bytes()
-    store = IngestStore(Path(tempfile.mkdtemp()) / "ingest")
-
-    # Full journey: ingest (Source Processor) -> distill (Distiller) ->
-    # propose/validate (Proposal Pipeline assemble) -> stage for review.
-    proposal = create_proposal_without_provider(
-        markdown, "text/markdown", "iso.md", kb, store=store
-    )
-    assert proposal.status == "staged"
-    assert proposal.validation_report.is_valid
-    assert proposal.provenance.converted_by == "markdown"
-    assert proposal.affected_pages == ["Isolation Page"]
-    assert proposal.blast_radius is not None
-
-    # Review surface: list + review by id.
-    assert [p.id for p in ProposalPipeline(kb, store=store).list()] == [proposal.id]
-    assert ProposalPipeline(kb, store=store).review(proposal.id).id == proposal.id
-
-    # Publish through the pipeline so the page is written to the Knowledge Base
-    # root and the proposal is marked terminal.
-    pipeline = ProposalPipeline(kb, store=store)
-    published = pipeline.publish(proposal.id)
-    assert published.status == "published"
-    assert (kb.root / "isolation_page.md").exists()
-
-    # Discard journey is exercised on a second proposal: stage then discard.
-    discardable = create_proposal_without_provider(
-        markdown, "text/markdown", "iso2.md", kb, store=store
-    )
-    discarded = pipeline.discard(discardable.id)
-    assert discarded.status == "discarded"
-    assert pipeline.discard(discardable.id) is None
+    git("add", "-A")
+    git("commit", "-qm", "authored page")
+    revision = git("rev-parse", "HEAD")
+    destination = root.parent / "published"
+    review = preview_publication(root, revision, destination, "none")
+    assert not destination.exists()
+    publish_revision(root, revision, destination, "none", review.review_digest)
+    assert load_knowledge_base(destination)[1].is_valid
 
     for blocked in (
         "lancedb",

@@ -460,36 +460,27 @@ def test_isolated_init_ingest_publish_journey(isolated_wheel_env: dict, tmp_path
         "Body from the isolated install.\n",
         encoding="utf-8",
     )
-    # ingest
+    # G4: every ingest route writes the Git authoring worktree — the KB
+    # lives in a real repository (Git is required for authoring, spec 0008
+    # §1) and no staged proposal exists anymore.
+    (kb_root / ".lumio-authoring.yaml").write_text(
+        "version: 1\nnamespace: wheel-isolation\nsources: {}\nbindings: {}\n"
+    )
+    subprocess.run(["git", "init", "-q"], cwd=kb_root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=kb_root, check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=kb_root, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=kb_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "kb"], cwd=kb_root, check=True)
+
     result = subprocess.run(
         [str(script), "ingest", str(kb_root), str(source)],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, f"ingest failed:\n{result.stderr}"
-    assert "Staged proposal" in result.stdout
-
-    # Extract the proposal id from the ingest store.
-    proposals_dir = kb_root / ".lumio" / "ingest" / "proposals"
-    proposal_files = list(proposals_dir.glob("*.json"))
-    assert len(proposal_files) == 1
-    proposal_id = proposal_files[0].stem
-
-    result = subprocess.run(
-        [str(script), "proposal", "validate", str(kb_root), proposal_id],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, f"proposal validate failed:\n{result.stderr}"
-
-    # publish
-    result = subprocess.run(
-        [str(script), "publish", str(kb_root), proposal_id],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, f"publish failed:\n{result.stderr}"
-    assert "Published" in result.stdout
+    assert "Ingested into the Git authoring worktree" in result.stdout
+    # No staged proposals exist by construction (the store is never created).
+    assert not (kb_root / ".lumio" / "ingest" / "proposals").exists()
 
     # The page was written (categorized KB routes to <category>/<slug>.md).
     assert (kb_root / "concepts" / "wheel_page.md").is_file()
@@ -502,6 +493,36 @@ def test_isolated_init_ingest_publish_journey(isolated_wheel_env: dict, tmp_path
     )
     assert result.returncode == 0
     assert "pages:               1" in result.stdout
+    subprocess.run(
+        ["git", "-C", str(kb_root), "add", "concepts/wheel_page.md", ".lumio-authoring.yaml"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(kb_root), "commit", "-qm", "authored page"], check=True)
+    revision = subprocess.run(
+        ["git", "-C", str(kb_root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    destination = tmp_path / "published"
+    args = [
+        str(script),
+        "publish",
+        str(kb_root),
+        "--revision",
+        revision,
+        "--to",
+        str(destination),
+        "--expected-current",
+        "none",
+        "--json",
+    ]
+    preview = subprocess.run(args, capture_output=True, text=True)
+    assert preview.returncode == 0, preview.stderr
+    review = json.loads(preview.stdout)
+    assert not destination.exists()
+    confirmed = subprocess.run(
+        [*args, "--confirm", review["review_digest"]], capture_output=True, text=True
+    )
+    assert confirmed.returncode == 0, confirmed.stderr
+    assert json.loads(confirmed.stdout)["revision"] == revision
 
 
 def test_isolated_search_page_related_paths(isolated_wheel_env: dict, tmp_path: Path):
@@ -569,68 +590,8 @@ def test_isolated_search_page_related_paths(isolated_wheel_env: dict, tmp_path: 
     assert "->" in result.stdout
 
 
-def test_isolated_proposal_inspect_and_discard(isolated_wheel_env: dict, tmp_path: Path):
-    """AC2 + AC6: proposal inspect and discard work from the isolated wheel."""
-    python = isolated_wheel_env["python"]
-    bin_dir = python.parent
-    script = bin_dir / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
-    kb_root = tmp_path / "kb"
-
-    subprocess.run([str(script), "init", str(kb_root)], check=True, capture_output=True)
-
-    source = tmp_path / "page.md"
-    source.write_text(
-        "---\n"
-        'title: "Inspect Page"\n'
-        "aliases: []\n"
-        'tags: ["inspect"]\n'
-        'summary: "Test page."\n'
-        'category: "concepts"\n'
-        'type: "concept"\n'
-        'durability_rationale: "Durable."\n'
-        'lifecycle: "draft"\n'
-        'visibility: "internal"\n'
-        'sources: [{id: "test", title: "Test"}]\n'
-        "synthetic: false\n"
-        "---\n\n# Inspect Page\n\nBody.\n",
-        encoding="utf-8",
-    )
-    subprocess.run(
-        [str(script), "ingest", str(kb_root), str(source)],
-        check=True,
-        capture_output=True,
-    )
-
-    proposals_dir = kb_root / ".lumio" / "ingest" / "proposals"
-    proposal_id = next(proposals_dir.glob("*.json")).stem
-
-    # proposal list
-    result = subprocess.run(
-        [str(script), "proposal", "list", str(kb_root)],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0
-    assert proposal_id in result.stdout
-
-    # proposal inspect
-    result = subprocess.run(
-        [str(script), "proposal", "inspect", str(kb_root), proposal_id],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0
-    assert "Inspect Page" in result.stdout
-    assert "Diff:" in result.stdout
-
-    # discard
-    result = subprocess.run(
-        [str(script), "discard", str(kb_root), proposal_id],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0
-    assert "Discarded" in result.stdout
+# Terminal proposal inspection/discard is retired by spec 0008 §7.
+# Native authoring and exact admission remain covered by the journey above.
 
 
 def test_isolated_skill_install(isolated_wheel_env: dict, tmp_path: Path):

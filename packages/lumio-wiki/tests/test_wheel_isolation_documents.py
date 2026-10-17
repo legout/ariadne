@@ -22,7 +22,6 @@ Building and installing into a fresh venv is expensive; this runs only under
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 import venv
@@ -158,42 +157,24 @@ def test_isolated_documents_extra_converts_pdf_into_proposal(
     pdf_path = tmp_path / "source.pdf"
     pdf_path.write_bytes(_MINIMAL_PDF)
 
-    ingest = subprocess.run(
+    # Conversion is preparation, not authority to write malformed extracted
+    # text into a KB. Host-authored valid pages use the base-wheel Git journey.
+    result = subprocess.run(
         [
-            str(python), "-m", "lumio_wiki.cli",
-            "ingest", str(kb_root), str(pdf_path),
+            str(python),
+            "-c",
+            "from pathlib import Path; from lumio_wiki.ingest import prepare_proposal_content; "
+            "import sys; text, provenance = prepare_proposal_content("
+            "Path(sys.argv[1]).read_bytes(), 'application/pdf', 'source.pdf'); "
+            "assert provenance.converted_by == 'liteparse'; print(text)",
+            str(pdf_path),
         ],
         capture_output=True,
         text=True,
     )
-    assert ingest.returncode == 0, f"ingest failed:\n{ingest.stderr}"
-    assert "proposal" in ingest.stdout.lower(), ingest.stdout
-
-    # List staged proposals and inspect the most recent one.
-    listing = subprocess.run(
-        [str(python), "-m", "lumio_wiki.cli", "proposal", "list", str(kb_root)],
-        capture_output=True,
-        text=True,
-    )
-    assert listing.returncode == 0, f"proposal list failed:\n{listing.stderr}"
-
-    proposals_dir = kb_root / ".lumio" / "ingest" / "proposals"
-    assert proposals_dir.is_dir(), (
-        f"proposal directory missing; stdout was:\n{ingest.stdout}"
-    )
-    proposals = sorted(proposals_dir.glob("*.json"))
-    assert proposals, f"no proposal staged; stdout was:\n{ingest.stdout}"
-
-
-    proposal_payload = json.loads(proposals[-1].read_text(encoding="utf-8"))
-    # The PdfSourceProcessor extracts "Hello Lumio World" from the text layer.
-    # Proposed pages carry the full Markdown (frontmatter + body) under
-    # ``markdown``; ``body`` is the assembled page body once distilled.
-    pages = proposal_payload.get("proposed_pages", [])
-    joined = "\n".join((page.get("markdown") or "") + (page.get("body") or "") for page in pages)
-    assert "Hello Lumio World" in joined, (
-        f"PDF text was not extracted into the proposal; payload was:\n{joined}"
-    )
+    assert result.returncode == 0, result.stderr
+    assert "Hello Lumio World" in result.stdout
+    assert not (kb_root / ".lumio").exists()
 
 
 def test_doctor_reports_documents_extra_installed(documents_wheel_env: Path):

@@ -2,7 +2,7 @@
 # "Finally" stage browser/API smoke (issue #157): boot the full `lumio`
 # application over the published Atlas Heatworks Knowledge Base and prove the
 # same content is consumable through Lumio's HTTP surface — without breaking the
-# proposal-first publication contract (this script only READS; it publishes
+# exact-revision publication contract (this script only READS; it publishes
 # nothing).
 #
 # What it does, end to end, fully offline:

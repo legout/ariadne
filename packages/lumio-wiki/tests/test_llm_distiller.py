@@ -12,7 +12,7 @@ Coverage:
   error naming the exact install command (AC4, PRD user story 18).
 - Structured-output retry/error behavior: transient provider errors are retried
   and an empty/malformed model response surfaces an actionable error (AC2).
-- Provider-driven proposals flow through the same ``ProposalPipeline.assemble``
+- Provider-driven extraction feeds the same native page-extraction seam
   so provenance, category/type routing, durability rationale, validation, diff,
   and blast radius are identical to the model-free path (AC3).
 """
@@ -31,7 +31,7 @@ from lumio_wiki.distiller import (
     OpenAIDistiller,
     OpenAIDistillerError,
 )
-from lumio_wiki.proposal_pipeline import ProposalPipeline
+from lumio_wiki.ingest import _extract_page_records, prepare_proposal_content
 from lumio_wiki.source_processor import TextMarkdownSourceProcessor
 
 ROOT = Path(__file__).parents[3]
@@ -256,73 +256,53 @@ def _kb(tmp_path: Path):
     return kb
 
 
-def test_provider_distilled_markdown_flows_through_the_proposal_pipeline(tmp_path: Path):
-    """AC3: provider-driven distillation enters the same proposal-first pipeline."""
+def test_provider_distilled_markdown_carries_routing_into_extraction(tmp_path: Path):
+    """AC3: provider-driven distillation enters the same native extraction."""
     kb = _kb(tmp_path)
-    store = lw.IngestStore(tmp_path / "ingest")
     distiller = OpenAIDistiller(model="fake-model", client=_fake_client())
     normalized = TextMarkdownSourceProcessor().process("source.txt", "text/plain", b"raw source")
-    provenance = lw.SourceProvenance(
-        original_filename="source.txt",
-        content_type="text/plain",
-        converted_by=normalized.converted_by,
-        source_hash=normalized.source_hash,
+    distilled, provenance = prepare_proposal_content(
+        b"raw source", "text/plain", "source.txt", distiller=distiller, categories=["concepts"]
     )
-    distilled = distiller.distill(normalized)
-    pipeline = ProposalPipeline(kb, store=store)
-    proposal = pipeline.assemble(distilled, provenance, "source.txt")
-    proposal = pipeline.stage(proposal)
+    pages = _extract_page_records(distilled, "source.txt", kb)
 
-    # Same proposal shape as host-agent ingestion.
-    assert isinstance(proposal, lw.IngestProposal)
-    assert proposal.status == "staged"
-    assert proposal.affected_pages == ["Distilled Page"]
+    # Same extracted pages as host-agent ingestion.
+    assert [page.title for page in pages] == ["Distilled Page"]
     # Provenance preserved from the normalized source.
-    assert proposal.provenance.original_filename == "source.txt"
-    assert proposal.provenance.source_hash == normalized.source_hash
-    # Category/type/durability routing preserved on the proposed page.
-    page = proposal.proposed_pages[0]
+    assert provenance.original_filename == "source.txt"
+    assert provenance.source_hash == normalized.source_hash
+    # Category/type/durability routing preserved on the extracted page.
+    page = pages[0]
     assert page.category == "concepts"
     assert page.page_type == "definition"
     assert page.durability_rationale.startswith("Core concept")
-    # Validation, diff, and blast radius are computed identically.
-    assert isinstance(proposal.validation_report, lw.ValidationReport)
-    assert proposal.diff  # non-empty diff
-    assert proposal.blast_radius is not None
-    assert "Distilled Page" in proposal.blast_radius.new_titles
 
 
-def test_provider_driven_and_passthrough_proposals_share_the_same_shape(tmp_path: Path):
-    """AC3: provider-driven and host-agent proposals are structurally identical.
+def test_provider_driven_and_passthrough_extraction_share_the_same_shape(tmp_path: Path):
+    """AC3: provider-driven and host-agent extraction are structurally identical.
 
-    Both paths feed the same ``ProposalPipeline.assemble`` so the resulting
-    ``IngestProposal`` carries the same fields in the same order — the
-    Distiller is the only seam that changes.
+    Both paths feed the same native extraction seam so the resulting pages
+    carry the same routing — the Distiller is the only seam that changes.
     """
     kb = _kb(tmp_path)
     # Both distillers produce the same Markdown; the only difference is who
-    # authored it. The proposal shape downstream must be identical.
+    # authored it. The extracted pages downstream must be identical.
     passthrough = lw.PassthroughMarkdownDistiller()
-    provenance = lw.SourceProvenance(
-        original_filename="source.txt",
-        content_type="text/plain",
-        converted_by="markdown",
-        source_hash="abc",
-    )
-    pipeline = ProposalPipeline(kb)
-    a = pipeline.assemble(
-        passthrough.distill(
-            TextMarkdownSourceProcessor().process(
-                "source.txt", "text/plain", PROVIDER_MARKDOWN.encode("utf-8")
-            ),
-            categories=["concepts"],
-        ),
-        provenance,
+    distilled_a, _prov_a = prepare_proposal_content(
+        PROVIDER_MARKDOWN.encode("utf-8"),
+        "text/plain",
         "source.txt",
+        distiller=passthrough,
+        categories=["concepts"],
     )
-    b = pipeline.assemble(PROVIDER_MARKDOWN, provenance, "source.txt")
-    assert set(a.__struct_fields__) == set(b.__struct_fields__)
-    assert [p.title for p in a.proposed_pages] == [p.title for p in b.proposed_pages]
+    distilled_b, _prov_b = prepare_proposal_content(
+        PROVIDER_MARKDOWN.encode("utf-8"), "text/plain", "source.txt", categories=["concepts"]
+    )
+    a = _extract_page_records(distilled_a, "source.txt", kb)
+    b = _extract_page_records(distilled_b, "source.txt", kb)
+    assert [p.title for p in a] == [p.title for p in b]
+    assert [p.category for p in a] == [p.category for p in b]
+    assert [p.relative_path for p in a] == [p.relative_path for p in b]
 
 
 def test_provider_request_failure_is_safe_at_cli_boundary():

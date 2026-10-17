@@ -51,6 +51,7 @@ expect_fail() { # expect_fail <label> <cmd...> : command must exit non-zero
 
 step "0. Project: $PROJ"
 mkdir -p "$PROJ"; cd "$PROJ"
+PROJ=$(pwd -P)
 
 step "1. Maintainer setup"
 if [ "$S3_READY" = 1 ]; then
@@ -155,6 +156,20 @@ tickets and attachments.
 PAGEEOF
 $LW validate ./kb
 
+step "3b. Adopt Git authoring (Source Reference Manifest + repository)"
+cat > kb/.lumio-authoring.yaml <<'YAMLEOF'
+version: 1
+namespace: "urn:uuid:onboarding-smoke-2026-0000-000000000001"
+sources: {}
+bindings: {}
+YAMLEOF
+git -C kb init -q
+git -C kb config user.email "maintainer@example.com"
+git -C kb config user.name "Maintainer"
+git -C kb add lumio.yaml entities .lumio-authoring.yaml
+git -C kb commit -qm "Seed knowledge base with adopted authoring manifest"
+export LUMIO_SOURCE_REGISTRY="$PROJ/private-source-registry"
+
 step "4. Managed document ingest (original source + authored page, one identity)"
 cat > password-reset-page.md <<'PAGEEOF'
 ---
@@ -182,13 +197,26 @@ Requests without a secondary email escalate to Support Ops on-call; reset
 volume is tracked in [Starlight DB](../entities/starlight-db.md).
 PAGEEOF
 $LW ingest ./kb "$HERE/sources/support-runbook.md" \
-  --compiled-page password-reset-page.md --source-id support-runbook-2026
+  --compiled-page password-reset-page.md --source-id support-runbook-2026 \
+  --source-registry "$LUMIO_SOURCE_REGISTRY"
 
-step "5. Proposal review: list -> inspect -> validate -> publish"
-PID=$($LW proposal list ./kb | awk '/staged/{print $1}')
-$LW proposal inspect ./kb "$PID" | tee /dev/stderr | grep -E 'affected_pages: +Password Reset Runbook' >/dev/null
-$LW proposal validate ./kb "$PID"
-$LW publish ./kb "$PID"
+step "5. Git review: diff -> commit -> validate"
+git -C kb add procedures/password_reset_runbook.md .lumio-authoring.yaml
+git -C kb diff --cached --stat | tee /dev/stderr | grep -E 'password_reset_runbook' >/dev/null
+git -C kb commit -qm "Add password-reset runbook via managed ingest"
+REV=$(git -C kb rev-parse HEAD)
+$LW validate ./kb | tee /dev/stderr | grep 'Knowledge base is valid' >/dev/null
+
+# Invoking this disposable smoke journey authorizes its synthetic local
+# publication, never a configured real KB/destination.
+LOCAL_REVIEW=$($LW publish ./kb --revision "$REV" --to "$PROJ/published" \
+  --expected-current none --source-registry "$LUMIO_SOURCE_REGISTRY" --json)
+printf '%s\n' "$LOCAL_REVIEW"
+LOCAL_DIGEST=$(printf '%s' "$LOCAL_REVIEW" | ${LUMIO_PYTHON:-python3} -c \
+  'import json,sys; print(json.load(sys.stdin)["review_digest"])')
+$LW publish ./kb --revision "$REV" --to "$PROJ/published" \
+  --expected-current none --source-registry "$LUMIO_SOURCE_REGISTRY" \
+  --confirm "$LOCAL_DIGEST" --json
 
 step "6. Retrieval, citation open actions, graph traversal"
 $LW search "password reset" --limit 2 | tee /dev/stderr | grep -E '^open:' >/dev/null
@@ -254,28 +282,21 @@ for path in source.rglob("*"):
     if not path.is_file():
         continue
     relative = path.relative_to(source)
-    if any(part.startswith(".") for part in relative.parts):
+    if relative.as_posix() != ".lumio-authoring.yaml" and any(part.startswith(".") for part in relative.parts):
         continue
-    if relative.as_posix() != "lumio.yaml" and path.suffix.lower() != ".md":
+    if relative.as_posix() not in {"lumio.yaml", ".lumio-authoring.yaml"} and path.suffix.lower() != ".md":
         continue
     destination = target / relative
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(path, destination)
 PYEOF
-cat > "$S3_KB/.lumio-authoring.yaml" <<'SOURCEEOF'
-version: 1
-namespace: "urn:uuid:0f6f0e3e-1d9a-4b2e-9d47-6c1f0f5f4f3e"
-sources: {}
-bindings: {}
-SOURCEEOF
 git -C "$S3_KB" init -q
 git -C "$S3_KB" config user.email "smoke@example.com"
 git -C "$S3_KB" config user.name "Onboarding Smoke"
 git -C "$S3_KB" add -A
 git -C "$S3_KB" commit -qm "Reviewed onboarding Knowledge Base"
 REV1=$(git -C "$S3_KB" rev-parse HEAD)
-S3_REGISTRY="$S3_TMP/source-registry"
-mkdir -p "$S3_REGISTRY"
+S3_REGISTRY="$LUMIO_SOURCE_REGISTRY"
 export LUMIO_SOURCE_STORE="$S3_TMP/source-store"
 export LUMIO_ARTIFACT_RETENTION=disabled
 

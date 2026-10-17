@@ -2,7 +2,7 @@
 
 This folder is a staged, realistic test of Lumio's progressive product layers:
 
-1. **Now:** `lumio-wiki[documents]` only — portable Knowledge Base setup, mixed-format ingestion, proposal review, publication, validation, and zero-index retrieval through a coding agent.
+1. **Now:** `lumio-wiki[documents]` only — portable Knowledge Base setup, mixed-format ingestion into a Git authoring worktree, exact-revision publication, validation, and zero-index retrieval through a coding agent.
 2. **Later:** add `lumio-lancedb` and compare enhanced retrieval against the same published Knowledge Base. Tracked in #156.
 3. **Finally:** add the full `lumio` application and exercise the same knowledge through Lumio's browser UI. Tracked in #157.
 
@@ -78,7 +78,7 @@ agent or start a new session** so the skill is discovered.
 
 Then ask the agent:
 
-> Ingest every file in `./sources` into the Lumio Knowledge Base at `./knowledge-base` using the installed `lumio-wiki` CLI and its coding-agent workflow. Treat me as the Maintainer: keep every mutation proposal-first, show me each proposal's validation and blast radius, and wait for my approval before publishing. Do not install `lumio-lancedb` or the full `lumio` application.
+> Ingest every file in `./sources` into the Lumio Knowledge Base at `./knowledge-base` using the installed `lumio-wiki` CLI and its coding-agent workflow. Treat me as the Maintainer: keep every mutation a Git worktree edit, show me each diff and the complete candidate validation, and wait for my approval before publishing an exact revision. Do not install `lumio-lancedb` or the full `lumio` application.
 
 **Restart / new-session check:** after a restart, the agent should resolve the
 Knowledge Base with no path argument — `lumio-wiki validate` (no `<kb>`)
@@ -90,19 +90,19 @@ This repository already provides the Lumio project instructions to agents starte
 ## Maintenance drill
 
 After the Knowledge Base is published, the example ships a maintenance tool
-belt that exercises the read-only and proposal-first surfaces without
+belt that exercises the read-only and authoring surfaces without
 mutating anything by default:
 
 ```bash
 bash tools/run_maintenance.sh        # validate, health, lint, cross-link, dream, source list
-bash tools/stage_dream_repair.sh     # dream --stage --limit 3, prints proposal IDs to review
+bash tools/stage_dream_repair.sh     # dream --stage --limit 3, applies worktree repairs to review
 DREAM_LIMIT=5 bash tools/stage_dream_repair.sh
 ```
 
 `run_maintenance.sh` is the always-safe read-only pass — run it after any
-ingest. `stage_dream_repair.sh` is the proposal-first drill: it stages up to
-`$DREAM_LIMIT` (default 3) reviewable repairs and prints the proposal IDs the
-agent should walk through `proposal inspect` → `proposal validate` →
+ingest. `stage_dream_repair.sh` is the repair drill: it applies up to
+`$DREAM_LIMIT` (default 3) ranked repairs as worktree edits the agent should
+review as a Git diff, then commit and publish the exact revision via
 `publish` (or `discard`). These scripts are the manual stand-in for the
 coding agent's daily `lumio-wiki dream --stage --limit 3` workflow described
 in `AGENTS.md`.
@@ -110,7 +110,7 @@ in `AGENTS.md`.
 ## End-to-end walkthrough (manual)
 
 The canonical first-run + ingest + maintenance flow, all commands run from
-this directory. Anything that touches the Knowledge Base is proposal-first.
+this directory. Anything that touches the Knowledge Base is a reviewed Git worktree edit.
 
 ```bash
 # 1. Install into an isolated venv (installs lumio-wiki[documents]).
@@ -147,9 +147,12 @@ YAML
 bash tools/install_skill.sh            # defaults to pi
 bash tools/install_skill.sh claude-code
 
-# 5. (Optional) ingest every committed fixture.
-# Each ingest stages a Compiled Page bound to a Source identity; review,
-# validate, and publish each proposal in turn. See "Compiled Page schema"
+# 5. (Optional) ingest fixtures into an explicitly selected disposable Git worktree.
+# Before writing, copy the KB OUTSIDE this foundation checkout, adopt its stable
+# .lumio-authoring.yaml namespace, initialize/commit Git, and set LUMIO_KB_PATH.
+# Select LUMIO_SOURCE_REGISTRY outside Git/public content; see docs/quickstart.md.
+# Each ingest writes a Compiled Page and exact Source binding; review,
+# validate the candidate, and publish each exact revision in turn. See "Compiled Page schema"
 # below for the required frontmatter.
 for src in sources/*; do
   base=$(basename "$src")
@@ -192,15 +195,19 @@ EOF
   lumio-wiki ingest "$src" --compiled-page "$page" --source-id "$sid"
 done
 
-# 6. Walk staged proposals.
-lumio-wiki proposal list
-lumio-wiki proposal validate <id>
-lumio-wiki publish <id>             # or: lumio-wiki discard <id>
+# 6. Review the Git worktree diff.
+git -C "$LUMIO_KB_PATH" diff
+lumio-wiki validate "$LUMIO_KB_PATH"
+# Stage ONLY authored/control/manifest paths, never private files, then commit.
+# Preview an exact commit; only confirm after explicit operator authorization:
+lumio-wiki publish "$LUMIO_KB_PATH" --revision <full-commit-id> --to <destination> \
+  --expected-current <version-or-none> --source-registry "$LUMIO_SOURCE_REGISTRY"
+# Repeat identical inputs with --confirm <review-digest> after review.
 
 # 7. Read-only maintenance pass.
 bash tools/run_maintenance.sh
 
-# 8. Proposal-first repair drill.
+# 8. Explicit worktree repair drill.
 bash tools/stage_dream_repair.sh
 ```
 
@@ -545,53 +552,46 @@ lumio-wiki setup ./knowledge-base \
 #    and configuration from .env alone.
 lumio-wiki validate
 
-# 4. Managed-ingest a mixed-format raw source and review the proposal.
+# 4. Select a disposable registered Git authoring worktree and private registry.
+# Adopt its stable namespace/source manifest as in docs/quickstart.md first.
+export LUMIO_SOURCE_REGISTRY=/path/outside-git/private-source-registry
 lumio-wiki ingest knowledge-base sources/company-overview.md \
-  --compiled-page staging/overview-page.md --source-id overview-src
-lumio-wiki proposal list knowledge-base
-lumio-wiki proposal inspect knowledge-base <proposal-id>
-lumio-wiki proposal validate knowledge-base <proposal-id>
-lumio-wiki publish knowledge-base <proposal-id>
+  --compiled-page staging/overview-page.md --source-id overview-src \
+  --source-registry "$LUMIO_SOURCE_REGISTRY"
+lumio-wiki validate knowledge-base
+git -C knowledge-base diff
+# Explicitly stage authored pages/control/manifest only, then commit with Git.
 
-# 5. Publish one complete immutable S3 version (remote LanceDB index built
-#    and health-checked BEFORE activation) and activate it.
-lumio-wiki publish-s3 --version v1 --retrieval lancedb
+# 5. Preview the exact commit, including remote LanceDB, before authorizing it.
+lumio-wiki publish knowledge-base --revision <full-commit-id> \
+  --to s3://public-kb-bucket/team-kb --expected-current none \
+  --source-registry "$LUMIO_SOURCE_REGISTRY" --retrieval lancedb
+# Only after operator authorization: repeat these SAME inputs with
+# --confirm <review-digest>. A commit or validation alone never admits.
 
-# 6. Separate read-only coding-agent project against the S3 Location.
-lumio-wiki setup --from s3://public-kb-bucket/team-kb \
-  --retrieval lancedb \
-  --source-store s3://private-source-bucket/team-kb \
-  --skill-scope project
-
-# 7. Fresh harness session retrieves citation-ready Evidence through remote
-#    LanceDB (pathless).
+# 6. In a SEPARATE reader project, bind the same complete Published Version.
+lumio-wiki setup --from s3://public-kb-bucket/team-kb --retrieval lancedb
 lumio-wiki search "coating process"
 
-# 8-9. Fetch the exact underlying Source Artifact and quote bounded original
-#    text (label binary/converted extraction as DERIVED); the signed link is
-#    a five-minute exact-object bearer grant.
-lumio-wiki source inspect --source-id overview-src
-lumio-wiki source fetch --source-id overview-src --output ./overview-original.md
-lumio-wiki source link --source-id overview-src --expires 5m
+# 7. Private Source inspection/fetch/link require separate explicit authorization.
+lumio-wiki source inspect --source-id overview-src --published-version <admitted-version>
+lumio-wiki source fetch --source-id overview-src --published-version <admitted-version> \
+  --output ./overview-original.md
 
-# 10. Publish a replacement Source Version (retire -> reactivate -> managed
-#     ingest), publish v2; the historical v1 still fetches historical bytes.
-lumio-wiki source retire knowledge-base --source-id overview-src
-lumio-wiki publish knowledge-base <retire-proposal-id>
-lumio-wiki source reactivate knowledge-base --source-id overview-src \
-  --file sources/company-overview-v2.md
-lumio-wiki publish knowledge-base <reactivate-proposal-id>
-lumio-wiki ingest knowledge-base sources/company-overview-v2.md \
-  --compiled-page staging/overview-page-v2.md --source-id overview-src
-lumio-wiki publish knowledge-base <revision-proposal-id>
-lumio-wiki publish-s3 --version v2 --retrieval lancedb
-lumio-wiki source fetch --source-id overview-src --published-version v1 \
-  --output ./overview-v1-original.md
+# 8. Source replacement is an explicit exact binding edit in the authoring tree.
+# Register/ingest the operator's new bytes, review all affected Entities and
+# commit. Retirement needs eligible support or explicit removal/reclassification.
+# Reactivation requires the exact declaring Entity selection (--entity <id>).
+# Preview/confirm the successor with --expected-current <prior-admitted-version>;
+# historical inspection continues to use the sealed historical binding.
 
-# 11. Conflict, rollback, orphan reporting, zero-index fallback.
-lumio-wiki cleanup-s3 s3://public-kb-bucket/team-kb   # reports interrupted builds
-lumio-wiki rollback-s3 s3://public-kb-bucket/team-kb --version v1
+# 9. Rollback is also preview/confirm with the actual expected current version.
+lumio-wiki rollback-s3 s3://public-kb-bucket/team-kb --version <historical-version> \
+  --expected-current <active-version>
+# Only after authorization, repeat with --confirm <review-digest>.
+lumio-wiki cleanup-s3 s3://public-kb-bucket/team-kb  # reports, never deletes
 LUMIO_RETRIEVAL_BACKEND=zero-index lumio-wiki search "coating process"
+
 ```
 
 Raw Source Artifacts are optional (retention is disabled by default) and
@@ -602,7 +602,7 @@ not claim-level lineage.
 
 - Do not ingest `README.md`, `evaluation/`, or `tools/`; only `sources/` contains Knowledge Sources.
 - Do not let the agent use the source files directly when answering evaluation questions; answers should come from the published Knowledge Base.
-- Keep proposal-first publication enabled.
+- Git review and validation are not Publication Admission; authorize the exact displayed publication separately.
 - Record any confusing command, missing guidance, incorrect conversion, weak proposal, or unsupported claim. These are product findings, not test setup failures to hide.
 - The Atlas Heatworks organization, people, products, suppliers, and measurements are fictional.
 
