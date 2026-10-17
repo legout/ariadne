@@ -1,10 +1,62 @@
 # Implementation plan 0008: Git-native Knowledge Authoring
 
-**Revision/status:** 11 — G1 accepted and integrated; G2 accepted as an
+**Revision/status:** 12 — G1 accepted and integrated; G2 accepted as an
 isolated component at `69cbd715…` (tree `1c0c5775…`, result
-`result/g2/fix-a3`); owner-authorized G3 execution started from that base;
-the frozen G3 result `b5e470b…` is reviewed but NOT accepted.
-Behavioral specification revision 3 (reactivation clarification only).
+`result/g2/fix-a3`); G3 executed and delta-corrected; the frozen G3 fix
+result `4eee870…` is reviewed but NOT accepted. Behavioral specification
+revision 3 (reactivation clarification only).
+
+**Owner-authorized G3-R residual correction, 2026-10-17 (r12):** after the
+one Sol/high `b5e470b…4eee870` delta review returned residuals D1–D7 (all
+parent-dispositioned accepted), the owner answered **“G3-R korrigieren”**:
+one isolated GLM/high candidate from `4eee870…` correcting EXACTLY those
+seven residuals (`base/g3-r-a1` = `4eee870…`, sole future result
+`result/g3/residual-a1`). Worker remains Pi `zai/glm-5.3`/high (same writer,
+workspace, and placement); review is ONE parent-only Sol/high direct
+`4eee870…R` delta. The prior collective-fix budget is exhausted and stays
+recorded; this is a separately named bounded authorization, not a third
+round. Scope, all minimum-complete changes: D1 the manifest candidate view
+derives from the SAME effective compound destination content as
+validation/apply (reuse the existing source-merge owner; no parallel
+algorithm, no dropped pins); D2 rename/move preserves exact incoming path
+targets on move-only, keeps pre-move targets of the moved page's outbound
+relative links, repairs the renamed page's own old-title references, and
+exposes the explicit old-title keep/drop/replacement disposition plus a
+CLI-expressible empty alias set (already-approved ADR-0016 behavior; the
+prior narrow publish.py move-owner allowance remains accepted); D3 composes
+body/link repairs against original coordinates (one candidate, one apply,
+dirty guard intact) and diagnoses conflicting summary replacements like
+lifecycle conflicts; D4 the native source register/candidate/dismiss/
+confirm writers reuse the repository-relative tracked-original/tracked-
+registry and inside-KB refusal before any private write (confirm before
+both the manifest edit and the candidate decision; read-only list exempt);
+D5 native register uses the existing exact-version registration primitive
+(identical retry converges, different bytes extend immutable history, Git
+intent/pins untouched) with truthful reused/registered disclosure; D6
+required private URL/research/capture observation persistence moves BEFORE
+the final worktree apply through one shared native hook with bounded
+storage-error mapping (immutable private history may remain on refusal;
+never falsely claim no history writes); D7 strict manifest errors translate
+at the native owner/dispatch boundary and the existing rollback error maps
+through the actual remove/merge/graph/passthrough/source CLI callers
+(keeping failed paths + backup location; no new exception hierarchy). No
+spec/ADR/CONTEXT/AGENTS change (spec r3 + ADR-0016 already settle the
+behavior), no new module/dependency, no G4 work, no legacy format change.
+Budget: one focused red residual group on existing seams (D1 compound
+additive sources/pins; D2 combined move-only incoming + moved-outbound +
+self-title + alias-disposition journey; D3 shifted-frontmatter link repair
+plus conflicting summaries; D4 unsafe private-selection refusal before side
+effects; D5 identical-retry/different-bytes registration without Git intent
+change; D6 injected observation I/O failure leaves the worktree unchanged
+with a bounded error; D7 strict-manifest and incomplete-rollback bounded
+CLI errors) and one coherent post-fix unit for those scenarios plus
+previously green nodes whose shared contracts actually changed; no rerun of
+the whole 17/new-interface/P11 groups, no full modules/CLI/baselines. Reuse
+prior evidence only where code/tests/inputs/env still match. Scoped
+Ruff/format/diff once, formatting before the final behavior proof where
+possible; Pyright missing-venv/import/frozen-Struct family stays
+UNVERIFIED/inconclusive with no experiments. Env: the existing locked
+worktree venv (Python 3.14.8, uv 0.11.8), no re-sync/install/config change.
 
 **Owner-authorized G3 collective correction, 2026-10-17 (r11):** after the
 independent G3 P review returned findings F1–F9 (all parent-dispositioned

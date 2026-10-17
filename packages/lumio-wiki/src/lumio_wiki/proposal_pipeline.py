@@ -836,6 +836,56 @@ def assemble_entity_merge_candidate(
     )
 
 
+def _pin_outbound_path_targets(
+    markdown: str, source_path: str, pages, *, exclude_title: str
+) -> str:
+    """Rewrite a moved page's path-resolved outbound links to stable targets (D2).
+
+    A relative link that resolved EXACTLY against the pre-move directory is
+    rewritten to its resolved target's root-absolute path, so the move (even
+    into a directory holding a same-basename DIFFERENT Entity) cannot
+    silently misroute it. Mirrors the shared resolver's path convention
+    (source-dir-relative first, then global) — a dest that resolves through
+    no path key is left untouched, never guessed.
+    """
+    from lumio_wiki.knowledge_base import _destination_stem, _scan_body_links
+
+    by_path: dict[str, str] = {}
+    for candidate in pages:
+        if not candidate.path or candidate.title == exclude_title:
+            # The moving page's own old path is not a stable target: the
+            # incoming-link repair and the atomic move own those rewires.
+            continue
+        stem = candidate.path
+        if stem.lower().endswith(".md"):
+            stem = stem[: -len(".md")]
+        by_path.setdefault(stem.casefold(), candidate.path)
+    source_dir = str(PurePosixPath(source_path).parent) if "/" in source_path else ""
+    lines = markdown.splitlines(keepends=True)
+    for dest, line_start, line_end in _scan_body_links(markdown, 1):
+        stem = _destination_stem(dest).casefold().lstrip("/")
+        if not stem or stem in {"..", "."} or dest.startswith(("http://", "https://", "/")):
+            continue
+        target_path: str | None = None
+        if source_dir:
+            target_path = by_path.get(f"{source_dir.casefold()}/{stem}")
+        if target_path is None:
+            target_path = by_path.get(stem)
+        if target_path is None or target_path == dest:
+            continue
+        lo = max(line_start - 1, 0)
+        hi = max(min(line_end, len(lines)), lo)
+        for index in range(lo, hi):
+            line = lines[index]
+            for old, new in (
+                (f"]({dest})", f"]({target_path})"),
+                (f"]({dest} ", f"]({target_path} "),
+            ):
+                if old in line:
+                    lines[index] = line.replace(old, new, 1)
+    return "".join(lines)
+
+
 def assemble_page_rename_candidate(
     kb,
     title: str,
@@ -843,17 +893,24 @@ def assemble_page_rename_candidate(
     new_title: str | None = None,
     new_category: str | None = None,
     aliases: list[str] | None = None,
+    keep_old_title_alias: bool = False,
 ) -> MutationCandidate:
-    """Assemble a reviewed title rename / category move / alias edit (G3).
+    """Assemble a reviewed title rename / category move / alias edit (G3/D2).
 
     The required native rename primitive (spec 0008 §6, ADR-0016): the
     page's stable Entity ID, Claims, Sources, and provenance are preserved
     while its Canonical Title changes (``rename_from``), its Content
     Category path relocates atomically (``move_from_path``), and its alias
-    list is the operator's explicit choice. Incoming exactly-resolved body
-    links retarget to the new title; a stale Hot Index pin updates; an
-    ambiguous link repair and any path/alias collision refuse. A pure
-    computation shared by any route — never a persisted proposal.
+    list is the operator's explicit choice (``keep_old_title_alias`` keeps
+    the old title reachable; ADR-0016's keep/drop decision is explicit, and
+    the caller discloses it). Exactly-resolved incoming body links retarget
+    on BOTH title renames and category moves; the renamed page's own
+    old-title references repair with labels preserved; a moved page's
+    path-resolved OUTBOUND links keep their pre-move targets (rewritten to
+    the target's root-absolute path, immune to the new directory); a stale
+    Hot Index pin updates; an ambiguous link repair and any path/alias
+    collision refuse. A pure computation shared by any route — never a
+    persisted proposal.
     """
     resolved_title = (title or "").strip()
     if not resolved_title:
@@ -881,7 +938,7 @@ def assemble_page_rename_candidate(
             None, new_category, PurePosixPath(page.path).name
         )
         moving = new_relative != page.path
-    if not renaming and not moving and aliases is None:
+    if not renaming and not moving and aliases is None and not keep_old_title_alias:
         raise ProposalPipelineError(
             "page rename requires a new title, a target category, or an explicit "
             "alias choice (nothing to change)"
@@ -899,8 +956,39 @@ def assemble_page_rename_candidate(
         if any(not alias for alias in cleaned_aliases):
             raise ProposalPipelineError("aliases must be non-empty strings")
         data["aliases"] = cleaned_aliases
+    if keep_old_title_alias and renaming:
+        # ADR-0016: the old title stays reachable as an EXPLICIT alias choice,
+        # added to whatever alias set this edit produces.
+        effective = list(data.get("aliases") or [])
+        if resolved_title not in effective:
+            effective.append(resolved_title)
+        data["aliases"] = effective
     frontmatter = yaml.encode(data).decode("utf-8").strip()
     renamed_markdown = f"---\n{frontmatter}\n---\n{body}"
+    if moving:
+        # D2: a moved page's path-resolved OUTBOUND links keep their pre-move
+        # targets — rewritten to the resolved target's root-absolute path so
+        # the new directory (even with a same-basename different Entity)
+        # cannot silently misroute them. Mirrors the shared path-resolution
+        # convention (source-dir-relative first, then global; never guessed).
+        renamed_markdown = _pin_outbound_path_targets(
+            renamed_markdown, page.path, kb.pages, exclude_title=resolved_title
+        )
+    if renaming:
+        # D2: the renamed page's OWN old-title references repair too (labels
+        # preserved by the shared replacement patterns).
+        _own_data, _own_body, own_body_start = parse_frontmatter(
+            renamed_markdown, Path(new_relative)
+        )
+        renamed_markdown, _changed, _ambiguous = _repair_body_links_for_merge(
+            renamed_markdown,
+            new_relative,
+            own_body_start,
+            resolved_title,
+            resolved_new_title,
+            new_relative,
+            kb.pages,
+        )
     proposed_pages: list[ProposedPage] = [
         ProposedPage(
             relative_path=new_relative,
@@ -910,10 +998,12 @@ def assemble_page_rename_candidate(
             move_from_path=page.path if moving else None,
         )
     ]
-    # Repair exactly-resolved incoming body links when the title changes —
-    # the same never-guess resolver the Entity Merge uses (ADR-0021).
+    # Repair exactly-resolved incoming body links on BOTH renames and moves
+    # — the same never-guess resolver the Entity Merge uses (ADR-0021). On a
+    # move-only edit the title stays stable, so exactly the path-resolved
+    # incoming links retarget to the new location.
     ambiguous_links: list[str] = []
-    if renaming:
+    if renaming or moving:
         for other in kb.pages:
             if not other.path or other.title == resolved_title:
                 continue
@@ -934,7 +1024,7 @@ def assemble_page_rename_candidate(
                 kb.pages,
             )
             ambiguous_links.extend(ambiguous)
-            if changed:
+            if changed and repaired != markdown:
                 proposed_pages.append(
                     ProposedPage(relative_path=other.path, title=other.title, markdown=repaired)
                 )

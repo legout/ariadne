@@ -3537,3 +3537,250 @@ def test_dream_semantic_stage_composes_link_repairs_into_one_apply(tmp_path, mon
     # path-link form) in the SAME single revision.
     assert "[Target Page](target.md)" in edited
     assert "The Target Page carries" not in edited
+
+
+# ---------------------------------------------------------------------------
+# G3-R (plan 0008 r12): native source-writer safety/registration residuals
+# (D4/D5) and the composed link-before-frontmatter dream repair (D3).
+# ---------------------------------------------------------------------------
+
+
+def _residual_git_kb(tmp_path: Path) -> tuple[Path, Path]:
+    """A committed manifest-bearing Git worktree KB plus its repo root."""
+    from test_git_authoring import _commit, _init_repo, _write_kb
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    return repo, kb
+
+
+def test_native_source_writers_refuse_unsafe_private_selections(tmp_path, capsys):
+    """D4 (spec 0008 §3.2): the native register/candidate/dismiss/confirm
+    writers reuse the repository-relative tracked-original/tracked-registry
+    and inside-KB refusal BEFORE any private byte is written."""
+    from lumio_wiki.source_registry import SourceRegistry
+
+    repo, kb = _residual_git_kb(tmp_path)
+    tracked_registry = repo / "tracked-private"
+    tracked_registry.mkdir()
+    SourceRegistry(tracked_registry).register_source("unsafe-doc", b"seed bytes")
+    from test_git_authoring import _commit
+
+    _commit(repo)
+    original = tmp_path / "original.txt"
+    original.write_bytes(b"operator original bytes")
+
+    code = main(
+        [
+            "source",
+            "--source-registry",
+            str(tracked_registry),
+            "register",
+            str(kb),
+            "--file",
+            str(original),
+            "--source-id",
+            "unsafe-doc",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1, captured.out
+    assert "Git-tracked" in captured.err
+    # No private write happened: the registry still holds only the seed.
+    assert len(SourceRegistry(tracked_registry).get("unsafe-doc").versions) == 1
+
+    # A Git-tracked --file original is refused too (untracked registry).
+    untracked_registry = tmp_path / "untracked-registry"
+    tracked_original = repo / "tracked-original.txt"
+    tracked_original.write_bytes(b"tracked original bytes")
+    _commit(repo)
+    code = main(
+        [
+            "source",
+            "--source-registry",
+            str(untracked_registry),
+            "register",
+            str(kb),
+            "--file",
+            str(tracked_original),
+            "--source-id",
+            "fresh-doc",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1, captured.out
+    assert "Git-tracked" in captured.err
+    assert all(s.source_id != "fresh-doc" for s in SourceRegistry(untracked_registry).list())
+
+    # A registry inside the KB subtree is refused before any write.
+    inside_registry = kb / "inside-registry"
+    code = main(
+        [
+            "source",
+            "--source-registry",
+            str(inside_registry),
+            "register",
+            str(kb),
+            "--file",
+            str(original),
+            "--source-id",
+            "another-doc",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1, captured.out
+    assert "OUTSIDE the authoring Knowledge Base subtree" in captured.err
+    assert not inside_registry.exists()
+
+
+def test_native_register_converges_and_extends_history(tmp_path, capsys):
+    """D5 (spec 0008 §3.2): native register uses the exact-version
+    primitive — an identical retry converges (reused), different bytes
+    extend the immutable history, and Git lifecycle intent/pins stay
+    untouched until an explicit authoring change."""
+    import hashlib
+
+    from lumio_wiki.source_references import parse_source_reference_manifest
+    from lumio_wiki.source_registry import SourceRegistry
+    from test_git_authoring import SOURCE_REFERENCE_MANIFEST_BASENAME
+
+    repo, kb = _residual_git_kb(tmp_path)
+    registry_root = tmp_path / "registry"
+    original = tmp_path / "doc.txt"
+    original.write_bytes(b"first bytes")
+
+    def _register() -> str:
+        code = main(
+            [
+                "source",
+                "--source-registry",
+                str(registry_root),
+                "register",
+                str(kb),
+                "--file",
+                str(original),
+                "--source-id",
+                "native-doc",
+            ]
+        )
+        out = capsys.readouterr()
+        assert code == 0, out.out + out.err
+        return out.out
+
+    out = _register()
+    assert "registered" in out
+    # Identical retry converges.
+    out = _register()
+    assert "reused" in out
+    # Different bytes extend the immutable history without Git intent change.
+    original.write_bytes(b"second, different bytes")
+    out = _register()
+    assert "registered" in out
+    source = SourceRegistry(registry_root).get("native-doc")
+    assert [version.content_hash for version in source.versions] == [
+        hashlib.sha256(b"first bytes").hexdigest(),
+        hashlib.sha256(b"second, different bytes").hexdigest(),
+    ]
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert "native-doc" not in manifest.sources
+    assert not manifest.bindings
+
+
+def test_dream_composes_link_repairs_before_frontmatter_shifts_coordinates(
+    tmp_path, monkeypatch, capsys
+):
+    """D3: a semantic frontmatter edit (inline YAML normalizes to block
+    style, shifting body lines) must not lose the compatible selected link
+    repair — the deterministic mention repair composes FIRST from the
+    ORIGINAL coordinates and the semantic edit composes on top; ONE apply
+    carries both."""
+    import contextlib
+    import io
+
+    from lumio_wiki.semantic_maintenance import (
+        SemanticDreamReviewer,
+        SemanticFinding,
+        SemanticReviewReport,
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _git(["config", "user.email", "t@example.com"], repo)
+    _git(["config", "user.name", "T"], repo)
+    kb_dir = repo / "kb"
+    kb_dir.mkdir()
+    # Inline flow-sequence frontmatter: block-style normalization on the
+    # semantic edit SHIFTS the body's absolute line numbers.
+    (kb_dir / "page.md").write_text(
+        "---\n"
+        'title: "Notes Page"\n'
+        "aliases: []\n"
+        "tags: [t]\n"
+        'summary: "Original summary."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        'sources:\n  - title: "Notes source"\n'
+        "synthetic: false\n"
+        "---\n\n"
+        "# Notes Page\n\n"
+        "The Target Page carries the detail.\n",
+        encoding="utf-8",
+    )
+    (kb_dir / "target.md").write_text(
+        "---\n"
+        'title: "Target Page"\n'
+        "aliases: []\n"
+        'tags:\n  - "t"\n'
+        'summary: "Target summary."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        'sources:\n  - title: "Target source"\n'
+        "synthetic: false\n"
+        "---\n\n"
+        "# Target Page\n\n"
+        "Body.\n",
+        encoding="utf-8",
+    )
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "base"], repo)
+
+    def _stub_review(self):
+        import lumio_wiki as lw
+
+        kb, _report = lw.load_knowledge_base(kb_dir)
+        return SemanticReviewReport(
+            pages=tuple(kb.pages),
+            findings=(
+                SemanticFinding(
+                    kind="summary",
+                    pages=("page.md",),
+                    reason="Rewrite for clarity.",
+                    summary="Composed page summary.",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(SemanticDreamReviewer, "review", _stub_review)
+    monkeypatch.setenv("LUMIO_PROVIDER_MODEL", "fake-model")
+    monkeypatch.setattr(SemanticDreamReviewer, "_build_client", staticmethod(lambda: object()))
+
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(["dream", str(kb_dir), "--semantic", "--stage", "--limit", "4"])
+    assert code in (0, 1), err.getvalue()
+    stdout = out.getvalue()
+    assert "semantic_applied_pages: 1" in stdout
+
+    import msgspec.yaml as yaml
+
+    edited = (kb_dir / "page.md").read_text(encoding="utf-8")
+    data = yaml.decode(edited.split("---")[1])
+    # BOTH the semantic summary replacement AND the deterministic mention
+    # repair (from the ORIGINAL coordinates) landed in ONE page revision.
+    assert data["summary"] == "Composed page summary."
+    assert "[Target Page](target.md)" in edited
+    assert "The Target Page carries" not in edited

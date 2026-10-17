@@ -3003,6 +3003,7 @@ def ingest_into_worktree(
     source_registry: SourceRegistry,
     artifact_store: SourceArtifactStore | None = None,
     raw_source_path: str | Path | None = None,
+    persist_observation=None,
 ) -> WorktreeIngestResult:
     """Register private provenance and write ordinary files into the worktree.
 
@@ -3017,6 +3018,13 @@ def ingest_into_worktree(
     authoring-file writes, so a refused target preserves the author's files;
     a mid-write failure restores them through the mutation backup. The CLI
     supplies ``raw_source_path`` so tracked raw inputs are refused too.
+
+    D6: ``persist_observation(source_id, content_hash)`` — the ONE shared
+    native hook for required private observation records (URL/research/
+    capture) — runs after the safety preflight and BEFORE the final worktree
+    apply, so an unpersistable observation refuses the edit while the
+    worktree is still untouched (the immutable registration may remain, as
+    private append-only history). Storage failures map to a bounded error.
     """
     from lumio_wiki.ingest import (
         _authored_page_declares_source,
@@ -3026,7 +3034,7 @@ def ingest_into_worktree(
     from lumio_wiki.knowledge_base import load_knowledge_base
 
     kb_path = Path(kb_root).resolve()
-    manifest = load_source_reference_manifest(kb_path)
+    manifest = _load_authoring_manifest(kb_path)
     if manifest is None:
         raise GitAuthoringError(
             f"no {SOURCE_REFERENCE_MANIFEST_BASENAME} beside the Knowledge Base: "
@@ -3131,6 +3139,19 @@ def ingest_into_worktree(
         "managed ingest",
         registry=source_registry,
     )
+    if persist_observation is not None:
+        try:
+            persist_observation(source_id, version.content_hash)
+        except GitAuthoringError:
+            raise
+        except OSError as exc:
+            raise GitAuthoringError(
+                "the required private provenance observation for "
+                f"{source_id!r} could not be persisted to the selected registry "
+                f"before the worktree edit ({exc}); the authoring files were not "
+                "written — the immutable registration may remain in private "
+                "history and the ingest can be retried"
+            ) from exc
 
     backup = MutationBackup("git-authoring-ingest")
     try:
@@ -3203,7 +3224,7 @@ def _refuse_invalid_candidate(report, operation: str) -> None:
         raise GitAuthoringError(f"{operation} candidate failed validation: {report}")
 
 
-def _candidate_page_record(page):
+def _candidate_page_record(page, existing_markdown: str | None = None):
     """A CompiledPage-like record parsed from one proposed page's markdown.
 
     ``validate_source_references`` reads only ``.pages`` with ``id``, ``title``,
@@ -3211,14 +3232,24 @@ def _candidate_page_record(page):
     page's declared identity, not the pre-edit tree's (F1: revised/new
     Entities are part of the fully applied candidate the manifest is
     validated against — only true deletions leave the view).
+
+    D1 (spec 0008 §3.1/§6): for an explicitly compound revision the EFFECTIVE
+    page content is the additive provenance merge — computed by the very
+    function apply/validation use (``merge_compound_sources``) — so the
+    manifest view sees the retained prior Sources together with the incoming
+    ones. No parallel source-merge algorithm exists here.
     """
     from types import SimpleNamespace
 
     from lumio_wiki.knowledge_base import _as_sources as as_sources
     from lumio_wiki.knowledge_base import _parse_frontmatter
+    from lumio_wiki.publish import merge_compound_sources
 
+    effective_markdown = page.markdown
+    if existing_markdown is not None and getattr(page, "compound_revision", False):
+        effective_markdown = merge_compound_sources(page.markdown, existing_markdown)
     try:
-        data, _body, _line = _parse_frontmatter(page.markdown, Path(page.relative_path))
+        data, _body, _line = _parse_frontmatter(effective_markdown, Path(page.relative_path))
     except Exception as exc:
         raise GitAuthoringError(
             f"cannot parse the proposed page at {page.relative_path!r} for the "
@@ -3245,13 +3276,21 @@ def _candidate_pages_view(kb, candidate_pages=(), removed_titles=()):
     from types import SimpleNamespace
 
     superseded = {title for title in removed_titles if title}
+    existing_by_title = {page.title: page for page in kb.pages if page.path}
     parsed = []
     for page in candidate_pages:
         superseded.add(page.title)
         rename_from = getattr(page, "rename_from", None)
         if rename_from:
             superseded.add(rename_from)
-        parsed.append(_candidate_page_record(page))
+        existing = existing_by_title.get(page.title)
+        existing_markdown = None
+        if existing is not None:
+            try:
+                existing_markdown = (Path(kb.root) / existing.path).read_text(encoding="utf-8")
+            except OSError:
+                existing_markdown = None
+        parsed.append(_candidate_page_record(page, existing_markdown=existing_markdown))
     kept = [page for page in kb.pages if page.title not in superseded]
     return SimpleNamespace(pages=[*kept, *parsed])
 
@@ -3303,6 +3342,46 @@ def _manifest_without_entities(
             sources=manifest.sources,
             bindings=bindings,
         )
+    )
+
+
+def _load_authoring_manifest(kb_path: Path) -> SourceReferenceManifest | None:
+    """Load the Source Reference Manifest with bounded strict errors (D7).
+
+    Spec 0008 §3.1: an unsupported/malformed manifest fails with a
+    diagnostic rather than being ignored — at the native owner boundary
+    that diagnostic is the bounded ``GitAuthoringError`` the CLI maps to
+    its error contract, never an escaping ``SourceReferenceError``.
+    """
+    try:
+        return load_source_reference_manifest(kb_path)
+    except SourceReferenceError as exc:
+        raise GitAuthoringError(
+            f"the {SOURCE_REFERENCE_MANIFEST_BASENAME} beside the Knowledge Base "
+            f"is invalid ({exc}); fix the manifest before this operation"
+        ) from exc
+
+
+def refuse_unsafe_private_selection(
+    kb_root: str | Path, source_registry, *, raw_source_path: str | Path | None = None
+) -> None:
+    """The shared private-selection safety preflight for native writers (D4).
+
+    Spec 0008 §3.2: Git-tracked raw inputs/registries and private state
+    inside the Knowledge Base subtree are refused BEFORE any private byte
+    is written — the same guards managed ingest and reactivation use,
+    reused by the native source lifecycle writers
+    (register/candidate/dismiss/confirm) instead of reimplemented.
+    """
+    kb_path = Path(kb_root).resolve()
+    repo_root, _subtree = resolve_repository(kb_path)
+    registry_root = _registry_root(source_registry)
+    _refuse_private_selection_inside_tree(kb_path, registry_root)
+    _refuse_tracked_private_paths(
+        repo_root,
+        "raw input/source registry",
+        Path(raw_source_path) if raw_source_path is not None else None,
+        registry_root,
     )
 
 
@@ -3417,7 +3496,7 @@ def remove_page_in_worktree(
         raise GitAuthoringError(str(exc)) from exc
     _refuse_invalid_candidate(candidate.validation_report, "page removal")
     excluded = frozenset(candidate.removed_titles)
-    manifest = load_source_reference_manifest(kb_path)
+    manifest = _load_authoring_manifest(kb_path)
     manifest_rewrite = None
     if manifest is not None:
         removed_ids = frozenset(page.id for page in kb.pages if page.title in excluded and page.id)
@@ -3472,7 +3551,7 @@ def merge_entities_in_worktree(
         raise GitAuthoringError(str(exc)) from exc
     _refuse_invalid_candidate(candidate.validation_report, "entity merge")
     excluded = frozenset(candidate.removed_titles)
-    manifest = load_source_reference_manifest(kb_path)
+    manifest = _load_authoring_manifest(kb_path)
     manifest_rewrite = None
     if manifest is not None:
         # F3 (spec 0008 §6): a merge transfers the retired Entity's exact
@@ -3553,7 +3632,7 @@ def write_pages_into_worktree(
 
     report = validate_candidate_knowledge_base(proposed_pages, kb_path, control_file=control_file)
     _refuse_invalid_candidate(report, operation)
-    manifest = load_source_reference_manifest(kb_path)
+    manifest = _load_authoring_manifest(kb_path)
     if manifest is not None:
         _refuse_manifest_drift(manifest, _candidate_pages_view(kb, proposed_pages), operation)
     written, deleted = _apply_worktree_candidate(kb_path, proposed_pages, control_file=control_file)
@@ -3597,7 +3676,7 @@ def revise_pages_in_worktree(
 
     report = validate_candidate_knowledge_base(proposed, kb_path)
     _refuse_invalid_candidate(report, operation)
-    manifest = load_source_reference_manifest(kb_path)
+    manifest = _load_authoring_manifest(kb_path)
     if manifest is not None:
         _refuse_manifest_drift(manifest, _candidate_pages_view(kb, proposed), operation)
     written, _deleted = _apply_worktree_candidate(kb_path, proposed)
@@ -3630,7 +3709,7 @@ def import_graph_into_worktree(
     except GraphImportError as exc:
         raise GitAuthoringError(str(exc)) from exc
     _refuse_invalid_candidate(candidate.validation_report, "graph import")
-    manifest = load_source_reference_manifest(kb_path)
+    manifest = _load_authoring_manifest(kb_path)
     if manifest is not None:
         _refuse_manifest_drift(
             manifest, _candidate_pages_view(kb, candidate.proposed_pages), "graph import"
@@ -3668,7 +3747,7 @@ def retire_source_in_worktree(
     """
     kb_path = Path(kb_root).resolve()
     kb = _load_valid_authoring_kb(kb_path)
-    manifest = load_source_reference_manifest(kb_path)
+    manifest = _load_authoring_manifest(kb_path)
     if manifest is None:
         raise GitAuthoringError(
             f"native source retirement requires adopting the "
@@ -3785,7 +3864,7 @@ def reactivate_source_in_worktree(
     """
     kb_path = Path(kb_root).resolve()
     kb = _load_valid_authoring_kb(kb_path)
-    manifest = load_source_reference_manifest(kb_path)
+    manifest = _load_authoring_manifest(kb_path)
     if manifest is None:
         raise GitAuthoringError(
             f"native source reactivation requires adopting the "
@@ -3866,15 +3945,8 @@ def reactivate_source_in_worktree(
     # F6 (spec 0008 §3.2): the complete safety preflight runs BEFORE any
     # private version/metadata write — a refused authoring mutation must
     # never have already extended the selected private history.
+    refuse_unsafe_private_selection(kb_path, source_registry, raw_source_path=raw_source_path)
     repo_root, _subtree = resolve_repository(kb_path)
-    registry_root = _registry_root(source_registry)
-    _refuse_private_selection_inside_tree(kb_path, registry_root)
-    _refuse_tracked_private_paths(
-        repo_root,
-        "raw input/source registry",
-        Path(raw_source_path) if raw_source_path is not None else None,
-        registry_root,
-    )
     _refuse_unsafe_worktree_mutation(
         repo_root,
         kb_path,
@@ -3921,16 +3993,20 @@ def rename_page_in_worktree(
     new_title: str | None = None,
     new_category: str | None = None,
     aliases: Sequence[str] | None = None,
+    keep_old_title_alias: bool = False,
 ) -> WorktreeMutationResult:
     """Rename, recategorize, and/or re-alias one Compiled Page as worktree edits.
 
     Required G3 completion (spec 0008 §6, ADR-0016): the reviewed title
     rename primitive with optional Content Category move and an explicit
-    alias choice. Stable Entity/Claim IDs, Sources, and provenance are
-    preserved; incoming exactly-resolved body links retarget; a stale Hot
-    Index pin updates; ambiguous link repairs and path/alias collisions
-    refuse; the complete candidate (pages, Control File, Source Reference
-    Manifest) validates before anything is written.
+    alias choice; ``keep_old_title_alias`` keeps the old title reachable as
+    an explicit ADR-0016 disposition. Stable Entity/Claim IDs, Sources, and
+    provenance are preserved; exactly-resolved incoming body links retarget
+    on renames AND moves; the moved page's outbound path-resolved links
+    keep their pre-move targets; a stale Hot Index pin updates; ambiguous
+    link repairs and path/alias collisions refuse; the complete candidate
+    (pages, Control File, Source Reference Manifest) validates before
+    anything is written.
     """
     from lumio_wiki.proposal_pipeline import (
         ProposalPipelineError,
@@ -3946,11 +4022,12 @@ def rename_page_in_worktree(
             new_title=new_title,
             new_category=new_category,
             aliases=list(aliases) if aliases is not None else None,
+            keep_old_title_alias=keep_old_title_alias,
         )
     except ProposalPipelineError as exc:
         raise GitAuthoringError(str(exc)) from exc
     _refuse_invalid_candidate(candidate.validation_report, "page rename")
-    manifest = load_source_reference_manifest(kb_path)
+    manifest = _load_authoring_manifest(kb_path)
     if manifest is not None:
         _refuse_manifest_drift(
             manifest, _candidate_pages_view(kb, candidate.proposed_pages), "page rename"

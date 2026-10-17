@@ -944,3 +944,59 @@ def test_native_research_ingest_persists_consulted_provenance(tmp_path):
     # Private consulted provenance never entered the public page.
     page_text = (kb / "concepts" / "workbench_press.md").read_text(encoding="utf-8")
     assert "https://example.com/primary" not in page_text
+
+
+def test_observation_persistence_failure_refuses_edit_before_worktree_write(
+    tmp_path, local_server, monkeypatch
+):
+    """D6 (G3-R): a required private observation that cannot be persisted
+    refuses the ingest BEFORE the final worktree apply — the command returns
+    a bounded error, no authoring file is written, and the immutable
+    registration may remain in private history (disclosed, convergent)."""
+    import contextlib
+    import io
+
+    from lumio_wiki.cli import main
+    from test_git_authoring import _authored_ingest_page, _commit, _init_repo, _write_kb
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    registry = tmp_path / "registry"
+
+    def _failing_atomic_write(path, data):
+        raise OSError("provenance storage unavailable")
+
+    monkeypatch.setattr("lumio_wiki.private_provenance.atomic_write_bytes", _failing_atomic_write)
+
+    page = tmp_path / "page.md"
+    page.write_text(_authored_ingest_page("example-page"))
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(
+            [
+                "ingest-url",
+                str(kb),
+                f"{local_server}/final.html",
+                "--compiled-page",
+                str(page),
+                "--source-id",
+                "example-page",
+                "--allow-http",
+                "--allow-private-destination",
+                "--source-registry",
+                str(registry),
+            ]
+        )
+    assert code == 1, out.getvalue()
+    message = err.getvalue()
+    assert "private provenance observation" in message
+    assert "Traceback" not in message
+    # The authoring worktree was NOT touched: no page file, no manifest edit.
+    assert not (kb / "concepts" / "workbench_press.md").exists()
+    from lumio_wiki.source_registry import SourceRegistry
+
+    # The immutable registration MAY remain as private history (convergent
+    # on retry) — never silently claimed absent.
+    sources = [s.source_id for s in SourceRegistry(registry).list()]
+    assert "example-page" in sources

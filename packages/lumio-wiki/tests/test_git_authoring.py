@@ -2950,3 +2950,212 @@ def test_reactivation_pins_explicitly_selected_entities(tmp_path):
         hashlib.sha256(b"never declared by any page").hexdigest(),
         hashlib.sha256(b"replacement bytes for the unused doc").hexdigest(),
     ]
+
+
+# ---------------------------------------------------------------------------
+# G3-R (plan 0008 r12): focused residual regressions for the accepted D1–D7.
+# Expectations derive from fixture bytes, hand-worked manifests, structural
+# YAML, and the SHA-256 oracle — never from implementation output.
+# ---------------------------------------------------------------------------
+
+
+def test_compound_revision_keeps_retained_source_pin(tmp_path):
+    """D1 (spec 0008 §3.1/§6): an explicitly compound revision adds the new
+    source while the manifest view derives from the SAME effective
+    destination content apply/validation produce — the retained prior Source
+    and its exact pin stay valid; no pin is dropped and no prior Source must
+    be manually repeated."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+    _ingest_operator_manual(tmp_path, repo, kb, registry)
+
+    service_bytes = b"Service bulletin: verify the ram annually."
+    service_digest = hashlib.sha256(service_bytes).hexdigest()
+    compound = (
+        _authored_ingest_page("operator-manual")
+        .replace(
+            '  - id: "operator-manual"\n    title: "Operator manual"\n',
+            '  - id: "service-manual"\n    title: "Service bulletin"\n',
+        )
+        .replace(
+            "synthetic: false\n",
+            "synthetic: false\ncompound_revision: true\n",
+        )
+    )
+    service_file = tmp_path / "service.txt"
+    service_file.write_bytes(service_bytes)
+    compiled2 = tmp_path / "press2.md"
+    compiled2.write_text(compound)
+    code = main(
+        [
+            "ingest",
+            str(kb),
+            str(service_file),
+            "--compiled-page",
+            str(compiled2),
+            "--source-id",
+            "service-manual",
+            "--source-registry",
+            str(registry.root),
+        ]
+    )
+    assert code == 0
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    # The effective compound page declares BOTH sources; BOTH exact pins
+    # remain (the retained one untouched).
+    assert manifest.bindings["entity:workbench-press"]["operator-manual"] == A_DIGEST
+    assert manifest.bindings["entity:workbench-press"]["service-manual"] == service_digest
+    page_text = (kb / "concepts" / "workbench_press.md").read_text(encoding="utf-8")
+    import msgspec.yaml as yaml
+
+    effective = yaml.decode(page_text.split("---")[1])
+    assert {source["id"] for source in effective["sources"]} == {
+        "operator-manual",
+        "service-manual",
+    }
+
+
+def test_rename_move_preserves_exact_references_and_alias_disposition(tmp_path, capsys):
+    """D2 (spec 0008 §6, ADR-0016): a move-only edit retargets incoming
+    path-resolved links; a moved page's outbound relative link KEEPS its
+    pre-move target even when the new directory holds a same-basename
+    different Entity; the renamed page's own old-title references repair;
+    and the old-title keep/drop disposition is explicit and disclosed."""
+    pages = {
+        "concepts/hydraulic-press.md": _entity_page(
+            "Hydraulic Press",
+            "entity:hydraulic-press",
+            ["press"],
+            body_sections=(
+                "## Overview\n\n"
+                "See [[Hydraulic Press]] maintenance notes; the fixture detail is in "
+                "[the blank](b.md).\n"
+            ),
+        ),
+        "concepts/b.md": _entity_page("Concept Blank", "entity:concept-blank", ["material"]),
+        "reference/b.md": _entity_page("Reference Blank", "entity:reference-blank", ["material"]),
+        "concepts/press-guide.md": _entity_page(
+            "Press Guide",
+            "entity:press-guide",
+            ["press"],
+            body_sections=(
+                "## Overview\n\n"
+                "The machine is documented at [the press](concepts/hydraulic-press.md).\n"
+            ),
+        ),
+    }
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo, control=CONTROL_V2_TWO_CATEGORIES, pages=pages)
+    _commit(repo)
+
+    # --- Move-only: the incoming path link retargets, the outbound link
+    # keeps its pre-move target (Concept Blank), the guide's page is
+    # untouched beyond the retarget. ---
+    code = main(["rename-page", str(kb), "Hydraulic Press", "--category", "reference"])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    moved = (kb / "reference" / "hydraulic-press.md").read_text(encoding="utf-8")
+    assert "[the blank](concepts/b.md)" in moved
+    assert "[the blank](b.md)" not in moved
+    guide = (kb / "concepts" / "press-guide.md").read_text(encoding="utf-8")
+    assert "[the press](reference/hydraulic-press.md)" in guide
+    assert "[the press](concepts/hydraulic-press.md)" not in guide
+    assert not (kb / "concepts" / "hydraulic-press.md").exists()
+    _commit(repo)
+
+    # --- Rename with an explicit keep/drop disposition: the own old-title
+    # self-reference repairs, and the disposition is disclosed. ---
+    code = main(["rename-page", str(kb), "Hydraulic Press", "--to", "Hydraulic Ram Press"])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "old title:" in out  # the ADR-0016 disposition is disclosed
+    assert "dropped" in out
+    renamed = (kb / "reference" / "hydraulic-press.md").read_text(encoding="utf-8")
+    assert "[[Hydraulic Ram Press]] maintenance notes" in renamed
+    assert "[[Hydraulic Press]]" not in renamed
+    _commit(repo)
+
+    # --- The explicit KEEP keeps the old title reachable as an alias. ---
+    code = main(
+        [
+            "rename-page",
+            str(kb),
+            "Hydraulic Ram Press",
+            "--to",
+            "Hydraulic Shop Press",
+            "--keep-old-title-alias",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "kept as an alias" in out
+    import msgspec.yaml as yaml
+
+    data = yaml.decode(
+        (kb / "reference" / "hydraulic-press.md").read_text(encoding="utf-8").split("---")[1]
+    )
+    assert data["title"] == "Hydraulic Shop Press"
+    assert "Hydraulic Ram Press" in data["aliases"]
+    _commit(repo)
+
+    # --- The explicit empty replacement set is expressible. ---
+    code = main(
+        ["rename-page", str(kb), "Hydraulic Shop Press", "--to", "Shop Press", "--clear-aliases"]
+    )
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "(explicitly cleared)" in out
+    data = yaml.decode(
+        (kb / "reference" / "hydraulic-press.md").read_text(encoding="utf-8").split("---")[1]
+    )
+    assert data["aliases"] == []
+
+
+def test_strict_manifest_error_is_bounded_cli_error(tmp_path, capsys):
+    """D7 (plan r12): an invalid intermediate manifest surfaces as the
+    command's bounded diagnostic through the native owner/CLI boundary —
+    never an escaping SourceReferenceError traceback."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    manifest_file = kb / SOURCE_REFERENCE_MANIFEST_BASENAME
+    manifest_file.write_text(
+        manifest_file.read_text(encoding="utf-8") + "  duplicate-key: also-here\n",
+        encoding="utf-8",
+    )
+    _commit(repo)
+
+    code = main(["remove-page", str(kb), "Hydraulic Press"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "invalid" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_incomplete_rollback_is_bounded_cli_error(tmp_path, capsys, monkeypatch):
+    """D7 (plan r12): the shared rollback error maps through the actual
+    remove-page CLI caller, retaining its failed paths and backup location."""
+    from lumio_wiki import git_authoring
+    from lumio_wiki.mutation import MutationBackup
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+
+    def _failing_apply(pages, root, **kwargs):
+        raise OSError("disk went away during apply")
+
+    def _failing_restore(self, root, **kwargs):
+        return ["concepts/hydraulic-press.md (restoration failed: disk went away)"]
+
+    monkeypatch.setattr(git_authoring, "apply_proposed_pages", _failing_apply)
+    monkeypatch.setattr(MutationBackup, "restore_all", _failing_restore)
+    code = main(["remove-page", str(kb), "Hydraulic Press"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "concepts/hydraulic-press.md" in captured.err
+    assert "retained" in captured.err
+    assert "Traceback" not in captured.err

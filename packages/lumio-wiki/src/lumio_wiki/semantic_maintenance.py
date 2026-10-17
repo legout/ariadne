@@ -319,25 +319,32 @@ class SemanticDreamReviewer:
         return SemanticStagingResult(tuple(staged), tuple(skipped))
 
     def worktree_edits(
-        self, *, report: SemanticReviewReport | None = None
+        self,
+        *,
+        report: SemanticReviewReport | None = None,
+        base_markdowns: dict[str, str] | None = None,
     ) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[SemanticFinding, str], ...]]:
-        """Compute the explicit worktree edits for the report's findings (G3).
+        """Compute the explicit worktree edits for the report's findings (G3/D3).
 
         Spec 0008 §6: an explicit apply operation edits the selected
         authoring worktree rather than staging stored proposals. Returns
         ``(edits, skipped)`` where ``edits`` are ``(page_path,
         final_markdown)`` pairs — at most ONE per page — and ``skipped``
-        carries ``(finding, reason)``. F8: compatible findings targeting the
-        same page compose sequentially against the same original page into
-        one final markdown; two lifecycle-setting findings with DIFFERENT
-        targets on one page are an explicit conflict diagnostic, never a
-        last-write-wins. Read-only: applying the edits is the caller's
-        explicit worktree operation.
+        carries ``(finding, reason)``. F8/D3: compatible findings targeting
+        the same page compose sequentially into one final markdown;
+        ``base_markdowns`` seeds the composition with already-composed
+        candidate pages (e.g. deterministic link repairs computed from the
+        ORIGINAL coordinates — frontmatter normalization cannot shift
+        them). Two lifecycle-setting findings with DIFFERENT targets, or two
+        summary findings proposing DIFFERENT replacements, are explicit
+        conflict diagnostics — never a last-write-wins. Read-only: applying
+        the edits is the caller's explicit worktree operation.
         """
         report = report or self.review()
         inspected = frozenset(page.path for page in report.pages)
-        composed: dict[str, str] = {}
+        composed: dict[str, str] = dict(base_markdowns or {})
         applied_lifecycle: dict[str, str] = {}
+        applied_summary: dict[str, str] = {}
         skipped: list[tuple[SemanticFinding, str]] = []
         for finding in report.findings:
             lifecycle = self._stale_target_lifecycle(finding) if finding.kind == "stale" else None
@@ -358,6 +365,24 @@ class SemanticDreamReviewer:
                         )
                     )
                     continue
+            if finding.kind == "summary" and finding.summary:
+                conflicts = sorted(
+                    page_path
+                    for page_path in finding.pages
+                    if page_path in applied_summary
+                    and applied_summary[page_path] != finding.summary
+                )
+                if conflicts:
+                    skipped.append(
+                        (
+                            finding,
+                            "conflicting summary replacement for page(s) "
+                            + ", ".join(conflicts)
+                            + f" (already set to {applied_summary[conflicts[0]]!r}, "
+                            f"finding proposes {finding.summary!r}); resolve explicitly",
+                        )
+                    )
+                    continue
             try:
                 finding_edits = self._edits_for_finding(
                     finding, inspected, for_worktree=True, base_markdowns=composed
@@ -375,6 +400,8 @@ class SemanticDreamReviewer:
                     changed = True
                 if lifecycle is not None:
                     applied_lifecycle[page_path] = lifecycle
+                if finding.kind == "summary" and finding.summary:
+                    applied_summary[page_path] = finding.summary
             if not changed:
                 skipped.append((finding, "finding has no actionable edit"))
         return tuple(sorted(composed.items())), tuple(skipped)

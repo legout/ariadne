@@ -328,3 +328,44 @@ def test_worktree_edits_compose_compatible_findings_per_page(kb_root: Path):
     composed = yaml.decode(markdown.split("---")[1])
     assert composed["lifecycle"] == "deprecated"
     assert composed["summary"] == "Acme Corp manufactures industrial presses."
+
+
+def test_conflicting_summary_replacements_are_diagnosed(kb_root: Path):
+    """D3 (G3-R): two summary findings proposing DIFFERENT replacements for
+    the same page are an explicit conflict diagnostic — the first applied
+    edit stands, the competing one is skipped with a reason; never a silent
+    last-string winner."""
+    from lumio_wiki.semantic_maintenance import SemanticFinding, SemanticReviewReport
+
+    kb, _ = lw.load_knowledge_base(kb_root)
+    report = SemanticReviewReport(
+        pages=tuple(kb.pages),
+        findings=(
+            SemanticFinding(
+                kind="summary",
+                pages=("entities/acme.md",),
+                reason="Rewrite for clarity.",
+                summary="First replacement summary.",
+            ),
+            SemanticFinding(
+                kind="summary",
+                pages=("entities/acme.md",),
+                reason="Rewrite for accuracy.",
+                summary="Second, competing summary.",
+            ),
+        ),
+    )
+    reviewer = SemanticDreamReviewer(kb, client=_client({"findings": []}), max_pages=2)
+
+    edits, skipped = reviewer.worktree_edits(report=report)
+
+    assert len(edits) == 1
+    page_path, markdown = edits[0]
+    assert page_path == "entities/acme.md"
+    import msgspec.yaml as yaml
+
+    composed = yaml.decode(markdown.split("---")[1])
+    assert composed["summary"] == "First replacement summary."
+    conflicts = [reason for finding, reason in skipped if "conflicting summary" in reason]
+    assert conflicts, skipped
+    assert "Second, competing summary." in conflicts[0]
