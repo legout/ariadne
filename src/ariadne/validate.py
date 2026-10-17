@@ -118,6 +118,10 @@ def validator_identity(performed_checks: list[str] | tuple[str, ...]) -> dict:
         "execution": f"duckdb/{getattr(duckdb, '__version__', 'unknown')}",
         "checks": list(performed_checks),
     }
+    if "contracts" in performed_checks:
+        from ariadne.contracts import CONSUMER_PROFILE
+
+        config["contract_profile"] = CONSUMER_PROFILE
     digest = hashlib.sha256(
         json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()

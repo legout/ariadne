@@ -275,7 +275,13 @@ class AuthoringProject:
             raise ValueError(
                 f"an artifact identity is a typed object with kind one of {EDIT_KINDS}, got {got!r}"
             )
-        rel = _LAYER_EDITORS[identity["kind"]].resolve_identity(identity)
+        editor = _LAYER_EDITORS[identity["kind"]]
+        kwargs = (
+            {"project": self.project, "proposal": proposal}
+            if identity["kind"] == "contract"
+            else {}
+        )
+        rel = editor.resolve_identity(identity, **kwargs)
         return proposals.read_artifact(self.project, proposal, rel, part=part)
 
     def edit_proposal(self, proposal: str, expected_revision: str, edit: dict) -> dict:
@@ -293,7 +299,11 @@ class AuthoringProject:
                 f"{EDIT_KINDS} (typed source proposals arrive through the "
                 f"propose_sources operation), got kind {got!r}"
             )
-        rel, content = _LAYER_EDITORS[edit["kind"]].resolve_edit(edit)
+        editor = _LAYER_EDITORS[edit["kind"]]
+        kwargs = (
+            {"project": self.project, "proposal": proposal} if edit["kind"] == "contract" else {}
+        )
+        rel, content = editor.resolve_edit(edit, **kwargs)
         return proposals.edit_proposal(self.project, proposal, expected_revision, rel, content)
 
     # ------------------- G3 (issue #35): sources, approval, measured inputs
@@ -624,7 +634,9 @@ def _report_view(report) -> dict:
     }
 
 
-def _validate_view(evidence: dict, evidence_path: Path, *, idempotent: bool) -> dict:
+def _validate_view(
+    evidence: dict, evidence_path: Path, *, idempotent: bool, contract_limits: dict
+) -> dict:
     """The validate_proposal response envelope (reused verbatim by the
     idempotent no-op retry)."""
     view = {
@@ -649,12 +661,31 @@ def _validate_view(evidence: dict, evidence_path: Path, *, idempotent: bool) -> 
         "contracts": evidence.get("contracts"),
         "evidence": str(evidence_path),
     }
+    contract_view = view.get("contracts")
+    if (
+        contract_view
+        and contract_inspection.contract_content_bytes(contract_view)
+        > contract_limits["response_bytes"]
+    ):
+        view.update(ok=False, status="invalid")
+        view["errors"] = [
+            *view["errors"],
+            "contract response incomplete: operator response ceiling exceeded; "
+            "see evidence reference",
+        ]
+        compact = {"complete": False, "outcome": "refused", "reason": "response_bytes"}
+        if contract_inspection.contract_content_bytes(compact) <= contract_limits["response_bytes"]:
+            view["contracts"] = compact
+        else:
+            view.pop("contracts")  # even a compact object cannot fit this ceiling
     if idempotent:
         view["idempotent"] = True
     return view
 
 
-def _contract_evidence_eligible(project: Path, stored: dict) -> bool:
+def _contract_evidence_eligible(
+    project: Path, tree: Path, stored: dict, approval: dict | None
+) -> bool:
     """Whether the stored validation's contract evidence is still ELIGIBLE as
     the unchanged candidate's reusable passing validation (spec 0028 §6): an
     expired observation must not return as a reusable pass — the full
@@ -663,18 +694,11 @@ def _contract_evidence_eligible(project: Path, stored: dict) -> bool:
     if not contracts.get("present") or not contracts.get("bindings"):
         return True
     limits = project_inspection_limits(project)
-    observations = {
-        observation.get("binding"): observation
-        for observation in contracts.get("observations") or []
-        if isinstance(observation, dict)
-    }
-    for binding in contracts["bindings"]:
-        observation = observations.get(binding.get("id"))
-        if observation is None or contract_inspection.observation_expired(
-            observation, limits["receipt_max_age_hours"]
-        ):
-            return False
-    return True
+    return (
+        approval is not None
+        and contract_inspection.contract_content_bytes(contracts) <= limits["response_bytes"]
+        and contract_inspection.evidence_eligible(tree, contracts, approval, limits)
+    )
 
 
 def _stale_schema_binding_errors(tree: Path, approval_digest: str | None) -> list[str]:
@@ -766,12 +790,13 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             and stored.get("validator_identity")
             == validator_identity(stored.get("performed_checks") or [])
             and _document_digests_current(project, stored.get("citations") or [])
-            and _contract_evidence_eligible(project, stored)
+            and _contract_evidence_eligible(project, worktree_root, stored, approval)
         ):
             return _validate_view(
                 stored,
                 proposals._validation_path(project, proposal, current),
                 idempotent=True,
+                contract_limits=project_inspection_limits(project),
             )
         repair: dict = dict(record.get("repair") or {"attempts": 0, "status": "open"})
         if repair["attempts"] >= MAX_ROUNDS or repair["status"] == "review_needed":
@@ -868,7 +893,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 limits=contract_limits,
             )
             if contract_evidence.get("present"):
-                serialized = len(json.dumps(contract_evidence, sort_keys=True).encode("utf-8"))
+                serialized = contract_inspection.contract_content_bytes(contract_evidence)
                 if serialized > contract_limits["response_bytes"]:
                     contract_errors.append(
                         f"the serialized contract evidence is {serialized} bytes, over "
@@ -1028,7 +1053,9 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
         }
         proposals._store_record(project, record)
         evidence_path = proposals.store_validation(project, evidence)
-        return _validate_view(evidence, evidence_path, idempotent=False)
+        return _validate_view(
+            evidence, evidence_path, idempotent=False, contract_limits=contract_limits
+        )
 
 
 def _review_body(rel: str, data: bytes, *, part: int) -> dict:
@@ -1400,6 +1427,7 @@ def _review_candidate(
                 report,
                 proposals._validation_path(project, proposal, current),
                 idempotent=False,
+                contract_limits=project_inspection_limits(project),
             ),
             "validation_stale": bool(stale_reasons),
             "stale_reasons": stale_reasons,

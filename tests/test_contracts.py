@@ -18,6 +18,7 @@ import os
 import socket
 import sys
 from datetime import UTC, datetime
+from decimal import Decimal
 from importlib import resources
 from pathlib import Path
 
@@ -466,6 +467,42 @@ def test_pinned_document_validation_is_offline_and_version_exact(tmp_path, monke
     # is explicitly unsupported — never a source-compliance claim
     result_bare = contracts.validate_document(FOUR_FIELD_DOC, "bare.odcs.yaml")[1]
     assert result_bare.valid is True and result_bare.supported_version is True
+    for malformed_shape in ("schema: 1\n", "servers: 1\n", "schema: {name: orders}\n"):
+        invalid = contracts.validate_document(FOUR_FIELD_DOC + malformed_shape, "shape.yaml")[1]
+        assert invalid.valid is False and any("schema:" in error for error in invalid.errors)
+    for malformed_binding in (
+        "version: true\nbindings: []\n",
+        "version: 1\n",
+        "version: 1\nbindings: 0\n",
+        "version: 1\nbindings: {}\n",
+    ):
+        assert contracts.validate_bindings_document(malformed_binding, "contract_bindings.yaml")[1]
+    duplicate_servers = (
+        FOUR_FIELD_DOC
+        + "servers:\n"
+        + "".join(
+            f"  - id: duplicate\n    server: {name}\n    type: duckdb\n    database: orders\n"
+            for name in ("one", "two")
+        )
+    )
+    assert any(
+        "duplicate scoped id" in error
+        for error in contracts.validate_document(duplicate_servers, "servers.yaml")[1].errors
+    )
+    vendor = FOUR_FIELD_DOC + (
+        "customProperties:\n  - property: vendor\n    value: [{id: same}, {id: same}]\n"
+    )
+    assert contracts.validate_document(vendor, "vendor.yaml")[1].valid is True
+    arity = ORDERS_CONTRACT.replace(
+        "    physicalType: table",
+        "    relationships:\n"
+        "      - from: [orders.id, orders.amount]\n"
+        "        to: [orders.id]\n    physicalType: table",
+    )
+    assert any(
+        "matching arity" in error
+        for error in contracts.validate_document(arity, "arity.yaml")[1].errors
+    )
     tree = tmp_path / "bundle"
     (tree / "contracts").mkdir(parents=True)
     (tree / "contracts" / "bare.odcs.yaml").write_text(FOUR_FIELD_DOC, encoding="utf-8")
@@ -574,6 +611,7 @@ def test_git_contract_journey_preserves_producer_and_requires_live_evidence(tmp_
     unbound_project = contract_project(tmp_path / "unbound")
     unbound_api = AuthoringProject(unbound_project)
     docs_only = unbound_api.start_proposal()
+    approved(unbound_api, unbound_project, docs_only)
     edited = unbound_api.edit_proposal(
         docs_only["proposal"],
         docs_only["candidate_revision"],
@@ -586,6 +624,57 @@ def test_git_contract_journey_preserves_producer_and_requires_live_evidence(tmp_
     unbound_review = unbound_api.review_proposal(docs_only["proposal"])
     assert admit(unbound_project, unbound_review) == 0
     assert read_current(unbound_project)["contracts"]["bindings"] == []
+    unbound_discovery = DiscoveryRuntime.open_project(unbound_project)
+    (document_only,) = asyncio.run(unbound_discovery.discover("orders"))["groups"]["contracts"][
+        "items"
+    ]
+    assert document_only["binding"] is None and document_only["observation"] is None
+    bounded = asyncio.run(unbound_discovery.discover("orders", limit=0))["groups"]["contracts"]
+    assert bounded["items"] == [] and bounded["complete"] is False
+    assert (
+        asyncio.run(unbound_discovery.discover("unmatched"))["groups"]["contracts"]["items"] == []
+    )
+
+    # Initial inventory in an already initialized, unborn Git repo includes
+    # both suffixes and the fixed binding; typed reads/edits retain .yml.
+    initial = tmp_path / "initial"
+    (initial / "contracts").mkdir(parents=True)
+    (initial / "contracts" / "orders.yml").write_text(ORDERS_CONTRACT)
+    (initial / "contracts" / "bare.yaml").write_text(FOUR_FIELD_DOC)
+    (initial / "contract_bindings.yaml").write_text("version: 1\nbindings: []\n")
+    run_git(initial, "init", "-q")
+    run_git(initial, "config", "user.name", "Ariadne Tests")
+    run_git(initial, "config", "user.email", "tests@ariadne.local")
+    initial_api = AuthoringProject(initial)
+    inherited = initial_api.start_proposal()
+    assert {rel for rel, _ in proposals.scope_blobs(initial, inherited["candidate_revision"])} == {
+        "contracts/orders.yml",
+        "contracts/bare.yaml",
+        "contract_bindings.yaml",
+    }
+    for name in ("orders", "orders.yml"):
+        assert (
+            initial_api.read_artifact(inherited["proposal"], {"kind": "contract", "name": name})[
+                "content"
+            ]
+            == ORDERS_CONTRACT
+        )
+    edited_yml = initial_api.edit_proposal(
+        inherited["proposal"],
+        inherited["candidate_revision"],
+        {
+            "kind": "contract",
+            "name": "orders",
+            "content": ORDERS_CONTRACT + "description: preserved suffix\n",
+        },
+    )
+    assert edited_yml["path"] == "contracts/orders.yml"
+    with pytest.raises(ValueError, match="collision"):
+        initial_api.edit_proposal(
+            inherited["proposal"],
+            edited_yml["revision"],
+            {"kind": "contract", "name": "orders.yaml", "content": ORDERS_CONTRACT},
+        )
 
 
 def contract_inspection_static_contract(api: AuthoringProject, started: dict) -> dict:
@@ -609,6 +698,10 @@ def test_bound_schema_and_required_null_drift_are_explicit(tmp_path):
     """AC3: the independently declared fixture passes; a removed column, an
     integer→string change and a NULL in a required column are actionable
     drift naming the contract; unverifiable physical metadata never passes."""
+    assert contracts.logical_type_matches("number", "DECIMAL(12,2)[]")[0] != "passed"
+    for native in ("TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS", "TIMESTAMP WITH TIME ZONE"):
+        assert contracts.logical_type_matches("timestamp", native)[0] == "passed"
+    assert contracts.compare_physical_type("TIMESTAMP_MS", "TIMESTAMP_NS")[0] == "drift"
     project = contract_project(tmp_path)
     api = AuthoringProject(project)
 
@@ -619,6 +712,21 @@ def test_bound_schema_and_required_null_drift_are_explicit(tmp_path):
     assert result["ok"] is True
 
     orders_db = project / "data" / "orders.duckdb"
+
+    # A one-table transformed projection is not the same physical dataset.
+    tree = project / proposals.WORKTREES_REL / started["proposal"]
+    model = tree / "semantic_layer" / "models" / "orders.yml"
+    original = model.read_text()
+    model.write_text(
+        original.replace(
+            "source: orders.main.orders",
+            "source: SELECT id, -amount AS amount, region FROM orders.main.orders",
+        )
+    )
+    assert any(
+        "unsupported" in error for error in contract_inspection.static_contract_checks(tree)[1]
+    )
+    model.write_text(original)
 
     # a required column removed from the source: contract drift names it
     write_native_db(
@@ -712,9 +820,9 @@ def connection_spy(monkeypatch):
     opened: list[list[str | None]] = []
     real = ariadne.sources.build_connection
 
-    def spy(registry, read_only=True, deadline=None):
+    def spy(registry, read_only=True, deadline=None, **selection):
         opened.append([src.path for src in registry.sources])
-        return real(registry, read_only, deadline=deadline)
+        return real(registry, read_only, deadline=deadline, **selection)
 
     monkeypatch.setattr(ariadne.sources, "build_connection", spy)
     return opened
@@ -744,6 +852,7 @@ def test_contract_source_and_sql_authority_precedes_execution(tmp_path, connecti
     # contract's duckdb server declaration opened nothing of its own
     approved_paths = {Path(entry).name for call in connection_spy for entry in call}
     assert approved_paths == {"orders.duckdb", "labels.duckdb"}
+    assert [Path(path).name for path in connection_spy[-1]] == ["orders.duckdb"]
     opens_with_contracts = len(connection_spy)
 
     # out-of-profile SQL is refused BEFORE execution: joins over other
@@ -753,6 +862,9 @@ def test_contract_source_and_sql_authority_precedes_execution(tmp_path, connecti
     out_of_profile = [
         # a foreign relation join (labels lives in the same registry)
         "SELECT COUNT(*) FROM {object} o JOIN labels.main.labels l ON o.id = l.event_id",
+        "SELECT COUNT(*) FROM {object} a JOIN {object} b ON a.id = b.id",
+        "SELECT 60",
+        "WITH unused AS (SELECT * FROM {object}) SELECT 60",
         # a raw file scan through a table function
         "SELECT COUNT(*) FROM read_csv('data/orders.duckdb')",
         # a metadata catalog read
@@ -823,14 +935,17 @@ def test_contract_source_and_sql_authority_precedes_execution(tmp_path, connecti
         and "NATIVE DuckDB" in error
         for error in parquet_result["errors"]
     )
-    # the schema-only profile on the non-native source stays supported: the
-    # field checks passed; only the SQL rules were refused as unsupported
-    assert not any("field_" in error for error in parquet_result["errors"])
+    # Projected adapter types cannot prove ORIGINAL physical types. Logical
+    # families and full-dataset NULL checks remain independently supported.
+    assert any(
+        "field_physical_type" in error and "unsupported" in error
+        for error in parquet_result["errors"]
+    )
     (parquet_observation,) = parquet_result["contracts"]["observations"]
     field_outcomes = {
         req["outcome"]
         for req in parquet_observation["requirements"]
-        if req["kind"].startswith("field_")
+        if req["kind"] in ("field_logical_type", "field_required")
     }
     assert field_outcomes == {"passed"}
 
@@ -947,6 +1062,9 @@ def test_scalar_quality_obeys_pinned_comparison_and_result_semantics(tmp_path):
             # NULL and wrong cardinality are evaluation errors
             ("SELECT SUM(amount) FROM {object} WHERE id > 100", "mustBe", 0),
             ("SELECT amount FROM {object}", "mustBe", 10),
+            ("SELECT SUM(CAST(amount AS DECIMAL(18,2))) FROM {object}", "mustBe", 60),
+            ("SELECT SUM(amount) FROM {object}", "mustBe", Decimal("60.000000000000001")),
+            ("SELECT region FROM {object}", "mustBe", 0),
         ]
     )
     result = api.validate_proposal(started["proposal"], contracted(api, started, contract))
@@ -974,6 +1092,9 @@ def test_scalar_quality_obeys_pinned_comparison_and_result_semantics(tmp_path):
         ("SELECT COUNT(*) = 0 FROM {object} WHERE amount < 0", "mustBe:0"): "unsupported",
         ("SELECT SUM(amount) FROM {object} WHERE id > 100", "mustBe:0"): "error",
         ("SELECT amount FROM {object}", "mustBe:10"): "error",
+        ("SELECT SUM(CAST(amount AS DECIMAL(18,2))) FROM {object}", "mustBe:60"): "passed",
+        ("SELECT SUM(amount) FROM {object}", "mustBe:60.000000000000001"): "drift",
+        ("SELECT region FROM {object}", "mustBe:0"): "error",
     }
     for key, outcome in expected.items():
         assert by_query.get(key) == outcome, (key, outcome, by_query)
@@ -1103,24 +1224,89 @@ def test_contract_evidence_dependency_and_age_gate(tmp_path, monkeypatch, capsys
     assert fresh["observed_at"] == expired_time.isoformat(timespec="seconds")
     assert "reused" not in fresh
 
-    # an expired observation is not reused: the next validation re-observes
-    # under the restored clock instead of restamping the stale evidence
+    # Expiry uses its own real proposal: no fourth changed-candidate round,
+    # no reset/raise of MAX_ROUNDS. An identical stored report must remeasure.
+    age_project = contract_project(tmp_path / "age")
+    age_api = AuthoringProject(age_project)
+    age_started = age_api.start_proposal()
+    approved(age_api, age_project, age_started)
+    old = age_api.validate_proposal(age_started["proposal"], contracted(age_api, age_started))
+    assert old["ok"] is True
     fixed["now"] = datetime.now(UTC)
-    renewed = api.edit_proposal(
-        started["proposal"],
-        third["revision"],
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-orders-count",
-            "content": POLICY_PAGE.replace("The rule body.", "A fresh edit."),
-        },
-    )
-    renewed_result = api.validate_proposal(started["proposal"], renewed["revision"])
+    renewed_result = age_api.validate_proposal(age_started["proposal"], old["revision"])
     assert renewed_result["ok"] is True
     (renewed_observation,) = renewed_result["contracts"]["observations"]
     assert renewed_observation["observed_at"] != expired_time.isoformat(timespec="seconds")
     assert "reused" not in renewed_observation
+
+    # Source identity changes cannot transfer an old passing measurement to
+    # a separately approved source with the same columns but failing data.
+    moved_project = contract_project(tmp_path / "moved")
+    moved_api = AuthoringProject(moved_project)
+    moved = moved_api.start_proposal()
+    approved(moved_api, moved_project, moved)
+    before_move = moved_api.validate_proposal(moved["proposal"], contracted(moved_api, moved))
+    assert before_move["ok"] is True
+    write_native_db(
+        moved_project / "data" / "replacement.duckdb",
+        "orders",
+        {"id": "INTEGER", "amount": "DOUBLE", "region": "VARCHAR"},
+        [(1, 10.0, "EMEA"), (2, 20.0, "AMER"), (3, -30.0, "EMEA")],
+    )
+    moved_revision = proposals.edit_proposal(
+        moved_project,
+        moved["proposal"],
+        before_move["revision"],
+        "ariadne.yaml",
+        "sources:\n  - name: orders\n    type: duckdb\n    path: data/replacement.duckdb\n",
+    )["revision"]
+    approved(moved_api, moved_project, {**moved, "candidate_revision": moved_revision})
+    after_move = moved_api.validate_proposal(moved["proposal"], moved_revision)
+    assert after_move["ok"] is False
+    (moved_observation,) = after_move["contracts"]["observations"]
+    assert "reused" not in moved_observation
+    assert any(
+        req["kind"] == "quality_sql" and req["outcome"] == "drift"
+        for req in moved_observation["requirements"]
+    )
+
+    # A tighter execution budget does not invalidate completed historical
+    # full-scope proof. A tighter OUTPUT ceiling still caps stored responses.
+    bounds_project = contract_project(tmp_path / "bounds")
+    bounds_api = AuthoringProject(bounds_project)
+    bounds = bounds_api.start_proposal()
+    approved(bounds_api, bounds_project, bounds)
+    full = bounds_api.validate_proposal(bounds["proposal"], contracted(bounds_api, bounds))
+    assert full["ok"] is True
+    config = bounds_project / "ariadne.yaml"
+    config.write_text(config.read_text() + "inspection:\n  execution_seconds: 0.0001\n")
+    history = bounds_api.validate_proposal(bounds["proposal"], full["revision"])
+    assert history["ok"] is True and history["idempotent"] is True
+    assert (
+        history["contracts"]["observations"][0]["observed_at"]
+        == full["contracts"]["observations"][0]["observed_at"]
+    )
+    config.write_text(config.read_text() + "  response_bytes: 1\n")
+    capped = bounds_api.validate_proposal(bounds["proposal"], full["revision"])
+    assert capped["ok"] is False and "contracts" not in capped
+    assert Path(capped["evidence"]).is_file()
+
+    # Fresh oversized content is refused too, not merely labelled failed
+    # while returning the full >64KiB quality-rule description.
+    large_project = contract_project(tmp_path / "large")
+    large_api = AuthoringProject(large_project)
+    large = large_api.start_proposal()
+    approved(large_api, large_project, large)
+    long_rule = ORDERS_CONTRACT.replace(
+        "        dimension: accuracy", "        description: " + "x" * 70000, 1
+    )
+    oversized = large_api.validate_proposal(
+        large["proposal"], contracted(large_api, large, long_rule)
+    )
+    assert oversized["ok"] is False
+    assert oversized["contracts"]["complete"] is False
+    assert len(json.dumps(oversized["contracts"]).encode()) <= 64 * 1024
+    assert Path(oversized["evidence"]).is_file()
 
     # an unsupported required constraint (enum) can never pass: the declared
     # requirement blocks validation instead of being silently dropped
@@ -1136,12 +1322,19 @@ def test_contract_evidence_dependency_and_age_gate(tmp_path, monkeypatch, capsys
             contract=ORDERS_CONTRACT.replace(
                 "      - id: order_region\n        name: region\n        logicalType: string",
                 "      - id: order_region\n        name: region\n        logicalType: string\n"
-                "        enum: [EMEA, AMER]",
+                "        enum: [{value: EMEA}, {value: AMER}]",
+            ).replace(
+                "        logicalType: integer",
+                "        logicalType: integer\n        unique: true",
+                1,
             ),
         ),
     )
     assert enum_result["ok"] is False
     assert any("field_enum" in error and "unsupported" in error for error in enum_result["errors"])
+    assert any(
+        "field_unique" in error and "unsupported" in error for error in enum_result["errors"]
+    )
 
     # an EXPIRED passing observation blocks admission under the operator's
     # 24h evidence-age budget, even though its revision validated

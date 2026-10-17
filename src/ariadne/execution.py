@@ -159,7 +159,7 @@ class DuckDBExecution:
     collection and close — moved intact from the query runtime (issue #33);
     every guarded operation is the historical one, in the historical order."""
 
-    def __init__(self, registry: Registry, *, budget=None) -> None:
+    def __init__(self, registry: Registry, *, budget=None, selected_assets=None) -> None:
         """The one DuckDB session over the registry sources (ADR-0010):
         :func:`ariadne.sources.build_connection` executes its deterministic
         statement plan verbatim and returns the connection plus the per-source
@@ -171,10 +171,13 @@ class DuckDBExecution:
         guarded statements — an over-budget setup stops and reports the
         deadline, never a partial session."""
         deadline = budget.remaining() if budget is not None else None
+        selection = {"selected_assets": selected_assets} if selected_assets is not None else {}
         if deadline is not None:
-            self.con, self.catalog = sources.build_connection(registry, deadline=deadline)
+            self.con, self.catalog = sources.build_connection(
+                registry, deadline=deadline, **selection
+            )
         else:
-            self.con, self.catalog = sources.build_connection(registry)
+            self.con, self.catalog = sources.build_connection(registry, **selection)
         if budget is not None and budget.expired():
             self.close()
             raise DeadlineExhausted(DEADLINE_MESSAGE.format(budget=budget.seconds))

@@ -21,11 +21,12 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, localcontext
 from importlib import resources
 from typing import Any
 
-import jsonschema
 import yaml
+from jsonschema.validators import extend, validator_for
 
 # The immutable official pin (spec 0028 §2): the unmodified upstream
 # ``schema/odcs-json-schema-v3.2.0.json`` from commit f0bdad9, Git blob
@@ -40,7 +41,7 @@ ODCS_KIND = "DataContract"
 
 # The consumer profile's own identity, bound into validation evidence (spec
 # 0028 §6): bump when the checks performed below change.
-CONSUMER_PROFILE = "ariadne-odcs-consumer/1"
+CONSUMER_PROFILE = "ariadne-odcs-consumer/2"
 
 # The exact logical-type → observed-scalar-family mapping of the supported
 # field profile (spec 0028 §4). NOT profiler.types_compatible (which owns
@@ -138,6 +139,26 @@ def _construct_mapping(loader: yaml.Loader, node: yaml.MappingNode, deep: bool =
 _UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
 
 
+def _construct_decimal(loader, node):
+    # Preserve producer digits before any binary float construction.
+    text = loader.construct_scalar(node).replace("_", "").lower()
+    try:
+        if ":" in text:
+            sign = -1 if text.startswith("-") else 1
+            with localcontext() as context:
+                context.prec = max(28, len(text) * 2)
+                value = Decimal(0)
+                for part in text.lstrip("+-").split(":"):
+                    value = value * 60 + Decimal(part)
+                return value * sign
+        return Decimal(text)
+    except InvalidOperation:
+        raise ContractError(f"invalid JSON numeric literal {text!r}") from None
+
+
+_UniqueKeyLoader.add_constructor("tag:yaml.org,2002:float", _construct_decimal)
+
+
 _schema_cache: dict | None = None
 
 
@@ -179,8 +200,8 @@ def _json_compatible(value: object, where: str) -> None:
     def check(node: object, path: str) -> None:
         if node is None or isinstance(node, (bool, int, str)):
             return
-        if isinstance(node, float):
-            if node != node or node in (float("inf"), float("-inf")):
+        if isinstance(node, (float, Decimal)):
+            if not (node.is_finite() if isinstance(node, Decimal) else math.isfinite(node)):
                 raise ContractError(f"{where}: {path} is a non-finite float — not a JSON value")
             return
         if isinstance(node, list):
@@ -233,8 +254,17 @@ def _schema_errors(document: dict) -> list[str]:
     ``format`` stays an annotation: no environment-dependent format checker
     may silently change document validity (spec 0028 §2)."""
     schema = load_pinned_schema()
-    validator_class = jsonschema.validators.validator_for(schema)  # pyright: ignore[reportAttributeAccessIssue,reportCallIssue] — jsonschema's Draft 2019-09 selection (untyped upstream)
-    validator = validator_class(schema)
+    validator_class = validator_for(schema)
+    # JSON integer semantics also cover an exactly integral decimal literal.
+    checker = validator_class.TYPE_CHECKER.redefine(
+        "integer",
+        lambda checker, value: (
+            value.is_finite() and value == value.to_integral_value()
+            if isinstance(value, Decimal)
+            else isinstance(value, int) and not isinstance(value, bool)
+        ),
+    )
+    validator = extend(validator_class, type_checker=checker)(schema)
     errors = []
     for error in sorted(validator.iter_errors(document), key=lambda e: list(e.absolute_path)):
         pointer = "/".join(str(part) for part in error.absolute_path) or "$"
@@ -264,8 +294,32 @@ def _walk_id_arrays(node: object, path: str, errors: list[str]) -> None:
         for index, item in enumerate(node):
             _walk_id_arrays(item, f"{path}[{index}]", errors)
     elif isinstance(node, dict):
-        for key, item in node.items():
-            _walk_id_arrays(item, f"{path}.{key}", errors)
+        # Only standard element containers; AnyType values/examples, library
+        # arguments and logicalTypeOptions are opaque vendor/operand data.
+        for key in (
+            "schema",
+            "properties",
+            "servers",
+            "roles",
+            "quality",
+            "relationships",
+            "customProperties",
+            "authoritativeDefinitions",
+            "synonyms",
+            "support",
+            "slaProperties",
+            "team",
+            "members",
+            "enum",
+            "description",
+            "items",
+            "map",
+        ):
+            if key in node:
+                _walk_id_arrays(node[key], f"{path}.{key}", errors)
+        if path.endswith(".map"):
+            for key in ("key", "value"):
+                _walk_id_arrays(node.get(key), f"{path}.{key}", errors)
 
 
 def _reference_targets(document: dict) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
@@ -341,6 +395,13 @@ def _check_references(document: dict, where: str, errors: list[str]) -> None:
         for position, relationship in enumerate(obj.get("relationships") or []):
             if not isinstance(relationship, dict):
                 continue
+            sides = [relationship.get(side) for side in ("from", "to")]
+            arities = [len(side) if isinstance(side, list) else 1 for side in sides]
+            if arities[0] != arities[1]:
+                errors.append(
+                    f"{where}: {base}.relationships[{position}]: composite endpoint "
+                    "arrays must have matching arity"
+                )
             for side in ("from", "to"):
                 endpoints = relationship.get(side)
                 if not isinstance(endpoints, list):
@@ -358,6 +419,11 @@ def _check_references(document: dict, where: str, errors: list[str]) -> None:
                 if not isinstance(relationship, dict):
                     continue
                 endpoints = relationship.get("to")
+                if isinstance(endpoints, list) and len(endpoints) != 1:
+                    errors.append(
+                        f"{where}: {base}.properties[{position}].relationships[{position_r}]: "
+                        "implicit single-property source and target must have matching arity"
+                    )
                 if not isinstance(endpoints, list):
                     endpoints = [endpoints]
                 for endpoint in endpoints:
@@ -427,11 +493,9 @@ def validate_document(text: str, where: str) -> tuple[dict | None, DocumentResul
     result.team = document.get("team")
     errors = _schema_errors(document)
     semantic: list[str] = []
-    _walk_id_arrays(document.get("schema") or [], "$.schema", semantic)
-    for index, server in enumerate(document.get("servers") or []):
-        if isinstance(server, dict):
-            _walk_id_arrays(server.get("roles") or [], f"$.servers[{index}].roles", semantic)
-    _check_references(document, where, semantic)
+    if not errors:
+        _walk_id_arrays(document, "$", semantic)
+        _check_references(document, where, semantic)
     # The explicit consumer version dispatch: only v3.2.0 is supported, even
     # though the pinned schema's enum accepts older labels.
     version_error = None
@@ -469,11 +533,30 @@ def observed_type_family(observed: str) -> tuple[str | None, dict]:
     compatibility (spec 0028 §4)."""
     text = (observed or "").strip().lower()
     variant: dict[str, Any] = {}
-    if text.startswith(("timestamp with time zone", "timetz")):
+    from ariadne.query_results import classify_output_type
+
+    base = text.split("(")[0].strip()
+    normalized = _PHYSICAL_ALIASES.get(base, base)
+    shape = normalized + text[len(base) :]
+    if not text or (
+        classify_output_type(shape) == "unsupported"
+        and text not in ("time with time zone", "timetz")
+    ):
+        return None, {"native_type": observed}
+    temporal = {
+        "timestamp_s": "seconds",
+        "timestamp_ms": "milliseconds",
+        "timestamp_ns": "nanoseconds",
+    }
+    if text in temporal:
+        return "timestamp", {"precision": temporal[text]}
+    if text == "timestamptz":
+        return "timestamp", {"time_zone": True}
+    if text in ("timestamp with time zone", "timetz"):
         variant["time_zone"] = True
         family = "timestamp" if text.startswith("timestamp") else "time"
         return family, variant
-    if text.startswith(("time with time zone",)):
+    if text == "time with time zone":
         return "time", {"time_zone": True}
     base = text.split("(")[0].strip()
     for suffix in (" with time zone",):
@@ -484,12 +567,18 @@ def observed_type_family(observed: str) -> tuple[str | None, dict]:
     if "(" in text:
         arguments = text[text.index("(") + 1 :].rstrip(")").strip()
         parts = [part.strip() for part in arguments.split(",")]
-        if normalized == "decimal" and 1 <= len(parts) <= 2 and all(p.isdigit() for p in parts):
+        if (
+            normalized == "decimal"
+            and 1 <= len(parts) <= 2
+            and all(p.isascii() and p.isdigit() for p in parts)
+        ):
             variant["precision"] = int(parts[0])
             if len(parts) == 2:
                 variant["scale"] = int(parts[1])
-        elif len(parts) == 1 and parts[0].isdigit():
+        elif len(parts) == 1 and parts[0].isascii() and parts[0].isdigit():
             variant["width"] = int(parts[0])
+        else:
+            return None, {"native_type": observed}
     return normalized, variant
 
 
@@ -598,9 +687,11 @@ def compare_quality_rule(rule: dict, value: object) -> tuple[str, str]:
     operand = rule[operator]
     if value is None:
         return "error", "the rule's query returned NULL — an evaluation error, not a comparison"
-    is_number = isinstance(value, (int, float)) and not isinstance(value, bool)
+    is_number = isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
     is_boolean = isinstance(value, bool)
-    if isinstance(value, float) and not math.isfinite(value):
+    if (isinstance(value, float) and not math.isfinite(value)) or (
+        isinstance(value, Decimal) and not value.is_finite()
+    ):
         return "error", "the rule's query returned a non-finite value — an evaluation error"
     if not (is_number or is_boolean):
         return "error", f"the rule's query returned {type(value).__name__} — not a scalar"
@@ -609,7 +700,16 @@ def compare_quality_rule(rule: dict, value: object) -> tuple[str, str]:
             not isinstance(operand, list)
             or len(operand) != 2
             or not all(
-                isinstance(bound, (int, float)) and not isinstance(bound, bool) for bound in operand
+                isinstance(bound, (int, float, Decimal))
+                and not isinstance(bound, bool)
+                and (
+                    bound.is_finite()
+                    if isinstance(bound, Decimal)
+                    else math.isfinite(bound)
+                    if isinstance(bound, float)
+                    else True
+                )
+                for bound in operand
             )
         ):
             return (
@@ -624,7 +724,7 @@ def compare_quality_rule(rule: dict, value: object) -> tuple[str, str]:
                 "unsupported",
                 f"{operator} compares numbers; a boolean result is not orderable here",
             )
-        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
         inside = low < value < high  # the pinned documentation's open endpoints
         passed = inside if operator == "mustBeBetween" else not inside
         return (
@@ -643,15 +743,17 @@ def compare_quality_rule(rule: dict, value: object) -> tuple[str, str]:
         if operator == "mustNotBe":
             return ("passed" if value != operand else "drift", f"mustNotBe {operand}: {value!r}")
         return "unsupported", f"{operator} does not order booleans"
-    if isinstance(operand, (int, float)) and not isinstance(operand, bool):
+    if isinstance(operand, (int, float, Decimal)) and not isinstance(operand, bool):
         if not is_number:
             return (
                 "unsupported",
                 f"{operator} {operand!r} is numeric; a boolean result is not same-type comparable",
             )
-        if isinstance(operand, float) and not math.isfinite(operand):
+        if (isinstance(operand, float) and not math.isfinite(operand)) or (
+            isinstance(operand, Decimal) and not operand.is_finite()
+        ):
             return "error", f"{operator} operand {operand!r} is non-finite"
-        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
         comparisons = {
             "mustBe": value == operand,
             "mustNotBe": value != operand,
@@ -725,7 +827,7 @@ def validate_bindings_document(text: str, where: str) -> tuple[list[Binding], li
         document = parse_contract_document(text, where)
     except ContractError as exc:
         return [], [str(exc)]
-    if document.get("version") != BINDING_VERSION:
+    if type(document.get("version")) is not int or document["version"] != BINDING_VERSION:
         errors.append(
             f"{where}: the native binding document declares version "
             f"{document.get('version')!r}, not {BINDING_VERSION}"
@@ -736,7 +838,9 @@ def validate_bindings_document(text: str, where: str) -> tuple[list[Binding], li
     bindings: list[Binding] = []
     seen_ids: set[str] = set()
     seen_datasets: dict[tuple[str, str], Binding] = {}
-    for index, entry in enumerate(document.get("bindings") or []):
+    if not isinstance(document.get("bindings"), list):
+        return [], [*errors, f"{where}: bindings is a required list"]
+    for index, entry in enumerate(document["bindings"]):
         position = f"{where}: bindings[{index}]"
         if not isinstance(entry, dict):
             errors.append(f"{position}: a binding is a mapping")

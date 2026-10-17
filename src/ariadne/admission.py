@@ -465,6 +465,21 @@ def _verified_evidence(project: Path, proposal: str, revision: str, review: dict
                     "evidence cannot admit a dependent model; revalidate the exact "
                     "revision, nothing was activated"
                 )
+    if contracts.get("bindings"):
+        limits = authoring_inputs.project_inspection_limits(project)
+        approval = {
+            "sources": resolved or [],
+            "approval_digest": effective,
+            "storage_bindings": bindings,
+        }
+        tree = project / proposals.WORKTREES_REL / proposal
+        if contract_inspection.contract_content_bytes(contracts) > limits[
+            "response_bytes"
+        ] or not contract_inspection.evidence_eligible(tree, contracts, approval, limits):
+            raise ValueError(
+                "contract observation dependencies, full scope or output limits are "
+                "ineligible — revalidate before admission; nothing was activated"
+            )
     if not authoring._document_digests_current(project, evidence.get("citations") or []):
         raise ValueError(
             f"the document evidence cited by {revision[:12]} changed since validation — "
@@ -772,6 +787,8 @@ def _contracts_descriptor_view(contracts: dict) -> dict:
                 "outcome": observation.get("outcome"),
                 "scope": observation.get("scope"),
                 "observed_at": observation.get("observed_at"),
+                "dependencies": observation.get("dependencies"),
+                "limits": observation.get("limits"),
                 "requirements": [
                     {
                         "kind": requirement.get("kind"),

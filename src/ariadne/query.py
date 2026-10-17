@@ -306,9 +306,8 @@ class _QueryRuntimeSession(_DiscoverySession):
         tuple (spec 0028 §7): built lazily ONCE from the admission descriptor
         only — the live catalog construction itself is untouched, and no
         additional source read ever runs for the annotation."""
-        cached = getattr(self, "_contract_annotation_cache", None)
-        if cached is not None:
-            return cached
+        from ariadne import authoring_inputs, contract_inspection
+
         cache: dict[tuple, dict] = {}
         record = self._managed
         view = (record or {}).get("contracts") or {}
@@ -324,6 +323,17 @@ class _QueryRuntimeSession(_DiscoverySession):
             if not isinstance(asset, dict):
                 continue
             observation = observations.get(binding.get("id"))
+            eligibility = "unknown"
+            if observation is not None and record is not None and self._project is not None:
+                eligibility = contract_inspection.snapshot_observation_eligibility(
+                    self.context_dir.parent,
+                    record,
+                    binding,
+                    observation,
+                    authoring_inputs.project_inspection_limits(self._project)[
+                        "receipt_max_age_hours"
+                    ],
+                )
             cache[
                 (asset.get("source"), asset.get("catalog"), asset.get("schema"), asset.get("table"))
             ] = {
@@ -337,9 +347,9 @@ class _QueryRuntimeSession(_DiscoverySession):
                     "observed_at": observation.get("observed_at"),
                     "outcome": observation.get("outcome"),
                     "scope": observation.get("scope"),
+                    "eligibility": eligibility,
                 },
             }
-        self._contract_annotation_cache = cache
         return cache
 
     def _claim_operation_budget(self) -> DeadlineBudget:

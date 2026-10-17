@@ -43,6 +43,7 @@ from ariadne.contracts import (  # pyright: ignore[reportMissingImports] — sam
     ContractError,
     DocumentResult,
 )
+from ariadne.query_results import json_default
 
 # The observation clock seam (the execution._deadline_clock discipline): a
 # module attribute so tests control observation times DETERMINISTICALLY —
@@ -77,7 +78,9 @@ def _qualified_table(table: dict) -> str:
 
 def _sha(value: object) -> str:
     return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(value, sort_keys=True, separators=(",", ":"), default=json_default).encode(
+            "utf-8"
+        )
     ).hexdigest()
 
 
@@ -145,13 +148,13 @@ def _physical_source_tables(source: str) -> list[list[str]]:
     (CTE and derived-table aliases are not physical relations)."""
     text = source.strip()
     try:
-        statements = sqlglot.parse(text, dialect="duckdb")
+        statements = sqlglot.parse(validate._wrap_source(text), dialect="duckdb")
     except Exception:
         return []  # the compile gate owns the verbatim parse error
     if len(statements) != 1 or statements[0] is None:
         return []
-    tree = statements[0]
-    if not isinstance(tree, (exp.Select, exp.Union, exp.Except, exp.Intersect)):
+    tree = statements[0].unnest()
+    if not isinstance(tree, exp.Select):
         return []
     tables: list[list[str]] = []
     for node in tree.find_all(exp.Table):
@@ -161,7 +164,7 @@ def _physical_source_tables(source: str) -> list[list[str]]:
     return tables
 
 
-def _dataset_agrees(asset: dict, source: str) -> tuple[bool, str]:
+def _dataset_agrees(asset: dict, source: str, columns=()) -> tuple[bool, str]:
     """The binding must agree with the selected OSI dataset's actual physical
     source: its single physical table is exactly the bound asset. A derived
     or joined source whose relationship the native resolver cannot establish
@@ -190,7 +193,96 @@ def _dataset_agrees(asset: dict, source: str) -> tuple[bool, str]:
             "tables — a derived source whose relationship the native resolver "
             "cannot establish is unsupported"
         )
+    # Conservative native resolution: only an identity projection over one
+    # direct table establishes the physical rows and columns being measured.
+    for parsed in sql_authority._parse_fragment(source, kind="source"):
+        select = parsed.unnest()
+        if not isinstance(select, exp.Select) or any(
+            value for key, value in select.args.items() if key not in ("expressions", "from_")
+        ):
+            return (
+                False,
+                "unsupported derived OSI source: physical column identity is unestablished",
+            )
+        from_ = select.args.get("from_")
+        relation = from_.this if isinstance(from_, exp.From) else None
+        if relation is None or not isinstance(relation, exp.Table):
+            return False, "unsupported derived OSI relation: expected one direct physical table"
+        if not isinstance(relation.this, exp.Identifier):
+            return False, "unsupported derived OSI relation: expected one direct physical table"
+        projections = select.expressions
+        if (
+            len(projections) == 1
+            and isinstance(projections[0], exp.Star)
+            and not any(projections[0].args.values())
+        ):
+            continue
+        names = set()
+        for projection in projections:
+            value = projection.this if isinstance(projection, exp.Alias) else projection
+            if (
+                not isinstance(value, exp.Column)
+                or value.is_star
+                or projection.alias_or_name != value.name
+                or (value.table and value.table != relation.alias_or_name)
+            ):
+                return False, "unsupported transformed OSI projection: not an exact physical column"
+            names.add(value.name)
+        if not set(columns).issubset(names):
+            return False, "unsupported OSI projection: mapped physical columns are not all retained"
     return True, ""
+
+
+def _dataset_dependency(tree: Path, binding: Binding) -> dict:
+    for model, envelope in validate._model_entries(tree):
+        if model != binding.model:
+            continue
+        for dataset in envelope["semantic_model"][0].get("datasets") or []:
+            if dataset.get("name") != binding.dataset:
+                continue
+            fields = {field["name"]: field for field in dataset.get("fields") or []}
+            columns = {}
+            for column in binding.properties.values():
+                field = fields.get(column)
+                dialects = (field or {}).get("expression", {}).get("dialects") or []
+                if not dialects:
+                    raise ContractError(f"unsupported OSI column identity for {column!r}")
+                for dialect in dialects:
+                    expression = sqlglot.parse_one(dialect["expression"])
+                    if (
+                        not isinstance(expression, exp.Column)
+                        or expression.name != column
+                        or expression.table
+                    ):
+                        raise ContractError(f"unsupported transformed OSI field {column!r}")
+                columns[column] = dialects
+            return {"source": dataset["source"], "columns": columns}
+    raise ContractError("unsupported unresolved OSI dataset identity")
+
+
+def _observation_dependencies(
+    tree: Path, binding: Binding, contract_digest: str, approval: dict
+) -> dict:
+    selected = [
+        entry for entry in approval.get("sources", []) if entry["name"] == binding.asset["source"]
+    ]
+    storages = {
+        entry["storage"]["name"] for entry in selected if isinstance(entry.get("storage"), dict)
+    }
+    return {
+        "contract_digest": contract_digest,
+        "binding_digest": _sha(binding.digest_payload()),
+        "profile": contracts.CONSUMER_PROFILE,
+        "schema_pin": contracts.SCHEMA_SHA256,
+        "approval_digest": approval.get("approval_digest"),
+        "source_identity": selected,
+        "storage_bindings": {
+            name: value
+            for name, value in (approval.get("storage_bindings") or {}).items()
+            if name in storages
+        },
+        "osi_dependency": _dataset_dependency(tree, binding),
+    }
 
 
 def _declaration_requirements(
@@ -274,6 +366,15 @@ def _declaration_requirements(
                         f"logical type {logical_type!r} (nested collection/object or "
                         "unknown) is outside the supported field profile"
                     ),
+                }
+            )
+        if prop.get("properties") or prop.get("items") or prop.get("map"):
+            requirements.append(
+                {
+                    "kind": "field_nested",
+                    "pointer": pointer,
+                    "outcome": "unsupported",
+                    "detail": "nested property declarations are outside the flat field profile",
                 }
             )
         if prop.get("logicalTypeOptions"):
@@ -433,7 +534,7 @@ def static_contract_checks(tree: Path) -> tuple[dict, list[str]]:
             errors.append(str(exc))
             continue
         documents.append((rel, document, result))
-        evidence["documents"].append(result.summary())
+        evidence["documents"].append(json.loads(json.dumps(result.summary(), default=json_default)))
         errors.extend(f"{rel}: {error}" for error in result.errors)
     if bindings_text is None:
         return evidence, errors
@@ -468,7 +569,11 @@ def static_contract_checks(tree: Path) -> tuple[dict, list[str]]:
                 "layer does not declare — resolved without fuzzy matching"
             )
             continue
-        agrees, detail = _dataset_agrees(binding.asset, source)
+        try:
+            _dataset_dependency(tree, binding)
+            agrees, detail = _dataset_agrees(binding.asset, source, binding.properties.values())
+        except (ValueError, sqlglot.errors.ParseError) as exc:
+            agrees, detail = False, str(exc)
         if not agrees:
             errors.append(f"contract_bindings.yaml: binding {binding.id!r}: {detail}")
             continue
@@ -529,6 +634,18 @@ def _expand_placeholders(
     return text, None
 
 
+def _has_physical_input(scope) -> bool:
+    if not isinstance(scope, sql_authority.Scope):
+        return False
+    for _node, origin in scope.selected_sources.values():
+        if isinstance(origin, sql_authority.Scope):
+            if _has_physical_input(origin):
+                return True
+        elif isinstance(origin, exp.Table):
+            return True
+    return False
+
+
 def _execute_quality_rule(con, budget, table: dict, requirement: dict) -> dict:
     """Authorize, execute and compare one SQL-quality rule. The expanded
     tree passes the existing ad-hoc authority (narrowed to the selected
@@ -545,17 +662,38 @@ def _execute_quality_rule(con, budget, table: dict, requirement: dict) -> dict:
     if error is not None:
         return {**requirement, "outcome": "unsupported", "detail": error}
     try:
+        for parsed in sql_authority._parse_fragment(sql, kind="source"):
+            # Ad-hoc callers keep their broader profile; contracts do not.
+            if (
+                not isinstance(parsed.unnest(), exp.Select)
+                or any(parsed.find_all(exp.Join, exp.Union, exp.Except, exp.Intersect))
+                or not _has_physical_input(sql_authority.build_scope(parsed.unnest()))
+            ):
+                raise ValueError(
+                    "contract SQL requires one SELECT over the bound relation, without joins"
+                )
         sql_authority.assert_ad_hoc_authority(
             sql, kind="source", authority=_narrowed_authority(con, table)
         )
-    except ValueError as exc:
+    except (ValueError, sqlglot.errors.SqlglotError) as exc:
         return {**requirement, "outcome": "refused", "detail": str(exc)}
     try:
         execution.assert_single_statement(sql)
         with budget.guard(con):
             relation = con.sql(sql)
             columns = list(relation.columns)
-            rows = relation.fetchall()
+            families = [contracts.observed_type_family(str(type_))[0] for type_ in relation.types]
+            scalar_families = contracts._LOGICAL_FAMILIES["number"] | {"boolean"}
+            if len(columns) != 1 or any(family not in scalar_families for family in families):
+                return {
+                    **requirement,
+                    "outcome": "error",
+                    "detail": (
+                        "the rule must return one numeric/boolean scalar column; "
+                        "refused before collection"
+                    ),
+                }
+            rows = relation.limit(2).fetchmany(2)
     except execution.DeadlineExhausted:
         raise
     except duckdb.Error as exc:
@@ -569,15 +707,17 @@ def _execute_quality_rule(con, budget, table: dict, requirement: dict) -> dict:
             **requirement,
             "outcome": "error",
             "detail": (
-                f"the rule's query must return exactly one row and one column, got "
-                f"{len(rows)} row(s) over {len(columns)} column(s)"
+                "the rule's query must return exactly one row and one column; "
+                f"collected {len(rows)} row(s) (at most two) over {len(columns)} column(s)"
             ),
         }
     outcome, detail = contracts.compare_quality_rule(requirement["rule"], rows[0][0])
     return {**requirement, "outcome": outcome, "detail": detail}
 
 
-def _observe_binding(con, budget, catalog, *, binding, document, contract_digest) -> dict:
+def _observe_binding(
+    con, budget, catalog, *, binding, document, contract_digest, dependencies
+) -> dict:
     """Observe ONE bound dataset against the approved catalog: presence,
     per-property type/physical-type checks, full-dataset required-NULL counts
     and the SQL-quality rules — each with its own honest outcome. Never a
@@ -640,12 +780,7 @@ def _observe_binding(con, budget, catalog, *, binding, document, contract_digest
             "outcome": "failed",
             "scope": "full",
             "observed_at": observed_at,
-            "dependencies": {
-                "contract_digest": contract_digest,
-                "binding_digest": _sha(binding.digest_payload()),
-                "profile": contracts.CONSUMER_PROFILE,
-                "schema_pin": contracts.SCHEMA_SHA256,
-            },
+            "dependencies": dependencies,
         }
     assert table is not None
     # Parent-dispositioned profile guard (spec 0028 §5): SQL-quality rules
@@ -671,13 +806,20 @@ def _observe_binding(con, budget, catalog, *, binding, document, contract_digest
             if requirement["kind"] == "quality_sql" and requirement["outcome"] == "not_run":
                 requirement["outcome"] = "unsupported"
                 requirement["detail"] = unsupported_detail
-    columns = {column["name"]: column["type"] for column in table["columns"]}
+    columns = {column["name"]: column for column in table["columns"]}
     property_by_id = {
         prop.get("id"): prop
         for prop in contract_object.get("properties") or []
         if isinstance(prop, dict) and isinstance(prop.get("id"), str)
     }
-    observed: list[dict] = []
+    observed: list[dict] = [
+        {
+            "kind": "dataset_presence",
+            "pointer": f"schema/{binding.object_id}",
+            "outcome": "passed",
+            "detail": "exact bound asset is present",
+        }
+    ]
     for prop_id, column_name in binding.properties.items():
         prop = property_by_id.get(prop_id)
         if prop is None:
@@ -697,7 +839,9 @@ def _observe_binding(con, budget, catalog, *, binding, document, contract_digest
                 }
             )
             continue
-        observed_type = columns[column_name]
+        observed_column = columns[column_name]
+        observed_type = observed_column["type"]
+        provenance = observed_column.get("type_provenance", "execution_projection")
         if prop.get("logicalType") is not None:
             outcome, detail = contracts.logical_type_matches(prop.get("logicalType"), observed_type)
             observed.append(
@@ -712,15 +856,22 @@ def _observe_binding(con, budget, catalog, *, binding, document, contract_digest
                 }
             )
         if prop.get("physicalType") is not None:
-            outcome, detail = contracts.compare_physical_type(
-                prop.get("physicalType"), observed_type
-            )
+            if provenance == "native_table":
+                outcome, detail = contracts.compare_physical_type(
+                    prop.get("physicalType"), observed_type
+                )
+            else:
+                outcome, detail = (
+                    "unsupported",
+                    "original physical type is unavailable from execution/view projection metadata",
+                )
             observed.append(
                 {
                     "kind": "field_physical_type",
                     "pointer": pointer,
                     "outcome": outcome,
                     "detail": f"{detail} (observed column {column_name!r})",
+                    "type_provenance": provenance,
                 }
             )
         if prop.get("required") is True:
@@ -778,7 +929,7 @@ def _observe_binding(con, budget, catalog, *, binding, document, contract_digest
                 },
             )
         )
-    requirements = [*observed, *quality_requirements]
+    requirements = [*declaration, *observed, *quality_requirements]
     return {
         "binding": binding.id,
         "contract": {
@@ -796,32 +947,94 @@ def _observe_binding(con, budget, catalog, *, binding, document, contract_digest
         else "failed",
         "scope": "full",
         "observed_at": observed_at,
-        "dependencies": {
-            "contract_digest": contract_digest,
-            "binding_digest": _sha(binding.digest_payload()),
-            "profile": contracts.CONSUMER_PROFILE,
-            "schema_pin": contracts.SCHEMA_SHA256,
-        },
+        "dependencies": dependencies,
         "observed_schema": [
-            {"column": column["name"], "type": column["type"]} for column in table["columns"]
+            {
+                "column": column["name"],
+                "type": column["type"],
+                "type_provenance": column.get("type_provenance", "execution_projection"),
+            }
+            for column in table["columns"]
         ],
     }
 
 
-def _dependencies_current(observation: dict, *, contract_digest, binding) -> bool:
+def _dependencies_current(observation: dict, *, expected: dict) -> bool:
     """Whether one retained observation's dependency identities still bind the
     current candidate: exact contract/binding digests plus the consumer
     profile/pin. Age is checked separately by the caller (spec 0028 §6: a
     changed dependency invalidates applicable evidence; age cannot excuse a
     known mismatch)."""
-    dependencies = observation.get("dependencies") or {}
     return (
-        dependencies.get("contract_digest") == contract_digest
-        and dependencies.get("binding_digest") == _sha(binding.digest_payload())
-        and dependencies.get("profile") == contracts.CONSUMER_PROFILE
-        and dependencies.get("schema_pin") == contracts.SCHEMA_SHA256
+        observation.get("dependencies") == expected
         and observation.get("outcome") == "passed"
+        and observation.get("scope") == "full"
+        and bool(observation.get("requirements"))
+        and all(req.get("outcome") == "passed" for req in observation["requirements"])
     )
+
+
+def contract_content_bytes(evidence: dict) -> int:
+    return len(json.dumps(evidence, sort_keys=True, default=json_default).encode("utf-8"))
+
+
+def evidence_eligible(tree: Path, evidence: dict, approval: dict, limits: dict) -> bool:
+    """Recheck retained proof against the actual candidate and frozen source, offline."""
+    current, errors = static_contract_checks(tree)
+    if (
+        errors
+        or current.get("documents") != evidence.get("documents")
+        or current.get("bindings") != evidence.get("bindings")
+    ):
+        return False
+    observations = {item.get("binding"): item for item in evidence.get("observations", [])}
+    for payload in current.get("bindings", []):
+        binding = Binding(**payload)
+        digest = next(
+            (
+                doc["digest"]
+                for doc in current["documents"]
+                if doc["id"] == binding.contract_id and doc["version"] == binding.contract_version
+            ),
+            None,
+        )
+        if digest is None:
+            return False
+        observation = observations.get(binding.id)
+        if (
+            observation is None
+            or not _dependencies_current(
+                observation, expected=_observation_dependencies(tree, binding, digest, approval)
+            )
+            or observation_expired(observation, limits["receipt_max_age_hours"])
+        ):
+            return False
+    return True
+
+
+def snapshot_observation_eligibility(
+    tree: Path, record: dict, binding: dict, observation: dict, max_age_hours: float
+) -> str:
+    digest = next(
+        (
+            doc.get("digest")
+            for doc in (record.get("contracts") or {}).get("documents", [])
+            if doc.get("id") == binding.get("contract_id")
+            and doc.get("version") == binding.get("contract_version")
+        ),
+        None,
+    )
+    if digest is None:
+        return "ineligible"
+    approval = {
+        "sources": record.get("sources", []),
+        "storage_bindings": record.get("storage_bindings", {}),
+        "approval_digest": record.get("source_digest"),
+    }
+    expected = _observation_dependencies(tree, Binding(**binding), digest, approval)
+    if not _dependencies_current(observation, expected=expected):
+        return "ineligible"
+    return "expired" if observation_expired(observation, max_age_hours) else "eligible"
 
 
 def observation_expired(observation: dict, max_age_hours: float) -> bool:
@@ -880,6 +1093,30 @@ def observe_contracts(
         )
         return evidence, errors
     observations: list[dict] = []
+    pending = []
+    dependencies = {}
+    digests = {}
+    for binding in bindings:
+        digest = next(
+            result.digest
+            for _rel, _doc, result in documents
+            if result.contract_id == binding.contract_id
+            and result.contract_version == binding.contract_version
+        )
+        digests[binding.id] = digest
+        dependencies[binding.id] = _observation_dependencies(tree, binding, digest, approval)
+        prior = (prior_observations or {}).get(binding.id)
+        if (
+            prior is not None
+            and _dependencies_current(prior, expected=dependencies[binding.id])
+            and not observation_expired(prior, limits["receipt_max_age_hours"])
+        ):
+            observations.append({**prior, "reused": True})
+        else:
+            pending.append(binding)
+    if not pending:
+        evidence["observations"] = observations
+        return evidence, errors
     budget = execution.DeadlineBudget(limits["execution_seconds"])
 
     def _unavailable_observation(binding: Binding, detail: str) -> dict:
@@ -904,26 +1141,22 @@ def observe_contracts(
             "outcome": "incomplete",
             "scope": "partial",
             "observed_at": _observation_clock().isoformat(timespec="seconds"),
-            "dependencies": {
-                "contract_digest": next(
-                    (
-                        result.digest
-                        for _rel, _doc, result in documents
-                        if result.contract_id == binding.contract_id
-                        and result.contract_version == binding.contract_version
-                    ),
-                    None,
-                ),
-                "binding_digest": _sha(binding.digest_payload()),
-                "profile": contracts.CONSUMER_PROFILE,
-                "schema_pin": contracts.SCHEMA_SHA256,
-            },
+            "dependencies": dependencies[binding.id],
+            "limits": dict(limits),
         }
 
     try:
         owned = execution.DuckDBExecution(
-            identity_registry(approval["sources"], approval.get("storage_bindings")),
+            identity_registry(
+                [
+                    entry
+                    for entry in approval["sources"]
+                    if entry["name"] in {binding.asset["source"] for binding in pending}
+                ],
+                approval.get("storage_bindings"),
+            ),
             budget=budget,
+            selected_assets=[binding.asset for binding in pending],
         )
     except ValueError as exc:
         # DeadlineExhausted (its subclass) or a redacted setup refusal — the
@@ -956,7 +1189,7 @@ def observe_contracts(
         return evidence, errors
     try:
         catalog = owned.catalog
-        for binding in bindings:
+        for binding in pending:
             document, error = contracts.resolve_contract(
                 documents, binding.contract_id, binding.contract_version
             )
@@ -964,20 +1197,6 @@ def observe_contracts(
                 continue  # the static leg already reported the error
             contract_object, object_error = _find_object(document, binding.object_id)
             if object_error is not None or contract_object is None:
-                continue
-            contract_digest = next(
-                result.digest
-                for _rel, _doc, result in documents
-                if result.contract_id == binding.contract_id
-                and result.contract_version == binding.contract_version
-            )
-            prior = (prior_observations or {}).get(binding.id)
-            if (
-                prior is not None
-                and _dependencies_current(prior, contract_digest=contract_digest, binding=binding)
-                and not observation_expired(prior, limits["receipt_max_age_hours"])
-            ):
-                observations.append({**prior, "reused": True})
                 continue
             try:
                 observations.append(
@@ -987,15 +1206,19 @@ def observe_contracts(
                         catalog,
                         binding=binding,
                         document=document,
-                        contract_digest=contract_digest,
+                        contract_digest=digests[binding.id],
+                        dependencies=dependencies[binding.id],
                     )
                 )
             except execution.DeadlineExhausted as exc:
                 observations.append(_unavailable_observation(binding, str(exc)))
     finally:
         owned.close()
-    evidence["observations"] = observations
-    for observation in observations:
+    # The existing scalar codec preserves Decimal digits as strings in
+    # persisted evidence; the comparisons above used the original numbers.
+    evidence["observations"] = json.loads(json.dumps(observations, default=json_default))
+    for observation in evidence["observations"]:
+        observation.setdefault("limits", dict(limits))
         evidence.setdefault("approval_digest", approval.get("approval_digest"))
         for requirement in observation["requirements"]:
             if requirement["outcome"] != "passed":

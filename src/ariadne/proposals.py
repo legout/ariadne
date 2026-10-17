@@ -643,7 +643,14 @@ def _scope_files(project: Path) -> list[str]:
     system-generated bookkeeping (``index.md``/``log.md``) is EXCLUDED: the
     finalize pass owns and regenerates it."""
     rels: list[str] = []
-    for rel in ("ariadne.yaml", "data/seed_notes.md", "semantic_layer/graph.yml"):
+    for rel in (
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "semantic_layer/graph.yml",
+        "contract_bindings.yaml",
+    ):
+        if rel == "contract_bindings.yaml" and (project / rel).is_symlink():
+            raise GitError("initial contract bindings must not be a symlink")
         if (project / rel).is_file():
             rels.append(rel)
     models = project / "semantic_layer" / "models"
@@ -653,6 +660,17 @@ def _scope_files(project: Path) -> list[str]:
             for path in sorted(models.iterdir())
             if path.is_file() and path.suffix in _MODEL_SUFFIXES
         )
+    contracts = project / "contracts"
+    if contracts.is_symlink():
+        raise GitError("initial contracts directory must not be a symlink")
+    if contracts.is_dir():
+        for path in sorted(contracts.iterdir()):
+            if path.suffix not in _MODEL_SUFFIXES:
+                continue
+            if path.is_symlink():
+                raise GitError(f"initial contract {path.name!r} must not be a symlink")
+            if path.is_file():
+                rels.append(path.relative_to(project).as_posix())
     for section in _OKF_PAGE_SECTIONS:
         root = project / "context_layer" / section
         if root.is_dir():
@@ -694,6 +712,8 @@ def _create_initial_revision(project: Path) -> str:
         # BEFORE anything is staged — a credential-bearing initial file refuses
         # with the index and history untouched.
         for rel in paths:
+            if (project / rel).is_symlink():
+                raise GitError(f"initial artifact {rel!r} must not be a symlink")
             with open(project / rel, "rb") as fh:  # bounded read, like the seam
                 raw = fh.read(MAX_ARTIFACT_BYTES + 1)
             check_artifact_content(f"initial artifact {rel!r}", raw.decode("utf-8", "replace"))

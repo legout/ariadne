@@ -4,6 +4,7 @@ QueryRuntime reuses this path; only its execution construction renders models
 and opens sources (spec 0018 / ADR-0021).
 """
 
+import json
 import shlex
 from pathlib import Path
 from typing import Any
@@ -229,7 +230,7 @@ class _DiscoverySession:
             "validation": record.get("validation"),
         }
 
-    def _contracts_group(self) -> dict:
+    def _contracts_group(self, query: str, limit: int) -> dict:
         """The bounded contracts group of ``discover`` (spec 2028 §7, issue
         #77/C1): ONLY the pinned admitted snapshot's contracts — producer
         ID/version, native binding and model/dataset identity, the
@@ -268,10 +269,8 @@ class _DiscoverySession:
                     contract_inspection,
                 )
 
-                eligibility = (
-                    "expired"
-                    if contract_inspection.observation_expired(observation, max_age_hours)
-                    else "eligible"
+                eligibility = contract_inspection.snapshot_observation_eligibility(
+                    self.context_dir.parent, record, binding, observation, max_age_hours
                 )
             items.append(
                 {
@@ -297,14 +296,46 @@ class _DiscoverySession:
                     },
                 }
             )
-        return {
-            "items": items,
-            "complete": True,
-            "reminder": (
-                "a contract observation is scoped, as-of evidence — never live "
-                "compliance, source access or human approval"
-            ),
+        bound_pairs = {
+            (binding.get("contract_id"), binding.get("contract_version")) for binding in bindings
         }
+        for document in view.get("documents", []):
+            if (document.get("id"), document.get("version")) not in bound_pairs:
+                items.append(
+                    {
+                        "contract": {"id": document.get("id"), "version": document.get("version")},
+                        "binding": None,
+                        "observation": None,
+                        "revision": record.get("commit"),
+                        "profile": CONSUMER_PROFILE,
+                        "limitations": CONTRACT_PROFILE_LIMITS,
+                    }
+                )
+        tokens = set(context._QUERY_TOKEN_RE.findall(query.lower()))
+        matches = [
+            item
+            for item in items
+            if tokens.issubset(
+                context._QUERY_TOKEN_RE.findall(json.dumps(item, default=str).lower())
+            )
+        ]
+        selected = matches[: max(0, limit)]
+        group = {
+            "items": selected,
+            "total_matches": len(matches),
+            "complete": len(selected) == len(matches),
+            "reminder": "scoped as-of evidence, never current compliance or human approval",
+        }
+        if self._project is not None:
+            from ariadne.contract_inspection import contract_content_bytes
+
+            ceiling = authoring_inputs.project_inspection_limits(self._project)["response_bytes"]
+            while selected and contract_content_bytes(group) > ceiling:
+                selected.pop()
+                group["complete"] = False
+            if contract_content_bytes(group) > ceiling:
+                raise ValueError("contract response ceiling cannot carry the summary")
+        return group
 
     async def discover(self, query: str, limit: int = 5) -> dict:
         """Compose native reads without execution or cross-kind ranking (spec 0018)."""
@@ -337,6 +368,8 @@ class _DiscoverySession:
                             f"ariadne get-metric {shlex.quote(entry['name'])}" for entry in items
                         ],
                     }
+                elif kind == "contracts":
+                    group = self._contracts_group(query, limit)
                 elif kind == "terms":
                     result = await self.resolve_term(query)
                     group = {
