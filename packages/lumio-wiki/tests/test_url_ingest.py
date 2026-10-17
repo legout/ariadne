@@ -806,3 +806,141 @@ def test_ingest_url_with_neither_flag_fails_with_actionable_error(
     err = capsys.readouterr().err
     assert "--compiled-page and --source-id are required together" in err
     assert "Traceback" not in err
+
+
+# ---------------------------------------------------------------------------
+# G3 fix-a1 (plan 0008 r11): native-route private provenance regressions for
+# the accepted F5 finding. Expectations derive from the fetched fixture bytes
+# and the hand-authored consulted manifest — never from implementation output.
+# ---------------------------------------------------------------------------
+
+from test_git_authoring import (  # noqa: E402
+    _authored_ingest_page,
+    _commit,
+    _init_repo,
+    _write_kb,
+)
+
+
+def _native_git_kb(tmp_path: Path) -> tuple[Path, Path]:
+    """A committed manifest-bearing Git worktree KB plus its repo root."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    return repo, kb
+
+
+def _ingest_url_native(tmp_path, kb, registry, local_server, *, page=None):
+    import contextlib
+    import io
+
+    from lumio_wiki.cli import main
+
+    page_file = tmp_path / "url-page.md"
+    page_file.write_text(page or _authored_ingest_page("example-page"))
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(
+            [
+                "ingest-url",
+                str(kb),
+                f"{local_server}/final.html",
+                "--compiled-page",
+                str(page_file),
+                "--source-id",
+                "example-page",
+                "--allow-http",
+                "--allow-private-destination",
+                "--source-registry",
+                str(registry),
+            ]
+        )
+    return code, out.getvalue(), err.getvalue()
+
+
+def test_native_url_ingest_persists_private_url_provenance(tmp_path, local_server):
+    """F5: the native URL route PERSISTS the source/final URL and retrieval
+    time privately under the selected registry root, exact-version-bound —
+    printing them to the console is not preservation, and they never enter
+    public page content."""
+    repo, kb = _native_git_kb(tmp_path)
+    registry = tmp_path / "registry"
+
+    code, out, err = _ingest_url_native(tmp_path, kb, registry, local_server)
+    assert code == 0, err
+    assert "Ingested into the Git authoring worktree" in out
+
+    records = sorted((registry / "provenance" / "example-page").rglob("*.json"))
+    assert records, "no private URL provenance record was persisted"
+    import json
+
+    payload = json.loads(records[0].read_text(encoding="utf-8"))
+    assert payload["kind"] == "url"
+    assert payload["source_url"] == f"{local_server}/final.html"
+    assert payload["final_url"] == f"{local_server}/final.html"
+    assert payload["retrieved_at"]
+    # The record lives under the exact content hash directory (version-bound).
+    digest_dir = records[0].parent.name
+    assert len(digest_dir) == 64 and all(c in "0123456789abcdef" for c in digest_dir)
+    # Nothing private leaked into the public page.
+    page_text = (kb / "concepts" / "workbench_press.md").read_text(encoding="utf-8")
+    assert str(local_server) not in page_text
+
+
+def test_native_research_ingest_persists_consulted_provenance(tmp_path):
+    """F5: the native research route PERSISTS the consulted URL/title/
+    access-time manifest privately under the selected registry root,
+    exact-version-bound — never only printed, never forced into the public
+    page's Sources."""
+    repo, kb = _native_git_kb(tmp_path)
+    registry = tmp_path / "registry"
+    report = tmp_path / "research.md"
+    report.write_text(_authored_ingest_page("research-bundle"))
+    consulted = tmp_path / "consulted.yaml"
+    consulted.write_text(
+        "- url: https://example.com/primary\n"
+        '  title: "Primary source"\n'
+        '  accessed_at: "2026-10-17T09:00:00+00:00"\n'
+        "- url: https://example.com/secondary\n"
+        '  title: "Secondary source"\n'
+        '  accessed_at: "2026-10-17T09:05:00+00:00"\n'
+    )
+
+    import contextlib
+    import io
+
+    from lumio_wiki.cli import main
+
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(
+            [
+                "ingest-research",
+                str(kb),
+                str(report),
+                "--manifest",
+                str(consulted),
+                "--source-id",
+                "research-bundle",
+                "--source-registry",
+                str(registry),
+            ]
+        )
+    assert code == 0, err.getvalue()
+    assert "Ingested into the Git authoring worktree" in out.getvalue()
+
+    import json
+
+    records = sorted((registry / "provenance" / "research-bundle").rglob("*.json"))
+    assert records, "no private research provenance record was persisted"
+    payload = json.loads(records[0].read_text(encoding="utf-8"))
+    assert payload["kind"] == "research"
+    assert [entry["url"] for entry in payload["consulted"]] == [
+        "https://example.com/primary",
+        "https://example.com/secondary",
+    ]
+    assert payload["consulted"][0]["title"] == "Primary source"
+    assert payload["consulted"][0]["accessed_at"] == "2026-10-17T09:00:00+00:00"
+    # Private consulted provenance never entered the public page.
+    page_text = (kb / "concepts" / "workbench_press.md").read_text(encoding="utf-8")
+    assert "https://example.com/primary" not in page_text

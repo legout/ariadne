@@ -1,6 +1,18 @@
 # Specification 0008: Git-native Knowledge Authoring
 
-**Written revision:** 2 — owner-directed public-foundation-only scope amendment.
+**Written revision:** 3 — revision 2's public-foundation-only scope plus the
+owner-answered 2026-10-17 reactivation clarification (§3.3). No other
+behavior, interface, schema, or scope changes.
+
+**Revision 3 amendment, 2026-10-17:** after the independent G3 review, the
+owner approved one collective correction of the nine accepted findings plus
+the required native rename/category-move/explicit-alias completion, and
+answered the reactivation behavior question: reactivation selects affected
+Entities explicitly through stable Entity IDs rather than refusing every
+still-declaring page or implicitly rebinding all of them. The exact contract
+is recorded in §3.3; execution authority and validation budget live in
+implementation plan 0008 r11. ADR-0029 already governs the architecture; no
+vocabulary or additional ADR is introduced.
 
 **Scope amendment, 2026-10-16:** the owner explicitly instructed:
 “Wir wollen die lumio App vorerst nicht weiter berücksichtigen. Fokussiere dich
@@ -185,6 +197,28 @@ inference from registering the new version. Retirement must leave eligible
 support, an explicitly reviewed replacement/reclassification, or an explicit
 Page Removal with dependent repairs. Missing files/network failures remain
 advisory retirement candidates, never automatic retirement or deletion.
+
+**Reactivation by explicit Entity selection (r3).** Reactivating a retired
+managed Source registers the operator's new original bytes as one exact
+immutable Source Version and, in the same explicit authoring manifest edit,
+flips the source's lifecycle intent to active and records exact
+`(Entity, Source, SHA-256)` pins for the Entities the operator explicitly
+selects. The selection is a list of stable Entity IDs supplied through the
+reactivation interface. The operation first determines every page in the
+selected complete candidate that still declares the retired Source ID; each
+such Entity must appear in the selection, and the selection may name no other
+Entity — unknown or missing IDs refuse with the computed declaring set as
+actionable diagnostics. Identity is never inferred from titles, filenames,
+the latest private version, or bytes, and there is no implicit rebinding of
+all declaring Entities. An empty selection is valid only when no page still
+declares the source. The exact SHA-256 digest is computed from the supplied
+bytes; the lifecycle flip and the selected Entity pins are written together
+as one atomic worktree edit after the repository/target/dirty/
+tracked-original/private-selection safety preflight, and the complete
+page/Control File/manifest candidate is validated with other exact support
+resolved in the explicitly selected private registry. Immutable source/version
+history is retained, a conflicting pin choice refuses, and no Snapshot,
+commit, admission, or publication is implied.
 
 Historical Source Binding Manifests retain the exact version-to-page/source
 mapping and inspection metadata outside public snapshots. Every new publication

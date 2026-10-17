@@ -326,27 +326,58 @@ class SemanticDreamReviewer:
         Spec 0008 §6: an explicit apply operation edits the selected
         authoring worktree rather than staging stored proposals. Returns
         ``(edits, skipped)`` where ``edits`` are ``(page_path,
-        final_markdown)`` pairs — the same reviewed lifecycle/summary/
-        contradiction edits the staged route computes, in their final
-        published form without proposal routing markers — and ``skipped``
-        carries ``(finding, reason)``. Read-only: applying the edits is the
-        caller's explicit worktree operation.
+        final_markdown)`` pairs — at most ONE per page — and ``skipped``
+        carries ``(finding, reason)``. F8: compatible findings targeting the
+        same page compose sequentially against the same original page into
+        one final markdown; two lifecycle-setting findings with DIFFERENT
+        targets on one page are an explicit conflict diagnostic, never a
+        last-write-wins. Read-only: applying the edits is the caller's
+        explicit worktree operation.
         """
         report = report or self.review()
         inspected = frozenset(page.path for page in report.pages)
-        edits: list[tuple[str, str]] = []
+        composed: dict[str, str] = {}
+        applied_lifecycle: dict[str, str] = {}
         skipped: list[tuple[SemanticFinding, str]] = []
         for finding in report.findings:
+            lifecycle = self._stale_target_lifecycle(finding) if finding.kind == "stale" else None
+            if lifecycle is not None:
+                conflicts = sorted(
+                    page_path
+                    for page_path in finding.pages
+                    if page_path in applied_lifecycle and applied_lifecycle[page_path] != lifecycle
+                )
+                if conflicts:
+                    skipped.append(
+                        (
+                            finding,
+                            "conflicting lifecycle intent on page(s) "
+                            + ", ".join(conflicts)
+                            + f" (already set to {applied_lifecycle[conflicts[0]]!r}, "
+                            f"finding wants {lifecycle!r}); resolve explicitly",
+                        )
+                    )
+                    continue
             try:
-                finding_edits = self._edits_for_finding(finding, inspected, for_worktree=True)
+                finding_edits = self._edits_for_finding(
+                    finding, inspected, for_worktree=True, base_markdowns=composed
+                )
             except (OSError, SemanticMaintenanceError, ValueError, msgspec.DecodeError) as exc:
                 skipped.append((finding, str(exc)))
                 continue
             if not finding_edits:
                 skipped.append((finding, "finding has no actionable edit"))
                 continue
-            edits.extend(finding_edits)
-        return tuple(edits), tuple(skipped)
+            changed = False
+            for page_path, edited in finding_edits:
+                if composed.get(page_path) != edited:
+                    composed[page_path] = edited
+                    changed = True
+                if lifecycle is not None:
+                    applied_lifecycle[page_path] = lifecycle
+            if not changed:
+                skipped.append((finding, "finding has no actionable edit"))
+        return tuple(sorted(composed.items())), tuple(skipped)
 
     @staticmethod
     def _stale_target_lifecycle(finding: SemanticFinding) -> str:
@@ -354,7 +385,12 @@ class SemanticDreamReviewer:
         return finding.lifecycle or "deprecated"
 
     def _edits_for_finding(
-        self, finding: SemanticFinding, inspected: frozenset[str], *, for_worktree: bool = False
+        self,
+        finding: SemanticFinding,
+        inspected: frozenset[str],
+        *,
+        for_worktree: bool = False,
+        base_markdowns: dict[str, str] | None = None,
     ) -> list[tuple[str, str]]:
         if finding.validation_errors:
             raise SemanticMaintenanceError("; ".join(finding.validation_errors))
@@ -371,7 +407,12 @@ class SemanticDreamReviewer:
         edits: list[tuple[str, str]] = []
         for page_path in finding.pages:
             source = Path(self.kb.root) / page_path
-            markdown = source.read_text(encoding="utf-8")
+            if base_markdowns is not None and page_path in base_markdowns:
+                # F8: compose against the already-composed candidate page,
+                # not a fresh read of the original.
+                markdown = base_markdowns[page_path]
+            else:
+                markdown = source.read_text(encoding="utf-8")
             page = next((p for p in self.kb.pages if p.path == page_path), None)
             if page is None:
                 raise SemanticMaintenanceError(f"page does not exist: {page_path}")

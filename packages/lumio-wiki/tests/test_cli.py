@@ -3343,3 +3343,197 @@ def test_fence_aware_sections_align_page_reads_validation_and_zero_index(
         for result in results
     )
     assert any(result.citation.section_title == "Actual" for result in results)
+
+
+# ---------------------------------------------------------------------------
+# G3 fix-a1 (plan 0008 r11): selected-registry lifecycle regression for the
+# accepted F9 finding.
+# ---------------------------------------------------------------------------
+
+
+def _git(args, repo: Path):
+    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr.decode()
+    return result.stdout.decode().strip()
+
+
+def test_source_confirm_candidate_uses_selected_registry(tmp_path, capsys):
+    """F9 (spec 0008 §3.2): on an adopted Knowledge Base, the candidate
+    register/dismiss/confirm lifecycle operates on the EXPLICITLY selected
+    shared private registry — a candidate recorded through the public
+    registry API in the selected registry is found and confirmed, never
+    searched for in a legacy ingest store."""
+    from lumio_wiki.source_registry import SourceRegistry
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _git(["config", "user.email", "t@example.com"], repo)
+    _git(["config", "user.name", "T"], repo)
+    kb = repo / "kb"
+    kb.mkdir()
+    (kb / "page.md").write_text(
+        "---\n"
+        'title: "Registry Page"\n'
+        "aliases: []\n"
+        'tags:\n  - "t"\n'
+        'summary: "s."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "sources:\n"
+        '  - title: "Registry Source"\n'
+        "synthetic: false\n"
+        "---\n\nBody.\n",
+        encoding="utf-8",
+    )
+    (kb / ".lumio-authoring.yaml").write_text(
+        'version: 1\nnamespace: "urn:uuid:11111111-2222-3333-4444-555555555555"\n'
+        "sources:\n  archived-doc:\n    status: active\nbindings: {}\n",
+        encoding="utf-8",
+    )
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "base"], repo)
+
+    registry_root = tmp_path / "selected-registry"
+    registry = SourceRegistry(registry_root)
+    registry.register_source("archived-doc", b"archived document bytes")
+    candidate = registry.record_retirement_candidate("archived-doc", "watched file missing")
+
+    code = main(
+        [
+            "source",
+            "--source-registry",
+            str(registry_root),
+            "confirm-candidate",
+            str(kb),
+            "--candidate-id",
+            candidate.id,
+            "--source-id",
+            "archived-doc",
+        ]
+    )
+    out = capsys.readouterr()
+    assert code == 0, out.out + out.err
+    assert "Retired Knowledge Source 'archived-doc'" in out.out
+    # The Git manifest carries the retirement intent; the legacy ingest
+    # store was never consulted or created.
+    manifest_text = (kb / ".lumio-authoring.yaml").read_text(encoding="utf-8")
+    assert "retired" in manifest_text
+    assert not (kb / ".lumio").exists()
+    decided = registry.get_candidate(candidate.id)
+    assert decided.status == "confirmed"
+
+
+# ---------------------------------------------------------------------------
+# G3 fix-a1 (plan 0008 r11): the composed semantic+link dream apply (F8).
+# New behavior — no failing-first repro applies.
+# ---------------------------------------------------------------------------
+
+
+def test_dream_semantic_stage_composes_link_repairs_into_one_apply(tmp_path, monkeypatch, capsys):
+    """F8: `dream --semantic --stage` composes the semantic finding AND the
+    deterministic link repair targeting the SAME page against one original
+    into ONE checked apply — both edits land in one page revision, and the
+    command succeeds instead of refusing its own first edit as unrelated."""
+    import contextlib
+    import io
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _git(["config", "user.email", "t@example.com"], repo)
+    _git(["config", "user.name", "T"], repo)
+    kb_dir = repo / "kb"
+    kb_dir.mkdir()
+    (kb_dir / "page.md").write_text(
+        "---\n"
+        'title: "Notes Page"\n'
+        "aliases: []\n"
+        'tags:\n  - "t"\n'
+        'summary: "Original summary."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        'sources:\n  - title: "Notes source"\n'
+        "synthetic: false\n"
+        "---\n\n"
+        "# Notes Page\n\n"
+        "The Target Page carries the detail.\n",
+        encoding="utf-8",
+    )
+    (kb_dir / "target.md").write_text(
+        "---\n"
+        'title: "Target Page"\n'
+        "aliases: []\n"
+        'tags:\n  - "t"\n'
+        'summary: "Target summary."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        'sources:\n  - title: "Target source"\n'
+        "synthetic: false\n"
+        "---\n\n"
+        "# Target Page\n\n"
+        "Body.\n",
+        encoding="utf-8",
+    )
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "base"], repo)
+
+    from lumio_wiki.semantic_maintenance import (
+        SemanticDreamReviewer,
+        SemanticFinding,
+        SemanticReviewReport,
+    )
+
+    hand_report = None
+
+    def _stub_review(self):
+        nonlocal hand_report
+        import lumio_wiki as lw
+
+        kb, _report = lw.load_knowledge_base(kb_dir)
+        hand_report = SemanticReviewReport(
+            pages=tuple(kb.pages),
+            findings=(
+                SemanticFinding(
+                    kind="stale",
+                    pages=("page.md",),
+                    reason="Superseded by a newer record.",
+                    lifecycle="deprecated",
+                ),
+            ),
+        )
+        return hand_report
+
+    monkeypatch.setattr(SemanticDreamReviewer, "review", _stub_review)
+    # The reviewer constructor configures the provider before review() runs;
+    # stub the client builder like the existing semantic CLI tests do.
+    monkeypatch.setenv("LUMIO_PROVIDER_MODEL", "fake-model")
+    monkeypatch.setattr(SemanticDreamReviewer, "_build_client", staticmethod(lambda: object()))
+
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(
+            [
+                "dream",
+                str(kb_dir),
+                "--semantic",
+                "--stage",
+                "--limit",
+                "4",
+            ]
+        )
+    assert code in (0, 1), err.getvalue()  # exit 1 only if lint flags residue
+    stdout = out.getvalue()
+    assert "semantic_applied_pages: 1" in stdout
+
+    edited = (kb_dir / "page.md").read_text(encoding="utf-8")
+    import msgspec.yaml as yaml
+
+    data = yaml.decode(edited.split("---")[1])
+    # BOTH the semantic lifecycle flip AND the deterministic link repair are
+    # present in ONE page revision.
+    assert data["lifecycle"] == "deprecated"
+    # The deterministic mention repair links the target page (markdown
+    # path-link form) in the SAME single revision.
+    assert "[Target Page](target.md)" in edited
+    assert "The Target Page carries" not in edited

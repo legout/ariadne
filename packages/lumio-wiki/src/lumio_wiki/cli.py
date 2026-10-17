@@ -2244,9 +2244,18 @@ def _ingest_into_worktree_cli(
     *,
     raw_source_path: Path | None = None,
     rows: Sequence[tuple[str, object]] = (),
+    extra_provenance=None,
 ) -> int:
-    """Shared managed worktree ingest for ingest/ingest-url/ingest-research (G3)."""
+    """Shared managed worktree ingest for ingest/ingest-url/ingest-research (G3).
+
+    ``extra_provenance(registry_root, source_id, content_hash)`` — when
+    supplied — persists the producer's private provenance (F5) under the
+    explicitly selected registry root after a successful ingest, so native
+    URL/research observation metadata survives outside Git and outside
+    public page content.
+    """
     from lumio_wiki.git_authoring import GitAuthoringError, ingest_into_worktree
+    from lumio_wiki.mutation import MutationRollbackError
 
     registry = _git_source_registry(args)
     if registry is None:
@@ -2269,7 +2278,14 @@ def _ingest_into_worktree_cli(
             artifact_store=artifact_store,
             raw_source_path=raw_source_path,
         )
-    except (GitAuthoringError, ManagedIngestError, SourceRegistryError) as exc:
+        if extra_provenance is not None:
+            extra_provenance(registry.root, source_id, result.content_hash)
+    except (
+        GitAuthoringError,
+        ManagedIngestError,
+        MutationRollbackError,
+        SourceRegistryError,
+    ) as exc:
         raise CliError(str(exc), exit_code=1) from exc
     print("Ingested into the Git authoring worktree (nothing committed):")
     print(f"  page:     {', '.join(result.page_paths)}")
@@ -2655,6 +2671,7 @@ def _cmd_capture_session(args: argparse.Namespace) -> int:
             redacted_markdown,
             safe_manifest,
             transcript_digest,
+            transcript_source_path=None,
         ):
             registry = _git_source_registry(args)
             if registry is None:
@@ -2663,6 +2680,8 @@ def _cmd_capture_session(args: argparse.Namespace) -> int:
                     "Source Registry: pass --source-registry <dir> or set "
                     f"{SOURCE_REGISTRY_ENV_VAR}"
                 )
+            from lumio_wiki.mutation import MutationRollbackError
+
             try:
                 result = ingest_into_worktree(
                     kb.root,
@@ -2673,12 +2692,25 @@ def _cmd_capture_session(args: argparse.Namespace) -> int:
                     redacted_markdown,
                     source_registry=registry,
                     artifact_store=_artifact_store_from_env(),
-                    raw_source_path=args.transcript or args.manifest,
+                    # F6: the tracked-input guard must check the ACTUALLY
+                    # resolved original transcript (explicit or manifest-named),
+                    # never merely the manifest that names it.
+                    raw_source_path=transcript_source_path or args.manifest,
                 )
-                from lumio_wiki.capture import write_capture_record
+                from lumio_wiki.capture import write_versioned_capture_record
 
-                write_capture_record(registry.root, source_id, safe_manifest, transcript_digest)
-            except (GitAuthoringError, ManagedIngestError, SourceRegistryError) as exc:
+                # F5: the Capture Manifest is retained per exact Source
+                # Version and per observation (content-addressed), never
+                # overwritten — including with raw retention disabled.
+                write_versioned_capture_record(
+                    registry.root, source_id, result.content_hash, safe_manifest, transcript_digest
+                )
+            except (
+                GitAuthoringError,
+                ManagedIngestError,
+                MutationRollbackError,
+                SourceRegistryError,
+            ) as exc:
                 raise CaptureError(str(exc)) from exc
             return result
 
@@ -2884,7 +2916,28 @@ def _cmd_ingest_url(args: argparse.Namespace) -> int:
 
     if load_source_reference_manifest(kb.root) is not None:
         # G3 (spec 0008 §7): an adopted Knowledge Base ingests fetched
-        # sources through ordinary worktree edits.
+        # sources through ordinary worktree edits. F5: the URL/final-URL/
+        # retrieval-time provenance is PERSISTED privately under the
+        # selected registry root, exact-version-bound — console output
+        # alone is not preservation.
+
+        def _url_provenance(registry_root, source_id, content_hash):
+            from lumio_wiki.private_provenance import write_observation_record
+
+            write_observation_record(
+                registry_root,
+                "provenance",
+                source_id,
+                content_hash,
+                {
+                    "kind": "url",
+                    "source_url": args.url,
+                    "final_url": result.final_url,
+                    "retrieved_at": result.retrieved_at,
+                    "media_type": result.media_type,
+                },
+            )
+
         return _ingest_into_worktree_cli(
             args,
             kb,
@@ -2897,6 +2950,7 @@ def _cmd_ingest_url(args: argparse.Namespace) -> int:
                 ("source_url:", result.final_url),
                 ("retrieved_at:", result.retrieved_at),
             ],
+            extra_provenance=_url_provenance,
         )
 
     ingest_dir = _resolve_ingest_dir(args, kb.root)
@@ -3028,12 +3082,36 @@ def _cmd_ingest_research(args: argparse.Namespace) -> int:
 
     if load_source_reference_manifest(kb.root) is not None:
         # G3 (spec 0008 §7): an adopted Knowledge Base ingests research
-        # bundles through ordinary worktree edits. The consulted URLs stay
-        # declared provenance: disclose them here and keep them in the
-        # authored page's public sources list.
+        # bundles through ordinary worktree edits. F5: the consulted
+        # URL/title/access-time manifest is PERSISTED privately under the
+        # selected registry root, exact-version-bound — printing is not
+        # preservation, and private provenance never enters public Reader
+        # content.
         print(f"consulted: {len(consulted)} sources (declare them in the page's sources)")
         for consulted_source in consulted:
             print(f"  {consulted_source.url} ({consulted_source.accessed_at})")
+
+        def _research_provenance(registry_root, source_id, content_hash):
+            from lumio_wiki.private_provenance import write_observation_record
+
+            write_observation_record(
+                registry_root,
+                "provenance",
+                source_id,
+                content_hash,
+                {
+                    "kind": "research",
+                    "consulted": [
+                        {
+                            "url": item.url,
+                            "title": item.title,
+                            "accessed_at": item.accessed_at,
+                        }
+                        for item in consulted
+                    ],
+                },
+            )
+
         return _ingest_into_worktree_cli(
             args,
             kb,
@@ -3044,6 +3122,7 @@ def _cmd_ingest_research(args: argparse.Namespace) -> int:
             authored_markdown,
             raw_source_path=report,
             rows=[("consulted:", f"{len(consulted)} sources")],
+            extra_provenance=_research_provenance,
         )
 
     ingest_dir = _resolve_ingest_dir(args, kb.root)
@@ -3271,6 +3350,43 @@ def _cmd_merge_entity(args: argparse.Namespace) -> int:
         details=[
             f"  redirect:       {args.retired} -> {args.survivor} recorded in ontology.redirects"
         ],
+    )
+    return 0
+
+
+def _cmd_rename_page(args: argparse.Namespace) -> int:
+    """Rename, recategorize, or re-alias one Compiled Page as worktree edits (G3).
+
+    Required G3 completion (spec 0008 §6, ADR-0016): the native reviewed
+    title-rename primitive with optional category move and an explicit alias
+    choice — stable Entity/Claim IDs and provenance preserved, incoming
+    exactly-resolved links and Hot Index pins repaired, nothing committed.
+    """
+    kb, _report = _load_kb(args.path)
+    from lumio_wiki.git_authoring import GitAuthoringError, rename_page_in_worktree
+    from lumio_wiki.mutation import MutationRollbackError
+
+    try:
+        result = rename_page_in_worktree(
+            kb.root,
+            args.title,
+            new_title=args.to,
+            new_category=args.category,
+            aliases=list(args.alias) if args.alias else None,
+        )
+    except (GitAuthoringError, MutationRollbackError) as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    details = []
+    if args.to:
+        details.append(f"  new title:      {args.to}")
+    if args.category:
+        details.append(f"  category:       {args.category}")
+    if args.alias:
+        details.append(f"  aliases:        {', '.join(args.alias)}")
+    _print_worktree_mutation(
+        result,
+        title=f"Renamed page {args.title!r} in the Git authoring worktree (nothing committed):",
+        details=details,
     )
     return 0
 
@@ -4434,17 +4550,25 @@ def _print_ranked_candidates(ranked, limit: int) -> None:
             print(f"     snippet: {candidate.snippet}")
 
 
-def _apply_link_candidates(args: argparse.Namespace, kb, ranked, limit: int):
+def _apply_link_candidates(
+    args: argparse.Namespace, kb, ranked, limit: int, base_pages: dict[str, str] | None = None
+):
     """Apply the top-ranked link repairs as worktree edits (G3, spec 0008 §6).
 
     An explicit apply operation edits the selected authoring worktree rather
     than staging stored proposals; the deterministic mention repairs compose
     per page and validate as ONE candidate before anything is written.
+    F8: ``base_pages`` seeds the composition with already-composed candidate
+    pages (the semantic dream edits computed by the SAME invocation), so
+    compatible semantic findings and deterministic repairs targeting one
+    page apply together — never as two mutations that would refuse each
+    other's uncommitted edits.
     """
     from lumio_wiki.git_authoring import GitAuthoringError, revise_pages_in_worktree
     from lumio_wiki.maintenance import MaintenanceError, repair_mention
+    from lumio_wiki.mutation import MutationRollbackError
 
-    revised: dict[str, str] = {}
+    revised: dict[str, str] = dict(base_pages or {})
     skipped: list[tuple[object, str]] = []
     for ranked_candidate in ranked[:limit]:
         candidate = ranked_candidate.candidate
@@ -4468,9 +4592,11 @@ def _apply_link_candidates(args: argparse.Namespace, kb, ranked, limit: int):
         return None, skipped
     try:
         result = revise_pages_in_worktree(
-            kb.root, list(revised.items()), operation="cross-link repair"
+            kb.root,
+            list(revised.items()),
+            operation="dream repair" if base_pages else "cross-link repair",
         )
-    except GitAuthoringError as exc:
+    except (GitAuthoringError, MutationRollbackError) as exc:
         raise CliError(str(exc), exit_code=1) from exc
     return result, skipped
 
@@ -4791,6 +4917,10 @@ def _cmd_dream(args: argparse.Namespace) -> int:
     _print_source_coverage(report.coverage)
     _print_validation_issues(lint.validation_report)
 
+    # F8: composed semantic edits wait here so the deterministic link repairs
+    # and the semantic findings apply together in ONE checked apply below.
+    semantic_pending: dict[str, str] = {}
+
     if args.semantic:
         from lumio_wiki.semantic_maintenance import (
             MissingSemanticExtraError,
@@ -4812,32 +4942,33 @@ def _cmd_dream(args: argparse.Namespace) -> int:
         print(f"semantic_pages:       {len(semantic_report.pages)}")
         _print_semantic_findings(semantic_report.findings)
         if args.stage and semantic_report.findings:
-            # G3 (spec 0008 §6): the explicit apply edits the authoring
-            # worktree — no semantic proposal is staged.
-            from lumio_wiki.git_authoring import (
-                GitAuthoringError,
-                revise_pages_in_worktree,
-            )
-
+            # G3 (spec 0008 §6, F8): the explicit apply COMPOSES compatible
+            # semantic findings per page (worktree_edits returns at most one
+            # final markdown per page) and defers the actual write so the
+            # deterministic link repairs below compose against the same
+            # original pages and ONE checked apply writes everything — never
+            # two same-invocation mutations that would refuse each other's
+            # uncommitted edits.
             edits, skipped_edits = reviewer.worktree_edits(report=semantic_report)
-            semantic_result = None
+            semantic_pending.update(edits)
             if edits:
-                try:
-                    semantic_result = revise_pages_in_worktree(
-                        kb.root, list(edits), operation="semantic dream repair"
-                    )
-                except GitAuthoringError as exc:
-                    raise CliError(str(exc), exit_code=1) from exc
-            print(f"semantic_applied_pages: {len(edits) if semantic_result else 0}")
-            if semantic_result is not None:
-                for page_path, _markdown in edits:
-                    print(f"  edited: {page_path}")
+                print(f"semantic_composed_pages: {len(edits)}")
             for finding, reason in skipped_edits:
                 print(f"  skipped: {finding.kind} ({reason})")
 
-    if args.stage and report.ranked_candidates:
+    if args.stage and (report.ranked_candidates or semantic_pending):
         print()
-        result, skipped = _apply_link_candidates(args, kb, report.ranked_candidates, args.limit)
+        result, skipped = _apply_link_candidates(
+            args,
+            kb,
+            report.ranked_candidates,
+            args.limit,
+            base_pages=semantic_pending or None,
+        )
+        if semantic_pending:
+            written = result.written if result is not None else []
+            applied = [page_path for page_path in semantic_pending if page_path in written]
+            print(f"semantic_applied_pages: {len(applied)}")
         _print_apply_outcome(args, result, skipped)
     return 0 if lint.is_valid else 1
 
@@ -5104,7 +5235,47 @@ def _report_source_lifecycle_proposal(proposal) -> None:
         print("impacts:         (none)")
 
 
+def _require_git_source_registry(args: argparse.Namespace):
+    """The explicitly selected private registry, refusing its absence (F9).
+
+    Native source lifecycle on an adopted Knowledge Base never falls back to
+    a legacy ingest store or an unrelated default; the shared history is the
+    one the operator explicitly selected.
+    """
+    registry = _git_source_registry(args)
+    if registry is None:
+        raise CliError(
+            "Git-native source lifecycle requires the explicitly selected private "
+            "Source Registry: pass --source-registry <dir> or set "
+            f"{SOURCE_REGISTRY_ENV_VAR}",
+            exit_code=2,
+        )
+    return registry
+
+
 def _cmd_source_register(args: argparse.Namespace) -> int:
+    kb, _report = _load_kb(args.path)
+    from lumio_wiki.source_references import load_source_reference_manifest
+
+    if load_source_reference_manifest(kb.root) is not None:
+        # F9 (spec 0008 §3.2): on an adopted Knowledge Base the shared
+        # private registry is the explicitly selected one — never the legacy
+        # ingest store. Lifecycle intent stays authored in the Git manifest.
+        registry = _require_git_source_registry(args)
+        raw_bytes = _read_source_file(args)
+        try:
+            registry.register_source(args.source_id, raw_bytes)
+            source = registry.get(args.source_id)
+        except SourceRegistryError as exc:
+            raise CliError(str(exc), exit_code=1) from exc
+        print(f"Registered Knowledge Source {args.source_id!r}")
+        print(f"  source_id:      {source.source_id}")
+        print(f"  versions:       {len(source.versions)}")
+        print(
+            "  lifecycle:      declared in the Git Source Reference Manifest "
+            "(add or review the declaration there)"
+        )
+        return 0
     _kb, pipeline = _source_pipeline(args)
     raw_bytes = _read_source_file(args)
     try:
@@ -5128,6 +5299,31 @@ def _cmd_source_register(args: argparse.Namespace) -> int:
 
 
 def _cmd_source_list(args: argparse.Namespace) -> int:
+    kb, _report = _load_kb(args.path)
+    from lumio_wiki.source_references import load_source_reference_manifest
+
+    manifest = load_source_reference_manifest(kb.root)
+    if manifest is not None:
+        # F9: the selected registry's identities with Git manifest lifecycle
+        # intent disclosed for managed sources — the private registry's own
+        # status is never masqueraded as the authoring lifecycle authority.
+        registry = _require_git_source_registry(args)
+        try:
+            sources = registry.list()
+        except SourceRegistryError as exc:
+            raise CliError(str(exc), exit_code=1) from exc
+        if not sources:
+            print("No registered Knowledge Sources.")
+            return 0
+        print(f"{'source_id':<16} {'lifecycle':<18} {'versions':<8}")
+        for source in sources:
+            git_intent = manifest.sources.get(source.source_id)
+            lifecycle = f"git:{git_intent}" if git_intent is not None else "unmanaged"
+            print(f"{source.source_id:<16} {lifecycle:<18} {len(source.versions):<8}")
+        print()
+        print("Managed sources show their Git Source Reference Manifest lifecycle")
+        print("intent; 'unmanaged' sources have no manifest declaration yet.")
+        return 0
     _kb, pipeline = _source_pipeline(args)
     sources = pipeline.list_sources()
     if not sources:
@@ -5145,12 +5341,17 @@ def _cmd_source_retire(args: argparse.Namespace) -> int:
 
     if load_source_reference_manifest(kb.root) is not None:
         # G3 (spec 0008 §3.2/§3.3): lifecycle intent is a reviewed Git
-        # manifest edit, never a proposal-keyed pending transition.
+        # manifest edit, never a proposal-keyed pending transition. F2/F9:
+        # the explicitly selected registry verifies the remaining exact
+        # support.
         from lumio_wiki.git_authoring import GitAuthoringError, retire_source_in_worktree
+        from lumio_wiki.mutation import MutationRollbackError
 
         try:
-            result = retire_source_in_worktree(kb.root, args.source_id)
-        except GitAuthoringError as exc:
+            result = retire_source_in_worktree(
+                kb.root, args.source_id, source_registry=_require_git_source_registry(args)
+            )
+        except (GitAuthoringError, MutationRollbackError, SourceRegistryError) as exc:
             raise CliError(str(exc), exit_code=1) from exc
         _print_worktree_mutation(
             result,
@@ -5170,6 +5371,22 @@ def _cmd_source_retire(args: argparse.Namespace) -> int:
 
 
 def _cmd_source_candidate(args: argparse.Namespace) -> int:
+    kb, _report = _load_kb(args.path)
+    from lumio_wiki.source_references import load_source_reference_manifest
+
+    if load_source_reference_manifest(kb.root) is not None:
+        # F9: the advisory candidate is recorded in the explicitly selected
+        # shared private registry (the same history managed ingest uses).
+        registry = _require_git_source_registry(args)
+        try:
+            candidate = registry.record_retirement_candidate(args.source_id, args.trigger)
+        except SourceRegistryError as exc:
+            raise CliError(str(exc), exit_code=1) from exc
+        print(f"candidate_id:   {candidate.id}")
+        print(f"source_id:      {candidate.source_id}")
+        print(f"trigger:        {candidate.trigger}")
+        print(f"status:         {candidate.status}")
+        return 0
     _kb, pipeline = _source_pipeline(args)
     try:
         candidate = pipeline.record_retirement_candidate(args.source_id, args.trigger)
@@ -5183,6 +5400,26 @@ def _cmd_source_candidate(args: argparse.Namespace) -> int:
 
 
 def _cmd_source_dismiss_candidate(args: argparse.Namespace) -> int:
+    kb, _report = _load_kb(args.path)
+    from lumio_wiki.source_references import load_source_reference_manifest
+
+    if load_source_reference_manifest(kb.root) is not None:
+        # F9: the selected shared private registry owns the candidate record.
+        registry = _require_git_source_registry(args)
+        try:
+            candidate = registry.get_candidate(args.candidate_id)
+            if args.source_id is not None and candidate.source_id != args.source_id:
+                raise SourceRegistryError(
+                    f"retirement candidate {args.candidate_id!r} does not belong to "
+                    f"Knowledge Source {args.source_id!r}"
+                )
+            candidate = registry.dismiss_retirement_candidate(args.candidate_id)
+        except SourceRegistryError as exc:
+            raise CliError(str(exc), exit_code=1) from exc
+        print(f"candidate_id:   {candidate.id}")
+        print(f"source_id:      {candidate.source_id}")
+        print(f"status:         {candidate.status}")
+        return 0
     _kb, pipeline = _source_pipeline(args)
     try:
         candidate = pipeline.dismiss_retirement_candidate(
@@ -5211,10 +5448,12 @@ def _cmd_source_confirm_candidate(args: argparse.Namespace) -> int:
     if load_source_reference_manifest(kb.root) is not None:
         # G3: confirming a retirement candidate on an adopted Knowledge Base
         # records the candidate decision and applies the Git manifest edit.
+        # F9: the candidate belongs to the explicitly selected shared private
+        # registry — never a legacy ingest store's unrelated history.
         from lumio_wiki.git_authoring import GitAuthoringError, retire_source_in_worktree
+        from lumio_wiki.mutation import MutationRollbackError
 
-        store = IngestStore(_resolve_ingest_dir(args, kb.root))
-        registry = store.source_registry
+        registry = _require_git_source_registry(args)
         try:
             candidate = registry.get_candidate(args.candidate_id)
             if args.source_id is not None and candidate.source_id != args.source_id:
@@ -5226,9 +5465,15 @@ def _cmd_source_confirm_candidate(args: argparse.Namespace) -> int:
                 raise SourceRegistryError(
                     f"retirement candidate {args.candidate_id!r} is not pending"
                 )
-            result = retire_source_in_worktree(kb.root, candidate.source_id)
+            result = retire_source_in_worktree(
+                kb.root, candidate.source_id, source_registry=registry
+            )
             registry.confirm_retirement_candidate(args.candidate_id)
-        except (GitAuthoringError, SourceRegistryError, ProposalPipelineError) as exc:
+        except (
+            GitAuthoringError,
+            MutationRollbackError,
+            SourceRegistryError,
+        ) as exc:
             raise CliError(str(exc), exit_code=1) from exc
         _print_worktree_mutation(
             result,
@@ -5257,20 +5502,25 @@ def _cmd_source_reactivate(args: argparse.Namespace) -> int:
     if load_source_reference_manifest(kb.root) is not None:
         # G3: reactivation registers the new bytes in the explicitly
         # selected private registry and flips the reviewed Git manifest
-        # intent; bindings are never invented here (spec 0008 §3.3).
+        # intent; spec 0008 §3.3 (r3): the affected Entities are pinned
+        # explicitly through the operator's --entity selection — never
+        # inferred, never implicitly all.
         from lumio_wiki.git_authoring import (
             GitAuthoringError,
             reactivate_source_in_worktree,
         )
+        from lumio_wiki.mutation import MutationRollbackError
 
         try:
             result = reactivate_source_in_worktree(
                 kb.root,
                 args.source_id,
                 raw_bytes,
-                source_registry=_git_source_registry(args),
+                entity_ids=tuple(args.entity or ()),
+                source_registry=_require_git_source_registry(args),
+                raw_source_path=args.file,
             )
-        except (GitAuthoringError, SourceRegistryError) as exc:
+        except (GitAuthoringError, MutationRollbackError, SourceRegistryError) as exc:
             raise CliError(str(exc), exit_code=1) from exc
         _print_worktree_mutation(
             result,
@@ -7219,6 +7469,48 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ingest_dir_argument(merge_entity_parser)
     merge_entity_parser.set_defaults(func=_cmd_merge_entity)
 
+    # rename-page (G3 completion, spec 0008 §6 / ADR-0016): the native
+    # reviewed title rename with optional category move and explicit aliases.
+    rename_page_parser = subparsers.add_parser(
+        "rename-page",
+        help="Rename, recategorize, or re-alias one Compiled Page in the worktree.",
+        description=(
+            "Apply a reviewed title rename (with an optional Content Category "
+            "move and an explicit alias replacement set) as ordinary worktree "
+            "edits: stable Entity/Claim IDs, Sources, and provenance are "
+            "preserved; exactly-resolved incoming body links and Hot Index pins "
+            "repair; ambiguous repairs and collisions refuse. Nothing is "
+            "committed (spec 0008 §6, ADR-0016)."
+        ),
+    )
+    _add_kb_argument(rename_page_parser)
+    rename_page_parser.add_argument(
+        "title", type=str, help="Current Canonical Page Title of the page to rename."
+    )
+    rename_page_parser.add_argument(
+        "--to",
+        type=str,
+        default=None,
+        help="New Canonical Page Title (omit to keep the current title).",
+    )
+    rename_page_parser.add_argument(
+        "--category",
+        type=str,
+        default=None,
+        help="Target configured Content Category (atomic category move).",
+    )
+    rename_page_parser.add_argument(
+        "--alias",
+        action="append",
+        dest="alias",
+        metavar="ALIAS",
+        help=(
+            "Explicit alias for the resulting page (repeatable; the complete "
+            "replacement set, e.g. the old title when it should stay reachable)"
+        ),
+    )
+    rename_page_parser.set_defaults(func=_cmd_rename_page)
+
     # health
     health_parser = subparsers.add_parser(
         "health",
@@ -7753,6 +8045,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     source_reactivate.add_argument(
         "--file", type=Path, required=True, help="Replacement source bytes."
+    )
+    source_reactivate.add_argument(
+        "--entity",
+        action="append",
+        dest="entity",
+        metavar="ENTITY_ID",
+        help=(
+            "Stable Entity ID of a page still declaring the source to pin to "
+            "the new exact version (repeatable; supply every still-declaring "
+            "Entity; omit only when none declare it)"
+        ),
     )
     source_reactivate.set_defaults(func=_cmd_source_reactivate)
 

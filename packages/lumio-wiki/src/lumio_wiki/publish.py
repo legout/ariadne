@@ -971,7 +971,10 @@ def _resolve_proposed_destinations(
                             file=source_relative,
                         )
                 owner = title_by_path.get(source_relative)
-                if owner is not None and owner != title:
+                if owner is not None and owner != title and owner != rename_from:
+                    # A rename+move relocates the page's own recorded path:
+                    # the move source is owned by the OLD title (rename_from)
+                    # of this same proposed page (issue #140 + #80 combined).
                     raise DestinationConflict(
                         f"Cannot move {title!r} from {source_relative}: that "
                         f"file is the recorded path of existing page {owner!r}, "

@@ -339,12 +339,17 @@ def _resolve_transcript_bytes(
     manifest_path: Path,
     manifest_bytes: bytes,
     transcript_path: Path | None,
-) -> tuple[bytes, str | None, str, str | None, list[str]]:
+) -> tuple[bytes, str | None, str, str | None, Path | None, list[str]]:
     """Resolve the original capture source bytes.
 
-    Returns ``(raw_bytes, digest, filename, content_type, warnings)``. In
-    order: an explicit ``--transcript`` path; the manifest's transcript path;
-    a digest-only reference (the export is not local — the manifest itself is
+    Returns ``(raw_bytes, digest, filename, content_type,
+    transcript_source_path, warnings)``. ``transcript_source_path`` is the
+    actually resolved original transcript file — the explicit path, or the
+    manifest-named path — so the native route's tracked-input safety guards
+    the ORIGINAL, not merely the manifest that names it (F6); it is ``None``
+    when the manifest itself is the private capture record. In order: an
+    explicit ``--transcript`` path; the manifest's transcript path; a
+    digest-only reference (the export is not local — the manifest itself is
     the private capture record, and the limitation is reported, not
     fabricated). A named transcript that cannot be read is an error.
     """
@@ -363,7 +368,10 @@ def _resolve_transcript_bytes(
             raw = explicit.read_bytes()
         except OSError as exc:
             raise CaptureError(f"capture transcript not readable: {explicit} ({exc})") from exc
-        return _checked_transcript(raw, explicit.name, named)
+        checked, digest, filename, content_type, checked_warnings = _checked_transcript(
+            raw, explicit.name, named
+        )
+        return checked, digest, filename, content_type, explicit, checked_warnings
 
     if named is not None and not _DIGEST_REFERENCE.match(named):
         path = Path(named) if Path(named).is_absolute() else manifest_path.parent / named
@@ -377,7 +385,10 @@ def _resolve_transcript_bytes(
             raw = path.read_bytes()
         except OSError as exc:
             raise CaptureError(f"capture transcript not readable: {path} ({exc})") from exc
-        return _checked_transcript(raw, path.name, None)
+        checked, digest, filename, content_type, checked_warnings = _checked_transcript(
+            raw, path.name, None
+        )
+        return checked, digest, filename, content_type, path, checked_warnings
 
     if named is not None:
         # Digest-only reference: the export is not locally available. Register
@@ -391,7 +402,7 @@ def _resolve_transcript_bytes(
         warnings.append(
             "no transcript bound; the manifest is registered as the private capture record"
         )
-    return manifest_bytes, None, manifest_path.name, "application/yaml", warnings
+    return manifest_bytes, None, manifest_path.name, "application/yaml", None, warnings
 
 
 def _checked_transcript(
@@ -427,7 +438,8 @@ def write_capture_record(
     G3: the root is caller-selected — the legacy staged route passes the
     ingest store root; the native Git route passes a private root OUTSIDE
     the authoring worktree (a Git-tracked capture record would publish
-    private provenance).
+    private provenance). Legacy format and route are retained unchanged
+    until G4.
     """
     captures = Path(root) / "captures"
     captures.mkdir(parents=True, exist_ok=True)
@@ -440,6 +452,40 @@ def write_capture_record(
     record_path = captures / f"{source_id}.json"
     record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     return record_path
+
+
+def write_versioned_capture_record(
+    root: str | Path,
+    source_id: str,
+    content_hash: str,
+    manifest: CaptureManifest,
+    transcript_digest: str | None,
+) -> Path:
+    """Persist one exact-version-bound immutable private Capture Manifest (F5).
+
+    The native Git route's capture record: bound to the exact registered
+    Source Version (``content_hash``) AND content-addressed by the manifest
+    itself, so repeated captures with changed bytes or changed metadata
+    under one Source ID accumulate distinct immutable records instead of
+    overwriting each other — including when raw artifact retention is
+    disabled. An identical retry converges to the existing record (no
+    volatile timestamp participates in the record identity). The legacy
+    flat record above stays untouched for the non-adopted route (G4 owns
+    its disposition).
+    """
+    from lumio_wiki.private_provenance import write_observation_record
+
+    return write_observation_record(
+        root,
+        "captures",
+        source_id,
+        content_hash,
+        {
+            "kind": "capture",
+            "manifest": msgspec.to_builtins(manifest),
+            "transcript_digest": transcript_digest,
+        },
+    )
 
 
 def _write_capture_record(
@@ -548,9 +594,17 @@ def capture_session(
     #    itself as the private record). Reports limitations; never fabricates
     #    a transcript. The returned bytes are REDACTED transcript bytes; the
     #    registry hash and provenance cover exactly what is registered.
-    capture_source_bytes, transcript_digest, filename, content_type, transcript_warnings = (
-        _resolve_transcript_bytes(manifest, manifest_path, manifest_bytes, transcript_path)
-    )
+    #    ``transcript_source_path`` carries the actually resolved original
+    #    transcript so the native route's tracked-input guard checks the
+    #    ORIGINAL, not merely the manifest that names it (F6).
+    (
+        capture_source_bytes,
+        transcript_digest,
+        filename,
+        content_type,
+        transcript_source_path,
+        transcript_warnings,
+    ) = _resolve_transcript_bytes(manifest, manifest_path, manifest_bytes, transcript_path)
 
     # 4. The authored page must declare the source identity — checked BEFORE
     #    registration so an inconsistent capture leaves no registry state.
@@ -587,6 +641,7 @@ def capture_session(
             redacted_markdown,
             safe_manifest,
             transcript_digest,
+            transcript_source_path,
         )
         return CaptureOutcome(preview=preview, worktree=worktree_result)
 

@@ -790,3 +790,150 @@ def test_quoted_json_credentials_are_redacted_before_capture_staging(tmp_path: P
     staged = outcome.proposal.proposed_pages[0].markdown
     assert "synthetic-json-credential-value" not in staged
     assert "[REDACTED]" in staged
+
+
+# ---------------------------------------------------------------------------
+# G3 fix-a1 (plan 0008 r11): focused native-route capture regressions for the
+# accepted F5/F6 findings. Expectations derive from the fixture bytes and the
+# SHA-256 oracle — never from implementation output.
+# ---------------------------------------------------------------------------
+
+from test_git_authoring import (  # noqa: E402
+    _authored_ingest_page,
+    _commit,
+    _init_repo,
+    _write_kb,
+)
+
+
+def _run_capture(kb, page, manifest_path, source_id, *, registry, transcript=None):
+    import contextlib
+    import io
+
+    from lumio_wiki.cli import main
+
+    args = [
+        "capture",
+        "session",
+        str(kb),
+        "--compiled-page",
+        str(page),
+        "--manifest",
+        str(manifest_path),
+        "--source-id",
+        source_id,
+        "--source-registry",
+        str(registry),
+        "--yes",
+    ]
+    if transcript is not None:
+        args.extend(["--transcript", str(transcript)])
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(args)
+    return code, out.getvalue(), err.getvalue()
+
+
+def _all_private_capture_contents(registry_root):
+    """Every capture-record JSON byte under the registry root (layout-free)."""
+    root = Path(registry_root)
+    contents = []
+    for path in sorted(root.rglob("*.json")):
+        if "captures" in path.relative_to(root).parts[:1]:
+            contents.append(path.read_bytes())
+    return contents
+
+
+def test_native_capture_preserves_distinct_manifests_per_version(tmp_path):
+    """F5: repeated captures under one Source ID retain their Capture
+    Manifests immutably — changed bytes AND changed metadata for the SAME
+    bytes each keep their own record; nothing is overwritten, even with raw
+    retention disabled."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    registry = tmp_path / "registry"
+
+    one = tmp_path / "one"
+    one.mkdir()
+    first = _manifest_bytes(one, CaptureManifest(client="pi", project="alpha"))[0]
+    two = tmp_path / "two"
+    two.mkdir()
+    second = _manifest_bytes(two, CaptureManifest(client="pi", project="beta"))[0]
+    three = tmp_path / "three"
+    three.mkdir()
+    third = _manifest_bytes(three, CaptureManifest(client="pi", project="gamma"))[0]
+    transcript_a = tmp_path / "a.jsonl"
+    transcript_a.write_bytes(b"session one findings\n")
+    transcript_b = tmp_path / "b.jsonl"
+    transcript_b.write_bytes(b"session TWO findings, different bytes\n")
+    page = tmp_path / "page.md"
+    page.write_text(_authored_ingest_page("pi-session"))
+
+    # Capture 1: transcript A, manifest alpha.
+    code, _out, err = _run_capture(
+        kb, page, first, "pi-session", registry=registry, transcript=transcript_a
+    )
+    assert code == 0, err
+    _commit(repo)
+    # Capture 2: transcript B (changed bytes), manifest beta.
+    page2 = tmp_path / "page2.md"
+    page2.write_text(_authored_ingest_page("pi-session"))
+    code, _out, err = _run_capture(
+        kb, page2, second, "pi-session", registry=registry, transcript=transcript_b
+    )
+    assert code == 0, err
+    _commit(repo)
+    # Capture 3: transcript A AGAIN (identical registered bytes), a
+    # DIFFERENT manifest (gamma) — same version, distinct observation.
+    page3 = tmp_path / "page3.md"
+    page3.write_text(_authored_ingest_page("pi-session"))
+    code, _out, err = _run_capture(
+        kb, page3, third, "pi-session", registry=registry, transcript=transcript_a
+    )
+    assert code == 0, err
+
+    records = _all_private_capture_contents(registry)
+    joined = b"\n".join(records).decode("utf-8", "replace")
+    # All three observations survive: two distinct manifests for the SAME
+    # registered bytes (alpha/gamma) plus the changed-bytes manifest (beta).
+    assert "alpha" in joined
+    assert "beta" in joined
+    assert "gamma" in joined
+    assert len(records) >= 3
+
+
+def test_native_capture_refuses_git_tracked_manifest_named_transcript(tmp_path, capsys):
+    """F6: the tracked-input safety guard must check the ACTUALLY resolved
+    original transcript (the manifest-named path), not merely the manifest
+    that names it — a Git-tracked transcript inside the authoring repository
+    refuses before any registration or write."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    # The transcript is Git-tracked inside the authoring repository; the
+    # manifest lives OUTSIDE the repo and names the transcript by ABSOLUTE
+    # path, so only a guard that checks the ACTUALLY resolved original
+    # transcript refuses (a manifest-only check passes).
+    transcript = repo / "tracked-session.jsonl"
+    transcript.write_bytes(b"tracked session findings\n")
+    _commit(repo)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    manifest_path = _manifest_bytes(
+        outside, CaptureManifest(client="pi", transcript=str(transcript))
+    )[0]
+    page = tmp_path / "page.md"
+    page.write_text(_authored_ingest_page("pi-session"))
+
+    code, _out, err = _run_capture(
+        kb, page, manifest_path, "pi-session", registry=tmp_path / "registry"
+    )
+    captured = capsys.readouterr()
+    assert code == 1, captured.out + err
+    assert "Git-tracked" in captured.err + err
+    # No private version was registered and no page was written.
+    from lumio_wiki.source_registry import SourceRegistry
+
+    assert all(s.source_id != "pi-session" for s in SourceRegistry(tmp_path / "registry").list())
+    assert not (kb / "concepts" / "workbench_press.md").exists()

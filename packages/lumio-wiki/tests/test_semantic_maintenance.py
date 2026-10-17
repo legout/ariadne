@@ -280,3 +280,51 @@ def test_blocked_semantic_candidate_is_skipped(kb_root: Path, monkeypatch):
     result = reviewer.stage_findings(store=_store(kb_root))
     assert not result.staged
     assert "blocked" in result.skipped[0][1]
+
+
+# ---------------------------------------------------------------------------
+# G3 fix-a1 (plan 0008 r11): focused composition regression for the accepted
+# F8 finding.
+# ---------------------------------------------------------------------------
+
+
+def test_worktree_edits_compose_compatible_findings_per_page(kb_root: Path):
+    """F8: compatible semantic findings targeting the SAME page compose
+    against one original into ONE final markdown (at most one edit per
+    page) — two full-page writes for one page can never apply together."""
+    from lumio_wiki.semantic_maintenance import SemanticFinding, SemanticReviewReport
+
+    kb, _ = lw.load_knowledge_base(kb_root)
+    report = SemanticReviewReport(
+        pages=tuple(kb.pages),
+        findings=(
+            SemanticFinding(
+                kind="stale",
+                pages=("entities/acme.md",),
+                reason="Superseded by a newer record.",
+                lifecycle="deprecated",
+            ),
+            SemanticFinding(
+                kind="summary",
+                pages=("entities/acme.md",),
+                reason="Rewrite for clarity.",
+                summary="Acme Corp manufactures industrial presses.",
+            ),
+        ),
+    )
+    reviewer = SemanticDreamReviewer(kb, client=_client({"findings": []}), max_pages=2)
+
+    edits, skipped = reviewer.worktree_edits(report=report)
+
+    assert not skipped
+    assert len(edits) == 1
+    page_path, markdown = edits[0]
+    assert page_path == "entities/acme.md"
+    # BOTH findings applied to the SAME composed page: the lifecycle flip
+    # and the replaced summary coexist in one final markdown (structural
+    # check — YAML quoting style is not a contract).
+    import msgspec.yaml as yaml
+
+    composed = yaml.decode(markdown.split("---")[1])
+    assert composed["lifecycle"] == "deprecated"
+    assert composed["summary"] == "Acme Corp manufactures industrial presses."

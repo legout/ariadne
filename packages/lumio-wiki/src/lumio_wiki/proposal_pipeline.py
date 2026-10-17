@@ -36,10 +36,12 @@ from lumio_wiki.ingest import (
     SourceLifecycleChange,
     SourceProvenance,
     _compute_diff,
+    _configured_category_names,
     _existing_page_markdown,
     _extract_page_records,
     _is_self_consistent_restage,
     _recomputed_mutation_identity,
+    _relative_path_for_category,
     _validate_page_routing,
     compute_blast_radius,
     is_reviewable_proposal,
@@ -602,6 +604,40 @@ def assemble_page_removal_candidate(
     )
 
 
+def _union_source_records(surviving_sources, retired_sources):
+    """Union two frontmatter ``sources`` lists by Source identity (F3).
+
+    Returns the merged plain-dict list, or ``None`` when neither side
+    declares sources. Records keep their recorded order: survivor first,
+    then the retired Entity's additions whose identity is not already
+    present. Pure data — no I/O.
+    """
+    from lumio_wiki.knowledge_base import _as_sources as as_sources
+
+    surviving = as_sources(surviving_sources)
+    retired = as_sources(retired_sources)
+    if not surviving and not retired:
+        return None
+
+    def _key(source) -> str:
+        return source.id or f"title:{source.title}\nurl:{source.url or ''}"
+
+    merged = list(surviving)
+    seen = {_key(source) for source in surviving}
+    for source in retired:
+        if _key(source) not in seen:
+            seen.add(_key(source))
+            merged.append(source)
+    return [
+        {
+            **({"id": source.id} if source.id else {}),
+            "title": source.title,
+            **({"url": source.url} if source.url else {}),
+        }
+        for source in merged
+    ]
+
+
 def assemble_entity_merge_candidate(
     kb,
     retired_entity_id: str,
@@ -703,6 +739,16 @@ def assemble_entity_merge_candidate(
     if isinstance(retired_data.get("claims"), list):
         _retarget_claim_objects(retired_data, retired_entity_id, surviving_entity_id)
         merged_claims.extend(retired_data["claims"])
+    # F3 (spec 0008 §6): the survivor's source list is the UNION with the
+    # retired Entity's sources — migrated knowledge keeps its provenance.
+    # Deduplication keys on the Source id (or title+url when id-less), the
+    # same identity compound revision uses; conflicting same-id records keep
+    # the survivor's existing record.
+    merged_sources = _union_source_records(
+        surviving_data.get("sources"), retired_data.get("sources")
+    )
+    if merged_sources is not None:
+        surviving_data["sources"] = merged_sources
     repaired_survivor_body, links_changed, ambiguous = _repair_body_links_for_merge(
         surviving_body,
         surviving_page.path,
@@ -785,6 +831,159 @@ def assemble_entity_merge_candidate(
         ],
         diff=diff,
         blast_radius=blast_radius,
+        validation_report=validation_report,
+        body_link_repairs=[],
+    )
+
+
+def assemble_page_rename_candidate(
+    kb,
+    title: str,
+    *,
+    new_title: str | None = None,
+    new_category: str | None = None,
+    aliases: list[str] | None = None,
+) -> MutationCandidate:
+    """Assemble a reviewed title rename / category move / alias edit (G3).
+
+    The required native rename primitive (spec 0008 §6, ADR-0016): the
+    page's stable Entity ID, Claims, Sources, and provenance are preserved
+    while its Canonical Title changes (``rename_from``), its Content
+    Category path relocates atomically (``move_from_path``), and its alias
+    list is the operator's explicit choice. Incoming exactly-resolved body
+    links retarget to the new title; a stale Hot Index pin updates; an
+    ambiguous link repair and any path/alias collision refuse. A pure
+    computation shared by any route — never a persisted proposal.
+    """
+    resolved_title = (title or "").strip()
+    if not resolved_title:
+        raise ProposalPipelineError("page rename requires the current Canonical Page Title")
+    page = next((p for p in kb.pages if p.title == resolved_title and p.path), None)
+    if page is None:
+        raise ProposalPipelineError(f"no Compiled Page found for title {resolved_title!r}")
+    resolved_new_title = (new_title or "").strip() or resolved_title
+    renaming = resolved_new_title != resolved_title
+    new_relative = page.path
+    moving = False
+    if new_category is not None:
+        control = getattr(kb, "control", None)
+        if control is None:
+            raise ProposalPipelineError(
+                "a category move requires a version-2 Knowledge Base with a Control File"
+            )
+        if new_category not in _configured_category_names(kb):
+            raise ProposalPipelineError(
+                f"target category {new_category!r} is not configured in the Control "
+                "File; an unconfigured category never creates a category path "
+                "(issue #78)"
+            )
+        new_relative = _relative_path_for_category(
+            None, new_category, PurePosixPath(page.path).name
+        )
+        moving = new_relative != page.path
+    if not renaming and not moving and aliases is None:
+        raise ProposalPipelineError(
+            "page rename requires a new title, a target category, or an explicit "
+            "alias choice (nothing to change)"
+        )
+    try:
+        page_markdown = (Path(kb.root) / page.path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ProposalPipelineError(f"could not read the page: {exc}") from exc
+    data, body, body_start = parse_frontmatter(page_markdown, Path(page.path))
+    if renaming:
+        data["title"] = resolved_new_title
+    cleaned_aliases: list[str] = []
+    if aliases is not None:
+        cleaned_aliases = [str(alias).strip() for alias in aliases]
+        if any(not alias for alias in cleaned_aliases):
+            raise ProposalPipelineError("aliases must be non-empty strings")
+        data["aliases"] = cleaned_aliases
+    frontmatter = yaml.encode(data).decode("utf-8").strip()
+    renamed_markdown = f"---\n{frontmatter}\n---\n{body}"
+    proposed_pages: list[ProposedPage] = [
+        ProposedPage(
+            relative_path=new_relative,
+            title=resolved_new_title,
+            markdown=renamed_markdown,
+            rename_from=resolved_title if renaming else None,
+            move_from_path=page.path if moving else None,
+        )
+    ]
+    # Repair exactly-resolved incoming body links when the title changes —
+    # the same never-guess resolver the Entity Merge uses (ADR-0021).
+    ambiguous_links: list[str] = []
+    if renaming:
+        for other in kb.pages:
+            if not other.path or other.title == resolved_title:
+                continue
+            try:
+                markdown = (Path(kb.root) / other.path).read_text(encoding="utf-8")
+            except OSError:
+                continue
+            _other_data, _other_body, other_body_start = parse_frontmatter(
+                markdown, Path(other.path)
+            )
+            repaired, changed, ambiguous = _repair_body_links_for_merge(
+                markdown,
+                other.path,
+                other_body_start,
+                resolved_title,
+                resolved_new_title,
+                new_relative,
+                kb.pages,
+            )
+            ambiguous_links.extend(ambiguous)
+            if changed:
+                proposed_pages.append(
+                    ProposedPage(relative_path=other.path, title=other.title, markdown=repaired)
+                )
+    if ambiguous_links:
+        raise ProposalPipelineError(
+            "ambiguous link repair blocks this rename (never guessed; resolve "
+            "the collision and retry): " + "; ".join(ambiguous_links)
+        )
+    control = getattr(kb, "control", None)
+    control_file = None
+    if control is not None:
+        kept_pins = [
+            HotIndexPin(
+                title=(
+                    resolved_new_title if renaming and pin.title == resolved_title else pin.title
+                ),
+                note=pin.note,
+            )
+            for pin in control.hot_index
+        ]
+        control_file = KnowledgeBaseControlFile(
+            version=control.version,
+            categories=list(control.categories),
+            hot_index=kept_pins,
+            mode=control.mode,
+            path=control.path,
+            ontology=control.ontology,
+        )
+    page_validation = validate_candidate_knowledge_base(
+        proposed_pages, kb.root, control_file=control_file
+    )
+    validation_report = ValidationReport(issues=list(page_validation.issues))
+    changes = []
+    if renaming:
+        changes.append(f"title: {resolved_title} -> {resolved_new_title}")
+    if moving:
+        changes.append(f"path: {page.path} -> {new_relative}")
+    if aliases is not None:
+        changes.append(f"aliases: {', '.join(cleaned_aliases) or '(none)'}")
+    return MutationCandidate(
+        proposed_pages=proposed_pages,
+        control_file=control_file,
+        removed_titles=[],
+        removed_paths=[],
+        removed_markdowns=[],
+        removal_reasons=[],
+        entity_merges=[],
+        diff="; ".join(changes),
+        blast_radius=compute_blast_radius(proposed_pages, kb),
         validation_report=validation_report,
         body_link_repairs=[],
     )

@@ -1,9 +1,56 @@
 # Implementation plan 0008: Git-native Knowledge Authoring
 
-**Revision/status:** 10 — G1 accepted and integrated; G2 accepted as an
+**Revision/status:** 11 — G1 accepted and integrated; G2 accepted as an
 isolated component at `69cbd715…` (tree `1c0c5775…`, result
-`result/g2/fix-a3`); owner-authorized G3 execution starts from that base.
-Behavioral specification unchanged.
+`result/g2/fix-a3`); owner-authorized G3 execution started from that base;
+the frozen G3 result `b5e470b…` is reviewed but NOT accepted.
+Behavioral specification revision 3 (reactivation clarification only).
+
+**Owner-authorized G3 collective correction, 2026-10-17 (r11):** after the
+independent G3 P review returned findings F1–F9 (all parent-dispositioned
+material/in-scope), the owner approved one collective correction plus the
+already-required native rename/category-move/explicit-alias completion, in a
+fresh isolated candidate (`base/g3-fix-a1` = `b5e470b…`, sole future result
+`result/g3/fix-a1`). Worker is Pi `zai/glm-5.3`/high (sole writer); review is
+ONE parent-only Sol/high direct `b5e470b…fixed` delta, never a worker
+precondition or autonomous third round. Scope: F1 complete-candidate Source
+Manifest validation (revised/new Entities, true deletions only, strict-error
+mapping); F2 retirement eligibility resolves exact registered versions in the
+selected private history; F3 merge provenance/source-list union + exact pin
+transfer with incompatible same-source digest refusal; F4 one shared
+complete page/control/source candidate gate before registration/apply for
+newly routed producers (no per-command forks); F5 exact-version-bound
+immutable private provenance records (content-addressed per observation:
+capture manifests and URL/research provenance under the selected registry
+root, distinct records for same bytes/different metadata, converging
+identical retries; legacy capture record format/route untouched until G4);
+F6 actual resolved original transcript path through tracked-input safety and
+full repository/target/tracked-private preflight before any private write in
+reactivation; F7 both native compensation handlers consume `restore_all`
+failures through the existing `MutationRollbackError` (retained backup,
+failed paths, no new recovery system); F8 compatible semantic findings and
+selected deterministic link repairs compose per page against the same
+original into ONE checked apply with incompatible-intent diagnostics; F9 all
+actual native source register/candidate/dismiss/confirm/list producers use
+the explicitly selected shared private registry, disclosing Git manifest
+lifecycle intent for managed sources. Plus: native rename primitive with
+optional category move + explicit alias choice and reference/pin/ID safety
+(pure `assemble_page_rename_candidate` lives beside the other pure assemblies
+in `proposal_pipeline.py` only until G4 relocates them; native code never
+invokes persisted ProposalPipeline state), and reactivation by explicit
+Entity selection per spec r3 §3.3 (repeatable CLI `--entity`, SDK
+`entity_ids`). No schema/ontology/namespace change, no vocabulary/new ADR,
+no G1/G2 publication/Reader redesign, no legacy format exercise (G4 owns
+export/archive/delete). Budget: one selected red bug group against unfixed
+public seams (F1–F9 where deterministic; new rename/reactivation interfaces
+are new behavior, not failing-import ceremony), one coherent post-fix native
+group covering the eleven named scenarios, scoped Ruff/format/diff once.
+Reuse the exact-base G3 P11 375p/1s log and G1/G2 evidence only for
+unchanged surfaces. No fresh baseline, no P11/full-`test_cli`/
+full-`test_git_authoring` rerun, no full suite, live services, wheels, MCP,
+private app, shared KB, integration, push, or release. Env: worktree-local
+locked uv environment on `/home/volker/.local/bin/python3.14` (3.14.8) with
+declared locked extras only.
 
 **Owner-authorized G3 start, 2026-10-17 (r10):** the parent accepted the
 isolated G2 component (`g2Acceptance` in the orchestrator run state; closed
