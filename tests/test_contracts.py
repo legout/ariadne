@@ -1290,6 +1290,31 @@ def test_contract_evidence_dependency_and_age_gate(tmp_path, monkeypatch, capsys
     capped = bounds_api.validate_proposal(bounds["proposal"], full["revision"])
     assert capped["ok"] is False and "contracts" not in capped
     assert Path(capped["evidence"]).is_file()
+    assert "response_bytes" in capped["configuration_error"]
+    assert "see evidence reference" in capped["configuration_error"]
+    assert not capped["errors"]
+    assert any(
+        check["name"] == "contracts" and check["outcome"] == "failed" and "detail" not in check
+        for check in capped["report"]["checks"]
+    )
+
+    # A valid 128-byte ceiling applies to the refusal collectively, not just
+    # its object. The fixed failure envelope and evidence reference are exempt.
+    config.write_text(config.read_text().replace("response_bytes: 1\n", "response_bytes: 128\n"))
+    tightened = bounds_api.validate_proposal(bounds["proposal"], full["revision"])
+    tightened_review = bounds_api.review_proposal(bounds["proposal"])["report"]
+    for response in (tightened, tightened_review):
+        contract_checks = [
+            check for check in response["report"]["checks"] if check["name"] == "contracts"
+        ]
+        contract_content = {"errors": response["errors"], "report": {"checks": contract_checks}}
+        if "contracts" in response:
+            contract_content["contracts"] = response["contracts"]
+        assert len(json.dumps(contract_content).encode()) <= 128
+        assert response["ok"] is False and response["status"] == "invalid"
+        assert any("refused" in error and "see evidence" in error for error in response["errors"])
+        assert contract_checks and all(check["outcome"] == "failed" for check in contract_checks)
+        assert Path(response["evidence"]).is_file()
 
     # Fresh oversized content is refused too, not merely labelled failed
     # while returning the full >64KiB quality-rule description.

@@ -689,23 +689,47 @@ def _validate_view(
         > contract_limits["response_bytes"]
     ):
         marker = "contract response incomplete/refused: truncated; see evidence reference"
+        replacement = {
+            "errors": [marker],
+            "details": [marker],
+            "contracts": {"complete": False, "outcome": "refused", "reason": "response_bytes"},
+        }
+        if (
+            contract_inspection.contract_content_bytes(replacement)
+            > contract_limits["response_bytes"]
+        ):
+            replacement = {"errors": ["refused; see evidence"]}
+        if (
+            contract_inspection.contract_content_bytes(replacement)
+            > contract_limits["response_bytes"]
+        ):
+            replacement = {}
+            # The fixed failure envelope/evidence reference is outside the contract budget.
+            view["configuration_error"] = (
+                "inspection.response_bytes cannot fit a contract refusal; see evidence reference"
+            )
         view.update(ok=False, status="invalid")
         # Static contract errors can also occur earlier in the base validator's errors.
-        view["errors"] = [error for error in view["errors"] if error not in omitted] + [marker]
+        view["errors"] = [
+            error for error in view["errors"] if error not in omitted
+        ] + replacement.get("errors", [])
         view["report"] = {
             **view["report"],
             "checks": [
-                {**check, "outcome": "failed", "detail": marker}
+                {
+                    "name": "contracts",
+                    "outcome": "failed",
+                    **({"detail": replacement["details"][0]} if "details" in replacement else {}),
+                }
                 if check["name"] == "contracts"
                 else check
                 for check in view["report"]["checks"]
             ],
         }
-        compact = {"complete": False, "outcome": "refused", "reason": "response_bytes"}
-        if contract_inspection.contract_content_bytes(compact) <= contract_limits["response_bytes"]:
-            view["contracts"] = compact
+        if "contracts" in replacement:
+            view["contracts"] = replacement["contracts"]
         else:
-            view.pop("contracts")  # even a compact object cannot fit this ceiling
+            view.pop("contracts")
     if idempotent:
         view["idempotent"] = True
     return view
