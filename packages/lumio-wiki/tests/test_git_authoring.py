@@ -1749,6 +1749,70 @@ def test_r3_post_activation_receipt_failure_cannot_replay_after_rollback(tmp_pat
     assert PublishedFilesystemLocation(destination).read_pointer() == revision_a
 
 
+def test_local_retry_recovers_after_private_binding_bookkeeping_failure(tmp_path, monkeypatch):
+    """D3: recovery after a post-version, pre-receipt private bookkeeping failure."""
+    from lumio_wiki.artifact_store import InMemoryArtifactStore
+    from lumio_wiki.location import published_version_path
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    destination = tmp_path / "dest"
+    revision_a = _commit(repo)
+    review_a = preview_publication(kb, revision_a, destination, "none")
+    publish_revision(kb, revision_a, destination, "none", review_a.review_digest)
+
+    page = kb / "concepts" / "steel-blank.md"
+    page.write_text(
+        _entity_page(
+            "Steel Blank",
+            "entity:steel-blank",
+            ["material"],
+            body_sections="## Overview\n\nB body.\n",
+        )
+    )
+    revision_b = _commit(repo)
+    review_b = preview_publication(kb, revision_b, destination, revision_a)
+
+    class _FailFirstBindingStore(InMemoryArtifactStore):
+        """Fails B's first binding-manifest write, after the version is complete."""
+
+        def __init__(self):
+            super().__init__()
+            self.failed = False
+
+        def put_binding_manifest(self, version, manifest):
+            if version == revision_b and not self.failed:
+                self.failed = True
+                raise OSError("injected private binding manifest failure")
+            return super().put_binding_manifest(version, manifest)
+
+    store = _FailFirstBindingStore()
+    with pytest.raises(OSError, match="private binding manifest failure"):
+        publish_revision(
+            kb, revision_b, destination, revision_a, review_b.review_digest, artifact_store=store
+        )
+    # The immutable version directory completed before the bookkeeping failure.
+    version_dir = published_version_path(destination, revision_b)
+    assert (version_dir / "manifest.json").is_file()
+    assert PublishedFilesystemLocation(destination).read_pointer() == revision_a
+
+    def tree_digests():
+        return {
+            str(path.relative_to(version_dir)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(version_dir.rglob("*"))
+            if path.is_file()
+        }
+
+    before = tree_digests()
+    receipt = publish_revision(
+        kb, revision_b, destination, revision_a, review_b.review_digest, artifact_store=store
+    )
+    assert receipt.activated is True
+    assert receipt.revision == revision_b
+    assert PublishedFilesystemLocation(destination).read_pointer() == revision_b
+    assert tree_digests() == before  # recovery rewrites no immutable bytes
+
+
 def test_f10_rollback_verifies_sealed_binding_identity(tmp_path):
     repo = _init_repo(tmp_path)
     kb = _write_kb(repo)

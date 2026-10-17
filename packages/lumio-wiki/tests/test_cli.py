@@ -2648,6 +2648,62 @@ def test_source_s3_uri_without_active_version_fails(
     assert "no active Published Version" in capsys.readouterr().err
 
 
+def test_source_s3_uri_reads_legacy_store_binding_for_legacy_version(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D1: a legacy S3 version's exact binding stays readable from the
+    configured private Source Artifact Store; a native version never falls
+    back around missing new metadata."""
+    from types import SimpleNamespace
+
+    from lumio_wiki import cli
+    from lumio_wiki.artifact_store import InMemoryArtifactStore, LocalDirectoryArtifactStore
+    from lumio_wiki.s3_location import S3Location
+    from lumio_wiki.s3_publish import PointerObservation
+
+    metadata_store = InMemoryArtifactStore()  # native operational store: nothing sealed
+    legacy_store = LocalDirectoryArtifactStore(tmp_path / "legacy-source-store")
+    lw.write_binding_manifest(
+        legacy_store,
+        lw.SourceBindingManifest(
+            published_version="v-active",
+            fingerprint="fp",
+            created_at="2025-11-01T00:00:00Z",
+            entries=[
+                lw.SourceBindingEntry(
+                    page_title="CLI Page",
+                    source_id="policy",
+                    content_hash=lw.artifact_content_hash(INSPECTION_RAW),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(tmp_path / "legacy-source-store"))
+    monkeypatch.setattr(cli, "_publication_metadata_store_for_s3", lambda _uri: metadata_store)
+    monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (object(), "kb-prefix"))
+    monkeypatch.setattr(
+        "lumio_wiki.s3_publish.observe_current_pointer",
+        lambda store_arg, prefix: PointerObservation(version="v-active", e_tag="e"),
+    )
+    monkeypatch.setattr(
+        S3Location, "_read_manifest", lambda self, version: SimpleNamespace(revision="")
+    )
+
+    assert main(["source", "inspect", "s3://bucket/kb", "--source-id", "policy"]) == 0
+    out = capsys.readouterr().out
+    assert "bound_to:        published version v-active (Source Binding Manifest)" in out
+    assert f"content_hash:    {lw.artifact_content_hash(INSPECTION_RAW)[:12]}" in out
+
+    # Fail-closed bound: once the public manifest carries Git provenance, the
+    # absent native metadata is corruption/loss, never a legacy fallback.
+    monkeypatch.setattr(
+        S3Location, "_read_manifest", lambda self, version: SimpleNamespace(revision="a" * 40)
+    )
+    assert main(["source", "inspect", "s3://bucket/kb", "--source-id", "policy"]) == 1
+    failure = capsys.readouterr()
+    assert "no Source Binding Manifest for published version 'v-active'" in failure.err
+
+
 # ---------------------------------------------------------------------------
 # Source identity resolution (issue #176): `source resolve` maps a Source ID,
 # Entity ID, Canonical Page Title, alias, or page path to ONE registered
@@ -2841,6 +2897,83 @@ def test_source_resolve_published_version_resolves_manifest_binding(
         f'next:            lumio-wiki source inspect "{source_kb.resolve()}" '
         "--source-id policy --published-version v2026" in out
     )
+
+
+def test_source_resolve_replay_carries_the_explicit_registry(
+    tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D4: the replay command preserves the explicitly selected registry, so
+    it re-resolves the same exact pin with no registry environment."""
+    import hashlib
+    import shlex
+
+    from lumio_wiki.source_references import (
+        SourceReferenceManifest,
+        serialize_source_reference_manifest,
+    )
+    from lumio_wiki.source_registry import SourceRegistry
+
+    kb = tmp_path / "authoring-kb"
+    shutil.copytree(FIXTURES / "valid", kb)
+    (kb / "cli_page.md").write_text(
+        textwrap.dedent(
+            """\
+            ---
+            title: "CLI Page"
+            id: "entity:cli"
+            aliases: []
+            tags: ["cli"]
+            summary: "A Compiled Page backed by the policy Knowledge Source."
+            lifecycle: "approved"
+            visibility: "internal"
+            sources:
+              - id: "policy"
+                title: "Policy Knowledge Source"
+            synthetic: false
+            ---
+
+            # CLI Page
+            """
+        ),
+        encoding="utf-8",
+    )
+    policy_raw = b"explicitly registered policy source bytes"
+    policy_digest = hashlib.sha256(policy_raw).hexdigest()
+    registry_root = tmp_path / "private-registry"
+    registry = SourceRegistry(registry_root)
+    registry.register_source("policy", policy_raw, filename="policy.txt", content_type="text/plain")
+    (kb / ".lumio-authoring.yaml").write_bytes(
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(
+                version=1,
+                namespace="urn:uuid:3f2a8c1e-6b7d-4e2f-9a3c-5d8e7f1a2b3c",
+                sources={"policy": "active"},
+                bindings={"entity:cli": {"policy": policy_digest}},
+            )
+        )
+    )
+    monkeypatch.delenv("LUMIO_SOURCE_REGISTRY", raising=False)
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    assert (
+        main(["source", "resolve", str(kb), "CLI Page", "--source-registry", str(registry_root)])
+        == 0
+    )
+    out = capsys.readouterr().out
+    next_line = next(line for line in out.splitlines() if line.startswith("next:"))
+    command = next_line.partition(":")[2].strip()
+    assert command.startswith("lumio-wiki source inspect")
+    assert "--entity-id entity:cli" in command
+    assert (
+        f"--source-registry {registry_root}" in command
+        or f'--source-registry "{registry_root}"' in command
+    )
+
+    # Replaying the printed command with NO registry environment resolves the
+    # same exact pin (the registry flag travels with the command, D4).
+    assert main(shlex.split(command)[1:]) == 0
+    replayed = capsys.readouterr().out
+    assert f"content_hash:    {policy_digest[:12]}" in replayed
 
 
 def test_source_resolution_scopes_published_bindings_to_entity(

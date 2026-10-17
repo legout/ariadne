@@ -469,6 +469,213 @@ def test_cli_rollback_s3_activates_a_prior_complete_version(tmp_path, monkeypatc
     assert msgspec_pointer(store) == revision_a
 
 
+def test_cli_rollback_s3_recovers_from_a_damaged_active_index(tmp_path, monkeypatch, capsys):
+    """D2: outgoing index health never blocks rollback to a verified target."""
+    store = _fake_store(monkeypatch)
+    root, revision_a, registry = _init_git_kb(tmp_path)
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(tmp_path / "source-store"))
+    builder = _RecordingBuilder()
+    monkeypatch.setattr(cli, "_publication_index_builder", lambda dest: builder)
+    rc, confirmed = _publish_git_revision(
+        root, revision_a, "none", registry, capsys, retrieval="lancedb"
+    )
+    assert rc == 0, confirmed.err
+    revision_b = _next_git_revision(root, "successor whose index gets damaged")
+    rc, confirmed = _publish_git_revision(
+        root, revision_b, revision_a, registry, capsys, retrieval="lancedb"
+    )
+    assert rc == 0, confirmed.err
+
+    args = [
+        "rollback-s3",
+        "s3://bucket/kb",
+        "--version",
+        revision_a,
+        "--expected-current",
+        revision_b,
+        "--json",
+    ]
+    assert cli.main(args) == 0
+    review = json.loads(capsys.readouterr().out)
+
+    # Damage only the OUTGOING active version's index object; the healthy
+    # target keeps its complete inventory. Target strictness is pinned by
+    # test_cli_rollback_s3_refuses_missing_requested_lancedb_object.
+    damaged_key = f"kb/{revision_b}/derived/lance/tables/evidence.lance/data"
+    assert damaged_key in _list(store, "kb/")
+    obstore.delete(store, damaged_key)
+
+    assert cli.main([*args, "--confirm", review["review_digest"]]) == 0
+    confirmed = capsys.readouterr()
+    assert json.loads(confirmed.out)["version"] == revision_a
+    assert msgspec_pointer(store) == revision_a
+
+
+def test_cli_publish_s3_adopts_legacy_indexed_version_from_legacy_store(
+    tmp_path, monkeypatch, capsys
+):
+    """D1+D2: first native adoption over a legacy indexed S3 version whose
+    exact binding manifest lives only in the configured legacy private store."""
+    import hashlib
+
+    import msgspec
+    from lumio_wiki.artifact_store import (
+        LocalDirectoryArtifactStore,
+        SourceBindingEntry,
+        SourceBindingManifest,
+        write_binding_manifest,
+    )
+    from lumio_wiki.s3_location import S3ManifestFile
+    from lumio_wiki.s3_publish import _publish_s3_working_tree
+
+    control = """\
+version: 2
+mode: categorized
+categories:
+  - name: concepts
+ontology:
+  entity_types:
+    press: {}
+  predicates:
+    presses:
+      subject_types: [press]
+      object_types: [press]
+"""
+    press_page = """\
+---
+id: "entity:press"
+title: "Press"
+entity_types:
+  - press
+tags: [test]
+summary: "Press summary."
+lifecycle: approved
+visibility: public
+sources:
+  - id: operator-manual
+    title: "Operator Manual"
+---
+
+# Press
+
+The captured source supports this page.
+"""
+
+    legacy_kb = tmp_path / "legacy-kb"
+    (legacy_kb / "concepts").mkdir(parents=True)
+    (legacy_kb / "lumio.yaml").write_text(control)
+    (legacy_kb / "concepts" / "press.md").write_text(press_page)
+    store = _fake_store(monkeypatch)
+    legacy_manifest = _publish_s3_working_tree(
+        store, "kb", source_root=legacy_kb, version="v-legacy"
+    )
+    # Legacy LanceDB completion metadata predates the object inventory (old
+    # shape: no ``objects`` key), yet is digest-consistent with its manifest.
+    legacy_completion = json.dumps(
+        {"fingerprint": legacy_manifest.fingerprint, "tables": {"evidence": 2}}
+    ).encode()
+    completion_rel = "derived/lance/completion.json"
+    obstore.put(store, "kb/v-legacy/" + completion_rel, legacy_completion)
+    patched_manifest = msgspec.structs.replace(
+        legacy_manifest,
+        derived_files=[
+            *legacy_manifest.derived_files,
+            S3ManifestFile(
+                path=completion_rel,
+                size=len(legacy_completion),
+                digest=hashlib.sha256(legacy_completion).hexdigest(),
+            ),
+        ],
+    )
+    obstore.put(store, "kb/v-legacy/manifest.json", msgspec.json.encode(patched_manifest))
+    assert msgspec_pointer(store) == "v-legacy"
+
+    source_a = b"legacy retained operator manual bytes"
+    digest_a = hashlib.sha256(source_a).hexdigest()
+    source_b = b"successor operator manual bytes"
+    digest_b = hashlib.sha256(source_b).hexdigest()
+    legacy_store = LocalDirectoryArtifactStore(tmp_path / "legacy-source-store")
+    write_binding_manifest(
+        legacy_store,
+        SourceBindingManifest(
+            published_version="v-legacy",
+            fingerprint=legacy_manifest.fingerprint,
+            created_at="2025-12-01T00:00:00Z",
+            entries=[
+                SourceBindingEntry(
+                    entity_id="entity:press",
+                    page_title="Press",
+                    source_id="operator-manual",
+                    content_hash=digest_a,
+                    content_type="text/plain",
+                    filename="manual.txt",
+                    size=len(source_a),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(tmp_path / "legacy-source-store"))
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test Author"], check=True)
+    root = repo / "kb"
+    shutil.copytree(legacy_kb, root)
+    (root / ".lumio-authoring.yaml").write_bytes(
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(
+                version=1,
+                namespace="urn:uuid:0f6f0e3e-1d9a-4b2e-9d47-6c1f0f5f4f3e",
+                sources={"operator-manual": "active"},
+                bindings={"entity:press": {"operator-manual": digest_b}},
+            )
+        )
+    )
+    registry = SourceRegistry(tmp_path / "registry")
+    registry.register_source(
+        "operator-manual", source_b, filename="manual-b.txt", content_type="text/plain"
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "kb"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "native successor"], check=True)
+    revision = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    args = [
+        "publish-s3",
+        str(root),
+        "s3://bucket/kb",
+        "--revision",
+        revision,
+        "--expected-current",
+        "v-legacy",
+        "--source-registry",
+        str(registry.root),
+        "--json",
+    ]
+    assert cli.main(args) == 0
+    review = json.loads(capsys.readouterr().out)
+    assert "adopt legacy Published Version 'v-legacy'" in review["adoption"]
+    replacements = [
+        impact
+        for impact in review["source_impact"]
+        if impact["source_id"] == "operator-manual"
+        and impact["change"] == "replaced legacy binding"
+    ]
+    assert replacements and replacements[0]["support"] == f"{digest_a} -> {digest_b}"
+    assert replacements[0]["entity_id"] == "entity:press"
+
+    assert cli.main([*args, "--confirm", review["review_digest"]]) == 0
+    confirmed = capsys.readouterr()
+    assert json.loads(confirmed.out)["activated"] is True
+    assert msgspec_pointer(store) == revision
+
+
 def test_cli_rollback_s3_reports_conflicts(tmp_path, monkeypatch, capsys):
     store, _root, revision, _registry = _publish_initial(tmp_path, monkeypatch, capsys)
     rc = cli.main(

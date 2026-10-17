@@ -69,7 +69,11 @@ from lumio_wiki import (
     validate,
     write_control_file,
 )
-from lumio_wiki.artifact_store import SourceBindingManifest
+from lumio_wiki.artifact_store import (
+    ArtifactAccessDenied,
+    ArtifactUnavailable,
+    SourceBindingManifest,
+)
 from lumio_wiki.citation_actions import (
     ReaderBaseURLError,
     citation_open_actions,
@@ -4999,6 +5003,50 @@ def _publication_metadata_store_for_s3(uri: str):
     return local_publication_metadata_store(identity)
 
 
+def _s3_version_is_native(path: str, version: str) -> bool:
+    """Whether the S3 Published Version carries Git publication provenance.
+
+    The version's public manifest is authoritative. An unreadable manifest
+    cannot prove legacy status, so it counts as native and never unlocks the
+    legacy-store compatibility read (fail closed, spec 0008 §5).
+    """
+    from lumio_wiki.s3_location import S3Location
+
+    try:
+        store, prefix = _build_publish_store(path)
+        manifest = S3Location(store, prefix, version=version)._read_manifest(version)
+    except Exception:
+        return True
+    return bool(manifest.revision)
+
+
+def _s3_binding_manifest_store(path: str, version: str, metadata_store, artifact_store):
+    """Pick the private store holding this S3 version's exact binding manifest.
+
+    Native publications seal theirs in the target-scoped operational store;
+    a legacy version whose manifest exists only in the configured private
+    Source Artifact Store (LUMIO_SOURCE_STORE) keeps that exact history
+    readable (D1, spec 0008 §§3.3/§5). Corruption or a missing native
+    manifest never falls back — the operational store stays the store of
+    record for native versions.
+    """
+    if artifact_store is None:
+        return metadata_store
+    try:
+        metadata_store.get_binding_manifest(version)
+    except ArtifactUnavailable:
+        if _s3_version_is_native(path, version):
+            return metadata_store
+        try:
+            artifact_store.get_binding_manifest(version)
+        except ArtifactUnavailable:
+            return metadata_store
+        return artifact_store
+    except ArtifactAccessDenied:
+        return metadata_store  # the mapped access-denied outcome must surface
+    return metadata_store
+
+
 def _source_discovery_hint(
     args: argparse.Namespace, source_id: str, version: str | None, artifact_store
 ) -> str:
@@ -5018,8 +5066,13 @@ def _source_discovery_hint(
         is_s3 = _is_object_store_uri(path)
         is_local_published = not is_s3 and _is_local_published_layout(args.path)
         if version is not None and is_s3:
-            store = _publication_metadata_store_for_s3(path)
-            ids = {entry.source_id for entry in read_binding_manifest(store, version).entries}
+            metadata_store = _publication_metadata_store_for_s3(path)
+            manifest_store = _s3_binding_manifest_store(
+                path, version, metadata_store, artifact_store
+            )
+            ids = {
+                entry.source_id for entry in read_binding_manifest(manifest_store, version).entries
+            }
         elif version is not None and is_local_published:
             _receipt, sealed = read_local_published_bindings(args.path, version)
             ids = {source_id for bindings in sealed.bindings.values() for source_id in bindings}
@@ -5097,13 +5150,16 @@ def _resolve_source_binding(
                     "this S3 Knowledge Base has no active Published Version", exit_code=1
                 )
             metadata_store = _publication_metadata_store_for_s3(path)
+            manifest_store = _s3_binding_manifest_store(
+                path, version, metadata_store, artifact_store
+            )
             page_title = None
             if entity_id is not None:
                 snapshot = _resolve_s3_snapshot(path, version=version)
                 page_title = _entity_page_title(snapshot.knowledge_base, entity_id)
             return (
                 resolve_manifest_binding(
-                    metadata_store,
+                    manifest_store,
                     version,
                     source_id,
                     entity_id=entity_id,
@@ -5392,9 +5448,10 @@ def _cmd_source_resolve(args: argparse.Namespace) -> int:
             raise CliError("this S3 Knowledge Base has no active version", exit_code=1)
         kb = _resolve_s3_snapshot(path, version=version).knowledge_base
         metadata_store = _publication_metadata_store_for_s3(path)
+        manifest_store = _s3_binding_manifest_store(path, version, metadata_store, artifact_store)
         try:
             known_ids = {
-                entry.source_id for entry in read_binding_manifest(metadata_store, version).entries
+                entry.source_id for entry in read_binding_manifest(manifest_store, version).entries
             }
         except SourceInspectionError as exc:
             raise CliError(str(exc), exit_code=1) from exc
@@ -5482,11 +5539,13 @@ def _cmd_source_resolve(args: argparse.Namespace) -> int:
         )
     )
     kb_location = path if is_s3 or is_local_published or version is not None else str(kb.root)
+    explicit_registry = getattr(args, "source_registry", None)
     next_action = source_inspect_command(
         binding.source_id,
         kb_location,
         binding.published_version,
         entity_id=binding.entity_id,
+        source_registry=str(explicit_registry) if explicit_registry else None,
     )
     page_info = (
         {"title": resolution.page.title, "path": resolution.page.path}

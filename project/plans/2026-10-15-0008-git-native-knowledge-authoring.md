@@ -1,8 +1,33 @@
 # Implementation plan 0008: Git-native Knowledge Authoring
 
-**Revision/status:** 7 — G1 accepted; G2 fix-first corrections and local
+**Revision/status:** 8 — G1 accepted; G2 fix-first corrections and local
 LanceDB completion are owner-authorized for one isolated candidate. Behavioral
 specification unchanged.
+
+**Owner-authorized D1–D5 delta correction, 2026-10-17 (r8):** after the
+independent fix-delta review returned findings D1–D5 unresolved on `8b034283`,
+the owner explicitly approved one additional bounded repair of exactly those
+five findings in a fresh isolated candidate (`g2-fix-a2`, base
+`8b034283…`). Worker is Pi `zai/glm-5.3`/high; review is one parent-only
+Sol/high delta over `8b034283…fixed` — no worker-dispatched review. Scope:
+D1 compatibility reads of exact legacy private S3 binding manifests held in
+the configured `LUMIO_SOURCE_STORE` for legacy S3 inspect/resolve and
+first-native-adoption comparison (new native metadata stays target-scoped;
+no registry-latest, migration, or fallback around missing/corrupt new native
+metadata); D2 outgoing reconciliation proving admission/activation truth
+without requiring outgoing index health, with the legacy exemption checked
+before new inventory validation while target completeness/retention and the
+R1 stale-retry closure stay strict; D3 local recovery verifying the actual
+`published_version_path(destination, version)` without rewriting immutable
+bytes; D4 carrying the explicitly selected `--source-registry` into the
+replayable authoring inspect command with normal quoting; D5 adapting only
+the `test_s3_publish_uses_one_captured_candidate` fixture to emit a real
+representative index object (production empty-inventory gate unchanged).
+Budget: one failing-first batch for the new repros where practical, one
+coherent selected post-fix check group, scoped Ruff/format/diff, reuse of
+still-applicable prior greens; no spec/ADR/AGENTS changes, broader suite,
+live services, merge/push, or third correction round. G2 remains unaccepted
+until the parent accepts it.
 
 **G2 caller/test-surface amendment, 2026-10-16 (parent-authorized):** G2 routes
 `publish-s3`, `rollback-s3`, and public SDK publication/rollback through the same

@@ -200,6 +200,7 @@ def source_inspect_command(
     published_version: str | None = None,
     *,
     entity_id: str | None = None,
+    source_registry: str | None = None,
 ) -> str:
     """The explicit private-Source action (ADR-0020).
 
@@ -207,13 +208,16 @@ def source_inspect_command(
     commands — never an implicitly emitted signed or public URL. The id is
     quoted only when it is not a safe bare shell word. ``published_version``
     pins the action to the exact Published Version whose Source Binding
-    Manifest binds the Source (A4 remediation).
+    Manifest binds the Source (A4 remediation). An explicitly selected
+    ``source_registry`` is carried into the replay so the command resolves
+    the same exact pins without relying on environment defaults (D4).
     """
     location = f"{_shell_double_quoted(kb_location)} " if kb_location else ""
     entity = f" --entity-id {_shell_arg(entity_id)}" if entity_id else ""
+    registry = f" --source-registry {_shell_arg(source_registry)}" if source_registry else ""
     return (
         f"lumio-wiki source inspect {location}--source-id {_shell_arg(source_id)}"
-        f"{entity}{_published_version_flag(published_version)}"
+        f"{entity}{registry}{_published_version_flag(published_version)}"
     )
 
 

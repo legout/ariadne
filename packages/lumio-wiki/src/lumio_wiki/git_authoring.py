@@ -1155,6 +1155,7 @@ def preview_publication(
         destination_path if destination_path is not None else destination,
         expected_current,
         source_registry=source_registry,
+        artifact_store=artifact_store,
         retention_required=retention_required,
         s3_location=s3_location,
         metadata_store=metadata_store,
@@ -1351,6 +1352,7 @@ def _review_from_capture(
     expected_current: str | None,
     *,
     source_registry: SourceRegistry | None,
+    artifact_store: SourceArtifactStore | None = None,
     retention_required: bool,
     s3_location: S3Location | None = None,
     metadata_store: SourceArtifactStore | None = None,
@@ -1414,13 +1416,28 @@ def _review_from_capture(
             else:
                 try:
                     legacy_raw = metadata_store.get_binding_manifest(observed)
-                    legacy_bindings = msgspec.json.decode(legacy_raw, type=SourceBindingManifest)
                 except ArtifactUnavailable:
+                    # First-native-adoption compatibility (D1): pre-Git S3
+                    # publications sealed their exact Source Binding Manifests
+                    # in the configured private Source Artifact Store; adoption
+                    # still compares that exact history (spec 0008 §§3.3/§5).
+                    legacy_raw = None
+                    if artifact_store is not None:
+                        try:
+                            legacy_raw = artifact_store.get_binding_manifest(observed)
+                        except ArtifactUnavailable:
+                            legacy_raw = None
+                if legacy_raw is None:
                     legacy_bindings = None
-                except msgspec.DecodeError as exc:
-                    raise GitAuthoringError(
-                        f"legacy S3 Source Binding Manifest for {observed!r} is malformed"
-                    ) from exc
+                else:
+                    try:
+                        legacy_bindings = msgspec.json.decode(
+                            legacy_raw, type=SourceBindingManifest
+                        )
+                    except msgspec.DecodeError as exc:
+                        raise GitAuthoringError(
+                            f"legacy S3 Source Binding Manifest for {observed!r} is malformed"
+                        ) from exc
                 if legacy_bindings is not None:
                     container_uri = s3_location.destination_uri
                     if container_uri is None:
@@ -1667,15 +1684,20 @@ def _persist_s3_activation(
 def _reconcile_active_s3_activation(
     location: S3Location, metadata_store: SourceArtifactStore
 ) -> None:
-    """Record the verified outgoing Git activation before another pointer transition."""
+    """Record the verified outgoing Git activation before another pointer transition.
+
+    Reconciliation proves admission/activation truth only: the outgoing
+    version's manifest identity, its private admission record, and the
+    activation receipt. Outgoing derived-artifact health is deliberately not
+    re-required here — a damaged active index must not block recovery to an
+    independently verified healthy target, and legacy versions predate the
+    new inventory (D2). Every activation path still fully validates the
+    TARGET version before CAS (spec 0008 §5).
+    """
     active = observe_current_pointer(location.store, location.prefix).version
     if active is None:
         return
-    import lumio_wiki.s3_publish as s3_publish
-
-    manifest = _load_complete_version(
-        s3_publish._require_obstore(), location.store, location.prefix, active
-    )
+    manifest = location._read_manifest(active)
     if not manifest.revision:
         return  # legacy Published Versions have no Git activation receipt
     if manifest.format_identity != VALIDATOR_CONTRACT_ID:
@@ -1871,6 +1893,7 @@ def _publish_s3_revision(
         destination,
         expected_current,
         source_registry=source_registry,
+        artifact_store=artifact_store,
         retention_required=retention_required,
         s3_location=s3_location,
         metadata_store=private_store,
@@ -2079,6 +2102,7 @@ def publish_revision(
         destination_path,
         expected_current,
         source_registry=source_registry,
+        artifact_store=artifact_store,
         retention_required=retention_required,
         retrieval=retrieval,
     )
@@ -2425,7 +2449,10 @@ def _verify_existing_version(
         raise GitAuthoringError(
             f"cannot reuse {version!r}: its requested LanceDB artifacts differ from this review"
         )
-    _verify_local_version_files(location.path, version, manifest)
+    # Verify the version's OWN directory (D3): _verify_local_version_files
+    # resolves manifest-relative paths beneath the version dir, not the
+    # publication destination root.
+    _verify_local_version_files(published_version_path(location.path, version), version, manifest)
 
 
 def _capture_local_index_files(version_dir: Path) -> list[S3ManifestFile]:

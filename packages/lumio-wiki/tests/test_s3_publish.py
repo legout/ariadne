@@ -215,7 +215,7 @@ The captured source supports this page.
     )
     assert "derived/lance" in review.requested_artifacts
 
-    def builder(*, fingerprint, pages, **_kwargs):
+    def builder(*, store, sidecar_prefix, fingerprint, pages, **_kwargs):
         assert [page.id for page in pages] == ["entity:press"]
         page_path.write_text(page_path.read_text() + "\nLater uncommitted change.\n")
         registry.register_source(
@@ -223,6 +223,15 @@ The captured source supports this page.
             b"late source registration",
             filename="late-source.txt",
             content_type="text/plain",
+        )
+        # D5: write one real representative index object from independently
+        # authored fixture bytes — the publisher digests actual store contents
+        # as the completion inventory, so metadata alone cannot pass the gate.
+        obstore.put(
+            store,
+            f"{sidecar_prefix}/evidence.lance",
+            b"fixture evidence table bytes",
+            mode="create",
         )
         return RemoteIndexCompletion(fingerprint=fingerprint.digest)
 
@@ -263,6 +272,7 @@ The captured source supports this page.
     assert manifest.source_reference_digest == hashlib.sha256(source_manifest_raw).hexdigest()
     assert receipt.revision == revision and receipt.activated is True
     assert graph is not None
+    assert "derived/lance/evidence.lance" in {item.path for item in manifest.derived_files}
     assert manifest.fingerprint == expected_fingerprint
     assert manifest.fingerprint == graph.fingerprint_digest == completion.fingerprint
     assert binding.fingerprint == manifest.fingerprint
