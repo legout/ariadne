@@ -30,6 +30,22 @@ _Avoid_: schema, data model
 
 ### Quality
 
+**Data Contract**:
+A producer-owned declaration of expected dataset structure and quality, with its own identity and version. It is distinct from observed physical state, executable semantic meaning and human admission.
+_Avoid_: observed schema, semantic model, quality guarantee
+
+**Contract Binding**:
+An explicit consumer-owned association between a Data Contract's scoped dataset/field identities, an identified physical source and a Semantic Layer dataset. It grants neither source access nor join authority.
+_Avoid_: name matching, source approval, shared ontology identity
+
+**Contract Observation**:
+A Core-produced, scoped, as-of comparison of supported contract expectations with an identified source. It is distinct from producer-supplied Source Quality Evidence and does not guarantee current conformance or confer human admission.
+_Avoid_: contract approval, live quality guarantee, upstream attestation
+
+**Contract Drift**:
+An observed difference between a supported contract expectation and its bound source at a stated scope and time. Unavailable, unsupported or unmeasured requirements are not observed drift or proof of compliance.
+_Avoid_: rewritten contract, unknown state, failed access
+
 **Governed Metric**:
 A named measure with one canonical Semantic Layer definition admitted by human review through the applicable Promotion or Git Review Admission route. Never computed by ad-hoc agent SQL.
 _Avoid_: KPI, ad-hoc metric
@@ -77,7 +93,7 @@ The agent that profiles a database and drafts Context Layer and Semantic Layer a
 _Avoid_: generator
 
 **Authoring Proposal**:
-A proposed change to the project's authored artifacts, including source declarations, Seed Notes, Semantic Layer, Context Layer and explicitly saved Answer Examples, based on an identified artifact revision and awaiting human review. It is distinct from served state and from the legacy ad-hoc Proposal.
+A proposed change to the project's authored artifacts, including source declarations, Seed Notes, Semantic Layer, Context Layer, Data Contracts, Contract Bindings and explicitly saved Answer Examples, based on an identified artifact revision and awaiting human review. It is distinct from served state and from the legacy ad-hoc Proposal.
 _Avoid_: approved change, served branch
 
 **Candidate Revision**:

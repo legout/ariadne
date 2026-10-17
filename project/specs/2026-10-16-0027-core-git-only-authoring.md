@@ -11,6 +11,8 @@
 | **Decision** | [ADR-0024](../adr/0024-git-only-durable-authored-state.md); vocabulary in [CONTEXT.md](../../CONTEXT.md). |
 | **Contract** | planning-contract v1; installed skill provenance unknown. |
 
+**Later scoped extension (2026-10-17):** the owner-approved [spec 0028 revision 2](2026-10-17-0028-odcs-contract-consumer.md) extends the native authored/snapshot inventory with producer ODCS contracts and separate local consumer bindings, and adds bounded approved-source contract validation/evidence to the same human admission route. This is subsequent #75 scope, not a retroactive expansion of #74 approval. It creates no general raw-SQL tool, legacy store or shared #76 interface; all unaffected requirements below remain.
+
 ## 1. Purpose, scope and non-goals
 
 Complete the existing native Git proposal/worktree route for a newly created Ariadne data project. Git is the only durable revision model for authored source declarations, Seed Notes, OSI models/graph, native Context Layer artifacts, document-derived content/provenance and explicitly saved Answer Examples. There is no application-owned staging tree or parallel persistent draft catalog.
