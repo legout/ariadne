@@ -12,6 +12,9 @@ import yaml
 
 from ariadne import admission, answer_examples, authoring_inputs, context
 from ariadne.context import list_pages, read_page, resolve_term, search_pages
+from ariadne.contracts import (  # pyright: ignore[reportMissingImports] — new module, stale analysis index; resolves in the qualified env
+    CONSUMER_PROFILE,
+)
 from ariadne.planner import PlannerError
 from ariadne.semantic_graph import SemanticGraph, load_graph
 from ariadne.sources import Registry, implicit_registry, load_registry
@@ -38,6 +41,17 @@ MISSING_CATALOG = (
     "models — metric operations are refused; discovery (search_context) and term "
     "resolution (resolve_term) still serve the admitted context, and no absent "
     "model ever triggers a raw-SQL fallback"
+)
+
+
+# The supported-consumer-profile scope note every contracts entry carries
+# (spec 0028 §§4–5): the honest limitation line, not a conformance claim.
+CONTRACT_PROFILE_LIMITS = (
+    "pinned ODCS v3.2.0 consumer profile: flat scalar field checks (presence, "
+    "logical/physical type, required-NULL) and single-dataset DuckDB SQL "
+    "quality; enum/unique/primaryKey/transform/nested assertions and other "
+    "dialects are preserved but unsupported; observations are as-of, never a "
+    "current-compliance claim"
 )
 
 
@@ -215,12 +229,89 @@ class _DiscoverySession:
             "validation": record.get("validation"),
         }
 
+    def _contracts_group(self) -> dict:
+        """The bounded contracts group of ``discover`` (spec 2028 §7, issue
+        #77/C1): ONLY the pinned admitted snapshot's contracts — producer
+        ID/version, native binding and model/dataset identity, the
+        supported-profile limitations and the matching stored observation's
+        as-of/eligibility. Never candidate/worktree content, never a source
+        read, and absent/expired evidence is reported honestly, never
+        regenerated."""
+        if self._source_free:
+            raise ValueError(
+                "no admitted snapshot is available — contract discovery serves "
+                "only a pinned admitted revision"
+            )
+        if self._managed is None:
+            raise ValueError("contracts serve only a Git admission")
+        record = self._managed
+        view = record.get("contracts") or {}
+        bindings = view.get("bindings") or []
+        observations = {
+            observation.get("binding"): observation
+            for observation in view.get("observations") or []
+            if isinstance(observation, dict)
+        }
+        max_age_hours = (
+            authoring_inputs.project_inspection_limits(self._project)["receipt_max_age_hours"]
+            if self._project is not None
+            else None
+        )
+        items = []
+        for binding in bindings:
+            if not isinstance(binding, dict):
+                continue
+            observation = observations.get(binding.get("id"))
+            eligibility = "unknown"
+            if max_age_hours is not None and observation is not None:
+                from ariadne import (  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue] — stale analysis index; resolves in the qualified env
+                    contract_inspection,
+                )
+
+                eligibility = (
+                    "expired"
+                    if contract_inspection.observation_expired(observation, max_age_hours)
+                    else "eligible"
+                )
+            items.append(
+                {
+                    "contract": {
+                        "id": binding.get("contract_id"),
+                        "version": binding.get("contract_version"),
+                    },
+                    "binding": binding.get("id"),
+                    "object_id": binding.get("object_id"),
+                    "asset": binding.get("asset"),
+                    "model": binding.get("model"),
+                    "dataset": binding.get("dataset"),
+                    "profile": CONSUMER_PROFILE,
+                    "limitations": CONTRACT_PROFILE_LIMITS,
+                    "revision": record.get("commit"),
+                    "observation": None
+                    if observation is None
+                    else {
+                        "observed_at": observation.get("observed_at"),
+                        "outcome": observation.get("outcome"),
+                        "scope": observation.get("scope"),
+                        "eligibility": eligibility,
+                    },
+                }
+            )
+        return {
+            "items": items,
+            "complete": True,
+            "reminder": (
+                "a contract observation is scoped, as-of evidence — never live "
+                "compliance, source access or human approval"
+            ),
+        }
+
     async def discover(self, query: str, limit: int = 5) -> dict:
         """Compose native reads without execution or cross-kind ranking (spec 0018)."""
         if self._managed is not None:
             self._recheck_pinned()  # global refusal, never a group availability label
         groups = {}
-        for kind in ("metrics", "pages", "terms", "examples"):
+        for kind in ("metrics", "pages", "terms", "examples", "contracts"):
             try:
                 if kind == "metrics":
                     catalog = await self.list_metrics()

@@ -67,8 +67,8 @@ from pathlib import Path
 from typing import Any
 
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-from sqlglot import (
-    expressions as exp,  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+from sqlglot import (  # pyright: ignore[reportMissingImports] — same
+    expressions as exp,
 )
 from sqlglot.optimizer.scope import Scope, build_scope  # pyright: ignore[reportMissingImports]
 
@@ -272,27 +272,75 @@ class _QueryRuntimeSession(_DiscoverySession):
         (source/catalog/schema/table plus the canonical credential-free
         ``resource``) — same-named tables in distinct schemas/collections stay
         distinct assets, and consumers use these fields rather than parsing
-        display names."""
+        display names. C1 (issue #77, spec 0028 §7): entries whose exact asset
+        tuple matches a bound contract of the PINNED admitted snapshot carry a
+        bounded snapshot-based contract annotation (producer id/version,
+        binding, as-of observation) — computed once from the admission
+        descriptor, with NO extra source reads and no second inspection."""
         self._discard_request_budget()  # fix pass 2, finding 1b (list_datasets)
+        annotations = self._contract_annotations()
         datasets: list[dict] = []
         for source in self.catalog:
             for table in source["tables"]:
-                datasets.append(
-                    {
-                        "name": (
-                            f"{source['name']}.{table['name']}"
-                            if self._qualified
-                            else table["name"]
-                        ),
-                        "columns": table["columns"],
-                        "source": source["name"],
-                        "catalog": table.get("catalog"),
-                        "schema": table.get("schema"),
-                        "table": table["name"],
-                        "resource": table.get("resource"),
-                    }
+                entry = {
+                    "name": (
+                        f"{source['name']}.{table['name']}" if self._qualified else table["name"]
+                    ),
+                    "columns": table["columns"],
+                    "source": source["name"],
+                    "catalog": table.get("catalog"),
+                    "schema": table.get("schema"),
+                    "table": table["name"],
+                    "resource": table.get("resource"),
+                }
+                contract = annotations.get(
+                    (source["name"], table.get("catalog"), table.get("schema"), table["name"])
                 )
+                if contract is not None:
+                    entry["contract"] = contract
+                datasets.append(entry)
         return datasets
+
+    def _contract_annotations(self) -> dict[tuple, dict]:
+        """The pinned snapshot's contract annotations keyed by exact asset
+        tuple (spec 0028 §7): built lazily ONCE from the admission descriptor
+        only — the live catalog construction itself is untouched, and no
+        additional source read ever runs for the annotation."""
+        cached = getattr(self, "_contract_annotation_cache", None)
+        if cached is not None:
+            return cached
+        cache: dict[tuple, dict] = {}
+        record = self._managed
+        view = (record or {}).get("contracts") or {}
+        observations = {
+            observation.get("binding"): observation
+            for observation in view.get("observations") or []
+            if isinstance(observation, dict)
+        }
+        for binding in view.get("bindings") or []:
+            if not isinstance(binding, dict):
+                continue
+            asset = binding.get("asset") or {}
+            if not isinstance(asset, dict):
+                continue
+            observation = observations.get(binding.get("id"))
+            cache[
+                (asset.get("source"), asset.get("catalog"), asset.get("schema"), asset.get("table"))
+            ] = {
+                "id": binding.get("contract_id"),
+                "version": binding.get("contract_version"),
+                "binding": binding.get("id"),
+                "object_id": binding.get("object_id"),
+                "observation": None
+                if observation is None
+                else {
+                    "observed_at": observation.get("observed_at"),
+                    "outcome": observation.get("outcome"),
+                    "scope": observation.get("scope"),
+                },
+            }
+        self._contract_annotation_cache = cache
+        return cache
 
     def _claim_operation_budget(self) -> DeadlineBudget:
         """One remaining-seconds budget per operation (spec 0014 §6, fix pass

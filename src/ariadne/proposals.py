@@ -574,6 +574,8 @@ def _in_user_scope(rel: str) -> bool:
         and pure.suffix in _MODEL_SUFFIXES
     ):
         return True
+    if len(parts) == 2 and parts[0] == "contracts" and pure.suffix in _MODEL_SUFFIXES:
+        return True  # spec 0028 §3: producer contract documents (flat)
     if (
         parts[0] == "context_layer"
         and len(parts) >= 3
@@ -605,7 +607,12 @@ def _in_snapshot(rel: str) -> bool:
         or any(part in ("", ".", "..") for part in parts)
     ):
         return False
-    if rel in ("ariadne.yaml", "data/seed_notes.md", "semantic_layer/graph.yml"):
+    if rel in (
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "semantic_layer/graph.yml",
+        "contract_bindings.yaml",
+    ):
         return True
     if (
         len(parts) == 3
@@ -613,6 +620,8 @@ def _in_snapshot(rel: str) -> bool:
         and pure.suffix in _MODEL_SUFFIXES
     ):
         return True
+    if len(parts) == 2 and parts[0] == "contracts" and pure.suffix in _MODEL_SUFFIXES:
+        return True  # spec 0028 §3: producer contract documents (flat)
     return (parts[0] == "context_layer" and pure.suffix == ".md") or (
         len(parts) == 2
         and parts[0] == "answer_examples"

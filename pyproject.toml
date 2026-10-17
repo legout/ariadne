@@ -13,6 +13,7 @@ dependencies = [
     "sqlglot>=25.0",  # own compile engine: ariadne/render.py (ADR-0008) + grain guard
     "openai>=1.40",
     "pyyaml>=6.0",
+    "jsonschema>=4.18",  # spec 0028 §2: pinned ODCS v3.2.0 structural validation (Draft 2019-09)
 ]
 
 [project.scripts]

@@ -94,7 +94,10 @@ _ADR_TOLERANCE = 1e-9
 # 4: the K4 applicability contract (issue #44, spec 0010 §9) — semantic
 # checks carry explicit not_applicable outcomes with reasons on a
 # context-only candidate.
-VALIDATOR_VERSION = "ariadne-validate/6"
+# 7: the ODCS contract checks (issue #77/C1, spec 0028 §§2–6) — static
+# document/binding checks in validate() with the live observation seam in
+# Git Authoring validation; pre-contract evidence cannot attest the gate.
+VALIDATOR_VERSION = "ariadne-validate/7"
 
 
 def validator_identity(performed_checks: list[str] | tuple[str, ...]) -> dict:
@@ -520,6 +523,15 @@ def _consumed_files(staging_dir: Path) -> list[tuple[str, Path, bytes]]:
     graph = staging_dir / "semantic_layer" / "graph.yml"
     if graph.is_file():
         files.append(_read("semantic_layer/graph.yml", graph))
+    contracts_dir = staging_dir / "contracts"
+    if contracts_dir.is_dir():
+        # spec 0028 §3: the producer contract documents are consumed and
+        # digested by validation — both suffixes of the authored grammar
+        for path in sorted(p for p in contracts_dir.iterdir() if p.suffix in (".yaml", ".yml")):
+            files.append(_read(f"contracts/{path.name}", path))
+    bindings = staging_dir / "contract_bindings.yaml"
+    if bindings.is_file():
+        files.append(_read("contract_bindings.yaml", bindings))
     context = staging_dir / "context_layer"
     if context.is_dir():
         for path in sorted(p for p in context.rglob("*") if p.is_file()):
@@ -588,7 +600,12 @@ def candidate_scope_files(staging: str | Path) -> list[tuple[str, Path, bytes]]:
     from the other)."""
     staging = Path(staging)
     files: list[tuple[str, Path, bytes]] = []
-    for rel in ("ariadne.yaml", "data/seed_notes.md", "semantic_layer/graph.yml"):
+    for rel in (
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "semantic_layer/graph.yml",
+        "contract_bindings.yaml",
+    ):
         path = staging / rel
         if path.is_file():
             files.append((rel, path, path.read_bytes()))
@@ -596,6 +613,12 @@ def candidate_scope_files(staging: str | Path) -> list[tuple[str, Path, bytes]]:
     if models.is_dir():
         for path in sorted(list(models.glob("*.yml")) + list(models.glob("*.yaml"))):
             files.append((f"semantic_layer/models/{path.name}", path, path.read_bytes()))
+    contracts_dir = staging / "contracts"
+    if contracts_dir.is_dir():
+        # spec 0028 §3: contract documents/bindings are candidate bytes the
+        # COMPLETE artifact digest binds, like every other authored artifact
+        for path in sorted(p for p in contracts_dir.iterdir() if p.suffix in (".yaml", ".yml")):
+            files.append((f"contracts/{path.name}", path, path.read_bytes()))
     context = staging / "context_layer"
     if context.is_dir():
         for path in sorted(p for p in context.rglob("*.md") if p.is_file()):
@@ -780,6 +803,49 @@ def _relationship_audit(
     return errors, detail
 
 
+def _static_contract_checks(staging: Path) -> tuple[dict, list[str]]:
+    """The offline ODCS contract checks of one artifact tree (spec 0028 §§2–3,
+    issue #77/C1): pinned document validation, the fixed binding document and
+    the static binding resolution. Source-free — nothing opens a connection —
+    and reported as the ``contracts`` check on BOTH validate() paths, so a
+    malformed inherited contract never disappears behind a context-only
+    ``not_applicable``."""
+    from ariadne import (  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue] — new module, stale analysis index; resolves in the qualified env
+        contract_inspection,  # function-local: it imports this module
+    )
+
+    try:
+        return contract_inspection.static_contract_checks(staging)
+    except Exception as exc:  # one honest failed check, never a crashed validation
+        return {"present": True}, [f"contract checks failed: {type(exc).__name__}: {exc}"]
+
+
+def _contract_check(staging: Path) -> tuple[CheckOutcome, list[str], dict]:
+    """The ``contracts`` CheckOutcome of the static validate() path: static
+    document/binding checks only — the live approved-source observation is
+    explicitly ``not_run`` here (spec 0028 §6: static success is never the
+    evidence for admitting dependent models)."""
+    evidence, errors = _static_contract_checks(staging)
+    if not evidence.get("present"):
+        return (
+            CheckOutcome(
+                "contracts",
+                "not_applicable",
+                "no contract artifacts (contracts/, contract_bindings.yaml) — the "
+                "candidate carries no data contracts",
+            ),
+            [],
+            evidence,
+        )
+    detail = "; ".join(errors)
+    if not errors:
+        detail = (
+            "static document/binding checks passed; the live approved-source "
+            "observation is not_run in compile-only validation (spec 0028 §6)"
+        )
+    return CheckOutcome("contracts", "failed" if errors else "passed", detail), errors, evidence
+
+
 def validate(
     staging_dir: str | Path,
     db_path: str | Path | None = None,
@@ -795,6 +861,7 @@ def validate(
     precede any SELECT compilation."""
     staging = Path(staging_dir)
     models_dir = _models_dir(staging)
+    contract_check, contract_errors, _contract_evidence = _contract_check(staging)
     # K4 (issue #44, spec 0010 §9): a candidate with NO semantic declarations
     # at all (no semantic_layer — the onboarding/schema/Reference-only form) is
     # CONTEXT-ONLY. The semantic checks are explicitly not_applicable WITH
@@ -802,7 +869,9 @@ def validate(
     # OSI/metric/Policy/relationship declaration still routes through the
     # full checks below, a PRESENT-but-empty models tree keeps the historical
     # structural refusal (mf F8: declared intent, no inventory), and a lone
-    # graph.yml without models stays the failure it always was.
+    # graph.yml without models stays the failure it always was. The static
+    # contract checks run here TOO: a malformed inherited contract must not
+    # disappear behind not_applicable (spec 0028 §6).
     context_only = (
         not models_dir.is_dir() and not (staging / "semantic_layer" / "graph.yml").is_file()
     )
@@ -814,8 +883,8 @@ def validate(
         )
         files = _consumed_files(staging)
         return ValidationResult(
-            True,
-            [],
+            not contract_errors,
+            list(contract_errors),
             report=ValidationReport(
                 digest=_digest_files(files),
                 scope="context-only (no semantic declarations)",
@@ -834,6 +903,7 @@ def validate(
                         reason + "; an unknown physical table Grain never relaxes semantic Grain",
                     ),
                     CheckOutcome("relationship_audit", "not_applicable", reason),
+                    contract_check,
                 ),
             ),
         )
@@ -841,7 +911,7 @@ def validate(
     registry_digest, registry_label = _registry_identity(db_path, sources_path, registry)
     live = db_path is not None or sources_path is not None or registry is not None
 
-    errors: list[str] = []
+    errors: list[str] = list(contract_errors)
     structural_detail = ""
     graph: SemanticGraph | None = None
     try:
@@ -947,6 +1017,7 @@ def validate(
             CheckOutcome("bind", bind_outcome),
             CheckOutcome("grain", grain_outcome),
             CheckOutcome("relationship_audit", relationship_outcome, relationship_detail),
+            contract_check,
         ),
     )
     return ValidationResult(not errors, errors, report=report)

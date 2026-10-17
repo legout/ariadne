@@ -169,7 +169,7 @@ def build_parser() -> _Parser:
     read_cmd.add_argument(
         "--kind",
         required=True,
-        choices=["model", "graph", "page", "seed_notes"],
+        choices=["model", "graph", "page", "seed_notes", "contract", "contract_bindings"],
         help="the typed artifact identity's kind",
     )
     read_cmd.add_argument("--name", default=None, help="artifact name (model/page)")

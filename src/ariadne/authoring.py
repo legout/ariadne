@@ -32,10 +32,12 @@ from sqlglot import exp  # pyright: ignore[reportMissingImports] — same
 from ariadne import (
     answer_examples,
     authoring_context,
+    authoring_contracts,  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue] — new module, stale analysis index; resolves in the qualified env
     authoring_inputs,  # noqa: F401 — re-export: the historical seam
     authoring_semantic,
     authoring_sources,
     context,
+    contract_inspection,  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue] — same
     execution,
     profiler,
     proposals,
@@ -105,6 +107,11 @@ _LAYER_EDITORS = {
     "graph": authoring_semantic,
     "page": authoring_context,
     "seed_notes": authoring_context,
+    # spec 0028 §3 (issue #77/C1): producer contract documents and the fixed
+    # native binding document are typed authored artifacts — the same
+    # revision-checked read/edit seam, no arbitrary file paths
+    "contract": authoring_contracts,
+    "contract_bindings": authoring_contracts,
 }
 EDIT_KINDS = tuple(sorted(_LAYER_EDITORS))
 
@@ -639,11 +646,35 @@ def _validate_view(evidence: dict, evidence_path: Path, *, idempotent: bool) -> 
         "report": evidence["report"],
         "performed_checks": list(evidence["performed_checks"]),
         "validator_identity": evidence["validator_identity"],
+        "contracts": evidence.get("contracts"),
         "evidence": str(evidence_path),
     }
     if idempotent:
         view["idempotent"] = True
     return view
+
+
+def _contract_evidence_eligible(project: Path, stored: dict) -> bool:
+    """Whether the stored validation's contract evidence is still ELIGIBLE as
+    the unchanged candidate's reusable passing validation (spec 0028 §6): an
+    expired observation must not return as a reusable pass — the full
+    validation re-observes it under the current age budget instead."""
+    contracts = stored.get("contracts") or {}
+    if not contracts.get("present") or not contracts.get("bindings"):
+        return True
+    limits = project_inspection_limits(project)
+    observations = {
+        observation.get("binding"): observation
+        for observation in contracts.get("observations") or []
+        if isinstance(observation, dict)
+    }
+    for binding in contracts["bindings"]:
+        observation = observations.get(binding.get("id"))
+        if observation is None or contract_inspection.observation_expired(
+            observation, limits["receipt_max_age_hours"]
+        ):
+            return False
+    return True
 
 
 def _stale_schema_binding_errors(tree: Path, approval_digest: str | None) -> list[str]:
@@ -735,6 +766,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             and stored.get("validator_identity")
             == validator_identity(stored.get("performed_checks") or [])
             and _document_digests_current(project, stored.get("citations") or [])
+            and _contract_evidence_eligible(project, stored)
         ):
             return _validate_view(
                 stored,
@@ -818,6 +850,32 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             errors.extend(citation_errors)
             errors.extend(receipt_errors)
             errors.extend(claim_errors)
+            # C1 (issue #77, spec 0028 §§4–6): the contract leg — the static
+            # document/binding checks plus, for resolved bindings under the
+            # operator-approved source identity, the live observation of every
+            # bound dataset under the operator's existing inspection ceilings
+            # (execution seconds, response bytes, evidence age — the shared
+            # K3 ceilings, explicitly extended to contract inspection).
+            # Still-applicable retained observations are reused with their
+            # ORIGINAL observation time; expired or dependency-mismatched
+            # evidence is re-observed, never restamped (spec 0028 §6).
+            contract_limits = project_inspection_limits(project)
+            contract_evidence, contract_errors = contract_inspection.observe_contracts(
+                project,
+                tree,
+                approval=approval,
+                prior_observations=record.get("contract_observations") or {},
+                limits=contract_limits,
+            )
+            if contract_evidence.get("present"):
+                serialized = len(json.dumps(contract_evidence, sort_keys=True).encode("utf-8"))
+                if serialized > contract_limits["response_bytes"]:
+                    contract_errors.append(
+                        f"the serialized contract evidence is {serialized} bytes, over "
+                        f"the {contract_limits['response_bytes']}-byte response ceiling "
+                        "— narrow the bound contract profile; nothing was admitted"
+                    )
+            errors.extend(contract_errors)
             # validate() carries no report at all only when a graph is declared
             # without models (the load owns that failure): the structural
             # outcome owns it explicitly. A context-only candidate (K4, issue
@@ -828,6 +886,28 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 if result.report is not None
                 else (CheckOutcome("structural", "failed", "; ".join(result.errors)),)
             )
+            # the static validate() contracts check is superseded here by the
+            # DEFINITIVE Git-Authoring outcome (static + live observation):
+            # compile-only static success never attests the admission gate.
+            base_checks = tuple(check for check in base_checks if check.name != "contracts")
+            if contract_evidence.get("present"):
+                contract_check = CheckOutcome(
+                    "contracts",
+                    "failed" if contract_errors else "passed",
+                    "; ".join(contract_errors)
+                    or (
+                        "document, binding and live approved-source observations "
+                        f"complete ({len(contract_evidence.get('observations') or [])} "
+                        "bound dataset(s) observed)"
+                    ),
+                )
+            else:
+                contract_check = CheckOutcome(
+                    "contracts",
+                    "not_applicable",
+                    "no contract artifacts (contracts/, contract_bindings.yaml) — the "
+                    "candidate carries no data contracts",
+                )
             checks = (
                 CheckOutcome(
                     "source_boundary", "failed" if auth_error else "passed", auth_error or ""
@@ -853,6 +933,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                     "failed" if (receipt_errors or claim_errors) else "passed",
                     "; ".join([*receipt_errors, *claim_errors]),
                 ),
+                contract_check,
             )
             # K4 (issue #44): an explicitly not_applicable check was NOT
             # performed — the applicability decision rides the report (each
@@ -925,14 +1006,26 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             "report": report_view,
             "performed_checks": performed,
             "validator_identity": validator_identity(performed),
+            # C1 (issue #77, spec 0028 §6): the contract observations bound to
+            # this validation — producer identity/version, bindings, live
+            # outcomes with their dependency digests and observation times.
+            # Bound into the evidence so pre-contract or weaker proof can
+            # never attest the contracted-model admission gate.
+            **({"contracts": contract_evidence} if contract_evidence.get("present") else {}),
             "repair": repair,
             "validated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         }
         # The proposal record's persistent repair/validation state and the
         # verified citation identities (plan §2) — never reset by a new commit.
+        # C1: the retained per-binding contract observations (for reuse with
+        # their ORIGINAL time while dependencies and age allow, spec 0028 §6).
         record["repair"] = repair
         record["validation"] = {"commit": final, "ok": ok, "key": key, "attempts": attempts}
         record["citations"] = citations
+        record["contract_observations"] = {
+            observation["binding"]: observation
+            for observation in contract_evidence.get("observations") or []
+        }
         proposals._store_record(project, record)
         evidence_path = proposals.store_validation(project, evidence)
         return _validate_view(evidence, evidence_path, idempotent=False)
@@ -984,6 +1077,8 @@ def _change_inventory(project: Path, record: dict) -> list[dict]:
             "semantic_layer",
             "context_layer",
             "answer_examples",
+            "contracts",
+            "contract_bindings.yaml",
         )
     ]
     diff = proposals._git(
