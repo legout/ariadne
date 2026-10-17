@@ -662,17 +662,45 @@ def _validate_view(
         "evidence": str(evidence_path),
     }
     contract_view = view.get("contracts")
+    contract_checks = [check for check in view["report"]["checks"] if check["name"] == "contracts"]
+    contract_errors = []
+    for check in contract_checks:
+        # Contract errors are appended last; match that exact suffix, including
+        # diagnostics containing semicolons, without classifying unrelated errors.
+        remaining = check["detail"]
+        for error in reversed(view["errors"]):
+            if remaining == error:
+                contract_errors.append(error)
+                break
+            suffix = f"; {error}"
+            if not remaining.endswith(suffix):
+                break
+            contract_errors.append(error)
+            remaining = remaining[: -len(suffix)]
+    omitted = set(contract_errors)
+    contract_content = {
+        "contracts": contract_view,
+        "errors": [error for error in view["errors"] if error in omitted],
+        "details": [check["detail"] for check in contract_checks],
+    }
     if (
         contract_view
-        and contract_inspection.contract_content_bytes(contract_view)
+        and contract_inspection.contract_content_bytes(contract_content)
         > contract_limits["response_bytes"]
     ):
+        marker = "contract response incomplete/refused: truncated; see evidence reference"
         view.update(ok=False, status="invalid")
-        view["errors"] = [
-            *view["errors"],
-            "contract response incomplete: operator response ceiling exceeded; "
-            "see evidence reference",
-        ]
+        # Static contract errors can also occur earlier in the base validator's errors.
+        view["errors"] = [error for error in view["errors"] if error not in omitted] + [marker]
+        view["report"] = {
+            **view["report"],
+            "checks": [
+                {**check, "outcome": "failed", "detail": marker}
+                if check["name"] == "contracts"
+                else check
+                for check in view["report"]["checks"]
+            ],
+        }
         compact = {"complete": False, "outcome": "refused", "reason": "response_bytes"}
         if contract_inspection.contract_content_bytes(compact) <= contract_limits["response_bytes"]:
             view["contracts"] = compact

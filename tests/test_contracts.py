@@ -1308,6 +1308,42 @@ def test_contract_evidence_dependency_and_age_gate(tmp_path, monkeypatch, capsys
     assert len(json.dumps(oversized["contracts"]).encode()) <= 64 * 1024
     assert Path(oversized["evidence"]).is_file()
 
+    # Schema-valid string operands are unsupported, and their diagnostics
+    # count toward §6's 64KiB ceiling too, including stored review responses.
+    operand_project = contract_project(tmp_path / "large-operand")
+    operand_api = AuthoringProject(operand_project)
+    operand_started = operand_api.start_proposal()
+    approved(operand_api, operand_project, operand_started)
+    long_operand = "x" * 70000
+    operand_contract = ORDERS_CONTRACT.replace(
+        "mustBe: 0", f"mustBe: {json.dumps(long_operand)}", 1
+    )
+    operand_result = operand_api.validate_proposal(
+        operand_started["proposal"],
+        contracted(operand_api, operand_started, operand_contract),
+    )
+    stored = json.loads(Path(operand_result["evidence"]).read_text())
+    assert any(long_operand in error and "unsupported" in error for error in stored["errors"])
+    assert any(
+        check["name"] == "contracts" and long_operand in check["detail"]
+        for check in stored["report"]["checks"]
+    )
+    stored_review = operand_api.review_proposal(operand_started["proposal"])["report"]
+    reused_result = operand_api.validate_proposal(
+        operand_started["proposal"], operand_result["revision"]
+    )
+    for response in (operand_result, stored_review, reused_result):
+        assert len(json.dumps(response).encode()) <= 64 * 1024
+        assert response["ok"] is False and response["status"] == "invalid"
+        assert any("truncated; see evidence reference" in error for error in response["errors"])
+        assert Path(response["evidence"]).is_file()
+        assert any(
+            check["name"] == "contracts"
+            and check["outcome"] == "failed"
+            and "truncated; see evidence reference" in check["detail"]
+            for check in response["report"]["checks"]
+        )
+
     # an unsupported required constraint (enum) can never pass: the declared
     # requirement blocks validation instead of being silently dropped
     enum_project = contract_project(tmp_path / "enum")
