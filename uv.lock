@@ -34,6 +34,7 @@ version = "0.4.1"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
+    { name = "jsonschema" },
     { name = "openai" },
     { name = "pyyaml" },
     { name = "sqlglot" },
@@ -62,6 +63,7 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.0" },
     { name = "firecrawl-anydoc", marker = "extra == 'dev'", specifier = "==0.1.3" },
     { name = "firecrawl-anydoc", marker = "extra == 'documents'", specifier = "==0.1.3" },
+    { name = "jsonschema", specifier = ">=4.18" },
     { name = "liteparse", marker = "extra == 'dev'", specifier = ">=2.4.0" },
     { name = "liteparse", marker = "extra == 'documents'", specifier = ">=2.4.0" },
     { name = "markitdown", extras = ["docx"], marker = "extra == 'dev'", specifier = ">=0.1.6" },

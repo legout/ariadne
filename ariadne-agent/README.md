@@ -118,6 +118,15 @@ the session.
   profile declarations: the agent proposes the credential-free declarations and
   never reads or sets environment values — the host process supplies them, and
   the human-only approval gate is unchanged.
+- **Data Contracts (development candidate)** use existing tools only:
+  `discover` adds the pinned snapshot’s contracts/as-of metadata group without
+  source access; `list_datasets` retains the approved live catalog and actual
+  columns with snapshot-only contract annotations. Authoring `read_artifact` /
+  `edit_proposal` accept `contract` and separate `contract_bindings` kinds,
+  preserving producer identity/content. Static validity is not live conformance;
+  dependent admission needs complete passing evidence plus the human gate.
+  See [the limited ODCS v3.2.0 profile](../docs/reference/data-contracts.md);
+  no full ODCS, current source health or #76 integration claim is implied.
 - **Guidance**: the version-matched packaged `ariadne/skill_assets/SKILL.md`
   from the installed `ariadne-data`, plus a short native-tool mapping. No
   global skill scans, no model-invocable skill scripts.

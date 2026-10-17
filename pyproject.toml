@@ -13,6 +13,7 @@ dependencies = [
     "sqlglot>=25.0",  # own compile engine: ariadne/render.py (ADR-0008) + grain guard
     "openai>=1.40",
     "pyyaml>=6.0",
+    "jsonschema>=4.18",  # spec 0028 §2: pinned ODCS v3.2.0 structural validation (Draft 2019-09)
 ]
 
 [project.scripts]
@@ -59,7 +60,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 # The packaged agent skill ships in the wheel, version-locked to the package
 # (ADR-0011); ariadne skill install copies it out.
-ariadne = ["skill_assets/**/*"]
+ariadne = ["skill_assets/**/*", "schemas/odcs/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

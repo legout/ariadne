@@ -66,7 +66,14 @@ from getpass import getuser
 from pathlib import Path, PurePosixPath
 from typing import NoReturn, cast
 
-from ariadne import authoring, authoring_inputs, authoring_sources, context, proposals
+from ariadne import (  # pyright: ignore[reportMissingImports] — analysis env lacks site-packages
+    authoring,
+    authoring_inputs,
+    authoring_sources,
+    context,
+    contract_inspection,  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue] — new module, stale analysis index; resolves in the qualified env
+    proposals,
+)
 from ariadne.sources import Registry
 from ariadne.validate import candidate_scope_digest, validator_identity
 
@@ -81,6 +88,10 @@ ADMISSION_ROUTE = "git-review-admission"
 # §5: a compile-only or failed report is not sufficient admission evidence).
 # ``conformance`` stays disclosed as not-run; the live relationship audit is
 # additionally required whenever the candidate carries a multi-fact graph.
+# C1 (issue #77, spec 0028 §6): ``contracts`` joins the required set — a
+# not_applicable outcome (with its reason) satisfies it for contract-free
+# candidates, and the contracted-model gate below additionally requires the
+# complete passing live evidence.
 REQUIRED_CHECKS = (
     "source_boundary",
     "structural",
@@ -89,6 +100,7 @@ REQUIRED_CHECKS = (
     "grain",
     "page_contract",
     "citations",
+    "contracts",
 )
 
 _HEX64_RE = authoring_sources._HEX64_RE  # the reviewed digest is the review's sha256
@@ -410,6 +422,64 @@ def _verified_evidence(project: Path, proposal: str, revision: str, review: dict
             f"re-approve the exact identity with ariadne-authoring approve-sources; "
             "nothing was activated"
         )
+    # C1 (issue #77, spec 0028 §6): the contracted-model admission gate —
+    # every binding of the exact validated revision needs a COMPLETE,
+    # applicable, unexpired PASSING observation of all its declared
+    # schema/quality requirements. Static-only or missing evidence (not_run),
+    # drift/unavailable/unsupported/refused/error outcomes, incomplete
+    # (budget-exhausted) scope and expired observations all block; reuse
+    # retained the original observation time, which is what expires here.
+    contracts = evidence.get("contracts") or {}
+    if contracts.get("bindings"):
+        observations = {
+            observation.get("binding"): observation
+            for observation in contracts.get("observations") or []
+            if isinstance(observation, dict)
+        }
+        max_age_hours = authoring_inputs.project_inspection_limits(project)["receipt_max_age_hours"]
+        for binding in contracts["bindings"]:
+            observation = observations.get(binding.get("id"))
+            if observation is None:
+                raise ValueError(
+                    f"the candidate of {revision[:12]} binds dataset "
+                    f"{binding.get('model')}.{binding.get('dataset')} to contract "
+                    f"{binding.get('contract_id')}@{binding.get('contract_version')} but "
+                    "carries no complete contract observation — unmeasured static "
+                    "validation can never admit a dependent model (spec 0028 §6); "
+                    "revalidate the exact revision, nothing was activated"
+                )
+            if observation.get("outcome") != "passed":
+                raise ValueError(
+                    f"the contract observation of binding {binding.get('id')!r} "
+                    f"(dataset {binding.get('model')}.{binding.get('dataset')}) is "
+                    f"{observation.get('outcome')!r} with non-passing requirement "
+                    "outcomes — drift, unavailable, unsupported, refused, error and "
+                    "not_run outcomes block admission (spec 0028 §6); nothing was "
+                    "activated"
+                )
+            if contract_inspection.observation_expired(observation, max_age_hours):
+                raise ValueError(
+                    f"the contract observation of binding {binding.get('id')!r} was "
+                    f"measured at {observation.get('observed_at')}, beyond the "
+                    f"operator's {max_age_hours}h evidence-age budget — expired "
+                    "evidence cannot admit a dependent model; revalidate the exact "
+                    "revision, nothing was activated"
+                )
+    if contracts.get("bindings"):
+        limits = authoring_inputs.project_inspection_limits(project)
+        approval = {
+            "sources": resolved or [],
+            "approval_digest": effective,
+            "storage_bindings": bindings,
+        }
+        tree = project / proposals.WORKTREES_REL / proposal
+        if contract_inspection.contract_content_bytes(contracts) > limits[
+            "response_bytes"
+        ] or not contract_inspection.evidence_eligible(tree, contracts, approval, limits):
+            raise ValueError(
+                "contract observation dependencies, full scope or output limits are "
+                "ineligible — revalidate before admission; nothing was activated"
+            )
     if not authoring._document_digests_current(project, evidence.get("citations") or []):
         raise ValueError(
             f"the document evidence cited by {revision[:12]} changed since validation — "
@@ -688,6 +758,53 @@ def admission_review(
     return response
 
 
+def _contracts_descriptor_view(contracts: dict) -> dict:
+    """The bounded, credential-free contract snapshot view of an admission
+    (spec 0028 §7, issue #77/C1): producer/binding identities, live outcomes
+    and as-of times only — contract text, quality queries, diagnostics and
+    server addresses never enter the descriptor agent surfaces read."""
+    return {
+        "documents": [
+            {
+                "path": document.get("path"),
+                "digest": document.get("digest"),
+                "id": document.get("id"),
+                "version": document.get("version"),
+                "valid": document.get("valid"),
+            }
+            for document in contracts.get("documents") or []
+            if isinstance(document, dict)
+        ],
+        "bindings": list(contracts.get("bindings") or []),
+        "observations": [
+            {
+                "binding": observation.get("binding"),
+                "contract": observation.get("contract"),
+                "object_id": observation.get("object_id"),
+                "asset": observation.get("asset"),
+                "model": observation.get("model"),
+                "dataset": observation.get("dataset"),
+                "outcome": observation.get("outcome"),
+                "scope": observation.get("scope"),
+                "observed_at": observation.get("observed_at"),
+                "dependencies": observation.get("dependencies"),
+                "limits": observation.get("limits"),
+                "requirements": [
+                    {
+                        "kind": requirement.get("kind"),
+                        "pointer": requirement.get("pointer"),
+                        "outcome": requirement.get("outcome"),
+                    }
+                    for requirement in observation.get("requirements") or []
+                    if isinstance(requirement, dict)
+                ],
+            }
+            for observation in contracts.get("observations") or []
+            if isinstance(observation, dict)
+        ],
+    }
+
+
 def admit_revision(
     project: str | Path,
     proposal: str,
@@ -859,6 +976,15 @@ def admit_revision(
                 # prior human evidence unchanged assertions retained. Empty
                 # means no mapping is confirmed by this admission.
                 "confirmed_mappings": confirmed_mappings,
+                # C1 (issue #77, spec 0028 §7): the bounded, credential-free
+                # contract snapshot view discovery/list_datasets annotate from
+                # — identities, outcomes and as-of times only; contract text,
+                # queries and server addresses never enter the descriptor.
+                **(
+                    {"contracts": _contracts_descriptor_view(evidence.get("contracts") or {})}
+                    if (evidence.get("contracts") or {}).get("present")
+                    else {}
+                ),
                 "admitted_at": now,
             }
             _publish_current(project, descriptor)  # AFTER the snapshot is complete

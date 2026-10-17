@@ -449,6 +449,38 @@ def test_native_duckdb_catalog_and_compiled_metric(tmp_path, monkeypatch):
     assert result["governed"] is True
     assert result["rows"] == [{"total_amount": 60.0}]
 
+    # Explicit contract selection must not bind an unrelated broken view.
+    # The ordinary builder must still refuse that same unready catalog.
+    selected_root = tmp_path / "selected"
+    selected_root.mkdir()
+    native_orders_catalog(selected_root / "catalog.duckdb")
+    backing = selected_root / "backing.parquet"
+    setup = duckdb.connect(str(selected_root / "catalog.duckdb"))
+    setup.execute(f"COPY (SELECT 1 AS n) TO '{backing}' (FORMAT PARQUET)")
+    setup.execute(f"CREATE VIEW main.unrelated AS SELECT * FROM read_parquet('{backing}')")
+    setup.close()
+    backing.unlink()
+    selected_registry = load_registry(
+        write_registry(
+            selected_root, [{"name": "warehouse", "type": "duckdb", "path": "catalog.duckdb"}]
+        )
+    )
+    selected_con, selected_catalog = build_connection(
+        selected_registry,
+        selected_assets=[
+            {"source": "warehouse", "catalog": "warehouse", "schema": "main", "table": "orders"}
+        ],
+    )
+    try:
+        assert [table["name"] for table in selected_catalog[0]["tables"]] == ["orders"]
+        assert selected_con.execute("SELECT SUM(amount) FROM warehouse.main.orders").fetchone() == (
+            60.0,
+        )
+    finally:
+        selected_con.close()
+    with pytest.raises(duckdb.Error, match="backing|No files|not found"):
+        build_connection(selected_registry)
+
 
 def test_native_catalog_schemas_do_not_bleed_into_file_sources(tmp_path):
     """Spec 0022 AC2: same-named tables in distinct native schemas stay

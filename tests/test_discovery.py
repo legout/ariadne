@@ -83,11 +83,32 @@ def test_admitted_context_only_discovery_pins_snapshot_and_never_reads_sources(
 ):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
-    project, _, review = admitted_candidate(tmp_path, asserted=False)
+    # Spec 0028 §§2/7: a valid unbound document has no observation. Insert it
+    # through Authoring BEFORE the helper's fresh validation and review.
+    project, api, review = admitted_candidate(
+        tmp_path,
+        asserted=False,
+        edit={
+            "kind": "contract",
+            "name": "orders.yaml",
+            "content": "apiVersion: v3.2.0\nkind: DataContract\n"
+            "id: order-number-contract\nversion: producer-release-A\n",
+        },
+    )
     from tests.test_context_admission import admit
 
     assert admit(project, review) == 0
     capsys.readouterr()
+    api.edit_proposal(
+        review["proposal"],
+        review["revision"],
+        {
+            "kind": "contract",
+            "name": "orders.yaml",
+            "content": "apiVersion: v3.2.0\nkind: DataContract\n"
+            "id: order-number-contract\nversion: unadmitted-draft\n",
+        },
+    )
 
     (project / "context_layer").mkdir(exist_ok=True)
     (project / "context_layer" / "root-draft.md").write_text("# Order number mutable root\n")
@@ -108,6 +129,18 @@ def test_admitted_context_only_discovery_pins_snapshot_and_never_reads_sources(
     paths = [hit["path"] for hit in groups["pages"]["items"]]
     assert "root-draft.md" not in paths and "draft.md" not in paths
     assert groups["examples"]["items"] == []
+    contracts = groups["contracts"]
+    assert contracts["status"] == "available" and contracts["complete"] is True
+    assert contracts["total_matches"] == 1
+    [contract] = contracts["items"]
+    assert contract["contract"] == {"id": "order-number-contract", "version": "producer-release-A"}
+    assert contract["binding"] is None and contract["observation"] is None
+    assert contract["revision"] == review["revision"]
+    assert "unsupported" in contract["limitations"]
+    assert cli(["search", "order number", "--project", str(project)]) == 0
+    human = capsys.readouterr().out
+    assert "Contracts — available" in human and "producer-release-A" in human
+    assert "unadmitted-draft" not in human
 
     runtime.context_dir.joinpath("tampered.md").write_text("# hand-edited snapshot\n")
     with pytest.raises(ValueError, match="pinned snapshot changed"):
@@ -150,3 +183,6 @@ def test_mcp_discovery_starts_source_free_for_every_registration(tmp_path, monke
             report = observed[-1]
             assert report["groups"]["pages"]["items"] == []
             assert report["groups"]["examples"]["items"] == []
+            assert set(report["groups"]) == {"metrics", "pages", "terms", "examples", "contracts"}
+            assert report["groups"]["contracts"]["status"] == "unavailable"
+            assert "no admitted snapshot" in report["groups"]["contracts"]["reason"]

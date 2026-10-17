@@ -4,6 +4,7 @@ QueryRuntime reuses this path; only its execution construction renders models
 and opens sources (spec 0018 / ADR-0021).
 """
 
+import json
 import shlex
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,9 @@ import yaml
 
 from ariadne import admission, answer_examples, authoring_inputs, context
 from ariadne.context import list_pages, read_page, resolve_term, search_pages
+from ariadne.contracts import (  # pyright: ignore[reportMissingImports] — new module, stale analysis index; resolves in the qualified env
+    CONSUMER_PROFILE,
+)
 from ariadne.planner import PlannerError
 from ariadne.semantic_graph import SemanticGraph, load_graph
 from ariadne.sources import Registry, implicit_registry, load_registry
@@ -38,6 +42,17 @@ MISSING_CATALOG = (
     "models — metric operations are refused; discovery (search_context) and term "
     "resolution (resolve_term) still serve the admitted context, and no absent "
     "model ever triggers a raw-SQL fallback"
+)
+
+
+# The supported-consumer-profile scope note every contracts entry carries
+# (spec 0028 §§4–5): the honest limitation line, not a conformance claim.
+CONTRACT_PROFILE_LIMITS = (
+    "pinned ODCS v3.2.0 consumer profile: flat scalar field checks (presence, "
+    "logical/physical type, required-NULL) and single-dataset DuckDB SQL "
+    "quality; enum/unique/primaryKey/transform/nested assertions and other "
+    "dialects are preserved but unsupported; observations are as-of, never a "
+    "current-compliance claim"
 )
 
 
@@ -215,12 +230,119 @@ class _DiscoverySession:
             "validation": record.get("validation"),
         }
 
+    def _contracts_group(self, query: str, limit: int) -> dict:
+        """The bounded contracts group of ``discover`` (spec 2028 §7, issue
+        #77/C1): ONLY the pinned admitted snapshot's contracts — producer
+        ID/version, native binding and model/dataset identity, the
+        supported-profile limitations and the matching stored observation's
+        as-of/eligibility. Never candidate/worktree content, never a source
+        read, and absent/expired evidence is reported honestly, never
+        regenerated."""
+        if self._source_free:
+            raise ValueError(
+                "no admitted snapshot is available — contract discovery serves "
+                "only a pinned admitted revision"
+            )
+        if self._managed is None:
+            raise ValueError("contracts serve only a Git admission")
+        record = self._managed
+        view = record.get("contracts") or {}
+        bindings = view.get("bindings") or []
+        observations = {
+            observation.get("binding"): observation
+            for observation in view.get("observations") or []
+            if isinstance(observation, dict)
+        }
+        max_age_hours = (
+            authoring_inputs.project_inspection_limits(self._project)["receipt_max_age_hours"]
+            if self._project is not None
+            else None
+        )
+        items = []
+        for binding in bindings:
+            if not isinstance(binding, dict):
+                continue
+            observation = observations.get(binding.get("id"))
+            eligibility = "unknown"
+            if max_age_hours is not None and observation is not None:
+                from ariadne import (  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue] — stale analysis index; resolves in the qualified env
+                    contract_inspection,
+                )
+
+                eligibility = contract_inspection.snapshot_observation_eligibility(
+                    self.context_dir.parent, record, binding, observation, max_age_hours
+                )
+            items.append(
+                {
+                    "contract": {
+                        "id": binding.get("contract_id"),
+                        "version": binding.get("contract_version"),
+                    },
+                    "binding": binding.get("id"),
+                    "object_id": binding.get("object_id"),
+                    "asset": binding.get("asset"),
+                    "model": binding.get("model"),
+                    "dataset": binding.get("dataset"),
+                    "profile": CONSUMER_PROFILE,
+                    "limitations": CONTRACT_PROFILE_LIMITS,
+                    "revision": record.get("commit"),
+                    "observation": None
+                    if observation is None
+                    else {
+                        "observed_at": observation.get("observed_at"),
+                        "outcome": observation.get("outcome"),
+                        "scope": observation.get("scope"),
+                        "eligibility": eligibility,
+                    },
+                }
+            )
+        bound_pairs = {
+            (binding.get("contract_id"), binding.get("contract_version")) for binding in bindings
+        }
+        for document in view.get("documents", []):
+            if (document.get("id"), document.get("version")) not in bound_pairs:
+                items.append(
+                    {
+                        "contract": {"id": document.get("id"), "version": document.get("version")},
+                        "binding": None,
+                        "observation": None,
+                        "revision": record.get("commit"),
+                        "profile": CONSUMER_PROFILE,
+                        "limitations": CONTRACT_PROFILE_LIMITS,
+                    }
+                )
+        tokens = set(context._QUERY_TOKEN_RE.findall(query.lower()))
+        matches = [
+            item
+            for item in items
+            if tokens.issubset(
+                context._QUERY_TOKEN_RE.findall(json.dumps(item, default=str).lower())
+            )
+        ]
+        selected = matches[: max(0, limit)]
+        group = {
+            "items": selected,
+            "total_matches": len(matches),
+            "complete": len(selected) == len(matches),
+            "reminder": "scoped as-of evidence, never current compliance or human approval",
+        }
+        if self._project is not None:
+            from ariadne.contract_inspection import contract_content_bytes
+
+            ceiling = authoring_inputs.project_inspection_limits(self._project)["response_bytes"]
+            while selected and contract_content_bytes(group) > ceiling:
+                selected.pop()
+                group["complete"] = False
+            if contract_content_bytes(group) > ceiling:
+                raise ValueError("contract response ceiling cannot carry the summary")
+        return group
+
     async def discover(self, query: str, limit: int = 5) -> dict:
         """Compose native reads without execution or cross-kind ranking (spec 0018)."""
         if self._managed is not None:
             self._recheck_pinned()  # global refusal, never a group availability label
         groups = {}
-        for kind in ("metrics", "pages", "terms", "examples"):
+        for kind in ("metrics", "pages", "terms", "examples", "contracts"):
             try:
                 if kind == "metrics":
                     catalog = await self.list_metrics()
@@ -246,6 +368,8 @@ class _DiscoverySession:
                             f"ariadne get-metric {shlex.quote(entry['name'])}" for entry in items
                         ],
                     }
+                elif kind == "contracts":
+                    group = self._contracts_group(query, limit)
                 elif kind == "terms":
                     result = await self.resolve_term(query)
                     group = {

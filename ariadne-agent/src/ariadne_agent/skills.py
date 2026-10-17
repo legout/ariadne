@@ -33,7 +33,11 @@ are native tools here — call them directly, never through a command:
 - `ariadne get-metric`      -> `get_metric(name, dimensions?, range?)`
 - `ariadne list-datasets`   -> `list_datasets()`
 - `ariadne define-metric`   -> `define_metric(definition)`
-- `ariadne search`          -> `discover(query, limit?)` (grouped, read-only)
+- `ariadne search`          -> `discover(query, limit?)` (five groups including
+  contracts; source-free, pinned admitted metadata and as-of evidence only)
+
+`list_datasets()` retains the approved live catalog and actual columns, with
+snapshot contract annotations only — it is not an offline inspection.
 - session-native (no CLI): `list_context_pages()` and
   `read_context_page(path)` — token-free listing and path-addressed reading
   of the admitted Context snapshot
@@ -74,6 +78,12 @@ revision-checked edits) — call them directly, never through a command:
 - `ariadne-authoring validate`        -> `validate_proposal(proposal, expected_revision)`
 - `ariadne-authoring review`          -> `review_proposal(proposal, part?)`
 - skill reference                     -> `read_skill_reference(reference)`
+
+`read_artifact` and `edit_proposal` include `contract` (name + producer content)
+and `contract_bindings` (the separate fixed contract_bindings.yaml). Exact
+producer IDs/version are preserved; validation reports supported-profile as-of
+evidence, never full ODCS compliance or source permission. No new tool or human
+gate is added.
 
 Document originals have NO upload command: the operator places them inside
 the allowed input roots (or exact approved URIs) and `inputs` reads the

@@ -169,10 +169,15 @@ def build_parser() -> _Parser:
     read_cmd.add_argument(
         "--kind",
         required=True,
-        choices=["model", "graph", "page", "seed_notes"],
+        choices=["model", "graph", "page", "seed_notes", "contract", "contract_bindings"],
         help="the typed artifact identity's kind",
     )
-    read_cmd.add_argument("--name", default=None, help="artifact name (model/page)")
+    read_cmd.add_argument(
+        "--name",
+        default=None,
+        help="artifact name (model/page/contract); exact .yaml/.yml "
+        "contract filename when extensions are ambiguous",
+    )
     read_cmd.add_argument("--section", default=None, help="OKF page section (page)")
     read_cmd.add_argument("--part", type=int, default=1, help="which bounded part (default: 1)")
     read_cmd.add_argument(
@@ -195,7 +200,8 @@ def build_parser() -> _Parser:
         "--file",
         required=True,
         help='edit JSON, e.g. {"kind": "model", "name": "events", "content": ...} '
-        '("-" reads stdin)',
+        '("-" reads stdin); kinds: model, graph, page, seed_notes, contract '
+        "(name + content), contract_bindings (content for fixed contract_bindings.yaml)",
     )
     edit_cmd.add_argument(
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"

@@ -32,10 +32,12 @@ from sqlglot import exp  # pyright: ignore[reportMissingImports] — same
 from ariadne import (
     answer_examples,
     authoring_context,
+    authoring_contracts,  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue] — new module, stale analysis index; resolves in the qualified env
     authoring_inputs,  # noqa: F401 — re-export: the historical seam
     authoring_semantic,
     authoring_sources,
     context,
+    contract_inspection,  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue] — same
     execution,
     profiler,
     proposals,
@@ -105,6 +107,11 @@ _LAYER_EDITORS = {
     "graph": authoring_semantic,
     "page": authoring_context,
     "seed_notes": authoring_context,
+    # spec 0028 §3 (issue #77/C1): producer contract documents and the fixed
+    # native binding document are typed authored artifacts — the same
+    # revision-checked read/edit seam, no arbitrary file paths
+    "contract": authoring_contracts,
+    "contract_bindings": authoring_contracts,
 }
 EDIT_KINDS = tuple(sorted(_LAYER_EDITORS))
 
@@ -268,7 +275,13 @@ class AuthoringProject:
             raise ValueError(
                 f"an artifact identity is a typed object with kind one of {EDIT_KINDS}, got {got!r}"
             )
-        rel = _LAYER_EDITORS[identity["kind"]].resolve_identity(identity)
+        editor = _LAYER_EDITORS[identity["kind"]]
+        kwargs = (
+            {"project": self.project, "proposal": proposal}
+            if identity["kind"] == "contract"
+            else {}
+        )
+        rel = editor.resolve_identity(identity, **kwargs)
         return proposals.read_artifact(self.project, proposal, rel, part=part)
 
     def edit_proposal(self, proposal: str, expected_revision: str, edit: dict) -> dict:
@@ -286,7 +299,11 @@ class AuthoringProject:
                 f"{EDIT_KINDS} (typed source proposals arrive through the "
                 f"propose_sources operation), got kind {got!r}"
             )
-        rel, content = _LAYER_EDITORS[edit["kind"]].resolve_edit(edit)
+        editor = _LAYER_EDITORS[edit["kind"]]
+        kwargs = (
+            {"project": self.project, "proposal": proposal} if edit["kind"] == "contract" else {}
+        )
+        rel, content = editor.resolve_edit(edit, **kwargs)
         return proposals.edit_proposal(self.project, proposal, expected_revision, rel, content)
 
     # ------------------- G3 (issue #35): sources, approval, measured inputs
@@ -617,7 +634,9 @@ def _report_view(report) -> dict:
     }
 
 
-def _validate_view(evidence: dict, evidence_path: Path, *, idempotent: bool) -> dict:
+def _validate_view(
+    evidence: dict, evidence_path: Path, *, idempotent: bool, contract_limits: dict
+) -> dict:
     """The validate_proposal response envelope (reused verbatim by the
     idempotent no-op retry)."""
     view = {
@@ -639,11 +658,99 @@ def _validate_view(evidence: dict, evidence_path: Path, *, idempotent: bool) -> 
         "report": evidence["report"],
         "performed_checks": list(evidence["performed_checks"]),
         "validator_identity": evidence["validator_identity"],
+        "contracts": evidence.get("contracts"),
         "evidence": str(evidence_path),
     }
+    contract_view = view.get("contracts")
+    contract_checks = [check for check in view["report"]["checks"] if check["name"] == "contracts"]
+    contract_errors = []
+    for check in contract_checks:
+        # Contract errors are appended last; match that exact suffix, including
+        # diagnostics containing semicolons, without classifying unrelated errors.
+        remaining = check["detail"]
+        for error in reversed(view["errors"]):
+            if remaining == error:
+                contract_errors.append(error)
+                break
+            suffix = f"; {error}"
+            if not remaining.endswith(suffix):
+                break
+            contract_errors.append(error)
+            remaining = remaining[: -len(suffix)]
+    omitted = set(contract_errors)
+    contract_content = {
+        "contracts": contract_view,
+        "errors": [error for error in view["errors"] if error in omitted],
+        "details": [check["detail"] for check in contract_checks],
+    }
+    if (
+        contract_view
+        and contract_inspection.contract_content_bytes(contract_content)
+        > contract_limits["response_bytes"]
+    ):
+        marker = "contract response incomplete/refused: truncated; see evidence reference"
+        replacement = {
+            "errors": [marker],
+            "details": [marker],
+            "contracts": {"complete": False, "outcome": "refused", "reason": "response_bytes"},
+        }
+        if (
+            contract_inspection.contract_content_bytes(replacement)
+            > contract_limits["response_bytes"]
+        ):
+            replacement = {"errors": ["refused; see evidence"]}
+        if (
+            contract_inspection.contract_content_bytes(replacement)
+            > contract_limits["response_bytes"]
+        ):
+            replacement = {}
+            # The fixed failure envelope/evidence reference is outside the contract budget.
+            view["configuration_error"] = (
+                "inspection.response_bytes cannot fit a contract refusal; see evidence reference"
+            )
+        view.update(ok=False, status="invalid")
+        # Static contract errors can also occur earlier in the base validator's errors.
+        view["errors"] = [
+            error for error in view["errors"] if error not in omitted
+        ] + replacement.get("errors", [])
+        view["report"] = {
+            **view["report"],
+            "checks": [
+                {
+                    "name": "contracts",
+                    "outcome": "failed",
+                    **({"detail": replacement["details"][0]} if "details" in replacement else {}),
+                }
+                if check["name"] == "contracts"
+                else check
+                for check in view["report"]["checks"]
+            ],
+        }
+        if "contracts" in replacement:
+            view["contracts"] = replacement["contracts"]
+        else:
+            view.pop("contracts")
     if idempotent:
         view["idempotent"] = True
     return view
+
+
+def _contract_evidence_eligible(
+    project: Path, tree: Path, stored: dict, approval: dict | None
+) -> bool:
+    """Whether the stored validation's contract evidence is still ELIGIBLE as
+    the unchanged candidate's reusable passing validation (spec 0028 §6): an
+    expired observation must not return as a reusable pass — the full
+    validation re-observes it under the current age budget instead."""
+    contracts = stored.get("contracts") or {}
+    if not contracts.get("present") or not contracts.get("bindings"):
+        return True
+    limits = project_inspection_limits(project)
+    return (
+        approval is not None
+        and contract_inspection.contract_content_bytes(contracts) <= limits["response_bytes"]
+        and contract_inspection.evidence_eligible(tree, contracts, approval, limits)
+    )
 
 
 def _stale_schema_binding_errors(tree: Path, approval_digest: str | None) -> list[str]:
@@ -735,11 +842,13 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             and stored.get("validator_identity")
             == validator_identity(stored.get("performed_checks") or [])
             and _document_digests_current(project, stored.get("citations") or [])
+            and _contract_evidence_eligible(project, worktree_root, stored, approval)
         ):
             return _validate_view(
                 stored,
                 proposals._validation_path(project, proposal, current),
                 idempotent=True,
+                contract_limits=project_inspection_limits(project),
             )
         repair: dict = dict(record.get("repair") or {"attempts": 0, "status": "open"})
         if repair["attempts"] >= MAX_ROUNDS or repair["status"] == "review_needed":
@@ -818,6 +927,32 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             errors.extend(citation_errors)
             errors.extend(receipt_errors)
             errors.extend(claim_errors)
+            # C1 (issue #77, spec 0028 §§4–6): the contract leg — the static
+            # document/binding checks plus, for resolved bindings under the
+            # operator-approved source identity, the live observation of every
+            # bound dataset under the operator's existing inspection ceilings
+            # (execution seconds, response bytes, evidence age — the shared
+            # K3 ceilings, explicitly extended to contract inspection).
+            # Still-applicable retained observations are reused with their
+            # ORIGINAL observation time; expired or dependency-mismatched
+            # evidence is re-observed, never restamped (spec 0028 §6).
+            contract_limits = project_inspection_limits(project)
+            contract_evidence, contract_errors = contract_inspection.observe_contracts(
+                project,
+                tree,
+                approval=approval,
+                prior_observations=record.get("contract_observations") or {},
+                limits=contract_limits,
+            )
+            if contract_evidence.get("present"):
+                serialized = contract_inspection.contract_content_bytes(contract_evidence)
+                if serialized > contract_limits["response_bytes"]:
+                    contract_errors.append(
+                        f"the serialized contract evidence is {serialized} bytes, over "
+                        f"the {contract_limits['response_bytes']}-byte response ceiling "
+                        "— narrow the bound contract profile; nothing was admitted"
+                    )
+            errors.extend(contract_errors)
             # validate() carries no report at all only when a graph is declared
             # without models (the load owns that failure): the structural
             # outcome owns it explicitly. A context-only candidate (K4, issue
@@ -828,6 +963,28 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 if result.report is not None
                 else (CheckOutcome("structural", "failed", "; ".join(result.errors)),)
             )
+            # the static validate() contracts check is superseded here by the
+            # DEFINITIVE Git-Authoring outcome (static + live observation):
+            # compile-only static success never attests the admission gate.
+            base_checks = tuple(check for check in base_checks if check.name != "contracts")
+            if contract_evidence.get("present"):
+                contract_check = CheckOutcome(
+                    "contracts",
+                    "failed" if contract_errors else "passed",
+                    "; ".join(contract_errors)
+                    or (
+                        "document, binding and live approved-source observations "
+                        f"complete ({len(contract_evidence.get('observations') or [])} "
+                        "bound dataset(s) observed)"
+                    ),
+                )
+            else:
+                contract_check = CheckOutcome(
+                    "contracts",
+                    "not_applicable",
+                    "no contract artifacts (contracts/, contract_bindings.yaml) — the "
+                    "candidate carries no data contracts",
+                )
             checks = (
                 CheckOutcome(
                     "source_boundary", "failed" if auth_error else "passed", auth_error or ""
@@ -853,6 +1010,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                     "failed" if (receipt_errors or claim_errors) else "passed",
                     "; ".join([*receipt_errors, *claim_errors]),
                 ),
+                contract_check,
             )
             # K4 (issue #44): an explicitly not_applicable check was NOT
             # performed — the applicability decision rides the report (each
@@ -925,17 +1083,31 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             "report": report_view,
             "performed_checks": performed,
             "validator_identity": validator_identity(performed),
+            # C1 (issue #77, spec 0028 §6): the contract observations bound to
+            # this validation — producer identity/version, bindings, live
+            # outcomes with their dependency digests and observation times.
+            # Bound into the evidence so pre-contract or weaker proof can
+            # never attest the contracted-model admission gate.
+            **({"contracts": contract_evidence} if contract_evidence.get("present") else {}),
             "repair": repair,
             "validated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         }
         # The proposal record's persistent repair/validation state and the
         # verified citation identities (plan §2) — never reset by a new commit.
+        # C1: the retained per-binding contract observations (for reuse with
+        # their ORIGINAL time while dependencies and age allow, spec 0028 §6).
         record["repair"] = repair
         record["validation"] = {"commit": final, "ok": ok, "key": key, "attempts": attempts}
         record["citations"] = citations
+        record["contract_observations"] = {
+            observation["binding"]: observation
+            for observation in contract_evidence.get("observations") or []
+        }
         proposals._store_record(project, record)
         evidence_path = proposals.store_validation(project, evidence)
-        return _validate_view(evidence, evidence_path, idempotent=False)
+        return _validate_view(
+            evidence, evidence_path, idempotent=False, contract_limits=contract_limits
+        )
 
 
 def _review_body(rel: str, data: bytes, *, part: int) -> dict:
@@ -984,6 +1156,8 @@ def _change_inventory(project: Path, record: dict) -> list[dict]:
             "semantic_layer",
             "context_layer",
             "answer_examples",
+            "contracts",
+            "contract_bindings.yaml",
         )
     ]
     diff = proposals._git(
@@ -1305,6 +1479,7 @@ def _review_candidate(
                 report,
                 proposals._validation_path(project, proposal, current),
                 idempotent=False,
+                contract_limits=project_inspection_limits(project),
             ),
             "validation_stale": bool(stale_reasons),
             "stale_reasons": stale_reasons,

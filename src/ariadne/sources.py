@@ -44,7 +44,7 @@ import json
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -758,7 +758,11 @@ def _setup_error(exc: BaseException, timer, deadline, secrets: list[str]) -> Bas
 
 
 def build_connection(
-    registry: Registry, read_only: bool = True, *, deadline: float | None = None
+    registry: Registry,
+    read_only: bool = True,
+    *,
+    deadline: float | None = None,
+    selected_assets: list[dict] | None = None,
 ) -> tuple[duckdb.DuckDBPyConnection, list[dict]]:
     """The one DuckDB session for all commands (ADR-0010): executes
     :func:`plan` verbatim and returns ``(connection, catalog)``. The catalog
@@ -772,6 +776,24 @@ def build_connection(
     under the connection's interrupt watchdog: an over-budget setup is
     interrupted and reported as the explicit deadline refusal — never a
     "stopped" claim with a read still running, never an unbounded setup."""
+    requested = registry.sources
+    if selected_assets is not None:
+        names = {asset["source"] for asset in selected_assets}
+        requested = [src for src in requested if src.name in names]
+        selected_sources = [
+            src
+            for src in requested
+            if any(
+                asset["source"] == src.name
+                and asset["catalog"] == (src.name if src.type in ATTACH_TYPES else None)
+                and (
+                    src.type in ATTACH_TYPES
+                    or (asset["schema"] == src.name and asset["table"] == _table_name(src))
+                )
+                for asset in selected_assets
+            )
+        ]
+        registry = replace(registry, sources=selected_sources)
     loads, statements = plan(registry, read_only=read_only)
     secrets = [_resolve_dsn(src) for src in registry.sources if src.type == "postgres"]
     cert = os.getenv("SSL_CERT_FILE")
@@ -804,7 +826,17 @@ def build_connection(
                 con.execute(statement)  # nosemgrep — plan() output, validated-registry inputs only
             except Exception as exc:
                 raise _setup_error(exc, timer, deadline, secrets)
-        catalog = [_catalog_entry(con, src) for src in registry.sources]
+        opened = {src.name for src in registry.sources}
+        catalog = [
+            (
+                _catalog_entry(con, src)
+                if selected_assets is None
+                else _catalog_entry(con, src, selected_assets=selected_assets)
+            )
+            if src.name in opened
+            else {"name": src.name, "type": src.type, "tables": []}
+            for src in requested
+        ]
     except Exception as exc:
         # K3 fix pass (finding 9): a failing setup CLOSES the connection it
         # opened — no leaked session/read survives the refused setup (the
@@ -1080,7 +1112,7 @@ def parse_resource(uri: object) -> tuple[str, list]:
     return kind, parts
 
 
-def _catalog_entry(con: duckdb.DuckDBPyConnection, src: Source) -> dict:
+def _catalog_entry(con: duckdb.DuckDBPyConnection, src: Source, *, selected_assets=None) -> dict:
     """Per-source catalog entry: tables with columns, from information_schema
     (attaches expose catalog ``<name>``; file views live in schema ``<name>``
     of the in-memory catalog). ``ref`` is the qualified prefix the profiler
@@ -1099,14 +1131,16 @@ def _catalog_entry(con: duckdb.DuckDBPyConnection, src: Source) -> dict:
     that merely shares another source's name never bleeds into that
     inventory."""
     attached = src.type in ATTACH_TYPES
+    selection, parameters = _selected_asset_filter(src, selected_assets)
     if attached:
         rows = con.execute(
             "SELECT table_catalog, table_schema, table_name, column_name, data_type "
             "FROM information_schema.columns "
             "WHERE table_catalog = ? AND table_schema NOT IN "
-            "('information_schema', 'pg_catalog') "
-            "ORDER BY table_catalog, table_schema, table_name, ordinal_position",
-            [src.name],
+            "('information_schema', 'pg_catalog')"
+            + selection
+            + " ORDER BY table_catalog, table_schema, table_name, ordinal_position",
+            [src.name, *parameters],
         ).fetchall()
     else:
         row = con.execute("SELECT current_database()").fetchone()
@@ -1115,9 +1149,10 @@ def _catalog_entry(con: duckdb.DuckDBPyConnection, src: Source) -> dict:
         rows = con.execute(
             "SELECT table_catalog, table_schema, table_name, column_name, data_type "
             "FROM information_schema.columns "
-            "WHERE table_catalog = ? AND table_schema = ? "
-            "ORDER BY table_catalog, table_schema, table_name, ordinal_position",
-            [database, src.name],
+            "WHERE table_catalog = ? AND table_schema = ?"
+            + selection
+            + " ORDER BY table_catalog, table_schema, table_name, ordinal_position",
+            [database, src.name, *parameters],
         ).fetchall()
     tables: dict[tuple[str, str, str], dict] = {}
     for catalog, schema, table, column, data_type in rows:
@@ -1136,22 +1171,63 @@ def _catalog_entry(con: duckdb.DuckDBPyConnection, src: Source) -> dict:
         entry["resource"] = table_resource(src.name, entry["catalog"], schema, table)
         table_list.append(entry)
     if src.type == "duckdb":
-        _bind_native_views(con, src)  # required view binding inside bounded setup
+        if selected_assets is None:
+            _bind_native_views(con, src)
+        else:
+            _bind_native_views(con, src, selected_assets=selected_assets)
+    if selected_assets is not None:
+        native_tables = set()
+        if src.type == "duckdb":
+            native_tables = set(
+                con.execute(
+                    "SELECT table_schema, table_name FROM information_schema.tables "
+                    "WHERE table_catalog = ? AND table_type = 'BASE TABLE' " + selection,
+                    [src.name, *parameters],
+                ).fetchall()
+            )
+        for table in table_list:
+            provenance = (
+                "native_table"
+                if (table["schema"], table["name"]) in native_tables
+                else "execution_projection"
+            )
+            for column in table["columns"]:
+                column["type_provenance"] = provenance
     return {"name": src.name, "type": src.type, "tables": table_list}
 
 
-def _bind_native_views(con: duckdb.DuckDBPyConnection, src: Source) -> None:
+def _selected_asset_filter(src: Source, selected_assets) -> tuple[str, list]:
+    if selected_assets is None:
+        return "", []
+    assets = [
+        asset
+        for asset in selected_assets
+        if asset["source"] == src.name
+        and asset["catalog"] == (src.name if src.type in ATTACH_TYPES else None)
+    ]
+    if not assets:
+        return " AND FALSE", []
+    return (
+        " AND (" + " OR ".join("(table_schema = ? AND table_name = ?)" for _ in assets) + ")",
+        [value for asset in assets for value in (asset["schema"], asset["table"])],
+    )
+
+
+def _bind_native_views(
+    con: duckdb.DuckDBPyConnection, src: Source, *, selected_assets=None
+) -> None:
     """Bind every view of a native catalog inside the SAME bounded setup
     (spec 0022 §2): information_schema reports a view's STORED columns without
     binding it, so one cheap ``DESCRIBE`` per view (bind-only — no data scan,
     no transitive dependency analysis) makes a missing backing file/URL fail
     the setup here and close the connection, instead of returning a partial
     ready session whose first query would fail later."""
+    selection, parameters = _selected_asset_filter(src, selected_assets)
     views = con.execute(
         "SELECT table_schema, table_name FROM information_schema.tables "
         "WHERE table_catalog = ? AND table_type = 'VIEW' AND table_schema NOT IN "
-        "('information_schema', 'pg_catalog')",
-        [src.name],
+        "('information_schema', 'pg_catalog')" + selection,
+        [src.name, *parameters],
     ).fetchall()
     for schema, view in views:
         con.execute(
