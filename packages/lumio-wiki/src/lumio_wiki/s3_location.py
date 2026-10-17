@@ -251,6 +251,7 @@ def build_published_manifest(
     content: dict[str, bytes],
     *,
     derived_content: dict[str, bytes] | None = None,
+    derived_manifest_files: list[S3ManifestFile] | None = None,
     revision: str = "",
     subtree: str = "",
     source_reference_digest: str = "",
@@ -279,15 +280,18 @@ def build_published_manifest(
         )
         for path, raw in sorted(content.items())
     ]
-    derived_files = []
-    for path, raw in sorted((derived_content or {}).items()):
-        derived_files.append(
-            S3ManifestFile(
-                path=path,
-                size=len(raw),
-                digest=hashlib.sha256(raw).hexdigest(),
-            )
+    derived_files = [
+        S3ManifestFile(
+            path=path,
+            size=len(raw),
+            digest=hashlib.sha256(raw).hexdigest(),
         )
+        for path, raw in sorted((derived_content or {}).items())
+    ]
+    derived_files.extend(derived_manifest_files or [])
+    derived_files.sort(key=lambda entry: entry.path)
+    if len({entry.path for entry in derived_files}) != len(derived_files):
+        raise KnowledgeBaseError("derived Published Version manifest paths must be unique")
     return S3Manifest(
         version=version,
         fingerprint=fingerprint_digest,

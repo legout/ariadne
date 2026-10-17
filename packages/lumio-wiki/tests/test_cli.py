@@ -2594,15 +2594,15 @@ def test_source_inspect_rejects_unsafe_published_version_without_echo(
 
 
 def test_source_s3_uri_resolves_active_published_version_once(
-    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+    source_kb: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from lumio_wiki import cli
+    from lumio_wiki.artifact_store import InMemoryArtifactStore
     from lumio_wiki.s3_publish import PointerObservation
 
-    store_root = tmp_path / "artifact-store"
-    store = _retained_policy_source(source_kb, store_root)
+    metadata_store = InMemoryArtifactStore()
     lw.write_binding_manifest(
-        store,
+        metadata_store,
         lw.SourceBindingManifest(
             published_version="v-active",
             fingerprint="fp",
@@ -2616,7 +2616,8 @@ def test_source_s3_uri_resolves_active_published_version_once(
             ],
         ),
     )
-    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    monkeypatch.setattr(cli, "_publication_metadata_store_for_s3", lambda _uri: metadata_store)
     monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (object(), "kb-prefix"))
     monkeypatch.setattr(
         "lumio_wiki.s3_publish.observe_current_pointer",
@@ -2626,6 +2627,8 @@ def test_source_s3_uri_resolves_active_published_version_once(
     assert main(["source", "inspect", "s3://bucket/kb", "--source-id", "policy"]) == 0
     out = capsys.readouterr().out
     assert "bound_to:        published version v-active (Source Binding Manifest)" in out
+    assert "availability:    not retained (no Source Artifact Store configured)" in out
+    assert "authorization:   granted (private publication metadata view)" in out
 
 
 def test_source_s3_uri_without_active_version_fails(
@@ -2838,6 +2841,161 @@ def test_source_resolve_published_version_resolves_manifest_binding(
         f'next:            lumio-wiki source inspect "{source_kb.resolve()}" '
         "--source-id policy --published-version v2026" in out
     )
+
+
+def test_source_resolution_scopes_published_bindings_to_entity(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from lumio_wiki import cli
+
+    for entity_id, title in (("entity-one", "Entity One"), ("entity-two", "Entity Two")):
+        page = source_kb / f"{entity_id}.md"
+        page.write_text(
+            textwrap.dedent(
+                f'''\
+                ---
+                title: "{title}"
+                id: "{entity_id}"
+                aliases: []
+                tags: []
+                sources:
+                  - id: "policy"
+                    title: "Policy Knowledge Source"
+                synthetic: false
+                ---
+
+                # {title}
+                '''
+            ),
+            encoding="utf-8",
+        )
+
+    store = _SigningInMemoryStore()
+    digest = lw.artifact_content_hash(INSPECTION_RAW)
+    store.put_artifact(
+        source_id="policy",
+        content_hash=digest,
+        raw_bytes=INSPECTION_RAW,
+        content_type="application/pdf",
+        filename="policy.pdf",
+    )
+    lw.write_binding_manifest(
+        store,
+        lw.SourceBindingManifest(
+            published_version="v2026",
+            fingerprint="fp",
+            created_at="2026-08-21T00:00:00Z",
+            entries=[
+                lw.SourceBindingEntry(
+                    page_title=title,
+                    source_id="policy",
+                    content_hash=digest,
+                    filename=f"{entity_id}.pdf",
+                    size=len(INSPECTION_RAW),
+                    entity_id=entity_id,
+                )
+                for entity_id, title in (("entity-one", "Entity One"), ("entity-two", "Entity Two"))
+            ],
+        ),
+    )
+    monkeypatch.setattr(cli, "_artifact_store_from_env", lambda: store)
+
+    assert (
+        main(
+            [
+                "source",
+                "resolve",
+                str(source_kb),
+                "Entity Two",
+                "--published-version",
+                "v2026",
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "entity_id:       entity-two" in out
+    assert (
+        f'next:            lumio-wiki source inspect "{source_kb.resolve()}" '
+        "--source-id policy --entity-id entity-two --published-version v2026" in out
+    )
+
+    assert (
+        main(
+            [
+                "source",
+                "inspect",
+                str(source_kb),
+                "--source-id",
+                "policy",
+                "--published-version",
+                "v2026",
+            ]
+        )
+        == 1
+    )
+    assert "multiple Entities" in capsys.readouterr().err
+
+    assert (
+        main(
+            [
+                "source",
+                "inspect",
+                str(source_kb),
+                "--source-id",
+                "policy",
+                "--entity-id",
+                "entity-two",
+                "--published-version",
+                "v2026",
+            ]
+        )
+        == 0
+    )
+    inspect_out = capsys.readouterr().out
+    assert "entity_id:       entity-two" in inspect_out
+    assert "filename:        entity-two.pdf" in inspect_out
+
+    fetch_path = tmp_path / "entity-two.pdf"
+    assert (
+        main(
+            [
+                "source",
+                "fetch",
+                str(source_kb),
+                "--source-id",
+                "policy",
+                "--entity-id",
+                "entity-two",
+                "--published-version",
+                "v2026",
+                "--output",
+                str(fetch_path),
+            ]
+        )
+        == 0
+    )
+    assert fetch_path.read_bytes() == INSPECTION_RAW
+
+    assert (
+        main(
+            [
+                "source",
+                "link",
+                str(source_kb),
+                "--source-id",
+                "policy",
+                "--entity-id",
+                "entity-two",
+                "--published-version",
+                "v2026",
+                "--expires",
+                "1h",
+            ]
+        )
+        == 0
+    )
+    assert "https://objects.example/artifacts/policy/" in capsys.readouterr().out
 
 
 def test_source_inspect_unknown_id_error_names_close_id_and_command(

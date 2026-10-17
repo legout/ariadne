@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from lumio_wiki import cli
+from lumio_wiki.artifact_store import InMemoryArtifactStore
 from lumio_wiki.s3_location import S3Location
 from lumio_wiki.source_references import (
     SourceReferenceManifest,
@@ -266,6 +267,58 @@ def test_cli_publish_s3_reports_a_pointer_conflict(tmp_path, monkeypatch, capsys
     assert msgspec_pointer(store) == revision_a
 
 
+def test_cli_s3_reconciles_post_activation_receipt_failure_before_retry(
+    tmp_path, monkeypatch, capsys
+):
+    import lumio_wiki.git_authoring as git_authoring
+
+    store = _fake_store(monkeypatch)
+    root, revision_a, registry = _init_git_kb(tmp_path)
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(tmp_path / "source-store"))
+    monkeypatch.delenv("LUMIO_ARTIFACT_RETENTION", raising=False)
+    rc, confirmed = _publish_git_revision(root, revision_a, "none", registry, capsys)
+    assert rc == 0, confirmed.err
+
+    revision_b = _next_git_revision(root, "receipt failure candidate")
+    args = [
+        "publish-s3",
+        str(root),
+        "s3://bucket/kb",
+        "--revision",
+        revision_b,
+        "--expected-current",
+        revision_a,
+        "--source-registry",
+        str(registry.root),
+        "--json",
+    ]
+    assert cli.main(args) == 0
+    review = json.loads(capsys.readouterr().out)
+    persist_activation = git_authoring._persist_s3_activation
+    failed = []
+
+    def fail_after_activation(metadata_store, receipt):
+        if receipt.version == revision_b and not failed:
+            failed.append(receipt.version)
+            raise OSError("activation receipt bookkeeping failure")
+        persist_activation(metadata_store, receipt)
+
+    monkeypatch.setattr(git_authoring, "_persist_s3_activation", fail_after_activation)
+    confirm_args = [arg for arg in args if arg != "--json"]
+    assert cli.main([*confirm_args, "--confirm", review["review_digest"]]) == 1
+    assert "activation receipt bookkeeping failure" in capsys.readouterr().err
+    assert msgspec_pointer(store) == revision_b
+
+    rc, rolled_back = _rollback_git_revision(revision_a, revision_b, capsys)
+    assert rc == 0, rolled_back.err
+    assert msgspec_pointer(store) == revision_a
+
+    assert cli.main([*args, "--confirm", review["review_digest"]]) == 0
+    retry = json.loads(capsys.readouterr().out)
+    assert retry["activated"] is True
+    assert msgspec_pointer(store) == revision_a
+
+
 def _list(store, prefix):
     paths = []
     for batch in obstore.list(store, prefix=prefix):
@@ -282,12 +335,14 @@ def _list(store, prefix):
 def _fake_store(monkeypatch, prefix="kb"):
     store = obstore.store.MemoryStore()
     location = S3Location(store, prefix, store_uri="s3://bucket")
+    metadata_store = InMemoryArtifactStore()
     monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (store, prefix))
     monkeypatch.setattr(
         cli,
         "_build_publish_location",
         lambda uri: (location, location.effective_target_identity),
     )
+    monkeypatch.setattr(cli, "_publication_metadata_store_for_s3", lambda uri: metadata_store)
     return store
 
 
@@ -312,6 +367,12 @@ class _RecordingBuilder:
         self.calls.append((sidecar_prefix, len(pages), fingerprint.digest))
         if self.exc is not None:
             raise self.exc
+        obstore.put(
+            store,
+            f"{sidecar_prefix}/tables/evidence.lance/data",
+            b"indexed evidence table",
+            mode="create",
+        )
 
         from lumio_wiki.s3_publish import RemoteIndexCompletion
 
@@ -333,6 +394,43 @@ def test_cli_publish_s3_retrieval_lancedb_builds_before_activation(tmp_path, mon
     assert rc == 0, confirmed.err
     assert builder.calls[0][0] == f"kb/{revision}/derived/lance"
     assert f"kb/{revision}/derived/lance/completion.json" in _list(store, "kb/")
+
+
+def test_cli_rollback_s3_refuses_missing_requested_lancedb_object(tmp_path, monkeypatch, capsys):
+    store = _fake_store(monkeypatch)
+    root, revision_a, registry = _init_git_kb(tmp_path)
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(tmp_path / "source-store"))
+    builder = _RecordingBuilder()
+    monkeypatch.setattr(cli, "_publication_index_builder", lambda dest: builder)
+    rc, confirmed = _publish_git_revision(
+        root, revision_a, "none", registry, capsys, retrieval="lancedb"
+    )
+    assert rc == 0, confirmed.err
+
+    revision_b = _next_git_revision(root, "successor without index")
+    rc, confirmed = _publish_git_revision(root, revision_b, revision_a, registry, capsys)
+    assert rc == 0, confirmed.err
+    object_key = f"kb/{revision_a}/derived/lance/tables/evidence.lance/data"
+    assert object_key in _list(store, "kb/")
+
+    args = [
+        "rollback-s3",
+        "s3://bucket/kb",
+        "--version",
+        revision_a,
+        "--expected-current",
+        revision_b,
+        "--json",
+    ]
+    assert cli.main(args) == 0
+    review = json.loads(capsys.readouterr().out)
+    obstore.delete(store, object_key)
+
+    confirm_args = [arg for arg in args if arg != "--json"]
+    assert cli.main([*confirm_args, "--confirm", review["review_digest"]]) == 1
+    failure = capsys.readouterr()
+    assert "missing" in failure.err.lower()
+    assert msgspec_pointer(store) == revision_b
 
 
 def test_cli_publish_s3_retrieval_lancedb_failure_blocks_activation(tmp_path, monkeypatch, capsys):

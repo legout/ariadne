@@ -233,8 +233,8 @@ class KnowledgeBaseSnapshot(msgspec.Struct, frozen=True):
     def index_dir(self) -> Path | None:
         """The derived index directory bound to the underlying Knowledge Base, if any.
 
-        A freshly resolved filesystem Snapshot has no bound index directory, so
-        retrieval defaults to the always-available zero-index path.
+        A local Published Snapshot binds its immutable ``derived/lance`` path;
+        ordinary filesystem snapshots default to the zero-index path.
         """
         return self.knowledge_base.index_dir
 
@@ -543,6 +543,7 @@ class PublishedFilesystemLocation:
                 f"{fingerprint.digest} != manifest fingerprint {manifest.fingerprint}"
             )
         kb, report = _load_and_validate(source, fingerprint=fingerprint)
+        kb = msgspec.structs.replace(kb, index_dir=root / "derived" / "lance")
         return KnowledgeBaseSnapshot(
             knowledge_base=kb,
             validation_report=report,

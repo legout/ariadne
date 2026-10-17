@@ -733,6 +733,7 @@ def capture_binding_entries(registry: Any, pages: list[Any]) -> list[SourceBindi
                     filename=current.filename,
                     size=current.size,
                     synthetic_page=bool(getattr(page, "synthetic", False)),
+                    entity_id=getattr(page, "id", "") or "",
                 )
             )
     return entries
@@ -817,14 +818,22 @@ def required_coverage_missing(
     from lumio_wiki.source_registry import SourceRegistryError, _validate_source_id
 
     if captured_entries is not None:
-        required_pairs = required_source_pairs(pages)
+        required = {
+            (getattr(page, "id", None) or page.title, page.title, source.id)
+            for page in pages
+            if not bool(getattr(page, "synthetic", False))
+            for source in page.sources
+            if source.id
+        }
         bound_pairs = {
-            (entry.page_title, entry.source_id)
+            (entry.entity_id or entry.page_title, entry.source_id)
             for entry in captured_entries
             if not entry.synthetic_page
         }
         missing: list[str] = []
-        for title, source_id in sorted(required_pairs - bound_pairs):
+        for identity, title, source_id in sorted(required):
+            if (identity, source_id) in bound_pairs:
+                continue
             try:
                 _validate_source_id(source_id)
             except SourceRegistryError:

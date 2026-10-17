@@ -33,13 +33,13 @@ from lumio_lancedb.index import (
     LanceDBRetrievalAdapter,
     _load_fingerprint,
 )
-from lumio_lancedb.location import RemoteIndexLocation
+from lumio_lancedb.location import LocalIndexLocation, RemoteIndexLocation
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
     from lumio_wiki.embeddings import Embedder
     from obstore.store import ObjectStore
 
-__all__ = ["remote_publication_builder"]
+__all__ = ["local_publication_builder", "remote_publication_builder"]
 
 
 def remote_publication_builder(
@@ -141,6 +141,62 @@ def remote_publication_builder(
                 f"read table rows: {exc}"
             ) from exc
 
+        return RemoteIndexCompletion(
+            fingerprint=fingerprint.digest,
+            model=embedder.model_info if embedder is not None else None,
+            tables=tables,
+        )
+
+    return _build
+
+
+def local_publication_builder(*, embedder: Embedder | None = None) -> IndexBuilder:
+    """Build and health-check a version-bound local LanceDB index."""
+
+    def _build(
+        *, index_dir: str, pages: list, fingerprint: Any, kb: Any = None
+    ) -> RemoteIndexCompletion:
+        location = LocalIndexLocation(index_dir)
+        adapter = LanceDBRetrievalAdapter()
+        adapter.build_index(list(pages), location, embedder=embedder, fingerprint=fingerprint)
+        if kb is not None:
+            build_graph_tables(kb, location, fingerprint)
+
+        db = location.connect()
+        present = set(db.list_tables().tables)
+        required = {TABLE_NAME, PAGE_TABLE_NAME}
+        if embedder is not None:
+            required.add(VECTOR_TABLE_NAME)
+        if kb is not None:
+            required |= {ENTITY_TABLE_NAME, GRAPH_EDGE_TABLE_NAME}
+        missing = required - present
+        if missing:
+            raise RuntimeError(
+                f"local LanceDB index at {index_dir} is unhealthy: missing "
+                f"table(s) {', '.join(sorted(missing))}"
+            )
+        if kb is not None:
+            stored = _load_fingerprint(location)
+            if stored is None or stored.digest != fingerprint.digest:
+                recorded = stored.digest if stored is not None else "none"
+                raise RuntimeError(
+                    f"local LanceDB index at {index_dir} is unhealthy: graph "
+                    f"projection fingerprint mismatch (recorded {recorded}, "
+                    f"expected {fingerprint.digest})"
+                )
+            for name in (ENTITY_TABLE_NAME, GRAPH_EDGE_TABLE_NAME):
+                head = db.open_table(name).head(1).to_pylist()
+                if head and head[0].get("fingerprint") != fingerprint.digest:
+                    raise RuntimeError(
+                        f"local LanceDB index at {index_dir} is unhealthy: table "
+                        f"{name} was built for a different fingerprint"
+                    )
+        try:
+            tables = {name: int(db.open_table(name).count_rows()) for name in sorted(present)}
+        except Exception as exc:
+            raise RuntimeError(
+                f"local LanceDB index at {index_dir} is unhealthy: could not read table rows: {exc}"
+            ) from exc
         return RemoteIndexCompletion(
             fingerprint=fingerprint.digest,
             model=embedder.model_info if embedder is not None else None,

@@ -40,7 +40,7 @@ from lumio_lancedb.location import (
     LocalIndexLocation,
     RemoteIndexLocation,
 )
-from lumio_lancedb.publish import remote_publication_builder
+from lumio_lancedb.publish import local_publication_builder, remote_publication_builder
 
 __all__ = [
     "ENTITY_TABLE_NAME",
@@ -59,6 +59,7 @@ __all__ = [
     "has_graph_tables",
     "has_semantic_index",
     "load_graph_state",
+    "local_publication_builder",
     "remote_publication_builder",
     "search_entity_candidates",
     "search_hybrid_index",

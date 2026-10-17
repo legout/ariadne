@@ -27,6 +27,7 @@ from lumio_wiki.source_inspection import (
     MAX_LINK_EXPIRES,
     OUTCOME_ABSENT_BINDING,
     OUTCOME_ACCESS_DENIED,
+    OUTCOME_AMBIGUOUS_BINDING,
     OUTCOME_CORRUPTION,
     OUTCOME_HISTORICAL_VERSION_MISMATCH,
     OUTCOME_UNAVAILABLE,
@@ -196,6 +197,55 @@ def test_resolve_manifest_binding_identity_mismatch_is_corruption():
     with pytest.raises(SourceInspectionError) as excinfo:
         resolve_manifest_binding(store, "v-requested", "report")
     assert excinfo.value.outcome == OUTCOME_CORRUPTION
+
+
+def test_resolve_manifest_binding_requires_entity_when_source_id_is_shared():
+    store = _store_with_manifest(
+        "v2026",
+        [
+            SourceBindingEntry(
+                page_title="Shared",
+                source_id="source-shared",
+                content_hash="11" * 32,
+                entity_id="entity-one",
+            ),
+            SourceBindingEntry(
+                page_title="Shared",
+                source_id="source-shared",
+                content_hash="22" * 32,
+                entity_id="entity-two",
+            ),
+        ],
+    )
+    with pytest.raises(SourceInspectionError) as excinfo:
+        resolve_manifest_binding(store, "v2026", "source-shared")
+    assert excinfo.value.outcome == OUTCOME_AMBIGUOUS_BINDING
+
+    binding = resolve_manifest_binding(store, "v2026", "source-shared", entity_id="entity-two")
+    assert binding.content_hash == "22" * 32
+    assert binding.entity_id == "entity-two"
+
+
+def test_resolve_manifest_binding_can_adopt_legacy_title_binding_for_entity():
+    store = _store_with_manifest(
+        "v2026",
+        [
+            SourceBindingEntry(
+                page_title="Historical Title",
+                source_id="legacy",
+                content_hash="33" * 32,
+            )
+        ],
+    )
+    binding = resolve_manifest_binding(
+        store,
+        "v2026",
+        "legacy",
+        entity_id="entity-three",
+        page_title="Historical Title",
+    )
+    assert binding.content_hash == "33" * 32
+    assert binding.entity_id == "entity-three"
 
 
 # ---------------------------------------------------------------------------

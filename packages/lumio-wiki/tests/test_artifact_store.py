@@ -223,11 +223,13 @@ def _use_memory_s3(monkeypatch, store):
     from lumio_wiki import cli
 
     location = S3Location(store, "kb", store_uri="s3://bucket")
+    metadata_store = InMemoryArtifactStore()
     monkeypatch.setattr(
         cli,
         "_build_publish_location",
         lambda _uri: (location, location.effective_target_identity),
     )
+    monkeypatch.setattr(cli, "_publication_metadata_store_for_s3", lambda _uri: metadata_store)
     return location
 
 
@@ -819,52 +821,148 @@ def test_cli_managed_ingest_retains_artifacts_from_env(tmp_path, monkeypatch, ca
 
 
 def test_required_retention_blocks_unregistered_source_references(tmp_path):
-    """A referenced source the registry does not know can never have a
-    verified artifact: under required retention it BLOCKS activation (the
-    manifest binding only registered identities is not a coverage pass)."""
-    kb = _kb(tmp_path)
-    artifact_store = InMemoryArtifactStore()
-    pipeline, ingest = _pipeline(kb, tmp_path, artifact_store=artifact_store)
-    # Only the fixture sources are registered/retained; the managed page
-    # cites an id that was never registered.
-    registry = ingest.source_registry
-    for page in kb.pages:
-        for source in page.sources:
-            if not source.id:
-                continue
-            fixture_bytes = f"fixture artifact for {source.id}".encode()
-            registry.register_or_reuse(source.id, fixture_bytes, filename=None, content_type=None)
-            retain_artifact(
-                artifact_store,
-                registry,
-                source_id=source.id,
-                raw_bytes=fixture_bytes,
-                content_type="text/plain",
-                filename=f"{source.id}.txt",
-            )
-    # The authored page cites the registered annual-report AND a second
-    # source id that was never privately registered.
-    authored = _authored_page("annual-report").replace(
-        '  - id: "annual-report"\n    title: "annual-report source"\n',
-        '  - id: "annual-report"\n'
-        '    title: "annual-report source"\n'
-        '  - id: "ghost-reference"\n'
-        '    title: "Never registered"\n',
+    """The public Git publisher blocks uncaptured public-only references."""
+    from lumio_wiki.git_authoring import (
+        PublicationRetentionError,
+        preview_publication,
+        publish_revision,
     )
-    assert "ghost-reference" in authored
-    proposal = pipeline.managed_ingest(
-        RAW, "application/pdf", "report.pdf", "annual-report", authored
-    )
-    assert pipeline.publish(proposal.id).status == "published"
 
-    store = obstore.store.MemoryStore()
-    hook = activation_binding_hook(
-        artifact_store=artifact_store,
-        registry=registry,
-        required=True,
+    root = _authoring_root(tmp_path)
+    registry = SourceRegistry(tmp_path / "source-registry")
+    digest = artifact_content_hash(RAW)
+    registry.register_or_reuse("architecture-doc", RAW, filename="source.pdf")
+    artifact_store = LocalDirectoryArtifactStore(tmp_path / "src-store")
+    retain_artifact(
+        artifact_store,
+        registry,
+        source_id="architecture-doc",
+        raw_bytes=RAW,
+        content_type="application/pdf",
+        filename="source.pdf",
     )
-    with pytest.raises(RetentionRequiredError, match="unregistered source"):
-        _publish(store, kb, version="v1", hook=hook)
+    revision = _commit_authoring(
+        root,
+        digest,
+        message="candidate includes an unregistered reference",
+        body="Exact source-backed page.",
+        include_ghost=True,
+    )
+    object_store = obstore.store.MemoryStore()
+    location = S3Location(object_store, "kb", store_uri="s3://bucket")
+    metadata_store = InMemoryArtifactStore()
+    destination = "s3://bucket/kb"
+    review = preview_publication(
+        root,
+        revision,
+        destination,
+        "none",
+        source_registry=registry,
+        artifact_store=artifact_store,
+        retention_required=True,
+        s3_location=location,
+        metadata_store=metadata_store,
+        destination_identity=location.effective_target_identity,
+    )
+    assert "ghost-reference" in review.public_only_sources
+    assert not review.blocking_diagnostics
+
+    with pytest.raises(PublicationRetentionError, match="ghost-reference"):
+        publish_revision(
+            root,
+            revision,
+            destination,
+            "none",
+            review.review_digest,
+            source_registry=registry,
+            artifact_store=artifact_store,
+            retention_required=True,
+            s3_location=location,
+            metadata_store=metadata_store,
+            destination_identity=location.effective_target_identity,
+        )
+    with pytest.raises(FileNotFoundError):
+        obstore.get(object_store, f"kb/{CURRENT_POINTER_OBJECT}")
+
+
+def test_required_retention_is_rechecked_after_remote_index_build(tmp_path):
+    from lumio_wiki.git_authoring import (
+        PublicationRetentionError,
+        preview_publication,
+        publish_revision,
+    )
+    from lumio_wiki.s3_publish import RemoteIndexCompletion
+
+    root = _authoring_root(tmp_path)
+    registry = SourceRegistry(tmp_path / "source-registry")
+    digest = artifact_content_hash(RAW)
+    registry.register_or_reuse("architecture-doc", RAW, filename="source.pdf")
+    artifact_store = LocalDirectoryArtifactStore(tmp_path / "src-store")
+    retain_artifact(
+        artifact_store,
+        registry,
+        source_id="architecture-doc",
+        raw_bytes=RAW,
+        content_type="application/pdf",
+        filename="source.pdf",
+    )
+    revision = _commit_authoring(
+        root,
+        digest,
+        message="candidate before remote index build",
+        body="Exact source-backed page.",
+    )
+    object_store = obstore.store.MemoryStore()
+    location = S3Location(object_store, "kb", store_uri="s3://bucket")
+    metadata_store = InMemoryArtifactStore()
+    destination = "s3://bucket/kb"
+    builder_calls = []
+
+    def builder(*, store, sidecar_prefix, pages, fingerprint, kb=None):
+        builder_calls.append(sidecar_prefix)
+        obstore.put(
+            store,
+            f"{sidecar_prefix}/tables/evidence.lance/data",
+            b"indexed evidence table",
+            mode="create",
+        )
+        artifact_store.delete_artifact(source_id="architecture-doc", content_hash=digest)
+        return RemoteIndexCompletion(fingerprint=fingerprint.digest, tables={"evidence": 1})
+
+    review = preview_publication(
+        root,
+        revision,
+        destination,
+        "none",
+        source_registry=registry,
+        artifact_store=artifact_store,
+        retention_required=True,
+        s3_location=location,
+        metadata_store=metadata_store,
+        destination_identity=location.effective_target_identity,
+        retrieval="lancedb",
+    )
+    assert not review.blocking_diagnostics
+
+    with pytest.raises(PublicationRetentionError, match="raw artifacts are unavailable"):
+        publish_revision(
+            root,
+            revision,
+            destination,
+            "none",
+            review.review_digest,
+            source_registry=registry,
+            artifact_store=artifact_store,
+            retention_required=True,
+            s3_location=location,
+            metadata_store=metadata_store,
+            destination_identity=location.effective_target_identity,
+            retrieval="lancedb",
+            index_builder=builder,
+        )
+    assert builder_calls == [f"kb/{revision}/derived/lance"]
+    with pytest.raises(FileNotFoundError):
+        obstore.get(object_store, f"kb/{CURRENT_POINTER_OBJECT}")
 
 
 def test_publish_s3_required_without_store_fails_closed(tmp_path, monkeypatch, capsys):
@@ -980,6 +1078,10 @@ def test_required_rollback_rejects_partial_historical_binding_manifest(
     )
     memory_store = obstore.store.MemoryStore()
     location = _use_memory_s3(monkeypatch, memory_store)
+    from lumio_wiki import cli
+
+    metadata_store = InMemoryArtifactStore()
+    monkeypatch.setattr(cli, "_publication_metadata_store_for_s3", lambda _uri: metadata_store)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
     monkeypatch.delenv("LUMIO_ARTIFACT_RETENTION", raising=False)
@@ -987,7 +1089,7 @@ def test_required_rollback_rejects_partial_historical_binding_manifest(
     _publish_git_revision(root, rev1, "none", registry, capsys)
     _publish_git_revision(root, rev2, rev1, registry, capsys)
     manifest = msgspec.json.decode(
-        artifact_store.get_binding_manifest(rev1), type=SourceBindingManifest
+        metadata_store.get_binding_manifest(rev1), type=SourceBindingManifest
     )
     bound = {(entry.page_title, entry.source_id) for entry in manifest.entries}
     assert ("Artifact Page", "architecture-doc") in bound

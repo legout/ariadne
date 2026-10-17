@@ -83,8 +83,9 @@ class ResolvedSourceBinding:
     filename: str | None
     content_type: str | None
     size: int | None
-    #: The Published Version or Git revision whose exact manifest bound this hash.
+    #: The Published Version whose exact manifest bound this hash.
     published_version: str | None
+    entity_id: str | None = None
 
 
 def resolve_registry_binding(
@@ -93,6 +94,7 @@ def resolve_registry_binding(
     content_hash: str,
     *,
     published_version: str | None = None,
+    entity_id: str | None = None,
 ) -> ResolvedSourceBinding:
     """Resolve one exact pinned hash through append-only registry history."""
     try:
@@ -112,6 +114,7 @@ def resolve_registry_binding(
         content_type=version.content_type,
         size=version.size,
         published_version=published_version,
+        entity_id=entity_id,
     )
 
 
@@ -141,6 +144,13 @@ def resolve_source_reference_binding(
             OUTCOME_ABSENT_BINDING,
             "the selected authoring manifest does not bind this source id",
         )
+    entity_ids = {page_id for page_id, _digest in matches}
+    if entity_id is None and len(entity_ids) > 1:
+        raise SourceInspectionError(
+            OUTCOME_AMBIGUOUS_BINDING,
+            "the selected authoring manifest binds this source id to multiple Entities; "
+            "resolve it from a specific Entity",
+        )
     hashes = {digest for _, digest in matches}
     if len(hashes) != 1:
         raise SourceInspectionError(
@@ -149,7 +159,11 @@ def resolve_source_reference_binding(
             "Source Versions; resolve it from a specific Entity",
         )
     return resolve_registry_binding(
-        registry, source_id, next(iter(hashes)), published_version=published_version
+        registry,
+        source_id,
+        next(iter(hashes)),
+        published_version=published_version,
+        entity_id=entity_id or next(iter(entity_ids)),
     )
 
 
@@ -200,6 +214,7 @@ def resolve_manifest_binding(
     source_id: str,
     *,
     entity_id: str | None = None,
+    page_title: str | None = None,
 ) -> ResolvedSourceBinding:
     """Resolve a source id through ONE Published Version's binding manifest.
 
@@ -220,8 +235,18 @@ def resolve_manifest_binding(
         raise SourceInspectionError(OUTCOME_ABSENT_BINDING, str(exc)) from exc
     manifest = read_binding_manifest(artifact_store, version)
     entries = [entry for entry in manifest.entries if entry.source_id == source_id]
-    if entity_id is not None and any(entry.entity_id for entry in entries):
-        entries = [entry for entry in entries if entry.entity_id == entity_id]
+    if entity_id is not None:
+        entries = [
+            entry
+            for entry in entries
+            if (entry.entity_id == entity_id if entry.entity_id else entry.page_title == page_title)
+        ]
+    elif len({entry.entity_id or entry.page_title for entry in entries}) > 1:
+        raise SourceInspectionError(
+            OUTCOME_AMBIGUOUS_BINDING,
+            "this Published Version binds the source id to multiple Entities; "
+            "resolve it from a specific Entity",
+        )
     if not entries:
         raise SourceInspectionError(
             OUTCOME_ABSENT_BINDING,
@@ -247,6 +272,8 @@ def resolve_manifest_binding(
         content_type=entry.content_type,
         size=entry.size,
         published_version=version,
+        entity_id=entry.entity_id
+        or (entity_id if entity_id is not None and entry.page_title == page_title else None),
     )
 
 
@@ -283,7 +310,7 @@ def resolve_local_published_binding(
         raise SourceInspectionError(OUTCOME_ABSENT_BINDING, str(exc)) from exc
     receipt, sealed = read_local_published_bindings(destination, version)
     matches = [
-        digest
+        (page_id, digest)
         for page_id, bindings in sealed.bindings.items()
         for bound_id, digest in bindings.items()
         if bound_id == source_id and (entity_id is None or page_id == entity_id)
@@ -293,13 +320,21 @@ def resolve_local_published_binding(
             OUTCOME_ABSENT_BINDING,
             f"published version {version!r} does not bind this source id",
         )
-    if len(set(matches)) != 1:
+    entity_ids = {page_id for page_id, _digest in matches}
+    if entity_id is None and len(entity_ids) > 1:
+        raise SourceInspectionError(
+            OUTCOME_AMBIGUOUS_BINDING,
+            "this Published Version binds the source id to multiple Entities; "
+            "resolve it from a specific Entity",
+        )
+    hashes = {digest for _page_id, digest in matches}
+    if len(hashes) != 1:
         raise SourceInspectionError(
             OUTCOME_AMBIGUOUS_BINDING,
             "this Published Version binds the source id to multiple exact Source Versions; "
             "resolve it from a specific Entity",
         )
-    content_hash = matches[0]
+    content_hash = next(iter(hashes))
     metadata = [
         item
         for item in sealed.source_versions
@@ -323,6 +358,7 @@ def resolve_local_published_binding(
         content_type=item.content_type,
         size=item.size,
         published_version=version,
+        entity_id=entity_id or next(iter(entity_ids)),
     )
 
 

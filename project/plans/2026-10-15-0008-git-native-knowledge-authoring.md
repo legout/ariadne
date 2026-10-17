@@ -1,7 +1,8 @@
 # Implementation plan 0008: Git-native Knowledge Authoring
 
-**Revision/status:** 6 — G1 accepted; G2 remains blocked pending one
-owner-authorized bounded follow-up. Behavioral specification unchanged.
+**Revision/status:** 7 — G1 accepted; G2 fix-first corrections and local
+LanceDB completion are owner-authorized for one isolated candidate. Behavioral
+specification unchanged.
 
 **G2 caller/test-surface amendment, 2026-10-16 (parent-authorized):** G2 routes
 `publish-s3`, `rollback-s3`, and public SDK publication/rollback through the same
@@ -318,6 +319,92 @@ uv run pytest -q packages/lumio-wiki/tests/test_s3_publish.py packages/lumio-wik
 **Done:** admitted local/S3 versions and optional indexes/inspection agree;
 independent R review passes before producer migration/final contraction.
 Live S3 proof remains part of G5, not inferred from MemoryStore.
+
+### G2 correction and local LanceDB completion (r7)
+
+**Authority and boundary:** the owner selected the complete correction of the
+independent G2 R1–R8 findings together with the already-approved local
+LanceDB publication requirement. This is one isolated corrected candidate,
+one targeted validation selection, and one delta-only independent review; G2
+remains unaccepted until the parent accepts it. Specification 0008 r2 and
+ADR-0029 remain the behavioral authority. This amendment changes neither
+product behavior nor any specification, ADR, AGENTS guidance, private app,
+shared KB, release, or integration scope.
+
+**Required corrections:**
+
+- **R1:** before any new S3 pointer transition, reconcile the verified outgoing
+  activation/admission truth; fail closed if reconciliation cannot be persisted.
+  Preserve the accepted no-stale-replay history after a post-CAS receipt failure
+  and later explicit rollback. Reuse the parent's existing red MemoryStore
+  probe; do not rerun it as a baseline.
+- **R2:** when retention is required, verify exact captured coverage and raw
+  artifact availability for every referenced non-synthetic page/source pair
+  before CAS, including after an optional costly builder. Preserve public-only
+  provenance when retention is disabled. Adapt the existing unregistered-source
+  test to the new public owner path, not the retired private primitive.
+- **R3:** the immutable manifest/completeness and health gate must cover actual
+  requested LanceDB tables and sidecars as well as graph/completion metadata.
+  Missing/corrupt requested index content blocks retry or rollback activation;
+  do not rebuild, substitute a newer index, or treat read fallback as complete.
+- **R4–R5:** use the explicitly selected Git source registry for authoring
+  inspect/fetch/link/resolve. Preserve selected Entity identity through exact
+  binding lookup and replayable commands; Source-ID-only ambiguity still refuses.
+- **R6:** use one target-scoped private metadata selection across preview,
+  confirm, rollback and CLI inspection, independent of optional raw artifact
+  storage. Without raw retention, disclose the exact sealed binding and raw
+  unavailability without requiring or inventing bytes.
+- **R7:** compare each historical page/source binding to that Entity in the
+  selected historical snapshot. Preserve legacy title bindings; unknown or
+  ambiguous identity blocks repair rather than guessing or allowing another
+  page's matching hash to mask a replacement.
+- **R8:** an explicit local `--published-version` reads that exact historical
+  private binding, keeping legacy Published Version labels distinct from Git
+  Authoring Revisions. Do not force legacy versions through Git or use latest.
+- **Local LanceDB:** complete capture/build/health, fail-closed activation,
+  immutable manifest/receipt, version-pinned reading, same-Snapshot fallback,
+  and explicit local rollback with the existing optional adapter. Keep the core
+  model-free and dependency direction inward; add no adapter hierarchy or
+  storage backend.
+
+**Owned surface:** retain the G2 production files above; touch the existing
+`lumio-lancedb` `publish.py`, `location.py`, `index.py`, `graph.py`, and
+`__init__.py` only where version-bound local/remote composition requires it.
+For tests, retain the existing G2 surface, add `test_git_authoring.py` and
+only directly affected existing local adapter tests. The owner additionally
+authorizes `packages/lumio-wiki/tests/test_cli.py` solely for directly affected
+source inspect/fetch/link/resolve and selected historical/pinned-source cases
+for R4–R8, with minimal inspection-specific fixture setup. Do not rewrite a
+shared fixture globally for unrelated managed-ingest, proposal, lifecycle,
+retire/register, or candidate tests; do not run the whole `test_cli.py`.
+Preserve its explicit local legacy `--published-version` behavior as a legacy
+binding proof, not Git admission.
+
+**Validation / one bounded selected check:** reuse still-applicable evidence
+from `logs/g2-focused-validation-first.log` (217 passing cases),
+`logs/g2-delta-recheck.log` (6 passing cases), and
+`logs/g2-rootcause-node.log` (1 passing case) separately because their frozen
+source tree matches this base. Do not rerun those greens or combine them into a
+suite claim. Use the existing R1 red probe/log only as prior failure evidence.
+Select one focused post-fix execution over the actually changed named scenarios:
+R1 S3 history regression; adapted R2 public-owner retention case; R3 actual
+requested-index constituent loss; R4–R8 only the affected CLI inspection and
+historical-binding cases; and one local authoring/LanceDB publication-read-
+rollback journey. Add a case only for a genuinely uncovered reachable behavior;
+expected values come from captured Git A/B, independently computed canonical
+fingerprints and source hashes, exact Entity bindings, fixture bytes, and the
+old expected pointer. Preserve numerical, permission, CAS, and retention
+assertions; no generic-error proof or self-confirming mocks. After the one
+coherent selected execution, run scoped Ruff, format, and diff checks for
+changed files. A failure authorizes only investigating that named failure.
+Reuse evidence only while code, tests, inputs, and locked Python 3.14.8
+environment still match; no broad suite or whole CLI module.
+
+**Handoff:** one collective correction pass and one independent review of the
+`00cbe24..fixed` delta only. No G3 consumption before acceptance. A surviving
+same finding after the authorized pass/recheck goes to the owner; no third
+round, live S3/onboarding, full suite, wheel/MCP, services, endpoint-path probe,
+LSP/type-clean claim, private app, shared KB, merge, push, PR, or release.
 
 ## G3 — Route every retained producer through ordinary Git edits
 

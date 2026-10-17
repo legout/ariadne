@@ -198,6 +198,8 @@ def source_inspect_command(
     source_id: str,
     kb_location: str | None = None,
     published_version: str | None = None,
+    *,
+    entity_id: str | None = None,
 ) -> str:
     """The explicit private-Source action (ADR-0020).
 
@@ -208,9 +210,10 @@ def source_inspect_command(
     Manifest binds the Source (A4 remediation).
     """
     location = f"{_shell_double_quoted(kb_location)} " if kb_location else ""
+    entity = f" --entity-id {_shell_arg(entity_id)}" if entity_id else ""
     return (
         f"lumio-wiki source inspect {location}--source-id {_shell_arg(source_id)}"
-        f"{_published_version_flag(published_version)}"
+        f"{entity}{_published_version_flag(published_version)}"
     )
 
 

@@ -468,6 +468,191 @@ def test_git_authoring_journey_publishes_exact_revision(tmp_path, capsys):
     assert PublishedFilesystemLocation(destination).read_pointer() == revision
 
 
+def test_local_lancedb_publication_read_and_rollback(tmp_path: Path, capsys) -> None:
+    lumio_lancedb = pytest.importorskip("lumio_lancedb")
+    repo = _init_repo(tmp_path)
+    pages = {
+        "concepts/hydraulic-press.md": _entity_page(
+            "Hydraulic Press",
+            "entity:hydraulic-press",
+            ["press"],
+            claims_yaml=_presses_claim(),
+            body_sections="## Overview\n\nA copper lens transfers force.\n",
+            sources_yaml="  []\n",
+        ).replace("sources:\n  []\n", "sources:\n  []\nsynthetic: true\n"),
+        "concepts/steel-blank.md": _entity_page(
+            "Steel Blank",
+            "entity:steel-blank",
+            ["material"],
+            sources_yaml="  []\n",
+        ).replace("sources:\n  []\n", "sources:\n  []\nsynthetic: true\n"),
+    }
+    kb = _write_kb(repo, pages=pages)
+    destination = tmp_path / "published"
+    revision_a = _commit(repo)
+
+    def publish(revision: str, expected_current: str) -> None:
+        args = [
+            "publish",
+            str(kb),
+            "--revision",
+            revision,
+            "--to",
+            str(destination),
+            "--expected-current",
+            expected_current,
+            "--retrieval",
+            "lancedb",
+            "--json",
+        ]
+        assert main(args) == 0
+        review = json.loads(capsys.readouterr().out)
+        assert "derived/lance" in review["requested_artifacts"]
+        confirm_args = [arg for arg in args if arg != "--json"]
+        rc = main([*confirm_args, "--confirm", review["review_digest"]])
+        confirmed = capsys.readouterr()
+        assert rc == 0, confirmed.err
+        assert f"Admitted Published Version {revision}" in confirmed.out
+        assert "activated:      True" in confirmed.out
+
+    publish(revision_a, "none")
+    revision_b_page = kb / "concepts" / "hydraulic-press.md"
+    revision_b_page.write_text(
+        revision_b_page.read_text(encoding="utf-8").replace("copper lens", "silver lens"),
+        encoding="utf-8",
+    )
+    revision_b = _commit(repo)
+    publish(revision_b, revision_a)
+
+    snapshot_b = PublishedFilesystemLocation(destination).resolve()
+    assert snapshot_b.published_version == revision_b
+    assert snapshot_b.index_dir == (destination / "versions" / revision_b / "derived" / "lance")
+    manifest_b = PublishedFilesystemLocation(destination).read_manifest(revision_b)
+    index_files = [
+        item for item in manifest_b.derived_files if item.path.startswith("derived/lance/")
+    ]
+    assert len(index_files) > 1
+    assert any(item.path.endswith("completion.json") for item in index_files)
+    for item in index_files:
+        raw = (destination / "versions" / revision_b / item.path).read_bytes()
+        assert len(raw) == item.size
+        assert hashlib.sha256(raw).hexdigest() == item.digest
+
+    adapter = lumio_lancedb.LanceDBRetrievalAdapter()
+    results_b = adapter.retrieve(
+        snapshot_b.pages,
+        "silver",
+        index_dir=snapshot_b.index_dir,
+        expected_fingerprint=snapshot_b.fingerprint,
+    )
+    assert any(result.citation.page_title == "Hydraulic Press" for result in results_b)
+
+    rollback_args = [
+        "rollback",
+        str(destination),
+        "--version",
+        revision_a,
+        "--expected-current",
+        revision_b,
+        "--json",
+    ]
+    assert main(rollback_args) == 0
+    rollback_review = json.loads(capsys.readouterr().out)
+    assert main([*rollback_args, "--confirm", rollback_review["review_digest"]]) == 0
+    capsys.readouterr()
+
+    snapshot_a = PublishedFilesystemLocation(destination).resolve()
+    assert snapshot_a.published_version == revision_a
+    assert snapshot_a.index_dir == (destination / "versions" / revision_a / "derived" / "lance")
+    results_a = adapter.retrieve(
+        snapshot_a.pages,
+        "copper",
+        index_dir=snapshot_a.index_dir,
+        expected_fingerprint=snapshot_a.fingerprint,
+    )
+    assert any(result.citation.page_title == "Hydraulic Press" for result in results_a)
+
+
+def test_local_published_source_inspection_uses_sealed_bindings_without_raw_store(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    source_id = "operator-manual"
+    raw = b"Private source bytes retained only in the authoring registry."
+    registry = SourceRegistry(tmp_path / "registry")
+    version, _action = registry.register_version(source_id, raw, filename="manual.txt")
+    manifest = SourceReferenceManifest(
+        version=1,
+        namespace=NAMESPACE,
+        sources={source_id: "active"},
+        bindings={"entity:hydraulic-press": {source_id: version.content_hash}},
+    )
+    pages = {
+        "concepts/hydraulic-press.md": _entity_page(
+            "Hydraulic Press",
+            "entity:hydraulic-press",
+            ["press"],
+            sources_yaml='  - id: "operator-manual"\n    title: "Manual"\n',
+        ),
+        "concepts/steel-blank.md": _entity_page(
+            "Steel Blank", "entity:steel-blank", ["material"], sources_yaml="  []\n"
+        ).replace("sources:\n  []\n", "sources:\n  []\nsynthetic: true\n"),
+    }
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo, manifest=manifest, pages=pages)
+    revision = _commit(repo)
+    destination = tmp_path / "published"
+    review = preview_publication(kb, revision, destination, "none", source_registry=registry)
+    publish_revision(
+        kb,
+        revision,
+        destination,
+        "none",
+        review.review_digest,
+        source_registry=registry,
+    )
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    assert (
+        main(
+            [
+                "source",
+                "inspect",
+                str(destination),
+                "--source-id",
+                source_id,
+                "--published-version",
+                revision,
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "entity_id:       entity:hydraulic-press" in out
+    assert f"local Published Version {revision} (sealed source bindings)" in out
+    assert "not retained (no Source Artifact Store configured)" in out
+    assert raw.decode() not in out
+
+    assert (
+        main(
+            [
+                "source",
+                "resolve",
+                str(destination),
+                "Hydraulic Press",
+                "--published-version",
+                revision,
+                "--json",
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["entity_id"] == "entity:hydraulic-press"
+    assert result["published_version"] == revision
+    assert "--entity-id" in result["next"]
+    assert revision in result["next"]
+
+
 # ---------------------------------------------------------------------------
 # Invalid authored content: specific collected blocking failures.
 # ---------------------------------------------------------------------------

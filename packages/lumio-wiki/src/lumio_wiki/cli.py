@@ -121,8 +121,10 @@ from lumio_wiki.source_inspection import (
     fetch_verified_artifact,
     parse_expires,
     read_binding_manifest,
+    read_local_published_bindings,
     resolve_local_published_binding,
     resolve_manifest_binding,
+    resolve_registry_binding,
     resolve_source_reference_binding,
     safe_fetch_destination,
     validate_published_version,
@@ -3191,16 +3193,22 @@ def _cmd_publish_revision(args: argparse.Namespace) -> int:
         )
     retrieval = getattr(args, "retrieval", "zero-index")
     s3_location = None
+    metadata_store = None
     destination_identity = None
     index_builder = None
     if _is_object_store_uri(args.to):
         if not args.to.startswith("s3://"):
             raise CliError("Git-native publication currently requires an s3:// destination")
         s3_location, destination_identity = _build_publish_location(args.to)
+        metadata_store = _publication_metadata_store_for_s3(args.to)
         if retrieval == "lancedb":
             index_builder = _publication_index_builder(args.to)
+        elif retrieval != "zero-index":
+            raise CliError("retrieval must be 'zero-index' or 'lancedb'")
+    elif retrieval == "lancedb":
+        index_builder = _local_publication_index_builder()
     elif retrieval != "zero-index":
-        raise CliError("version-bound LanceDB indexes require an s3:// destination")
+        raise CliError("retrieval must be 'zero-index' or 'lancedb'")
     if not getattr(args, "confirm", None):
         try:
             review = preview_publication(
@@ -3212,7 +3220,7 @@ def _cmd_publish_revision(args: argparse.Namespace) -> int:
                 artifact_store=artifact_store,
                 retention_required=retention_required,
                 s3_location=s3_location,
-                metadata_store=artifact_store,
+                metadata_store=metadata_store,
                 destination_identity=destination_identity,
                 retrieval=retrieval,
             )
@@ -3246,7 +3254,7 @@ def _cmd_publish_revision(args: argparse.Namespace) -> int:
             artifact_store=artifact_store,
             retention_required=retention_required,
             s3_location=s3_location,
-            metadata_store=artifact_store,
+            metadata_store=metadata_store,
             destination_identity=destination_identity,
             retrieval=retrieval,
             index_builder=index_builder,
@@ -3293,11 +3301,13 @@ def _cmd_rollback(args: argparse.Namespace) -> int:
             )
     expected_current = getattr(args, "expected_current", None)
     s3_location = None
+    metadata_store = None
     destination_identity = None
     if _is_object_store_uri(args.destination):
         if not args.destination.startswith("s3://"):
             raise CliError("Git-native rollback currently requires an s3:// destination")
         s3_location, destination_identity = _build_publish_location(args.destination)
+        metadata_store = _publication_metadata_store_for_s3(args.destination)
     if not getattr(args, "confirm", None):
         try:
             review = preview_rollback(
@@ -3306,7 +3316,7 @@ def _cmd_rollback(args: argparse.Namespace) -> int:
                 expected_current,
                 retention_required=retention_required,
                 s3_location=s3_location,
-                metadata_store=artifact_store,
+                metadata_store=metadata_store,
                 destination_identity=destination_identity,
             )
         except Exception as exc:
@@ -3346,7 +3356,7 @@ def _cmd_rollback(args: argparse.Namespace) -> int:
             artifact_store=artifact_store,
             retention_required=retention_required,
             s3_location=s3_location,
-            metadata_store=artifact_store,
+            metadata_store=metadata_store,
             destination_identity=destination_identity,
         )
     except Exception as exc:
@@ -3430,6 +3440,20 @@ def _publication_index_builder(destination: str):
         store_uri=f"s3://{parsed.netloc}",
         storage_options=_lance_storage_options_from_env() or None,
     )
+
+
+def _local_publication_index_builder():
+    """Build and health-check a version-bound local LanceDB index."""
+    from lumio_wiki.composition import OptionalCapabilityError, require_lancedb
+
+    try:
+        lumio_lancedb = require_lancedb()
+    except OptionalCapabilityError as exc:
+        raise CliError(
+            "Git-admitted local publication with --retrieval lancedb needs "
+            "lumio-lancedb; install with: pip install lumio-lancedb"
+        ) from exc
+    return lumio_lancedb.local_publication_builder()
 
 
 def _cmd_publish_s3(args: argparse.Namespace) -> int:
@@ -4964,6 +4988,17 @@ def _active_published_version(uri: str) -> str:
     return observation.version
 
 
+def _publication_metadata_store_for_s3(uri: str):
+    """Select the private operational store bound to one S3 destination."""
+    from lumio_wiki.artifact_store import local_publication_metadata_store
+
+    location = _resolve_object_store_location(uri)
+    identity = location.effective_target_identity
+    if not identity:
+        raise CliError("the S3 destination has no credential-free metadata identity", exit_code=1)
+    return local_publication_metadata_store(identity)
+
+
 def _source_discovery_hint(
     args: argparse.Namespace, source_id: str, version: str | None, artifact_store
 ) -> str:
@@ -4976,17 +5011,33 @@ def _source_discovery_hint(
     Best-effort by design: a hint failure can never mask the real error.
     """
     ids: set[str] = set()
+    from lumio_wiki.source_references import load_source_reference_manifest
+
     try:
-        if version is not None:
-            if artifact_store is not None:
-                ids = {
-                    entry.source_id
-                    for entry in read_binding_manifest(artifact_store, version).entries
-                }
+        path = str(args.path)
+        is_s3 = _is_object_store_uri(path)
+        is_local_published = not is_s3 and _is_local_published_layout(args.path)
+        if version is not None and is_s3:
+            store = _publication_metadata_store_for_s3(path)
+            ids = {entry.source_id for entry in read_binding_manifest(store, version).entries}
+        elif version is not None and is_local_published:
+            _receipt, sealed = read_local_published_bindings(args.path, version)
+            ids = {source_id for bindings in sealed.bindings.values() for source_id in bindings}
+        elif version is not None and artifact_store is not None:
+            ids = {
+                entry.source_id for entry in read_binding_manifest(artifact_store, version).entries
+            }
         else:
             kb, _report = _load_kb(args.path)
-            ingest_dir = _resolve_ingest_dir(args, kb.root)
-            ids = {item.source_id for item in IngestStore(ingest_dir).source_registry.list()}
+            manifest = load_source_reference_manifest(kb.root)
+            if manifest is not None:
+                registry = _git_source_registry(args)
+                ids = (
+                    {item.source_id for item in registry.list()} if registry is not None else set()
+                )
+            else:
+                ingest_dir = _resolve_ingest_dir(args, kb.root)
+                ids = {item.source_id for item in IngestStore(ingest_dir).source_registry.list()}
     except Exception:  # pragma: no cover - display-only fallback
         ids = set()
     suggestions = suggest_source_ids(ids, source_id)
@@ -5004,10 +5055,21 @@ def _source_discovery_hint(
     )
 
 
+def _entity_page_title(kb: Any, entity_id: str | None) -> str | None:
+    if entity_id is None:
+        return None
+    matches = [page.title for page in kb.pages if getattr(page, "id", None) == entity_id]
+    if len(matches) != 1:
+        raise SourceInspectionError(
+            OUTCOME_ABSENT_BINDING, "the selected Entity is not present in this Knowledge Base"
+        )
+    return matches[0]
+
+
 def _resolve_source_binding(
     args: argparse.Namespace, source_id: str, *, entity_id: str | None = None
 ):
-    """Resolve exactly the Source Version pinned by this authoring/public view."""
+    """Resolve the selected Entity's exact Source Version and raw store."""
     path = str(args.path)
     is_s3 = _is_object_store_uri(path)
     is_local_published = not is_s3 and _is_local_published_layout(args.path)
@@ -5026,27 +5088,27 @@ def _resolve_source_binding(
         except ValueError as exc:
             raise CliError(str(exc)) from None
     artifact_store = _artifact_store_from_env()
-    from lumio_wiki.source_references import (
-        SourceReferenceError,
-        load_source_reference_manifest,
-    )
+    from lumio_wiki.source_references import SourceReferenceError, load_source_reference_manifest
 
     try:
         if is_s3:
-            if artifact_store is None:
-                raise CliError(
-                    "no private Source Artifact Store is configured "
-                    "(LUMIO_SOURCE_STORE); publication bindings are stored "
-                    "there — record one with 'lumio-wiki setup "
-                    "--source-store <s3-uri|path>'",
-                    exit_code=1,
-                )
             if version is None:
                 raise CliError(
                     "this S3 Knowledge Base has no active Published Version", exit_code=1
                 )
+            metadata_store = _publication_metadata_store_for_s3(path)
+            page_title = None
+            if entity_id is not None:
+                snapshot = _resolve_s3_snapshot(path, version=version)
+                page_title = _entity_page_title(snapshot.knowledge_base, entity_id)
             return (
-                resolve_manifest_binding(artifact_store, version, source_id, entity_id=entity_id),
+                resolve_manifest_binding(
+                    metadata_store,
+                    version,
+                    source_id,
+                    entity_id=entity_id,
+                    page_title=page_title,
+                ),
                 artifact_store,
             )
         if is_local_published:
@@ -5059,34 +5121,62 @@ def _resolve_source_binding(
                 artifact_store,
             )
         if version is not None:
-            from lumio_wiki.git_authoring import GitAuthoringError, capture_revision
-
-            try:
-                captured = capture_revision(args.path, version)
-            except GitAuthoringError as exc:
+            if artifact_store is None:
                 raise CliError(
-                    f"could not read exact authoring revision: {exc}", exit_code=1
-                ) from exc
-            registry = IngestStore(_resolve_ingest_dir(args, captured.kb_root)).source_registry
+                    "no private Source Artifact Store is configured "
+                    "(LUMIO_SOURCE_STORE); legacy publication bindings are stored "
+                    "there — record one with 'lumio-wiki setup --source-store <s3-uri|path>'",
+                    exit_code=1,
+                )
+            kb, _report = _load_kb(args.path)
             return (
-                resolve_source_reference_binding(
-                    registry,
-                    captured.manifest,
+                resolve_manifest_binding(
+                    artifact_store,
+                    version,
                     source_id,
                     entity_id=entity_id,
-                    published_version=version,
+                    page_title=_entity_page_title(kb, entity_id),
                 ),
                 artifact_store,
             )
         kb, _report = _load_kb(args.path)
         manifest = load_source_reference_manifest(kb.root)
         if manifest is None:
-            raise SourceInspectionError(
-                OUTCOME_HISTORICAL_VERSION_MISMATCH,
-                "this Knowledge Base has no exact Source Reference Manifest; "
-                "refusing to substitute the registry's latest Source Version",
+            registry = IngestStore(_resolve_ingest_dir(args, kb.root)).source_registry
+            if entity_id is not None and not any(
+                getattr(page, "id", None) == entity_id
+                and any(source.id == source_id for source in page.sources)
+                for page in kb.pages
+            ):
+                raise SourceInspectionError(
+                    OUTCOME_ABSENT_BINDING,
+                    "the selected Entity does not declare this source id",
+                )
+            try:
+                versions = registry.get(source_id).versions
+            except SourceRegistryError as exc:
+                raise SourceInspectionError(OUTCOME_ABSENT_BINDING, str(exc)) from exc
+            if not versions:
+                raise SourceInspectionError(
+                    OUTCOME_HISTORICAL_VERSION_MISMATCH,
+                    "the current registry has no Source Version for this source id",
+                )
+            return (
+                resolve_registry_binding(
+                    registry,
+                    source_id,
+                    versions[-1].content_hash,
+                    entity_id=entity_id,
+                ),
+                artifact_store,
             )
-        registry = IngestStore(_resolve_ingest_dir(args, kb.root)).source_registry
+        registry = _git_source_registry(args)
+        if registry is None:
+            raise CliError(
+                "Git-native source inspection requires the explicitly selected private "
+                f"Source Registry: pass --source-registry <dir> or set {SOURCE_REGISTRY_ENV_VAR}",
+                exit_code=1,
+            )
         return (
             resolve_source_reference_binding(registry, manifest, source_id, entity_id=entity_id),
             artifact_store,
@@ -5127,20 +5217,35 @@ def _binding_availability(artifact_store, binding) -> str:
 
 
 def _cmd_source_inspect(args: argparse.Namespace) -> int:
-    binding, artifact_store = _resolve_source_binding(args, args.source_id)
+    binding, artifact_store = _resolve_source_binding(
+        args, args.source_id, entity_id=getattr(args, "entity_id", None)
+    )
     availability = _binding_availability(artifact_store, binding)
+    local_published = not _is_object_store_uri(str(args.path)) and _is_local_published_layout(
+        args.path
+    )
     bound_to = (
-        f"published version {binding.published_version} (Source Binding Manifest)"
-        if binding.published_version is not None
-        else "current registry version (local worktree)"
+        f"local Published Version {binding.published_version} (sealed source bindings)"
+        if binding.published_version is not None and local_published
+        else (
+            f"published version {binding.published_version} (Source Binding Manifest)"
+            if binding.published_version is not None
+            else "current registry version (local worktree)"
+        )
     )
     authorization = (
         "granted (private Source Artifact Store read verified)"
-        if artifact_store is not None
-        else "granted (private registry view)"
+        if availability == "retained (digest and size verified)"
+        else (
+            "granted (private publication metadata view)"
+            if binding.published_version is not None
+            else "granted (private registry view)"
+        )
     )
     digest = binding.content_hash
     print(f"source_id:       {binding.source_id}")
+    if binding.entity_id:
+        print(f"entity_id:       {binding.entity_id}")
     print(f"content_hash:    {digest[:12]} (sha256, abbreviated)")
     print(f"filename:        {binding.filename or '(none recorded)'}")
     print(f"media_type:      {binding.content_type or '(none recorded)'}")
@@ -5167,7 +5272,9 @@ def _source_not_retained_hint() -> str:
 
 
 def _cmd_source_fetch(args: argparse.Namespace) -> int:
-    binding, artifact_store = _resolve_source_binding(args, args.source_id)
+    binding, artifact_store = _resolve_source_binding(
+        args, args.source_id, entity_id=getattr(args, "entity_id", None)
+    )
     if artifact_store is None:
         raise CliError(
             "no private Source Artifact Store is configured (LUMIO_SOURCE_STORE); "
@@ -5198,7 +5305,9 @@ def _cmd_source_fetch(args: argparse.Namespace) -> int:
 def _cmd_source_link(args: argparse.Namespace) -> int:
     from lumio_wiki.artifact_store import ArtifactAccessDenied, SigningUnavailable
 
-    binding, artifact_store = _resolve_source_binding(args, args.source_id)
+    binding, artifact_store = _resolve_source_binding(
+        args, args.source_id, entity_id=getattr(args, "entity_id", None)
+    )
     if artifact_store is None:
         raise CliError(
             "no private Source Artifact Store is configured (LUMIO_SOURCE_STORE); "
@@ -5259,74 +5368,138 @@ def _cmd_source_link(args: argparse.Namespace) -> int:
 
 
 def _cmd_source_resolve(args: argparse.Namespace) -> int:
-    """Resolve one query to a registered Knowledge Source identity (#176)."""
-    # _open_read_kb handles BOTH a local worktree and an S3 Location URI
-    # (the active Published Version's pages) — page-identity resolution must
-    # work on a reader's S3 KB too, not just a local filesystem path.
-    kb = _open_read_kb(args.path)
+    """Resolve a query against the selected registry or pinned publication."""
+    path = str(args.path)
+    is_s3 = _is_object_store_uri(path)
+    is_local_published = not is_s3 and _is_local_published_layout(args.path)
     version = getattr(args, "published_version", None)
-    if version is None and _is_object_store_uri(str(args.path)):
-        version = _active_published_version(str(args.path))
+    if version is None and is_s3:
+        version = _active_published_version(path)
+    if version is None and is_local_published:
+        from lumio_wiki.location import PublishedFilesystemLocation
+
+        version = PublishedFilesystemLocation(args.path).read_pointer()
+        if version is None:
+            raise CliError("this local Published Knowledge Base has no active version", exit_code=1)
     if version is not None:
         try:
             validate_published_version(version)
         except ValueError as exc:
             raise CliError(str(exc)) from None
     artifact_store = _artifact_store_from_env()
-    known_ids: set[str] = set()
-    if version is not None:
-        if artifact_store is None:
-            raise CliError(
-                "no private Source Artifact Store is configured "
-                "(LUMIO_SOURCE_STORE); publication bindings are stored there "
-                "— record one with 'lumio-wiki setup --source-store "
-                "<s3-uri|path>'",
-                exit_code=1,
-            )
+    if is_s3:
+        if version is None:
+            raise CliError("this S3 Knowledge Base has no active version", exit_code=1)
+        kb = _resolve_s3_snapshot(path, version=version).knowledge_base
+        metadata_store = _publication_metadata_store_for_s3(path)
         try:
             known_ids = {
-                entry.source_id for entry in read_binding_manifest(artifact_store, version).entries
+                entry.source_id for entry in read_binding_manifest(metadata_store, version).entries
             }
         except SourceInspectionError as exc:
             raise CliError(str(exc), exit_code=1) from exc
-    else:
-        ingest_dir = _resolve_ingest_dir(args, kb.root)
-        known_ids = {item.source_id for item in IngestStore(ingest_dir).source_registry.list()}
-    resolution = resolve_source(kb.pages, known_ids, args.query)
+    elif is_local_published:
+        from lumio_wiki.location import PublishedFilesystemLocation
 
+        if version is None:
+            raise CliError("this local Published Knowledge Base has no active version", exit_code=1)
+        kb = PublishedFilesystemLocation(args.path, version=version).resolve().knowledge_base
+        try:
+            _receipt, sealed = read_local_published_bindings(args.path, version)
+        except SourceInspectionError as exc:
+            raise CliError(str(exc), exit_code=1) from exc
+        known_ids = {source_id for bindings in sealed.bindings.values() for source_id in bindings}
+    else:
+        kb = _open_read_kb(args.path)
+        if version is not None:
+            if artifact_store is None:
+                raise CliError(
+                    "no private Source Artifact Store is configured "
+                    "(LUMIO_SOURCE_STORE); legacy publication bindings are stored "
+                    "there — record one with 'lumio-wiki setup --source-store <s3-uri|path>'",
+                    exit_code=1,
+                )
+            try:
+                known_ids = {
+                    entry.source_id
+                    for entry in read_binding_manifest(artifact_store, version).entries
+                }
+            except SourceInspectionError as exc:
+                raise CliError(str(exc), exit_code=1) from exc
+        else:
+            from lumio_wiki.source_references import (
+                SourceReferenceError,
+                load_source_reference_manifest,
+            )
+
+            try:
+                manifest = load_source_reference_manifest(kb.root)
+            except SourceReferenceError as exc:
+                raise CliError(
+                    f"the Source Reference Manifest is invalid: {exc}", exit_code=1
+                ) from exc
+            if manifest is not None:
+                registry = _git_source_registry(args)
+                if registry is None:
+                    raise CliError(
+                        "Git-native source resolution requires the explicitly selected private "
+                        f"Source Registry: pass --source-registry <dir> or set "
+                        f"{SOURCE_REGISTRY_ENV_VAR}",
+                        exit_code=1,
+                    )
+                known_ids = {item.source_id for item in registry.list()}
+            else:
+                ingest_dir = _resolve_ingest_dir(args, kb.root)
+                known_ids = {
+                    item.source_id for item in IngestStore(ingest_dir).source_registry.list()
+                }
+
+    resolution = resolve_source(kb.pages, known_ids, args.query)
     if resolution.outcome != OUTCOME_RESOLVED or resolution.source_id is None:
         return _report_unresolved_source(args, resolution)
 
-    # Identity resolved; report the SAME binding/availability surface inspect
-    # uses, through the same seams (never a signed URL — that is link only).
-    binding, artifact_store = _resolve_source_binding(args, resolution.source_id)
+    entity_id = resolution.page.id if resolution.page is not None else None
+    binding, artifact_store = _resolve_source_binding(
+        args, resolution.source_id, entity_id=entity_id
+    )
     availability = _binding_availability(artifact_store, binding)
     bound_to = (
-        f"published version {binding.published_version} (Source Binding Manifest)"
-        if binding.published_version is not None
-        else "current registry version (local worktree)"
+        f"local Published Version {binding.published_version} (sealed source bindings)"
+        if binding.published_version is not None and is_local_published
+        else (
+            f"published version {binding.published_version} (Source Binding Manifest)"
+            if binding.published_version is not None
+            else "current registry version (local worktree)"
+        )
     )
     authorization = (
         "granted (private Source Artifact Store read verified)"
-        if artifact_store is not None
-        else "granted (private registry view)"
+        if availability == "retained (digest and size verified)"
+        else (
+            "granted (private publication metadata view)"
+            if binding.published_version is not None
+            else "granted (private registry view)"
+        )
     )
-    kb_location = str(args.path) if _is_object_store_uri(str(args.path)) else str(kb.root)
+    kb_location = path if is_s3 or is_local_published or version is not None else str(kb.root)
     next_action = source_inspect_command(
         binding.source_id,
         kb_location,
         binding.published_version,
+        entity_id=binding.entity_id,
+    )
+    page_info = (
+        {"title": resolution.page.title, "path": resolution.page.path}
+        if resolution.page is not None
+        else None
     )
     if args.json:
         payload = {
             "outcome": OUTCOME_RESOLVED,
             "source_id": binding.source_id,
+            "entity_id": binding.entity_id,
             "matched_by": resolution.matched_by,
-            "page": (
-                {"title": resolution.page.title, "path": resolution.page.path}
-                if resolution.page is not None
-                else None
-            ),
+            "page": page_info,
             "content_hash": binding.content_hash[:12],
             "filename": binding.filename,
             "media_type": binding.content_type,
@@ -5340,6 +5513,8 @@ def _cmd_source_resolve(args: argparse.Namespace) -> int:
         print(json.dumps(payload))
         return 0
     print(f"source_id:       {binding.source_id}")
+    if binding.entity_id:
+        print(f"entity_id:       {binding.entity_id}")
     print(f"matched_by:      {resolution.matched_by}")
     if resolution.page is not None:
         print(f"page:            {resolution.page.title} ({resolution.page.path})")
@@ -7168,6 +7343,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_kb_argument(source_resolve)
     _add_ingest_dir_argument(source_resolve)
     source_resolve.add_argument(
+        "--source-registry",
+        default=None,
+        help=f"Private Git source registry directory (fallback: {SOURCE_REGISTRY_ENV_VAR}).",
+    )
+    source_resolve.add_argument(
         "query",
         type=str,
         help="Source ID, Entity ID, page title, alias, or page path to resolve.",
@@ -7201,8 +7381,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_kb_argument(source_inspect)
     _add_ingest_dir_argument(source_inspect)
     source_inspect.add_argument(
+        "--source-registry",
+        default=None,
+        help=f"Private Git source registry directory (fallback: {SOURCE_REGISTRY_ENV_VAR}).",
+    )
+    source_inspect.add_argument(
         "--source-id", required=True, help="Knowledge Source identity to inspect."
     )
+    source_inspect.add_argument("--entity-id", default=None, help="Entity to disambiguate.")
     source_inspect.add_argument(
         "--published-version",
         default=None,
@@ -7230,8 +7416,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_kb_argument(source_fetch)
     _add_ingest_dir_argument(source_fetch)
     source_fetch.add_argument(
+        "--source-registry",
+        default=None,
+        help=f"Private Git source registry directory (fallback: {SOURCE_REGISTRY_ENV_VAR}).",
+    )
+    source_fetch.add_argument(
         "--source-id", required=True, help="Knowledge Source identity to fetch."
     )
+    source_fetch.add_argument("--entity-id", default=None, help="Entity to disambiguate.")
     source_fetch.add_argument(
         "--published-version",
         default=None,
@@ -7261,8 +7453,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_kb_argument(source_link)
     _add_ingest_dir_argument(source_link)
     source_link.add_argument(
+        "--source-registry",
+        default=None,
+        help=f"Private Git source registry directory (fallback: {SOURCE_REGISTRY_ENV_VAR}).",
+    )
+    source_link.add_argument(
         "--source-id", required=True, help="Knowledge Source identity to link."
     )
+    source_link.add_argument("--entity-id", default=None, help="Entity to disambiguate.")
     source_link.add_argument(
         "--published-version",
         default=None,
