@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 0.4.1 - 2026-10-16
+
+Hotfix: the released `ariadne-agent` 0.4.0 was incompatible with
+`ariadne-data` 0.4.0.
+
+- **Agent migration to the Git-only core (#73 remainder)** — embedded Agent
+  sessions now resolve through the core project factories
+  (`QueryRuntime.open_project` / `DiscoveryRuntime.open_project`) using the
+  server's deferred first-admission pattern: a not-yet-admitted project opens
+  an Analyst session with source-free discovery, the first governed query
+  refuses honestly naming the human-only `ariadne-admit` step, and the first
+  real admission is picked up once and stays pinned. The retired direct
+  runtime construction (`staging_dir`, artifact roots) and all
+  Promotion/staging guidance are gone; `define_metric` guidance reports the
+  ephemeral `persistence: not_saved` result. The authoring `upload_document`
+  tool is removed with the retired core seam — originals are operator-placed
+  external inputs. Agent tests migrated to real Git admission fixtures (34
+  cases, Python 3.14 with `tau-ai==0.4.6` and `tau-mcp 0.1.0`); the packaged
+  agent README now documents the Git-only session contract. Core is
+  unchanged; live-model behavior remains unverified.
+
 ## 0.4.0 - 2026-10-16
 
 Fifth release: Git-only durable authoring (#74) on the Python 3.14 / MCP 2.2.0 core (#73).
