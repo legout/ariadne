@@ -139,10 +139,14 @@ connection keeps the secret it was built with until it is closed (rotation
 is not refreshed inside a live session). Restarting or reconstructing the
 serving process is the pickup point for changed credentials.
 
-A legacy project without `storages:` keeps its existing grants, digests and
-gates unchanged under the retained staging/Promotion route; profile
-declarations are preserved through legacy proposal installation and staged
-validation, with the same effective-binding approval semantics.
+A project without `storages:` keeps its existing grants, digests and gates
+unchanged — profile-free registries and old records keep their existing shape
+and digests. Profile declarations ride Git candidates with the same
+effective-binding approval semantics through source approval, validation
+evidence and human Git Review Admission; the legacy staging/Promotion route
+they were once preserved through is retired (spec 0027's scoped amendment to
+spec 0025 — only the staging-compatibility obligations lapsed, every
+retained-format check stands).
 
 ## Know the remaining limits
 
