@@ -1,9 +1,11 @@
 """ODCS contract consumer: pin, Git journey, drift, authority, quality
 semantics and evidence gates (issue #77 / C1; spec 2028 §§2–7, AC1–AC7).
 
-Real temporary Git repositories (repo-local identity), real parquet sources,
-the packaged official schema pin and exact upstream official fixture bytes.
-Expected values are hand-derived from the pinned sources and the fixture rows
+Real temporary Git repositories (repo-local identity), real native DuckDB
+catalog sources (the approved profile's native fixture; a legacy parquet
+file-view variant serves the non-native-source guard case), the packaged
+official schema pin and exact upstream official fixture bytes. Expected
+values are hand-derived from the pinned sources and the fixture rows
 (IDs 1/2/3, amounts 10/20/30 → COUNT 3, SUM 60.0, zero NULLs, zero negative
 amounts) or asserted against the byte identities the spec records — never
 copied from implementation output.
@@ -64,7 +66,7 @@ semantic_model:
     description: Orders model
     datasets:
       - name: orders
-        source: orders.orders
+        source: orders.main.orders
         primary_key: [id]
         fields:
           - name: id
@@ -100,7 +102,7 @@ TABLES_PAGE = (
     "tags: [table]\n"
     "sources:\n"
     "  - id: orders\n"
-    "    resource: orders.orders\n"
+    "    resource: orders.main.orders\n"
     "    title: orders\n"
     "grain:\n"
     "  primary_key: [id]\n"
@@ -171,8 +173,11 @@ SKILLS_PAGE = (
 # The producer contract over the hand-worked fixture: three properties
 # (integer id required, number amount required, string region), physicalTypes
 # only where the original type is reliably observable (int and double match
-# the observed catalog types after alias normalization), and two SQL-quality
-# rules with hand-derived expectations (0 negative amounts; SUM 60).
+# the observed NATIVE catalog types after alias normalization), and two
+# SQL-quality rules with hand-derived expectations (0 negative amounts;
+# SUM 60). The duckdb server entry carries the official schema's required
+# `database` property — inert producer metadata; the approved native source
+# identity, never the server block, controls what opens.
 ORDERS_CONTRACT = """\
 apiVersion: v3.2.0
 kind: DataContract
@@ -182,6 +187,7 @@ name: orders
 servers:
   - server: orders-duckdb
     type: duckdb
+    database: orders
 schema:
   - id: orders_object
     name: orders
@@ -218,12 +224,19 @@ bindings:
     contract_id: orders-contract
     contract_version: 1.0.0
     object_id: orders_object
-    asset: {source: orders, catalog: null, schema: orders, table: orders}
+    asset: {source: orders, catalog: orders, schema: main, table: orders}
     model: orders
     dataset: orders
     properties: {order_id: id, order_amount: amount, order_region: region}
     server_id: orders-duckdb
 """
+
+# The file-view asset spelling for the non-native-source guard case (a
+# duckdb-labelled contract bound to an approved PARQUET source).
+PARQUET_BINDINGS = ORDERS_BINDINGS.replace(
+    "asset: {source: orders, catalog: orders, schema: main, table: orders}",
+    "asset: {source: orders, catalog: null, schema: orders, table: orders}",
+)
 
 # A four-field, schema-less ODCS document: document-valid, and by design
 # never a source-compliance claim (spec 0028 §2 / AC1).
@@ -237,47 +250,86 @@ def isolated_git_config(monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
 
 
+def _insert_sql(table: str, arity: int) -> str:
+    """One fully STATIC parameterized INSERT statement per arity (2–4
+    fixture columns): no interpolation ever reaches the executor."""
+    statements = {
+        2: f"INSERT INTO {table} VALUES (?, ?)",
+        3: f"INSERT INTO {table} VALUES (?, ?, ?)",
+        4: f"INSERT INTO {table} VALUES (?, ?, ?, ?)",
+    }
+    return statements[arity]
+
+
 def write_orders_parquet(path: Path, rows: list[tuple], columns: dict[str, str]) -> Path:
     """A real parquet file with explicit column types (NULLs expressible)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     names = list(columns)
     con = duckdb.connect()
-    # test-fixture DDL over test-local column constants and bound parameters
+    # test-fixture DDL over test-local column constants
     ddl = ", ".join(f"{name} {columns[name]}" for name in names)
     # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
     con.execute(f"CREATE TABLE t({ddl})")
-    marks = ", ".join("?" for _ in names)
+    # static statement from the arity map; row values ride as bound parameters
     # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
-    con.executemany(f"INSERT INTO t VALUES ({marks})", rows)
+    con.executemany(_insert_sql("t", len(names)), rows)
     # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
     con.execute(f"COPY t TO '{path}' (FORMAT PARQUET)")
     con.close()
     return path
 
 
-def contract_project(root: Path, *, with_labels: bool = False) -> Path:
+def write_native_db(path: Path, table: str, columns: dict[str, str], rows: list[tuple]) -> Path:
+    """A real native DuckDB catalog file whose table carries the exact
+    ORIGINAL column types (the approved profile's native source; NULLs
+    expressible through bound parameters)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.unlink(missing_ok=True)  # a rewrite replaces the catalog wholesale
+    names = list(columns)
+    con = duckdb.connect(str(path))
+    # test-fixture DDL over test-local column constants
+    ddl = ", ".join(f"{name} {columns[name]}" for name in names)
+    # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
+    con.execute(f'CREATE TABLE main."{table}"({ddl})')
+    # static statement from the arity map; row values ride as bound parameters
+    # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
+    con.executemany(_insert_sql(f'main."{table}"', len(names)), rows)
+    con.close()
+    return path
+
+
+def contract_project(root: Path, *, native: bool = True, with_labels: bool = False) -> Path:
     """A real temporary Git data project whose human-created initial artifact
-    revision is a complete existing bundle over the orders parquet."""
+    revision is a complete existing bundle. The default fixture is the
+    approved profile's NATIVE DuckDB source (a real catalog file with exact
+    original types); ``native=False`` keeps the legacy parquet file-view
+    variant for the non-native-source guard case."""
     project = root / "proj"
     project.mkdir(parents=True, exist_ok=True)
-    write_orders_parquet(
-        project / "data" / "orders.parquet",
-        [(1, 10.0, "EMEA"), (2, 20.0, "AMER"), (3, 30.0, "EMEA")],
-        {"id": "INTEGER", "amount": "DOUBLE", "region": "VARCHAR"},
-    )
-    registry = "sources:\n  - name: orders\n    type: parquet\n    path: data/orders.parquet\n"
+    rows = [(1, 10.0, "EMEA"), (2, 20.0, "AMER"), (3, 30.0, "EMEA")]
+    columns = {"id": "INTEGER", "amount": "DOUBLE", "region": "VARCHAR"}
+    if native:
+        write_native_db(project / "data" / "orders.duckdb", "orders", columns, rows)
+        registry = "sources:\n  - name: orders\n    type: duckdb\n    path: data/orders.duckdb\n"
+        model_source = "orders.main.orders"
+    else:
+        write_orders_parquet(project / "data" / "orders.parquet", rows, columns)
+        registry = "sources:\n  - name: orders\n    type: parquet\n    path: data/orders.parquet\n"
+        model_source = "orders.orders"
     if with_labels:  # an in-registry join temptation for the authority checks
-        write_orders_parquet(
-            project / "data" / "labels.parquet",
-            [(1, "x"), (1, "y"), (2, "z")],
+        write_native_db(
+            project / "data" / "labels.duckdb",
+            "labels",
             {"event_id": "INTEGER", "tag": "VARCHAR"},
+            [(1, "x"), (1, "y"), (2, "z")],
         )
-        registry += "  - name: labels\n    type: parquet\n    path: data/labels.parquet\n"
+        registry += "  - name: labels\n    type: duckdb\n    path: data/labels.duckdb\n"
     (project / "ariadne.yaml").write_text(registry, encoding="utf-8")
     (project / "data").mkdir(exist_ok=True)
     (project / "data" / "seed_notes.md").write_text(SEED_NOTES, encoding="utf-8")
     (project / "semantic_layer" / "models").mkdir(parents=True, exist_ok=True)
-    (project / "semantic_layer" / "models" / "orders.yml").write_text(MODEL_YML, encoding="utf-8")
+    model = MODEL_YML.replace("source: orders.main.orders", f"source: {model_source}")
+    (project / "semantic_layer" / "models" / "orders.yml").write_text(model, encoding="utf-8")
     pages = {
         "context_layer/tables/orders.md": TABLES_PAGE,
         "context_layer/references/joins/orders--orders.md": REFERENCE_PAGE,
@@ -298,7 +350,12 @@ def contract_project(root: Path, *, with_labels: bool = False) -> Path:
     return project
 
 
-def contracted(api: AuthoringProject, started: dict, contract: str | None = ORDERS_CONTRACT) -> str:
+def contracted(
+    api: AuthoringProject,
+    started: dict,
+    contract: str | None = ORDERS_CONTRACT,
+    bindings: str = ORDERS_BINDINGS,
+) -> str:
     """Submit the contract document and binding file as typed edits; returns
     the revision to validate against."""
     revision = started["candidate_revision"]
@@ -312,7 +369,7 @@ def contracted(api: AuthoringProject, started: dict, contract: str | None = ORDE
     bound = api.edit_proposal(
         started["proposal"],
         revision,
-        {"kind": "contract_bindings", "content": ORDERS_BINDINGS},
+        {"kind": "contract_bindings", "content": bindings},
     )
     return bound["revision"]
 
@@ -561,13 +618,14 @@ def test_bound_schema_and_required_null_drift_are_explicit(tmp_path):
     result = api.validate_proposal(started["proposal"], contracted(api, started))
     assert result["ok"] is True
 
-    orders = project / "data" / "orders.parquet"
+    orders_db = project / "data" / "orders.duckdb"
 
     # a required column removed from the source: contract drift names it
-    write_orders_parquet(
-        orders,
-        [(1, "EMEA"), (2, "AMER"), (3, "EMEA")],
+    write_native_db(
+        orders_db,
+        "orders",
         {"id": "INTEGER", "region": "VARCHAR"},
+        [(1, "EMEA"), (2, "AMER"), (3, "EMEA")],
     )
     removed = api.start_proposal()
     approved(api, project, removed)
@@ -586,10 +644,11 @@ def test_bound_schema_and_required_null_drift_are_explicit(tmp_path):
     )
 
     # an integer column changed to a string: type drift, not coercion
-    write_orders_parquet(
-        orders,
-        [("1", 10.0, "EMEA"), ("2", 20.0, "AMER"), ("3", 30.0, "EMEA")],
+    write_native_db(
+        orders_db,
+        "orders",
         {"id": "VARCHAR", "amount": "DOUBLE", "region": "VARCHAR"},
+        [("1", 10.0, "EMEA"), ("2", 20.0, "AMER"), ("3", 30.0, "EMEA")],
     )
     retyped = api.start_proposal()
     approved(api, project, retyped)
@@ -604,10 +663,11 @@ def test_bound_schema_and_required_null_drift_are_explicit(tmp_path):
     )
 
     # a NULL in a required column: full-dataset NULL count is drift
-    write_orders_parquet(
-        orders,
-        [(1, 10.0, "EMEA"), (2, None, "AMER"), (3, 30.0, "EMEA")],
+    write_native_db(
+        orders_db,
+        "orders",
         {"id": "INTEGER", "amount": "DOUBLE", "region": "VARCHAR"},
+        [(1, 10.0, "EMEA"), (2, None, "AMER"), (3, 30.0, "EMEA")],
     )
     nulled = api.start_proposal()
     approved(api, project, nulled)
@@ -675,13 +735,15 @@ def test_contract_source_and_sql_authority_precedes_execution(tmp_path, connecti
         api.validate_proposal(started["proposal"], revision)
     assert connection_spy == []
 
-    approved(api, project, started)
+    # approval binds the CURRENT candidate revision (the contract edits moved
+    # it past `started`) — the same helper contract as the other journeys
+    approved(api, project, {**started, "candidate_revision": revision})
     result = api.validate_proposal(started["proposal"], revision)
     assert result["ok"] is True
     # only the APPROVED registry identity ever reached the builder: the
     # contract's duckdb server declaration opened nothing of its own
     approved_paths = {Path(entry).name for call in connection_spy for entry in call}
-    assert approved_paths == {"orders.parquet", "labels.parquet"}
+    assert approved_paths == {"orders.duckdb", "labels.duckdb"}
     opens_with_contracts = len(connection_spy)
 
     # out-of-profile SQL is refused BEFORE execution: joins over other
@@ -690,9 +752,9 @@ def test_contract_source_and_sql_authority_precedes_execution(tmp_path, connecti
     # source/endpoint is ever opened for them
     out_of_profile = [
         # a foreign relation join (labels lives in the same registry)
-        "SELECT COUNT(*) FROM {object} o JOIN labels.labels l ON o.id = l.event_id",
+        "SELECT COUNT(*) FROM {object} o JOIN labels.main.labels l ON o.id = l.event_id",
         # a raw file scan through a table function
-        "SELECT COUNT(*) FROM read_csv('data/orders.parquet')",
+        "SELECT COUNT(*) FROM read_csv('data/orders.duckdb')",
         # a metadata catalog read
         "SELECT COUNT(*) FROM information_schema.columns",
         # multiple statements
@@ -722,7 +784,9 @@ def test_contract_source_and_sql_authority_precedes_execution(tmp_path, connecti
         assert {Path(entry).name for entry in call} <= approved_paths
 
     # a non-DuckDB producer server is dialect-unsupported, never transpiled
-    # or opened: the contract's postgres address is inert metadata
+    # or opened: the contract's postgres address is inert metadata (the
+    # official schema's PostgresServer required fields make the document
+    # structurally valid — the refusal is the DIALECT, not the document)
     postgres_project = contract_project(tmp_path / "postgres")
     postgres_api = AuthoringProject(postgres_project)
     postgres_started = postgres_api.start_proposal()
@@ -737,6 +801,38 @@ def test_contract_source_and_sql_authority_precedes_execution(tmp_path, connecti
     assert any(
         "unsupported" in error and "postgresql" in error for error in postgres_result["errors"]
     )
+
+    # a duckdb-LABELLED contract over an approved NON-NATIVE source: the
+    # producer server says duckdb and the document is fully schema-valid,
+    # but the bound approved source is a parquet file view — SQL-quality
+    # rules are unsupported (spec 0028 §5), while the schema-only checks on
+    # that source keep their ordinary supported outcomes
+    parquet_project = contract_project(tmp_path / "parquet", native=False)
+    parquet_api = AuthoringProject(parquet_project)
+    parquet_started = parquet_api.start_proposal()
+    approved(parquet_api, parquet_project, parquet_started)
+    parquet_result = parquet_api.validate_proposal(
+        parquet_started["proposal"],
+        contracted(parquet_api, parquet_started, bindings=PARQUET_BINDINGS),
+    )
+    assert parquet_result["ok"] is False
+    assert any(
+        "quality_sql" in error
+        and "unsupported" in error
+        and "parquet" in error
+        and "NATIVE DuckDB" in error
+        for error in parquet_result["errors"]
+    )
+    # the schema-only profile on the non-native source stays supported: the
+    # field checks passed; only the SQL rules were refused as unsupported
+    assert not any("field_" in error for error in parquet_result["errors"])
+    (parquet_observation,) = parquet_result["contracts"]["observations"]
+    field_outcomes = {
+        req["outcome"]
+        for req in parquet_observation["requirements"]
+        if req["kind"].startswith("field_")
+    }
+    assert field_outcomes == {"passed"}
 
     # unavailable, never compliant: the operator's tightened execution ceiling
     # stops the contract observation — an honest unavailable outcome, distinct
@@ -772,14 +868,26 @@ def test_contract_source_and_sql_authority_precedes_execution(tmp_path, connecti
 
 def quality_contract(rules: list[tuple[str, str, object]], server_type: str = "duckdb") -> str:
     """A producer contract whose object maps ALL bound properties (static
-    completeness holds) and carries exactly the given SQL rules."""
+    completeness holds) and carries exactly the given SQL rules. The server
+    entries satisfy the official schema's per-type required fields
+    (DuckdbServer: database; PostgresServer: host/port/database/schema) —
+    inert producer metadata, never connection instructions."""
+    server_fields = {
+        "duckdb": "    database: orders",
+        "postgresql": (
+            "    host: inert-producer-metadata.example\n"
+            "    port: 5432\n"
+            "    database: orders\n"
+            "    schema: public"
+        ),
+    }[server_type]
     lines = [
         "apiVersion: v3.2.0",
         "kind: DataContract",
         "id: orders-contract",
         "version: 1.0.0",
         "servers:",
-        f"  - server: orders-duckdb\n    type: {server_type}",
+        f"  - server: orders-duckdb\n    type: {server_type}\n{server_fields}",
         "schema:",
         "  - id: orders_object",
         "    name: orders",

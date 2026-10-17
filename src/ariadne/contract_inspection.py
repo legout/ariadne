@@ -589,6 +589,7 @@ def _observe_binding(con, budget, catalog, *, binding, document, contract_digest
     requirements: list[dict] = [*declaration, *quality]
     observed_at = _observation_clock().isoformat(timespec="seconds")
     table = None
+    source_type: str | None = None
     for entry in catalog:
         for candidate in entry["tables"]:
             if (
@@ -598,6 +599,7 @@ def _observe_binding(con, budget, catalog, *, binding, document, contract_digest
                 and candidate["name"] == binding.asset["table"]
             ):
                 table = candidate
+                source_type = entry.get("type")
     if table is None:
         names = {entry["name"] for entry in catalog}
         if binding.asset["source"] not in names:
@@ -646,6 +648,29 @@ def _observe_binding(con, budget, catalog, *, binding, document, contract_digest
             },
         }
     assert table is not None
+    # Parent-dispositioned profile guard (spec 0028 §5): SQL-quality rules
+    # evaluate only over an approved NATIVE DuckDB source. A duckdb-labelled
+    # producer server cannot make a non-native approved source (a file-view
+    # projection) a SQL-quality engine — those rules are unsupported, never
+    # a pass; the schema-only field checks on other sources keep their
+    # ordinary supported outcomes above and below.
+    if (
+        any(
+            requirement["kind"] == "quality_sql" and requirement["outcome"] == "not_run"
+            for requirement in quality
+        )
+        and source_type != "duckdb"
+    ):
+        unsupported_detail = (
+            f"the binding's SQL-quality rules evaluate only over an approved NATIVE "
+            f"DuckDB source (spec 2028 §5): the bound approved source is type "
+            f"{source_type!r} — the contract's duckdb server label never makes a "
+            "non-native source a SQL-quality engine"
+        )
+        for requirement in quality:
+            if requirement["kind"] == "quality_sql" and requirement["outcome"] == "not_run":
+                requirement["outcome"] = "unsupported"
+                requirement["detail"] = unsupported_detail
     columns = {column["name"]: column["type"] for column in table["columns"]}
     property_by_id = {
         prop.get("id"): prop
@@ -735,7 +760,7 @@ def _observe_binding(con, budget, catalog, *, binding, document, contract_digest
             )
     quality_requirements: list[dict] = []
     for requirement in quality:
-        if requirement["kind"] != "quality_sql":
+        if requirement["kind"] != "quality_sql" or requirement["outcome"] != "not_run":
             quality_requirements.append(requirement)
             continue
         quality_requirements.append(
