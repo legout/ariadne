@@ -18,6 +18,7 @@ import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 import msgspec
 import msgspec.yaml as yaml
@@ -454,6 +455,339 @@ def _repair_body_links_for_merge(
                     changed = True
                     break
     return "".join(body_lines), changed, ambiguous
+
+
+class MutationCandidate(msgspec.Struct, frozen=True):
+    """One assembled deterministic Knowledge Base mutation (G3, spec 0008 §2/§7).
+
+    Route-independent output of the shared removal/merge assembly: the legacy
+    Proposal Pipeline stages it as an ``IngestProposal`` while native Git
+    authoring applies the very same pages/repairs as ordinary worktree file
+    edits. It is a computation result — never a persisted proposal wrapper,
+    queue entry, or review state.
+    """
+
+    proposed_pages: list
+    control_file: Any
+    removed_titles: list[str]
+    removed_paths: list[str]
+    removed_markdowns: list[str]
+    removal_reasons: list[str]
+    entity_merges: list
+    diff: str
+    blast_radius: Any
+    validation_report: Any
+    body_link_repairs: list
+
+
+def assemble_page_removal_candidate(
+    kb,
+    title: str,
+    *,
+    reason: str = "",
+    affected_claim_notes: list[str] | None = None,
+) -> MutationCandidate:
+    """Assemble an explicit Page Removal and its dependent repairs (#135).
+
+    The deterministic computation shared by the staged-proposal route and
+    native Git worktree edits: resolves the page by Canonical Title, drops
+    canonical Relationships to the removed title, unwraps exactly-resolved
+    body links (ambiguous destinations are disclosed, never guessed), drops
+    a stale Hot Index pin atomically through a proposed Control File, and
+    validates the removal + repairs as ONE candidate Knowledge Base.
+    """
+    title = title.strip()
+    if not title:
+        raise ProposalPipelineError("page removal requires a Canonical Page Title")
+    target_page = None
+    for page in kb.pages:
+        if page.title == title:
+            target_page = page
+            break
+    if target_page is None or not target_page.path:
+        raise ProposalPipelineError(f"no Compiled Page found for Canonical Title {title!r}")
+    removed_entity_id = target_page.id
+
+    _refs, diagnostics = _extract_references(kb.pages)
+    proposed_pages: list[ProposedPage] = []
+    body_link_repairs: list[BodyLinkRepairCandidate] = []
+    validation_issues: list = []
+    for page in kb.pages:
+        if page.title == title or not page.path:
+            continue
+        try:
+            page_markdown = (Path(kb.root) / page.path).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        _data, _body, body_start_line = parse_frontmatter(page_markdown, Path(kb.root) / page.path)
+        repaired, changed, ambiguous = _repair_page_for_removal(
+            page_markdown,
+            removed_entity_id,
+            page.path,
+            body_start_line,
+            title,
+            kb.pages,
+        )
+        for note in ambiguous:
+            validation_issues.append(
+                ValidationIssue(
+                    file=page.path,
+                    field="body-links",
+                    message=note,
+                    severity="warning",
+                )
+            )
+        if not changed:
+            continue
+        proposed_pages.append(
+            ProposedPage(relative_path=page.path, title=page.title, markdown=repaired)
+        )
+
+    for ref in _refs:
+        if ref.target_title == title and ref.source_title != title:
+            body_link_repairs.append(
+                BodyLinkRepairCandidate(
+                    source_title=ref.source_title,
+                    source_path=ref.source_path,
+                    target_title=ref.target_title,
+                    origin=ref.origin,
+                    line_start=ref.line_start,
+                    line_end=ref.line_end,
+                )
+            )
+
+    control_file: KnowledgeBaseControlFile | None = None
+    kb_control = getattr(kb, "control", None)
+    if kb_control is not None and any(pin.title == title for pin in kb_control.hot_index):
+        kept_pins = [
+            HotIndexPin(title=pin.title, note=pin.note)
+            for pin in kb_control.hot_index
+            if pin.title != title
+        ]
+        control_file = KnowledgeBaseControlFile(
+            version=kb_control.version,
+            categories=list(kb_control.categories),
+            hot_index=kept_pins,
+            mode=kb_control.mode,
+            path=kb_control.path,
+            ontology=kb_control.ontology,
+        )
+
+    page_validation = validate_candidate_knowledge_base(
+        proposed_pages,
+        kb.root,
+        removed_titles=[title],
+        control_file=control_file,
+    )
+    validation_report = ValidationReport(issues=list(page_validation.issues) + validation_issues)
+
+    existing_pages = _existing_page_markdown(kb)
+    removed_markdown: str = existing_pages.get(title) or target_page.body
+    diff = _compute_removal_diff(
+        title, target_page.path, removed_markdown, proposed_pages, existing_pages
+    )
+    blast_radius = compute_blast_radius(proposed_pages, kb)
+    return MutationCandidate(
+        proposed_pages=proposed_pages,
+        control_file=control_file,
+        removed_titles=[title],
+        removed_paths=[target_page.path],
+        removed_markdowns=[removed_markdown],
+        removal_reasons=[reason],
+        entity_merges=[],
+        diff=diff,
+        blast_radius=blast_radius,
+        validation_report=validation_report,
+        body_link_repairs=body_link_repairs,
+    )
+
+
+def assemble_entity_merge_candidate(
+    kb,
+    retired_entity_id: str,
+    surviving_entity_id: str,
+    *,
+    reason: str = "",
+) -> MutationCandidate:
+    """Assemble an Entity Merge and its dependent repairs (#169).
+
+    The deterministic computation shared by the staged-proposal route and
+    native Git worktree edits: the surviving Entity keeps its stable ID and
+    page while absorbing the retired Entity's Claims; Claim objects and
+    exactly-resolved body links targeting the retired page are retargeted;
+    the retired ID is recorded as an ontology redirect; the retired page is
+    excluded from the next Published Version. Automatic or ambiguous merges
+    remain forbidden (ADR-0021).
+    """
+    retired_entity_id = retired_entity_id.strip()
+    surviving_entity_id = surviving_entity_id.strip()
+    if not retired_entity_id or not surviving_entity_id:
+        raise ProposalPipelineError("entity merge requires two Entity IDs")
+    if retired_entity_id == surviving_entity_id:
+        raise ProposalPipelineError("cannot merge an entity into itself")
+    control = getattr(kb, "control", None)
+    if control is None:
+        raise ProposalPipelineError(
+            "entity merge requires a version-2 Knowledge Base with a Control File "
+            "(Legacy Flat Mode has no ontology redirects)"
+        )
+    page_by_entity = {page.id: page for page in kb.pages if page.id}
+    retired_page = page_by_entity.get(retired_entity_id)
+    surviving_page = page_by_entity.get(surviving_entity_id)
+    if retired_page is None or not retired_page.path:
+        raise ProposalPipelineError(
+            f"no Compiled Page found for retired Entity {retired_entity_id!r}"
+        )
+    if surviving_page is None or not surviving_page.path:
+        raise ProposalPipelineError(
+            f"no Compiled Page found for surviving Entity {surviving_entity_id!r}"
+        )
+    retired_title = retired_page.title
+    surviving_title = surviving_page.title
+
+    try:
+        retired_markdown = (Path(kb.root) / retired_page.path).read_text(encoding="utf-8")
+        surviving_markdown = (Path(kb.root) / surviving_page.path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ProposalPipelineError(f"could not read a merge page: {exc}") from exc
+
+    all_pages = [page for page in kb.pages if page.path]
+    ambiguous_links: list[str] = []
+    proposed_pages: list[ProposedPage] = []
+
+    def _merge_page_markdown(markdown: str, path: str) -> tuple[str, bool]:
+        """Retarget Claim objects + repair exactly-resolved body links."""
+        data, body, body_start = parse_frontmatter(markdown, Path(path))
+        claims_changed = _retarget_claim_objects(data, retired_entity_id, surviving_entity_id)
+        repaired_body, links_changed, ambiguous = _repair_body_links_for_merge(
+            body,
+            path,
+            body_start,
+            retired_title,
+            surviving_title,
+            surviving_page.path,
+            all_pages,
+        )
+        ambiguous_links.extend(ambiguous)
+        if not claims_changed and not links_changed:
+            return markdown, False
+        frontmatter = yaml.encode(data).decode("utf-8").strip()
+        return f"---\n{frontmatter}\n---\n{repaired_body}", True
+
+    for page in all_pages:
+        if page.title in (retired_title, surviving_title):
+            continue
+        try:
+            markdown = (Path(kb.root) / page.path).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        merged, changed = _merge_page_markdown(markdown, page.path)
+        if changed:
+            proposed_pages.append(
+                ProposedPage(relative_path=page.path, title=page.title, markdown=merged)
+            )
+    if ambiguous_links:
+        raise ProposalPipelineError(
+            "ambiguous link repair blocks this entity merge "
+            "(never guessed; resolve the collision and retry): " + "; ".join(ambiguous_links)
+        )
+
+    surviving_data, surviving_body, surviving_line = parse_frontmatter(
+        surviving_markdown, Path(surviving_page.path)
+    )
+    _retarget_claim_objects(surviving_data, retired_entity_id, surviving_entity_id)
+    merged_claims = list(surviving_data.get("claims") or [])
+    retired_data, _retired_body, _retired_line = parse_frontmatter(
+        retired_markdown, Path(retired_page.path)
+    )
+    if isinstance(retired_data.get("claims"), list):
+        _retarget_claim_objects(retired_data, retired_entity_id, surviving_entity_id)
+        merged_claims.extend(retired_data["claims"])
+    repaired_survivor_body, links_changed, ambiguous = _repair_body_links_for_merge(
+        surviving_body,
+        surviving_page.path,
+        surviving_line,
+        retired_title,
+        surviving_title,
+        surviving_page.path,
+        all_pages,
+    )
+    if ambiguous:
+        raise ProposalPipelineError(
+            "ambiguous link repair blocks this entity merge "
+            "(never guessed; resolve the collision and retry): " + "; ".join(ambiguous)
+        )
+    if merged_claims:
+        surviving_data["claims"] = merged_claims
+    frontmatter = yaml.encode(surviving_data).decode("utf-8").strip()
+    merged_markdown = f"---\n{frontmatter}\n---\n{repaired_survivor_body}"
+    if merged_markdown != surviving_markdown:
+        proposed_pages.insert(
+            0,
+            ProposedPage(
+                relative_path=surviving_page.path,
+                title=surviving_title,
+                markdown=merged_markdown,
+            ),
+        )
+
+    ontology = control.ontology or Ontology()
+    redirects = [
+        redirect for redirect in ontology.redirects if redirect.from_id != retired_entity_id
+    ]
+    redirects.append(EntityRedirect(from_id=retired_entity_id, to_id=surviving_entity_id))
+    new_ontology = Ontology(
+        entity_types=ontology.entity_types,
+        predicates=ontology.predicates,
+        redirects=redirects,
+    )
+    kept_pins = [
+        HotIndexPin(title=pin.title, note=pin.note)
+        for pin in control.hot_index
+        if pin.title != retired_title
+    ]
+    control_file = KnowledgeBaseControlFile(
+        version=control.version,
+        categories=list(control.categories),
+        hot_index=kept_pins,
+        mode=control.mode,
+        path=control.path,
+        ontology=new_ontology,
+    )
+
+    page_validation = validate_candidate_knowledge_base(
+        proposed_pages,
+        kb.root,
+        removed_titles=[retired_title],
+        control_file=control_file,
+    )
+    validation_report = ValidationReport(issues=list(page_validation.issues))
+
+    existing_pages = _existing_page_markdown(kb)
+    diff = _compute_removal_diff(
+        retired_title, retired_page.path, retired_markdown, proposed_pages, existing_pages
+    )
+    blast_radius = compute_blast_radius(proposed_pages, kb)
+    return MutationCandidate(
+        proposed_pages=proposed_pages,
+        control_file=control_file,
+        removed_titles=[retired_title],
+        removed_paths=[retired_page.path],
+        removed_markdowns=[retired_markdown],
+        removal_reasons=[reason or f"merged into {surviving_title}"],
+        entity_merges=[
+            EntityMerge(
+                retired_entity_id=retired_entity_id,
+                surviving_entity_id=surviving_entity_id,
+                retired_title=retired_title,
+                surviving_title=surviving_title,
+            )
+        ],
+        diff=diff,
+        blast_radius=blast_radius,
+        validation_report=validation_report,
+        body_link_repairs=[],
+    )
 
 
 class ProposalPipeline:
@@ -1081,143 +1415,18 @@ class ProposalPipeline:
     ) -> IngestProposal:
         """Assemble a Page Removal proposal without persisting it (#135).
 
-        Resolves the page by Canonical Title, generates the dependent-page
-        repair revisions (dropping Relationships to the removed title and
-        unwrapping exactly-resolved body links to their readable text),
-        collects location-bearing body-link repair disclosures, drops a stale
-        Hot Index pin atomically when needed, and validates the removal + its
-        repairs as ONE candidate Knowledge Base. Mirrors the rename (#140)
-        and retire/reactivate source-lifecycle flows.
+        G3 (spec 0008 §7): the deterministic removal computation is shared
+        with native Git worktree edits through
+        :func:`assemble_page_removal_candidate`; this method only shapes the
+        shared candidate as a staged ``IngestProposal`` with its
+        assembly-bound reviewed snapshot.
         """
-        title = title.strip()
-        if not title:
-            raise ProposalPipelineError("page removal requires a Canonical Page Title")
-        target_page = None
-        for page in self._kb.pages:
-            if page.title == title:
-                target_page = page
-                break
-        if target_page is None or not target_page.path:
-            raise ProposalPipelineError(f"no Compiled Page found for Canonical Title {title!r}")
-        removed_entity_id = target_page.id
-
-        # Claim repair (AC5, ADR-0021): every OTHER page with a canonical
-        # Relationship targeting the removed title gets a revision that DROPS
-        # those edges. Redirect is an explicit Maintainer edit to the staged
-        # proposal; the default, reviewed repair is to drop the dangling edge.
-        # AC6: the same revision unwraps exactly-resolved body links to their
-        # readable text, so a page is proposed when either a Claim or an
-        # exactly-resolved body link targets the removed page; an ambiguous
-        # destination is reported for review, never guessed.
-        # AC6: location-bearing disclosure of exactly-resolved body links,
-        # derived from the shared Extracted Reference extraction. Replaced
-        # pages keep their location line (reviewer visibility); ambiguous
-        # destinations never appear (they are not exactly resolved).
-        _refs, diagnostics = _extract_references(self._kb.pages)
-        proposed_pages: list[ProposedPage] = []
-        body_link_repairs: list[BodyLinkRepairCandidate] = []
-        validation_issues: list = []
-        for page in self._kb.pages:
-            if page.title == title or not page.path:
-                continue
-            try:
-                page_markdown = (self._kb.root / page.path).read_text(encoding="utf-8")
-            except OSError:
-                continue
-            _data, _body, body_start_line = parse_frontmatter(
-                page_markdown, self._kb.root / page.path
-            )
-            repaired, changed, ambiguous = _repair_page_for_removal(
-                page_markdown,
-                removed_entity_id,
-                page.path,
-                body_start_line,
-                title,
-                self._kb.pages,
-            )
-            for note in ambiguous:
-                validation_issues.append(
-                    ValidationIssue(
-                        file=page.path,
-                        field="body-links",
-                        message=note,
-                        severity="warning",
-                    )
-                )
-            if not changed:
-                continue
-            proposed_pages.append(
-                ProposedPage(relative_path=page.path, title=page.title, markdown=repaired)
-            )
-
-        # Disclosure (AC6): every exactly-resolved body link is disclosed
-        # once for reviewer visibility. Pages with a Claim drop the edge and
-        # the link in ONE revision; body-only pages get the unwrap-only one.
-        for ref in _refs:
-            if ref.target_title == title and ref.source_title != title:
-                body_link_repairs.append(
-                    BodyLinkRepairCandidate(
-                        source_title=ref.source_title,
-                        source_path=ref.source_path,
-                        target_title=ref.target_title,
-                        origin=ref.origin,
-                        line_start=ref.line_start,
-                        line_end=ref.line_end,
-                    )
-                )
-
-        # Hot Index pin (AC7): an unresolved pin is a blocking validation
-        # error, so when the removed title is pinned the proposal drops the
-        # pin atomically via a proposed Control File. The ontology travels
-        # through UNCHANGED (Plan 02 / P4 review): the pin-drop rewrites only
-        # the Hot Index section, so proposing a Control File without the
-        # reviewed ontology would silently erase every Entity Type, Predicate,
-        # and redirect on publication — the reviewed redirect/pin state the
-        # preconditions capture is preserved verbatim except for the pins.
-        control_file: KnowledgeBaseControlFile | None = None
-        kb_control = getattr(self._kb, "control", None)
-        if kb_control is not None and any(pin.title == title for pin in kb_control.hot_index):
-            kept_pins = [
-                HotIndexPin(title=pin.title, note=pin.note)
-                for pin in kb_control.hot_index
-                if pin.title != title
-            ]
-            control_file = KnowledgeBaseControlFile(
-                version=kb_control.version,
-                categories=list(kb_control.categories),
-                hot_index=kept_pins,
-                mode=kb_control.mode,
-                path=kb_control.path,
-                ontology=kb_control.ontology,
-            )
-
-        # Validate the removal + repairs (+ pin drop) as ONE candidate. The
-        # authoritative gate is the full-candidate validation below; the
-        # ingest-routing validator is SKIPPED for a removal proposal because
-        # every proposed page is a REPAIR of an existing, already-classified,
-        # already-published page (it drops a relationship edge and unwraps
-        # exactly-resolved body links) — exactly as category moves and title
-        # renames skip routing re-validation.
-        page_validation = validate_candidate_knowledge_base(
-            proposed_pages,
-            self._kb.root,
-            removed_titles=[title],
-            control_file=control_file,
+        candidate = assemble_page_removal_candidate(
+            self._kb, title, reason=reason, affected_claim_notes=affected_claim_notes
         )
-        validation_report = ValidationReport(
-            issues=list(page_validation.issues) + validation_issues
-        )
-
-        existing_pages = _existing_page_markdown(self._kb)
-        removed_markdown: str = existing_pages.get(title) or target_page.body
-        diff = _compute_removal_diff(
-            title, target_page.path, removed_markdown, proposed_pages, existing_pages
-        )
-        blast_radius = compute_blast_radius(proposed_pages, self._kb)
-
         removal = PageRemoval(
-            title=title,
-            lost_support_reason=reason,
+            title=candidate.removed_titles[0],
+            lost_support_reason=candidate.removal_reasons[0],
             affected_claim_notes=list(affected_claim_notes),
         )
         provenance = SourceProvenance(
@@ -1231,20 +1440,22 @@ class ProposalPipeline:
             status="staged",
             created_at=datetime.now(UTC).isoformat(),
             provenance=provenance,
-            proposed_pages=proposed_pages,
-            affected_pages=[page.title for page in proposed_pages],
-            diff=diff,
-            validation_report=validation_report,
-            blocked=not validation_report.is_valid,
-            blast_radius=blast_radius,
-            control_file=control_file,
+            proposed_pages=candidate.proposed_pages,
+            affected_pages=[page.title for page in candidate.proposed_pages],
+            diff=candidate.diff,
+            validation_report=candidate.validation_report,
+            blocked=not candidate.validation_report.is_valid,
+            blast_radius=candidate.blast_radius,
+            control_file=candidate.control_file,
             removed_pages=[removal],
-            body_link_repairs=body_link_repairs,
+            body_link_repairs=candidate.body_link_repairs,
             # Plan 02 / P4 (B03/B04): the assembly binds the reviewed
             # snapshot (removed bytes, repair destinations, Control File
             # state) so the persisted record and its base are ONE snapshot;
             # the caller verifies it under the staging locks.
-            preconditions=self._assembly_preconditions(proposed_pages, [title]),
+            preconditions=self._assembly_preconditions(
+                candidate.proposed_pages, candidate.removed_titles
+            ),
         )
 
     def propose_entity_merge(
@@ -1299,180 +1510,18 @@ class ProposalPipeline:
         *,
         reason: str,
     ) -> IngestProposal:
-        """Assemble an Entity Merge proposal without persisting it (#169)."""
-        retired_entity_id = retired_entity_id.strip()
-        surviving_entity_id = surviving_entity_id.strip()
-        if not retired_entity_id or not surviving_entity_id:
-            raise ProposalPipelineError("entity merge requires two Entity IDs")
-        if retired_entity_id == surviving_entity_id:
-            raise ProposalPipelineError("cannot merge an entity into itself")
-        control = getattr(self._kb, "control", None)
-        if control is None:
-            raise ProposalPipelineError(
-                "entity merge requires a version-2 Knowledge Base with a Control File "
-                "(Legacy Flat Mode has no ontology redirects)"
-            )
-        page_by_entity = {page.id: page for page in self._kb.pages if page.id}
-        retired_page = page_by_entity.get(retired_entity_id)
-        surviving_page = page_by_entity.get(surviving_entity_id)
-        if retired_page is None or not retired_page.path:
-            raise ProposalPipelineError(
-                f"no Compiled Page found for retired Entity {retired_entity_id!r}"
-            )
-        if surviving_page is None or not surviving_page.path:
-            raise ProposalPipelineError(
-                f"no Compiled Page found for surviving Entity {surviving_entity_id!r}"
-            )
-        retired_title = retired_page.title
-        surviving_title = surviving_page.title
+        """Assemble an Entity Merge proposal without persisting it (#169).
 
-        try:
-            retired_markdown = (self._kb.root / retired_page.path).read_text(encoding="utf-8")
-            surviving_markdown = (self._kb.root / surviving_page.path).read_text(encoding="utf-8")
-        except OSError as exc:
-            raise ProposalPipelineError(f"could not read a merge page: {exc}") from exc
-
-        all_pages = [page for page in self._kb.pages if page.path]
-        ambiguous_links: list[str] = []
-        proposed_pages: list[ProposedPage] = []
-
-        def _merge_page_markdown(markdown: str, path: str) -> tuple[str, bool]:
-            """Retarget Claim objects + repair exactly-resolved body links."""
-            data, body, body_start = parse_frontmatter(markdown, Path(path))
-            claims_changed = _retarget_claim_objects(data, retired_entity_id, surviving_entity_id)
-            repaired_body, links_changed, ambiguous = _repair_body_links_for_merge(
-                body,
-                path,
-                body_start,
-                retired_title,
-                surviving_title,
-                surviving_page.path,
-                all_pages,
-            )
-            ambiguous_links.extend(ambiguous)
-            if not claims_changed and not links_changed:
-                return markdown, False
-            frontmatter = yaml.encode(data).decode("utf-8").strip()
-            return f"---\n{frontmatter}\n---\n{repaired_body}", True
-
-        # 1. Claim repair + body-link repair on every OTHER page. The
-        #    surviving page is assembled separately (it also absorbs the
-        #    retired Entity's Claims).
-        for page in all_pages:
-            if page.title in (retired_title, surviving_title):
-                continue
-            try:
-                markdown = (self._kb.root / page.path).read_text(encoding="utf-8")
-            except OSError:
-                continue
-            merged, changed = _merge_page_markdown(markdown, page.path)
-            if changed:
-                proposed_pages.append(
-                    ProposedPage(relative_path=page.path, title=page.title, markdown=merged)
-                )
-        if ambiguous_links:
-            raise ProposalPipelineError(
-                "ambiguous link repair blocks this entity merge "
-                "(never guessed; resolve the collision and retry): " + "; ".join(ambiguous_links)
-            )
-
-        # 2. Surviving page revision: its own Claims (retargeted) plus the
-        #    retired page's Claims (retargeted), and its body links repaired.
-        #    A Claim ID that exists on both pages becomes a duplicate in the
-        #    candidate — the merge-collision gate blocks publication.
-        surviving_data, surviving_body, surviving_line = parse_frontmatter(
-            surviving_markdown, Path(surviving_page.path)
+        G3 (spec 0008 §7): the deterministic merge computation is shared
+        with native Git worktree edits through
+        :func:`assemble_entity_merge_candidate`.
+        """
+        candidate = assemble_entity_merge_candidate(
+            self._kb, retired_entity_id, surviving_entity_id, reason=reason
         )
-        _retarget_claim_objects(surviving_data, retired_entity_id, surviving_entity_id)
-        merged_claims = list(surviving_data.get("claims") or [])
-        retired_data, _retired_body, _retired_line = parse_frontmatter(
-            retired_markdown, Path(retired_page.path)
-        )
-        if isinstance(retired_data.get("claims"), list):
-            _retarget_claim_objects(retired_data, retired_entity_id, surviving_entity_id)
-            merged_claims.extend(retired_data["claims"])
-        repaired_survivor_body, links_changed, ambiguous = _repair_body_links_for_merge(
-            surviving_body,
-            surviving_page.path,
-            surviving_line,
-            retired_title,
-            surviving_title,
-            surviving_page.path,
-            all_pages,
-        )
-        if ambiguous:
-            raise ProposalPipelineError(
-                "ambiguous link repair blocks this entity merge "
-                "(never guessed; resolve the collision and retry): " + "; ".join(ambiguous)
-            )
-        if merged_claims:
-            surviving_data["claims"] = merged_claims
-        frontmatter = yaml.encode(surviving_data).decode("utf-8").strip()
-        merged_markdown = f"---\n{frontmatter}\n---\n{repaired_survivor_body}"
-        if merged_markdown != surviving_markdown:
-            proposed_pages.insert(
-                0,
-                ProposedPage(
-                    relative_path=surviving_page.path,
-                    title=surviving_title,
-                    markdown=merged_markdown,
-                ),
-            )
-
-        # 3. Control File: record the retired Entity ID as a redirect to the
-        #    surviving ID. A resulting redirect cycle or Claim-ID collision is
-        #    caught by the authoritative candidate gate below and blocks
-        #    publication.
-        ontology = control.ontology or Ontology()
-        redirects = [
-            redirect for redirect in ontology.redirects if redirect.from_id != retired_entity_id
-        ]
-        redirects.append(EntityRedirect(from_id=retired_entity_id, to_id=surviving_entity_id))
-        new_ontology = Ontology(
-            entity_types=ontology.entity_types,
-            predicates=ontology.predicates,
-            redirects=redirects,
-        )
-        # An unresolved Hot Index pin is a blocking validation error, so a pin
-        # on the retired title drops atomically with the merge (as in #135).
-        kept_pins = [
-            HotIndexPin(title=pin.title, note=pin.note)
-            for pin in control.hot_index
-            if pin.title != retired_title
-        ]
-        control_file = KnowledgeBaseControlFile(
-            version=control.version,
-            categories=list(control.categories),
-            hot_index=kept_pins,
-            mode=control.mode,
-            path=control.path,
-            ontology=new_ontology,
-        )
-
-        # Validate the merge + repairs as ONE candidate Knowledge Base.
-        page_validation = validate_candidate_knowledge_base(
-            proposed_pages,
-            self._kb.root,
-            removed_titles=[retired_title],
-            control_file=control_file,
-        )
-        validation_report = ValidationReport(issues=list(page_validation.issues))
-
-        existing_pages = _existing_page_markdown(self._kb)
-        diff = _compute_removal_diff(
-            retired_title, retired_page.path, retired_markdown, proposed_pages, existing_pages
-        )
-        blast_radius = compute_blast_radius(proposed_pages, self._kb)
-
         removal = PageRemoval(
-            title=retired_title,
-            lost_support_reason=reason or f"merged into {surviving_title}",
-        )
-        entity_merge = EntityMerge(
-            retired_entity_id=retired_entity_id,
-            surviving_entity_id=surviving_entity_id,
-            retired_title=retired_title,
-            surviving_title=surviving_title,
+            title=candidate.removed_titles[0],
+            lost_support_reason=candidate.removal_reasons[0],
         )
         provenance = SourceProvenance(
             original_filename=None,
@@ -1485,19 +1534,21 @@ class ProposalPipeline:
             status="staged",
             created_at=datetime.now(UTC).isoformat(),
             provenance=provenance,
-            proposed_pages=proposed_pages,
-            affected_pages=[page.title for page in proposed_pages],
-            diff=diff,
-            validation_report=validation_report,
-            blocked=not validation_report.is_valid,
-            blast_radius=blast_radius,
-            control_file=control_file,
+            proposed_pages=candidate.proposed_pages,
+            affected_pages=[page.title for page in candidate.proposed_pages],
+            diff=candidate.diff,
+            validation_report=candidate.validation_report,
+            blocked=not candidate.validation_report.is_valid,
+            blast_radius=candidate.blast_radius,
+            control_file=candidate.control_file,
             removed_pages=[removal],
-            entity_merges=[entity_merge],
+            entity_merges=candidate.entity_merges,
             # Plan 02 / P4 (B03/B04): same assembly-bound reviewed snapshot
             # as the removal route (repaired/surviving revisions, retired
             # page bytes, Control File state).
-            preconditions=self._assembly_preconditions(proposed_pages, [retired_title]),
+            preconditions=self._assembly_preconditions(
+                candidate.proposed_pages, candidate.removed_titles
+            ),
         )
 
     def assemble(

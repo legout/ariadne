@@ -429,8 +429,26 @@ def _extend_control_file_ontology(
     )
 
 
-def import_graph(graph_path: str | Path, kb) -> IngestProposal:
-    """Stage stub Compiled Pages from a graph.json as ONE reviewable proposal.
+class GraphImportCandidate(msgspec.Struct, frozen=True):
+    """One assembled graph-import mutation shared by both authoring routes.
+
+    G3 (spec 0008 §7): the deterministic stub-page/Control-File computation
+    is route-independent — the legacy staged-proposal route persists it as an
+    ``IngestProposal`` while native Git authoring applies it as ordinary
+    worktree file edits. Never a persisted proposal wrapper itself.
+    """
+
+    proposed_pages: list
+    control_file: Any
+    diagnostics: list
+    validation_report: Any
+    diff: str
+    source_hash: str
+    source_path: str
+
+
+def assemble_graph_import(graph_path: str | Path, kb) -> GraphImportCandidate:
+    """Assemble stub Compiled Pages from a graph.json (#PRD-0005).
 
     Accepts Lumio exports and foreign wiki-export lineage: nodes resolve by
     ``id`` (Entity ID or path), titles by ``label``/``title``, categories by
@@ -631,22 +649,41 @@ def import_graph(graph_path: str | Path, kb) -> IngestProposal:
         proposed_pages, kb, extra_categories=extension_categories
     )
     validation_report = ValidationReport(issues=list(page_validation.issues) + routing_issues)
+    return GraphImportCandidate(
+        proposed_pages=proposed_pages,
+        control_file=extension_control_file,
+        diagnostics=diagnostics,
+        validation_report=validation_report,
+        diff=diff,
+        source_hash=hashlib.sha256(raw).hexdigest(),
+        source_path=str(Path(graph_path)),
+    )
+
+
+def import_graph(graph_path: str | Path, kb) -> IngestProposal:
+    """Stage stub Compiled Pages from a graph.json as ONE reviewable proposal.
+
+    G3 (spec 0008 §7): the deterministic computation lives in
+    :func:`assemble_graph_import` and is shared with native Git worktree
+    edits; this legacy route persists it as a staged ``IngestProposal``.
+    """
+    candidate = assemble_graph_import(graph_path, kb)
     return IngestProposal(
         id=uuid.uuid4().hex,
         status="staged",
         created_at=datetime.now(UTC).isoformat(),
         provenance=SourceProvenance(
-            original_filename=str(Path(graph_path)),
+            original_filename=candidate.source_path,
             content_type="application/json",
             converted_by="graph-exchange",
-            source_hash=hashlib.sha256(raw).hexdigest(),
+            source_hash=candidate.source_hash,
         ),
-        proposed_pages=proposed_pages,
-        affected_pages=[page.title for page in proposed_pages],
-        diff=diff,
-        validation_report=validation_report,
-        blocked=not validation_report.is_valid,
-        blast_radius=compute_blast_radius(proposed_pages, kb),
-        okf_diagnostics=diagnostics,
-        control_file=extension_control_file,
+        proposed_pages=candidate.proposed_pages,
+        affected_pages=[page.title for page in candidate.proposed_pages],
+        diff=candidate.diff,
+        validation_report=candidate.validation_report,
+        blocked=not candidate.validation_report.is_valid,
+        blast_radius=compute_blast_radius(candidate.proposed_pages, kb),
+        okf_diagnostics=candidate.diagnostics,
+        control_file=candidate.control_file,
     )

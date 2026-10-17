@@ -47,7 +47,6 @@ from lumio_wiki import (
     ControlFileError,
     Distiller,
     ExportVisibilityScope,
-    GraphImportError,
     IngestStore,
     KnowledgeBase,
     KnowledgeBaseError,
@@ -60,7 +59,6 @@ from lumio_wiki import (
     export_graph,
     generate_hot_index,
     generate_navigation_indexes,
-    import_graph,
     is_reviewable_proposal,
     load_knowledge_base,
     run_source_coverage_check,
@@ -110,7 +108,6 @@ from lumio_wiki.knowledge_base import (
 from lumio_wiki.maintenance import (
     _run_dream_cycle_loaded,
     _run_lint_loaded,
-    _stage_ranked_link_candidates_loaded,
 )
 from lumio_wiki.records import ValidationReport
 from lumio_wiki.source_inspection import (
@@ -2236,16 +2233,19 @@ def _cmd_hot(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_ingest_git_authoring(
+def _ingest_into_worktree_cli(
     args: argparse.Namespace,
     kb,
     raw_bytes: bytes,
     content_type: str | None,
-    source_path: Path,
+    filename: str,
     source_id: str,
-    compiled_page: Path,
+    authored_markdown: str,
+    *,
+    raw_source_path: Path | None = None,
+    rows: Sequence[tuple[str, object]] = (),
 ) -> int:
-    """Managed ingest into the Git authoring worktree (no proposal, no commit)."""
+    """Shared managed worktree ingest for ingest/ingest-url/ingest-research (G3)."""
     from lumio_wiki.git_authoring import GitAuthoringError, ingest_into_worktree
 
     registry = _git_source_registry(args)
@@ -2256,21 +2256,18 @@ def _cmd_ingest_git_authoring(
             f"{SOURCE_REGISTRY_ENV_VAR}",
             exit_code=2,
         )
-    if not compiled_page.is_file():
-        raise CliError(f"compiled-page file not found: {compiled_page}")
-    authored_markdown = compiled_page.read_text(encoding="utf-8")
     artifact_store = _artifact_store_from_env()
     try:
         result = ingest_into_worktree(
             kb.root,
             raw_bytes,
             content_type,
-            source_path.name,
+            filename,
             source_id,
             authored_markdown,
             source_registry=registry,
             artifact_store=artifact_store,
-            raw_source_path=source_path,
+            raw_source_path=raw_source_path,
         )
     except (GitAuthoringError, ManagedIngestError, SourceRegistryError) as exc:
         raise CliError(str(exc), exit_code=1) from exc
@@ -2279,7 +2276,99 @@ def _cmd_ingest_git_authoring(
     print(f"  title:    {result.page_title}")
     print(f"  entity:   {result.entity_id}")
     print(f"  source:   {result.source_id} ({result.registration}, {result.content_hash})")
+    for label, value in rows:
+        print(f"  {label:<16}{value}")
     print(f"  manifest: {result.manifest_path}")
+    print("Review the changes and commit them with Git; publication admits an exact commit.")
+    return 0
+
+
+def _cmd_ingest_git_authoring(
+    args: argparse.Namespace,
+    kb,
+    raw_bytes: bytes,
+    content_type: str | None,
+    source_path: Path,
+    source_id: str,
+    compiled_page: Path,
+) -> int:
+    """Managed ingest into the Git authoring worktree (no proposal, no commit)."""
+    if not compiled_page.is_file():
+        raise CliError(f"compiled-page file not found: {compiled_page}")
+    return _ingest_into_worktree_cli(
+        args,
+        kb,
+        raw_bytes,
+        content_type,
+        source_path.name,
+        source_id,
+        compiled_page.read_text(encoding="utf-8"),
+        raw_source_path=source_path,
+    )
+
+
+def _cmd_ingest_worktree_passthrough(
+    args: argparse.Namespace,
+    kb,
+    raw_bytes: bytes,
+    content_type: str | None,
+    source_path: Path,
+) -> int:
+    """Passthrough/distilled ingest into the Git authoring worktree (G3).
+
+    Spec 0008 §7: an adopted Knowledge Base ingests through ordinary
+    worktree file edits — no proposal is staged and nothing is committed.
+    Conversion/distillation stays identical to the legacy route; only the
+    staging target changes.
+    """
+    from lumio_wiki.git_authoring import GitAuthoringError, write_pages_into_worktree
+    from lumio_wiki.ingest import (
+        _extract_page_records,
+        _validate_page_routing,
+        prepare_proposal_content,
+    )
+    from lumio_wiki.source_processor import (
+        MissingDocumentExtraError,
+        SourceProcessorError,
+    )
+
+    distiller = _build_distiller(args)
+    categories = (
+        [category.name for category in kb.control.categories] if kb.control is not None else None
+    )
+    ontology = kb.control.ontology if kb.control is not None else None
+    authoring_mode = "categorized" if kb.control is not None else "legacy-flat"
+    try:
+        distilled, provenance = prepare_proposal_content(
+            raw_bytes,
+            content_type,
+            source_path.name,
+            distiller=distiller,
+            categories=categories,
+            ontology=ontology,
+            authoring_mode=authoring_mode,
+        )
+    except (MissingDocumentExtraError, SourceProcessorError) as exc:
+        raise CliError(str(exc)) from exc
+    except Exception as exc:
+        from lumio_wiki.distiller import OpenAIDistillerError
+
+        if isinstance(exc, OpenAIDistillerError):
+            raise CliError(str(exc)) from exc
+        raise
+    pages = _extract_page_records(distilled, source_path.name, kb)
+    routing_issues = [
+        issue for issue in _validate_page_routing(pages, kb) if issue.severity == "error"
+    ]
+    if routing_issues:
+        raise CliError("; ".join(f"{issue.file}: {issue.message}" for issue in routing_issues))
+    try:
+        result = write_pages_into_worktree(kb.root, pages, operation="ingest")
+    except GitAuthoringError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    print("Ingested into the Git authoring worktree (nothing committed):")
+    print(f"  pages:          {', '.join(result.written)}")
+    print(f"  converted_by:   {provenance.converted_by}")
     print("Review the changes and commit them with Git; publication admits an exact commit.")
     return 0
 
@@ -2421,6 +2510,11 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         return _cmd_ingest_git_authoring(
             args, kb, raw_bytes, content_type, source_path, source_id, compiled_page
         )
+    if authoring_manifest is not None:
+        # G3 (spec 0008 §7): an adopted Knowledge Base never falls back to
+        # legacy proposal staging — the passthrough/distilled route writes
+        # ordinary worktree files.
+        return _cmd_ingest_worktree_passthrough(args, kb, raw_bytes, content_type, source_path)
 
     ingest_dir = _resolve_ingest_dir(args, kb.root)
     ingest_dir.mkdir(parents=True, exist_ok=True)
@@ -2539,6 +2633,57 @@ def _cmd_capture_session(args: argparse.Namespace) -> int:
     except CaptureError as exc:
         raise CliError(str(exc), exit_code=1) from exc
 
+    # G3 (spec 0008 §7): a Knowledge Base that adopted Git authoring
+    # confirms captures through ordinary worktree edits — the preview-first
+    # contract is unchanged and no proposal is staged. The private capture
+    # record is written beside the explicitly selected private Source
+    # Registry, never inside the Git worktree.
+    from lumio_wiki.source_references import load_source_reference_manifest
+
+    worktree_ingest = None
+    if load_source_reference_manifest(kb.root) is not None:
+        from lumio_wiki.git_authoring import (
+            GitAuthoringError,
+            ingest_into_worktree,
+        )
+
+        def _worktree_capture_ingest(
+            raw_bytes,
+            content_type,
+            filename,
+            source_id,
+            redacted_markdown,
+            safe_manifest,
+            transcript_digest,
+        ):
+            registry = _git_source_registry(args)
+            if registry is None:
+                raise CaptureError(
+                    "Git-native capture requires the explicitly selected private "
+                    "Source Registry: pass --source-registry <dir> or set "
+                    f"{SOURCE_REGISTRY_ENV_VAR}"
+                )
+            try:
+                result = ingest_into_worktree(
+                    kb.root,
+                    raw_bytes,
+                    content_type,
+                    filename,
+                    source_id,
+                    redacted_markdown,
+                    source_registry=registry,
+                    artifact_store=_artifact_store_from_env(),
+                    raw_source_path=args.transcript or args.manifest,
+                )
+                from lumio_wiki.capture import write_capture_record
+
+                write_capture_record(registry.root, source_id, safe_manifest, transcript_digest)
+            except (GitAuthoringError, ManagedIngestError, SourceRegistryError) as exc:
+                raise CaptureError(str(exc)) from exc
+            return result
+
+        worktree_ingest = _worktree_capture_ingest
+
     ingest_dir = _resolve_ingest_dir(args, kb.root)
     ingest_dir.mkdir(parents=True, exist_ok=True)
     store = IngestStore(ingest_dir)
@@ -2584,11 +2729,20 @@ def _cmd_capture_session(args: argparse.Namespace) -> int:
             source_id=args.source_id,
             transcript_path=args.transcript,
             confirmed=True,
+            ingest=worktree_ingest,
         )
     except CaptureError as exc:
         raise CliError(str(exc), exit_code=1) from exc
 
     print(format_capture_preview(outcome.preview))
+    if outcome.worktree is not None:
+        result = outcome.worktree
+        print("Captured into the Git authoring worktree (nothing committed):")
+        print(f"  page:     {', '.join(result.page_paths)}")
+        print(f"  source:   {result.source_id} ({result.registration}, {result.content_hash})")
+        print(f"  manifest: {result.manifest_path}")
+        print("Review the changes and commit them with Git; publication admits an exact commit.")
+        return 0
     proposal = outcome.proposal
     if proposal is None:  # defensive: confirmed=True always stages or raises
         raise CliError("capture confirmation did not stage a proposal", exit_code=1)
@@ -2726,6 +2880,25 @@ def _cmd_ingest_url(args: argparse.Namespace) -> int:
     except UrlFetchError as exc:
         raise CliError(str(exc)) from exc
 
+    from lumio_wiki.source_references import load_source_reference_manifest
+
+    if load_source_reference_manifest(kb.root) is not None:
+        # G3 (spec 0008 §7): an adopted Knowledge Base ingests fetched
+        # sources through ordinary worktree edits.
+        return _ingest_into_worktree_cli(
+            args,
+            kb,
+            result.body,
+            result.media_type,
+            result.filename,
+            source_id,
+            authored_markdown,
+            rows=[
+                ("source_url:", result.final_url),
+                ("retrieved_at:", result.retrieved_at),
+            ],
+        )
+
     ingest_dir = _resolve_ingest_dir(args, kb.root)
     ingest_dir.mkdir(parents=True, exist_ok=True)
     store = IngestStore(ingest_dir)
@@ -2850,6 +3023,28 @@ def _cmd_ingest_research(args: argparse.Namespace) -> int:
         raise CliError(f"research report not found: {report}")
     authored_markdown = report.read_text(encoding="utf-8")
     consulted = _parse_research_manifest(args.manifest)
+
+    from lumio_wiki.source_references import load_source_reference_manifest
+
+    if load_source_reference_manifest(kb.root) is not None:
+        # G3 (spec 0008 §7): an adopted Knowledge Base ingests research
+        # bundles through ordinary worktree edits. The consulted URLs stay
+        # declared provenance: disclose them here and keep them in the
+        # authored page's public sources list.
+        print(f"consulted: {len(consulted)} sources (declare them in the page's sources)")
+        for consulted_source in consulted:
+            print(f"  {consulted_source.url} ({consulted_source.accessed_at})")
+        return _ingest_into_worktree_cli(
+            args,
+            kb,
+            report.read_bytes(),
+            "text/markdown",
+            report.name,
+            args.source_id,
+            authored_markdown,
+            raw_source_path=report,
+            rows=[("consulted:", f"{len(consulted)} sources")],
+        )
 
     ingest_dir = _resolve_ingest_dir(args, kb.root)
     ingest_dir.mkdir(parents=True, exist_ok=True)
@@ -3007,53 +3202,76 @@ def _cmd_proposal_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_remove_page(args: argparse.Namespace) -> int:
-    """Stage an explicit Page Removal proposal (issue #135)."""
-    _kb, pipeline = _proposal_pipeline(args)
-    try:
-        proposal = pipeline.propose_page_removal(args.title, reason=args.reason or "")
-    except ProposalPipelineError as exc:
-        raise CliError(str(exc), exit_code=1) from exc
-    print(f"Staged proposal {proposal.id}")
-    print(f"  status:         {proposal.status}")
-    for removal in proposal.removed_pages:
-        print(f"  removed_page:   {removal.title}")
-        if removal.lost_support_reason:
-            print(f"  lost_support:   {removal.lost_support_reason}")
-    print(f"  repairs:        {len(proposal.proposed_pages)} dependent page(s)")
-    print(f"  body_links:     {len(proposal.body_link_repairs)} repair candidate(s)")
-    print(f"  blocked:        {proposal.blocked}")
+def _print_worktree_mutation(result, *, title: str, details: Sequence[str] = ()) -> None:
+    """Print one native worktree mutation outcome with Git-review guidance."""
+    print(title)
+    for line in details:
+        print(line)
+    if result.written:
+        print(f"  written:        {', '.join(result.written)}")
+    if result.deleted:
+        print(f"  deleted:        {', '.join(result.deleted)}")
+    if result.affected_titles:
+        print(f"  affected_pages: {', '.join(result.affected_titles)}")
+    for diagnostic in result.diagnostics:
+        print(f"  note:           {diagnostic}")
+    if result.manifest_updated:
+        print("  manifest:       source reference manifest updated")
     print()
-    print("Review with:")
-    print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
-    if is_reviewable_proposal(proposal) and not proposal.blocked:
-        print(f"  lumio-wiki publish {args.path} {proposal.id}")
+    print("Review the changes and commit them with Git; publication admits an exact commit.")
+
+
+def _cmd_remove_page(args: argparse.Namespace) -> int:
+    """Remove one Compiled Page (and its dependent repairs) in the worktree.
+
+    G3 (spec 0008 §2/§6/§7): the deterministic removal edits the selected
+    Git authoring worktree as ordinary files — no proposal is staged and
+    nothing is committed.
+    """
+    kb, _report = _load_kb(args.path)
+    from lumio_wiki.git_authoring import GitAuthoringError, remove_page_in_worktree
+
+    try:
+        result = remove_page_in_worktree(kb.root, args.title, reason=args.reason or "")
+    except GitAuthoringError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    details = []
+    if args.reason:
+        details.append(f"  reason:         {args.reason}")
+    _print_worktree_mutation(
+        result,
+        title=f"Removed page {args.title!r} in the Git authoring worktree (nothing committed):",
+        details=details,
+    )
     return 0
 
 
 def _cmd_merge_entity(args: argparse.Namespace) -> int:
-    """Stage an explicit, reviewed Entity Merge proposal (issue #169)."""
-    _kb, pipeline = _proposal_pipeline(args)
+    """Merge one Entity into another as ordinary worktree edits (G3).
+
+    Spec 0008 §6/§7: the retired Entity's Claims migrate, dependents retarget,
+    the redirect/pins repair, and the retired page becomes an explicit Git
+    tree deletion — no proposal is staged and nothing is committed.
+    """
+    kb, _report = _load_kb(args.path)
+    from lumio_wiki.git_authoring import GitAuthoringError, merge_entities_in_worktree
+
     try:
-        proposal = pipeline.propose_entity_merge(
-            args.retired, args.survivor, reason=args.reason or ""
+        result = merge_entities_in_worktree(
+            kb.root, args.retired, args.survivor, reason=args.reason or ""
         )
-    except ProposalPipelineError as exc:
+    except GitAuthoringError as exc:
         raise CliError(str(exc), exit_code=1) from exc
-    print(f"Staged proposal {proposal.id}")
-    print(f"  status:         {proposal.status}")
-    for merge in proposal.entity_merges:
-        print(f"  entity_merge:   {merge.retired_entity_id} -> {merge.surviving_entity_id}")
-        print(f"    retired:      {merge.retired_title}")
-        print(f"    surviving:    {merge.surviving_title}")
-    print(f"  repairs:        {len(proposal.proposed_pages)} dependent page(s)")
-    print("  redirect:       recorded in ontology.redirects on publish")
-    print(f"  blocked:        {proposal.blocked}")
-    print()
-    print("Review with:")
-    print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
-    if is_reviewable_proposal(proposal) and not proposal.blocked:
-        print(f"  lumio-wiki publish {args.path} {proposal.id}")
+    _print_worktree_mutation(
+        result,
+        title=(
+            f"Merged entity {args.retired!r} into {args.survivor!r} in the Git "
+            "authoring worktree (nothing committed):"
+        ),
+        details=[
+            f"  redirect:       {args.retired} -> {args.survivor} recorded in ontology.redirects"
+        ],
+    )
     return 0
 
 
@@ -3610,32 +3828,23 @@ def _cmd_export_graph(args: argparse.Namespace) -> int:
 
 
 def _cmd_import_graph(args: argparse.Namespace) -> int:
-    """Stage stub Compiled Pages from a graph.json as one reviewable proposal."""
+    """Import stub Compiled Pages from a graph.json into the worktree (G3).
+
+    Spec 0008 §7: graph exchange imports edit the selected Git authoring
+    worktree as ordinary files (stub pages plus any Control File extension);
+    broken edges stay disclosed diagnostics and edges never become Claims.
+    """
     kb, _report = _load_kb(args.path)
-    ingest_dir = _resolve_ingest_dir(args, kb.root)
-    ingest_dir.mkdir(parents=True, exist_ok=True)
-    store = IngestStore(ingest_dir)
-    pipeline = ProposalPipeline(kb, store=store)
+    from lumio_wiki.git_authoring import GitAuthoringError, import_graph_into_worktree
+
     try:
-        proposal = import_graph(args.graph_file, kb)
-    except GraphImportError as exc:
+        result = import_graph_into_worktree(kb.root, args.graph_file)
+    except GitAuthoringError as exc:
         raise CliError(str(exc), exit_code=1) from exc
-    proposal = pipeline.stage(proposal)
-    print(f"Staged proposal {proposal.id}")
-    print("  converted_by:   graph-exchange")
-    print(f"  affected_pages: {', '.join(proposal.affected_pages) or '(none)'}")
-    print(f"  blocked:        {proposal.blocked}")
-    diagnostics = proposal.okf_diagnostics
-    if diagnostics:
-        print(f"  diagnostics:    {len(diagnostics)} (inspect for detail)")
-    if proposal.control_file is not None:
-        print("  control_file:   proposed Control File extension (review before publish)")
-    print()
-    print("Review with:")
-    print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
-    print(f"  lumio-wiki proposal validate {args.path} {proposal.id}")
-    if is_reviewable_proposal(proposal) and not proposal.blocked:
-        print(f"  lumio-wiki publish {args.path} {proposal.id}")
+    _print_worktree_mutation(
+        result,
+        title="Imported graph stubs into the Git authoring worktree (nothing committed):",
+    )
     return 0
 
 
@@ -4225,32 +4434,60 @@ def _print_ranked_candidates(ranked, limit: int) -> None:
             print(f"     snippet: {candidate.snippet}")
 
 
-def _stage_candidates(args: argparse.Namespace, kb, ranked, limit: int):
-    """Stage one reviewable repair proposal per candidate, bounded by limit."""
-    ingest_dir = _resolve_ingest_dir(args, kb.root)
-    ingest_dir.mkdir(parents=True, exist_ok=True)
-    result = _stage_ranked_link_candidates_loaded(
-        kb,
-        ranked,
-        store=IngestStore(ingest_dir),
-        limit=limit,
-    )
-    return result.staged, result.skipped
+def _apply_link_candidates(args: argparse.Namespace, kb, ranked, limit: int):
+    """Apply the top-ranked link repairs as worktree edits (G3, spec 0008 §6).
+
+    An explicit apply operation edits the selected authoring worktree rather
+    than staging stored proposals; the deterministic mention repairs compose
+    per page and validate as ONE candidate before anything is written.
+    """
+    from lumio_wiki.git_authoring import GitAuthoringError, revise_pages_in_worktree
+    from lumio_wiki.maintenance import MaintenanceError, repair_mention
+
+    revised: dict[str, str] = {}
+    skipped: list[tuple[object, str]] = []
+    for ranked_candidate in ranked[:limit]:
+        candidate = ranked_candidate.candidate
+        source_path = Path(kb.root) / candidate.source_path
+        try:
+            markdown = source_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            skipped.append((candidate, f"could not read the page: {exc}"))
+            continue
+        current = revised[candidate.source_path] if candidate.source_path in revised else markdown
+        try:
+            repaired = repair_mention(current, candidate)
+        except MaintenanceError as exc:
+            skipped.append((candidate, str(exc)))
+            continue
+        if repaired == current:
+            skipped.append((candidate, "mention no longer present"))
+            continue
+        revised[candidate.source_path] = repaired
+    if not revised:
+        return None, skipped
+    try:
+        result = revise_pages_in_worktree(
+            kb.root, list(revised.items()), operation="cross-link repair"
+        )
+    except GitAuthoringError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    return result, skipped
 
 
-def _print_staging_outcome(args, staged, skipped) -> None:
-    print(f"staged_proposals:    {len(staged)}")
-    for proposal in staged:
-        print(f"  staged: {proposal.id} pages={', '.join(proposal.affected_pages)}")
+def _print_apply_outcome(args, result, skipped) -> None:
+    """Print one native link-repair apply outcome with Git-review guidance."""
+    if result is None:
+        print("applied_repairs:    0")
+    else:
+        print(f"applied_repairs:    {len(result.written)} page(s)")
+        for relative in result.written:
+            print(f"  edited: {relative}")
     for candidate, reason in skipped:
         print(f"  skipped: {candidate.source_path}:{candidate.line} ({reason})")
-    if staged:
+    if result is not None and result.written:
         print()
-        print("Review with:")
-        print(f"  lumio-wiki proposal list {args.path}")
-        for proposal in staged:
-            if is_reviewable_proposal(proposal) and not proposal.blocked:
-                print(f"  lumio-wiki publish {args.path} {proposal.id}")
+        print("Review the changes and commit them with Git; publication admits an exact commit.")
 
 
 def _cmd_cross_link(args: argparse.Namespace) -> int:
@@ -4272,8 +4509,8 @@ def _cmd_cross_link(args: argparse.Namespace) -> int:
         print(f"  ... {len(ranked) - args.limit} more (raise --limit to show)")
     if args.stage:
         print()
-        staged, skipped = _stage_candidates(args, kb, ranked, args.limit)
-        _print_staging_outcome(args, staged, skipped)
+        result, skipped = _apply_link_candidates(args, kb, ranked, args.limit)
+        _print_apply_outcome(args, result, skipped)
     else:
         print()
         print("Stage repairs with:")
@@ -4575,19 +4812,33 @@ def _cmd_dream(args: argparse.Namespace) -> int:
         print(f"semantic_pages:       {len(semantic_report.pages)}")
         _print_semantic_findings(semantic_report.findings)
         if args.stage and semantic_report.findings:
-            ingest_dir = _resolve_ingest_dir(args, kb.root)
-            ingest_dir.mkdir(parents=True, exist_ok=True)
-            result = reviewer.stage_findings(store=IngestStore(ingest_dir), report=semantic_report)
-            print(f"semantic_staged_proposals: {len(result.staged)}")
-            for proposal in result.staged:
-                print(f"  staged: {proposal.id} pages={', '.join(proposal.affected_pages)}")
-            for finding, reason in result.skipped:
+            # G3 (spec 0008 §6): the explicit apply edits the authoring
+            # worktree — no semantic proposal is staged.
+            from lumio_wiki.git_authoring import (
+                GitAuthoringError,
+                revise_pages_in_worktree,
+            )
+
+            edits, skipped_edits = reviewer.worktree_edits(report=semantic_report)
+            semantic_result = None
+            if edits:
+                try:
+                    semantic_result = revise_pages_in_worktree(
+                        kb.root, list(edits), operation="semantic dream repair"
+                    )
+                except GitAuthoringError as exc:
+                    raise CliError(str(exc), exit_code=1) from exc
+            print(f"semantic_applied_pages: {len(edits) if semantic_result else 0}")
+            if semantic_result is not None:
+                for page_path, _markdown in edits:
+                    print(f"  edited: {page_path}")
+            for finding, reason in skipped_edits:
                 print(f"  skipped: {finding.kind} ({reason})")
 
     if args.stage and report.ranked_candidates:
         print()
-        staged, skipped = _stage_candidates(args, kb, report.ranked_candidates, args.limit)
-        _print_staging_outcome(args, staged, skipped)
+        result, skipped = _apply_link_candidates(args, kb, report.ranked_candidates, args.limit)
+        _print_apply_outcome(args, result, skipped)
     return 0 if lint.is_valid else 1
 
 
@@ -4889,6 +5140,26 @@ def _cmd_source_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_source_retire(args: argparse.Namespace) -> int:
+    kb, _report = _load_kb(args.path)
+    from lumio_wiki.source_references import load_source_reference_manifest
+
+    if load_source_reference_manifest(kb.root) is not None:
+        # G3 (spec 0008 §3.2/§3.3): lifecycle intent is a reviewed Git
+        # manifest edit, never a proposal-keyed pending transition.
+        from lumio_wiki.git_authoring import GitAuthoringError, retire_source_in_worktree
+
+        try:
+            result = retire_source_in_worktree(kb.root, args.source_id)
+        except GitAuthoringError as exc:
+            raise CliError(str(exc), exit_code=1) from exc
+        _print_worktree_mutation(
+            result,
+            title=(
+                f"Retired Knowledge Source {args.source_id!r} in the Git authoring "
+                "worktree (nothing committed):"
+            ),
+        )
+        return 0
     _kb, pipeline = _source_pipeline(args)
     try:
         proposal = pipeline.retire_source(args.source_id)
@@ -4934,6 +5205,39 @@ def _cmd_source_confirm_candidate(args: argparse.Namespace) -> int:
     id, source id, controlled trigger, and ``status: page title`` impacts) —
     never raw source bytes, local paths, registry internals, or credentials.
     """
+    kb, _report = _load_kb(args.path)
+    from lumio_wiki.source_references import load_source_reference_manifest
+
+    if load_source_reference_manifest(kb.root) is not None:
+        # G3: confirming a retirement candidate on an adopted Knowledge Base
+        # records the candidate decision and applies the Git manifest edit.
+        from lumio_wiki.git_authoring import GitAuthoringError, retire_source_in_worktree
+
+        store = IngestStore(_resolve_ingest_dir(args, kb.root))
+        registry = store.source_registry
+        try:
+            candidate = registry.get_candidate(args.candidate_id)
+            if args.source_id is not None and candidate.source_id != args.source_id:
+                raise SourceRegistryError(
+                    f"retirement candidate {args.candidate_id!r} does not belong to "
+                    f"Knowledge Source {args.source_id!r}"
+                )
+            if candidate.status != "pending":
+                raise SourceRegistryError(
+                    f"retirement candidate {args.candidate_id!r} is not pending"
+                )
+            result = retire_source_in_worktree(kb.root, candidate.source_id)
+            registry.confirm_retirement_candidate(args.candidate_id)
+        except (GitAuthoringError, SourceRegistryError, ProposalPipelineError) as exc:
+            raise CliError(str(exc), exit_code=1) from exc
+        _print_worktree_mutation(
+            result,
+            title=(
+                f"Retired Knowledge Source {candidate.source_id!r} in the Git authoring "
+                "worktree (nothing committed):"
+            ),
+        )
+        return 0
     _kb, pipeline = _source_pipeline(args)
     try:
         proposal = pipeline.confirm_retirement_candidate(
@@ -4946,8 +5250,37 @@ def _cmd_source_confirm_candidate(args: argparse.Namespace) -> int:
 
 
 def _cmd_source_reactivate(args: argparse.Namespace) -> int:
-    _kb, pipeline = _source_pipeline(args)
+    kb, _report = _load_kb(args.path)
     raw_bytes = _read_source_file(args)
+    from lumio_wiki.source_references import load_source_reference_manifest
+
+    if load_source_reference_manifest(kb.root) is not None:
+        # G3: reactivation registers the new bytes in the explicitly
+        # selected private registry and flips the reviewed Git manifest
+        # intent; bindings are never invented here (spec 0008 §3.3).
+        from lumio_wiki.git_authoring import (
+            GitAuthoringError,
+            reactivate_source_in_worktree,
+        )
+
+        try:
+            result = reactivate_source_in_worktree(
+                kb.root,
+                args.source_id,
+                raw_bytes,
+                source_registry=_git_source_registry(args),
+            )
+        except (GitAuthoringError, SourceRegistryError) as exc:
+            raise CliError(str(exc), exit_code=1) from exc
+        _print_worktree_mutation(
+            result,
+            title=(
+                f"Reactivated Knowledge Source {args.source_id!r} in the Git "
+                "authoring worktree (nothing committed):"
+            ),
+        )
+        return 0
+    _kb, pipeline = _source_pipeline(args)
     try:
         proposal = pipeline.reactivate_source(args.source_id, raw_bytes)
     except (SourceRegistryError, ProposalPipelineError) as exc:
@@ -6229,6 +6562,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Capture the current coding-agent session or a research result.",
     )
     _add_kb_argument(capture_session_parser)
+    capture_session_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Git-native capture: explicitly selected private Source Registry "
+            f"directory (fallback: {SOURCE_REGISTRY_ENV_VAR}). The private "
+            "capture record is written beside it, outside Git."
+        ),
+    )
     _add_ingest_dir_argument(capture_session_parser)
     capture_session_parser.add_argument(
         "--compiled-page",
@@ -6437,6 +6780,15 @@ def build_parser() -> argparse.ArgumentParser:
             "(trusted local endpoints). Rejected by default."
         ),
     )
+    ingest_url_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Git-native ingest: explicitly selected private Source Registry "
+            f"directory (fallback: {SOURCE_REGISTRY_ENV_VAR})."
+        ),
+    )
     _add_ingest_dir_argument(ingest_url_parser)
     ingest_url_parser.set_defaults(func=_cmd_ingest_url)
 
@@ -6469,6 +6821,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         required=True,
         help="Explicit, stable Knowledge Source identity (lowercase ASCII label).",
+    )
+    ingest_research_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Git-native ingest: explicitly selected private Source Registry "
+            f"directory (fallback: {SOURCE_REGISTRY_ENV_VAR})."
+        ),
     )
     _add_ingest_dir_argument(ingest_research_parser)
     ingest_research_parser.set_defaults(func=_cmd_ingest_research)
@@ -7250,6 +7611,15 @@ def build_parser() -> argparse.ArgumentParser:
             "retirement and reactivation stage ordinary reviewable proposals "
             "through the Proposal Pipeline. Output is safe: no raw source bytes, "
             "local file paths, or credentials are disclosed."
+        ),
+    )
+    source_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Git-native lifecycle: explicitly selected private Source Registry "
+            f"directory (fallback: {SOURCE_REGISTRY_ENV_VAR})."
         ),
     )
     source_sub = source_parser.add_subparsers(

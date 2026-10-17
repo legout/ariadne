@@ -197,6 +197,21 @@ def _merge_kb(tmp_path: Path) -> Path:
     return root
 
 
+def _git_authoring_worktree(root: Path) -> Path:
+    """Wrap the built Knowledge Base in a committed Git authoring worktree (G3)."""
+    import subprocess
+
+    def _git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "test@example.com")
+    _git("config", "user.name", "Test Author")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "authoring revision")
+    return root
+
+
 def _claim_objects(root: Path) -> set[tuple[str, str, str]]:
     """All (page title, claim id, object entity id) triples in a KB."""
     kb, report = load_knowledge_base(root)
@@ -485,9 +500,9 @@ def test_entity_merge_invalid_resulting_ontology_blocks_publication(tmp_path):
     proposal = pipeline.propose_entity_merge("entity:hammer", "entity:anvil")
 
     assert proposal.blocked
-    assert any(
-        "range violation" in issue.message for issue in proposal.validation_report.issues
-    ), proposal.validation_report
+    assert any("range violation" in issue.message for issue in proposal.validation_report.issues), (
+        proposal.validation_report
+    )
     with pytest.raises(ProposalBlockedError):
         pipeline.publish(proposal.id)
     kb, report = load_knowledge_base(root)
@@ -639,9 +654,7 @@ def test_entity_merge_proposal_round_trips_msgspec(tmp_path):
 
 
 def _alpha_with_claims(status_a1: str, evidence_count: int = 1) -> str:
-    evidence = "".join(
-        '      - section: "Evidence"\n' for _ in range(evidence_count)
-    )
+    evidence = "".join('      - section: "Evidence"\n' for _ in range(evidence_count))
     return _page(
         "Alpha",
         claim_overrides=(
@@ -799,8 +812,12 @@ def test_page_removal_never_leaves_a_dangling_claim(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_merge_entity_cli_stages_inspects_and_publishes(tmp_path, capsys):
-    root = _merge_kb(tmp_path)
+def test_merge_entity_cli_edits_the_authoring_worktree(tmp_path, capsys):
+    # G3 (spec 0008 §2/§6/§7): the CLI merge edits the selected Git authoring
+    # worktree as ordinary files — the retired page is an explicit tree
+    # deletion, the redirect lands in the Control File, no proposal is
+    # staged, and nothing is committed (the author reviews the diff).
+    root = _git_authoring_worktree(_merge_kb(tmp_path))
     ingest_dir = tmp_path / "cli-ingest"
 
     exit_code = main(
@@ -808,26 +825,13 @@ def test_merge_entity_cli_stages_inspects_and_publishes(tmp_path, capsys):
     )
     out = capsys.readouterr().out
     assert exit_code == 0, out
-    assert "Staged proposal" in out
-    assert "entity_merge:   entity:beta -> entity:gamma" in out
+    assert "Merged entity 'entity:beta' into 'entity:gamma'" in out
 
-    proposal_id = out.split("Staged proposal ")[1].splitlines()[0].strip()
-    exit_code = main(
-        ["proposal", "inspect", str(root), proposal_id, "--ingest-dir", str(ingest_dir)]
-    )
-    out = capsys.readouterr().out
-    assert exit_code == 0, out
-    assert "claim_changes:" in out
-    assert "before:" in out and "after:" in out
-    # Disclosure carries no full page bodies (the Diff section is a diff,
-    # not a body dump).
-    disclosure = out.split("Diff:")[0]
-    assert "Supporting evidence for the edges." not in disclosure
-
-    exit_code = main(["publish", str(root), proposal_id, "--ingest-dir", str(ingest_dir)])
-    out = capsys.readouterr().out
-    assert exit_code == 0, out
-    assert "Published proposal" in out
+    assert not (root / "concepts" / "beta.md").exists()
+    assert "entity:beta: entity:gamma" in (root / "lumio.yaml").read_text(encoding="utf-8")
+    # Ordinary files only: no ingest store, no staged proposal.
+    assert not ingest_dir.exists()
+    assert not (root / ".lumio").exists()
 
     kb, report = load_knowledge_base(root)
     assert report.is_valid, report
@@ -855,25 +859,34 @@ def test_merge_entity_cli_blocked_merge_is_an_error(tmp_path, capsys):
 
 
 def test_proposal_inspect_json_carries_claim_changes_and_merges(tmp_path, capsys):
+    # Legacy proposal inspection surface (retained until G4): the staged
+    # record now comes from the SDK staging route — the CLI no longer stages
+    # — and the JSON disclosure still carries the merge/claim changes
+    # without private metadata.
     root = _merge_kb(tmp_path)
     ingest_dir = tmp_path / "json-ingest"
-    assert main(
-        ["merge-entity", str(root), "entity:beta", "entity:gamma", "--ingest-dir", str(ingest_dir)]
-    ) == 0
-    proposal_id = (
-        capsys.readouterr().out.split("Staged proposal ")[1].splitlines()[0].strip()
+    from lumio_wiki.ingest import IngestStore
+    from lumio_wiki.proposal_pipeline import ProposalPipeline
+
+    kb, _report = load_knowledge_base(root)
+    proposal = ProposalPipeline(kb, store=IngestStore(ingest_dir)).propose_entity_merge(
+        "entity:beta", "entity:gamma"
     )
-    assert main(
-        [
-            "proposal",
-            "inspect",
-            str(root),
-            proposal_id,
-            "--json",
-            "--ingest-dir",
-            str(ingest_dir),
-        ]
-    ) == 0
+    proposal_id = proposal.id
+    assert (
+        main(
+            [
+                "proposal",
+                "inspect",
+                str(root),
+                proposal_id,
+                "--json",
+                "--ingest-dir",
+                str(ingest_dir),
+            ]
+        )
+        == 0
+    )
     payload = capsys.readouterr().out
     assert '"entity_merges"' in payload
     assert '"claim_changes"' in payload

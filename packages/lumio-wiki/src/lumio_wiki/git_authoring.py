@@ -95,14 +95,22 @@ __all__ = [
     "PublicationSourceImpact",
     "RollbackReview",
     "WorktreeIngestResult",
+    "WorktreeMutationResult",
     "capture_revision",
+    "import_graph_into_worktree",
     "ingest_into_worktree",
+    "merge_entities_in_worktree",
     "preview_publication",
     "preview_rollback",
     "publish_revision",
+    "remove_page_in_worktree",
     "resolve_full_commit",
     "resolve_repository",
+    "retire_source_in_worktree",
+    "revise_pages_in_worktree",
+    "reactivate_source_in_worktree",
     "rollback_publication",
+    "write_pages_into_worktree",
 ]
 
 #: Identifies the validator/format contract bound into every review digest.
@@ -3117,3 +3125,554 @@ def _authored_entity_id(markdown: str) -> str | None:
         return None
     entity_id = data.get("id")
     return str(entity_id) if entity_id else None
+
+
+# ---------------------------------------------------------------------------
+# Native deterministic mutations (G3, spec 0008 §2/§6/§7): every retained
+# producer edits ordinary files in the selected authoring worktree. No
+# proposal objects, no persisted queues, no implicit Git commit — authors
+# review the diff and commit explicitly; publication admits an exact commit.
+# ---------------------------------------------------------------------------
+
+
+class WorktreeMutationResult(msgspec.Struct, frozen=True):
+    """What one native authoring mutation edited in the worktree (uncommitted)."""
+
+    written: list[str]
+    deleted: list[str]
+    affected_titles: list[str]
+    diagnostics: list[str]
+    manifest_updated: bool
+
+
+def _load_valid_authoring_kb(kb_path: Path):
+    from lumio_wiki.knowledge_base import load_knowledge_base
+
+    kb, report = load_knowledge_base(kb_path)
+    if not report.is_valid:
+        raise GitAuthoringError(
+            "the authoring worktree's Knowledge Base does not validate; refusing "
+            "to mutate over invalid authored content: " + str(report)
+        )
+    return kb
+
+
+def _refuse_invalid_candidate(report, operation: str) -> None:
+    """Refuse an invalid mutation candidate with its specific collected failures."""
+    if not report.is_valid:
+        raise GitAuthoringError(f"{operation} candidate failed validation: {report}")
+
+
+def _pages_view(kb, exclude_titles: frozenset[str]):
+    """A page view for manifest cross-checks (``validate_source_references`` reads
+    only ``.pages``); revised/removed titles are excluded because their repairs
+    do not change declared sources."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(pages=[p for p in kb.pages if p.title not in exclude_titles])
+
+
+def _checked_manifest(manifest: SourceReferenceManifest) -> SourceReferenceManifest:
+    """Round-trip a rewritten manifest through the strict v1 parser."""
+    parse_source_reference_manifest(serialize_source_reference_manifest(manifest))
+    return manifest
+
+
+def _manifest_without_entities(
+    manifest: SourceReferenceManifest, entity_ids: frozenset[str]
+) -> SourceReferenceManifest | None:
+    """Drop the removed/retired Entities' bindings (their keys would dangle)."""
+    if not entity_ids or not any(entity_id in manifest.bindings for entity_id in entity_ids):
+        return None
+    bindings = {
+        entity_id: bindings
+        for entity_id, bindings in manifest.bindings.items()
+        if entity_id not in entity_ids
+    }
+    return _checked_manifest(
+        SourceReferenceManifest(
+            version=manifest.version,
+            namespace=manifest.namespace,
+            sources=manifest.sources,
+            bindings=bindings,
+        )
+    )
+
+
+def _refuse_manifest_drift(
+    manifest: SourceReferenceManifest, kb, exclude_titles: frozenset[str], operation: str
+) -> None:
+    """Fail closed when the rewritten manifest disagrees with the candidate pages."""
+    issues = validate_source_references(manifest, _pages_view(kb, exclude_titles))
+    if issues:
+        details = "; ".join(issues)
+        raise GitAuthoringError(
+            f"the {operation} would leave the {SOURCE_REFERENCE_MANIFEST_BASENAME} "
+            f"inconsistent with the candidate Knowledge Base: {details}"
+        )
+
+
+def _apply_worktree_candidate(
+    kb_path: Path,
+    candidate_pages: list,
+    *,
+    removed_titles: list[str] | None = None,
+    removed_paths: list[str] | None = None,
+    control_file=None,
+    manifest_rewrite: SourceReferenceManifest | None = None,
+    allow_untracked_manifest: bool = False,
+) -> tuple[list[str], list[str]]:
+    """Refuse unsafe targets, then apply the checked edits atomically.
+
+    The same destination checks publication uses (path collisions, escapes,
+    overwrites) plus the worktree-safety refusals (detached HEAD, unresolved
+    conflicts, unrelated uncommitted edits) run BEFORE any byte is written;
+    an ordinary failure restores the complete prior state through the
+    mutation backup. Nothing is committed.
+    """
+    repo_root, _subtree = resolve_repository(kb_path)
+    mutation_paths = [
+        relative
+        for relative in affected_mutation_paths(
+            candidate_pages, kb_path, removed_titles=removed_titles
+        )
+        if relative != _CONTROL_BASENAME
+    ]
+    if control_file is not None:
+        mutation_paths.append(_CONTROL_BASENAME)
+    allow_untracked = frozenset()
+    if manifest_rewrite is not None:
+        mutation_paths.append(SOURCE_REFERENCE_MANIFEST_BASENAME)
+        if allow_untracked_manifest:
+            allow_untracked = frozenset({SOURCE_REFERENCE_MANIFEST_BASENAME})
+    _refuse_unsafe_worktree_mutation(
+        repo_root, kb_path, mutation_paths, allow_untracked=allow_untracked
+    )
+    backup = MutationBackup("git-authoring-mutation")
+    try:
+        for relative in mutation_paths:
+            backup.capture_path(kb_path, relative)
+        apply_proposed_pages(
+            candidate_pages,
+            kb_path,
+            removed_titles=removed_titles,
+            control_file=control_file,
+        )
+        if manifest_rewrite is not None:
+            atomic_write_bytes(
+                kb_path / SOURCE_REFERENCE_MANIFEST_BASENAME,
+                serialize_source_reference_manifest(manifest_rewrite),
+            )
+    except BaseException:
+        backup.restore_all(kb_path)
+        raise
+    backup.cleanup()
+    written = sorted({page.relative_path for page in candidate_pages})
+    deleted = sorted(set(removed_paths or []))
+    return written, deleted
+
+
+def _mutation_diagnostics(report) -> list[str]:
+    """Disclose non-blocking warnings (e.g. ambiguous body-link notes)."""
+    return [
+        f"{issue.file}: {issue.message}"
+        for issue in getattr(report, "issues", [])
+        if getattr(issue, "severity", "error") != "error"
+    ]
+
+
+def remove_page_in_worktree(
+    kb_root: str | Path, title: str, *, reason: str = ""
+) -> WorktreeMutationResult:
+    """Remove one Compiled Page and repair its dependents as worktree edits.
+
+    Spec 0008 §2/§6: an explicit, declared removal relative to the current
+    tree — dependent Relationships drop, exactly-resolved body links unwrap,
+    a stale Hot Index pin drops atomically, and the complete candidate
+    (including the Control File and, when present, the Source Reference
+    Manifest's bindings for the removed Entity) validates before anything is
+    written. Ambiguous destinations are disclosed, never guessed.
+    """
+    from lumio_wiki.proposal_pipeline import (
+        ProposalPipelineError,
+        assemble_page_removal_candidate,
+    )
+
+    kb_path = Path(kb_root).resolve()
+    kb = _load_valid_authoring_kb(kb_path)
+    try:
+        candidate = assemble_page_removal_candidate(kb, title, reason=reason)
+    except ProposalPipelineError as exc:
+        raise GitAuthoringError(str(exc)) from exc
+    _refuse_invalid_candidate(candidate.validation_report, "page removal")
+    excluded = frozenset(candidate.removed_titles)
+    manifest = load_source_reference_manifest(kb_path)
+    manifest_rewrite = None
+    if manifest is not None:
+        removed_ids = frozenset(page.id for page in kb.pages if page.title in excluded and page.id)
+        manifest_rewrite = _manifest_without_entities(manifest, removed_ids)
+        if manifest_rewrite is None:
+            _refuse_manifest_drift(manifest, kb, excluded, "page removal")
+        else:
+            _refuse_manifest_drift(manifest_rewrite, kb, excluded, "page removal")
+    written, deleted = _apply_worktree_candidate(
+        kb_path,
+        candidate.proposed_pages,
+        removed_titles=candidate.removed_titles,
+        removed_paths=candidate.removed_paths,
+        control_file=candidate.control_file,
+        manifest_rewrite=manifest_rewrite,
+        allow_untracked_manifest=True,
+    )
+    return WorktreeMutationResult(
+        written=written,
+        deleted=deleted,
+        affected_titles=sorted({page.title for page in candidate.proposed_pages} | excluded),
+        diagnostics=_mutation_diagnostics(candidate.validation_report),
+        manifest_updated=manifest_rewrite is not None,
+    )
+
+
+def merge_entities_in_worktree(
+    kb_root: str | Path, retired_entity_id: str, surviving_entity_id: str, *, reason: str = ""
+) -> WorktreeMutationResult:
+    """Merge one Entity into another as ordinary worktree edits.
+
+    Spec 0008 §6: the surviving Entity keeps its stable ID/page and absorbs
+    the retired Entity's Claims; Claim objects and exactly-resolved body
+    links retarget; the retired ID becomes an ontology redirect; the retired
+    page is an explicit Git tree deletion; a stale Hot Index pin and the
+    retired Entity's Source Reference Manifest bindings drop atomically with
+    the merge. Ambiguous link repair refuses (never guessed).
+    """
+    from lumio_wiki.proposal_pipeline import (
+        ProposalPipelineError,
+        assemble_entity_merge_candidate,
+    )
+
+    kb_path = Path(kb_root).resolve()
+    kb = _load_valid_authoring_kb(kb_path)
+    try:
+        candidate = assemble_entity_merge_candidate(
+            kb, retired_entity_id, surviving_entity_id, reason=reason
+        )
+    except ProposalPipelineError as exc:
+        raise GitAuthoringError(str(exc)) from exc
+    _refuse_invalid_candidate(candidate.validation_report, "entity merge")
+    excluded = frozenset(candidate.removed_titles)
+    manifest = load_source_reference_manifest(kb_path)
+    manifest_rewrite = None
+    if manifest is not None:
+        manifest_rewrite = _manifest_without_entities(manifest, frozenset({retired_entity_id}))
+        if manifest_rewrite is None:
+            _refuse_manifest_drift(manifest, kb, excluded, "entity merge")
+        else:
+            _refuse_manifest_drift(manifest_rewrite, kb, excluded, "entity merge")
+    written, deleted = _apply_worktree_candidate(
+        kb_path,
+        candidate.proposed_pages,
+        removed_titles=candidate.removed_titles,
+        removed_paths=candidate.removed_paths,
+        control_file=candidate.control_file,
+        manifest_rewrite=manifest_rewrite,
+        allow_untracked_manifest=True,
+    )
+    return WorktreeMutationResult(
+        written=written,
+        deleted=deleted,
+        affected_titles=sorted({page.title for page in candidate.proposed_pages} | excluded),
+        diagnostics=_mutation_diagnostics(candidate.validation_report),
+        manifest_updated=manifest_rewrite is not None,
+    )
+
+
+def write_pages_into_worktree(
+    kb_root: str | Path,
+    proposed_pages: list,
+    *,
+    control_file=None,
+    operation: str = "page write",
+) -> WorktreeMutationResult:
+    """Write proposed Compiled Pages into the worktree as ordinary files.
+
+    The passthrough/graph/OKF/external-import producer (spec 0008 §7):
+    destination checks, complete-candidate validation, and a fail-closed
+    Source Reference Manifest cross-check precede any byte; a mid-write
+    failure restores the prior state. No proposal, no commit. Source
+    bindings are added by the managed ingest route, not inferred here.
+    """
+    kb_path = Path(kb_root).resolve()
+    kb = _load_valid_authoring_kb(kb_path)
+    from lumio_wiki.publish import validate_candidate_knowledge_base
+
+    report = validate_candidate_knowledge_base(proposed_pages, kb_path, control_file=control_file)
+    _refuse_invalid_candidate(report, operation)
+    excluded = frozenset(page.title for page in proposed_pages)
+    manifest = load_source_reference_manifest(kb_path)
+    if manifest is not None:
+        _refuse_manifest_drift(manifest, kb, excluded, operation)
+    written, deleted = _apply_worktree_candidate(kb_path, proposed_pages, control_file=control_file)
+    return WorktreeMutationResult(
+        written=written,
+        deleted=deleted,
+        affected_titles=sorted({page.title for page in proposed_pages}),
+        diagnostics=[],
+        manifest_updated=False,
+    )
+
+
+def revise_pages_in_worktree(
+    kb_root: str | Path,
+    revisions: Sequence[tuple[str, str]],
+    *,
+    operation: str = "page revision",
+) -> WorktreeMutationResult:
+    """Revise existing Compiled Pages in place through the checked apply.
+
+    The maintenance/semantic explicit-apply producer (spec 0008 §6): link
+    repairs and Dream Cycle findings edit the selected authoring worktree
+    as ordinary files — never staged proposals. A Link repair never creates
+    an accepted Claim; validation gates the complete candidate first.
+    """
+    kb_path = Path(kb_root).resolve()
+    kb = _load_valid_authoring_kb(kb_path)
+    page_by_path = {page.path: page for page in kb.pages if page.path}
+    proposed = []
+    for page_path, markdown in revisions:
+        page = page_by_path.get(page_path)
+        if page is None:
+            raise GitAuthoringError(
+                f"{operation} targets {page_path!r}, which is not a Compiled Page "
+                "in the selected Knowledge Base"
+            )
+        from lumio_wiki.ingest import ProposedPage
+
+        proposed.append(ProposedPage(relative_path=page.path, title=page.title, markdown=markdown))
+    from lumio_wiki.publish import validate_candidate_knowledge_base
+
+    report = validate_candidate_knowledge_base(proposed, kb_path)
+    _refuse_invalid_candidate(report, operation)
+    excluded = frozenset(page.title for page in proposed)
+    manifest = load_source_reference_manifest(kb_path)
+    if manifest is not None:
+        _refuse_manifest_drift(manifest, kb, excluded, operation)
+    written, _deleted = _apply_worktree_candidate(kb_path, proposed)
+    return WorktreeMutationResult(
+        written=written,
+        deleted=[],
+        affected_titles=sorted({page.title for page in proposed}),
+        diagnostics=[],
+        manifest_updated=False,
+    )
+
+
+def import_graph_into_worktree(
+    kb_root: str | Path, graph_path: str | Path
+) -> WorktreeMutationResult:
+    """Import stub Compiled Pages from a graph document as worktree edits.
+
+    Spec 0008 §7 disposition for graph exchange: the deterministic stub-page
+    and Control-File-extension computation is shared with the legacy staged
+    route (:func:`lumio_wiki.graph_exchange.assemble_graph_import`); this
+    native producer applies it as ordinary files. Broken edges stay
+    disclosed diagnostics; edges never become Claims.
+    """
+    from lumio_wiki.graph_exchange import GraphImportError, assemble_graph_import
+
+    kb_path = Path(kb_root).resolve()
+    kb = _load_valid_authoring_kb(kb_path)
+    try:
+        candidate = assemble_graph_import(graph_path, kb)
+    except GraphImportError as exc:
+        raise GitAuthoringError(str(exc)) from exc
+    _refuse_invalid_candidate(candidate.validation_report, "graph import")
+    excluded = frozenset(page.title for page in candidate.proposed_pages)
+    manifest = load_source_reference_manifest(kb_path)
+    if manifest is not None:
+        _refuse_manifest_drift(manifest, kb, excluded, "graph import")
+    written, deleted = _apply_worktree_candidate(
+        kb_path, candidate.proposed_pages, control_file=candidate.control_file
+    )
+    diagnostics = [
+        f"{diagnostic.path}: {diagnostic.message}" for diagnostic in candidate.diagnostics
+    ]
+    return WorktreeMutationResult(
+        written=written,
+        deleted=deleted,
+        affected_titles=sorted({page.title for page in candidate.proposed_pages}),
+        diagnostics=diagnostics,
+        manifest_updated=False,
+    )
+
+
+def retire_source_in_worktree(kb_root: str | Path, source_id: str) -> WorktreeMutationResult:
+    """Retire one managed Knowledge Source through Git lifecycle intent.
+
+    Spec 0008 §3.2/§3.3: retirement intent is reviewed in the Source
+    Reference Manifest, never a proposal-keyed pending transition. The page
+    impact is computed first and retirement REFUSES to write when any
+    declaring page would be left sole-source-lost — leave eligible support,
+    review a replacement/reclassification, or remove the page first. A
+    retired source keeps its history and drops its supporting bindings in
+    the same atomic manifest edit.
+    """
+    kb_path = Path(kb_root).resolve()
+    kb = _load_valid_authoring_kb(kb_path)
+    manifest = load_source_reference_manifest(kb_path)
+    if manifest is None:
+        raise GitAuthoringError(
+            f"native source retirement requires adopting the "
+            f"{SOURCE_REFERENCE_MANIFEST_BASENAME} first (lifecycle intent is "
+            "reviewed in Git; the legacy proposal-keyed route stays selected by "
+            "its own callers)"
+        )
+    if source_id not in manifest.sources:
+        raise GitAuthoringError(
+            f"Knowledge Source {source_id!r} is not declared in the "
+            f"{SOURCE_REFERENCE_MANIFEST_BASENAME}; only managed sources carry "
+            "Git lifecycle intent"
+        )
+    if manifest.sources[source_id] == "retired":
+        raise GitAuthoringError(f"Knowledge Source {source_id!r} is already retired")
+    active = {sid for sid, status in manifest.sources.items() if status == "active"}
+    impacts: list[tuple[str, str]] = []
+    for page in kb.pages:
+        declared = {source.id for source in page.sources if source.id}
+        if source_id not in declared:
+            continue
+        impacts.append(
+            (
+                page.title,
+                "still-supported" if (declared - {source_id}) & active else "sole-source-lost",
+            )
+        )
+    lost = sorted(title for title, status in impacts if status == "sole-source-lost")
+    if lost:
+        raise GitAuthoringError(
+            f"retiring {source_id!r} would leave page(s) without eligible support: "
+            f"{', '.join(lost)}. Leave eligible support, review a replacement or "
+            "reclassification, or remove the page first (spec 0008 §3.3)"
+        )
+    sources = dict(manifest.sources)
+    sources[source_id] = "retired"
+    bindings = {
+        entity_id: {sid: digest for sid, digest in entity_bindings.items() if sid != source_id}
+        for entity_id, entity_bindings in manifest.bindings.items()
+    }
+    bindings = {entity_id: kept for entity_id, kept in bindings.items() if kept}
+    updated = _checked_manifest(
+        SourceReferenceManifest(
+            version=manifest.version,
+            namespace=manifest.namespace,
+            sources=sources,
+            bindings=bindings,
+        )
+    )
+    _refuse_manifest_drift(updated, kb, frozenset(), "source retirement")
+    written, deleted = _apply_worktree_candidate(
+        kb_path, [], manifest_rewrite=updated, allow_untracked_manifest=True
+    )
+    diagnostics = [
+        f"{status}: {title}" for title, status in sorted(impacts, key=lambda item: item[0])
+    ]
+    return WorktreeMutationResult(
+        written=written,
+        deleted=deleted,
+        affected_titles=sorted(title for title, _status in impacts),
+        diagnostics=diagnostics,
+        manifest_updated=True,
+    )
+
+
+def reactivate_source_in_worktree(
+    kb_root: str | Path,
+    source_id: str,
+    raw_bytes: bytes,
+    *,
+    content_type: str | None = None,
+    filename: str | None = None,
+    source_registry=None,
+) -> WorktreeMutationResult:
+    """Reactivate a retired managed Source with new bytes and Git intent.
+
+    Spec 0008 §3.2/§3.3: the new bytes extend the explicitly selected
+    private registry's immutable history; the manifest intent edit flips the
+    source to active. Bindings are NOT invented here — a page that still
+    declares the source requires an explicit exact binding against the new
+    version, so those pages block this edit with guidance instead of being
+    silently rebound (reaffirming knowledge against replacement bytes is an
+    explicit reviewed source-binding edit).
+    """
+    kb_path = Path(kb_root).resolve()
+    kb = _load_valid_authoring_kb(kb_path)
+    manifest = load_source_reference_manifest(kb_path)
+    if manifest is None:
+        raise GitAuthoringError(
+            f"native source reactivation requires adopting the "
+            f"{SOURCE_REFERENCE_MANIFEST_BASENAME} first (lifecycle intent is "
+            "reviewed in Git; the legacy proposal-keyed route stays selected by "
+            "its own callers)"
+        )
+    if source_id not in manifest.sources:
+        raise GitAuthoringError(
+            f"Knowledge Source {source_id!r} is not declared in the "
+            f"{SOURCE_REFERENCE_MANIFEST_BASENAME}; only managed sources carry "
+            "Git lifecycle intent"
+        )
+    if manifest.sources[source_id] != "retired":
+        raise GitAuthoringError(f"Knowledge Source {source_id!r} is not retired")
+    if source_registry is None:
+        raise GitAuthoringError(
+            "native source reactivation requires the explicitly selected private "
+            "Source Registry (the new bytes extend its immutable history)"
+        )
+    _refuse_private_selection_inside_tree(kb_path, _registry_root(source_registry))
+    declaring = sorted(
+        page.title
+        for page in kb.pages
+        if source_id in {source.id for source in page.sources if source.id}
+    )
+    sources = dict(manifest.sources)
+    sources[source_id] = "active"
+    updated = _checked_manifest(
+        SourceReferenceManifest(
+            version=manifest.version,
+            namespace=manifest.namespace,
+            sources=sources,
+            bindings=manifest.bindings,
+        )
+    )
+    issues = validate_source_references(updated, _pages_view(kb, frozenset()))
+    if declaring or issues:
+        details = "; ".join(
+            [
+                *(
+                    [
+                        f"page(s) still declaring {source_id!r} require an explicit "
+                        f"exact binding against the new version: {', '.join(declaring)}"
+                    ]
+                    if declaring
+                    else []
+                ),
+                *issues,
+            ]
+        )
+        raise GitAuthoringError(
+            "source reactivation would leave the "
+            f"{SOURCE_REFERENCE_MANIFEST_BASENAME} inconsistent: {details}. "
+            "Re-ingest the affected pages against the new bytes (the managed "
+            "route records the exact binding) or reclassify them first"
+        )
+    version, registration = source_registry.register_version(
+        source_id, raw_bytes, filename=filename, content_type=content_type
+    )
+    written, deleted = _apply_worktree_candidate(
+        kb_path, [], manifest_rewrite=updated, allow_untracked_manifest=True
+    )
+    return WorktreeMutationResult(
+        written=written,
+        deleted=deleted,
+        affected_titles=[],
+        diagnostics=[f"registered {source_id} version {version.content_hash} ({registration})"],
+        manifest_updated=True,
+    )

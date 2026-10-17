@@ -169,7 +169,18 @@ def test_cli_semantic_review_reports_and_stages(monkeypatch, kb_root: Path, caps
     monkeypatch.setenv("LUMIO_PROVIDER_MODEL", "fake-model")
     monkeypatch.setattr(SemanticDreamReviewer, "_build_client", staticmethod(lambda: client))
 
+    import subprocess
+
     from lumio_wiki.cli import main
+
+    def _git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(kb_root), *args], check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "test@example.com")
+    _git("config", "user.name", "Test Author")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "authoring revision")
 
     rc = main(["dream", str(kb_root), "--semantic", "--stage"])
     out = capsys.readouterr().out
@@ -177,10 +188,12 @@ def test_cli_semantic_review_reports_and_stages(monkeypatch, kb_root: Path, caps
     assert rc == 0
     assert "# Semantic Dream Review" in out
     assert "semantic_summary: 1" in out
-    assert "semantic_staged_proposals: 1" in out
-    assert "Lumio is trusted knowledge chat." not in (
-        kb_root / "concepts" / "overview.md"
-    ).read_text(encoding="utf-8")
+    assert "semantic_applied_pages: 1" in out
+    # G3 (spec 0008 §6): the explicit apply edits the worktree — the
+    # reviewed replacement summary is now authored page content (uncommitted).
+    assert "Lumio is trusted knowledge chat." in (kb_root / "concepts" / "overview.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_contradiction_stages_body_callouts_on_both_pages(kb_root: Path):

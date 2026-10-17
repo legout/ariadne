@@ -2232,3 +2232,95 @@ def test_f6_rollback_requires_review_confirmation_and_current_baseline(tmp_path,
     assert PublishedFilesystemLocation(destination).read_pointer() == revision_b
     assert main([*fresh_args, "--confirm", digest]) == 0
     assert PublishedFilesystemLocation(destination).read_pointer() == revision_a
+
+
+def test_native_source_retirement_edits_git_lifecycle_intent(tmp_path, capsys):
+    """G3 (spec 0008 §3.2/§3.3): retirement intent is a reviewed Git manifest
+    edit, never a proposal-keyed pending transition.
+
+    A retirement with eligible support drops the retired source's binding and
+    keeps the page bound to its exact remaining source (independently derived
+    digest over known bytes); a sole-source retirement REFUSES with the
+    affected page named, leaving the manifest untouched.
+    """
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    registry = SourceRegistry(tmp_path / "registry")
+
+    source_file = tmp_path / "manual.txt"
+    source_file.write_bytes(A_BYTES)
+    compiled = tmp_path / "press.md"
+    compiled.write_text(_authored_ingest_page("operator-manual"))
+    ingest_args = [
+        "ingest",
+        str(kb),
+        str(source_file),
+        "--compiled-page",
+        str(compiled),
+        "--source-id",
+        "operator-manual",
+        "--source-registry",
+        str(registry.root),
+    ]
+    assert main(ingest_args) == 0
+    _commit(repo)
+
+    # A second exact supporting source: the authored page declares both.
+    service_bytes = b"Service bulletin: verify the ram annually."
+    service_digest = hashlib.sha256(service_bytes).hexdigest()
+    second_page = _authored_ingest_page("operator-manual").replace(
+        '  - id: "operator-manual"\n    title: "Operator manual"\n',
+        '  - id: "operator-manual"\n    title: "Operator manual"\n'
+        '  - id: "service-manual"\n    title: "Service bulletin"\n',
+    )
+    service_file = tmp_path / "service.txt"
+    service_file.write_bytes(service_bytes)
+    compiled2 = tmp_path / "press2.md"
+    compiled2.write_text(second_page)
+    assert (
+        main(
+            [
+                "ingest",
+                str(kb),
+                str(service_file),
+                "--compiled-page",
+                str(compiled2),
+                "--source-id",
+                "service-manual",
+                "--source-registry",
+                str(registry.root),
+            ]
+        )
+        == 0
+    )
+    _commit(repo)
+
+    # --- Retire the operator manual: an ordinary manifest edit. ---
+    code = main(["source", "retire", str(kb), "--source-id", "operator-manual"])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "Retired Knowledge Source 'operator-manual'" in out
+    manifest = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest.sources["operator-manual"] == "retired"
+    assert manifest.sources["service-manual"] == "active"
+    # A retired source cannot keep supporting bindings: only the exact
+    # service digest remains (independent SHA-256 oracle over known bytes).
+    assert manifest.bindings["entity:workbench-press"] == {"service-manual": service_digest}
+    # No proposal lifecycle was created anywhere.
+    assert not (kb / ".lumio").exists()
+    # The intent edit never rewrites the authored page.
+    page_text = (kb / "concepts" / "workbench_press.md").read_text(encoding="utf-8")
+    assert "operator-manual" in page_text
+
+    # --- A sole-source retirement refuses and preserves the manifest. ---
+    code = main(["source", "retire", str(kb), "--source-id", "service-manual"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "Workbench Press" in captured.err
+    manifest_after = parse_source_reference_manifest(
+        (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest_after.sources["service-manual"] == "active"
+    assert manifest_after.bindings["entity:workbench-press"] == {"service-manual": service_digest}

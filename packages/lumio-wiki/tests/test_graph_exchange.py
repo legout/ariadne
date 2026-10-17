@@ -448,18 +448,37 @@ def test_cli_export_graph_writes_both_artifacts(tmp_path: Path, capsys: pytest.C
     assert "graph.json" in out and "graph.graphml" in out
 
 
-def test_cli_import_graph_stages_reviewable_proposal(
+def test_cli_import_graph_edits_the_authoring_worktree(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
+    # G3 (spec 0008 §7): graph import writes the stub pages (and any Control
+    # File extension) into the selected Git authoring worktree as ordinary
+    # uncommitted files — no proposal is staged.
     kb, _report = load_knowledge_base(CATEGORIZED_KB)
     export = export_graph(select_export_pages(kb.pages, ExportVisibilityScope.ALL))
     graph_path = tmp_path / "graph.json"
     graph_path.write_text(export.graph_json, encoding="utf-8")
     dest_root = _fresh_categorized_kb(tmp_path / "dest")
+    import subprocess
+
+    def _git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(dest_root), *args], check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "test@example.com")
+    _git("config", "user.name", "Test Author")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "authoring revision")
 
     rc = main(["import-graph", str(dest_root), str(graph_path)])
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Staged proposal" in out
-    assert "proposal inspect" in out
+    assert "Imported graph stubs into the Git authoring worktree" in out
+    assert "Staged proposal" not in out
+    status = subprocess.run(
+        ["git", "-C", str(dest_root), "status", "--porcelain", "--untracked-files=all"],
+        check=True,
+        capture_output=True,
+    ).stdout.decode()
+    assert "concepts/overview.md" in status

@@ -318,13 +318,43 @@ class SemanticDreamReviewer:
                     staged.append(proposal)
         return SemanticStagingResult(tuple(staged), tuple(skipped))
 
+    def worktree_edits(
+        self, *, report: SemanticReviewReport | None = None
+    ) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[SemanticFinding, str], ...]]:
+        """Compute the explicit worktree edits for the report's findings (G3).
+
+        Spec 0008 §6: an explicit apply operation edits the selected
+        authoring worktree rather than staging stored proposals. Returns
+        ``(edits, skipped)`` where ``edits`` are ``(page_path,
+        final_markdown)`` pairs — the same reviewed lifecycle/summary/
+        contradiction edits the staged route computes, in their final
+        published form without proposal routing markers — and ``skipped``
+        carries ``(finding, reason)``. Read-only: applying the edits is the
+        caller's explicit worktree operation.
+        """
+        report = report or self.review()
+        inspected = frozenset(page.path for page in report.pages)
+        edits: list[tuple[str, str]] = []
+        skipped: list[tuple[SemanticFinding, str]] = []
+        for finding in report.findings:
+            try:
+                finding_edits = self._edits_for_finding(finding, inspected, for_worktree=True)
+            except (OSError, SemanticMaintenanceError, ValueError, msgspec.DecodeError) as exc:
+                skipped.append((finding, str(exc)))
+                continue
+            if not finding_edits:
+                skipped.append((finding, "finding has no actionable edit"))
+                continue
+            edits.extend(finding_edits)
+        return tuple(edits), tuple(skipped)
+
     @staticmethod
     def _stale_target_lifecycle(finding: SemanticFinding) -> str:
         """Single source of truth used by both output and staging."""
         return finding.lifecycle or "deprecated"
 
     def _edits_for_finding(
-        self, finding: SemanticFinding, inspected: frozenset[str]
+        self, finding: SemanticFinding, inspected: frozenset[str], *, for_worktree: bool = False
     ) -> list[tuple[str, str]]:
         if finding.validation_errors:
             raise SemanticMaintenanceError("; ".join(finding.validation_errors))
@@ -371,7 +401,13 @@ class SemanticDreamReviewer:
                     f"> Reason: {finding.reason}\n{note_lines}\n"
                 )
                 edited = markdown.rstrip("\n") + callout
-            edited = mark_compound_revision(edited, **_revision_routing_fields(self.kb, page_path))
+            if not for_worktree:
+                # The staged-proposal route marks revisions with proposal-only
+                # routing fields (stripped at publish); a direct worktree edit
+                # writes the final published form.
+                edited = mark_compound_revision(
+                    edited, **_revision_routing_fields(self.kb, page_path)
+                )
             edits.append((page_path, edited))
         return edits
 

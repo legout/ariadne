@@ -1,8 +1,39 @@
 # Implementation plan 0008: Git-native Knowledge Authoring
 
-**Revision/status:** 9 — G1 accepted; G2 fix-first corrections and local
-LanceDB completion are owner-authorized for one isolated candidate. Behavioral
-specification unchanged.
+**Revision/status:** 10 — G1 accepted and integrated; G2 accepted as an
+isolated component at `69cbd715…` (tree `1c0c5775…`, result
+`result/g2/fix-a3`); owner-authorized G3 execution starts from that base.
+Behavioral specification unchanged.
+
+**Owner-authorized G3 start, 2026-10-17 (r10):** the parent accepted the
+isolated G2 component (`g2Acceptance` in the orchestrator run state; closed
+review chain `g2-reviewer` → `g2-fix-reviewer` → `g2-fix2-reviewer` →
+`g2-d1-reviewer` PASS) and authorized G3 in a fresh isolated candidate
+(`base/g3-a1` = `69cbd715…`, sole future result `result/g3/a1`). Worker is
+Pi `zai/glm-5.3`/high (sole writer); review is one parent-only independent
+P delta on Sol/high before G4, never a worker precondition. Baseline reuse:
+the parent git-verified that the eleven P test files and the legacy
+producer/support modules they exercise are byte-identical from the committed
+G1 fix tree (`410e7ac…`) to the accepted G2 base, so the committed G1
+full-suite (`1732 passed, 9 skipped`, fixed `-n 4`) and regression (`402
+passed`) logs pin unchanged legacy producer behavior; no fresh P baseline,
+full suite, or repeated green is run for the new worker/path. Post-delta
+budget: the plan's eleven-file focused P command runs once after migration
+only because every listed producer actually changes; additional checks are
+limited to `test_git_authoring.py` nodes whose direct contract changes,
+node-selected `test_cli.py` migrated-producer handlers, and directly affected
+ingest/optional-extra cases, each justified by the actual diff; semantic
+oracles are preserved while obsolete proposal-state assertions migrate to
+file/Git-diff plus admitted-snapshot outcomes; tests that explicitly cover
+the legacy terminal lifecycle scheduled for G4 stay classified legacy.
+Default zero new tests; one focused case only for genuinely uncovered
+compound-provenance/binding/redirect-pin/dirty-refusal behavior with
+independently derived expectations. One coherent selected post-fix unit plus
+scoped Ruff/format/diff; one collective fix pass and one parent-only delta
+recheck. No full suite, live services, wheels, MCP, provider calls, private
+KB, integration, push, or release. Env: worktree-local locked uv environment
+on the explicit Python 3.14.8 with the declared locked workspace/dev extras
+needed by the selected cases.
 
 **Owner-authorized D1 residual follow-up, 2026-10-17 (r9):** after the
 independent `8b034283…c393114e` delta review closed D2–D5 and returned two
