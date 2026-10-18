@@ -19,6 +19,7 @@ from urllib.parse import quote
 import msgspec
 import msgspec.yaml as yaml
 
+from lumio_wiki.ariadne_context import parse_ariadne_profile
 from lumio_wiki.embeddings import (
     DEFAULT_SEMANTIC_THRESHOLD,
     Embedder,
@@ -2971,6 +2972,7 @@ def _parse_page(
     data, body, body_start_line = _parse_frontmatter(text, Path(relative))
     claims, claim_issues = _as_claims(data.get("claims"), relative)
     review_after, _review_issues = _as_review_after(data.get("review_after"), relative)
+    profile, _profile_errors = parse_ariadne_profile(data.get("ariadne_profile"), where=relative)
     page = CompiledPage(
         path=relative,
         title=str(data.get("title", "")),
@@ -2987,6 +2989,7 @@ def _parse_page(
         synthetic=bool(data.get("synthetic", False)),
         body=body,
         body_start_line=body_start_line,
+        ariadne_profile=profile,
     )
     return page, data, claim_issues
 
@@ -3692,6 +3695,21 @@ def _validate_page(
 ) -> list[ValidationIssue]:
     """Validate a single page, returning all issues for that page."""
     page_issues: list[ValidationIssue] = []
+
+    # The typed Ariadne Context Profile envelope (spec 0009): a structurally
+    # invalid envelope refuses validation with named-path diagnostics
+    # instead of becoming opaque accepted authority.
+    _profile_record, profile_errors = parse_ariadne_profile(
+        data.get("ariadne_profile"), where=relative
+    )
+    for message in profile_errors:
+        page_issues.append(
+            ValidationIssue(
+                file=relative,
+                field="ariadne_profile",
+                message=message,
+            )
+        )
 
     if not page.title:
         page_issues.append(

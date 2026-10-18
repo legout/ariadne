@@ -192,6 +192,16 @@ class S3Manifest(msgspec.Struct, frozen=True):
     source_reference_digest: str = ""
     """SHA-256 of the reviewed Source Reference Manifest bytes (local)."""
 
+    namespace: str = ""
+    """The admitted KB Namespace of the Source Reference Manifest (local).
+
+    A safe identity/digest reader fact for the Ariadne Context Profile SDK
+    (spec 0009 §5): lets a published version's Context Identity be verified
+    without consulting private admission records. Empty on every manifest
+    published before this field existed; readers treat that honestly as an
+    unverifiable identity, never as a default namespace.
+    """
+
     format_identity: str = ""
     """The validator/format contract identity that admitted this version (local)."""
 
@@ -256,6 +266,7 @@ def build_published_manifest(
     subtree: str = "",
     source_reference_digest: str = "",
     format_identity: str = "",
+    namespace: str = "",
 ) -> S3Manifest:
     """Build a manifest for an immutable version from canonical content.
 
@@ -301,6 +312,7 @@ def build_published_manifest(
         subtree=subtree,
         source_reference_digest=source_reference_digest,
         format_identity=format_identity,
+        namespace=namespace,
     )
 
 

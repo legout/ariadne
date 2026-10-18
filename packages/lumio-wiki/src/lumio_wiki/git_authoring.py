@@ -2169,6 +2169,7 @@ def publish_revision(
         subtree=captured.subtree,
         source_reference_digest=captured.manifest_digest,
         format_identity=VALIDATOR_CONTRACT_ID,
+        namespace=captured.manifest.namespace,
     )
     sealed = SealedSourceReferences(
         published_version=version,
@@ -2580,6 +2581,7 @@ def _write_version_directory(
             subtree=manifest.subtree,
             source_reference_digest=manifest.source_reference_digest,
             format_identity=manifest.format_identity,
+            namespace=manifest.namespace,
         )
 
     # The manifest is written last: its presence marks a complete version.
