@@ -14,8 +14,8 @@ Guards the invariants the release pipeline depends on:
    topics issue #181 requires: migration, optional extras, supported
    Python version, and known MVP limits.
 4. **Credential posture** — the release workflow uses environment-scoped
-   tokens only, retains build provenance, gates PyPI promotion behind a
-   protected environment, and never triggers from pull requests.
+   tokens only, retains build provenance, verifies candidates before automatic
+   publication, and never triggers from pull requests.
 """
 
 from __future__ import annotations

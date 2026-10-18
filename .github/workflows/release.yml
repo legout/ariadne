@@ -3,9 +3,9 @@ name: release
 # Issue #181 / ADR-0025: certified wheel releases. A pushed v*.*.* tag builds
 # both inter-member wheels once from that exact commit, records their
 # SHA-256 hashes and SLSA build provenance, verifies the built artifacts,
-# and publishes those same wheels directly to PyPI after manual approval.
+# and automatically publishes those same wheels directly to PyPI.
 #
-# Credential model: PYPI_API_TOKEN in the protected `pypi` environment.
+# Credential model: PYPI_API_TOKEN in the `pypi` environment.
 # Ordinary CI and pull requests do not receive the publishing token.
 # Build provenance still uses GitHub OIDC; token-based PyPI uploads do not
 # generate PyPI digital attestations. See docs/packaging.md for owner setup.
@@ -158,7 +158,7 @@ jobs:
         run: bash examples/onboarding-journey/smoke-journey.sh
 
   promote-pypi:
-    # Manual environment approval and both candidate checks precede upload.
+    # Both candidate checks precede automatic upload; no reviewer gate.
     needs: [verify-wiki, verify-s3-compat]
     runs-on: ubuntu-latest
     environment: pypi

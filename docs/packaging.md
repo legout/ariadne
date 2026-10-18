@@ -312,29 +312,29 @@ publication. One pipeline, no rebuilds:
      (`examples/onboarding-journey/smoke-journey.sh`) against the disposable
      SeaweedFS service: local Maintainer journey, S3 publication with and
      without LanceDB, remote LanceDB reader and zero-index fallback.
-3. **Human-gated publication** — `promote-pypi` runs only after both candidate
-   checks and the `pypi` environment's required reviewers approve. It downloads
-   the same build artifact, verifies its hashes (`sha256sum -c`) and publishes
-   those exact wheels directly to PyPI. No staging-index account or token is
-   required.
+3. **Automatic publication** — `promote-pypi` runs after both candidate
+   checks pass. It downloads the same build artifact, verifies its hashes
+   (`sha256sum -c`) and publishes those exact wheels directly to PyPI.
+   No manual deployment approval or staging-index account/token is required.
 
 **Credential model.** Publishing uses one GitHub Environment secret:
 `PYPI_API_TOKEN` in `pypi`. It must authorize both public distributions;
 a token for another project is not sufficient.
 The workflow fails before upload if a token is missing, never falls back to
 Trusted Publishing, and never prints token values. Ordinary CI and pull
-requests do not receive these secrets. Production promotion still requires
-manual environment approval; do not bypass that gate.
+requests do not receive these secrets. The `pypi` environment scopes the token;
+it has no required reviewers or wait timer. Artifact verification still gates
+production publication.
 
 GitHub's tagged-build SLSA provenance and recorded SHA-256/byte comparisons
 remain enabled. The publish action's PyPI digital attestations require Trusted
 Publishing and are disabled for this token-based mode. No workflow action
 shares an Actions cache with PR-triggered workflows.
 
-**One-time owner setup** (the issue #181 human gate):
+**One-time owner setup**:
 
-1. Create GitHub environment **`pypi`** with required reviewers = repository
-   owners.
+1. Create GitHub environment **`pypi`** without required reviewers or a wait
+   timer.
 2. Store `PYPI_API_TOKEN` in that environment. For a first publication,
    ensure the token's scope permits creating both projects;
    review the narrowest workable scope after creation. Never put tokens in a

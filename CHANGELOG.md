@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Remove the manual deployment approval for future PyPI releases; candidate
+  verification, tag restrictions and environment-scoped credentials remain.
+
 ## 0.2.0 - 2026-10-18
 
 ### Breaking changes
