@@ -19,9 +19,9 @@
   private observations and history, and require explicit lifecycle/alias choices.
 - Keep base reading portable, model-free and independent of Git and Ariadne.
 - Verify index-installed wheel bytes without requiring optional origin metadata;
-  download only the two public wheels during release promotion.
-- Use environment-scoped TestPyPI/PyPI tokens, retain build provenance and byte
-  checks, and preserve manual production approval.
+  check the two built public wheels before publication.
+- Publish directly to PyPI using one environment-scoped token, retain build
+  provenance and byte checks, and preserve manual production approval.
 
 See [release notes](docs/release-notes/v0.2.0.md) for migration, extras, Python
 requirements and verification limits. The private application and joint Ariadne
