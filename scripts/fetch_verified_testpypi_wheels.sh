@@ -6,7 +6,7 @@
 # artifacts TestPyPI is actually serving, never a rebuild.
 #
 # Usage: fetch_verified_testpypi_wheels.sh DEST HASHES_FILE VERSION
-#   DEST        directory the three wheels are downloaded into
+#   DEST        directory the two public wheels are downloaded into
 #   HASHES_FILE sha256sum file recorded by the release build job
 #   VERSION     lockstep release version (e.g. 0.1.1)
 set -euo pipefail
@@ -22,11 +22,11 @@ for attempt in $(seq 1 12); do
   if /tmp/fetch-testpypi-venv/bin/pip download --no-deps \
        --index-url https://test.pypi.org/simple/ \
        --extra-index-url https://pypi.org/simple/ \
-       -d "$dest" "lumio-wiki==$version" "lumio-lancedb==$version" "lumio==$version"; then
+       -d "$dest" "lumio-wiki==$version" "lumio-lancedb==$version"; then
     break
   fi
   echo "TestPyPI not serving the release yet (attempt $attempt); retrying" >&2
   sleep 30
 done
-test "$(find "$dest" -maxdepth 1 -name '*.whl' | wc -l)" -eq 3
+test "$(find "$dest" -maxdepth 1 -name '*.whl' | wc -l)" -eq 2
 (cd "$dest" && sha256sum -c "$hashes")

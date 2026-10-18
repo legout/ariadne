@@ -59,8 +59,11 @@ def assert_installed_wheel(wheel: Path) -> None:
     module = importlib.import_module(root)
     assert Path(module.__file__).resolve() == installed_root / "__init__.py"
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
-    direct = json.loads(distribution.read_text("direct_url.json") or "{}")
-    assert direct.get("url") == wheel.as_uri() and "dir_info" not in direct, direct
+    # Index installs omit origin metadata; member bytes still bind the artifact.
+    direct_text = distribution.read_text("direct_url.json")
+    direct = json.loads(direct_text) if direct_text is not None else {}
+    if direct_text is not None:
+        assert direct.get("url") == wheel.as_uri() and "dir_info" not in direct, direct
     archive_info = direct.get("archive_info", {})
     hashes = archive_info.get("hashes", {})
     if "sha256" in hashes:
