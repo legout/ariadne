@@ -11,6 +11,8 @@ The legacy implementation is not changed or deployed by this amendment._
 
 _Renumbered from the duplicate ADR-0015; the earlier Portable Maintainer Workflows decision retains ADR-0015 by commit chronology._
 
+**Subsequent native profile decision (owner, 2026-10-18):** [ADR-0030](0030-ariadne-context-profile-and-sdk-boundary.md)/[spec 0009](../specs/2026-10-18-0009-ariadne-context-profile.md) are the separate decision anticipated below for supported native Ariadne metadata preservation. Generic OKF Exchange Profile 1/2 mappings and loss disclosures remain unchanged; they are not the integration interchange. Written integration revision 1 is owner-approved for planning only.
+
 ## Context
 
 Google Cloud's OKF v0.2 keeps the v0.1 bundle model but makes provenance,

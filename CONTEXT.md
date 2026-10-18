@@ -224,6 +224,32 @@ The former `proposal-first` or `direct-write` choice for ingestion publication.
 Neither mode supplies the Publication Admission required by Git authoring.
 _Avoid_: edit mode, commit mode.
 
+### Integrated knowledge and analytics
+
+**Content Repository**:
+The jointly reviewed authored knowledge and analytics inputs under one revision history. It is distinct from either software repository and from an admitted runtime snapshot.
+_Avoid_: merged codebase, published version, shared draft store
+
+**Context Binding**:
+An explicit association between an identified metric, its knowledge Entity and its required Policies in one knowledge snapshot. It grants neither source access nor calculation or join authority.
+_Avoid_: title match, Contract Binding, inferred dependency
+
+**Policy Closure**:
+The complete finite set of required Policies reached through explicit Policy dependencies for a metric in one knowledge snapshot. Provenance citations and navigation links are not Policy dependencies.
+_Avoid_: all linked pages, search results, source closure
+
+**Visibility Scope**:
+The operator-authorized set of knowledge access classes for an integrated project and its bound release. It is distinct from authored Visibility and cannot be widened by a query.
+_Avoid_: user role, authored permission, visibility hierarchy
+
+**Bound Release**:
+An immutable, human-admitted association of exact knowledge, analytics, evidence and execution identities. It is distinct from a package release and does not freeze mutable business data.
+_Avoid_: latest, software version, historical answer cache
+
+**Ariadne Context Profile**:
+The explicitly versioned application contract preserving supported Ariadne metadata and exact knowledge identity in native Lumio content. It is not generic OKF interchange, executable semantics or admission authority.
+_Avoid_: lossless generic OKF, semantic engine, Context Provider service
+
 ### Knowledge Base controls and published artifacts
 
 **Knowledge Base Control File**:
