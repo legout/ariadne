@@ -108,38 +108,40 @@ def test_release_workflow_uses_tag_secrets_and_gated_promotion():
     assert "pull_request" not in workflow
 
     jobs = workflow["jobs"]
-    assert "build-wheels" in jobs
-    assert jobs["publish-testpypi"]["environment"] == "testpypi"
-    assert jobs["promote-pypi"]["environment"] == "pypi"
-    # The PyPI promotion is the human gate: it must depend on every
-    # TestPyPI verification job.
-    promote_needs = set(jobs["promote-pypi"]["needs"])
-    verify_jobs = {name for name in jobs if name.startswith("verify-testpypi")}
-    assert verify_jobs, "release must verify the TestPyPI install"
-    assert verify_jobs <= promote_needs, promote_needs
-
-    # Secret-only uploads must fail before the action could fall back to OIDC.
-    text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    for job, secret in (
-        ("publish-testpypi", "TEST_PYPI_API_TOKEN"),
-        ("promote-pypi", "PYPI_API_TOKEN"),
-    ):
-        permissions = jobs[job].get("permissions") or {}
-        assert permissions.get("id-token") != "write", (job, permissions)
+    verify_jobs = {"verify-wiki", "verify-s3-compat"}
+    assert set(jobs) == {"build-wheels", "promote-pypi"} | verify_jobs
+    publish = jobs["promote-pypi"]
+    assert publish["environment"] == "pypi"
+    assert verify_jobs <= set(publish["needs"])
+    for job in verify_jobs:
+        assert jobs[job]["needs"] == "build-wheels"
+    for job in verify_jobs | {"promote-pypi"}:
         steps = jobs[job]["steps"]
-        upload_index = next(
-            i
-            for i, step in enumerate(steps)
-            if step.get("uses", "").startswith("pypa/gh-action-pypi-publish@")
-        )
-        reference = "${{ secrets." + secret + " }}"
-        assert steps[upload_index]["with"]["password"] == reference
-        assert steps[upload_index]["with"]["attestations"] is False
         assert any(
-            step.get("env", {}).get(secret) == reference
-            and f'test -n "${secret}"' in step.get("run", "")
-            for step in steps[:upload_index]
-        ), f"{job}: missing pre-upload token guard"
+            step.get("uses", "").startswith("actions/download-artifact@")
+            and step.get("with", {}).get("name") == "release-wheels"
+            for step in steps
+        )
+        assert any("sha256sum -c" in step.get("run", "") for step in steps)
+
+    # One production token, no staging-index dependency or OIDC fallback.
+    text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    assert "TEST_PYPI_API_TOKEN" not in text and "test.pypi.org" not in text
+    assert (publish.get("permissions") or {}).get("id-token") != "write"
+    steps = publish["steps"]
+    upload_index = next(
+        i
+        for i, step in enumerate(steps)
+        if step.get("uses", "").startswith("pypa/gh-action-pypi-publish@")
+    )
+    assert steps[upload_index]["with"]["password"] == "${{ secrets.PYPI_API_TOKEN }}"
+    assert steps[upload_index]["with"]["packages-dir"] == "dist/"
+    assert steps[upload_index]["with"]["attestations"] is False
+    assert any(
+        step.get("env", {}).get("PYPI_API_TOKEN") == "${{ secrets.PYPI_API_TOKEN }}"
+        and 'test -n "$PYPI_API_TOKEN"' in step.get("run", "")
+        for step in steps[:upload_index]
+    ), "missing pre-upload token guard"
 
     build = jobs["build-wheels"]
     assert build["permissions"]["id-token"] == "write"
@@ -147,9 +149,3 @@ def test_release_workflow_uses_tag_secrets_and_gated_promotion():
         step.get("uses", "").startswith("actions/attest-build-provenance@")
         for step in build["steps"]
     )
-
-    # Both wheel-fetch sites share the certified fetch/verify helper, so the
-    # TestPyPI verification and the PyPI promotion cannot drift apart.
-    fetch_script = ROOT / "scripts" / "fetch_verified_testpypi_wheels.sh"
-    assert fetch_script.is_file()
-    assert text.count("fetch_verified_testpypi_wheels.sh") >= 2

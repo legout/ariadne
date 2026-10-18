@@ -304,26 +304,23 @@ publication. One pipeline, no rebuilds:
 1. **Build once** — `build-wheels` builds both public wheels from the tagged
    commit, asserts the lockstep version, records SHA-256 hashes (workflow
    summary + artifact) and SLSA build provenance bound to the tag.
-2. **TestPyPI** — `publish-testpypi` uploads the hash-verified wheels using
-   its environment-scoped `TEST_PYPI_API_TOKEN`.
-3. **Verify the journey** — fresh venvs install *by name* from TestPyPI
-   using the documented `pip install` command shapes:
-   - `verify-testpypi-wiki` — the isolation/packaged-skill/local-library
-     smoke (`scripts/verify_lumio_wiki_wheel.py`) plus
-     `lumio-wiki skill path`/`doctor` against the published wheel.
-   - `verify-testpypi-s3-compat` — the canonical onboarding journey
-     (`examples/onboarding-journey/smoke-journey.sh`) against SeaweedFS
-     `weed mini`: local Maintainer journey, S3 publication with and without
-     LanceDB, remote LanceDB reader, zero-index fallback.
-4. **Human-gated promotion** — `promote-pypi` runs only after the `pypi`
-   environment's required reviewers approve. It re-downloads the wheels
-   TestPyPI is actually serving, proves them byte-identical to the build
-   record (`sha256sum -c`), and promotes those exact artifacts to PyPI.
+2. **Verify the candidates** — both jobs download the build artifact, verify
+   its recorded hashes and install those exact wheel files in fresh venvs:
+   - `verify-wiki` — isolation, packaged skill, local-library smoke and
+     optional-extras resolution (`scripts/verify_lumio_wiki_wheel.py`).
+   - `verify-s3-compat` — the canonical onboarding journey
+     (`examples/onboarding-journey/smoke-journey.sh`) against the disposable
+     SeaweedFS service: local Maintainer journey, S3 publication with and
+     without LanceDB, remote LanceDB reader and zero-index fallback.
+3. **Human-gated publication** — `promote-pypi` runs only after both candidate
+   checks and the `pypi` environment's required reviewers approve. It downloads
+   the same build artifact, verifies its hashes (`sha256sum -c`) and publishes
+   those exact wheels directly to PyPI. No staging-index account or token is
+   required.
 
-**Credential model.** Publishing uses API tokens stored only as GitHub
-Environment secrets: `TEST_PYPI_API_TOKEN` in `testpypi`, and `PYPI_API_TOKEN`
-in `pypi`. Tokens must authorize both public distributions on their respective
-index; a token for another project or for the other index is not sufficient.
+**Credential model.** Publishing uses one GitHub Environment secret:
+`PYPI_API_TOKEN` in `pypi`. It must authorize both public distributions;
+a token for another project is not sufficient.
 The workflow fails before upload if a token is missing, never falls back to
 Trusted Publishing, and never prints token values. Ordinary CI and pull
 requests do not receive these secrets. Production promotion still requires
@@ -336,10 +333,10 @@ shares an Actions cache with PR-triggered workflows.
 
 **One-time owner setup** (the issue #181 human gate):
 
-1. Create GitHub environments **`testpypi`** (no approval required) and
-   **`pypi`** (required reviewers = repository owners).
-2. Store the matching index tokens in the environment secrets above. For a
-   first publication, ensure the token's scope permits creating both projects;
+1. Create GitHub environment **`pypi`** with required reviewers = repository
+   owners.
+2. Store `PYPI_API_TOKEN` in that environment. For a first publication,
+   ensure the token's scope permits creating both projects;
    review the narrowest workable scope after creation. Never put tokens in a
    repository file, command argument, release note or conversation.
 3. Protect the `v*` tag pattern (admins/maintainers only) so only

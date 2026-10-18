@@ -2,16 +2,11 @@ name: release
 
 # Issue #181 / ADR-0025: certified wheel releases. A pushed v*.*.* tag builds
 # both inter-member wheels once from that exact commit, records their
-# SHA-256 hashes and SLSA build provenance, publishes them to TestPyPI,
-# verifies the documented installation journey against the TestPyPI
-# artifacts, and only then — behind a human-approved protected environment —
-# promotes the byte-identical wheels (hash-checked against the build record)
-# to PyPI.
+# SHA-256 hashes and SLSA build provenance, verifies the built artifacts,
+# and publishes those same wheels directly to PyPI after manual approval.
 #
-# Credential model: environment-scoped API tokens, never source credentials.
-# TestPyPI uses TEST_PYPI_API_TOKEN; PyPI uses PYPI_API_TOKEN. Publishing jobs
-# run only in the `testpypi` / `pypi` environments, and `pypi` requires manual
-# reviewer approval. Ordinary CI and pull requests receive neither token.
+# Credential model: PYPI_API_TOKEN in the protected `pypi` environment.
+# Ordinary CI and pull requests do not receive the publishing token.
 # Build provenance still uses GitHub OIDC; token-based PyPI uploads do not
 # generate PyPI digital attestations. See docs/packaging.md for owner setup.
 #
@@ -69,38 +64,9 @@ jobs:
         with:
           subject-path: dist/*.whl
 
-  publish-testpypi:
+  verify-wiki:
+    # Verify the exact built wheel in fresh environments before publication.
     needs: build-wheels
-    runs-on: ubuntu-latest
-    environment: testpypi
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-wheels
-      - name: Verify artifact hashes before upload
-        run: |
-          (cd dist && sha256sum -c ../wheel-hashes.txt)
-      - name: Require the TestPyPI environment token
-        env:
-          TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
-        run: test -n "$TEST_PYPI_API_TOKEN"
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
-        with:
-          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
-          repository-url: https://test.pypi.org/legacy/
-          attestations: false # PyPI attestations require Trusted Publishing.
-          # Wheels were hash-verified before upload, so an index that already
-          # carries the identical file makes failed workflow re-runs safe.
-          skip-existing: true
-
-  verify-testpypi-wiki:
-    # Fresh-venv install by NAME (the documented pip command shape), then the
-    # isolation + packaged-skill + local library smoke against the TestPyPI
-    # install: proves the published wheel — not just the built one — carries
-    # the certified surface.
-    needs: publish-testpypi
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -113,22 +79,16 @@ jobs:
         with:
           python-version: "3.14"
           enable-cache: false
-      - name: Download the exact TestPyPI wheels and verify recorded hashes
-        run: >-
-          bash scripts/fetch_verified_testpypi_wheels.sh tp wheel-hashes.txt
-          "${GITHUB_REF_NAME#v}"
-      - name: Fresh-venv install by name from TestPyPI
+      - name: Verify recorded artifact hashes
+        run: (cd dist && sha256sum -c ../wheel-hashes.txt)
+      - name: Fresh-venv install of the candidate wheel
         run: |
-          version="${GITHUB_REF_NAME#v}"
           uv venv --python 3.14 /tmp/wiki
-          uv pip install --python /tmp/wiki/bin/python \
-            --index-url https://test.pypi.org/simple/ \
-            --extra-index-url https://pypi.org/simple/ \
-            "lumio-wiki==$version"
+          uv pip install --python /tmp/wiki/bin/python dist/lumio_wiki-*.whl
       - name: Package isolation + local library smoke (verify_lumio_wiki_wheel.py)
         run: |
           /tmp/wiki/bin/python scripts/verify_lumio_wiki_wheel.py \
-            tp/lumio_wiki-*.whl \
+            dist/lumio_wiki-*.whl \
             tests/fixtures/valid tests/fixtures/categorized_kb
       - name: Packaged Agent Skill matches the tagged contract byte-for-byte
         run: |
@@ -137,24 +97,17 @@ jobs:
           cmp "$skill" packages/lumio-wiki/src/lumio_wiki/data/skill/SKILL.md
           cmp "$protocol" packages/lumio-wiki/src/lumio_wiki/data/skill/PROTOCOL.md
           /tmp/wiki/bin/lumio-wiki doctor
-      - name: The documented heavy-extras command resolves from public indexes
+      - name: The candidate heavy extras resolve from public PyPI
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          wheel=$(echo dist/lumio_wiki-*.whl)
           uv venv --python 3.14 /tmp/extras
-          uv pip install --python /tmp/extras/bin/python \
-            --index-url https://test.pypi.org/simple/ \
-            --extra-index-url https://pypi.org/simple/ \
-            "lumio-wiki[all]==$version"
+          uv pip install --python /tmp/extras/bin/python "${wheel}[all]"
           /tmp/extras/bin/python -c "import liteparse, markitdown, openai"
 
-  verify-testpypi-s3-compat:
-    # The canonical onboarding journey (docs/quickstart.md) against a real
-    # S3-compatible service, installed from TestPyPI using the documented
-    # extras set: local Maintainer journey, S3 publication with and without
-    # LanceDB, remote LanceDB reader, and the expected zero-index fallback.
-    # admin/secret are labelled local-test credentials on an ephemeral CI
-    # container — never real credentials.
-    needs: publish-testpypi
+  verify-s3-compat:
+    # Exercise the built wheels against the disposable S3-compatible service.
+    # admin/secret are local-test credentials, never real credentials.
+    needs: build-wheels
     runs-on: ubuntu-latest
     services:
       seaweedfs:
@@ -186,14 +139,18 @@ jobs:
         with:
           python-version: "3.14"
           enable-cache: false
-      - name: Install the documented quickstart set from TestPyPI
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-wheels
+      - name: Verify recorded artifact hashes
+        run: (cd dist && sha256sum -c ../wheel-hashes.txt)
+      - name: Install the candidate wheels with quickstart extras
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          wiki=$(echo dist/lumio_wiki-*.whl)
+          lancedb=$(echo dist/lumio_lancedb-*.whl)
           uv venv --python 3.14 /tmp/journey
           uv pip install --python /tmp/journey/bin/python \
-            --index-url https://test.pypi.org/simple/ \
-            --extra-index-url https://pypi.org/simple/ \
-            "lumio-wiki[s3]==$version" "lumio-lancedb[s3]==$version"
+            "${wiki}[s3]" "${lancedb}[s3]"
       - name: Run the canonical onboarding journey from the installed wheels
         env:
           LUMIO_WIKI_BIN: /tmp/journey/bin/lumio-wiki
@@ -201,11 +158,8 @@ jobs:
         run: bash examples/onboarding-journey/smoke-journey.sh
 
   promote-pypi:
-    # The issue #181 human gate: this job runs only after the `pypi`
-    # environment's required reviewers approve. It re-downloads the wheels
-    # TestPyPI is actually serving, proves they are byte-identical to the
-    # build record, and promotes those exact artifacts to PyPI.
-    needs: [verify-testpypi-wiki, verify-testpypi-s3-compat]
+    # Manual environment approval and both candidate checks precede upload.
+    needs: [verify-wiki, verify-s3-compat]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -221,10 +175,8 @@ jobs:
         with:
           python-version: "3.14"
           enable-cache: false
-      - name: Re-download the TestPyPI wheels and prove byte identity
-        run: >-
-          bash scripts/fetch_verified_testpypi_wheels.sh tp wheel-hashes.txt
-          "${GITHUB_REF_NAME#v}"
+      - name: Prove byte identity before publication
+        run: (cd dist && sha256sum -c ../wheel-hashes.txt)
       - name: Require the PyPI environment token
         env:
           PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
@@ -233,7 +185,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
-          packages-dir: tp/
+          packages-dir: dist/
           attestations: false # Build provenance remains attached to the tag.
           # The artifacts were hash-verified against the build record in the
           # step above; skipping an already-published identical file makes a
