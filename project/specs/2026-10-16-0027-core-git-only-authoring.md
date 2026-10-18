@@ -13,6 +13,8 @@
 
 **Later scoped extension (2026-10-17):** the owner-approved [spec 0028 revision 2](2026-10-17-0028-odcs-contract-consumer.md) extends the native authored/snapshot inventory with producer ODCS contracts and separate local consumer bindings, and adds bounded approved-source contract validation/evidence to the same human admission route. This is subsequent #75 scope, not a retroactive expansion of #74 approval. It creates no general raw-SQL tool, legacy store or shared #76 interface; all unaffected requirements below remain.
 
+**Later opted-in integration extension (owner design approval, 2026-10-18):** [spec 0029](2026-10-18-0029-lumio-bound-governed-releases.md) defines one shared Content Commit, the integration selector and joint KB-input validation binding, direct optional Lumio SDK consumption and an extended final admission descriptor. Its mandatory Policy refusal is integrated-only; standalone and all native source/semantic/human gates remain. Written revision 1 is owner-approved for planning; #74's original execution/publication authority is not expanded.
+
 ## 1. Purpose, scope and non-goals
 
 Complete the existing native Git proposal/worktree route for a newly created Ariadne data project. Git is the only durable revision model for authored source declarations, Seed Notes, OSI models/graph, native Context Layer artifacts, document-derived content/provenance and explicitly saved Answer Examples. There is no application-owned staging tree or parallel persistent draft catalog.

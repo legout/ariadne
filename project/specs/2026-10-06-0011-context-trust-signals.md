@@ -10,6 +10,8 @@
 | **Contract** | planning-contract v1; installed skill provenance unknown. |
 | **Later output-budget reconciliation** | Owner-approved design [0014, revision 1](2026-10-08-0014-bounded-record-queries-and-results.md), 2026-10-08: fitting results retain full required context and advisory signals. A complete query response exceeding the shared output budget refuses instead of dropping Policies or warnings. This is a representation-size refusal, not lifecycle-based enforcement; warning interpretation, arithmetic, consumed dependencies and admission remain unchanged. No existing task or permission scope is expanded. |
 
+**Later opted-in integration extension (owner design approval, 2026-10-18):** [spec 0029](2026-10-18-0029-lumio-bound-governed-releases.md) defines explicit transitive mandatory Policy Closure and pre-execution refusal for SDK-bound integrated projects only. This scopes the non-failing fallback/direct-only consumption below to unchanged standalone behavior; advisory freshness and optional metadata do not become runtime expiry gates. Written integration revision 1 is owner-approved for planning; this notice authorizes no implementation or runtime checks.
+
 ## 1. Purpose and boundaries
 
 Make existing OKF trust and lifecycle evidence deterministically interpretable and visible to Ariadne consumers. Correct the reader gap demonstrated by the research: valid explicit-offset expiry timestamps currently become `unknown`. Expose warnings for concrete problems in context actually consumed by an operation, rather than expecting each agent or adapter to interpret frontmatter independently.
