@@ -304,8 +304,8 @@ publication. One pipeline, no rebuilds:
 1. **Build once** — `build-wheels` builds both public wheels from the tagged
    commit, asserts the lockstep version, records SHA-256 hashes (workflow
    summary + artifact) and SLSA build provenance bound to the tag.
-2. **TestPyPI** — `publish-testpypi` uploads the hash-verified wheels via
-   trusted publishing.
+2. **TestPyPI** — `publish-testpypi` uploads the hash-verified wheels using
+   its environment-scoped `TEST_PYPI_API_TOKEN`.
 3. **Verify the journey** — fresh venvs install *by name* from TestPyPI
    using the documented `pip install` command shapes:
    - `verify-testpypi-wiki` — the isolation/packaged-skill/local-library
@@ -320,27 +320,34 @@ publication. One pipeline, no rebuilds:
    TestPyPI is actually serving, proves them byte-identical to the build
    record (`sha256sum -c`), and promotes those exact artifacts to PyPI.
 
-**Credential model.** Trusted publishing (OIDC) only: no PyPI token is
-stored in the repository, its environments, or any workflow input, so
-ordinary CI, agents, forks, and pull requests hold no release credential at
-all. The workflow triggers only on tag push, publishes only from the
-protected `testpypi`/`pypi` environments, and shares no Actions cache with
-PR-triggered workflows.
+**Credential model.** Publishing uses API tokens stored only as GitHub
+Environment secrets: `TEST_PYPI_API_TOKEN` in `testpypi`, and `PYPI_API_TOKEN`
+in `pypi`. Tokens must authorize both public distributions on their respective
+index; a token for another project or for the other index is not sufficient.
+The workflow fails before upload if a token is missing, never falls back to
+Trusted Publishing, and never prints token values. Ordinary CI and pull
+requests do not receive these secrets. Production promotion still requires
+manual environment approval; do not bypass that gate.
+
+GitHub's tagged-build SLSA provenance and recorded SHA-256/byte comparisons
+remain enabled. The publish action's PyPI digital attestations require Trusted
+Publishing and are disabled for this token-based mode. No workflow action
+shares an Actions cache with PR-triggered workflows.
 
 **One-time owner setup** (the issue #181 human gate):
 
-1. Configure **pending trusted publishers** for `lumio-wiki` and
-   `lumio-lancedb` on both TestPyPI and PyPI, scoped to the
-   `legout/lumio-wiki` repository, workflow `release.yml`, and environment
-   names `testpypi` / `pypi`.
-2. Create GitHub environments **`testpypi`** (no approval required) and
-   **`pypi`** (required reviewers = repository owners; this approval is the
-   publication gate).
+1. Create GitHub environments **`testpypi`** (no approval required) and
+   **`pypi`** (required reviewers = repository owners).
+2. Store the matching index tokens in the environment secrets above. For a
+   first publication, ensure the token's scope permits creating both projects;
+   review the narrowest workable scope after creation. Never put tokens in a
+   repository file, command argument, release note or conversation.
 3. Protect the `v*` tag pattern (admins/maintainers only) so only
    authorized pushes can start a release.
 
-Release notes live in `docs/release-notes/` per published version
-(`v0.1.1.md` is the first).
+Release notes live in `docs/release-notes/` per published version. The current
+public-family notes are [`v0.2.0.md`](release-notes/v0.2.0.md); older notes are
+historical and may describe the former private three-package workspace.
 
 ## Issue graph certification (issue #104, AC7)
 

@@ -13,8 +13,8 @@ Guards the invariants the release pipeline depends on:
 3. **Release notes** — the published version's notes cover the four
    topics issue #181 requires: migration, optional extras, supported
    Python version, and known MVP limits.
-4. **Credential posture** — the release workflow publishes via trusted
-   publishing only (no stored tokens), gates PyPI promotion behind a
+4. **Credential posture** — the release workflow uses environment-scoped
+   tokens only, retains build provenance, gates PyPI promotion behind a
    protected environment, and never triggers from pull requests.
 """
 
@@ -30,7 +30,7 @@ MEMBERS = {
     "lumio-wiki": ROOT / "packages" / "lumio-wiki" / "pyproject.toml",
     "lumio-lancedb": ROOT / "packages" / "lumio-lancedb" / "pyproject.toml",
 }
-RELEASE_NOTES = ROOT / "docs" / "release-notes" / "v0.1.1.md"
+RELEASE_NOTES = ROOT / "docs" / "release-notes" / "v0.2.0.md"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 
 MEMBER_NAMES = tuple(MEMBERS)
@@ -93,10 +93,10 @@ def test_release_notes_cover_the_required_topics():
     assert re.search(r"^#+ .*extras", lowered, re.MULTILINE), "extras section"
     assert re.search(r"^#+ .*python", lowered, re.MULTILINE), "python version section"
     assert re.search(r"^#+ .*mvp|^#+ .*limits", lowered, re.MULTILINE), "MVP limits section"
-    assert "0.1.1" in notes
+    assert "0.2.0" in notes
 
 
-def test_release_workflow_uses_tag_trusted_publishing_and_gated_promotion():
+def test_release_workflow_uses_tag_secrets_and_gated_promotion():
     import yaml
 
     workflow = yaml.safe_load(RELEASE_WORKFLOW.read_text(encoding="utf-8"))
@@ -118,13 +118,35 @@ def test_release_workflow_uses_tag_trusted_publishing_and_gated_promotion():
     assert verify_jobs, "release must verify the TestPyPI install"
     assert verify_jobs <= promote_needs, promote_needs
 
-    # Trusted publishing only: every publishing job holds exactly the OIDC
-    # permission and no stored-token inputs anywhere in the workflow.
+    # Secret-only uploads must fail before the action could fall back to OIDC.
     text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    assert "api_token" not in text and "password" not in text
-    for job in ("publish-testpypi", "promote-pypi"):
+    for job, secret in (
+        ("publish-testpypi", "TEST_PYPI_API_TOKEN"),
+        ("promote-pypi", "PYPI_API_TOKEN"),
+    ):
         permissions = jobs[job].get("permissions") or {}
-        assert permissions.get("id-token") == "write", (job, permissions)
+        assert permissions.get("id-token") != "write", (job, permissions)
+        steps = jobs[job]["steps"]
+        upload_index = next(
+            i
+            for i, step in enumerate(steps)
+            if step.get("uses", "").startswith("pypa/gh-action-pypi-publish@")
+        )
+        reference = "${{ secrets." + secret + " }}"
+        assert steps[upload_index]["with"]["password"] == reference
+        assert steps[upload_index]["with"]["attestations"] is False
+        assert any(
+            step.get("env", {}).get(secret) == reference
+            and f'test -n "${secret}"' in step.get("run", "")
+            for step in steps[:upload_index]
+        ), f"{job}: missing pre-upload token guard"
+
+    build = jobs["build-wheels"]
+    assert build["permissions"]["id-token"] == "write"
+    assert any(
+        step.get("uses", "").startswith("actions/attest-build-provenance@")
+        for step in build["steps"]
+    )
 
     # Both wheel-fetch sites share the certified fetch/verify helper, so the
     # TestPyPI verification and the PyPI promotion cannot drift apart.

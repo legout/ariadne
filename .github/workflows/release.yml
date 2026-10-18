@@ -8,13 +8,12 @@ name: release
 # promotes the byte-identical wheels (hash-checked against the build record)
 # to PyPI.
 #
-# Credential model: trusted publishing (OIDC) only. No PyPI token is stored
-# in this repository or its environments, so ordinary CI, agents, forks, and
-# pull requests hold no release credential at all. Publishing jobs run only
-# in the protected `testpypi` / `pypi` environments; the `pypi` environment
-# requires reviewer approval, which is the issue #181 human gate. One-time
-# owner setup (trusted publishers, environment protection, tag protection)
-# is documented in docs/packaging.md under "Releases".
+# Credential model: environment-scoped API tokens, never source credentials.
+# TestPyPI uses TEST_PYPI_API_TOKEN; PyPI uses PYPI_API_TOKEN. Publishing jobs
+# run only in the `testpypi` / `pypi` environments, and `pypi` requires manual
+# reviewer approval. Ordinary CI and pull requests receive neither token.
+# Build provenance still uses GitHub OIDC; token-based PyPI uploads do not
+# generate PyPI digital attestations. See docs/packaging.md for owner setup.
 #
 # Hardening (zizmor): every action is SHA-pinned, checkout never persists
 # credentials, and no job shares an Actions cache with PR-triggered
@@ -75,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: testpypi
     permissions:
-      id-token: write # trusted publishing; no stored credential exists
+      contents: read
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -83,10 +82,15 @@ jobs:
       - name: Verify artifact hashes before upload
         run: |
           (cd dist && sha256sum -c ../wheel-hashes.txt)
+      - name: Require the TestPyPI environment token
+        env:
+          TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+        run: test -n "$TEST_PYPI_API_TOKEN"
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
+          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
           repository-url: https://test.pypi.org/legacy/
-          attestations: true
+          attestations: false # PyPI attestations require Trusted Publishing.
           # Wheels were hash-verified before upload, so an index that already
           # carries the identical file makes failed workflow re-runs safe.
           skip-existing: true
@@ -205,7 +209,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      id-token: write # trusted publishing; no stored credential exists
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -221,11 +225,16 @@ jobs:
         run: >-
           bash scripts/fetch_verified_testpypi_wheels.sh tp wheel-hashes.txt
           "${GITHUB_REF_NAME#v}"
+      - name: Require the PyPI environment token
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: test -n "$PYPI_API_TOKEN"
       - name: Publish the hash-verified artifacts to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: tp/
-          attestations: true
+          attestations: false # Build provenance remains attached to the tag.
           # The artifacts were hash-verified against the build record in the
           # step above; skipping an already-published identical file makes a
           # re-run after a partial failure safe.
