@@ -447,6 +447,11 @@ class S3Location:
     # -- Location protocol --------------------------------------------------
 
     @property
+    def version(self) -> str | None:
+        """The pinned immutable version, when this Location is pinned."""
+        return self._pinned_version
+
+    @property
     def prefix(self) -> str:
         """The object-key prefix the Knowledge Base root lives under."""
         return self._prefix

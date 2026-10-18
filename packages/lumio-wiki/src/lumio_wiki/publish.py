@@ -1391,6 +1391,12 @@ def merge_compound_sources(proposed_markdown: str, existing_markdown: str) -> st
     except Exception:
         existing_data = {}
 
+    # A compound revision is additive provenance (issue #79); a proposal that
+    # does not re-declare the Ariadne Context Profile envelope preserves the
+    # existing envelope exactly as it preserves prior Sources — profile data
+    # is never silently discarded by the merge (spec 0009 §3).
+    if "ariadne_profile" in existing_data and "ariadne_profile" not in proposed_data:
+        proposed_data["ariadne_profile"] = existing_data["ariadne_profile"]
     existing_sources = as_sources(existing_data.get("sources"))
     proposed_sources = as_sources(proposed_data.get("sources"))
 

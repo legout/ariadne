@@ -58,6 +58,7 @@ from lumio_wiki.mutation import (
     mutation_lock,
 )
 from lumio_wiki.publish import affected_mutation_paths, apply_proposed_pages
+from lumio_wiki.records import ValidationIssue, ValidationReport
 from lumio_wiki.s3_location import S3Location, S3ManifestFile, build_published_manifest
 from lumio_wiki.s3_publish import (
     LANCE_COMPLETION_OBJECT,
@@ -310,6 +311,30 @@ class CapturedRevision:
         self.fingerprint = _fingerprint_sources(self.source)
         self.kb, self.report = _load_and_validate(self.source, fingerprint=self.fingerprint)
         self.content = canonical_content(self.source)
+        # The complete captured candidate's cross-page profile validity
+        # (spec 0009 §3): capture is the shared native publication/inspection
+        # gate, so typed-closure, binding and agreement violations surface as
+        # blocking validation errors exactly once, before any admission.
+        from lumio_wiki.ariadne_context import validate_ariadne_profiles
+
+        if any(page.ariadne_profile is not None for page in self.kb.pages):
+            profile_diagnostics = validate_ariadne_profiles(
+                self.kb.pages, namespace=self.manifest.namespace
+            )
+            if profile_diagnostics:
+                self.report = ValidationReport(
+                    issues=[
+                        *self.report.issues,
+                        *[
+                            ValidationIssue(
+                                file=diagnostic.path or "ariadne_profile",
+                                field="ariadne_profile",
+                                message=diagnostic.message,
+                            )
+                            for diagnostic in profile_diagnostics
+                        ],
+                    ]
+                )
 
 
 def _parse_manifest_or_raise(raw: bytes) -> SourceReferenceManifest:
@@ -3423,6 +3448,53 @@ def _refuse_manifest_drift(
         )
 
 
+def _refuse_profile_candidate_violations(
+    kb_path: Path, candidate_pages: list, *, removed_titles: list[str] | None
+) -> None:
+    """The complete-candidate Ariadne Context Profile gate (spec 0009 §3).
+
+    Cross-page profile validity is enforced at the REAL native mutation gate,
+    BEFORE any worktree byte is written: the fully applied candidate (kept
+    pages plus parsed proposed pages, declared removals excluded) must keep
+    every typed Policy Closure, unique metric binding, native Policy path
+    agreement and ontology declaration resolvable under the adopted manifest
+    namespace. Profiled content without an adopted Source Reference Manifest
+    refuses. Explicit refusal — never a lossy rebuild."""
+    from lumio_wiki.ariadne_context import validate_ariadne_profiles
+    from lumio_wiki.knowledge_base import _parse_page
+
+    superseded = {title for title in (removed_titles or []) if title}
+    parsed_proposed: list = []
+    for page in candidate_pages:
+        superseded.add(page.title)
+        rename_from = getattr(page, "rename_from", None)
+        if rename_from:
+            superseded.add(rename_from)
+        try:
+            parsed, _data, _issues = _parse_page(page.markdown, page.relative_path)
+        except Exception:
+            continue  # structural failures refuse earlier via candidate validation
+        parsed_proposed.append(parsed)
+    kb = _load_valid_authoring_kb(kb_path)
+    kept = [page for page in kb.pages if page.title not in superseded]
+    candidate_view = kept + parsed_proposed
+    if not any(page.ariadne_profile is not None for page in candidate_view):
+        return
+    manifest = _load_authoring_manifest(kb_path)
+    if manifest is None:
+        raise GitAuthoringError(
+            "the mutation touches Ariadne Context Profile content, but the "
+            "Knowledge Base carries no adopted Source Reference Manifest; adopt "
+            "Git authoring before authoring profiled pages"
+        )
+    diagnostics = validate_ariadne_profiles(candidate_view, namespace=manifest.namespace)
+    if diagnostics:
+        raise GitAuthoringError(
+            "the mutation candidate violates the Ariadne Context Profile contract: "
+            + "; ".join(diagnostic.message for diagnostic in diagnostics[:5])
+        )
+
+
 def _apply_worktree_candidate(
     kb_path: Path,
     candidate_pages: list,
@@ -3456,6 +3528,7 @@ def _apply_worktree_candidate(
         mutation_paths.append(SOURCE_REFERENCE_MANIFEST_BASENAME)
         if allow_untracked_manifest:
             allow_untracked = frozenset({SOURCE_REFERENCE_MANIFEST_BASENAME})
+    _refuse_profile_candidate_violations(kb_path, candidate_pages, removed_titles=removed_titles)
     _refuse_unsafe_worktree_mutation(
         repo_root, kb_path, mutation_paths, allow_untracked=allow_untracked
     )
@@ -3571,6 +3644,15 @@ def merge_entities_in_worktree(
     except MutationCandidateError as exc:
         raise GitAuthoringError(str(exc)) from exc
     _refuse_invalid_candidate(candidate.validation_report, "entity merge")
+    retired_page = next(
+        (page for page in kb.pages if page.id == retired_entity_id and page.path), None
+    )
+    if retired_page is not None and retired_page.ariadne_profile is not None:
+        raise GitAuthoringError(
+            "entity merge cannot retire the profiled page "
+            f"{retired_page.title!r}: its Ariadne Context Profile envelope has "
+            "no safe automatic survivor — revise the profile explicitly first"
+        )
     excluded = frozenset(candidate.removed_titles)
     manifest = _load_authoring_manifest(kb_path)
     manifest_rewrite = None

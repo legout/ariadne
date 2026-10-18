@@ -398,6 +398,7 @@ def _publish_s3_captured_revision(
         subtree=captured.subtree,
         source_reference_digest=captured.manifest_digest,
         format_identity="lumio-wiki/git-authoring/1",
+        namespace=captured.manifest.namespace,
     )
 
 
@@ -419,6 +420,7 @@ def _publish_s3_candidate(
     subtree: str = "",
     source_reference_digest: str = "",
     format_identity: str = "",
+    namespace: str = "",
 ) -> S3Manifest:
     """Build and activate one validated candidate, never recapturing content."""
     if not report.is_valid:
@@ -472,6 +474,7 @@ def _publish_s3_candidate(
         subtree=subtree,
         source_reference_digest=source_reference_digest,
         format_identity=format_identity,
+        namespace=namespace,
     )
     _write_manifest(obstore, store, prefix, version, manifest)
     if before_activation is not None:

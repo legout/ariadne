@@ -39,7 +39,7 @@ ariadne_profile:
           aliases:
             - global order number
           fields:
-            - resource: "retail.main/orders"
+            - resource: "ariadne://table/WyJyZXRhaWwiLG51bGwsIm1haW4iLCJvcmRlcnMiXQ"
               column: "order_number"
           scope: []
           description: >-
@@ -48,12 +48,12 @@ ariadne_profile:
           aliases:
             - local order number
           fields:
-            - resource: "retail.main/orders"
+            - resource: "ariadne://table/WyJyZXRhaWwiLG51bGwsIm1haW4iLCJvcmRlcnMiXQ"
               column: "store_id"
-            - resource: "retail.main/orders"
+            - resource: "ariadne://table/WyJyZXRhaWwiLG51bGwsIm1haW4iLCJvcmRlcnMiXQ"
               column: "local_order_number"
           scope:
-            - resource: "retail.main/orders"
+            - resource: "ariadne://table/WyJyZXRhaWwiLG51bGwsIm1haW4iLCJvcmRlcnMiXQ"
               column: "store_id"
           description: >-
             The store-local order number; unique only within one store.

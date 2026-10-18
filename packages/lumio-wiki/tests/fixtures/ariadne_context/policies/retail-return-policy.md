@@ -18,6 +18,11 @@ ariadne_profile:
   required_policies: []
   native:
     type: policy
+    title: "Retail Return Policy"
+    description: "Normative rules for accepting and refunding customer returns."
+    tags:
+      - policy
+      - returns
     status: stable
     stale_after: 2027-06-30
     verified:
