@@ -2,10 +2,10 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Approved revision 11 — CLI-test-only exception.** Owner 2026-10-19 selected “CLI-Testfix +1 Node (Recommended)”: reorder only the two test argv lists to documented subcommand-first syntax, then exactly one P3 invocation of the remaining Capability node. Product/parser unchanged; reuse seven P2 successes plus three original P successes. Any new failure stops; sole candidate review still unused. |
+| **Status** | **Approved revision 12 — one product correction pass.** Owner 2026-10-19 selected “Korrektur + 3 Checks (Recommended)” after the sole M1 review returned fix-first. Bind integrated validation to actual build content, preserve standalone initialization with unrelated knowledge symlinks, and separate required explicit SDK qualification from Core default collection without new dependencies/skips. Three calls only (target red, affected post-check, SDK-free Core collection), then one delta-only recheck; any unexpected failure stops. No integration/publication. |
 | **Historical planning authority** | Owner, Ariadne Pi conversation 2026-10-19: after selecting local Metric MVP/strict profile boundary and approving its complete design, selected “Schriftlich freigeben (Recommended)” for written spec r2, ADR/source notices and subsequent local implementation planning only. No implementation, runtime tests, GitHub changes, integration or publication. |
 | **Goal / source** | First deliver the strict local journey defined by [spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), §§1.1–7 and [ADR-0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Preserve the full #76/#79 target; deferred features remain open. |
-| **Current source identity** | Approved spec SHA256 `22359ad5ab6f01d99b46cb8f8d7a8c6d1df6875d4dc21bb94481b03997a86adf`; document fork descends from source `5502300aca23d1afd3f49fb4f73d5fd9374a9b5a`. Native Core bytes equal `24630dbd404870f30602d66b5d5a2d53fa892f86`. Parent records the actual locally frozen source commit/ref before dispatch; no public source URL is claimed. |
+| **Behavioral / correction source identity** | Approved spec SHA256 `22359ad5ab6f01d99b46cb8f8d7a8c6d1df6875d4dc21bb94481b03997a86adf`, unchanged r2. Original native baseline at M1 source `48365534be950e0d1fdcdc911e0a581b59c3b37b` was main `24630dbd404870f30602d66b5d5a2d53fa892f86`. Correction base is frozen unaccepted `39dac6fe3251161efcb1bd56c324dfe66365dd82`, tree `6eba535870648b4296e43f6c33de6ba81bbd11aa`; parent records the new r12 execution source before resuming the verified isolated Sol/high writer. |
 | **Producer** | Accepted Lumio `7cdd6e89030f4f1add06d077143e9953b6258894`, tree `47ce31e965f9887a57553a1ff777567625f010e9`, implementing companion spec0009 approved r2/ADR0030. Exact ABI/fixture identities are in the proposed task. No producer changes or new L1 review. |
 | **Tracker** | [#76](https://github.com/legout/ariadne/issues/76) owns the full target; [#79](https://github.com/legout/ariadne/issues/79) stays the larger A1 parent and [#80](https://github.com/legout/ariadne/issues/80) later full qualification. Canonical [M1/#81](https://github.com/legout/ariadne/issues/81) is a new native child of #79, with the native [Lumio #2](https://github.com/legout/lumio-wiki/issues/2) dependency. Existing full-target task bodies were not narrowed or closed. |
 | **Capture / contract** | Existing glossary terms suffice. ADR-0026 records the delivery refinement without a new architecture/producer contract. Spec r2 owns scope/behavior/acceptance. No unresolved material design choice is delegated to a writer. Planning-contract v1; installed catalog provenance unknown. |
@@ -32,7 +32,7 @@ and the shared budget, not a second editable task definition.
 
 | Canonical task | Depends on | Produces | Validation / review |
 | :--- | :--- | :--- | :--- |
-| [M1/#81](https://github.com/legout/ariadne/issues/81) — local Metric MVP | Approved r2/r8 and scoped M1 grant; accepted L1; locally frozen source and verified host/env required before writes | One jointly validated synthetic Content Commit, one exact overall local admission, SDK-bound `get_metric`=150 with full required context/caveats, and explicit unsupported-operation boundaries | One high-risk unit; approved M1-R/M1-P, two calls total; one immediate independent M1 candidate review, then supervised pause |
+| [M1/#81](https://github.com/legout/ariadne/issues/81) — local Metric MVP | Approved r2/r12 and scoped correction grant; accepted L1; frozen source and verified host/env | One jointly validated synthetic release and local Metric answer, preserving strict unsupported-operation and standalone boundaries | Five historical calls and initial review spent; three correction calls, one fix pass and one delta-only recheck now approved, then supervised pause |
 
 ### Approved execution settings; verify before dispatch
 
@@ -85,7 +85,38 @@ expectations. The accepted L1 producer is not re-reviewed.
 
 ## 3. Approved finite M1 assurance boundary
 
-### Revision 11 exception: documented CLI test invocation
+### Revision 12 correction: validation identity, standalone scope and SDK qualification
+
+The sole independent M1 review of4836553..39dac6f returned fix-first.
+Parent statically confirmed validation stored only version/config labels while
+actual content identity was first captured at preview, and an unconditional
+knowledge-symlink rejection changed standalone initial authoring. No runtime
+repro was run. Default Core collection also imports the new SDK-only module
+without an installed SDK; owner approved the separate qualification policy.
+
+One correction pass addresses only those issues. Keep standalone validation
+SDK-independent. Preserve build A's identity in integrated validation evidence;
+reject stale/missing identities for reuse/preview/admission, rather than minting
+build B evidence at preview. Restrict knowledge-directory checks to selected
+integration; retain integrated symlink refusal. Move the SDK-only module to
+`tests/lumio_metric_mvp.py` (explicit pytest target, not default `test_*.py`),
+without skips or weaker assertions. Its qualification remains required for M1,
+not silently omitted or claimed by the native Core gate. The standalone new
+regression lives in the existing default Core admission test module.
+
+The two new scenarios are a code-content change between validation and preview,
+and standalone initial proposal creation with an unrelated knowledge symlink.
+Prepare independent bug tests before product repair; parent inspects them before
+the sole red call. Expected red is exactly both reported defects, not a setup,
+SDK/schema/fixture error. Then one affected post-call covers the complete MVP
+module and the named native admission/source scenarios because validation and
+initialization are shared. One SDK-free Core collect-only call checks the owner-
+approved collection boundary; no full Core execution/wheel qualification.
+Use the original qualified SDK environment and a fresh run-owned offline Core-
+only environment with no Lumio distribution; no global/online/new-dependency
+fallback. Stop on any unexpected result. Preserve39dac6f and all earlier logs.
+
+### Preserved revision 11 exception: documented CLI test invocation
 
 Tags-only P2 produced seven successful nodes and one failed Capability node.
 The latter passed native guards/catalog assertions, then called CLI with
@@ -132,21 +163,28 @@ per-method/per-layer matrices, baseline suite or second live proof.
 | Approved call | Timing | Command ownership / expected evidence |
 | :--- | :--- | :--- |
 | M1-R, spent | Before product edits | New strict-profile refusal node only, using existing native Core entrypoints and accepted SDK. A native-valid unsupported Reference profile being ignored is the expected defect; import/setup/contract-fixture errors are not accepted red. Exact command is in the task. |
-| M1-R2, once | Test-only fixture/oracle correction before any product edits | Same strict-profile node/command as original M1-R, new noclobber logs. Only the intended unsupported-profile defect may be the red; source/contract/citation/setup failures or green stop. |
+| M1-R2, spent intended red | Test-only fixture/oracle correction before any product edits | Same strict-profile node/command as original M1-R, new noclobber logs. Only the intended unsupported-profile defect may be the red; source/contract/citation/setup failures or green stop. |
 | M1-P, spent failed | After intended M1-R2/coherent implementation | Eight named nodes failed on the shared tags fixture before admission; three trailing successful nodes remain reusable. Raw log/exit and native records are preserved. |
 | M1-P2, spent | After tags-only correction | Seven nodes succeeded; Capability node failed on invalid test CLI syntax. Raw progress/evidence retained. |
-| M1-P3, once | After CLI-test argument-order correction | Only `tests/test_lumio_metric_mvp.py::test_capability_refusals_and_source_free_catalog`; no other nodes repeated. |
+| M1-P3, spent passed | After CLI-test argument-order correction | Single Capability node passed; composite P(3)+P2(7)+P3(1), not a combined all-green invocation. |
+| M1-C-R, once | Two prepared bug tests before product correction | Exact two selectors in canonical #81, expect both targeted failures. No SDK-free collection before repair. |
+| M1-C-P, once | After coherent correction and final formatting | Explicit SDK module plus new standalone symlink node and the two original native nodes; named affected validation/initialization paths, no extra suite. |
+| M1-C-C, once | Only after passing post-check | Core-only environment, default collect-only with the existing three capability-locked S3 exclusions. Expected success without SDK or SDK-only module collection. |
 
-Approved M1 budget is now **five invocations in total**: invalid-green M1-R,
-intended-red M1-R2, failed M1-P, partial-success M1-P2 and the one CLI-only
-M1-P3. No reset, other retry/fix reserve or borrowed V2/V3–V5 allocation. The original grant was
+Approved M1 budget is now **eight invocations in total**: five spent historical
+calls (invalid-green R, intended-red R2, failed P, partial-success P2 and passed
+single-node P3), plus the three correction calls above. Owner selected
+“Korrektur + 3 Checks (Recommended)”, including one fix pass and one delta-only
+review after applicable success. No third review, retry reserve, budget reset or
+borrowed V2/V3–V5 allocation. The original grant was
 “Plan + M1 starten (Recommended)”; the one extra call/test-only correction was
 separately approved with “Test-only korrigieren +1 Red (Recommended)”. The P2
 tags-only exception was approved with “Nur Tags korrigieren +1 Lauf”. The
 P3 exception was approved with “CLI-Testfix +1 Node (Recommended)”. Static changed-path syntax/Ruff/diff/diagnostics and exact
 upstream blob comparison are the only additional code checks proposed; a
-single isolated import/origin env preflight verifies the actual binding, not
-product behavior. No behavior probe, collection run or hidden nested pytest.
+single isolated import/origin env preflight verifies each new environment's
+actual binding, not product behavior. Only the named M1-C-C collection is newly
+authorized; no other behavior probe, collection run or hidden nested pytest.
 
 New tests use spec/hand-worked/trusted-producer oracles. Fault injection may
 raise at the named SDK-reader/descriptor boundary but never manufacture a
@@ -168,12 +206,13 @@ blobs. Do not rerun the producer or describe that evidence as consumer proof.
 The two existing native nodes are rerun only because M1 changes their shared
 admission/source initialization. No extra actor/transport/installed-wheel run.
 
-The one approved fresh M1 review covers the exact new source-to-result range and
-integration effects against local r2, not settled L1 or all future #76 features.
-Reviewer runs no tests/repairs; parent alone dispositions findings. No repair
-is pre-authorized. An unexpected failure stops with preserved WIP/logs; at most
-one subsequently authorized fix and one delta recheck may follow. No third
-round, unapproved budget extension or assertion weakening.
+The one fresh M1 review covered4836553..39dac6f against local r2 and returned
+fix-first. Its slot is spent. Owner now approved only the two parent-accepted
+findings and collection-policy correction above, with one delta-only recheck of
+39dac6f..fixedResult and affected behavior. No re-review of settled areas/L1 or
+deferred #76 features. Reviewer runs no tests/repairs; parent owns disposition.
+An unexpected failure stops with preserved WIP/logs. No third round, unapproved
+budget extension or assertion weakening.
 
 The existing [tag publication workflow](../../.github/workflows/publish.yml)
 retains its built Core wheel suite and the documented exclusion of the three
