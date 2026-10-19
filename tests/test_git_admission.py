@@ -110,6 +110,38 @@ def admit(  # type-honest default (S1 #56 turn check): Sequence accepts the tupl
     return admit_cli(argv)
 
 
+def test_standalone_initial_proposal_ignores_unrelated_knowledge_symlink(tmp_path):
+    """AC7: absent integration, unrelated user knowledge is outside initial capture."""
+    project = tmp_path / "standalone"
+    project.mkdir()
+    documents = tmp_path / "unrelated-documents"
+    documents.mkdir()
+    note = documents / "notes.md"
+    note.write_text("# Unrelated user documentation\n")
+    knowledge = project / "knowledge"
+    knowledge.symlink_to(documents, target_is_directory=True)
+    run_git(project, "init", "-q")
+    run_git(project, "config", "user.name", "Ariadne Tests")
+    run_git(project, "config", "user.email", "tests@ariadne.local")
+    assert not (project / "context_integration.yaml").exists()
+
+    api = AuthoringProject(project)
+    started = api.start_proposal()  # Public initial creation, with no existing commit.
+    review = api.review_proposal(started["proposal"])
+    assert review["revision"] == started["candidate_revision"]
+    committed = run_git(
+        project, "ls-tree", "-r", "--name-only", started["candidate_revision"]
+    ).splitlines()
+    assert not any(path == "knowledge" or path.startswith("knowledge/") for path in committed)
+    assert not any(
+        item["resource"] == "knowledge" or item["resource"].startswith("knowledge/")
+        for item in review["files"]
+    )
+    assert knowledge.is_symlink()
+    assert note.read_text() == "# Unrelated user documentation\n"
+    assert not (project / "context_integration.yaml").exists()
+
+
 # ---------------------------------------------------------- [1] the red seam
 
 

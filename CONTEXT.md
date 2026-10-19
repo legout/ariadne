@@ -132,6 +132,28 @@ _Avoid_: hints file
 The targeted clarification of a data project's business meaning using existing owner knowledge and source evidence. Its captured interpretations remain proposals until human admission through the applicable route.
 _Avoid_: automatic business-rule approval, setup wizard
 
+### Integrated knowledge and analytics
+
+**Content Repository**:
+The jointly reviewed authored knowledge and analytics inputs under one revision history. It is distinct from either software repository and from an admitted runtime snapshot.
+_Avoid_: merged codebase, published version, shared draft store
+
+**Context Binding**:
+An explicit association between an identified metric, its knowledge Entity and its required Policies in one knowledge snapshot. It grants neither source access nor calculation or join authority.
+_Avoid_: title match, Contract Binding, inferred dependency
+
+**Policy Closure**:
+The complete finite set of required Policies reached through explicit Policy dependencies for a metric in one knowledge snapshot. Provenance citations and navigation links are not Policy dependencies.
+_Avoid_: all linked pages, search results, source closure
+
+**Visibility Scope**:
+The operator-authorized set of knowledge access classes for an integrated project and its bound release. It is distinct from authored Visibility and cannot be widened by a query.
+_Avoid_: user role, authored permission, visibility hierarchy
+
+**Bound Release**:
+An immutable, human-admitted association of exact knowledge, analytics, evidence and execution identities. It is distinct from a package release and does not freeze mutable business data.
+_Avoid_: latest, software version, historical answer cache
+
 ### Querying
 
 **Ad-hoc Metric**:
@@ -193,7 +215,7 @@ The declared row identity of a dataset (its primary key in analytical terms). Ea
 _Avoid_: granularity, level
 
 **Policy**:
-A human-owned business rule published as an OKF page in `policies/` (e.g. status exclusion, currency cutover); metrics cite policies in their `sources`.
+A human-owned business rule expressed as Context Layer knowledge (e.g. status exclusion, currency cutover). Standalone metrics cite native OKF Policies; integrated metrics bind required Policies from an exact Lumio snapshot.
 _Avoid_: rule note, guideline
 
 **Computation**:

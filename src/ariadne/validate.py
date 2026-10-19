@@ -602,13 +602,22 @@ def candidate_scope_files(staging: str | Path) -> list[tuple[str, Path, bytes]]:
     artifact set a Git proposal validates, reviews and admits (one walker
     behind the complete digest and the review inventory, so neither can drift
     from the other)."""
+    from ariadne.lumio_context import knowledge_path  # pyright: ignore[reportMissingImports]
+
     staging = Path(staging)
     files: list[tuple[str, Path, bytes]] = []
+    knowledge = staging / "knowledge"
+    if (staging / "context_integration.yaml").is_file() and knowledge.is_dir():
+        for path in sorted(knowledge.rglob("*")):
+            rel = path.relative_to(staging).as_posix()
+            if path.is_file() and knowledge_path(rel):
+                files.append((rel, path, path.read_bytes()))
     for rel in (
         "ariadne.yaml",
         "data/seed_notes.md",
         "semantic_layer/graph.yml",
         "contract_bindings.yaml",
+        "context_integration.yaml",
     ):
         path = staging / rel
         if path.is_file():

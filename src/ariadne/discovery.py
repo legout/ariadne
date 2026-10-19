@@ -4,6 +4,7 @@ QueryRuntime reuses this path; only its execution construction renders models
 and opens sources (spec 0018 / ADR-0021).
 """
 
+import copy
 import json
 import shlex
 from pathlib import Path
@@ -148,6 +149,13 @@ class _DiscoverySession:
         self._admission_sources = sources
         self._semantic_dir = Path(semantic_dir)
         self._managed = admission_record
+        self._context_snapshot = None
+        if admission_record is not None:
+            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+            self._context_snapshot = lumio_context.verify_release(
+                admission_record, self.context_dir.parent
+            )
         self._project = Path(project_root).resolve() if project_root is not None else None
         self._examples_root = self._project
         if self._source_free:
@@ -161,6 +169,13 @@ class _DiscoverySession:
                 self._admission_reason = MISSING_CATALOG
         else:
             self._admission_reason = "a valid Git admission is required for public discovery"
+
+    def _refuse_unsupported(self, operation):
+        if self._context_snapshot is not None:
+            from ariadne.lumio_context import SUPPORT  # pyright: ignore[reportMissingImports]
+
+            if operation in SUPPORT["unsupported"]:
+                raise ValueError(f"unsupported integrated MVP operation: {operation}")
 
     def _load_managed_graph(self, semantic_dir: Path) -> None:
         """The Git-review admission is the multi-fact graph's admission:
@@ -204,6 +219,11 @@ class _DiscoverySession:
                 "the admitted source identity no longer carries the operator's "
                 "approval — re-approve the exact resolved identity before serving",
             )
+
+        if self._context_snapshot is not None:
+            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+            self._context_snapshot = lumio_context.verify_release(record, self.context_dir.parent)
 
     def _admission_view(self, record: dict) -> dict:
         """The response's local admission provenance. The managed Git route
@@ -393,7 +413,12 @@ class _DiscoverySession:
                 raise  # admission/identity failures always refuse the whole operation
             except (OSError, ValueError, RuntimeError) as exc:
                 groups[kind] = {"status": "unavailable", "reason": str(exc)}
-        return {"query": query, "groups": groups}
+        result = {"query": query, "groups": groups}
+        if self._context_snapshot is not None:
+            assert self._managed is not None
+            result["bound_release"] = self._managed["bound_release"]["digest"]
+            result["support"] = copy.deepcopy(self._managed["bound_release"]["support"])
+        return result
 
     async def list_metrics(self) -> list[dict | str]:
         """Governed metrics with descriptions and available dimensions; the list
@@ -410,8 +435,10 @@ class _DiscoverySession:
         if self._source_free:
             raise ValueError("no admitted snapshot is available")
         if self._context_only:
+            if self._context_snapshot is not None:
+                raise ValueError("no admitted metric catalog; integrated MVP has no fallback")
             raise ValueError(MISSING_CATALOG)
-        entries: list[dict | str] = [
+        entries: list[dict] = [
             {
                 "name": name,
                 "description": meta["description"],
@@ -419,8 +446,24 @@ class _DiscoverySession:
             }
             for name, meta in self._metrics.items()
         ]
-        entries.append(ROUTING_HINT)
-        return entries
+        hint = ROUTING_HINT
+        if self._context_snapshot is not None:
+            assert self._managed is not None
+            manifest = self._managed["bound_release"]
+            for entry in entries:
+                entry["bound_release"] = manifest["digest"]
+                entry["support"] = copy.deepcopy(manifest["support"])
+                entry["context_binding"] = copy.deepcopy(
+                    next(
+                        binding
+                        for binding in manifest["bindings"]
+                        if binding["metric"] == entry["name"]
+                        and binding["model"]
+                        == self._metrics[entry["name"]]["model"]["semantic_model"][0]["name"]
+                    )
+                )
+            hint = "Local integrated MVP: get_metric only; other serving operations refuse."
+        return [*entries, hint]
 
     async def search_examples(
         self,
@@ -433,6 +476,8 @@ class _DiscoverySession:
         revision: str | None = None,
     ) -> list[dict]:
         """Search admitted Examples by default, or one explicitly selected candidate."""
+        if proposal is None:
+            self._refuse_unsupported("search_examples")
         if (proposal is None) != (revision is None):
             raise ValueError("--proposal and --revision are required together")
         if proposal is not None:
@@ -463,6 +508,7 @@ class _DiscoverySession:
 
     async def search_context(self, query: str, limit: int = 10) -> list[dict]:
         """Search only the admitted Context snapshot."""
+        self._refuse_unsupported("search_context")
         if self._source_free:
             return []
         if self._managed is not None:
@@ -482,6 +528,7 @@ class _DiscoverySession:
         resolver applies no transform, rewrites no SQL and authorizes no join;
         ``search_context`` keeps its lexical ranking and passage pointers
         unchanged."""
+        self._refuse_unsupported("resolve_term")
         if self._source_free:
             return resolve_term([], request, part=part)
         if self._managed is not None:
@@ -513,6 +560,7 @@ class _DiscoverySession:
 
     async def list_context_pages(self) -> list[dict]:
         """List admitted Context metadata without opening a source."""
+        self._refuse_unsupported("list_context_pages")
         if self._source_free:
             return []
         if self._managed is not None:
@@ -521,6 +569,7 @@ class _DiscoverySession:
 
     async def read_context_page(self, path: str) -> dict:
         """Read one exact page from the admitted Context snapshot."""
+        self._refuse_unsupported("read_context_page")
         if self._source_free:
             raise ValueError("no admitted Context snapshot; use Authoring for a candidate")
         if self._managed is not None:
