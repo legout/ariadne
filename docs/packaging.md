@@ -76,7 +76,7 @@ there is no dependency edge from the foundation wheel. The CLI/evaluation
 composition boundary may discover and lazily load it only when an operator
 explicitly selects a LanceDB backend — the dependency graph remains one-way.
 
-**Dependencies:** `lumio-wiki>=0.1.1,<0.2.0`, `lancedb`, `pyarrow`,
+**Dependencies:** `lumio-wiki>=0.3.0,<0.4.0`, `lancedb`, `pyarrow`,
 `msgspec[yaml]`. Optional `embeddings` extra pulls in
 `sentence-transformers` (Torch stays out of the base adapter and out of
 `lumio-wiki`). Verified in every release by the
@@ -194,12 +194,15 @@ Certified in `tests/test_adapter_selection_contract.py` and
 
 ### Pre-1.0 release policy (issue #181)
 
-The three distributions release as one **lockstep family**:
+Following ADR-0025, the two **public** distributions (`lumio-wiki` and
+`lumio-lancedb`) release as one **lockstep family**. The private application
+moves independently and is not published or qualified by this repository.
+The current public family is 0.3.x.
 
-- All members carry the **same version** at all times (certified by
+- Both public members carry the **same version** (certified by
   `test_members_share_one_lockstep_version`). A release tag `vX.Y.Z` builds
-  all three wheels from that one commit; the release workflow refuses a tag
-  whose version does not match every member.
+  both public wheels from that one commit; the release workflow refuses a tag
+  whose version does not match both members.
 - **`0.MINOR` is the compatibility family.** Breaking changes to any public
   contract bump MINOR (and the inter-member upper bounds move in the same
   change). PATCH releases are compatible fixes only — the family never mixes
@@ -343,7 +346,7 @@ shares an Actions cache with PR-triggered workflows.
    authorized pushes can start a release.
 
 Release notes live in `docs/release-notes/` per published version. The current
-public-family notes are [`v0.2.0.md`](release-notes/v0.2.0.md); older notes are
+public-family notes are [`v0.3.0.md`](release-notes/v0.3.0.md); older notes are
 historical and may describe the former private three-package workspace.
 
 ## Issue graph certification (issue #104, AC7)
