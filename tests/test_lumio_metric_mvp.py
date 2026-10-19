@@ -25,7 +25,11 @@ from lumio_wiki.source_references import (  # pyright: ignore[reportMissingImpor
     serialize_source_reference_manifest,
 )
 
-from ariadne import admission, lumio_context, query_results  # pyright: ignore[reportAttributeAccessIssue] — editor resolves the baseline checkout
+from ariadne import (  # pyright: ignore[reportAttributeAccessIssue] — editor resolves the baseline checkout
+    admission,
+    lumio_context,
+    query_results,
+)
 from ariadne.authoring import AuthoringProject
 from ariadne.cli import main as cli
 from ariadne.discovery import DiscoveryRuntime
@@ -205,6 +209,7 @@ def test_unsupported_ariadne_profile_refuses_before_publication(tmp_path):
 CANCELLATION = """---
 id: entity:cancelled-orders
 entity_types: [policy]
+tags: [policy]
 title: Cancelled Orders
 summary: Cancelled orders are excluded from recognized revenue.
 visibility: public
