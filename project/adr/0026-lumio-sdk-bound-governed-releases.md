@@ -34,6 +34,34 @@ before SQL. Standalone retains ADR-0011/spec 0011's advisory fallback. Policies,
 Aliases and ontology links still grant neither calculation nor join authority;
 Source Approval remains a separate human permission.
 
+## Local delivery-scope refinement (2026-10-19)
+
+After the initial A1 failure/review, the owner selected a local Metric
+through-slice and a strict profile boundary, then approved writing the complete
+six-part MVP design with “So ausarbeiten (Recommended)”. The owner subsequently
+approved written spec0029 r2 and scoped notices with “Schriftlich freigeben
+(Recommended)” on 2026-10-19, opening local planning only. This is not a new
+implementation or publication grant and does not change the accepted producer.
+The owner later separately approved M1 execution with “Plan + M1 starten
+(Recommended)”; plan0029 r8 owns that limited grant, not the full target.
+
+Keep the repository, SDK, human consent, exact identity, Visibility Scope and
+atomic-last activation decisions above. First support local immutable Versions,
+Metric/Policy profiles, `get_metric` and source-free admitted catalog/capability
+disclosure. Other integrated Analyst operations and unsupported Ariadne
+application kinds/extensions refuse; standalone remains unchanged. S3,
+multi-metric/Context operations and additional annotation semantics remain
+full-target work, not waived guarantees.
+
+The strict boundary is chosen over a partially validated projection: an
+unsupported Ariadne profile anywhere in the captured KB refuses instead of
+leaving an ambiguous “Core-validated” subset. Ordinary unprofiled Lumio pages
+remain KB content. This keeps one honest consumer contract without losing
+producer bytes or claiming nonexistent reference/evidence validation. Delivery
+staging is reversible through separately reviewed support and a new matching
+admission; it does not warrant a second architecture ADR. The full #76/#79
+goals and qualification obligations stay open.
+
 ## Alternatives and consequences
 
 A separate content repo is chosen over independently moving content repos so

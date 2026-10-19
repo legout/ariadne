@@ -9,7 +9,7 @@
 | **Evidence / decision** | [Pinned ODCS research](../research/2026-10-16-odcs-consumer-standard-baseline.md), [ADR-0025](../adr/0025-odcs-producer-contracts-and-local-bindings.md), [CONTEXT.md](../../CONTEXT.md). |
 | **Contract** | planning-contract v1; exact installed skill provenance unknown. |
 
-**Later integration design (owner, 2026-10-18):** [spec 0029](2026-10-18-0029-lumio-bound-governed-releases.md) binds these native ODCS/OSI/evidence identities to an exact Lumio knowledge snapshot through an opted-in overall admission. It does not change this specification's ODCS pin, limited consumer profile, source permissions, original-time evidence or standalone behavior. Written integration revision 1 is owner-approved for planning; no implementation or publication is authorized here.
+**Later integration design (owner, 2026-10-18):** [spec 0029](2026-10-18-0029-lumio-bound-governed-releases.md) binds these native ODCS/OSI/evidence identities to an exact Lumio knowledge snapshot through an opted-in overall admission. It does not change this specification's ODCS pin, limited consumer profile, source permissions, original-time evidence or standalone behavior. Revision 1 remains the full target. The owner-approved 2026-10-19 local MVP design is captured in spec0029 r2 (written r2 approved; separate M1 execution authority is scoped in plan0029 r8): its joint fixture still includes an actual ODCS contract/binding; integrated live `list_datasets` is explicitly unavailable until later support, not silently redefined as an offline result. Standalone `list_datasets` retains this specification's live-catalog behavior. No implementation or publication is authorized here.
 
 ## 1. Scope and authority
 
