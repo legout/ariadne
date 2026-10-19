@@ -515,6 +515,60 @@ def test_hidden_required_policy_cannot_activate(tmp_path):
         runtime.con.close()
 
 
+def test_validation_build_change_requires_revalidation_before_preview(tmp_path, monkeypatch):
+    """Spec0029 §§4–5: preview B cannot confer B's identity on A's validation."""
+    code = tmp_path / "temporary-consumer-build.py"
+    code.write_text("validated_build = 'A'\n")
+    module_root = lumio_context._module_root
+    monkeypatch.setattr(
+        lumio_context,
+        "_module_root",
+        lambda name: code if name == "ariadne" else module_root(name),
+    )
+    project, api, review_a = ready(tmp_path / "content")
+    assert all(check["outcome"] == "passed" for check in review_a["report"]["report"]["checks"]), (
+        "Build A must pass the genuine native checks before drift"
+    )
+    validation_path = Path(review_a["report"]["evidence"])
+    evidence_a = validation_path.read_bytes()
+    destination = tmp_path / "published"
+    preview_a = preview(project, review_a, destination)
+    assert preview_a["manifest"]["content_commit"] == review_a["revision"]
+    assert validation_path.read_bytes() == evidence_a
+    assert not destination.exists()
+
+    # The sole change between A validation/preview and B preview is these code bytes.
+    code.write_text("validated_build = 'B'\n")
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^(?:composite review changed; )?integrated validation build "
+            r"(?:identity|content) (?:changed|mismatch|does not match)[;: ].*\brevalidat"
+        ),
+    ):
+        preview(project, review_a, destination)
+    assert validation_path.read_bytes() == evidence_a, "Preview must not rewrite A evidence"
+    assert not destination.exists()
+
+    # Genuine B revalidation, not an idempotent A reuse or a preview-time restamp.
+    refreshed = api.validate_proposal(review_a["proposal"], review_a["revision"])
+    assert refreshed["ok"] is True, refreshed["errors"]
+    assert refreshed.get("idempotent") is not True
+    assert refreshed["revision"] == review_a["revision"]
+    assert refreshed["artifact_digest"] == review_a["report"]["artifact_digest"]
+    assert refreshed["source_digest"] == review_a["report"]["source_digest"]
+    assert all(check["outcome"] == "passed" for check in refreshed["report"]["checks"])
+    assert Path(refreshed["evidence"]).read_bytes() != evidence_a
+    review_b = api.review_proposal(review_a["proposal"])
+    preview_b = preview(project, review_b, destination)
+    assert preview_b["manifest"]["execution"] != preview_a["manifest"]["execution"]
+    assert (
+        preview_b["manifest"]["core"]["validation_digest"]
+        != preview_a["manifest"]["core"]["validation_digest"]
+    )
+    assert not destination.exists()
+
+
 def test_same_location_build_content_change_refuses(tmp_path, monkeypatch):
     project, _api, review = ready(tmp_path)
     code = tmp_path / "temporary-sdk.py"
