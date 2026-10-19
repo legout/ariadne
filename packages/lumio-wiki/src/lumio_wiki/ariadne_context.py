@@ -1751,10 +1751,15 @@ def _verify_s3_admission(metadata_store: Any, pinned: str, manifest: Any) -> Non
             f"the admission record of S3 Published Version {pinned!r} records a "
             "different content fingerprint"
         )
-    if not receipt.activated or activation.version != pinned:
+    # Activation is recorded separately from the immutable preparation receipt.
+    if (
+        activation.version != receipt.version
+        or activation.review_digest != receipt.review_digest
+        or activation.expected_current != receipt.expected_current
+    ):
         raise UnadmittedInputError(
-            f"S3 Published Version {pinned!r} was prepared but its admission never "
-            "completed activation"
+            f"the activation receipt of S3 Published Version {pinned!r} does not "
+            "match its admission record"
         )
 
 
