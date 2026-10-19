@@ -1,11 +1,10 @@
 name: publish
 
-# Publish on every version change: pushing a v* tag builds both distributions
-# and uploads them to PyPI. The tag must equal the version in BOTH pyproject
-# files (checked below), so a version bump + tag is the one publishing path.
-# PyPI auth: account API token via the PYPI_API_TOKEN repo secret (owner
-# choice 2026-10-12, amending ADR-0018) — one token covers both
-# distributions; no PyPI-side project setup needed.
+# Core-only release (owner decision 2026-10-19, ADR-0018): a v* tag builds
+# and publishes ariadne-data only. ariadne-agent and tau-mcp are excluded
+# until separately authorized; their versions and sources stay unchanged.
+# The tag must equal the root pyproject version. PyPI auth remains the
+# PYPI_API_TOKEN repository secret; no credential-model change.
 
 on:
   push:
@@ -26,23 +25,15 @@ jobs:
           enable-cache: false # no cache in the publishing job: a poisoned cache
           # must not reach released artifacts
 
-      - name: Verify tag matches both project versions
+      - name: Verify tag matches the core project version
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           CORE=$(python3 -c "import tomllib; \
             print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          AGENT=$(python3 -c "import tomllib; \
-            print(tomllib.load( \
-              open('ariadne-agent/pyproject.toml','rb'))['project']['version'])")
-          echo "tag=$TAG core=$CORE agent=$AGENT"
+          echo "tag=$TAG core=$CORE"
           test "$TAG" = "$CORE" || { echo "core $CORE != tag $TAG"; exit 1; }
-          test "$TAG" = "$AGENT" || { echo "agent $AGENT != tag $TAG"; exit 1; }
 
       - name: Build ariadne-data (core)
-        run: uv build
-
-      - name: Build ariadne-agent
-        working-directory: ariadne-agent
         run: uv build
 
       - name: Run the core test suite on the built candidate
@@ -69,9 +60,3 @@ jobs:
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: uv publish
-
-      - name: Publish ariadne-agent
-        env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        run: uv publish
-        working-directory: ariadne-agent

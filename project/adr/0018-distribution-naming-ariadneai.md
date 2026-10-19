@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | Accepted (owner decision, Pi conversation 2026-10-03; **amended 2026-10-12**) |
+| **Status** | Accepted (owner decision, Pi conversation 2026-10-03; **amended 2026-10-12 and 2026-10-19**) |
 | **Context** | [ADR-0012](0012-local-first-artifact-runtime.md), [ADR-0016](0016-modular-core-git-authoring.md) |
 
 ## Decision
@@ -33,9 +33,13 @@ ADR and skill pins.
 - Installation surfaces (`pip install ariadne-data[...]`, agent dependency,
   install hints, READMEs, skill) use the new names; historical
   specifications/plans keep their original `ariadne-core` wording as history.
-- Publishing is tag-gated (`.github/workflows/publish.yml`): a `v*` tag that
-  equals both projects' versions builds and uploads both wheels; core tests
-  run on the built wheel before upload. **Amended 2026-10-12 (owner choice):**
+- Publishing is tag-gated (`.github/workflows/publish.yml`). Through 0.4.1,
+  the tag matched both projects and published both distributions. **Amended
+  2026-10-19 (owner release-scope decision):** from the 0.5.0 release, `v*`
+  tags match the root Core version and build/test/publish **`ariadne-data`
+  only**. `ariadne-agent` and `tau-mcp` are explicitly excluded until separately
+  authorized; do not bump their versions or publish them as a side effect.
+  Core tests still run on the built wheel before upload. **Amended 2026-10-12 (owner choice):**
   authentication uses a PyPI account API token via the `PYPI_API_TOKEN`
   repo secret — one token covers both distributions and PyPI creates the
   projects on first upload, so no PyPI-side registration is needed. This

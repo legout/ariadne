@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-10-19
+
+- **ODCS contract consumer (#75, #77, #78)** — consume the official ODCS
+  3.2.0 schema through the supported flat contract profile, Git-native model
+  bindings and bounded source-approved observations. Contract metadata is
+  disclosed through existing surfaces; unsupported checks never imply conformance.
+- **Local Lumio-bound Metric MVP (#81)** — one authored Git revision combines
+  Core models/contracts and `knowledge/`. Human composite admission binds exact
+  native validation, source approvals, immutable local SDK publication, Visibility
+  Scope and actual build contents. `get_metric` returns the full required Metric
+  and Policy context, exact citations and existing caveats; admission does not
+  create independent numerical attestation.
+- **Strict integrated capability boundary** — supported Metric/Policy profiles
+  are validated globally; unsupported technical annotations and integrated
+  Analyst operations refuse instead of falling back. `discover`/`list_metrics`
+  disclose the admitted catalog without source execution. Standalone behavior
+  remains SDK-independent. Integrated KB bindings over S3 and broader operations
+  remain deferred; native Core source/storage capabilities are not removed.
+- **Evidence and compatibility fixes** — validation binds the build that ran it,
+  including applicable retained observations; a changed build requires genuine
+  revalidation. Standalone initial authoring ignores unrelated knowledge symlinks.
+- **Core-only release** — publish `ariadne-data` only. `ariadne-agent` and
+  `tau-mcp` are not changed or released. The optional integration pairs with
+  `lumio-wiki==0.3.0`; Python remains >=3.14.
+
 ## 0.4.1 - 2026-10-16
 
 Hotfix: the released `ariadne-agent` 0.4.0 was incompatible with
