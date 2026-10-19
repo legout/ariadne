@@ -658,6 +658,11 @@ def _validate_view(
         "report": evidence["report"],
         "performed_checks": list(evidence["performed_checks"]),
         "validator_identity": evidence["validator_identity"],
+        **(
+            {"execution_identity": evidence["execution_identity"]}
+            if evidence.get("execution_identity") is not None
+            else {}
+        ),
         "contracts": evidence.get("contracts"),
         "evidence": str(evidence_path),
     }
@@ -817,6 +822,12 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 f"validation expected {expected_revision} — re-read the candidate and "
                 "retry with the current revision; nothing was written"
             )
+        from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+        validation_build = lumio_context.validation_build_identity(worktree_root)
+        build_context = (
+            {"execution_identity": validation_build} if validation_build is not None else {}
+        )
         # The G3 seam BEFORE any finalize commit: the candidate's resolved
         # source identity must carry the operator's approval — for its CURRENT
         # effective storage binding (spec 0025 §4: endpoint changes need their
@@ -837,6 +848,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
         stored = proposals.load_validation(project, proposal, current)
         if (
             stored is not None
+            and stored.get("execution_identity") == validation_build
             and stored.get("source_digest") == source_digest
             and stored.get("approval_digest") == (approval_digest_value or source_digest)
             and stored.get("validator_identity")
@@ -844,6 +856,9 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             and _document_digests_current(project, stored.get("citations") or [])
             and _contract_evidence_eligible(project, worktree_root, stored, approval)
         ):
+            lumio_context.require_validation_build(
+                stored, lumio_context.validation_build_identity(worktree_root)
+            )
             return _validate_view(
                 stored,
                 proposals._validation_path(project, proposal, current),
@@ -941,7 +956,10 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 project,
                 tree,
                 approval=approval,
-                prior_observations=record.get("contract_observations") or {},
+                prior_observations=(record.get("contract_observations") or {})
+                if validation_build is None
+                or record.get("contract_observation_build") == validation_build
+                else {},
                 limits=contract_limits,
             )
             if contract_evidence.get("present"):
@@ -953,8 +971,6 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                         "— narrow the bound contract profile; nothing was admitted"
                     )
             errors.extend(contract_errors)
-            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
-
             _captured = None
             try:
                 _captured, context_errors = lumio_context.candidate(
@@ -1057,6 +1073,9 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 {"name": check.name, "outcome": check.outcome, "detail": check.detail}
                 for check in checks
             ]
+        lumio_context.require_validation_build(
+            build_context, lumio_context.validation_build_identity(worktree_root)
+        )
         ok = not errors
         status = "validated" if ok else "invalid"
         # Bounded repair accounting: one round per CHANGED validation (a
@@ -1066,6 +1085,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
         # of the same key consumes nothing.
         key = {
             "commit": final,
+            **build_context,
             "source_digest": source_digest,
             "approval_digest": approval_digest_value or source_digest,
             "documents": sorted(
@@ -1101,6 +1121,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             "report": report_view,
             "performed_checks": performed,
             "validator_identity": validator_identity(performed),
+            **build_context,
             # C1 (issue #77, spec 0028 §6): the contract observations bound to
             # this validation — producer identity/version, bindings, live
             # outcomes with their dependency digests and observation times.
@@ -1121,6 +1142,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             observation["binding"]: observation
             for observation in contract_evidence.get("observations") or []
         }
+        record["contract_observation_build"] = validation_build
         proposals._store_record(project, record)
         evidence_path = proposals.store_validation(project, evidence)
         return _validate_view(
@@ -1407,6 +1429,14 @@ def _review_candidate(
         report = proposals.load_validation(project, proposal, current)
         stale_reasons: list[str] = []
         if report is not None:
+            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+            try:
+                lumio_context.require_validation_build(
+                    report, lumio_context.validation_build_identity(tree)
+                )
+            except ValueError as exc:
+                stale_reasons.append(str(exc))
             if report.get("source_digest") != source_digest:
                 stale_reasons.append("the resolved source identity changed since validation")
             if approval["state"] == "unresolved":
@@ -1472,6 +1502,11 @@ def _review_candidate(
                         "commit": report["commit"],
                         "ok": report["ok"],
                         "artifact_digest": report["artifact_digest"],
+                        **(
+                            {"execution_identity": report["execution_identity"]}
+                            if report.get("execution_identity") is not None
+                            else {}
+                        ),
                     },
                 },
                 sort_keys=True,

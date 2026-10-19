@@ -174,6 +174,18 @@ def execution_identity():
     return result
 
 
+def validation_build_identity(root):
+    """Standalone never resolves the optional SDK, even for evidence applicability."""
+    if not (Path(root) / "context_integration.yaml").is_file():
+        return None
+    return execution_identity()
+
+
+def require_validation_build(evidence, identity):
+    if identity is not None and evidence.get("execution_identity") != identity:
+        raise ValueError("integrated validation build identity mismatch; revalidation required")
+
+
 def core_binding(record, evidence):
     return {
         "commit": record["commit"],
@@ -256,6 +268,7 @@ def prepare_release(
     selected = selector(root)
     if selected is None:
         raise ValueError("overall admission requires an integrated selector")
+    require_validation_build(evidence, validation_build_identity(root))
     captured, errors = candidate(root, root / "knowledge", revision)
     if errors:
         raise ValueError("; ".join(errors))
@@ -295,7 +308,7 @@ def prepare_release(
         "input_scopes": {"core": ".", "knowledge": selected["subtree"]},
         "support": copy.deepcopy(SUPPORT),
         "core": core_binding(pseudo, evidence),
-        "execution": execution_identity(),
+        "execution": evidence["execution_identity"],
         "visibility_scope": scope,
         "destination": str(Path(destination).resolve()),
         "knowledge": {
@@ -419,6 +432,7 @@ def verify_release(record, snapshot):
         "report",
         "performed_checks",
         "validator_identity",
+        "execution_identity",
         "artifact_digest",
         "source_digest",
         "approval_digest",
@@ -434,7 +448,7 @@ def verify_release(record, snapshot):
             and manifest["input_scopes"] == {"core": ".", "knowledge": selected["subtree"]}
             and manifest["support"] == SUPPORT
             and manifest["core"] == core_binding(record, evidence)
-            and manifest["execution"] == execution_identity()
+            and manifest["execution"] == evidence.get("execution_identity") == execution_identity()
             and record["overall_confirmation"]["manifest_digest"] == manifest["digest"]
             and record["native_publication"]["review_digest"]
             == manifest["publication_review_digest"]

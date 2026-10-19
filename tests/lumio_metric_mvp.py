@@ -437,7 +437,13 @@ def test_composite_consent_binds_scope_build_and_full_previous_release(tmp_path,
             "_module_root",
             lambda name: temporary_code if name == "lumio_wiki" else root(name),
         )
-        with pytest.raises(ValueError, match="composite review changed"):
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"^(?:composite review changed; )?integrated validation build "
+                r"(?:identity|content) (?:changed|mismatch|does not match)[;: ].*\brevalidat"
+            ),
+        ):
             activate(project, review, original)
     activate(project, review, original)
     review = AuthoringProject(project).review_proposal(review["proposal"])
@@ -570,13 +576,13 @@ def test_validation_build_change_requires_revalidation_before_preview(tmp_path, 
 
 
 def test_same_location_build_content_change_refuses(tmp_path, monkeypatch):
-    project, _api, review = ready(tmp_path)
     code = tmp_path / "temporary-sdk.py"
     code.write_text("reader = 1\n")
     root = lumio_context._module_root
     monkeypatch.setattr(
         lumio_context, "_module_root", lambda name: code if name == "lumio_wiki" else root(name)
     )
+    project, _api, review = ready(tmp_path)
     identity = lumio_context.execution_identity()
     assert identity == lumio_context.execution_identity()
     activate(project, review, preview(project, review, tmp_path / "published"))

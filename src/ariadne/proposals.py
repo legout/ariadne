@@ -649,14 +649,15 @@ def _scope_files(project: Path) -> list[str]:
     finalize pass owns and regenerates it."""
     rels: list[str] = []
     knowledge = project / "knowledge"
-    if knowledge.is_symlink():
-        raise GitError("initial knowledge directory must not be a symlink")
-    if (project / "context_integration.yaml").is_file() and knowledge.is_dir():
-        rels.extend(
-            p.relative_to(project).as_posix()
-            for p in sorted(knowledge.rglob("*"))
-            if p.is_file() and knowledge_path(p.relative_to(project).as_posix())
-        )
+    if (project / "context_integration.yaml").is_file():
+        if knowledge.is_symlink():
+            raise GitError("initial knowledge directory must not be a symlink")
+        if knowledge.is_dir():
+            rels.extend(
+                p.relative_to(project).as_posix()
+                for p in sorted(knowledge.rglob("*"))
+                if p.is_file() and knowledge_path(p.relative_to(project).as_posix())
+            )
     for rel in (
         "ariadne.yaml",
         "data/seed_notes.md",

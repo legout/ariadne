@@ -321,6 +321,12 @@ def _verified_evidence(project: Path, proposal: str, revision: str, review: dict
             f"exact revision (status {evidence.get('status')!r}) — revalidate the final "
             "revision before admission; nothing was activated"
         )
+    from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+    lumio_context.require_validation_build(
+        evidence,
+        lumio_context.validation_build_identity(project / proposals.WORKTREES_REL / proposal),
+    )
     checks = (evidence.get("report") or {}).get("checks") or []
     by_name = {check.get("name"): check for check in checks}
     outcomes = {name: check.get("outcome") for name, check in by_name.items()}
@@ -1031,6 +1037,11 @@ def admit_revision(
                     "report": evidence["report"],
                     "performed_checks": list(evidence["performed_checks"]),
                     "validator_identity": evidence["validator_identity"],
+                    **(
+                        {"execution_identity": evidence["execution_identity"]}
+                        if evidence.get("execution_identity") is not None
+                        else {}
+                    ),
                     "artifact_digest": evidence["artifact_digest"],
                     "source_digest": evidence["source_digest"],
                     "approval_digest": evidence.get("approval_digest"),
