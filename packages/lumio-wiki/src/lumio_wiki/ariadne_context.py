@@ -1425,9 +1425,10 @@ def validate_ariadne_profiles(
                     path=page.path,
                 )
             )
-        # Retained native Policy path references must agree with the typed
-        # binding (spec 0009 §4): preserved provenance, explicit mapping,
-        # never a source of new edges.
+        # Only metrics' retained native Policy references govern their typed
+        # closure; other pages' sources remain provenance (spec 0009 §4).
+        if profile.kind != "metric":
+            continue
         for path in _native_policy_paths(page):
             target = by_path.get(path)
             if target is None:

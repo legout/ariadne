@@ -387,7 +387,7 @@ def test_ariadne_context_journey(tmp_path):
         "global-order-number",
     )
     assert mapping["claim"] == "asserted"
-    assert mapping["source_ids"] == ["src-owner-rule"]
+    assert disclose_native(mapping["source_ids"]) == ["src-owner-rule"]
     summary = reference.native["ariadne_evidence"]["store-prefix-composition"][0]
     assert summary["tested_left"] == 1200
     assert summary["eligible_right"] == 3500
@@ -832,13 +832,13 @@ def test_profile_cross_page_refusals(tmp_path):
     contradiction_kb = _plain_kb(
         tmp_path,
         {
-            "policies/policy.md": policy_page,
+            "policies/retail-return-policy.md": policy_page,
             "metrics/m1.md": _metric_page(
                 "entity:m1",
                 "margin",
-                "",
+                "    []\n",
                 native_policy="policies/retail-return-policy.md",
-            ).replace("  required_policies:\n\n", "  required_policies: []\n"),
+            ),
         },
     )
     contradiction_pages = load_knowledge_base(contradiction_kb)[0].pages
