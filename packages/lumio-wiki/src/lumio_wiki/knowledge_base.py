@@ -19,6 +19,7 @@ from urllib.parse import quote
 import msgspec
 import msgspec.yaml as yaml
 
+from lumio_wiki.ariadne_context import _parse_ariadne_context_control, parse_ariadne_profile
 from lumio_wiki.embeddings import (
     DEFAULT_SEMANTIC_THRESHOLD,
     Embedder,
@@ -2971,6 +2972,7 @@ def _parse_page(
     data, body, body_start_line = _parse_frontmatter(text, Path(relative))
     claims, claim_issues = _as_claims(data.get("claims"), relative)
     review_after, _review_issues = _as_review_after(data.get("review_after"), relative)
+    profile, _profile_errors = parse_ariadne_profile(data.get("ariadne_profile"), where=relative)
     page = CompiledPage(
         path=relative,
         title=str(data.get("title", "")),
@@ -2987,6 +2989,7 @@ def _parse_page(
         synthetic=bool(data.get("synthetic", False)),
         body=body,
         body_start_line=body_start_line,
+        ariadne_profile=profile,
     )
     return page, data, claim_issues
 
@@ -3692,6 +3695,21 @@ def _validate_page(
 ) -> list[ValidationIssue]:
     """Validate a single page, returning all issues for that page."""
     page_issues: list[ValidationIssue] = []
+
+    # The typed Ariadne Context Profile envelope (spec 0009): a structurally
+    # invalid envelope refuses validation with named-path diagnostics
+    # instead of becoming opaque accepted authority.
+    _profile_record, profile_errors = parse_ariadne_profile(
+        data.get("ariadne_profile"), where=relative
+    )
+    for message in profile_errors:
+        page_issues.append(
+            ValidationIssue(
+                file=relative,
+                field="ariadne_profile",
+                message=message,
+            )
+        )
 
     if not page.title:
         page_issues.append(
@@ -4477,6 +4495,17 @@ def _load_and_validate_control_file(
 
     ontology, ontology_issues = _as_ontology(raw.get("ontology"))
     issues.extend(ontology_issues)
+    ariadne_context = None
+    if "ariadne_context" in raw:
+        ariadne_context, profile_errors = _parse_ariadne_context_control(
+            raw["ariadne_context"], raw_bytes
+        )
+        if parsed_version != 2:
+            profile_errors.append("ariadne_context requires Control File version 2")
+        issues.extend(
+            ValidationIssue(file=CONTROL_FILE_BASENAME, field="ariadne_context", message=message)
+            for message in profile_errors
+        )
     control = KnowledgeBaseControlFile(
         version=parsed_version,
         categories=categories,
@@ -4484,6 +4513,7 @@ def _load_and_validate_control_file(
         mode=str(mode),
         path=CONTROL_FILE_BASENAME,
         ontology=ontology,
+        ariadne_context=ariadne_context,
     )
     return control, issues
 
@@ -4557,6 +4587,20 @@ def write_control_file(path: str | Path, control: KnowledgeBaseControlFile) -> P
             else:
                 lines.append(f"  - {title}")
     _append_ontology_lines(lines, control)
+    if control.ariadne_context is not None:
+        # YAML's serializer preserves exact string keys/revisions (including
+        # numeric-looking scalars); plain Control File bytes remain unchanged.
+        lines.extend(yaml.encode({
+            "ariadne_context": {
+                "version": control.ariadne_context.version,
+                "ontology_catalog": {
+                    namespace: dict(sorted(identifiers.items()))
+                    for namespace, identifiers in sorted(
+                        control.ariadne_context.ontology_catalog.items()
+                    )
+                },
+            }
+        }).decode("utf-8").rstrip("\n").splitlines())
     content = "\n".join(lines) + "\n"
     _atomic_write_text(target, content)
     return target

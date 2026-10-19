@@ -20,6 +20,8 @@ not runtime implementation or integration. Behavior and acceptance belong to
 supervised execution stay approved; the earlier private C0 prerequisite does
 not apply to isolated public candidate work.
 
+**Subsequent separate design (owner, 2026-10-18):** [ADR-0030](0030-ariadne-context-profile-and-sdk-boundary.md)/[spec 0009](../specs/2026-10-18-0009-ariadne-context-profile.md) define the direct SDK application-profile boundary. This ADR's original exclusion of #2/#76 is historical scope, not a grant for the new work. Its native Git, source privacy and independent Publication Admission remain; written integration revision 1 is owner-approved for planning only.
+
 Git branches/worktrees and native diff/review become the only persistent
 Knowledge Base authoring lifecycle. A stored Ingest Proposal, pending source
 transition tied to a proposal, or application-owned merge/review state machine

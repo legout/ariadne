@@ -1,5 +1,7 @@
 # Specification 0008: Git-native Knowledge Authoring
 
+**Subsequent separate design (owner, 2026-10-18):** [spec 0009](2026-10-18-0009-ariadne-context-profile.md)/[ADR-0030](../adr/0030-ariadne-context-profile-and-sdk-boundary.md) own the explicitly selected native Ariadne Context Profile and direct SDK boundary for #2/#76. They retain this specification's native Git, Source privacy and Publication Admission. Written revision 1 is owner-approved for planning; this is not retroactive #1 implementation/release authority, private-app scope or a change to generic OKF exchange.
+
 **Written revision:** 3 — revision 2's public-foundation-only scope plus the
 owner-answered 2026-10-17 reactivation clarification (§3.3). No other
 behavior, interface, schema, or scope changes.

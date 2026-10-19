@@ -58,6 +58,7 @@ from lumio_wiki.mutation import (
     mutation_lock,
 )
 from lumio_wiki.publish import affected_mutation_paths, apply_proposed_pages
+from lumio_wiki.records import ValidationIssue, ValidationReport
 from lumio_wiki.s3_location import S3Location, S3ManifestFile, build_published_manifest
 from lumio_wiki.s3_publish import (
     LANCE_COMPLETION_OBJECT,
@@ -310,6 +311,32 @@ class CapturedRevision:
         self.fingerprint = _fingerprint_sources(self.source)
         self.kb, self.report = _load_and_validate(self.source, fingerprint=self.fingerprint)
         self.content = canonical_content(self.source)
+        # The complete captured candidate's cross-page profile validity
+        # (spec 0009 §3): capture is the shared native publication/inspection
+        # gate, so typed-closure, binding and agreement violations surface as
+        # blocking validation errors exactly once, before any admission.
+        from lumio_wiki.ariadne_context import _control_catalog, validate_ariadne_profiles
+
+        if any(page.ariadne_profile is not None for page in self.kb.pages):
+            profile_diagnostics = validate_ariadne_profiles(
+                self.kb.pages,
+                namespace=self.manifest.namespace,
+                ontology_catalog=_control_catalog(self.kb.control),
+            )
+            if profile_diagnostics:
+                self.report = ValidationReport(
+                    issues=[
+                        *self.report.issues,
+                        *[
+                            ValidationIssue(
+                                file=diagnostic.path or "ariadne_profile",
+                                field="ariadne_profile",
+                                message=diagnostic.message,
+                            )
+                            for diagnostic in profile_diagnostics
+                        ],
+                    ]
+                )
 
 
 def _parse_manifest_or_raise(raw: bytes) -> SourceReferenceManifest:
@@ -1210,6 +1237,8 @@ def _load_s3_publication_record(
         or receipt.subtree != manifest.subtree
         or receipt.fingerprint != manifest.fingerprint
         or receipt.manifest_digest != manifest.source_reference_digest
+        or receipt.validator_contract != manifest.format_identity
+        or (manifest.namespace and record.sealed.namespace != manifest.namespace)
         or record.sealed.published_version != version
         or record.sealed.revision != receipt.revision
         or record.sealed.fingerprint != receipt.fingerprint
@@ -1257,6 +1286,7 @@ def _load_s3_publication_record(
         or binding.revision != receipt.revision
         or binding.subtree != receipt.subtree
         or binding.source_reference_digest != receipt.manifest_digest
+        or binding.validator_contract != receipt.validator_contract
         or actual_bindings != record.sealed.bindings
     ):
         raise GitAuthoringError(
@@ -2169,6 +2199,7 @@ def publish_revision(
         subtree=captured.subtree,
         source_reference_digest=captured.manifest_digest,
         format_identity=VALIDATOR_CONTRACT_ID,
+        namespace=captured.manifest.namespace,
     )
     sealed = SealedSourceReferences(
         published_version=version,
@@ -2580,6 +2611,7 @@ def _write_version_directory(
             subtree=manifest.subtree,
             source_reference_digest=manifest.source_reference_digest,
             format_identity=manifest.format_identity,
+            namespace=manifest.namespace,
         )
 
     # The manifest is written last: its presence marks a complete version.
@@ -2649,6 +2681,7 @@ def _verify_version_complete(
         or receipt.subtree != manifest.subtree
         or receipt.manifest_digest != manifest.source_reference_digest
         or receipt.validator_contract != manifest.format_identity
+        or receipt.destination != str(destination.resolve())
     ):
         raise GitAuthoringError(
             f"the admission receipt for {version!r} does not agree with its "
@@ -2657,6 +2690,8 @@ def _verify_version_complete(
     sealed = msgspec.json.decode(
         _verify_sealed_state(destination, receipt), type=SealedSourceReferences
     )
+    if manifest.namespace and sealed.namespace != manifest.namespace:
+        raise GitAuthoringError("the sealed Source namespace disagrees with the published manifest")
     return manifest, receipt, sealed
 
 
@@ -3094,6 +3129,9 @@ def ingest_into_worktree(
         raise GitAuthoringError(
             "the authored page candidate failed validation: " + str(candidate_report)
         )
+    candidate_view = _refuse_profile_candidate_violations(
+        kb_path, pages, removed_titles=None, kb=kb
+    )
     mutation_paths = [
         relative
         for relative in affected_mutation_paths(pages, kb_path)
@@ -3106,7 +3144,6 @@ def ingest_into_worktree(
         mutation_paths,
         allow_untracked=frozenset({SOURCE_REFERENCE_MANIFEST_BASENAME}),
     )
-    candidate_view = _candidate_pages_view(kb, pages)
     # The exact binding digest is computed from the supplied bytes up front
     # (registration converges on the same content-addressed version).
     digest = hashlib.sha256(raw_bytes).hexdigest()
@@ -3232,7 +3269,7 @@ def _refuse_invalid_candidate(report, operation: str) -> None:
         raise GitAuthoringError(f"{operation} candidate failed validation: {report}")
 
 
-def _candidate_page_record(page, existing_markdown: str | None = None):
+def _candidate_page_record(destination):
     """A CompiledPage-like record parsed from one proposed page's markdown.
 
     ``validate_source_references`` reads only ``.pages`` with ``id``, ``title``,
@@ -3241,41 +3278,32 @@ def _candidate_page_record(page, existing_markdown: str | None = None):
     Entities are part of the fully applied candidate the manifest is
     validated against — only true deletions leave the view).
 
-    D1 (spec 0008 §3.1/§6): for an explicitly compound revision the EFFECTIVE
-    page content is the additive provenance merge — computed by the very
-    function apply/validation use (``merge_compound_sources``) — so the
-    manifest view sees the retained prior Sources together with the incoming
-    ones. Compound+move is refused: the destination owner prioritizes moves
-    without merging Sources, so a synthetic union would approve absent pins.
+    The native destination supplies the effective path and compound merge
+    base, matching apply's ``merge_compound_sources`` computation (spec 0009
+    §3; spec 0008 §3.1/§6). Compound+move stays refused: the destination
+    owner prioritizes moves without merging Sources, so a synthetic union
+    would approve absent pins.
     """
-    from types import SimpleNamespace
-
-    from lumio_wiki.knowledge_base import _as_sources as as_sources
-    from lumio_wiki.knowledge_base import _parse_frontmatter
+    from lumio_wiki.knowledge_base import _parse_page
     from lumio_wiki.publish import merge_compound_sources
 
+    page = destination.page
     if getattr(page, "compound_revision", False) and getattr(page, "move_from_path", None):
         raise GitAuthoringError(
             "compound_revision and move_from_path cannot be combined: compound "
             "and move require separate authoring edits; no authoring files were written"
         )
     effective_markdown = page.markdown
-    if existing_markdown is not None and getattr(page, "compound_revision", False):
-        effective_markdown = merge_compound_sources(page.markdown, existing_markdown)
+    if destination.kind == "compound" and destination.merge_base is not None:
+        effective_markdown = merge_compound_sources(page.markdown, destination.merge_base)
     try:
-        data, _body, _line = _parse_frontmatter(effective_markdown, Path(page.relative_path))
+        parsed, _data, _issues = _parse_page(effective_markdown, destination.relative_path)
     except Exception as exc:
         raise GitAuthoringError(
-            f"cannot parse the proposed page at {page.relative_path!r} for the "
+            f"cannot parse the proposed page at {destination.relative_path!r} for the "
             f"{SOURCE_REFERENCE_MANIFEST_BASENAME} cross-check: {exc}"
         ) from exc
-    return SimpleNamespace(
-        path=page.relative_path,
-        title=page.title,
-        id=str(data.get("id") or ""),
-        sources=as_sources(data.get("sources")),
-        synthetic=bool(data.get("synthetic")),
-    )
+    return parsed
 
 
 def _candidate_pages_view(kb, candidate_pages=(), removed_titles=()):
@@ -3289,22 +3317,24 @@ def _candidate_pages_view(kb, candidate_pages=(), removed_titles=()):
     """
     from types import SimpleNamespace
 
+    from lumio_wiki.publish import DestinationConflict, _resolve_proposed_destinations
+
     superseded = {title for title in removed_titles if title}
-    existing_by_title = {page.title: page for page in kb.pages if page.path}
+    existing_by_title = {page.title: page.path for page in kb.pages if page.path}
+    try:
+        destinations = _resolve_proposed_destinations(
+            candidate_pages, Path(kb.root).resolve(), existing_by_title
+        )
+    except DestinationConflict as exc:
+        raise GitAuthoringError(str(exc)) from exc
     parsed = []
-    for page in candidate_pages:
+    for destination in destinations:
+        page = destination.page
         superseded.add(page.title)
         rename_from = getattr(page, "rename_from", None)
         if rename_from:
             superseded.add(rename_from)
-        existing = existing_by_title.get(page.title)
-        existing_markdown = None
-        if existing is not None:
-            try:
-                existing_markdown = (Path(kb.root) / existing.path).read_text(encoding="utf-8")
-            except OSError:
-                existing_markdown = None
-        parsed.append(_candidate_page_record(page, existing_markdown=existing_markdown))
+        parsed.append(_candidate_page_record(destination))
     kept = [page for page in kb.pages if page.title not in superseded]
     return SimpleNamespace(pages=[*kept, *parsed])
 
@@ -3421,6 +3451,56 @@ def _refuse_manifest_drift(
         )
 
 
+def _refuse_profile_candidate_violations(
+    kb_path: Path,
+    candidate_pages: list,
+    *,
+    removed_titles: list[str] | None,
+    control_file=None,
+    kb=None,
+):
+    """Validate the same effective page/control candidate as native apply.
+
+    Shared by managed ingest before private registration and by the atomic
+    worktree apply boundary. Namespace comes from the adopted manifest;
+    catalog authority comes only from the candidate's canonical Control File.
+    """
+    from lumio_wiki.ariadne_context import _control_catalog, validate_ariadne_profiles
+
+    if kb is None:
+        kb = _load_valid_authoring_kb(kb_path)
+    candidate = _candidate_pages_view(kb, candidate_pages, removed_titles or ())
+    profiled_ids = {page.id for page in kb.pages if page.ariadne_profile is not None}
+    profiled_paths = {page.path for page in kb.pages if page.ariadne_profile is not None}
+    for page in candidate.pages:
+        if (
+            page.id in profiled_ids or page.path in profiled_paths
+        ) and page.ariadne_profile is None:
+            raise GitAuthoringError(
+                f"the mutation would drop the Ariadne Context Profile at {page.path}; "
+                "preserve the envelope or explicitly remove the page"
+            )
+    if not any(page.ariadne_profile is not None for page in candidate.pages):
+        return candidate
+    manifest = _load_authoring_manifest(kb_path)
+    if manifest is None:
+        raise GitAuthoringError(
+            "the mutation touches Ariadne Context Profile content, but the "
+            "Knowledge Base carries no adopted Source Reference Manifest; adopt "
+            "Git authoring before authoring profiled pages"
+        )
+    control = control_file if control_file is not None else kb.control
+    diagnostics = validate_ariadne_profiles(
+        candidate.pages, namespace=manifest.namespace, ontology_catalog=_control_catalog(control)
+    )
+    if diagnostics:
+        raise GitAuthoringError(
+            "the mutation candidate violates the Ariadne Context Profile contract: "
+            + "; ".join(diagnostic.message for diagnostic in diagnostics[:5])
+        )
+    return candidate
+
+
 def _apply_worktree_candidate(
     kb_path: Path,
     candidate_pages: list,
@@ -3454,6 +3534,9 @@ def _apply_worktree_candidate(
         mutation_paths.append(SOURCE_REFERENCE_MANIFEST_BASENAME)
         if allow_untracked_manifest:
             allow_untracked = frozenset({SOURCE_REFERENCE_MANIFEST_BASENAME})
+    _refuse_profile_candidate_violations(
+        kb_path, candidate_pages, removed_titles=removed_titles, control_file=control_file
+    )
     _refuse_unsafe_worktree_mutation(
         repo_root, kb_path, mutation_paths, allow_untracked=allow_untracked
     )
@@ -3569,6 +3652,15 @@ def merge_entities_in_worktree(
     except MutationCandidateError as exc:
         raise GitAuthoringError(str(exc)) from exc
     _refuse_invalid_candidate(candidate.validation_report, "entity merge")
+    retired_page = next(
+        (page for page in kb.pages if page.id == retired_entity_id and page.path), None
+    )
+    if retired_page is not None and retired_page.ariadne_profile is not None:
+        raise GitAuthoringError(
+            "entity merge cannot retire the profiled page "
+            f"{retired_page.title!r}: its Ariadne Context Profile envelope has "
+            "no safe automatic survivor — revise the profile explicitly first"
+        )
     excluded = frozenset(candidate.removed_titles)
     manifest = _load_authoring_manifest(kb_path)
     manifest_rewrite = None
@@ -3959,6 +4051,9 @@ def reactivate_source_in_worktree(
             },
         )
     )
+    # Profile validity precedes registration here too; Source exact-pin
+    # consistency still resolves after the new private version is registered.
+    candidate_view = _refuse_profile_candidate_violations(kb_path, [], removed_titles=None, kb=kb)
     # F6 (spec 0008 §3.2): the complete safety preflight runs BEFORE any
     # private version/metadata write — a refused authoring mutation must
     # never have already extended the selected private history.
@@ -3984,7 +4079,7 @@ def reactivate_source_in_worktree(
     # just-recorded version) and BEFORE any authoring-file write.
     _refuse_manifest_drift(
         updated,
-        _candidate_pages_view(kb),
+        candidate_view,
         "source reactivation",
         registry=source_registry,
     )

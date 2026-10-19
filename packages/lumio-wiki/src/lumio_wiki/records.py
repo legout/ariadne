@@ -280,6 +280,78 @@ class PageRead(msgspec.Struct, frozen=True):
     review_after: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Ariadne Context Profile records (spec 0009, ADR-0030).
+#
+# An optional typed ``ariadne_profile`` envelope on a Compiled Page. The
+# envelope is application metadata: Lumio keeps its canonical identity,
+# provenance and Claims unchanged, and the ``native`` slot retains supported
+# Ariadne OKF metadata losslessly (typed identity, provenance, lifecycle,
+# freshness, attestation, Reference/identifier representation, mapping and
+# evidence families). ``required_policies`` are typed Policy edges — a
+# distinct concept from provenance ``sources``.
+# ---------------------------------------------------------------------------
+
+
+class AriadnePolicyReference(msgspec.Struct, frozen=True):
+    """One exact typed ``required_policies`` edge target.
+
+    Knowledge identity is ``(namespace, entity_id)`` — never a title or path.
+    """
+
+    namespace: str
+    entity_id: str
+
+
+class AriadneMetricReference(msgspec.Struct, frozen=True):
+    """The exact native model/metric identity one metric page binds."""
+
+    model: str
+    metric: str
+
+
+class AriadneCoreReference(msgspec.Struct, frozen=True):
+    """A native Resource or semantic identity a page annotates."""
+
+    kind: str
+    """``resource`` or ``semantic`` — the native artifact family."""
+
+    id: str
+    """The exact credential-free native identity string."""
+
+
+class AriadneOntologyReference(msgspec.Struct, frozen=True):
+    """An explicit declared cross-ontology reference.
+
+    Names its target by declared namespace, identifier and immutable revision;
+    never a title, alias or navigation link.
+    """
+
+    namespace: str
+    identifier: str
+    revision: str
+
+
+class AriadneProfile(msgspec.Struct, frozen=True):
+    """The versioned ``ariadne-context/1`` envelope of one profiled page.
+
+    ``native`` keeps the supported Ariadne metadata with its scalar types,
+    ordered lists, scoped identifiers and full text (YAML-native date/datetime
+    values keep their original published source; disclosure follows the
+    native JSON representation contract). Structural validation and the
+    frozen supported-schema boundary live in
+    :mod:`lumio_wiki.ariadne_context`.
+    """
+
+    version: int
+    kind: str
+    native: dict = msgspec.field(default_factory=dict)
+    required_policies: list[AriadnePolicyReference] = msgspec.field(default_factory=list)
+    metric_ref: AriadneMetricReference | None = None
+    core_ref: AriadneCoreReference | None = None
+    ontology_refs: list[AriadneOntologyReference] = msgspec.field(default_factory=list)
+
+
 class CompiledPage(msgspec.Struct, frozen=True):
     """A loaded Markdown page from a Knowledge Base.
 
@@ -303,6 +375,10 @@ class CompiledPage(msgspec.Struct, frozen=True):
     synthetic: bool = False
     body: str = ""
     body_start_line: int = 1
+    # Optional typed Ariadne Context Profile envelope (spec 0009). None is the
+    # plain page form; a structurally invalid envelope parses to None and its
+    # named-path diagnostics reach the ValidationReport instead.
+    ariadne_profile: AriadneProfile | None = None
 
 
 class ValidationIssue(msgspec.Struct, frozen=True):
@@ -860,6 +936,13 @@ class HotIndexPin(msgspec.Struct, frozen=True):
     note: str | None = None
 
 
+class AriadneContextControl(msgspec.Struct, frozen=True):
+    """Candidate-bound application declarations in the version-2 Control File."""
+
+    version: int
+    ontology_catalog: dict[str, dict[str, str]]
+
+
 class KnowledgeBaseControlFile(msgspec.Struct, frozen=True):
     """The versioned root Knowledge Base Control File (``lumio.yaml``).
 
@@ -876,6 +959,7 @@ class KnowledgeBaseControlFile(msgspec.Struct, frozen=True):
     mode: str = "categorized"
     path: str = "lumio.yaml"
     ontology: Ontology | None = None
+    ariadne_context: AriadneContextControl | None = None
 
 
 class ActivityLogEntry(msgspec.Struct, frozen=True):
