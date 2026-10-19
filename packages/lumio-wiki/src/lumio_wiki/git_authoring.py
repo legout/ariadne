@@ -319,7 +319,8 @@ class CapturedRevision:
 
         if any(page.ariadne_profile is not None for page in self.kb.pages):
             profile_diagnostics = validate_ariadne_profiles(
-                self.kb.pages, namespace=self.manifest.namespace,
+                self.kb.pages,
+                namespace=self.manifest.namespace,
                 ontology_catalog=_control_catalog(self.kb.control),
             )
             if profile_diagnostics:
@@ -3268,7 +3269,7 @@ def _refuse_invalid_candidate(report, operation: str) -> None:
         raise GitAuthoringError(f"{operation} candidate failed validation: {report}")
 
 
-def _candidate_page_record(page, existing_markdown: str | None = None):
+def _candidate_page_record(destination):
     """A CompiledPage-like record parsed from one proposed page's markdown.
 
     ``validate_source_references`` reads only ``.pages`` with ``id``, ``title``,
@@ -3277,29 +3278,29 @@ def _candidate_page_record(page, existing_markdown: str | None = None):
     Entities are part of the fully applied candidate the manifest is
     validated against — only true deletions leave the view).
 
-    D1 (spec 0008 §3.1/§6): for an explicitly compound revision the EFFECTIVE
-    page content is the additive provenance merge — computed by the very
-    function apply/validation use (``merge_compound_sources``) — so the
-    manifest view sees the retained prior Sources together with the incoming
-    ones. Compound+move is refused: the destination owner prioritizes moves
-    without merging Sources, so a synthetic union would approve absent pins.
+    The native destination supplies the effective path and compound merge
+    base, matching apply's ``merge_compound_sources`` computation (spec 0009
+    §3; spec 0008 §3.1/§6). Compound+move stays refused: the destination
+    owner prioritizes moves without merging Sources, so a synthetic union
+    would approve absent pins.
     """
     from lumio_wiki.knowledge_base import _parse_page
     from lumio_wiki.publish import merge_compound_sources
 
+    page = destination.page
     if getattr(page, "compound_revision", False) and getattr(page, "move_from_path", None):
         raise GitAuthoringError(
             "compound_revision and move_from_path cannot be combined: compound "
             "and move require separate authoring edits; no authoring files were written"
         )
     effective_markdown = page.markdown
-    if existing_markdown is not None and getattr(page, "compound_revision", False):
-        effective_markdown = merge_compound_sources(page.markdown, existing_markdown)
+    if destination.kind == "compound" and destination.merge_base is not None:
+        effective_markdown = merge_compound_sources(page.markdown, destination.merge_base)
     try:
-        parsed, _data, _issues = _parse_page(effective_markdown, page.relative_path)
+        parsed, _data, _issues = _parse_page(effective_markdown, destination.relative_path)
     except Exception as exc:
         raise GitAuthoringError(
-            f"cannot parse the proposed page at {page.relative_path!r} for the "
+            f"cannot parse the proposed page at {destination.relative_path!r} for the "
             f"{SOURCE_REFERENCE_MANIFEST_BASENAME} cross-check: {exc}"
         ) from exc
     return parsed
@@ -3316,22 +3317,24 @@ def _candidate_pages_view(kb, candidate_pages=(), removed_titles=()):
     """
     from types import SimpleNamespace
 
+    from lumio_wiki.publish import DestinationConflict, _resolve_proposed_destinations
+
     superseded = {title for title in removed_titles if title}
-    existing_by_title = {page.title: page for page in kb.pages if page.path}
+    existing_by_title = {page.title: page.path for page in kb.pages if page.path}
+    try:
+        destinations = _resolve_proposed_destinations(
+            candidate_pages, Path(kb.root).resolve(), existing_by_title
+        )
+    except DestinationConflict as exc:
+        raise GitAuthoringError(str(exc)) from exc
     parsed = []
-    for page in candidate_pages:
+    for destination in destinations:
+        page = destination.page
         superseded.add(page.title)
         rename_from = getattr(page, "rename_from", None)
         if rename_from:
             superseded.add(rename_from)
-        existing = existing_by_title.get(page.title)
-        existing_markdown = None
-        if existing is not None:
-            try:
-                existing_markdown = (Path(kb.root) / existing.path).read_text(encoding="utf-8")
-            except OSError:
-                existing_markdown = None
-        parsed.append(_candidate_page_record(page, existing_markdown=existing_markdown))
+        parsed.append(_candidate_page_record(destination))
     kept = [page for page in kb.pages if page.title not in superseded]
     return SimpleNamespace(pages=[*kept, *parsed])
 
@@ -3449,8 +3452,12 @@ def _refuse_manifest_drift(
 
 
 def _refuse_profile_candidate_violations(
-    kb_path: Path, candidate_pages: list, *, removed_titles: list[str] | None,
-    control_file=None, kb=None,
+    kb_path: Path,
+    candidate_pages: list,
+    *,
+    removed_titles: list[str] | None,
+    control_file=None,
+    kb=None,
 ):
     """Validate the same effective page/control candidate as native apply.
 
@@ -4046,9 +4053,7 @@ def reactivate_source_in_worktree(
     )
     # Profile validity precedes registration here too; Source exact-pin
     # consistency still resolves after the new private version is registered.
-    candidate_view = _refuse_profile_candidate_violations(
-        kb_path, [], removed_titles=None, kb=kb
-    )
+    candidate_view = _refuse_profile_candidate_violations(kb_path, [], removed_titles=None, kb=kb)
     # F6 (spec 0008 §3.2): the complete safety preflight runs BEFORE any
     # private version/metadata write — a refused authoring mutation must
     # never have already extended the selected private history.

@@ -1387,6 +1387,56 @@ def test_control_catalog_flows_through_native_gates(tmp_path):
         } == before
 
 
+def test_managed_policy_revision_retains_recorded_path(tmp_path):
+    """D4: a same-title revision is not a move, even when ingest proposes a new slug."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    registry = SourceRegistry(tmp_path / "private-registry")
+    policy_path = kb / "policies/retail-return-policy.md"
+    data, body, _ = parse_frontmatter(
+        (FIXTURE / "policies/retail-return-policy.md").read_text(), policy_path
+    )
+    source_bytes = b"Returns Handbook, 2026 edition: Finance reviews this policy quarterly.\n"
+    revised_body = body + "\nFinance reviews this policy quarterly.\n"
+    authored = _case_markdown(
+        {
+            **data,
+            "category": "policies",
+            "type": "policy",
+            "durability_rationale": "Durable returns and refund rules.",
+        },
+        revised_body,
+    )
+
+    ingest_into_worktree(
+        kb,
+        source_bytes,
+        "text/plain",
+        "returns-handbook.txt",
+        "src-returns-handbook",
+        authored,
+        source_registry=registry,
+    )
+
+    written = policy_path.read_text()
+    written_data, written_body, _ = parse_frontmatter(written, policy_path)
+    assert written_data == {**data, "type": "policy"}
+    assert written_body.strip("\n") == revised_body.strip("\n")
+    assert not (kb / "policies/retail_return_policy.md").exists()
+    assert (kb / "metrics/retail-revenue.md").read_bytes() == (
+        FIXTURE / "metrics/retail-revenue.md"
+    ).read_bytes()
+    manifest = yaml.decode((kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes())
+    assert manifest["namespace"] == NAMESPACE
+    assert manifest["bindings"]["entity:retail-return-policy"]["src-returns-handbook"] == (
+        hashlib.sha256(source_bytes).hexdigest()
+    )
+    loaded, report = load_knowledge_base(kb)
+    assert report.is_valid
+    assert validate_ariadne_profiles(loaded.pages, namespace=NAMESPACE) == ()
+
+
 @pytest.mark.parametrize("operation", ["managed-ingest", "effective-compound"])
 def test_effective_ingest_and_compound_gate_before_writes(tmp_path, operation):
     """D4: refusal precedes private registration and effective compound writes."""
