@@ -2,14 +2,15 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Approved behavior, written revision 1.** Local source freeze and the companion Lumio L1 implementation are now approved; Ariadne A1/Q1 execution remains unapproved. |
+| **Status** | **Approved behavior, written revision 1.** Scoped A1/#79 implementation is owner-approved on 2026-10-19; no Q1 or target integration/publication authority. |
 | **Approval** | Owner, Pi conversation 2026-10-18 for #76 and Lumio #2: selected one Content Repository, direct Python SDK, integrated-only strict mandatory Policies, one overall human confirmation, and project-wide Visibility Scope defaulting to public. Then selected “Design freigeben (Recommended)” for the complete six-section V1 design and its capture in both repositories. The owner subsequently selected “Schriftliche Fassung freigeben (Recommended)” for both written revision-1 specifications, ADRs, glossaries and scoped source amendments, opening implementation planning. Plan approval, execution and publication remain separate. |
 | **Intake** | [Ariadne #76](https://github.com/legout/ariadne/issues/76), [Lumio #2](https://github.com/legout/lumio-wiki/issues/2). |
 | **Baseline** | Ariadne `24630dbd404870f30602d66b5d5a2d53fa892f86`; Lumio Wiki `31b6a3e1ef8d04a968b8605128efbdb519396aa7`. These identify inspected source, not a newly certified runtime pairing. |
 | **Decision** | [ADR-0026](../adr/0026-lumio-sdk-bound-governed-releases.md), [vocabulary](../../CONTEXT.md). |
-| **Companion contract** | `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md`, written revision 1: owns the application profile, SDK view, knowledge identities, Policy Closure and producer preservation. This specification owns the consumer binding, overall admission and governed query behavior. |
+| **Companion contract** | `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md`, approved behavior revision 2, concretely accepted at Lumio7cdd6e89: owns the application profile, SDK view, knowledge identities, Policy Closure and producer preservation. This specification owns the consumer binding, overall admission and governed query behavior. |
 | **Contract** | planning-contract v1; installed catalog provenance unknown. |
-| **Scoped L1 authorization** | Owner, Lumio Pi conversation 2026-10-18: “Implementiere #2 autonom mit paseo subagents”, then “Freigeben und #2 starten (Recommended)”. Authorizes local isolated source-document commits in both repositories and only Lumio #2/L1 execution. No Ariadne implementation, target integration, push, issue updates, release, production/source access or migration follows. Behavioral revision 1 is unchanged. |
+| **Scoped L1 authorization** | Owner, Lumio Pi conversation 2026-10-18: “Implementiere #2 autonom mit paseo subagents”, then “Freigeben und #2 starten (Recommended)”. Historical L1-only grant; behavioral revision 1 is unchanged. |
+| **Scoped A1 authorization** | Owner, Ariadne Pi conversation 2026-10-19: “A1 via Paseo/Pi starten (Recommended)”. Locally freeze an isolated source/plan copy, GLM-5.3/high implements only #79, V2 once with failure stop, then independent Sol/high review. Use exact accepted Lumio7cdd6e89/fixture, preserve original documents. No Q1, software target/main integration, push, issue updates, release, production/source access, real-KB publication or cleanup. |
 
 ## 1. Scope, ownership and non-goals
 
@@ -274,8 +275,9 @@ ADR-0026 records the genuine repository/SDK/admission trade-offs; the Lumio
 companion owns the producer decision. Scope, exclusions and AC1–AC8 are above.
 The owner has approved the material design choices and this complete written
 revision 1. The [joint implementation plan](../plans/2026-10-18-0029-lumio-bound-governed-releases.md)
-now records the subsequent L1-only approval and local source freeze. Its Ariadne
-A1/Q1 tasks remain proposed; no Ariadne writer, test, dependency installation,
-source permission, target integration, push/release or migration is authorized.
-The document commits are frozen locally for the Lumio producer; original design
-worktrees remain untouched and no floating-main runtime pin is introduced.
+now records the subsequent scoped A1/#79 approval and local source freeze.
+Only the isolated GLM-high implementation, one V2 invocation and independent
+Sol-high review are authorized; Q1, source permission, real-KB access,
+software target integration/push/release/migration and cleanup are not.
+Original design worktrees remain untouched. The accepted Lumio producer is
+pinned exactly; no floating-main runtime pin is introduced.

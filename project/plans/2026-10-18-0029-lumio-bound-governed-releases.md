@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 5 — owner-approved test-oracle exception c2.** C1's two calls are spent: the named guard red was reproduced; its post-check has one final-LF expectation failure and two passing D4 guards. Product delta remains uncommitted/unaccepted. C2 permits only document-boundary LF normalization in the regression and one invocation of that failed node; the previously reserved single delta review remains pending. A1/Q1 remain proposed. |
+| **Status** | **Revision 6 — owner-approved A1/#79 only.** Accepted L1 pin/fixture are consumed by an isolated Paseo/Pi GLM-5.3/high writer; V2 exactly once, failure stops, then one independent Sol/high review. Q1, main integration/push/release/issue updates/cleanup remain unapproved. |
 | **Original execution approval** | Owner, Lumio Pi conversation 2026-10-18: “Implementiere #2 autonom mit paseo subagents”, then “Freigeben und #2 starten (Recommended)”. Authorized the original local source freeze and L1 execution; its later failures, owner exceptions and terminal review are retained, not reset. |
 | **D1–D5 continuation approval** | Owner, Lumio Pi conversation 2026-10-19: “weiter gehts”, then “Control File + Sol (Recommended)”. Approves the optional versioned `ariadne_context.ontology_catalog` block in canonical `lumio.yaml`, local Spec0009/ADR0030/shared-plan precision, fresh isolated Pi Sol/high implementation of D1–D5, one focused expected-red regression invocation, one full profile-module post-correction invocation and one independent review. No automatic retries, Ariadne implementation, main integration, push, issue update, release or cleanup. |
 | **D4-only correction approval** | Owner, Lumio Pi conversation 2026-10-19: selected “Nur D4 beheben (Recommended)” after the b1 fix-first handback. Authorizes isolated Sol/high correction of the existing destination-kernel mismatch, one independently expected regression, exactly two focused pytest invocations (red, then D4 post-check) and one independent delta review. This explicitly extends execution for D4 only; it neither resets b1 nor authorizes other features, integration or publication. |
@@ -14,7 +14,40 @@
 | **Tracker** | Ariadne [#76](https://github.com/legout/ariadne/issues/76), Lumio [#2](https://github.com/legout/lumio-wiki/issues/2). Owner requested corresponding tickets on 2026-10-18: Lumio #2 owns L1, Ariadne #79 owns A1 and #80 owns Q1. This thin joint overview owns readiness/order/coverage/shared budget; tickets alone own the task bodies. Do not maintain a duplicate editable Lumio plan. |
 | **Contract** | planning-contract v1; installed catalog revision unknown. `orchestrate-implementation` owns execution; `merge-worktree` owns integration. |
 
-## 1. Readiness, authority and sequence
+## 1. Current A1 readiness and authority
+
+Owner, Ariadne Pi conversation 2026-10-19, selected **“A1 via Paseo/Pi starten
+(Recommended)”**: locally freeze a new isolated source/plan copy, implement
+only #79 with Pi GLM-5.3/high, one V2 invocation, then one fresh independent
+Pi Sol/high review. On failure stop; no automatic repair/rerun. No Q1, target
+integration/main mutation, push, issue update, release, real-source/KB access
+or cleanup. Protected original nine Ariadne and six Lumio design-document
+deltas/worktrees remain untouched.
+
+Ariadne native base remains `24630dbd404870f30602d66b5d5a2d53fa892f86`.
+This parent source copy descends from immutable r5 source
+`19ff0b7f76d7464d3108a313b0bde27e0fbcd7d5`; only approval/readiness metadata
+is reconciled. Ariadne spec0029 behavior remains r1. Companion Lumio spec0009
+behavior is approved r2; the concrete accepted producer/fixture is pinned at
+`7cdd6e89030f4f1add06d077143e9953b6258894`, tree
+`47ce31e965f9887a57553a1ff777567625f010e9`.
+ABI blobs: `ariadne_context.py=1c989dd747fa04d275f8d2bdb3a3613771bf1ed0`,
+`records.py=3253748fe40f8106dd315ec7326bc8663189f3bc`;
+fixture tree `614ae3c0750738c41d124eda3bd379f591d18ea0`.
+Its SDK entrypoints are `inspect_ariadne_candidate`,
+`open_published_context`, `validate_ariadne_profiles`, `disclose_native`.
+
+L1 was independently accepted by its parent and merged/pushed as Lumio
+`d798c1368d05cdc288f24139db6567ca674c903c`, exact accepted tree, with both
+CI runs 39231454102/39231454187 successful on that commit. Later main
+`8a99aea2b9b5d229936a3fde6c6012f22a187410` is not the A1 dependency:
+create a fresh read-only SDK checkout at the accepted pin rather than relying
+on removed L1 worktree/env paths. No producer mutation or new L1 review/test
+is authorized. Existing remote task readiness wording is historical; the
+current scoped owner grant and these frozen sources govern local A1.
+
+### Historical L1 readiness context (r1–r5; not current dispatch authority)
+
 
 The capture checkpoint is complete in the two approved source specifications:
 resolved vocabulary is in the owning glossaries; ADR-0026/0030 record the real
@@ -87,8 +120,8 @@ task decomposition in the tickets, not in a duplicate local/Lumio plan.
 
 | Order | Canonical ticket | Prerequisite | Assigned checks |
 | :--- | :--- | :--- | :--- |
-| L1 | [Lumio #2 — native profile and immutable SDK view](https://github.com/legout/lumio-wiki/issues/2) | Frozen r2 producer behavior, r5 oracle exception, preserved tested c1 product delta and verified same isolated host/environment; b1 candidate721 unaccepted | B1 and C1 calls spent; C2 failing node once, reuse C1's two unchanged guard passes; the one reserved721-to-fix D4 delta review before consumption |
-| A1 | [Ariadne #79 — joint admission and bound revenue](https://github.com/legout/ariadne/issues/79) | Accepted L1 ABI/fixture/ref plus global readiness | V2; immediate consumer review |
+| L1 | [Lumio #2 — native profile and immutable SDK view](https://github.com/legout/lumio-wiki/issues/2) | ACCEPTED producer7cdd6e89; exact ABI/fixture pin above; merged d798c136 with successful CI | Reuse accepted producer/evidence; no new L1 call or review |
+| A1 | [Ariadne #79 — joint admission and bound revenue](https://github.com/legout/ariadne/issues/79) | Owner-approved scoped start, frozen r6 sources, accepted L1 pin and verified host/environment | V2 once; fresh immediate Sol/high review; no automatic correction/retry |
 | Q1 | [Ariadne #80 — public surfaces and qualification](https://github.com/legout/ariadne/issues/80) | Accepted L1 and A1 | V3–V5, named native build/verifier checks and paired installed proof; final delta/integration review |
 
 All three are native sub-issues of [Ariadne #76](https://github.com/legout/ariadne/issues/76).
@@ -100,6 +133,39 @@ state in the remote ticket records the earlier capture; no issue update is
 included in this local execution grant. A1/Q1 remain planned and unapproved.
 
 ## 4. Finite assurance budget and review rules
+
+### Current A1 reservation: V2 exactly once
+
+This is a separately scoped A1 start, not a reset of any L1 history. V2 was
+never consumed by the producer. Exactly one pytest invocation is authorized,
+from the A1 worktree with the preflight-recorded Python 3.14.0 interpreter
+containing the exact accepted SDK and required test-only S3 capability:
+
+```sh
+$CORE_PY -m pytest -q tests/test_lumio_context.py \
+  tests/test_git_admission.py::test_only_reviewed_validated_revision_activates_without_changing_candidate_bytes \
+  tests/test_git_source_access.py::test_committed_registry_cannot_open_source_until_operator_approval
+```
+
+Obligation: `new-test` for the native bound-revenue/Policy-isolation/activation
+failure journey, `existing-check` for the two touched standalone admission/
+source-permission paths. Independently expected revenue is 150 from completed
+orders 100+50, excluding cancelled25; exact full Policy text and fixture/SDK
+identities come from the accepted inputs, not implementation output.
+Preserve meaningful native assertions and real synthetic human gates.
+
+Do not spend the single invocation on a baseline, collection-only command,
+red-first exploratory run, SDK probe or whole suite. Static syntax/Ruff/diff
+checks are allowed. No separate native behavior probe, package-wheel/live/
+network campaign or Q1 V3–V5 execution. Use existing relevant verified native
+evidence as baseline; the assigned V2 nodes exercise the actual changed
+admission/source paths. Unexpected setup/test failure stops for owner
+disposition; no automatic repair, assertion relaxation, retry or borrowed
+reservation. Fresh independent review follows a clean frozen passing result;
+no test execution or settled L1 review by that reviewer.
+
+### Preserved L1 history and later Q1 rules (r1–r5)
+
 
 The original proposed joint V1–V5 budget and all later owner exceptions remain
 historical. The original L1 boundary consumed four invocations: three full profile-module
@@ -230,19 +296,15 @@ not stolen-secret/broken-TLS/malicious-admin stories or generic hardening.
 
 ## 5. Handoff state
 
-Revision 5 records the explicit c2 oracle exception after c1's failed
-post-check. Frozen61/721 remain unaccepted; neither is an A1-consumable ABI.
-Keep the approved r2 behavior/ADR/glossary and tested c1 semantic product
-patch unchanged. Freeze this new execution-source copy while preserving r4,
-all old worktrees/refs/reports and failed tests. Verify the same idle Sol
-worker's placement/runtime and the current patch against tested content before
-grants; c2 may edit only the decoded-body LF comparison and execute its one
-node. Record actual result/ref/cleanliness, failures/reused passes, unknown
-formatting actor and the still-single delta review in existing parent state.
-No duplicate plan, new process ledger or issue update. A1/Q1 remain proposed;
-target integration, push/release, private app/real-KB access and cleanup remain
-unauthorized.
-
+Revision 6 authorizes only the A1/#79 slice. Freeze this new source copy and
+record exact issue79 body/hash, producer/source pins, host/runtime/worktree
+identity, original-document hashes and evidence paths in the parent-owned run
+state. Worker commits/frozen result and independent review must precede A1
+acceptance. Preserve the r1–r5 source refs and all producer history; no old
+red/unaccepted intermediate is substituted for the accepted7cdd6e89 dependency.
+The reserved original documents/worktrees, software main refs and other
+sessions' state remain untouched. Supervised delivery pauses with an isolated
+reviewed candidate; no Q1 or software integration/publication follows.
 Known later boundary: a published supporting SDK version and truthful consumer
 release constraints are required for distribution; source-pinned qualification
 is not that publication. The concurrent public Lumio 0.2.0 release is not
