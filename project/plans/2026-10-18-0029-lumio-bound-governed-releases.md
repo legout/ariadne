@@ -2,10 +2,11 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 4 — owner-approved D4-only correction c1.** B1 is terminal: `721caf2` has 12 passing focused tests but remains unaccepted after independent review and parent confirmation of retained-destination parity failure. C1 has two finite focused pytest invocations and one delta-only independent review; A1/Q1 remain proposed. |
+| **Status** | **Revision 5 — owner-approved test-oracle exception c2.** C1's two calls are spent: the named guard red was reproduced; its post-check has one final-LF expectation failure and two passing D4 guards. Product delta remains uncommitted/unaccepted. C2 permits only document-boundary LF normalization in the regression and one invocation of that failed node; the previously reserved single delta review remains pending. A1/Q1 remain proposed. |
 | **Original execution approval** | Owner, Lumio Pi conversation 2026-10-18: “Implementiere #2 autonom mit paseo subagents”, then “Freigeben und #2 starten (Recommended)”. Authorized the original local source freeze and L1 execution; its later failures, owner exceptions and terminal review are retained, not reset. |
 | **D1–D5 continuation approval** | Owner, Lumio Pi conversation 2026-10-19: “weiter gehts”, then “Control File + Sol (Recommended)”. Approves the optional versioned `ariadne_context.ontology_catalog` block in canonical `lumio.yaml`, local Spec0009/ADR0030/shared-plan precision, fresh isolated Pi Sol/high implementation of D1–D5, one focused expected-red regression invocation, one full profile-module post-correction invocation and one independent review. No automatic retries, Ariadne implementation, main integration, push, issue update, release or cleanup. |
 | **D4-only correction approval** | Owner, Lumio Pi conversation 2026-10-19: selected “Nur D4 beheben (Recommended)” after the b1 fix-first handback. Authorizes isolated Sol/high correction of the existing destination-kernel mismatch, one independently expected regression, exactly two focused pytest invocations (red, then D4 post-check) and one independent delta review. This explicitly extends execution for D4 only; it neither resets b1 nor authorizes other features, integration or publication. |
+| **Test-oracle exception approval** | Owner, Lumio Pi conversation 2026-10-19: selected “Testorakel korrigieren (Recommended)”. Exclude only leading/trailing LF framing in the decoded-body comparison; preserve strict full text, internal newlines, metadata, path and Source-binding assertions. No further product fix. Exactly one additional invocation of the failed regression, reuse the two relevant passing D4 cases, then the already reserved delta review. This is an explicit oracle/budget exception, not a retry loop or new review allocation. |
 | **Goal** | Deliver the approved native Lumio profile/SDK and one SDK-bound Ariadne admission/query journey over one Content Commit. |
 | **Approved sources** | [Ariadne spec 0029 r1](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), [ADR-0026](../adr/0026-lumio-sdk-bound-governed-releases.md); `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md` r2 and amended ADR-0030 (r1 sources and approval remain historical). Owner selected “Schriftliche Fassung freigeben (Recommended)” on 2026-10-18 for both written specifications, ADRs, glossaries and scoped amendments. |
 | **Source locations** | Original Ariadne and Lumio design worktrees remain reserved and untouched. Approved document copies are committed in isolated local source branches; the parent records the exact two source commits before dispatch. No source-document push or target integration is authorized. |
@@ -86,7 +87,7 @@ task decomposition in the tickets, not in a duplicate local/Lumio plan.
 
 | Order | Canonical ticket | Prerequisite | Assigned checks |
 | :--- | :--- | :--- | :--- |
-| L1 | [Lumio #2 — native profile and immutable SDK view](https://github.com/legout/lumio-wiki/issues/2) | Frozen r2 producer sources, r4 D4-only correction and qualified fresh host/environment; b1 candidate721 unaccepted | B1-R/B1-P and review spent; C1-R once, C1-P once; one independent721-to-fix D4 delta review before consumption |
+| L1 | [Lumio #2 — native profile and immutable SDK view](https://github.com/legout/lumio-wiki/issues/2) | Frozen r2 producer behavior, r5 oracle exception, preserved tested c1 product delta and verified same isolated host/environment; b1 candidate721 unaccepted | B1 and C1 calls spent; C2 failing node once, reuse C1's two unchanged guard passes; the one reserved721-to-fix D4 delta review before consumption |
 | A1 | [Ariadne #79 — joint admission and bound revenue](https://github.com/legout/ariadne/issues/79) | Accepted L1 ABI/fixture/ref plus global readiness | V2; immediate consumer review |
 | Q1 | [Ariadne #80 — public surfaces and qualification](https://github.com/legout/ariadne/issues/80) | Accepted L1 and A1 | V3–V5, named native build/verifier checks and paired installed proof; final delta/integration review |
 
@@ -134,7 +135,7 @@ named gaps were resolved, but D4 and the overall producer remain unaccepted.
 Those six historical pytest invocations and all original review boundaries
 remain recorded unchanged. Source-traced D4 is not claimed runtime-reproduced.
 
-The owner now grants **c1, D4 only**, exactly two additional serial invocations:
+For **c1, D4 only**, the owner granted exactly two additional serial invocations:
 
 - **C1-R, once before production edits:**
   `$LUMIO_PY -m pytest -q packages/lumio-wiki/tests/test_ariadne_context.py::test_managed_policy_revision_retains_recorded_path`.
@@ -157,6 +158,40 @@ new dependencies, live/installed gates or borrowed A1/Q1 budget. Scoped static
 syntax/Ruff/diff checks remain allowed. Exact runtime/environment isolation
 and commit/freeze/relinquish handoff rules are unchanged. Reuse unaffected
 b1 evidence only with its actual surface and delta qualification.
+
+C1 actually used C1-R (one expected Policy path-guard failure, exit1), then
+C1-P (one failed final-LF suffix assertion, two passing existing D4 guard
+cases, exit1). The public managed revision now returns and its exact metadata
+assertion passes, but later duplicate-path, unchanged-metric, Source-digest and
+loader assertions were not reached. No success commit/ref or review occurred.
+Keep both true failed logs; eight historical invocations remain eight.
+
+Parent source trace identifies the latter assertion as over-strict for this
+D4 obligation: unchanged native `ingest._split_distilled_pages` already trims
+LF characters at document boundaries before routing. This is not caused by
+the destination fix. The parent had approved that unnecessary expectation
+and obtained the explicit c2 decision instead of altering it or retrying.
+Spec0009 r2's semantic body/metadata preservation and exact **committed**
+publication bytes remain unchanged; c2 selects no product behavior change.
+
+**C2, exactly one additional invocation:** only
+`test_managed_policy_revision_retains_recorded_path` in the same module.
+Compare the entire decoded written body with the submitted fixture-derived
+revised body, excluding only leading/trailing LF framing on both sides.
+Internal newlines, spaces/tabs, all body text, exact decoded metadata, recorded
+path/no duplicate, metric bytes and Source-binding digest checks stay strict.
+No generic whitespace stripping, copied output oracle, other test edits or
+product repair is permitted. Use the same isolated3.14 environment and tested
+c1 semantic product delta. The two existing guard passes survive this test-only
+change; do not repeat them, the group or the whole module. Unexpected failure
+again stops for owner disposition; no extra repair or test is authorized.
+
+The one previously reserved delta-only review remains unused (0/1); c2 adds
+no review allocation. After actual success, commit/freeze the existing D4
+product delta plus this test-only correction in a unique result ref, retaining
+all failed patches/logs and qualified neutral formatting drift. Review only
+721-to-fixed-result and the original D4 finding plus the authorized oracle
+change. No settled D1/D2/D3/D5 or general L1 re-review; no integration authority.
 
 Later joint/Q1 non-pytest checks are the scoped static checks, required existing Lumio
 build/verifier/MCP job and one paired installed-origin/profile-read proof
@@ -195,13 +230,15 @@ not stolen-secret/broken-TLS/malicious-admin stories or generic hardening.
 
 ## 5. Handoff state
 
-Revision 4 records the owner's explicit D4-only c1 approval after terminal b1
-handback. Frozen `61c5cc9` and `721caf2` remain unaccepted; neither is an A1
-consumable ABI. Keep Lumio's approved r2 behavior/ADR/glossary unchanged and
-freeze this reconciled execution-source copy before fresh Sol dispatch from
-721. Record exact source/base/result refs, host/model/worktree/runtime, one
-red regression, the focused D4 post-check and delta-only review in existing
-parent run state. Do not edit the old worker's preserved formatting drift.
+Revision 5 records the explicit c2 oracle exception after c1's failed
+post-check. Frozen61/721 remain unaccepted; neither is an A1-consumable ABI.
+Keep the approved r2 behavior/ADR/glossary and tested c1 semantic product
+patch unchanged. Freeze this new execution-source copy while preserving r4,
+all old worktrees/refs/reports and failed tests. Verify the same idle Sol
+worker's placement/runtime and the current patch against tested content before
+grants; c2 may edit only the decoded-body LF comparison and execute its one
+node. Record actual result/ref/cleanliness, failures/reused passes, unknown
+formatting actor and the still-single delta review in existing parent state.
 No duplicate plan, new process ledger or issue update. A1/Q1 remain proposed;
 target integration, push/release, private app/real-KB access and cleanup remain
 unauthorized.
