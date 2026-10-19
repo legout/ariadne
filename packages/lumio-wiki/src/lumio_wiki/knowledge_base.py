@@ -4590,17 +4590,24 @@ def write_control_file(path: str | Path, control: KnowledgeBaseControlFile) -> P
     if control.ariadne_context is not None:
         # YAML's serializer preserves exact string keys/revisions (including
         # numeric-looking scalars); plain Control File bytes remain unchanged.
-        lines.extend(yaml.encode({
-            "ariadne_context": {
-                "version": control.ariadne_context.version,
-                "ontology_catalog": {
-                    namespace: dict(sorted(identifiers.items()))
-                    for namespace, identifiers in sorted(
-                        control.ariadne_context.ontology_catalog.items()
-                    )
-                },
-            }
-        }).decode("utf-8").rstrip("\n").splitlines())
+        lines.extend(
+            yaml.encode(
+                {
+                    "ariadne_context": {
+                        "version": control.ariadne_context.version,
+                        "ontology_catalog": {
+                            namespace: dict(sorted(identifiers.items()))
+                            for namespace, identifiers in sorted(
+                                control.ariadne_context.ontology_catalog.items()
+                            )
+                        },
+                    }
+                }
+            )
+            .decode("utf-8")
+            .rstrip("\n")
+            .splitlines()
+        )
     content = "\n".join(lines) + "\n"
     _atomic_write_text(target, content)
     return target
