@@ -307,10 +307,16 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
 
     if args.command == "search":
         return _print_discovery(DiscoveryRuntime.open_project(args.project), args)
+    discovery = DiscoveryRuntime.open_project(args.project)
+    if args.command == "list-metrics" and discovery._context_snapshot is not None:
+        print(json.dumps(asyncio.run(discovery.list_metrics()), default=_json_default))
+        return 0
+    discovery._refuse_unsupported(args.command.replace("-", "_"))
     limits = query_results.load_host_query_limits(args.project)
     runtime = QueryRuntime.open_project(
         args.project,
         deadline_budget=DeadlineBudget(limits["execution_seconds"]),
+        discovery=discovery if discovery._managed is not None else None,
     )
     if args.command == "list-metrics":
         result = asyncio.run(runtime.list_metrics())

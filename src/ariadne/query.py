@@ -277,6 +277,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         bounded snapshot-based contract annotation (producer id/version,
         binding, as-of observation) — computed once from the admission
         descriptor, with NO extra source reads and no second inspection."""
+        self._refuse_unsupported("list_datasets")
         self._discard_request_budget()  # fix pass 2, finding 1b (list_datasets)
         annotations = self._contract_annotations()
         datasets: list[dict] = []
@@ -415,20 +416,45 @@ class _QueryRuntimeSession(_DiscoverySession):
         dimensions: list[str] | None = None,
         range: dict | None = None,  # noqa: A002 — spec §4 names the parameter
     ) -> dict:
+        budget = None
+        if self._context_snapshot is not None:
+            budget = self._claim_operation_budget()
+            self._recheck_pinned()
         if self._context_only:  # K4: the specific missing-catalog refusal
             if self._managed is not None:
                 self._recheck_pinned()
+            if self._context_snapshot is not None:
+                raise ValueError("no admitted metric catalog; integrated MVP has no fallback")
             raise ValueError(MISSING_CATALOG)
         if name not in self._metrics:  # spec §7/rev 4: discovery before failure
             available = ", ".join(sorted(self._metrics))
-            raise ValueError(
-                f"unknown metric {name!r}; available metrics: {available}. {ROUTING_HINT}"
+            hint = (
+                ROUTING_HINT
+                if self._context_snapshot is None
+                else ("Local integrated MVP: get_metric only; no Ad-hoc fallback.")
             )
-        if self._managed is not None:
+            raise ValueError(f"unknown metric {name!r}; available metrics: {available}. {hint}")
+        if self._managed is not None and self._context_snapshot is None:
             # Issue #37/G5: a governed answer on the managed route re-checks the
             # session's pinned snapshot bytes and source identity first — a
             # hand-edited snapshot or a withdrawn approval is a staleness refusal.
             self._recheck_pinned()
+        required_context = None
+        if self._context_snapshot is not None:
+            assert self._managed is not None
+            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+            required_context = lumio_context.metric_context(
+                self._context_snapshot,
+                self._managed["bound_release"],
+                self.context_dir,
+                self._metrics[name]["model"]["semantic_model"][0]["name"],
+                name,
+            )
+            query_results.account_rows(self._limits, {"context": required_context}, [])
+            query_results.finalize_response(
+                self._limits, {"context": required_context}, response_measure=self._measure
+            )
         # Compiled by our sqlglot renderer (ADR-0008) from the served OSI models —
         # never tool input (spec §6): the executor only ever receives SQL returned
         # by the compile step. The statement guard is defense in depth on this
@@ -440,7 +466,10 @@ class _QueryRuntimeSession(_DiscoverySession):
         # Issue #56/S1 (spec 0014 §6): one fresh remaining-seconds budget covers
         # bind, the live grain audit and bounded execution/collection; a reused
         # session never inherits a previous operation's allowance.
-        budget = self._claim_operation_budget()
+        if budget is None:
+            budget = self._claim_operation_budget()
+        if budget.expired():
+            raise query_results.deadline_refusal(budget.seconds)
         with self._phase(budget):
             # Same gauntlet as the ad-hoc path (spec §8.9): the renderer compiles
             # structurally, so a column missing from the source only surfaces at
@@ -466,7 +495,9 @@ class _QueryRuntimeSession(_DiscoverySession):
             "rows": bounded.rows,
             "sql": sql,
             "governed": True,  # spec rev 3 §8.10: symmetry with define_metric
-            "context": self._metric_context(name),  # spec rev 10 §8.21 (ADR-0011)
+            "context": (
+                required_context if required_context is not None else self._metric_context(name)
+            ),
         }
         if self._managed is not None:
             # Issue #37/G5: revision/route provenance alongside the existing
@@ -650,6 +681,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         context with the independent attestation state, and the local admission
         provenance — ``governed: true`` only because a human admitted the exact
         validated revision."""
+        self._refuse_unsupported("query_metrics")
         graph, admission = self._admitted()
         # Issue #56/S1 (spec 0014 §6): the shared budget covers the planner's
         # live relationship/grain audits, the EXPLAIN bind and the bounded
@@ -744,6 +776,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         many_to_one/one_to_one lookup paths — with no aggregates and no
         fan-out, over the ADMITTED served graph, behind the same admission,
         single-statement, and EXPLAIN bind gauntlet."""
+        self._refuse_unsupported("query_detail")
         graph, admission = self._admitted()
         budget = self._claim_operation_budget()
         with self._phase(budget):
@@ -798,6 +831,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         sessions do not represent public serving. Compiled through the existing planner
         ownership, the single-statement guard and the EXPLAIN bind, then the
         shared S1 output safeguards bound the answer."""
+        self._refuse_unsupported("query_records")
         if self._managed is not None:
             # spec 0014 §3: managed projects retain pinned admission +
             # approved-source rechecks; a stale pin or withdrawn approval
@@ -924,6 +958,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         expected_revision: str | None = None,
     ) -> dict:
         """Save one explicit Example as an unadmitted Git proposal candidate."""
+        self._refuse_unsupported("save_example")
         self._discard_request_budget()
         if self._managed is not None:
             if self._project is None:
@@ -983,6 +1018,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         metadata catalog or indirect SQL function ever reaches the grain
         guard, the compile gate, bind or execution.
         """
+        self._refuse_unsupported("define_metric")
         params = _normalize_definition(definition)
         budget = self._claim_operation_budget()
         with self._phase(budget):
@@ -1135,7 +1171,21 @@ class DeferredQueryRuntime:
     async def discover(self, query: str, limit: int = 5) -> dict:
         return await self.discovery.discover(query, limit=limit)
 
+    async def list_metrics(self):
+        if self.discovery._context_snapshot is not None:
+            return await self.discovery.list_metrics()
+        return await self.runtime().list_metrics()
+
     def __getattr__(self, name):
+        if self.discovery._context_snapshot is not None and name in {
+            "search_context",
+            "resolve_term",
+            "list_context_pages",
+            "read_context_page",
+            "search_examples",
+        }:
+            return getattr(self.discovery, name)
+        self.discovery._refuse_unsupported(name)
         return getattr(self.runtime(), name)
 
     def close(self) -> None:

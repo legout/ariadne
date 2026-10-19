@@ -4,10 +4,18 @@ Golden producer bytes remain untouched; test candidates use explicit Git edits.
 All sources, publications, receipts and operator confirmations are synthetic/local.
 """
 
+import asyncio
+import copy
+import hashlib
+import json
 import os
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — qualified test env is external
+import yaml
 from lumio_wiki.ariadne_context import (  # pyright: ignore[reportMissingImports]
     inspect_ariadne_candidate,
 )
@@ -17,7 +25,11 @@ from lumio_wiki.source_references import (  # pyright: ignore[reportMissingImpor
     serialize_source_reference_manifest,
 )
 
+from ariadne import admission, lumio_context, query_results  # pyright: ignore[reportAttributeAccessIssue] — editor resolves the baseline checkout
 from ariadne.authoring import AuthoringProject
+from ariadne.cli import main as cli
+from ariadne.discovery import DiscoveryRuntime
+from ariadne.query import DeferredQueryRuntime, QueryRuntime
 from tests.test_contracts import (
     ORDERS_BINDINGS,
     ORDERS_CONTRACT,
@@ -81,6 +93,7 @@ def content_project(root):
         .replace("order_count", "revenue")
         .replace("COUNT(*)", "SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)")
     )
+    model.rename(model.with_name("retail_sales.yml"))
     metric = project / "context_layer" / "metrics" / "order_count.md"
     metric.with_name("revenue.md").write_text(metric.read_text().replace("order_count", "revenue"))
     metric.unlink()
@@ -138,10 +151,558 @@ def test_unsupported_ariadne_profile_refuses_before_publication(tmp_path):
     )
     assert inspection.diagnostics == (), "SDK input must be genuinely native-valid"
     validated = api.validate_proposal(started["proposal"], revision)
-    other_errors = [error for error in validated["errors"] if "unsupported" not in error.lower()]
-    assert other_errors == [], "An unrelated native contract/setup failure is not the expected red"
-    assert not validated["ok"] and any(
-        "unsupported" in error.lower() and "reference" in error.lower()
-        for error in validated["errors"]
-    ), "M1 must refuse the unsupported Reference profile before publication"
+    checks = {check["name"]: check for check in validated["report"]["checks"]}
+    native_checks = {
+        "source_boundary",
+        "structural",
+        "compile",
+        "conformance",
+        "bind",
+        "grain",
+        "relationship_audit",
+        "page_contract",
+        "answer_examples",
+        "citations",
+        "mapping_evidence",
+        "contracts",
+    }
+    assert native_checks <= checks.keys(), "The native validation report must be complete"
+    assert {name: checks[name]["outcome"] for name in native_checks} == dict.fromkeys(
+        native_checks, "passed"
+    ), "An unrelated failed native check is not the expected red"
+    assert validated["ok"] is False, "M1 must refuse the unsupported Reference profile"
+    assert len(validated["errors"]) == 1, "Only the unsupported KB profile may fail"
+    artifact, _, cause = validated["errors"][0].partition(": ")
+    assert artifact == "knowledge/references/order-number.md"
+    assert re.search(
+        r"\bunsupported\s+(?:Ariadne\s+)?profile(?:\s+kind)?\s+['\"]?reference\b",
+        cause,
+        flags=re.IGNORECASE,
+    ), "The KB diagnostic must identify the unsupported Ariadne Reference profile"
     assert not (project / ".ariadne" / "current.json").exists()
+
+    # A supported kind must not hide an unsupported execution annotation either.
+    project2, api2, started2, revision2 = supported_candidate(tmp_path / "extension")
+    tree2 = worktree_of(project2, started2["proposal"])
+    metric = tree2 / "knowledge/metrics/retail-revenue.md"
+    meta, body = page_parts(metric)
+    meta["ariadne_profile"]["native"]["attester"] = "authored-not-a-Core-receipt"
+    write_page(metric, meta, body)
+    revision2 = reconcile_knowledge(project2, started2["proposal"], revision2)
+    assert (
+        inspect_ariadne_candidate(
+            str(tree2 / "knowledge"), revision2, namespace=NAMESPACE
+        ).diagnostics
+        == ()
+    )
+    refused = api2.validate_proposal(started2["proposal"], revision2)
+    assert refused["ok"] is False
+    assert refused["errors"] == [
+        "knowledge/metrics/retail-revenue.md: unsupported technical Ariadne profile extension"
+    ]
+
+
+CANCELLATION = """---
+id: entity:cancelled-orders
+entity_types: [policy]
+title: Cancelled Orders
+summary: Cancelled orders are excluded from recognized revenue.
+visibility: public
+lifecycle: approved
+sources:
+  - id: human-cancellation-rule
+    title: Synthetic operator rule
+ariadne_profile:
+  version: 1
+  kind: policy
+  required_policies: []
+  native:
+    type: policy
+    title: Cancelled Orders
+    description: Exclude cancelled orders from recognized revenue.
+    status: stable
+    tags: [policy]
+    stale_after: 2020-01-01
+    verified:
+      - by: human:synthetic-owner
+        on: 2020-01-01
+    sources:
+      - id: human-cancellation-rule
+        title: Synthetic operator rule
+---
+
+# Cancelled Orders
+
+Exclude every order whose status is cancelled from recognized revenue.
+Completed orders 100 and 50 count; cancelled order 25 does not. The sanctioned
+OSI expression performs this exclusion; this narrative is not a SQL compiler.
+"""
+
+
+def page_parts(path):
+    _empty, frontmatter, body = path.read_text().split("---", 2)
+    return yaml.safe_load(frontmatter), body
+
+
+def write_page(path, meta, body):
+    path.write_text("---\n" + yaml.safe_dump(meta, sort_keys=False) + "---" + body)
+
+
+def reconcile_knowledge(project, proposal, previous):
+    tree = worktree_of(project, proposal)
+    run_git(tree, "add", "-f", "--", "knowledge")
+    run_git(tree, "commit", "-q", "-m", "human: explicitly adapt joint candidate knowledge")
+    revision = run_git(tree, "rev-parse", "HEAD").strip()
+    admission.reconcile(project, proposal, previous, revision)
+    return revision
+
+
+def supported_candidate(root):
+    project, api, started, revision = native_candidate(root)
+    tree = worktree_of(project, started["proposal"])
+    reference = tree / "knowledge/references/order-number.md"
+    meta, body = page_parts(reference)
+    del meta["ariadne_profile"]  # visible Git candidate edit, never an input conversion
+    write_page(reference, meta, body)
+    (tree / "knowledge/policies/cancelled-orders.md").write_text(CANCELLATION)
+    metric = tree / "knowledge/metrics/retail-revenue.md"
+    meta, body = page_parts(metric)
+    profile = meta["ariadne_profile"]
+    profile["required_policies"].append(
+        {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"}
+    )
+    profile["native"]["sources"].append(
+        {"id": "cancelled-orders", "resource": "policies/cancelled-orders.md"}
+    )
+    profile["ontology_refs"] = [
+        {"namespace": "urn:demo:catalog", "identifier": "retail-hierarchy", "revision": "r7"}
+    ]
+    write_page(metric, meta, body + "\nCancelled orders are excluded per Cancelled Orders.\n")
+    (tree / "knowledge/lumio.yaml").write_text(
+        CONTROL
+        + yaml.safe_dump(
+            {
+                "ariadne_context": {
+                    "version": 1,
+                    "ontology_catalog": {"urn:demo:catalog": {"retail-hierarchy": "r7"}},
+                }
+            }
+        )
+    )
+    revision = reconcile_knowledge(project, started["proposal"], revision)
+    return project, api, started, revision
+
+
+def ready(root):
+    project, api, started, revision = supported_candidate(root)
+    validated = api.validate_proposal(started["proposal"], revision)
+    assert validated["ok"] is True, validated["errors"]
+    assert validated["contracts"]["observations"][0]["outcome"] == "passed"
+    review = api.review_proposal(started["proposal"])
+    assert review["source_approved"] is True
+    paths = {item["resource"] for item in review["files"]}
+    assert {
+        "context_integration.yaml",
+        "knowledge/lumio.yaml",
+        "knowledge/policies/cancelled-orders.md",
+        "contracts/orders-contract.yaml",
+        "contract_bindings.yaml",
+        "semantic_layer/models/retail_sales.yml",
+    } <= paths
+    return project, api, review
+
+
+def preview(project, review, destination, expected="none", scope=("public",)):
+    return admission.overall_review(
+        project,
+        review["proposal"],
+        review["revision"],
+        review["review_digest"],
+        destination=destination,
+        expected_current=expected,
+        scope=scope,
+    )
+
+
+def activate(project, review, composite):
+    return admission.admit_revision(
+        project,
+        review["proposal"],
+        review["revision"],
+        review["review_digest"],
+        confirmed_by="human:synthetic-operator",
+        overall_preview=composite,
+        confirmed_overall_digest=composite["digest"],
+    )
+
+
+def current_bytes(project):
+    return (project / ".ariadne/current.json").read_bytes()
+
+
+def revenue(runtime):
+    result = asyncio.run(runtime.get_metric("revenue"))
+    assert result["rows"] == [{"revenue": 150.0}]
+    assert result["governed"] is True
+    return result
+
+
+def test_local_revenue_release_and_later_policy_isolation(tmp_path):
+    project, api, review = ready(tmp_path)
+    destination = tmp_path / "published"
+    composite = preview(project, review, destination)
+    assert not (project / ".ariadne/current.json").exists()
+    assert not destination.exists()
+    with pytest.raises(ValueError, match="composite confirmation"):
+        admission.admit_revision(
+            project,
+            review["proposal"],
+            review["revision"],
+            review["review_digest"],
+            confirmed_by="human:operator",
+        )
+    admitted = activate(project, review, composite)
+    record, snapshot = admission.resolve_admission(project)
+    manifest = record["bound_release"]
+    assert manifest == composite["manifest"] == admitted["bound_release"]
+    assert (
+        manifest["knowledge"]["publication_manifest_digest"]
+        == hashlib.sha256(
+            (destination / "versions" / review["revision"] / "manifest.json").read_bytes()
+        ).hexdigest()
+    )
+    assert (
+        record["native_publication"]["manifest_digest"]
+        == manifest["knowledge"]["source_reference_digest"]
+    )
+    assert record["native_publication"]["activated"] is True
+    assert record["overall_confirmation"]["digest"] == composite["digest"]
+    runtime = QueryRuntime.open_project(project)
+    try:
+        result = revenue(runtime)
+        context = result["context"]
+        assert context["attestation"] == "pending"
+        assert "not independently value-attested" in context["governed_note"]
+        assert CANCELLATION in context["policies"]
+        assert (BASELINE / "policies/retail-return-policy.md").read_text() in context["policies"]
+        assert len(context["policies"]) == 2
+        assert "context_stale" in {w["code"] for w in context["context_signals"]["warnings"]}
+        assert {c["entity_id"] for c in context["citations"]} == {
+            "entity:retail-revenue",
+            "entity:retail-return-policy",
+            "entity:cancelled-orders",
+        }
+        assert all(c["published_version"] == review["revision"] for c in context["citations"])
+        assert "data_signals" in result and result["result"]["complete"] is True
+        # Full context is checked before SQL, not silently omitted for a tighter host budget.
+        old_limits = runtime._limits
+        runtime._limits = {**old_limits, "response_bytes": 1000}
+        with pytest.raises(query_results.QueryResultError):
+            revenue(runtime)
+        runtime._limits = old_limits
+        tree = worktree_of(project, review["proposal"])
+        policy = tree / "knowledge/policies/cancelled-orders.md"
+        policy.write_text(CANCELLATION + "\nLater reviewed policy text.\n")
+        revised = reconcile_knowledge(project, review["proposal"], review["revision"])
+        checked = api.validate_proposal(review["proposal"], revised)
+        assert checked["ok"] is True, checked["errors"]
+        later = api.review_proposal(review["proposal"])
+        activate(project, later, preview(project, later, destination, review["revision"]))
+        assert revenue(runtime)["context"] == context
+        assert "Later reviewed policy text." not in "".join(context["policies"])
+        assert (snapshot / "knowledge/policies/cancelled-orders.md").read_text() == CANCELLATION
+    finally:
+        runtime.con.close()
+
+
+def test_composite_consent_binds_scope_build_and_full_previous_release(tmp_path, monkeypatch):
+    project, _api, review = ready(tmp_path)
+    destination = tmp_path / "published"
+    original = preview(project, review, destination)
+    altered = copy.deepcopy(original)
+    altered["manifest"]["visibility_scope"] = ["public", "internal"]
+    with pytest.raises(ValueError, match="composite confirmation"):
+        activate(project, review, altered)
+    root = lumio_context._module_root
+    temporary_code = tmp_path / "reader.py"
+    temporary_code.write_text("identity_changed = True\n")
+    with monkeypatch.context() as m:
+        m.setattr(
+            lumio_context,
+            "_module_root",
+            lambda name: temporary_code if name == "lumio_wiki" else root(name),
+        )
+        with pytest.raises(ValueError, match="composite review changed"):
+            activate(project, review, original)
+    activate(project, review, original)
+    review = AuthoringProject(project).review_proposal(review["proposal"])
+    # Same content commit, genuinely distinct scope/native destination bindings.
+    stale = preview(project, review, tmp_path / "stale", scope=("public",))
+    widened = preview(project, review, tmp_path / "widened", scope=("public", "internal"))
+    activate(project, review, widened)
+    previous = current_bytes(project)
+    assert json.loads(previous)["commit"] == review["revision"]
+    with pytest.raises(ValueError, match="composite review changed"):
+        activate(project, review, stale)
+    assert current_bytes(project) == previous
+
+
+def test_corrupt_missing_or_mixed_release_refuses_before_sql(tmp_path, monkeypatch):
+    project, _api, review = ready(tmp_path / "a")
+    destination = tmp_path / "published-a"
+    activate(project, review, preview(project, review, destination))
+    project_b, _api_b, review_b = ready(tmp_path / "b")
+    activate(project_b, review_b, preview(project_b, review_b, tmp_path / "published-b"))
+    descriptor_path = project / ".ariadne/current.json"
+    original = current_bytes(project)
+    record = json.loads(original)
+    other = json.loads(current_bytes(project_b))
+    broken = copy.deepcopy(record)
+    del broken["bound_release"]
+    damaged = copy.deepcopy(record)
+    damaged["bound_release"]["content_commit"] = "0" * 40
+    mixed = copy.deepcopy(record)
+    mixed["bound_release"] = other["bound_release"]
+    from ariadne.execution import DuckDBExecution
+
+    def no_execution(*args, **kwargs):
+        raise AssertionError("invalid binding reached source construction/SQL")
+
+    with monkeypatch.context() as m:
+        m.setattr(DuckDBExecution, "__init__", no_execution)
+        for invalid in (broken, damaged, mixed):
+            descriptor_path.write_text(json.dumps(invalid))
+            with pytest.raises(ValueError):
+                QueryRuntime.open_project(project)
+        descriptor_path.write_bytes(original)
+        version_policy = (
+            destination / "versions" / review["revision"] / "policies/cancelled-orders.md"
+        )
+        version_policy.write_text("corrupt pinned KB")
+        with pytest.raises(Exception, match="[Vv]ersion|[Cc]ontext|[Ss]napshot"):
+            QueryRuntime.open_project(project)
+
+
+def test_hidden_required_policy_cannot_activate(tmp_path):
+    project, api, review = ready(tmp_path)
+    destination = tmp_path / "published"
+    activate(project, review, preview(project, review, destination))
+    previous = current_bytes(project)
+    runtime = QueryRuntime.open_project(project)
+    try:
+        tree = worktree_of(project, review["proposal"])
+        hidden_text = CANCELLATION.replace("visibility: public", "visibility: restricted").replace(
+            "title: Cancelled Orders", "title: Hidden Trade Secret"
+        )
+        (tree / "knowledge/policies/cancelled-orders.md").write_text(hidden_text)
+        revised = reconcile_knowledge(project, review["proposal"], review["revision"])
+        checked = api.validate_proposal(review["proposal"], revised)
+        assert checked["ok"] is True, checked["errors"]
+        hidden = api.review_proposal(review["proposal"])
+        with pytest.raises(ValueError, match="Policy Closure") as refused:
+            preview(project, hidden, destination, review["revision"])
+        assert "Hidden Trade Secret" not in str(refused.value)
+        assert current_bytes(project) == previous
+        result = revenue(runtime)
+        assert "Hidden Trade Secret" not in json.dumps(result)
+        assert CANCELLATION in result["context"]["policies"]
+    finally:
+        runtime.con.close()
+
+
+def test_same_location_build_content_change_refuses(tmp_path, monkeypatch):
+    project, _api, review = ready(tmp_path)
+    code = tmp_path / "temporary-sdk.py"
+    code.write_text("reader = 1\n")
+    root = lumio_context._module_root
+    monkeypatch.setattr(
+        lumio_context, "_module_root", lambda name: code if name == "lumio_wiki" else root(name)
+    )
+    identity = lumio_context.execution_identity()
+    assert identity == lumio_context.execution_identity()
+    activate(project, review, preview(project, review, tmp_path / "published"))
+    DiscoveryRuntime.open_project(project)
+    code.write_text("reader = 2\n")
+    assert identity != lumio_context.execution_identity()
+    with pytest.raises(ValueError, match="execution identity"):
+        DiscoveryRuntime.open_project(project)
+
+
+def test_post_publication_failure_preserves_binding_and_reports_receipt(tmp_path, monkeypatch):
+    from lumio_wiki.location import (  # pyright: ignore[reportMissingImports]
+        PublishedFilesystemLocation,
+    )
+
+    for fault in ("reader", "descriptor"):
+        project, _api, review = ready(tmp_path / fault)
+        destination = tmp_path / (fault + "-published")
+        activate(project, review, preview(project, review, destination))
+        review = AuthoringProject(project).review_proposal(review["proposal"])
+        previous = current_bytes(project)
+        new_destination = tmp_path / (fault + "-residue")
+        composite = preview(project, review, new_destination)
+
+        def fail(*args, **kwargs):
+            raise OSError("assigned post-publication fault")
+
+        with monkeypatch.context() as m:
+            if fault == "reader":
+                m.setattr(lumio_context, "open_context", fail)
+            else:
+                m.setattr(admission, "_publish_current", fail)
+            with pytest.raises(lumio_context.OverallAdmissionError) as caught:
+                activate(project, review, composite)
+        outcome = caught.value.outcome
+        assert outcome["integrated_activated"] is False
+        assert outcome["publication_receipt"]["activated"] is True
+        assert outcome["publication_receipt"]["version"] == review["revision"]
+        assert (
+            outcome["publication_receipt"]["manifest_digest"]
+            == composite["manifest"]["knowledge"]["source_reference_digest"]
+        )
+        assert "publication_receipt" in str(caught.value)
+        assert PublishedFilesystemLocation(new_destination).read_pointer() == review["revision"]
+        assert current_bytes(project) == previous
+        runtime = QueryRuntime.open_project(project)
+        try:
+            revenue(runtime)
+        finally:
+            runtime.con.close()
+
+
+def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, capsys):
+    project, _api, review = ready(tmp_path)
+    activate(project, review, preview(project, review, tmp_path / "published"))
+    runtime = QueryRuntime.open_project(project)
+    discovery = DiscoveryRuntime.open_project(project)
+    observed_result = revenue(runtime)
+
+    def no_execution(*args, **kwargs):
+        raise AssertionError("catalog/unsupported operation opened execution")
+
+    deferred = DeferredQueryRuntime(no_execution, discovery)
+    calls = [
+        ("query_metrics", ({"metrics": ["revenue"]},)),
+        ("query_detail", ({"dataset": "orders", "fields": ["id"]},)),
+        (
+            "query_records",
+            (
+                {
+                    "dataset": "orders.main.orders",
+                    "fields": ["id"],
+                    "order": [{"field": "id", "direction": "asc"}],
+                },
+            ),
+        ),
+        (
+            "define_metric",
+            (
+                {
+                    "name": "test_value",
+                    "source": "orders.main.orders",
+                    "expression": "SUM(amount)",
+                    "description": "Temporary value",
+                },
+            ),
+        ),
+        (
+            "save_example",
+            (
+                {
+                    "question": "Revenue?",
+                    "interpretation": "Exclude cancelled orders.",
+                    "method": {"operation": "get_metric", "arguments": {"name": "revenue"}},
+                    "result": observed_result,
+                    "submitter": "human:synthetic-operator",
+                    "attestation": "Synthetic fixture meaning checked against the stated rule.",
+                    "sources": ["context_layer/metrics/revenue.md"],
+                },
+            ),
+        ),
+        ("search_examples", ("revenue",)),
+        ("search_context", ("cancelled",)),
+        ("resolve_term", ("Order Number",)),
+        ("list_context_pages", ()),
+        ("read_context_page", ("policies/cancelled-orders.md",)),
+        ("list_datasets", ()),
+    ]
+    from ariadne.execution import DuckDBExecution
+
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(runtime._execution, "bind", no_execution)
+            m.setattr(DuckDBExecution, "__init__", no_execution)
+            catalog = asyncio.run(discovery.list_metrics())
+            assert isinstance(catalog, list) and isinstance(catalog[0], dict)
+            assert catalog[0]["name"] == "revenue"
+            assert (
+                catalog[0]["bound_release"]
+                == json.loads(current_bytes(project))["bound_release"]["digest"]
+            )
+            assert "define_metric" not in catalog[-1]
+            assert asyncio.run(deferred.list_metrics()) == catalog
+            groups = asyncio.run(deferred.discover("revenue"))["groups"]
+            assert groups["metrics"]["status"] == "available"
+            assert groups["contracts"]["status"] == "available"
+            assert all(groups[k]["status"] == "unavailable" for k in ("pages", "terms", "examples"))
+            for name, args in calls:
+                with pytest.raises(
+                    ValueError, match=f"unsupported integrated MVP operation: {name}"
+                ):
+                    asyncio.run(getattr(runtime, name)(*args))
+                with pytest.raises(
+                    ValueError, match=f"unsupported integrated MVP operation: {name}"
+                ):
+                    asyncio.run(getattr(deferred, name)(*args))
+            assert cli(["--project", str(project), "list-metrics"]) == 0
+            assert json.loads(capsys.readouterr().out)[0]["name"] == "revenue"
+            assert cli(["--project", str(project), "list-datasets"]) == 1
+            assert "unsupported integrated MVP operation" in capsys.readouterr().err
+    finally:
+        runtime.con.close()
+
+
+def test_standalone_never_imports_optional_lumio(tmp_path):
+    from tests.test_git_admission import admitted_ready
+    from tests.test_git_authoring import POLICY_PAGE, complete_bundle_project
+
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    review, _journey = admitted_ready(
+        api,
+        project,
+        {
+            "kind": "page",
+            "section": "policies",
+            "name": "all-events-count",
+            "content": POLICY_PAGE.replace("The rule body.", "The standalone rule body."),
+        },
+    )
+    admission.admit_revision(
+        project,
+        review["proposal"],
+        review["revision"],
+        review["review_digest"],
+        confirmed_by="human:standalone-operator",
+    )
+    script = """import asyncio, importlib.abc, sys
+class NoLumio(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "lumio_wiki" or fullname.startswith("lumio_wiki."):
+            raise AssertionError("standalone imported optional Lumio")
+sys.meta_path.insert(0, NoLumio())
+from ariadne.query import QueryRuntime
+runtime = QueryRuntime.open_project(sys.argv[1])
+try:
+    result = asyncio.run(runtime.get_metric("event_count"))
+    assert result["rows"] == [{"event_count": 3}]
+finally:
+    runtime.con.close()
+"""
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(project)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr

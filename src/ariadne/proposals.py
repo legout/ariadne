@@ -46,6 +46,7 @@ import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack s
 
 from ariadne.context import _load, core_body_sections
 from ariadne.ingest import _SECRET_PATTERNS
+from ariadne.lumio_context import knowledge_path  # pyright: ignore[reportMissingImports]
 from ariadne.sources import _DSN_PASSWORD_RE
 
 # Operator-owned project state, ignored via the repo-LOCAL exclude file: the
@@ -567,6 +568,8 @@ def _in_user_scope(rel: str) -> bool:
     ):
         return False
     parts = pure.parts
+    if rel == "context_integration.yaml" or knowledge_path(rel):
+        return True
     if rel in (
         "ariadne.yaml",
         "data/seed_notes.md",
@@ -613,6 +616,8 @@ def _in_snapshot(rel: str) -> bool:
         or any(part in ("", ".", "..") for part in parts)
     ):
         return False
+    if rel == "context_integration.yaml" or knowledge_path(rel):
+        return True
     if rel in (
         "ariadne.yaml",
         "data/seed_notes.md",
@@ -643,14 +648,27 @@ def _scope_files(project: Path) -> list[str]:
     system-generated bookkeeping (``index.md``/``log.md``) is EXCLUDED: the
     finalize pass owns and regenerates it."""
     rels: list[str] = []
+    knowledge = project / "knowledge"
+    if knowledge.is_symlink():
+        raise GitError("initial knowledge directory must not be a symlink")
+    if (project / "context_integration.yaml").is_file() and knowledge.is_dir():
+        rels.extend(
+            p.relative_to(project).as_posix()
+            for p in sorted(knowledge.rglob("*"))
+            if p.is_file() and knowledge_path(p.relative_to(project).as_posix())
+        )
     for rel in (
         "ariadne.yaml",
         "data/seed_notes.md",
         "semantic_layer/graph.yml",
         "contract_bindings.yaml",
+        "context_integration.yaml",
     ):
-        if rel == "contract_bindings.yaml" and (project / rel).is_symlink():
-            raise GitError("initial contract bindings must not be a symlink")
+        if (
+            rel in ("contract_bindings.yaml", "context_integration.yaml")
+            and (project / rel).is_symlink()
+        ):
+            raise GitError(f"initial artifact {rel!r} must not be a symlink")
         if (project / rel).is_file():
             rels.append(rel)
     models = project / "semantic_layer" / "models"
@@ -1076,7 +1094,10 @@ def scope_blobs(project: Path, revision: str) -> list[tuple[str, bytes]]:
     exact-final-commit validation and review."""
     tracked = _git(["ls-tree", "-r", "--name-only", revision], project).stdout.split("\n")
     blobs: list[tuple[str, bytes]] = []
+    integrated = "context_integration.yaml" in tracked
     for rel in sorted(path for path in tracked if _in_snapshot(path)):
+        if knowledge_path(rel) and not integrated:
+            continue
         blob = _read_blob(project, revision, rel)
         if blob is not None:  # pragma: no cover - ls-tree paths always resolve
             blobs.append((rel, blob))
@@ -1098,7 +1119,9 @@ def refuse_untracked_scope(project: Path, record: dict) -> None:
     ).stdout.splitlines():
         if line.startswith("??"):
             rel = line[3:].rsplit(" -> ", 1)[-1]
-            if _in_snapshot(rel):
+            if _in_snapshot(rel) and (
+                not knowledge_path(rel) or (worktree / "context_integration.yaml").is_file()
+            ):
                 raise ValueError(
                     f"the worktree of proposal {proposal} carries the untracked artifact "
                     f"draft {rel!r} — an interrupted artifact creation left it as "

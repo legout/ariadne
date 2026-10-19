@@ -351,6 +351,11 @@ def _verified_evidence(project: Path, proposal: str, revision: str, review: dict
             "evidence; revalidate the exact revision; nothing was activated"
         )
     artifact_files = set(evidence.get("artifact_files") or [])
+    if (
+        "context_integration.yaml" in artifact_files
+        and outcomes.get("context_integration") != "passed"
+    ):
+        raise ValueError("integrated candidate requires its actual joint context validation")
     graph_candidate = "semantic_layer/graph.yml" in artifact_files
     if graph_candidate and outcomes.get("relationship_audit") != "passed":
         raise ValueError(
@@ -706,6 +711,39 @@ def _retained_confirmations(
 # ------------------------------------------------------------ the human commands
 
 
+def overall_review(
+    project,
+    proposal,
+    revision,
+    reviewed_digest,
+    *,
+    destination,
+    expected_current="none",
+    scope=("public",),
+    confirm_mappings=None,
+):
+    """Operator-only composite preview; no publication or activation."""
+    from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+    project = Path(project).resolve()
+    displayed = admission_review(
+        project, proposal, revision, reviewed_digest, confirm_mappings=confirm_mappings
+    )
+    review = displayed["review"]
+    evidence = _verified_evidence(project, proposal, revision, review)
+    return lumio_context.prepare_release(
+        project,
+        proposal,
+        revision,
+        review,
+        evidence,
+        destination,
+        expected_current,
+        scope,
+        confirm_mappings or [],
+    )
+
+
 def admission_review(
     project: str | Path,
     proposal: str,
@@ -813,6 +851,8 @@ def admit_revision(
     *,
     confirmed_by: str | None,
     confirm_mappings: list[str] | tuple[str, ...] | None = None,
+    overall_preview: dict | None = None,
+    confirmed_overall_digest: str | None = None,
 ) -> dict:
     """HUMAN-ONLY activation (the ``--confirm`` half of ``ariadne-admit``):
     record the operator's explicit confirmation for the exact reviewed revision
@@ -867,6 +907,39 @@ def admit_revision(
                     "re-review and admit the current digest, nothing was activated"
                 )
             evidence = _verified_evidence(project, proposal, revision, review)
+            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+            selected_context = lumio_context.selector(project / proposals.WORKTREES_REL / proposal)
+            if selected_context is not None:
+                if (
+                    not overall_preview
+                    or not confirmed_overall_digest
+                    or overall_preview.get("digest") != confirmed_overall_digest
+                    or lumio_context.digest(
+                        {k: v for k, v in overall_preview.items() if k != "digest"}
+                    )
+                    != confirmed_overall_digest
+                ):
+                    raise ValueError(
+                        "integrated admission requires one exact composite confirmation"
+                    )
+                previous_review = overall_preview["publication_review"]
+                recomputed = lumio_context.prepare_release(
+                    project,
+                    proposal,
+                    revision,
+                    review,
+                    evidence,
+                    previous_review["destination"],
+                    previous_review["expected_current"],
+                    overall_preview["manifest"]["visibility_scope"],
+                    confirm_mappings or [],
+                )
+                if recomputed != overall_preview:
+                    raise ValueError("composite review changed; new overall consent is required")
+            elif overall_preview is not None:
+                raise ValueError("overall confirmation cannot activate a standalone candidate")
+            publication_outcome = None
             # The expected admitted baseline (plan §2: the confirmation binds
             # the CURRENTLY expected served baseline; AC3: admission must not
             # silently erase another admitted proposal's changes). The record
@@ -987,7 +1060,42 @@ def admit_revision(
                 ),
                 "admitted_at": now,
             }
-            _publish_current(project, descriptor)  # AFTER the snapshot is complete
+            if selected_context is not None:
+                assert overall_preview is not None
+                publication_outcome = lumio_context.publish_and_verify(overall_preview)
+                try:
+                    descriptor["bound_release"] = overall_preview["manifest"]
+                    descriptor["overall_confirmation"] = {
+                        "by": confirmed_by,
+                        "at": now,
+                        "digest": confirmed_overall_digest,
+                        "expected_core_digest": overall_preview["expected_core_digest"],
+                        "manifest_digest": overall_preview["manifest"]["digest"],
+                    }
+                    descriptor["native_publication"] = publication_outcome["publication_receipt"]
+                    lumio_context.verify_release(descriptor, snapshot)
+                    if (
+                        lumio_context.digest(load_current(project))
+                        != overall_preview["expected_core_digest"]
+                    ):
+                        raise ValueError("complete expected prior Core binding changed")
+                    _publish_current(project, descriptor)
+                except Exception as exc:
+                    try:
+                        observed = load_current(project)
+                        publication_outcome["observed_core_digest"] = lumio_context.digest(observed)
+                        publication_outcome["integrated_activated"] = (
+                            observed is not None
+                            and observed.get("bound_release") == descriptor["bound_release"]
+                        )
+                    except Exception:
+                        publication_outcome["integrated_activated"] = None
+                    raise lumio_context.OverallAdmissionError(
+                        str(exc), publication_outcome
+                    ) from exc
+                publication_outcome["integrated_activated"] = True
+            else:
+                _publish_current(project, descriptor)  # AFTER the snapshot is complete
             # This admission is now the proposal's expected baseline: the next
             # admission of the SAME proposal builds on it without a reconcile
             # (its later candidates descend from this commit). The descriptor
@@ -1031,6 +1139,11 @@ def admit_revision(
             if (entry["page"], entry["mapping"]) not in selected_keys
         ],
         "lapsed_confirmations": lapsed,
+        **(
+            {"bound_release": descriptor["bound_release"], "native_outcome": publication_outcome}
+            if publication_outcome is not None
+            else {}
+        ),
         "admitted_at": now,
     }
 
@@ -1237,6 +1350,9 @@ def resolve_admission(project: str | Path) -> tuple[dict, Path]:
                 "its exact endpoint; approve and admit the current binding before "
                 "serving, never a silent endpoint switch"
             )
+    from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+    lumio_context.verify_release(record, snapshot)
     return record, snapshot
 
 
@@ -1309,8 +1425,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--by", default=None, help="operator identity recorded with the confirmation"
     )
+    parser.add_argument("--context-destination", help="local immutable Lumio publication target")
+    parser.add_argument("--context-expected-current", default="none")
+    parser.add_argument("--visibility", action="append", default=None)
+    parser.add_argument("--overall-digest", help="exact displayed composite confirmation digest")
     try:
         args = parser.parse_args(argv)
+        composite = (
+            overall_review(
+                args.project,
+                args.proposal,
+                args.revision,
+                args.reviewed_digest,
+                destination=args.context_destination,
+                expected_current=args.context_expected_current,
+                scope=args.visibility or ["public"],
+                confirm_mappings=args.confirm_mappings,
+            )
+            if args.context_destination
+            else None
+        )
         if args.confirm:
             result = admit_revision(
                 args.project,
@@ -1319,14 +1453,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.reviewed_digest,
                 confirmed_by=args.by or f"human:{getuser()}",
                 confirm_mappings=args.confirm_mappings,
+                overall_preview=composite,
+                confirmed_overall_digest=args.overall_digest,
             )
         else:
-            result = admission_review(
-                args.project,
-                args.proposal,
-                args.revision,
-                args.reviewed_digest,
-                confirm_mappings=args.confirm_mappings,
+            result = (
+                composite
+                if composite is not None
+                else admission_review(
+                    args.project,
+                    args.proposal,
+                    args.revision,
+                    args.reviewed_digest,
+                    confirm_mappings=args.confirm_mappings,
+                )
             )
     except Exception as exc:  # one JSON error object, message verbatim
         print(

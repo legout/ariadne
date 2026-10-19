@@ -953,6 +953,16 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                         "— narrow the bound contract profile; nothing was admitted"
                     )
             errors.extend(contract_errors)
+            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+            _captured = None
+            try:
+                _captured, context_errors = lumio_context.candidate(
+                    tree, worktree_root / "knowledge", final
+                )
+            except Exception as exc:
+                context_errors = [f"context integration: {type(exc).__name__}: {exc}"]
+            errors.extend(context_errors)
             # validate() carries no report at all only when a graph is declared
             # without models (the load owns that failure): the structural
             # outcome owns it explicitly. A context-only candidate (K4, issue
@@ -1011,6 +1021,14 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                     "; ".join([*receipt_errors, *claim_errors]),
                 ),
                 contract_check,
+                CheckOutcome(
+                    "context_integration",
+                    "failed"
+                    if context_errors
+                    else ("not_applicable" if _captured is None else "passed"),
+                    "; ".join(context_errors)
+                    or ("standalone project; no integrated selector" if _captured is None else ""),
+                ),
             )
             # K4 (issue #44): an explicitly not_applicable check was NOT
             # performed — the applicability decision rides the report (each
@@ -1158,6 +1176,8 @@ def _change_inventory(project: Path, record: dict) -> list[dict]:
             "answer_examples",
             "contracts",
             "contract_bindings.yaml",
+            "context_integration.yaml",
+            "knowledge",
         )
     ]
     diff = proposals._git(
