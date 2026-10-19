@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Approved revision 8 — scoped M1 execution only.** Owner selected “Plan + M1 starten (Recommended)” on 2026-10-19: local source freeze, new M1 GitHub child, fresh Paseo/Pi Sol/high writer, M1-R/M1-P once each and one independent Sol/high candidate review. Canonical ticket/freeze/host/env readiness must still be verified before writes. No target integration/push/release/real-KB/cleanup. |
+| **Status** | **Approved revision 9 — bounded M1 regression-fixture/oracle exception.** Owner 2026-10-19 selected “Test-only korrigieren +1 Red (Recommended)”: test-only correction plus exactly one additional M1-R2, then original M1 continuation only after intended red. The false-green M1-R remains spent; M1-P and the one candidate review remain unrun/unchanged. No broader scope, retries, main/push/release/cleanup. |
 | **Historical planning authority** | Owner, Ariadne Pi conversation 2026-10-19: after selecting local Metric MVP/strict profile boundary and approving its complete design, selected “Schriftlich freigeben (Recommended)” for written spec r2, ADR/source notices and subsequent local implementation planning only. No implementation, runtime tests, GitHub changes, integration or publication. |
 | **Goal / source** | First deliver the strict local journey defined by [spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), §§1.1–7 and [ADR-0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Preserve the full #76/#79 target; deferred features remain open. |
 | **Current source identity** | Approved spec SHA256 `22359ad5ab6f01d99b46cb8f8d7a8c6d1df6875d4dc21bb94481b03997a86adf`; document fork descends from source `5502300aca23d1afd3f49fb4f73d5fd9374a9b5a`. Native Core bytes equal `24630dbd404870f30602d66b5d5a2d53fa892f86`. Parent records the actual locally frozen source commit/ref before dispatch; no public source URL is claimed. |
@@ -85,6 +85,22 @@ expectations. The accepted L1 producer is not re-reviewed.
 
 ## 3. Approved finite M1 assurance boundary
 
+### Revision 9 exception: false-positive M1-R, not successful evidence
+
+M1-R exited 0 while accepting a native fixture citation failure: the model name
+was changed to retail_sales but its file remained orders.yml, and the broad
+substring matcher mistook `unsupported` in pytest's temporary path plus
+`reference escapes` for the desired profile refusal. Parent confirmed the
+native evidence/source; test-only WIP1f0bdba is clean and no product code exists.
+The owner approved aligning the fixture/model citation and strengthening the
+oracle, with **one extra invocation of that same node (M1-R2)**. No native gate
+is weakened; diagnostic paths/incidental words cannot establish the expected
+cause. Statically inspect the correction before the call. An unrelated failure
+or another false green stops; no further repair/rerun is allocated. Only the
+intended missing-feature failure unlocks the original product/P continuation.
+The actual WIP/log/native-validation records stay preserved in the parent run.
+
+
 **One high-risk unit:** money, Source Approval, exact human consent, Scope,
 complete immutable binding and last activation. It needs one immediate
 independent candidate review before later work consumes the result. No
@@ -92,12 +108,15 @@ per-method/per-layer matrices, baseline suite or second live proof.
 
 | Approved call | Timing | Command ownership / expected evidence |
 | :--- | :--- | :--- |
-| M1-R, once | Before product edits | New strict-profile refusal node only, using existing native Core entrypoints and accepted SDK. A native-valid unsupported Reference profile being ignored is the expected defect; import/setup/contract-fixture errors are not accepted red. Exact command is in the task. |
-| M1-P, once | After coherent implementation and final static formatting | Entire new focused MVP module plus the two named existing admission/source nodes. Genuine native confirmations/receipts and independent oracles; exact command is in the task. |
+| M1-R, spent | Before product edits | New strict-profile refusal node only, using existing native Core entrypoints and accepted SDK. A native-valid unsupported Reference profile being ignored is the expected defect; import/setup/contract-fixture errors are not accepted red. Exact command is in the task. |
+| M1-R2, once | Test-only fixture/oracle correction before any product edits | Same strict-profile node/command as original M1-R, new noclobber logs. Only the intended unsupported-profile defect may be the red; source/contract/citation/setup failures or green stop. |
+| M1-P, once, still unrun | After intended M1-R2 and coherent implementation/final static formatting | Entire new focused MVP module plus the two named existing admission/source nodes. Genuine native confirmations/receipts and independent oracles; exact command is in the task. |
 
-Approved M1 runtime budget: **two pytest invocations**, no retry/fix reserve
-and no borrowed V2/V3–V5 allocation. The owner explicitly approved this new
-local boundary with “Plan + M1 starten (Recommended)”. Static changed-path syntax/Ruff/diff/diagnostics and exact
+Approved M1 budget is now **three invocations in total**: spent invalid-green
+M1-R, one explicitly added M1-R2 and the original unrun M1-P. No reset, other
+retry/fix reserve or borrowed V2/V3–V5 allocation. The original grant was
+“Plan + M1 starten (Recommended)”; the one extra call/test-only correction was
+separately approved with “Test-only korrigieren +1 Red (Recommended)”. Static changed-path syntax/Ruff/diff/diagnostics and exact
 upstream blob comparison are the only additional code checks proposed; a
 single isolated import/origin env preflight verifies the actual binding, not
 product behavior. No behavior probe, collection run or hidden nested pytest.
@@ -144,6 +163,10 @@ work, not a reason to run them now or to claim them from this local proof.
   V2 ran once: **3 passed/6 failed, exit1**. Five new journeys stopped at the
   first KB edit; their deeper assertions were not proved. Its one initial
   review was owner-advanced to red WIP and returned fix-first. No slot survives.
+- M1-R invalid-green WIP `1f0bdba1e7aa1447d77c96e0c4961c6f4c2726ec`, tree
+  `8d8cbb5d1cabec7e21a2c17fbab4ec6ba763b94f`: only five test/baseline files;
+  no product changes or passed-result ref. Raw M1-R exit0 and its real native
+  citation failure are not repro/feature proof. M1-P/review remain unused.
 - Original r1–r6 grants, failed producer calls, owner b1/c1/c2 exceptions and
   retained evidence remain in immutable source history (including source5502300)
   and the parent-owned run. This new proposal does not reset or rewrite them.
