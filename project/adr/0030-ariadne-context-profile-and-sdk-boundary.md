@@ -49,3 +49,17 @@ Native helpers must preserve supported profile metadata or refuse unsafe
 rewrites. The private application remains excluded; no software release,
 private adoption, production migration or shared-KB publication follows from
 the public profile design.
+
+## Candidate-bound catalog clarification — 2026-10-19
+
+The owner selected “Control File + Sol (Recommended)” for the D1–D5 continuation:
+the Declared Ontology Catalog lives in an optional versioned application block
+of the existing canonical Control File. Its bytes already travel through native
+capture, fingerprinting and publication, so every producer gate and pinned
+reader can use the same reviewed declaration. A separate catalog file would
+require another canonical-artifact path, while a caller-only map would bypass
+captured authority; neither is selected. This adds no external catalog service,
+semantic equivalence or admission permission. Specification 0009 revision 2
+owns the concrete shape, invariants and acceptance; the shared plan owns the
+finite correction checks. Earlier failed candidates remain unaccepted and the
+private application, A1/Q1, target integration and release remain excluded.

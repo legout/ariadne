@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Approved behavior, written revision 1.** Isolated L1 execution is now approved by the scoped amendment below; integration/publication remain gated. |
+| **Status** | **Approved behavior, written revision 2.** Revision 2 fixes the candidate-bound catalog representation and records the owner-approved D1–D5 continuation; integration/publication remain gated. |
 | **Approval** | Owner, Pi conversation 2026-10-18 for Lumio #2/Ariadne #76: one Content Repository, direct optional Python SDK, integrated-only strict mandatory Policies, one overall human confirmation and project-wide Visibility Scope defaulting to public. Selected “Design freigeben (Recommended)” for the six-section joint design and documentation capture in both repositories, then “Schriftliche Fassung freigeben (Recommended)” for both written revision-1 specifications, ADRs, glossaries and scoped source amendments, opening implementation planning only. |
 | **Intake** | [Lumio #2](https://github.com/legout/lumio-wiki/issues/2), [Ariadne #76](https://github.com/legout/ariadne/issues/76). |
 | **Baseline** | Lumio `31b6a3e1ef8d04a968b8605128efbdb519396aa7`; Ariadne `24630dbd404870f30602d66b5d5a2d53fa892f86`. Inspected source identities, not certified installed pairing. |
@@ -11,6 +11,8 @@
 | **Contract** | planning-contract v1; installed catalog provenance unknown. |
 | **L1 execution amendment** | Owner, Pi conversation 2026-10-18: “Implementiere #2 autonom mit paseo subagents”, then “Freigeben und #2 starten (Recommended)”. Approves the existing plan-r1 L1 slice and local isolated commits of the approved document sets in both repositories. L1 only: no A1/Q1 implementation, target integration, push, issue update, release, real KB or private-app access. Behavioral revision 1 is unchanged. |
 | **Reconciled execution base** | Lumio `c59a1df4ebc1e619543d04c3c70931145cb5a918`; Ariadne native source `24630dbd404870f30602d66b5d5a2d53fa892f86`. The Lumio release delta from the inspected baseline changes SDK version/skill metadata and packaging/release tooling, not native SDK behavior. Profile support is not part of published 0.2.0. |
+| **Revision 2 approval** | Owner, Pi conversation 2026-10-19: “weiter gehts”, then “Control File + Sol (Recommended)”. Approves the optional versioned catalog block below, local precision of this specification/ADR-0030/shared plan 0029, isolated Sol/Paseo correction of D1–D5, one focused expected-red regression invocation, one full profile-module invocation after correction and one independent review. No automatic retries or wider execution. |
+| **D1–D5 continuation base** | Frozen, clean but **unaccepted** Lumio `61c5cc93460948acf4278003061e6b8dbef1e485`, tree `cbf9889aa8d9515282a470cfa2e305012be1523d`; the previous initial/delta reviews and four-invocation history remain intact. Ariadne native source is unchanged. |
 
 ## 1. Scope and authority
 
@@ -83,6 +85,12 @@ and the native Context contracts at the inspected Ariadne baseline.
 New producer implementation must freeze those source revisions/fixtures and
 be accepted before a dependent consumer implementation starts. This is a
 defined support boundary, not permission to invent another native schema.
+Native producer shapes are the independent oracle: generated table schema rows
+retain `column`, `type`, `nullable`, `default` and `comment`; generated
+table/dataset provenance may use canonical `ariadne://` Resources as well as
+the supported relative bundle references. Value-evidence states retain their
+source-defined state-specific structures, not merely a nonempty state label.
+Do not rename native fields or author positive fixtures to match a new validator.
 
 Dataset/table/computation/metric annotations cannot replace Core observations,
 OSI or actual independent numerical validation. Authored `verified`,
@@ -109,6 +117,13 @@ profile fields and repair exact impacted references under existing Git review
 or refuse the operation with diagnostics before an unsafe rewrite. They may
 not rebuild a profiled page through a lossy generic OKF/canonical renderer.
 No source/publication receipt is authored into a page to make it authoritative.
+The same preserve-or-refuse rule covers profile data in the Control File.
+Managed ingest and every affected native write boundary validate the complete
+**effective** candidate, including preserved compound metadata, before private
+registration or authoring writes where applicable. A raw incoming fragment is
+not the candidate that the shared compound/apply path will write. Reuse that
+existing effective computation; do not introduce a second rewrite engine or
+filesystem/registry reads through a source-agnostic loader's synthetic root.
 
 Native validation checks the complete captured candidate: envelope schema,
 unique Entity and metric bindings, declared profile fields, scope-aware
@@ -135,11 +150,58 @@ establishes correspondence. Declared external reference validity does not prove
 real-world semantic equality. Core execution/confirmed Mapping rules remain
 separate even for a valid reference.
 
+### Candidate-bound Declared Ontology Catalog (revision 2)
+
+The optional application block is authored in the existing version-2 Control
+File, not a second catalog file or mutable runtime setting:
+
+```yaml
+version: 2
+# Existing Control File fields remain unchanged.
+ariadne_context:
+  version: 1
+  ontology_catalog:
+    "urn:demo:catalog":
+      retail-hierarchy: "r7"
+```
+
+`ariadne_context.version` is the exact integer `1`. Its `ontology_catalog`
+is a mapping of explicit nonempty namespace strings to mappings of explicit
+nonempty target identifier strings to one exact nonempty immutable-revision
+string. Empty catalog mappings are valid; missing/unknown/ambiguous targets,
+floating revisions, malformed structures and unsupported block versions refuse
+with named Control File diagnostics. The example `r7` is an explicit declared
+revision, not permission to resolve a remote latest version or infer equality.
+
+The whole block is optional. References without a matching declaration refuse;
+profile-absent Knowledge Bases retain their previous bytes, fingerprints and
+operations. Existing canonical capture, fingerprinting and local/S3 publication
+already include the Control File bytes: a catalog-only edit therefore changes
+the bound canonical identity without adding a new Context Identity component.
+The separate Source Reference Manifest identity keeps its existing meaning.
+
+Capture, inspection, native effective-candidate/write/publication gates and
+pinned readers use the catalog from those same captured or published Control
+File bytes. A caller argument cannot supply, replace, augment or widen that
+authority. An existing provisional compatibility argument may only agree with
+the captured declaration or refuse; a direct helper pass cannot override a
+captured report. No network lookup, external mutable catalog or new service
+is introduced. A declared target grants neither semantic equivalence nor
+calculation/join/admission authority.
+
+### Context Bindings and Policy Closure
+
 Each integrated metric has exactly one Context Binding to a metric Entity.
 Every native modeled metric in the integrated scope must be covered or the
 joint release refuses; context-only candidates remain possible without inventing
 metrics. Two pages cannot bind the same exact metric. Empty Policy requirements
 must be intentional, explicit and reviewed, not inferred from missing metadata.
+For this selected profile, an explicitly empty `required_policies: []` does
+not require a fabricated legacy Policy citation. Retained native governing
+Policy paths are checked in every supported native form, including scalar
+source strings and structured `sources[].resource` entries. Provenance stays
+separate: a Policy page's self-citation is not its mandatory dependency. This
+profile rule does not change standalone Ariadne's own context requirements.
 
 Policy Closure is the finite transitive set reachable through only typed
 `required_policies` edges from the metric page. Every target must be an
@@ -188,6 +250,13 @@ Context Identity contains the KB Namespace, selected subtree/profile version,
 immutable Published Version, canonical fingerprint, publication manifest digest,
 Source Reference Manifest digest and effective scope. Fingerprint alone is
 insufficient: existing native source-reference controls are separately bound.
+Opening also binds those public facts to the matching producer-owned native
+admission evidence, including exact subtree and Source Reference Manifest
+digest (and native binding integrity), rather than matching only version and
+page fingerprint. Same-content/different-source or wrong-store prepared
+residue must refuse. Native separate S3 activation receipts and admitted
+historical-version reads retain their existing meaning; consumers do not
+reconstruct or receive private receipt bodies.
 
 The view never exposes unfiltered underlying KB state as the reader shortcut.
 Missing, corrupt, incompatible or identity-mismatched content is a specific
@@ -283,7 +352,12 @@ profile/SDK, and companion Ariadne spec 0029 owns the binding/consumer behavior.
 Freeze exact approved document/source revisions before dependent coding; no
 duplicated mutable contract or floating runtime pin is authorized.
 
-Material design choices and complete written revision 1 are owner-approved.
+Material design choices and written revision 1 were owner-approved. Revision 2
+records the owner's subsequent Control File choice and D1–D5 continuation:
+the Declared Ontology Catalog term is captured in the owning glossary and
+ADR-0030 records why canonical controls were selected over a separate file or
+caller authority. This resolves the catalog representation before the new
+writer handoff; no A1/Q1 scope or publication authority is added.
 The one joint implementation plan remains in
 `legout/ariadne:project/plans/2026-10-18-0029-lumio-bound-governed-releases.md`.
 Its existing L1 slice is now owner-approved for isolated autonomous execution,

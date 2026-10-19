@@ -250,10 +250,14 @@ _Avoid_: latest, software version, historical answer cache
 The explicitly versioned application contract preserving supported Ariadne metadata and exact knowledge identity in native Lumio content. It is not generic OKF interchange, executable semantics or admission authority.
 _Avoid_: lossless generic OKF, semantic engine, Context Provider service
 
+**Declared Ontology Catalog**:
+The reviewed set of exact external namespace, identifier and immutable-revision declarations against which a Knowledge Base's ontology references resolve. A declaration establishes neither semantic equivalence nor execution authority.
+_Avoid_: physical catalog, downloaded vocabulary, global alias registry
+
 ### Knowledge Base controls and published artifacts
 
 **Knowledge Base Control File**:
-A versioned root `lumio.yaml` that declares a categorized Knowledge Base's Content Category catalog and Hot Index pins. It is KB-local content control: portable with the Knowledge Base, validated and fingerprinted by the Core SDK, but neither a Compiled Page nor an OKF concept.
+A versioned root `lumio.yaml` that declares a Knowledge Base's Content Categories, Hot Index pins and controlled knowledge vocabularies or profile declarations. It is KB-local content control: portable with the Knowledge Base, validated and fingerprinted by the Core SDK, but neither a Compiled Page nor an OKF concept.
 _Avoid_: config file, settings file, kb.json.
 
 **Content Category**:
