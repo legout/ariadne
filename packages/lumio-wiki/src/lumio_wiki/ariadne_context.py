@@ -51,21 +51,24 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
-from datetime import date
+from datetime import date, datetime
 from types import MappingProxyType
-from typing import Any
+from typing import Any, TypeGuard
 
 import msgspec
 
 from lumio_wiki.records import (
+    AriadneContextControl,
     AriadneCoreReference,
     AriadneMetricReference,
     AriadneOntologyReference,
     AriadnePolicyReference,
     AriadneProfile,
     CompiledPage,
+    KnowledgeBaseControlFile,
     Source,
 )
 
@@ -347,7 +350,7 @@ def _resource_uri_errors(where: str, uri: object, *, kinds: tuple[str, ...]) -> 
 # ---------------------------------------------------------------------------
 
 
-def _is_int(value: object) -> bool:
+def _is_int(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
@@ -792,8 +795,62 @@ def _evidence_errors(where: str, evidence: object) -> list[str]:
     return errors
 
 
+def _value_evidence_errors(where: str, evidence: object) -> list[str]:
+    """Spec0024's saved observation structure, never measurement authentication."""
+    if not isinstance(evidence, dict):
+        return [f"{where} must map selected columns to evidence entries"]
+    errors: list[str] = []
+    reasons = {
+        "not_in_profile", "column_missing", "type_changed", "unsupported_representation",
+        "permission_denied", "too_large",
+    }
+    for column, entry in evidence.items():
+        spot = f"{where}[{column!r}]"
+        if not _non_empty_str(column) or not isinstance(entry, dict):
+            errors.append(f"{spot} requires a column name and a state-specific mapping")
+            continue
+        state = entry.get("state")
+        if state == "unavailable":
+            reason = entry.get("reason")
+            if (set(entry) != {"state", "reason"}
+                    or not isinstance(reason, str) or reason not in reasons):
+                errors.append(f"{spot} unavailable requires a supported reason and no top_values")
+        elif state == "observed":
+            top = entry.get("top_values")
+            if set(entry) != {"state", "top_values"} or not isinstance(top, list) or not top:
+                errors.append(f"{spot} observed requires measured top_values")
+                continue
+            if len(top) > 10:
+                errors.append(f"{spot} top_values exceeds the native ten-value bound")
+            for index, value in enumerate(top):
+                item = f"{spot}.top_values[{index}]"
+                if not isinstance(value, dict) or set(value) != {"value", "count"}:
+                    errors.append(f"{item} must contain exactly value and count")
+                    continue
+                literal = value["value"]
+                if not (
+                    literal is None or isinstance(literal, (str, bool, int))
+                    or (isinstance(literal, float) and math.isfinite(literal))
+                ):
+                    errors.append(f"{item}.value must retain a supported finite native scalar")
+                if not _is_int(value["count"]) or value["count"] < 0:
+                    errors.append(f"{item}.count must be a non-negative integer")
+        else:
+            errors.append(f"{spot}.state must be observed or unavailable")
+    if not errors:
+        try:
+            size = len(json.dumps(evidence, ensure_ascii=False, allow_nan=False,
+                                  separators=(",", ":")).encode("utf-8"))
+        except UnicodeError:
+            errors.append(f"{where} must contain UTF-8 representable values")
+        else:
+            if size > 8 * 1024:
+                errors.append(f"{where} exceeds the native 8-KiB compact-JSON bound")
+    return errors
+
+
 def _table_ariadne_errors(where: str, block: object) -> list[str]:
-    """The core-generated table ``ariadne`` schema/observations block."""
+    """The pinned native schema rows and saved observations, without reinterpretation."""
     if not isinstance(block, dict):
         return [f"{where} must be a mapping"]
     errors: list[str] = []
@@ -806,62 +863,62 @@ def _table_ariadne_errors(where: str, block: object) -> list[str]:
     else:
         for index, entry in enumerate(schema):
             spot = f"{where} schema[{index}]"
-            if not isinstance(entry, dict) or not _non_empty_str(entry.get("name")):
-                errors.append(f"{spot} requires a non-empty 'name'")
-            elif not _non_empty_str(entry.get("type")):
-                errors.append(f"{spot} requires a non-empty 'type'")
-            if isinstance(entry, dict) and not _json_shaped(entry):
-                errors.append(f"{spot} must stay JSON-contract representable")
+            if not isinstance(entry, dict):
+                errors.append(f"{spot} must be a column metadata mapping")
+                continue
+            if set(entry) != {"column", "type", "nullable", "default", "comment"}:
+                errors.append(f"{spot} requires native column/type/nullable/default/comment fields")
+            for key in ("column", "type"):
+                if not _non_empty_str(entry.get(key)):
+                    errors.append(f"{spot} requires a non-empty '{key}'")
+            nullable = entry.get("nullable")
+            if nullable is not None and not isinstance(nullable, bool) and nullable != "unknown":
+                errors.append(f"{spot}.nullable must retain a boolean, null or unknown")
+            for key in ("default", "comment"):
+                if entry.get(key) is not None and not isinstance(entry[key], str):
+                    errors.append(f"{spot}.{key} must retain a string or null")
     observations = block.get("observations")
     if not isinstance(observations, dict):
-        errors.append(f"{where} observations must be a mapping of measured facts")
+        return [*errors, f"{where} observations must be a mapping of measured facts"]
+    unknown = sorted(set(observations) - _TABLE_OBSERVATION_KEYS)
+    if unknown:
+        errors.append(f"{where} observations carries unsupported field(s) {unknown}")
+    observed_at = observations.get("observed_at")
+    try:
+        timestamp = (
+            datetime.fromisoformat(observed_at) if isinstance(observed_at, str) else observed_at
+        )
+        if not isinstance(timestamp, datetime) or timestamp.utcoffset() is None:
+            raise ValueError
+    except (ValueError, OverflowError):
+        errors.append(f"{where} observations requires an explicit-offset 'observed_at' timestamp")
+    if observations.get("scope") not in ("full", "sampled"):
+        errors.append(f"{where} observations scope must be full or sampled")
+    count = observations.get("row_count")
+    if not _is_int(count) or count < 0:
+        errors.append(f"{where} observations row_count must be a non-negative integer")
+    errors.extend(_string_list_errors(
+        f"{where} observations candidate_keys", observations.get("candidate_keys")))
+    columns = observations.get("columns")
+    if not isinstance(columns, dict):
+        errors.append(f"{where} observations columns must be a mapping")
     else:
-        unknown = sorted(set(observations) - _TABLE_OBSERVATION_KEYS)
-        if unknown:
-            errors.append(f"{where} observations carries unsupported field(s) {unknown}")
-        if not _non_empty_str(observations.get("observed_at")):
-            errors.append(f"{where} observations requires its 'observed_at' timestamp")
-        if "scope" in observations and not _non_empty_str(observations["scope"]):
-            errors.append(f"{where} observations scope must be a non-empty string")
-        if "row_count" in observations and not _is_int(observations["row_count"]):
-            errors.append(f"{where} observations row_count must be an integer")
-        if "candidate_keys" in observations:
-            errors.extend(
-                _string_list_errors(
-                    f"{where} observations candidate_keys", observations["candidate_keys"]
-                )
-            )
-        if "columns" in observations:
-            columns = observations["columns"]
-            if not isinstance(columns, dict):
-                errors.append(f"{where} observations columns must be a mapping")
-            else:
-                for name, stats in columns.items():
-                    spot = f"{where} observations columns[{name!r}]"
-                    if (
-                        not isinstance(stats, dict)
-                        or not _is_int(stats.get("null_count"))
-                        or (not _is_int(stats.get("distinct_count")))
-                    ):
-                        errors.append(f"{spot} must carry integer null_count/distinct_count")
-        if "citation" in observations:
-            errors.extend(
-                _resource_uri_errors(
-                    f"{where} observations citation", observations["citation"], kinds=("table",)
-                )
-            )
-        if "value_evidence" in observations:
-            evidence = observations["value_evidence"]
-            if not isinstance(evidence, dict) or not all(
-                isinstance(entry, dict) and _non_empty_str(entry.get("state"))
-                for entry in evidence.values()
+        for name, stats in columns.items():
+            spot = f"{where} observations columns[{name!r}]"
+            if (
+                not _non_empty_str(name) or not isinstance(stats, dict)
+                or set(stats) != {"null_count", "distinct_count"}
+                or any(not _is_int(stats.get(key)) or stats[key] < 0
+                       for key in ("null_count", "distinct_count"))
             ):
-                errors.append(
-                    f"{where} observations value_evidence must map columns to "
-                    "state-carrying evidence entries"
-                )
-        if "source_binding" in observations and not _non_empty_str(observations["source_binding"]):
-            errors.append(f"{where} observations source_binding must be a non-empty string")
+                errors.append(f"{spot} must carry non-negative integer null_count/distinct_count")
+    errors.extend(_resource_uri_errors(
+        f"{where} observations citation", observations.get("citation"), kinds=("table",)))
+    if "value_evidence" in observations:
+        errors.extend(_value_evidence_errors(
+            f"{where} observations value_evidence", observations["value_evidence"]))
+    if "source_binding" in observations and not _non_empty_str(observations["source_binding"]):
+        errors.append(f"{where} observations source_binding must be a non-empty string")
     return errors
 
 
@@ -895,10 +952,10 @@ def _native_source_entry_errors(where: str, index: int, entry: object) -> list[s
         return [f"{spot} carries unsupported field(s) {unknown}"]
     if "resource" in entry:
         resource = entry["resource"]
+        if isinstance(resource, str) and resource.startswith("ariadne://"):
+            return _resource_uri_errors(f"{spot} resource", resource, kinds=("table", "collection"))
         if not _non_empty_str(resource) or resource.startswith("/") or "://" in resource:
-            return [
-                f"{spot} resource must be a credential-free relative bundle path, got {resource!r}"
-            ]
+            return [f"{spot} resource must be a relative bundle path or canonical Ariadne Resource"]
     return []
 
 
@@ -1017,17 +1074,6 @@ def native_metadata_errors(where: str, native: object, *, kind: str | None = Non
             errors.append(
                 f"{where} computation pages require 'attester' or the honest "
                 "'attestation: pending' state"
-            )
-    if kind == "metric" or native_type == "metric":
-        if isinstance(native.get("sources"), list) and not any(
-            isinstance(entry, dict)
-            and isinstance(entry.get("resource"), str)
-            and entry["resource"].startswith("policies/")
-            for entry in native["sources"]
-        ):
-            errors.append(
-                f"{where} metric pages must cite at least one governing policy "
-                "(a policies/... native source resource)"
             )
     if "ariadne" in native:
         block = native["ariadne"]
@@ -1202,10 +1248,9 @@ def _native_policy_paths(page: CompiledPage) -> list[str]:
     sources = profile.native.get("sources")
     if isinstance(sources, list):
         for entry in sources:
-            if isinstance(entry, dict):
-                resource = entry.get("resource")
-                if isinstance(resource, str) and resource.startswith("policies/"):
-                    paths.append(resource)
+            resource = entry.get("resource") if isinstance(entry, dict) else entry
+            if isinstance(resource, str) and resource.startswith("policies/"):
+                paths.append(resource)
     governed_by = profile.native.get("governed_by")
     if isinstance(governed_by, str) and governed_by.startswith("policies/"):
         paths.append(governed_by)
@@ -1289,14 +1334,69 @@ def policy_closure(
     return tuple(ordered), tuple(diagnostics)
 
 
+def _parse_ariadne_context_control(
+    raw: object, control_bytes: bytes,
+) -> tuple[AriadneContextControl | None, list[str]]:
+    """Parse the optional canonical application block; no external authority or I/O."""
+    import yaml
+
+    errors: list[str] = []
+    # The normal safe YAML decoder collapses duplicate keys. Inspect only this
+    # block's fixed-depth maps so ambiguous declarations cannot become last-wins.
+    root = yaml.compose(control_bytes, Loader=yaml.SafeLoader)
+    if isinstance(root, yaml.MappingNode):
+        blocks = [value for key, value in root.value
+                  if isinstance(key, yaml.ScalarNode) and key.value == "ariadne_context"]
+        if len(blocks) != 1:
+            errors.append("ariadne_context is declared more than once")
+        maps = [(node, "ariadne_context", 0) for node in blocks]
+        while maps:
+            node, path, depth = maps.pop()
+            if not isinstance(node, yaml.MappingNode):
+                continue
+            seen: set[str] = set()
+            for key, value in node.value:
+                if not isinstance(key, yaml.ScalarNode):
+                    continue
+                if key.value in seen:
+                    errors.append(f"{path} has duplicate declaration {key.value!r}")
+                seen.add(key.value)
+                if (depth == 0 and key.value == "ontology_catalog") or depth == 1:
+                    maps.append((value, f"{path}.{key.value}", depth + 1))
+    if not isinstance(raw, dict) or set(raw) != {"version", "ontology_catalog"}:
+        return None, [*errors, "ariadne_context requires exactly version and ontology_catalog"]
+    if type(raw["version"]) is not int or raw["version"] != 1:
+        errors.append("ariadne_context.version must be the exact integer 1")
+    catalog = raw["ontology_catalog"]
+    if not isinstance(catalog, dict):
+        return None, [*errors, "ariadne_context.ontology_catalog must be a mapping"]
+    for namespace, identifiers in catalog.items():
+        spot = f"ariadne_context.ontology_catalog[{namespace!r}]"
+        if not _non_empty_str(namespace) or not isinstance(identifiers, dict):
+            errors.append(f"{spot} requires a non-empty namespace and an identifier mapping")
+            continue
+        for identifier, revision in identifiers.items():
+            if not _non_empty_str(identifier) or not _non_empty_str(revision):
+                errors.append(
+                    f"{spot}[{identifier!r}] requires one exact non-empty revision string"
+                )
+            elif revision.strip().casefold() in FLOATING_REVISIONS:
+                errors.append(f"{spot}[{identifier!r}] refuses floating revision {revision!r}")
+    return (None, errors) if errors else (AriadneContextControl(1, catalog), [])
+
+
+def _control_catalog(control: KnowledgeBaseControlFile | None) -> dict[str, dict[str, str]] | None:
+    return control.ariadne_context.ontology_catalog if control and control.ariadne_context else None
+
+
 def _ontology_errors(
     pages: Sequence[CompiledPage],
     catalog: Mapping[str, Mapping[str, str | Sequence[str]]] | None,
 ) -> list[AriadneProfileDiagnostic]:
     """Resolve declared ontology references against the pinned catalog scope.
 
-    Without a caller-pinned declared catalog the references are unresolved
-    input (spec 0009 §4); floating revisions already refused at parse time;
+    The catalog is structural data extracted from the candidate Control File
+    (spec 0009 §4); floating revisions already refused at parse time;
     conflicting duplicate declarations are ambiguous and refuse.
     """
     diagnostics: list[AriadneProfileDiagnostic] = []
@@ -1349,11 +1449,8 @@ def _ontology_errors(
                 )
             )
             continue
-        permitted = (
-            {allowed_revisions} if isinstance(allowed_revisions, str) else set(allowed_revisions)
-        )
         for revision in sorted(revisions):
-            if revision not in permitted:
+            if not isinstance(allowed_revisions, str) or revision != allowed_revisions:
                 diagnostics.append(
                     AriadneProfileDiagnostic(
                         "unresolved-reference",
@@ -1378,7 +1475,8 @@ def validate_ariadne_profiles(
     complete kind-correct scope-aware required Policy Closure, retained
     native Policy path agreement and pinned ontology declarations. In reader
     mode (``scope``) authorization selects the visible roots BEFORE any
-    lookup, expansion or diagnostic: hidden pages never produce or shape
+    lookup, expansion or diagnostic. ``ontology_catalog`` is extracted
+    structural data, not publication authority. Hidden pages never produce or shape
     diagnostics, and unrelated hidden graphs never block a public reader.
     No database access, no payload execution.
     """
@@ -1583,6 +1681,8 @@ def inspect_ariadne_candidate(
     validation and the structural Source Reference Manifest consistency
     available without private registry access. Operator review may inspect
     its own candidate normally, so no visibility filtering is applied here.
+    The compatibility ``ontology_catalog`` argument may only agree with the
+    declaration already captured from lumio.yaml; it cannot supply authority.
     """
     from lumio_wiki.git_authoring import capture_revision
     from lumio_wiki.source_references import validate_source_references
@@ -1607,11 +1707,11 @@ def inspect_ariadne_candidate(
         AriadneProfileDiagnostic("malformed", message)
         for message in validate_source_references(captured.manifest, captured.kb)
     )
-    diagnostics.extend(
-        validate_ariadne_profiles(
-            captured.kb.pages, namespace=namespace, ontology_catalog=ontology_catalog
-        )
-    )
+    if ontology_catalog is not None and ontology_catalog != _control_catalog(captured.kb.control):
+        diagnostics.append(AriadneProfileDiagnostic(
+            "unresolved-reference",
+            "caller ontology_catalog does not agree with the captured Control File declaration",
+        ))
     return AriadneCandidateInspection(
         namespace=namespace,
         revision=captured.revision,
@@ -1669,97 +1769,54 @@ def _raise_for_diagnostics(diagnostics: Sequence[AriadneProfileDiagnostic]) -> N
 
 
 def _verify_local_admission(destination: Any, pinned: str, manifest: Any) -> None:
-    """Verify the native local admission fact for the exact pinned version.
+    """Reuse native exact manifest/receipt/sealed verification, without Git or current."""
+    from pathlib import Path
 
-    Reads the producer's own private admission record (never exposed to
-    consumers) and checks its identity facts: a version directory without a
-    completed, matching, activated receipt is prepared residue or a foreign
-    version, never an admitted Context. Admitted historical versions remain
-    valid after the current pointer advances; pointer equality is never used.
-    """
-    import msgspec as _msgspec
+    from lumio_wiki.git_authoring import _verify_version_complete
 
-    from lumio_wiki.git_authoring import PublicationReceipt, _receipt_path
-
-    path = _receipt_path(destination, pinned)
     try:
-        raw = path.read_bytes()
-    except OSError as exc:
+        checked, receipt, _sealed = _verify_version_complete(
+            Path(destination).resolve(), pinned, manifest.fingerprint
+        )
+    except Exception as exc:
+        # Private records and storage details are not reader diagnostics.
         raise UnadmittedInputError(
-            f"Published Version {pinned!r} at {destination} has no completed "
-            f"admission receipt ({exc}) — prepared residue and foreign versions "
-            "are never admitted Context input"
+            f"Published Version {pinned!r} has no completed matching native admission"
         ) from exc
-    try:
-        receipt = _msgspec.json.decode(raw, type=PublicationReceipt)
-    except _msgspec.DecodeError as exc:
+    if checked != manifest or not receipt.activated:
         raise UnadmittedInputError(
-            f"the admission receipt of Published Version {pinned!r} is malformed: {exc}"
-        ) from exc
-    if receipt.version != pinned or receipt.revision != manifest.revision:
-        raise UnadmittedInputError(
-            f"the admission receipt of Published Version {pinned!r} identifies a "
-            "different version/revision — never admitted Context input"
-        )
-    if receipt.fingerprint != manifest.fingerprint:
-        raise UnadmittedInputError(
-            f"the admission receipt of Published Version {pinned!r} records a "
-            "different content fingerprint"
-        )
-    if not receipt.activated:
-        raise UnadmittedInputError(
-            f"Published Version {pinned!r} was prepared but its admission never "
-            "completed activation"
+            f"Published Version {pinned!r} has inconsistent admission or incomplete activation"
         )
 
 
-def _verify_s3_admission(metadata_store: Any, pinned: str, manifest: Any) -> None:
-    """Verify the native S3 admission facts for the exact pinned version.
-
-    Reads only the producer-side private metadata store the publisher used
-    (never exposed to consumers): the publication record and the activation
-    receipt for this exact version. No current-pointer equality is used, so
-    admitted historical versions remain openable after the pointer advances.
-    """
-    import msgspec as _msgspec
-
-    from lumio_wiki.git_authoring import S3ActivationReceipt, S3PublicationRecord
+def _verify_s3_admission(metadata_store: Any, pinned: str, manifest: Any, location: Any) -> None:
+    """Native Source/subtree/binding integrity plus the separate activation receipt."""
+    from lumio_wiki.git_authoring import S3ActivationReceipt, _load_s3_publication_record
 
     try:
-        record_raw = metadata_store.get_publication_record(pinned)
-        activation_raw = metadata_store.get_activation_receipt(pinned)
-    except Exception as exc:  # ArtifactUnavailable family.
+        record = _load_s3_publication_record(metadata_store, pinned, manifest)
+        if record is None:
+            raise ValueError("missing native admission record")
+        activation = msgspec.json.decode(
+            metadata_store.get_activation_receipt(pinned), type=S3ActivationReceipt
+        )
+    except Exception as exc:
         raise UnadmittedInputError(
             f"S3 Published Version {pinned!r} has no completed private admission "
-            f"record ({exc}) — prepared residue is never admitted Context input"
-        ) from exc
-    try:
-        record = _msgspec.json.decode(record_raw, type=S3PublicationRecord)
-        activation = _msgspec.json.decode(activation_raw, type=S3ActivationReceipt)
-    except _msgspec.DecodeError as exc:
-        raise UnadmittedInputError(
-            f"the private admission records of S3 Published Version {pinned!r} are malformed: {exc}"
+            "matching its exact native identity and binding integrity"
         ) from exc
     receipt = record.receipt
-    if receipt.version != pinned or receipt.revision != manifest.revision:
-        raise UnadmittedInputError(
-            f"the admission record of S3 Published Version {pinned!r} identifies a "
-            "different version/revision"
-        )
-    if receipt.fingerprint != manifest.fingerprint:
-        raise UnadmittedInputError(
-            f"the admission record of S3 Published Version {pinned!r} records a "
-            "different content fingerprint"
-        )
-    # Activation is recorded separately from the immutable preparation receipt.
     if (
         activation.version != receipt.version
         or activation.review_digest != receipt.review_digest
         or activation.expected_current != receipt.expected_current
+        or (location.destination_uri is not None
+            and receipt.destination.rstrip("/") != location.destination_uri.rstrip("/"))
+        or (location.effective_target_identity is not None
+            and receipt.destination_identity != location.effective_target_identity)
     ):
         raise UnadmittedInputError(
-            f"the activation receipt of S3 Published Version {pinned!r} does not "
-            "match its admission record"
+            f"S3 Published Version {pinned!r} has inconsistent activation or destination identity"
         )
 
 
@@ -1780,7 +1837,8 @@ def open_published_context(
     (including the selected subtree) is compared before a usable view, and
     the expected identity's effective Visibility Scope is applied before any
     lookup, expansion or view construction. A changed or wrong version
-    refuses; there is no fallback to latest.
+    refuses; there is no fallback to latest. ``ontology_catalog`` is a
+    compatibility assertion only: it must agree with the published Control File.
     """
     from lumio_wiki.location import PublishedFilesystemLocation, published_version_path
     from lumio_wiki.s3_location import MANIFEST_OBJECT, S3Location, _get_bytes
@@ -1872,7 +1930,7 @@ def open_published_context(
     if isinstance(location, PublishedFilesystemLocation):
         _verify_local_admission(location.path, pinned, manifest)
     else:
-        _verify_s3_admission(metadata_store, pinned, manifest)
+        _verify_s3_admission(metadata_store, pinned, manifest, location)
     if not snapshot.validation_report.is_valid:
         _refuse_invalid_report(snapshot, expected.scope)
     _raise_for_diagnostics(
@@ -1880,9 +1938,15 @@ def open_published_context(
             snapshot.pages,
             namespace=manifest.namespace,
             scope=expected.scope,
-            ontology_catalog=ontology_catalog,
+            ontology_catalog=_control_catalog(snapshot.knowledge_base.control),
         )
     )
+    if ontology_catalog is not None and ontology_catalog != _control_catalog(
+        snapshot.knowledge_base.control
+    ):
+        raise UnresolvedReferenceError(
+            "caller ontology_catalog does not agree with the published Control File declaration"
+        )
     allowed = set(expected.scope)
     in_scope = [
         page

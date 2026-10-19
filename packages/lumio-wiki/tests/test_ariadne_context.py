@@ -20,10 +20,13 @@ output.
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+from datetime import date
 from pathlib import Path
 
 import msgspec
@@ -42,12 +45,16 @@ from lumio_wiki.ariadne_context import (
 from lumio_wiki.artifact_store import InMemoryArtifactStore
 from lumio_wiki.git_authoring import (
     GitAuthoringError,
+    ingest_into_worktree,
     merge_entities_in_worktree,
     preview_publication,
     publish_revision,
     remove_page_in_worktree,
     rename_page_in_worktree,
+    write_pages_into_worktree,
 )
+from lumio_wiki.ingest import ProposedPage
+from lumio_wiki.knowledge_base import _parse_frontmatter as parse_frontmatter
 from lumio_wiki.knowledge_base import load_knowledge_base
 from lumio_wiki.location import FilesystemLocation, PublishedFilesystemLocation
 from lumio_wiki.s3_location import S3Location, S3Manifest, _get_bytes
@@ -56,6 +63,8 @@ from lumio_wiki.source_references import (
     SourceReferenceManifest,
     serialize_source_reference_manifest,
 )
+from lumio_wiki.source_registry import SourceRegistry
+from msgspec import yaml
 
 NAMESPACE = "urn:demo:retail"
 FIXTURE = Path(__file__).parent / "fixtures" / "ariadne_context"
@@ -108,6 +117,9 @@ def _sanitized_environment(tmp_path, monkeypatch):
     for name in list(os.environ):
         if name.startswith(("LUMIO_", "AWS_", "PYTHONPATH")):
             monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(home / ".aws" / "config"))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(home / ".aws" / "credentials"))
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -680,8 +692,9 @@ def test_profile_envelope_refusals(tmp_path):
         "    grain:\n      primary_key: [order_number]\n"
         '      cardinality_enforcement: "strict_1_to_1"\n'
         "    observed_value_columns:\n      order_number: VARCHAR\n"
-        "    ariadne:\n      schema:\n        - name: order_number\n"
-        "          type: VARCHAR\n"
+        "    ariadne:\n      schema:\n        - column: order_number\n"
+        "          type: VARCHAR\n          nullable: unknown\n"
+        "          default: unknown\n          comment: unknown\n"
         "      observations:\n"
         '        observed_at: "2026-10-01T00:00:00+00:00"\n'
         "        scope: full\n        row_count: 10\n"
@@ -691,6 +704,7 @@ def test_profile_envelope_refusals(tmp_path):
         f"        citation: {ORDERS_TABLE_URI}\n"
         "        value_evidence:\n          order_number:\n"
         "            state: observed\n"
+        '            top_values:\n              - value: "00123"\n                count: 1\n'
     )
     computation_page = _profile_page(
         "  version: 1\n  kind: computation\n"
@@ -955,3 +969,671 @@ def test_s3_published_context_journey(tmp_path):
     assert binding.metric_entity_id == "entity:retail-revenue"
     (closure_view,) = binding.required_policies
     assert closure_view.entity_id == "entity:retail-return-policy"
+
+
+# B1 regressions: native Ariadne 24630dbd and spec 0009 r2 are the oracles.
+# Inline cases leave the canonical three-page consumer fixture unchanged.
+
+
+def _case_markdown(data: dict, body: str = "# Case\n\nReviewed case.\n") -> str:
+    return "---\n" + yaml.encode(data).decode() + "---\n" + body
+
+
+def _literal_profile_page(profile: dict, *, entity_id="entity:probe", title="Probe") -> str:
+    kind = profile["kind"]
+    return _case_markdown(
+        {
+            "id": entity_id,
+            "title": title,
+            "entity_types": [kind if kind in {"metric", "policy"} else "reference"],
+            "tags": ["probe"],
+            "summary": "Independently authored native case.",
+            "lifecycle": "approved",
+            "visibility": "public",
+            "sources": [{"id": "src-probe", "title": "Reviewed source"}],
+            "ariadne_profile": profile,
+        }
+    )
+
+
+def _native_metric(sources: list) -> dict:
+    # Native attach_model_metadata uses the OSI identity, not a Policy path.
+    return {
+        "type": "metric",
+        "title": "Revenue",
+        "description": "Reviewed revenue definition.",
+        "tags": ["finance"],
+        "status": "stable",
+        "sources": sources,
+        "governed_by": "semantic_layer retail_sales::revenue",
+        "dimensions": ["store"],
+        "grain": {"primary_key": ["order_number"], "cardinality_enforcement": "strict_1_to_1"},
+    }
+
+
+def test_native_schema_matches_pinned_producers(tmp_path):
+    """D1: authoring._schema_columns + context.build_{table,dataset}_page."""
+    collection_uri = "ariadne://collection/" + base64.urlsafe_b64encode(
+        b'["retail",null,"main"]'
+    ).decode().rstrip("=")
+    # Ordinal schema and declared metadata from the pinned _schema_columns.
+    schema = [
+        {
+            "column": "order_number",
+            "type": "VARCHAR",
+            "nullable": False,
+            "default": None,
+            "comment": "unknown",
+        },
+        {
+            "column": "region",
+            "type": "VARCHAR",
+            "nullable": True,
+            "default": "'EMEA'",
+            "comment": "unknown",
+        },
+        {
+            "column": "active",
+            "type": "BOOLEAN",
+            "nullable": "unknown",
+            "default": "unknown",
+            "comment": "unknown",
+        },
+        {
+            "column": "units",
+            "type": "INTEGER",
+            "nullable": "unknown",
+            "default": "unknown",
+            "comment": "unknown",
+        },
+        {
+            "column": "ratio",
+            "type": "DOUBLE",
+            "nullable": "unknown",
+            "default": "unknown",
+            "comment": "unknown",
+        },
+    ]
+    # Spec 0024's three-row measured literals; no database measurement in Lumio.
+    evidence = {
+        "region": {
+            "state": "observed",
+            "top_values": [{"value": "EMEA", "count": 2}, {"value": "AMER", "count": 1}],
+        },
+        "order_number": {
+            "state": "observed",
+            "top_values": [{"value": "00123", "count": 2}, {"value": "123", "count": 1}],
+        },
+        "active": {
+            "state": "observed",
+            "top_values": [{"value": True, "count": 2}, {"value": None, "count": 1}],
+        },
+        "units": {
+            "state": "observed",
+            "top_values": [{"value": 2, "count": 2}, {"value": 1, "count": 1}],
+        },
+        "ratio": {
+            "state": "observed",
+            "top_values": [{"value": 1.5, "count": 2}, {"value": 0.5, "count": 1}],
+        },
+        "removed": {"state": "unavailable", "reason": "column_missing"},
+    }
+    observations = {
+        "observed_at": "2026-10-13T12:00:00+00:00",
+        "scope": "full",
+        "row_count": 3,
+        "candidate_keys": [],
+        "columns": {
+            row["column"]: {"null_count": int(row["column"] == "active"), "distinct_count": 2}
+            for row in schema
+        },
+        "citation": ORDERS_TABLE_URI,
+        "value_evidence": evidence,
+    }
+    table_native = {
+        "type": "table",
+        "title": "retail.main.orders",
+        "description": "Physical orders.",
+        "tags": ["table", "schema"],
+        "resource": ORDERS_TABLE_URI,
+        "sources": [
+            {
+                "id": "catalog-retail-main-orders",
+                "resource": ORDERS_TABLE_URI,
+                "title": "catalog and profile of retail.main.orders",
+            }
+        ],
+        "stale_after": date(2027, 6, 30),
+        "observed_value_columns": {row["column"]: row["type"] for row in schema}
+        | {"removed": "VARCHAR"},
+        "ariadne": {"schema": schema, "observations": observations},
+    }
+    table_profile = {
+        "version": 1,
+        "kind": "table",
+        "native": table_native,
+        "core_ref": {"kind": "resource", "id": ORDERS_TABLE_URI},
+    }
+    dataset_native = {
+        "type": "dataset",
+        "title": "retail.main",
+        "description": "Physical collection.",
+        "tags": ["dataset"],
+        "resource": collection_uri,
+        "sources": [
+            {
+                "id": "catalog-retail-main",
+                "resource": collection_uri,
+                "title": "catalog of retail.main",
+            }
+        ],
+        "ariadne": {"tables": [ORDERS_TABLE_URI]},
+    }
+    dataset_profile = {
+        "version": 1,
+        "kind": "dataset",
+        "native": dataset_native,
+        "core_ref": {"kind": "resource", "id": collection_uri},
+    }
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(
+        repo,
+        mutate={
+            "references/native-table.md": _literal_profile_page(
+                table_profile, entity_id="entity:table", title="Native table"
+            ),
+            "references/native-dataset.md": _literal_profile_page(
+                dataset_profile, entity_id="entity:dataset", title="Native dataset"
+            ),
+        },
+    )
+    _, report = load_knowledge_base(kb)
+    assert report.is_valid, ("D1 native producer literals", [i.message for i in report.issues])
+    revision = _commit(repo)
+    assert inspect_ariadne_candidate(str(kb), revision, namespace=NAMESPACE).diagnostics == ()
+    destination = tmp_path / "published"
+    _publish(kb, revision, destination, "none")
+    context = open_published_context(
+        PublishedFilesystemLocation(destination, version=revision),
+        _expected_identity(kb, destination, revision),
+    )
+    table = next(p for p in context.pages if p.entity_id == "entity:table")
+    dataset = next(p for p in context.pages if p.entity_id == "entity:dataset")
+    assert table.content == _literal_profile_page(
+        table_profile, entity_id="entity:table", title="Native table"
+    )
+    assert disclose_native(table.native) == {**table_native, "stale_after": "2027-06-30"}
+    assert disclose_native(dataset.native) == dataset_native
+    assert type(table.native["ariadne"]["schema"][0]["nullable"]) is bool
+    values = table.native["ariadne"]["observations"]["value_evidence"]
+    assert type(values["units"]["top_values"][0]["value"]) is int
+    assert type(values["active"]["top_values"][0]["value"]) is bool
+    # State-specific payloads are structural contracts, not authenticated receipts.
+    for invalid in (
+        {"state": "observed"},
+        {"state": "unavailable"},
+        {"state": "confirmed", "top_values": [{"value": "EMEA", "count": 2}]},
+    ):
+        malformed = copy.deepcopy(table_profile)
+        malformed["native"]["ariadne"]["observations"]["value_evidence"]["region"] = invalid
+        bad_kb = _plain_kb(tmp_path, {"references/bad.md": _literal_profile_page(malformed)})
+        _, bad_report = load_knowledge_base(bad_kb)
+        assert not bad_report.is_valid, ("D1 malformed value_evidence accepted", invalid)
+        assert any("value_evidence" in i.message for i in bad_report.issues)
+
+
+@pytest.mark.parametrize("scenario", ["intentional-empty", "scalar-policy-disagreement"])
+def test_policy_requirements_allow_empty_and_check_scalar_sources(tmp_path, scenario):
+    """D2: native _metric_context reads scalar and structured Policy sources."""
+    policy_native = {
+        "type": "policy",
+        "title": "Policy A",
+        "description": "Reviewed policy.",
+        "tags": ["policy"],
+        "status": "stable",
+        "sources": ["policies/a.md"],
+    }
+    policy_a = _literal_profile_page(
+        {"version": 1, "kind": "policy", "required_policies": [], "native": policy_native},
+        entity_id="entity:a",
+        title="Policy A",
+    )
+    policy_b_native = {**policy_native, "title": "Policy B", "sources": ["policies/b.md"]}
+    policy_b = _literal_profile_page(
+        {"version": 1, "kind": "policy", "required_policies": [], "native": policy_b_native},
+        entity_id="entity:b",
+        title="Policy B",
+    )
+    provenance = {
+        "id": "model",
+        "title": "Reviewed OSI",
+        "resource": "../../semantic_layer/models/retail_sales.yml",
+    }
+    required = (
+        []
+        if scenario == "intentional-empty"
+        else [{"namespace": NAMESPACE, "entity_id": "entity:b"}]
+    )
+    sources = (
+        [provenance]
+        if not required
+        else ["policies/a.md", {"id": "policy-b", "resource": "policies/b.md"}, provenance]
+    )
+    profile = {
+        "version": 1,
+        "kind": "metric",
+        "metric_ref": {"model": "retail_sales", "metric": "revenue"},
+        "required_policies": required,
+        "native": _native_metric(sources),
+    }
+    kb = _plain_kb(
+        tmp_path,
+        {
+            "policies/a.md": policy_a,
+            "policies/b.md": policy_b,
+            "metrics/revenue.md": _literal_profile_page(profile),
+        },
+    )
+    loaded, report = load_knowledge_base(kb)
+    assert report.is_valid, ("D2 explicit requirements", [i.message for i in report.issues])
+    diagnostics = validate_ariadne_profiles(loaded.pages, namespace=NAMESPACE)
+    if scenario == "intentional-empty":
+        assert diagnostics == ()
+        missing = copy.deepcopy(profile)
+        del missing["required_policies"]
+        absent_kb = _plain_kb(tmp_path, {"metrics/revenue.md": _literal_profile_page(missing)})
+        _, absent_report = load_knowledge_base(absent_kb)
+        assert not absent_report.is_valid
+        assert any("required_policies" in i.message for i in absent_report.issues)
+    else:
+        assert any(
+            d.category == "unresolved-reference" and "policies/a.md" in d.message
+            for d in diagnostics
+        ), ("D2 retained scalar Policy A was ignored", diagnostics)
+        profile["required_policies"].insert(0, {"namespace": NAMESPACE, "entity_id": "entity:a"})
+        (kb / "metrics/revenue.md").write_text(_literal_profile_page(profile))
+        agreed, agreed_report = load_knowledge_base(kb)
+        assert agreed_report.is_valid
+        assert validate_ariadne_profiles(agreed.pages, namespace=NAMESPACE) == ()
+        profile["native"]["sources"] = ["policies/a.md", provenance]
+        profile["required_policies"] = [{"namespace": NAMESPACE, "entity_id": "entity:a"}]
+        (kb / "metrics/revenue.md").write_text(_literal_profile_page(profile))
+        scalar, scalar_report = load_knowledge_base(kb)
+        assert scalar_report.is_valid
+        assert validate_ariadne_profiles(scalar.pages, namespace=NAMESPACE) == ()
+
+
+def test_control_catalog_flows_through_native_gates(tmp_path):
+    """D3: the authored Control File, never a caller override, owns the catalog."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    plain_control = (kb / "lumio.yaml").read_bytes()
+    plain_revision = _commit(repo)
+    plain = inspect_ariadne_candidate(str(kb), plain_revision, namespace=NAMESPACE)
+    assert plain.diagnostics == ()
+    assert (kb / "lumio.yaml").read_bytes() == plain_control
+    catalog = {"version": 1, "ontology_catalog": {"urn:demo:catalog": {"retail-hierarchy": "r7"}}}
+    control = (
+        CONTROL_V2
+        + 'hot_index:\n  - title: "Order Number"\n'
+        + yaml.encode({"ariadne_context": catalog}).decode()
+    )
+    (kb / "lumio.yaml").write_text(control)
+    reference_file = kb / "references/order-number.md"
+    reference_data, body, _ = parse_frontmatter(reference_file.read_text(), reference_file)
+    reference_data["ariadne_profile"]["ontology_refs"] = [
+        {"namespace": "urn:demo:catalog", "identifier": "retail-hierarchy", "revision": "r7"}
+    ]
+    reference_file.write_text(_case_markdown(reference_data, body))
+    revision = _commit(repo)
+    inspection = inspect_ariadne_candidate(str(kb), revision, namespace=NAMESPACE)
+    assert inspection.diagnostics == (), (
+        "D3 captured Control File catalog",
+        inspection.diagnostics,
+    )
+    assert inspection.fingerprint != plain.fingerprint
+    destination = tmp_path / "published"
+    _publish(kb, revision, destination, "none")
+    expected = _expected_identity(kb, destination, revision)
+    original = open_published_context(
+        PublishedFilesystemLocation(destination, version=revision), expected
+    )
+    assert (destination / "versions" / revision / "lumio.yaml").read_bytes() == control.encode()
+    # The same captured Control File also governs in-memory S3 admission/read.
+    import obstore
+
+    store = obstore.store.MemoryStore()
+    metadata = InMemoryArtifactStore()
+    s3 = S3Location(store, "catalog", store_uri="s3://test-bucket")
+    review = preview_publication(
+        kb, revision, "s3://test-bucket/catalog", "none", s3_location=s3, metadata_store=metadata
+    )
+    publish_revision(
+        kb,
+        revision,
+        "s3://test-bucket/catalog",
+        "none",
+        review.review_digest,
+        s3_location=s3,
+        metadata_store=metadata,
+    )
+    manifest_raw = _get_bytes(store, f"catalog/{revision}/manifest.json")
+    manifest = msgspec.json.decode(manifest_raw, type=S3Manifest)
+    s3_identity = msgspec.structs.replace(
+        expected,
+        fingerprint=manifest.fingerprint,
+        publication_manifest_digest=hashlib.sha256(manifest_raw).hexdigest(),
+    )
+    s3_context = open_published_context(
+        S3Location(store, "catalog", version=revision), s3_identity, metadata_store=metadata
+    )
+    assert s3_context.pages == original.pages
+    assert _get_bytes(store, f"catalog/{revision}/lumio.yaml") == control.encode()
+    rename_page_in_worktree(
+        kb, "Order Number", new_title="Order Identifier", keep_old_title_alias=True
+    )
+    assert yaml.decode((kb / "lumio.yaml").read_bytes())["ariadne_context"] == catalog
+    renamed_revision = _commit(repo)
+    renamed = inspect_ariadne_candidate(str(kb), renamed_revision, namespace=NAMESPACE)
+    assert renamed.diagnostics == ()
+    _publish(kb, renamed_revision, destination, revision)
+    # Catalog-only edit: an unused exact declaration, not a page rewrite.
+    changed = yaml.decode((kb / "lumio.yaml").read_bytes())
+    changed["ariadne_context"]["ontology_catalog"]["urn:demo:catalog"]["other-target"] = "r8"
+    (kb / "lumio.yaml").write_bytes(yaml.encode(changed))
+    changed_revision = _commit(repo)
+    changed_inspection = inspect_ariadne_candidate(str(kb), changed_revision, namespace=NAMESPACE)
+    assert changed_inspection.diagnostics == ()
+    assert changed_inspection.fingerprint != renamed.fingerprint
+    assert changed_inspection.source_reference_manifest_digest == (
+        renamed.source_reference_manifest_digest
+    )
+    assert _git(repo, "diff", "--name-only", renamed_revision, changed_revision) == "kb/lumio.yaml"
+    _publish(kb, changed_revision, destination, renamed_revision)
+    current = open_published_context(
+        PublishedFilesystemLocation(destination, version=changed_revision),
+        _expected_identity(kb, destination, changed_revision),
+    )
+    assert next(p for p in current.pages if p.entity_id == "entity:order-number").content == (
+        reference_file.read_text()
+    )
+    assert (
+        open_published_context(PublishedFilesystemLocation(destination, version=revision), expected)
+        == original
+    )
+    # Unknown, mismatched and floating targets refuse through the native write gate.
+    current_data, current_body, _ = parse_frontmatter(reference_file.read_text(), reference_file)
+    before = {p.relative_to(kb).as_posix(): p.read_bytes() for p in kb.rglob("*") if p.is_file()}
+    for target in (
+        {"namespace": "urn:unknown", "identifier": "retail-hierarchy", "revision": "r7"},
+        {"namespace": "urn:demo:catalog", "identifier": "retail-hierarchy", "revision": "r6"},
+        {"namespace": "urn:demo:catalog", "identifier": "retail-hierarchy", "revision": "main"},
+    ):
+        invalid = copy.deepcopy(current_data)
+        invalid["ariadne_profile"]["ontology_refs"] = [target]
+        with pytest.raises(GitAuthoringError, match="ontology|catalog|revision"):
+            write_pages_into_worktree(
+                kb,
+                [
+                    ProposedPage(
+                        relative_path="references/order-number.md",
+                        title="Order Identifier",
+                        markdown=_case_markdown(invalid, current_body),
+                    )
+                ],
+            )
+        assert {
+            p.relative_to(kb).as_posix(): p.read_bytes() for p in kb.rglob("*") if p.is_file()
+        } == before
+
+
+@pytest.mark.parametrize("operation", ["managed-ingest", "effective-compound"])
+def test_effective_ingest_and_compound_gate_before_writes(tmp_path, operation):
+    """D4: refusal precedes private registration and effective compound writes."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    _commit(repo)
+    registry = SourceRegistry(tmp_path / "private-registry")
+    before = {p.relative_to(kb).as_posix(): p.read_bytes() for p in kb.rglob("*") if p.is_file()}
+    private_before = registry.snapshot_state_bytes()
+    refusal = None
+    if operation == "managed-ingest":
+        profile = {
+            "version": 1,
+            "kind": "metric",
+            "metric_ref": {"model": "retail_sales", "metric": "missing_policy_revenue"},
+            "required_policies": [{"namespace": NAMESPACE, "entity_id": "entity:missing-policy"}],
+            "native": _native_metric([{"id": "missing", "resource": "policies/missing.md"}]),
+        }
+        authored = _literal_profile_page(profile, title="Missing Policy Revenue")
+        data, body, _ = parse_frontmatter(authored, Path("authored.md"))
+        data.update(category="metrics", type="metric", durability_rationale="Durable metric rule.")
+        try:
+            ingest_into_worktree(
+                kb,
+                b"Reviewed metric source",
+                "text/plain",
+                "metric.txt",
+                "src-probe",
+                _case_markdown(data, body),
+                source_registry=registry,
+            )
+        except GitAuthoringError as exc:
+            refusal = str(exc)
+    else:
+        metric_path = kb / "metrics/retail-revenue.md"
+        metric_data, metric_body, _ = parse_frontmatter(metric_path.read_text(), metric_path)
+        del metric_data["ariadne_profile"]
+        policy_path = kb / "policies/retail-return-policy.md"
+        policy_data, policy_body, _ = parse_frontmatter(policy_path.read_text(), policy_path)
+        policy_data["ariadne_profile"] = {
+            "version": 1,
+            "kind": "reference",
+            "native": {
+                "type": "reference",
+                "title": "Returns reference",
+                "description": "Background.",
+                "tags": ["returns"],
+                "sources": ["policies/retail-return-policy.md"],
+            },
+        }
+        try:
+            write_pages_into_worktree(
+                kb,
+                [
+                    ProposedPage(
+                        relative_path="metrics/retail-revenue.md",
+                        title="Retail Revenue (Metric)",
+                        markdown=_case_markdown(metric_data, metric_body),
+                        compound_revision=True,
+                    ),
+                    ProposedPage(
+                        relative_path="policies/retail-return-policy.md",
+                        title="Retail Return Policy",
+                        markdown=_case_markdown(policy_data, policy_body),
+                    ),
+                ],
+            )
+        except GitAuthoringError as exc:
+            refusal = str(exc)
+    after = {p.relative_to(kb).as_posix(): p.read_bytes() for p in kb.rglob("*") if p.is_file()}
+    private_after = registry.snapshot_state_bytes()
+    assert (refusal is not None, after == before, private_after == private_before) == (
+        True,
+        True,
+        True,
+    ), (
+        "D4 unsafe effects",
+        operation,
+        refusal,
+        "worktree_unchanged",
+        after == before,
+        "private_history_unchanged",
+        private_after == private_before,
+    )
+    assert refusal is not None
+    if operation == "managed-ingest":
+        assert "entity:missing-policy" in refusal
+    else:
+        assert "not a Policy" in refusal
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+@pytest.mark.parametrize("backend", ["local", "s3"])
+def test_admission_rejects_foreign_source_subtree_binding(tmp_path, monkeypatch, backend):
+    """D5: prepared bytes must not borrow another KB's genuine admission facts."""
+    import lumio_wiki.git_authoring as native
+
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    other = repo / "other"
+    shutil.copytree(kb, other)
+    registry = SourceRegistry(tmp_path / "private-registry")
+    # Same pages and Content Commit, different exact private Source Versions.
+    for root, raw in ((kb, b"Finance review A"), (other, b"Finance review B")):
+        version, _ = registry.register_version(
+            "src-finance-model", raw, filename="finance.txt", content_type="text/plain"
+        )
+        assert version.content_hash == hashlib.sha256(raw).hexdigest()
+        (root / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+            serialize_source_reference_manifest(
+                SourceReferenceManifest(
+                    version=1,
+                    namespace=NAMESPACE,
+                    sources={"src-finance-model": "active"},
+                    bindings={
+                        "entity:retail-revenue": {
+                            "src-finance-model": hashlib.sha256(raw).hexdigest()
+                        }
+                    },
+                )
+            )
+        )
+    revision = _commit(repo)
+    destination = tmp_path / "admitted"
+    prepared_destination = tmp_path / "prepared"
+    metadata = InMemoryArtifactStore()
+    prepared_metadata = InMemoryArtifactStore()
+    store = None
+    if backend == "s3":
+        import obstore
+
+        store = obstore.store.MemoryStore()
+
+    def publish(root, version, expected_current, *, prepared=False):
+        s3_location = None
+        private_store = None
+        if backend == "local":
+            target = prepared_destination if prepared else destination
+        else:
+            prefix = "prepared" if prepared else "admitted"
+            target = f"s3://test-bucket/{prefix}"
+            s3_location = S3Location(store, prefix, store_uri="s3://test-bucket")
+            private_store = prepared_metadata if prepared else metadata
+        review = preview_publication(
+            root,
+            version,
+            target,
+            expected_current,
+            source_registry=registry,
+            s3_location=s3_location,
+            metadata_store=private_store,
+        )
+        assert review.blocking_diagnostics == []
+        return publish_revision(
+            root,
+            version,
+            target,
+            expected_current,
+            review.review_digest,
+            source_registry=registry,
+            s3_location=s3_location,
+            metadata_store=private_store,
+        )
+
+    def pinned_identity(root, *, prepared=False):
+        if backend == "local":
+            target = prepared_destination if prepared else destination
+            raw = (target / "versions" / revision / "manifest.json").read_bytes()
+            location = PublishedFilesystemLocation(target, version=revision)
+        else:
+            prefix = "prepared" if prepared else "admitted"
+            raw = _get_bytes(store, f"{prefix}/{revision}/manifest.json")
+            location = S3Location(store, prefix, version=revision, store_uri="s3://test-bucket")
+        manifest = msgspec.json.decode(raw, type=S3Manifest)
+        identity = ContextIdentity(
+            namespace=NAMESPACE,
+            profile_version=1,
+            published_version=revision,
+            fingerprint=manifest.fingerprint,
+            publication_manifest_digest=hashlib.sha256(raw).hexdigest(),
+            source_reference_digest=hashlib.sha256(
+                (root / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+            ).hexdigest(),
+            subtree="other" if prepared else "kb",
+            scope=PUBLIC_VISIBILITY_SCOPE,
+        )
+        return location, identity
+
+    publish(kb, revision, "none")
+    admitted_location, admitted_identity = pinned_identity(kb)
+    selected_metadata = metadata if backend == "s3" else None
+    original = open_published_context(
+        admitted_location, admitted_identity, metadata_store=selected_metadata
+    )
+    # Inject only a storage failure after real preparation, before private admission.
+    with monkeypatch.context() as failure:
+
+        def unavailable(*args, **kwargs):
+            raise OSError("synthetic private admission storage failure")
+
+        if backend == "s3":
+            failure.setattr(native, "_persist_s3_publication_record", unavailable)
+        else:
+            write = native.atomic_write_bytes
+
+            def fail_receipt(path, raw):
+                if path == native._receipt_path(prepared_destination, revision):
+                    unavailable()
+                return write(path, raw)
+
+            failure.setattr(native, "atomic_write_bytes", fail_receipt)
+        with pytest.raises(OSError, match="synthetic private admission storage failure"):
+            publish(other, revision, "none", prepared=True)
+    prepared_location, prepared_identity = pinned_identity(other, prepared=True)
+    assert prepared_identity.fingerprint == admitted_identity.fingerprint
+    assert prepared_identity.source_reference_digest != admitted_identity.source_reference_digest
+    assert prepared_identity.subtree != admitted_identity.subtree
+    # Full expected public identity is correct, but preparation is not admission.
+    with pytest.raises(UnadmittedInputError):
+        open_published_context(
+            prepared_location,
+            prepared_identity,
+            metadata_store=prepared_metadata if backend == "s3" else None,
+        )
+    # Admitted historical reads must survive advancement of the native pointer.
+    policy = kb / "policies/retail-return-policy.md"
+    policy.write_text(policy.read_text() + "\nReviewed clarification.\n")
+    successor = _commit(repo)
+    publish(kb, successor, revision)
+    assert (
+        open_published_context(
+            admitted_location, admitted_identity, metadata_store=selected_metadata
+        )
+        == original
+    )
+    if backend == "local":
+        # Wrong local state selection: unmodified genuine records, no invented success.
+        shutil.copyfile(
+            native._receipt_path(destination, revision),
+            native._receipt_path(prepared_destination, revision),
+        )
+        shutil.copyfile(
+            native._sealed_path(destination, revision),
+            native._sealed_path(prepared_destination, revision),
+        )
+    # S3's ordinary wrong-store selection supplies the admitted A records to B.
+    with pytest.raises(UnadmittedInputError):
+        open_published_context(
+            prepared_location, prepared_identity, metadata_store=selected_metadata
+        )

@@ -315,11 +315,12 @@ class CapturedRevision:
         # (spec 0009 §3): capture is the shared native publication/inspection
         # gate, so typed-closure, binding and agreement violations surface as
         # blocking validation errors exactly once, before any admission.
-        from lumio_wiki.ariadne_context import validate_ariadne_profiles
+        from lumio_wiki.ariadne_context import _control_catalog, validate_ariadne_profiles
 
         if any(page.ariadne_profile is not None for page in self.kb.pages):
             profile_diagnostics = validate_ariadne_profiles(
-                self.kb.pages, namespace=self.manifest.namespace
+                self.kb.pages, namespace=self.manifest.namespace,
+                ontology_catalog=_control_catalog(self.kb.control),
             )
             if profile_diagnostics:
                 self.report = ValidationReport(
@@ -1235,6 +1236,8 @@ def _load_s3_publication_record(
         or receipt.subtree != manifest.subtree
         or receipt.fingerprint != manifest.fingerprint
         or receipt.manifest_digest != manifest.source_reference_digest
+        or receipt.validator_contract != manifest.format_identity
+        or (manifest.namespace and record.sealed.namespace != manifest.namespace)
         or record.sealed.published_version != version
         or record.sealed.revision != receipt.revision
         or record.sealed.fingerprint != receipt.fingerprint
@@ -1282,6 +1285,7 @@ def _load_s3_publication_record(
         or binding.revision != receipt.revision
         or binding.subtree != receipt.subtree
         or binding.source_reference_digest != receipt.manifest_digest
+        or binding.validator_contract != receipt.validator_contract
         or actual_bindings != record.sealed.bindings
     ):
         raise GitAuthoringError(
@@ -2676,6 +2680,7 @@ def _verify_version_complete(
         or receipt.subtree != manifest.subtree
         or receipt.manifest_digest != manifest.source_reference_digest
         or receipt.validator_contract != manifest.format_identity
+        or receipt.destination != str(destination.resolve())
     ):
         raise GitAuthoringError(
             f"the admission receipt for {version!r} does not agree with its "
@@ -2684,6 +2689,8 @@ def _verify_version_complete(
     sealed = msgspec.json.decode(
         _verify_sealed_state(destination, receipt), type=SealedSourceReferences
     )
+    if manifest.namespace and sealed.namespace != manifest.namespace:
+        raise GitAuthoringError("the sealed Source namespace disagrees with the published manifest")
     return manifest, receipt, sealed
 
 
@@ -3121,6 +3128,9 @@ def ingest_into_worktree(
         raise GitAuthoringError(
             "the authored page candidate failed validation: " + str(candidate_report)
         )
+    candidate_view = _refuse_profile_candidate_violations(
+        kb_path, pages, removed_titles=None, kb=kb
+    )
     mutation_paths = [
         relative
         for relative in affected_mutation_paths(pages, kb_path)
@@ -3133,7 +3143,6 @@ def ingest_into_worktree(
         mutation_paths,
         allow_untracked=frozenset({SOURCE_REFERENCE_MANIFEST_BASENAME}),
     )
-    candidate_view = _candidate_pages_view(kb, pages)
     # The exact binding digest is computed from the supplied bytes up front
     # (registration converges on the same content-addressed version).
     digest = hashlib.sha256(raw_bytes).hexdigest()
@@ -3275,10 +3284,7 @@ def _candidate_page_record(page, existing_markdown: str | None = None):
     ones. Compound+move is refused: the destination owner prioritizes moves
     without merging Sources, so a synthetic union would approve absent pins.
     """
-    from types import SimpleNamespace
-
-    from lumio_wiki.knowledge_base import _as_sources as as_sources
-    from lumio_wiki.knowledge_base import _parse_frontmatter
+    from lumio_wiki.knowledge_base import _parse_page
     from lumio_wiki.publish import merge_compound_sources
 
     if getattr(page, "compound_revision", False) and getattr(page, "move_from_path", None):
@@ -3290,19 +3296,13 @@ def _candidate_page_record(page, existing_markdown: str | None = None):
     if existing_markdown is not None and getattr(page, "compound_revision", False):
         effective_markdown = merge_compound_sources(page.markdown, existing_markdown)
     try:
-        data, _body, _line = _parse_frontmatter(effective_markdown, Path(page.relative_path))
+        parsed, _data, _issues = _parse_page(effective_markdown, page.relative_path)
     except Exception as exc:
         raise GitAuthoringError(
             f"cannot parse the proposed page at {page.relative_path!r} for the "
             f"{SOURCE_REFERENCE_MANIFEST_BASENAME} cross-check: {exc}"
         ) from exc
-    return SimpleNamespace(
-        path=page.relative_path,
-        title=page.title,
-        id=str(data.get("id") or ""),
-        sources=as_sources(data.get("sources")),
-        synthetic=bool(data.get("synthetic")),
-    )
+    return parsed
 
 
 def _candidate_pages_view(kb, candidate_pages=(), removed_titles=()):
@@ -3449,37 +3449,32 @@ def _refuse_manifest_drift(
 
 
 def _refuse_profile_candidate_violations(
-    kb_path: Path, candidate_pages: list, *, removed_titles: list[str] | None
-) -> None:
-    """The complete-candidate Ariadne Context Profile gate (spec 0009 §3).
+    kb_path: Path, candidate_pages: list, *, removed_titles: list[str] | None,
+    control_file=None, kb=None,
+):
+    """Validate the same effective page/control candidate as native apply.
 
-    Cross-page profile validity is enforced at the REAL native mutation gate,
-    BEFORE any worktree byte is written: the fully applied candidate (kept
-    pages plus parsed proposed pages, declared removals excluded) must keep
-    every typed Policy Closure, unique metric binding, native Policy path
-    agreement and ontology declaration resolvable under the adopted manifest
-    namespace. Profiled content without an adopted Source Reference Manifest
-    refuses. Explicit refusal — never a lossy rebuild."""
-    from lumio_wiki.ariadne_context import validate_ariadne_profiles
-    from lumio_wiki.knowledge_base import _parse_page
+    Shared by managed ingest before private registration and by the atomic
+    worktree apply boundary. Namespace comes from the adopted manifest;
+    catalog authority comes only from the candidate's canonical Control File.
+    """
+    from lumio_wiki.ariadne_context import _control_catalog, validate_ariadne_profiles
 
-    superseded = {title for title in (removed_titles or []) if title}
-    parsed_proposed: list = []
-    for page in candidate_pages:
-        superseded.add(page.title)
-        rename_from = getattr(page, "rename_from", None)
-        if rename_from:
-            superseded.add(rename_from)
-        try:
-            parsed, _data, _issues = _parse_page(page.markdown, page.relative_path)
-        except Exception:
-            continue  # structural failures refuse earlier via candidate validation
-        parsed_proposed.append(parsed)
-    kb = _load_valid_authoring_kb(kb_path)
-    kept = [page for page in kb.pages if page.title not in superseded]
-    candidate_view = kept + parsed_proposed
-    if not any(page.ariadne_profile is not None for page in candidate_view):
-        return
+    if kb is None:
+        kb = _load_valid_authoring_kb(kb_path)
+    candidate = _candidate_pages_view(kb, candidate_pages, removed_titles or ())
+    profiled_ids = {page.id for page in kb.pages if page.ariadne_profile is not None}
+    profiled_paths = {page.path for page in kb.pages if page.ariadne_profile is not None}
+    for page in candidate.pages:
+        if (
+            page.id in profiled_ids or page.path in profiled_paths
+        ) and page.ariadne_profile is None:
+            raise GitAuthoringError(
+                f"the mutation would drop the Ariadne Context Profile at {page.path}; "
+                "preserve the envelope or explicitly remove the page"
+            )
+    if not any(page.ariadne_profile is not None for page in candidate.pages):
+        return candidate
     manifest = _load_authoring_manifest(kb_path)
     if manifest is None:
         raise GitAuthoringError(
@@ -3487,12 +3482,16 @@ def _refuse_profile_candidate_violations(
             "Knowledge Base carries no adopted Source Reference Manifest; adopt "
             "Git authoring before authoring profiled pages"
         )
-    diagnostics = validate_ariadne_profiles(candidate_view, namespace=manifest.namespace)
+    control = control_file if control_file is not None else kb.control
+    diagnostics = validate_ariadne_profiles(
+        candidate.pages, namespace=manifest.namespace, ontology_catalog=_control_catalog(control)
+    )
     if diagnostics:
         raise GitAuthoringError(
             "the mutation candidate violates the Ariadne Context Profile contract: "
             + "; ".join(diagnostic.message for diagnostic in diagnostics[:5])
         )
+    return candidate
 
 
 def _apply_worktree_candidate(
@@ -3528,7 +3527,9 @@ def _apply_worktree_candidate(
         mutation_paths.append(SOURCE_REFERENCE_MANIFEST_BASENAME)
         if allow_untracked_manifest:
             allow_untracked = frozenset({SOURCE_REFERENCE_MANIFEST_BASENAME})
-    _refuse_profile_candidate_violations(kb_path, candidate_pages, removed_titles=removed_titles)
+    _refuse_profile_candidate_violations(
+        kb_path, candidate_pages, removed_titles=removed_titles, control_file=control_file
+    )
     _refuse_unsafe_worktree_mutation(
         repo_root, kb_path, mutation_paths, allow_untracked=allow_untracked
     )
@@ -4043,6 +4044,11 @@ def reactivate_source_in_worktree(
             },
         )
     )
+    # Profile validity precedes registration here too; Source exact-pin
+    # consistency still resolves after the new private version is registered.
+    candidate_view = _refuse_profile_candidate_violations(
+        kb_path, [], removed_titles=None, kb=kb
+    )
     # F6 (spec 0008 §3.2): the complete safety preflight runs BEFORE any
     # private version/metadata write — a refused authoring mutation must
     # never have already extended the selected private history.
@@ -4068,7 +4074,7 @@ def reactivate_source_in_worktree(
     # just-recorded version) and BEFORE any authoring-file write.
     _refuse_manifest_drift(
         updated,
-        _candidate_pages_view(kb),
+        candidate_view,
         "source reactivation",
         registry=source_registry,
     )

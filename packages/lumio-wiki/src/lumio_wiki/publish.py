@@ -2129,14 +2129,7 @@ def assemble_page_removal_candidate(
             for pin in kb_control.hot_index
             if pin.title != title
         ]
-        control_file = KnowledgeBaseControlFile(
-            version=kb_control.version,
-            categories=list(kb_control.categories),
-            hot_index=kept_pins,
-            mode=kb_control.mode,
-            path=kb_control.path,
-            ontology=kb_control.ontology,
-        )
+        control_file = msgspec.structs.replace(kb_control, hot_index=kept_pins)
 
     page_validation = validate_candidate_knowledge_base(
         proposed_pages,
@@ -2355,14 +2348,7 @@ def assemble_entity_merge_candidate(
         for pin in control.hot_index
         if pin.title != retired_title
     ]
-    control_file = KnowledgeBaseControlFile(
-        version=control.version,
-        categories=list(control.categories),
-        hot_index=kept_pins,
-        mode=control.mode,
-        path=control.path,
-        ontology=new_ontology,
-    )
+    control_file = msgspec.structs.replace(control, hot_index=kept_pins, ontology=new_ontology)
 
     page_validation = validate_candidate_knowledge_base(
         proposed_pages,
@@ -2608,14 +2594,7 @@ def assemble_page_rename_candidate(
             )
             for pin in control.hot_index
         ]
-        control_file = KnowledgeBaseControlFile(
-            version=control.version,
-            categories=list(control.categories),
-            hot_index=kept_pins,
-            mode=control.mode,
-            path=control.path,
-            ontology=control.ontology,
-        )
+        control_file = msgspec.structs.replace(control, hot_index=kept_pins)
     page_validation = validate_candidate_knowledge_base(
         proposed_pages, kb.root, control_file=control_file
     )

@@ -19,7 +19,7 @@ from urllib.parse import quote
 import msgspec
 import msgspec.yaml as yaml
 
-from lumio_wiki.ariadne_context import parse_ariadne_profile
+from lumio_wiki.ariadne_context import _parse_ariadne_context_control, parse_ariadne_profile
 from lumio_wiki.embeddings import (
     DEFAULT_SEMANTIC_THRESHOLD,
     Embedder,
@@ -4495,6 +4495,17 @@ def _load_and_validate_control_file(
 
     ontology, ontology_issues = _as_ontology(raw.get("ontology"))
     issues.extend(ontology_issues)
+    ariadne_context = None
+    if "ariadne_context" in raw:
+        ariadne_context, profile_errors = _parse_ariadne_context_control(
+            raw["ariadne_context"], raw_bytes
+        )
+        if parsed_version != 2:
+            profile_errors.append("ariadne_context requires Control File version 2")
+        issues.extend(
+            ValidationIssue(file=CONTROL_FILE_BASENAME, field="ariadne_context", message=message)
+            for message in profile_errors
+        )
     control = KnowledgeBaseControlFile(
         version=parsed_version,
         categories=categories,
@@ -4502,6 +4513,7 @@ def _load_and_validate_control_file(
         mode=str(mode),
         path=CONTROL_FILE_BASENAME,
         ontology=ontology,
+        ariadne_context=ariadne_context,
     )
     return control, issues
 
@@ -4575,6 +4587,20 @@ def write_control_file(path: str | Path, control: KnowledgeBaseControlFile) -> P
             else:
                 lines.append(f"  - {title}")
     _append_ontology_lines(lines, control)
+    if control.ariadne_context is not None:
+        # YAML's serializer preserves exact string keys/revisions (including
+        # numeric-looking scalars); plain Control File bytes remain unchanged.
+        lines.extend(yaml.encode({
+            "ariadne_context": {
+                "version": control.ariadne_context.version,
+                "ontology_catalog": {
+                    namespace: dict(sorted(identifiers.items()))
+                    for namespace, identifiers in sorted(
+                        control.ariadne_context.ontology_catalog.items()
+                    )
+                },
+            }
+        }).decode("utf-8").rstrip("\n").splitlines())
     content = "\n".join(lines) + "\n"
     _atomic_write_text(target, content)
     return target

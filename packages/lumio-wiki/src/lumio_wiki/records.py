@@ -936,6 +936,13 @@ class HotIndexPin(msgspec.Struct, frozen=True):
     note: str | None = None
 
 
+class AriadneContextControl(msgspec.Struct, frozen=True):
+    """Candidate-bound application declarations in the version-2 Control File."""
+
+    version: int
+    ontology_catalog: dict[str, dict[str, str]]
+
+
 class KnowledgeBaseControlFile(msgspec.Struct, frozen=True):
     """The versioned root Knowledge Base Control File (``lumio.yaml``).
 
@@ -952,6 +959,7 @@ class KnowledgeBaseControlFile(msgspec.Struct, frozen=True):
     mode: str = "categorized"
     path: str = "lumio.yaml"
     ontology: Ontology | None = None
+    ariadne_context: AriadneContextControl | None = None
 
 
 class ActivityLogEntry(msgspec.Struct, frozen=True):
