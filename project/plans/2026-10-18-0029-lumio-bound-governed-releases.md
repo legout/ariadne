@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Approved revision 10 — tags-only fixture exception.** Owner 2026-10-19 selected “Nur Tags korrigieren +1 Lauf”: add required top-level cancellation-page tags only, then exactly one P2 invocation of the eight failed MVP nodes; reuse the three unaffected successes. No product/SDK/assertion changes or further retry. The one candidate review remains unused and follows only a passing candidate. |
+| **Status** | **Approved revision 11 — CLI-test-only exception.** Owner 2026-10-19 selected “CLI-Testfix +1 Node (Recommended)”: reorder only the two test argv lists to documented subcommand-first syntax, then exactly one P3 invocation of the remaining Capability node. Product/parser unchanged; reuse seven P2 successes plus three original P successes. Any new failure stops; sole candidate review still unused. |
 | **Historical planning authority** | Owner, Ariadne Pi conversation 2026-10-19: after selecting local Metric MVP/strict profile boundary and approving its complete design, selected “Schriftlich freigeben (Recommended)” for written spec r2, ADR/source notices and subsequent local implementation planning only. No implementation, runtime tests, GitHub changes, integration or publication. |
 | **Goal / source** | First deliver the strict local journey defined by [spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), §§1.1–7 and [ADR-0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Preserve the full #76/#79 target; deferred features remain open. |
 | **Current source identity** | Approved spec SHA256 `22359ad5ab6f01d99b46cb8f8d7a8c6d1df6875d4dc21bb94481b03997a86adf`; document fork descends from source `5502300aca23d1afd3f49fb4f73d5fd9374a9b5a`. Native Core bytes equal `24630dbd404870f30602d66b5d5a2d53fa892f86`. Parent records the actual locally frozen source commit/ref before dispatch; no public source URL is claimed. |
@@ -85,7 +85,17 @@ expectations. The accepted L1 producer is not re-reviewed.
 
 ## 3. Approved finite M1 assurance boundary
 
-### Revision 10 exception: shared cancellation-page tags
+### Revision 11 exception: documented CLI test invocation
+
+Tags-only P2 produced seven successful nodes and one failed Capability node.
+The latter passed native guards/catalog assertions, then called CLI with
+`--project` before the subcommand, contrary to the existing parser and
+`docs/reference/cli.md` examples. Owner approved only reordering the two
+list-metrics/list-datasets test calls plus one P3 of that same failed node.
+No product/parser/assertion relaxation, other node repeats or new review.
+Preserve P2/e3627f4 and its actual log/exit; further failure stops.
+
+### Preserved revision 10 exception: shared cancellation-page tags
 
 Original M1-P exited1 with eight named failures: the shared Cancellation page
 omitted required top-level tags, while native tags do not satisfy that field.
@@ -124,14 +134,16 @@ per-method/per-layer matrices, baseline suite or second live proof.
 | M1-R, spent | Before product edits | New strict-profile refusal node only, using existing native Core entrypoints and accepted SDK. A native-valid unsupported Reference profile being ignored is the expected defect; import/setup/contract-fixture errors are not accepted red. Exact command is in the task. |
 | M1-R2, once | Test-only fixture/oracle correction before any product edits | Same strict-profile node/command as original M1-R, new noclobber logs. Only the intended unsupported-profile defect may be the red; source/contract/citation/setup failures or green stop. |
 | M1-P, spent failed | After intended M1-R2/coherent implementation | Eight named nodes failed on the shared tags fixture before admission; three trailing successful nodes remain reusable. Raw log/exit and native records are preserved. |
-| M1-P2, once | After tags-only correction | Exactly the eight failed `tests/test_lumio_metric_mvp.py` node selectors, one invocation; no standalone-import or existing-node repeats. Keep real confirmations/receipts/oracles; command is in amended canonical #81. |
+| M1-P2, spent | After tags-only correction | Seven nodes succeeded; Capability node failed on invalid test CLI syntax. Raw progress/evidence retained. |
+| M1-P3, once | After CLI-test argument-order correction | Only `tests/test_lumio_metric_mvp.py::test_capability_refusals_and_source_free_catalog`; no other nodes repeated. |
 
-Approved M1 budget is now **four invocations in total**: invalid-green M1-R,
-intended-red M1-R2, failed M1-P and the one added tags-only M1-P2. No reset,
-other retry/fix reserve or borrowed V2/V3–V5 allocation. The original grant was
+Approved M1 budget is now **five invocations in total**: invalid-green M1-R,
+intended-red M1-R2, failed M1-P, partial-success M1-P2 and the one CLI-only
+M1-P3. No reset, other retry/fix reserve or borrowed V2/V3–V5 allocation. The original grant was
 “Plan + M1 starten (Recommended)”; the one extra call/test-only correction was
 separately approved with “Test-only korrigieren +1 Red (Recommended)”. The P2
-tags-only exception was approved with “Nur Tags korrigieren +1 Lauf”. Static changed-path syntax/Ruff/diff/diagnostics and exact
+tags-only exception was approved with “Nur Tags korrigieren +1 Lauf”. The
+P3 exception was approved with “CLI-Testfix +1 Node (Recommended)”. Static changed-path syntax/Ruff/diff/diagnostics and exact
 upstream blob comparison are the only additional code checks proposed; a
 single isolated import/origin env preflight verifies the actual binding, not
 product behavior. No behavior probe, collection run or hidden nested pytest.

@@ -659,9 +659,9 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
                     ValueError, match=f"unsupported integrated MVP operation: {name}"
                 ):
                     asyncio.run(getattr(deferred, name)(*args))
-            assert cli(["--project", str(project), "list-metrics"]) == 0
+            assert cli(["list-metrics", "--project", str(project)]) == 0
             assert json.loads(capsys.readouterr().out)[0]["name"] == "revenue"
-            assert cli(["--project", str(project), "list-datasets"]) == 1
+            assert cli(["list-datasets", "--project", str(project)]) == 1
             assert "unsupported integrated MVP operation" in capsys.readouterr().err
     finally:
         runtime.con.close()
