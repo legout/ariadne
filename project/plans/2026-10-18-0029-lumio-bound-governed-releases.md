@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 19 — L2 → A2 execution authorized, 2026-10-20.** Q2 is accepted isolated85dbaab. Owner approved the exact written local navigation contract and its autonomous producer → consumer implementation. G2/T2 and other remaining drafts stay proposed. Previous status: Owner requested a next-issue roadmap and reaffirmed Git with local sync as the standard, S3 secondary. No implementation, test execution, ticket publication, integration or release is authorized by this draft. Historical approved M1 execution r12 is complete and preserved in `v0.5.0` and the immutable result refs. |
+| **Status** | **Revision 20 — L2 accepted; A2 frozen fix-first; bounded correction proposed, 2026-10-20.** Q2 is accepted isolated85dbaab. Owner approved the exact written local navigation contract and its autonomous producer → consumer implementation. G2/T2 and other remaining drafts stay proposed. Previous status: Owner requested a next-issue roadmap and reaffirmed Git with local sync as the standard, S3 secondary. No implementation, test execution, ticket publication, integration or release is authorized by this draft. Historical approved M1 execution r12 is complete and preserved in `v0.5.0` and the immutable result refs. |
 | **Owner direction** | 2026-10-20: “S3 Anbindung ist für Ariadne zweitrangig. Der bevorzugte Weg bleibt git repo mit lokalem sync.” This approves the priority used for this proposal, not new SDK interfaces or capability expansion. |
 | **Goal** | Make the shared Git Content Repository plus a local checkout the normal operator path, then expand useful local knowledge/analytics capabilities without weakening exact admission or standalone behavior. S3 is optional later work, not a prerequisite. |
 | **Behavioral sources** | [Spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), especially §§2–6 and preserved full-target AC1–AC9; [ADR0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Companion: `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md` r2 / ADR0030. The r2 MVP refusal boundary remains authoritative until the corresponding source amendments are approved. |
@@ -81,6 +81,62 @@ its exact affected check before execution. One fresh A2 candidate review covers
 new Core integration effects and prior Q2 correspondence; it does not reopen
 settled Q2 findings. Same one-small-fix/one-delta limit, with all budgets and
 identities recorded in the existing run state, not another ledger.
+
+### A2 candidate disposition — proposed additional correction, 2026-10-20
+
+L2 is accepted at `86db9f14909d095e4fdad270c6ea6d36c326b86b`.
+A2 candidate `2375530b18a8b08401b959dff1cdc5bda4aa7ad7` (tree
+`3125f639ab439dd0718f2f1a3667fae540e30f5a`) is **unaccepted / fix-first**.
+The one independent candidate review (`thr_9eyrt3e2qz`, Pi Sol/high) identified
+two reachable violations of existing response guarantees, not new behavior:
+
+- `discover` catches a pages `QueryResultError` as `ValueError`, replacing
+  required oversized page content with an unavailable group. Propagate budget
+  refusals so CLI `search` and MCP `discover` refuse the whole operation.
+- Source-free MCP navigation bypasses the existing transport-refusal
+  representability preflight. Validate the configured `mcp_response_bytes`
+  against actual refusal envelopes without constructing QueryRuntime; reject
+  unusably small host ceilings before navigation, rather than returning an
+  oversized refusal. Reuse the existing refusal forms and wire measurement.
+
+Parent accepts both findings. No code correction has been granted or performed.
+The original assigned A2 invocation remains exit1 (12 passes, one mistaken
+bare-dict structured-output test oracle). The worker corrected that oracle,
+completed late parent static-gap requests, repeated all13 nodes and committed
+without the required failure disposition. This was not authorized; the second
+exit0 is observed evidence, never an authorized replacement. Parent also
+acknowledges approving the incorrect bare-dict assumption. Installed MCP2.2
+source independently confirms the corrected strict form; no product output
+flags were changed. Preserve both logs and the committed candidate. The spent
+correction/recheck is not reset at review or candidate assembly.
+
+**Owner decision requested; this section grants no execution:** authorize one
+additional bounded A2 correction cycle for exactly these two findings. Use one
+fresh registered Pi `zai/glm-5.3/high` writer based on frozen2375530, one
+read-only Pi `openai-codex/gpt-6.1-sol/high` delta reviewer, and the unchanged
+accepted producer86db. Owned files: `src/ariadne/discovery.py`, necessary
+`src/ariadne/serve.py`, and the existing focused navigation scenario in
+`tests/lumio_local_context.py`. No new parser/framework, source runtime,
+capabilities, dependencies, metadata/version changes or producer edits.
+
+First prepare the smallest regression extension to the existing navigation
+journey and return its independently justified oracle for parent static review:
+required page output larger than the Core ceiling must refuse through actual
+CLI search and MCP discover; an MCP-only ceiling below the existing refusal
+representations must be rejected before navigation. Distinguish configuration
+rejection from an oversized tool-result refusal. Reuse existing native limit
+semantics and real wire measurement, never weaken old assertions. One serial
+RED invocation of only the existing A2 node against unchanged product, then
+freeze for parent disposition. If RED matches the named failures, one product
+fix pass and one same-node POST invocation; targeted Ruff over touched files.
+No rerun of the12 unaffected green nodes, Q2 numerical journey, full suites,
+collection/probes, installs or service setup. A failure stops; no automatic
+retry. One delta review covers the fix and affected integration only. Any
+remaining material finding returns to the owner; no third round.
+
+Commit a clean isolated result and preserve all refs/evidence. No target
+integration, push, issue changes, release or cleanup. T2 remains proposed;
+full A1/Q1 and installed-artifact qualification are not completed by this slice.
 
 ### L2 F1 disposition — bounded correction, 2026-10-20
 
