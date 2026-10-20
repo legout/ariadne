@@ -2119,6 +2119,81 @@ def _published_page_record(
     )
 
 
+#: Native page-search field -> canonical frontmatter key carrying the decoded
+#: value a metadata-only match must cite.
+_METADATA_FIELD_KEYS = MappingProxyType(
+    {"title": "title", "alias": "aliases", "tag": "tags", "summary": "summary"}
+)
+
+
+def _mark_offset(mark: Any, line_starts: Sequence[int], bound: int) -> int:
+    """Character offset of one composed YAML mark inside its frontmatter text."""
+    base = line_starts[mark.line] if mark.line < len(line_starts) else bound
+    return min(base + mark.column, bound)
+
+
+def _metadata_match_passage(
+    page: CompiledPage,
+    matched_fields: Sequence[str],
+    terms: Sequence[str],
+    lines: Sequence[str],
+) -> tuple[str, int, int, None]:
+    """The verbatim canonical raw span of the actually matched metadata value.
+
+    Composed YAML node marks map the decoded native search value back to its
+    canonical source characters: an escaped scalar (``"\\u0068alcyon"``) cites
+    its authored raw line, a multiline scalar truthfully cites its whole raw
+    span, and a comment on an unrelated key never stands in for the passage.
+    Metadata sits above the body, so no section exists. An unavailable
+    mapping refuses; a body passage is never fabricated.
+    """
+    import yaml
+
+    keys = {
+        _METADATA_FIELD_KEYS[field]
+        for field in matched_fields
+        if field in _METADATA_FIELD_KEYS
+    }
+    if not keys:
+        raise MalformedProfileError(
+            f"no citable frontmatter key for matched fields of {page.path!r}"
+        )
+    # The frontmatter is every canonical line above the body; composed marks
+    # are 0-based lines of exactly this text, so canonical line == mark + 1.
+    frontmatter = "\n".join(lines[: max(page.body_start_line - 1, 0)])
+    line_starts = [0]
+    for line in lines[: max(page.body_start_line - 1, 0)]:
+        line_starts.append(line_starts[-1] + len(line) + 1)
+    root = yaml.compose(frontmatter, Loader=yaml.SafeLoader)
+    if not isinstance(root, yaml.MappingNode):
+        raise MalformedProfileError(
+            f"no citable YAML frontmatter mapping at {page.path!r}"
+        )
+    for key, value in root.value:
+        if not (isinstance(key, yaml.ScalarNode) and key.value in keys):
+            continue
+        # A searched field holds one scalar or a sequence of scalars; no
+        # deeper structure is interpreted.
+        values = value.value if isinstance(value, yaml.SequenceNode) else (value,)
+        for node in values:
+            if not isinstance(node, yaml.ScalarNode):
+                continue
+            folded = node.value.casefold()
+            if not any(term in folded for term in terms):
+                continue
+            # The raw token span minus its consuming trailing line breaks is
+            # the verbatim passage; character offsets keep spans exact.
+            start = _mark_offset(node.start_mark, line_starts, len(frontmatter))
+            end = _mark_offset(node.end_mark, line_starts, len(frontmatter))
+            span = frontmatter[start:end].rstrip()
+            first = node.start_mark.line
+            last = first + len(span.splitlines()) - 1
+            return "\n".join(lines[first : last + 1]), first + 1, last + 1, None
+    raise MalformedProfileError(
+        f"no canonical source span for the matched metadata value of {page.path!r}"
+    )
+
+
 def _canonical_match_passage(
     page: CompiledPage,
     matched_fields: Sequence[str],
@@ -2129,20 +2204,21 @@ def _canonical_match_passage(
 
     A body match cites its matching canonical line (verbatim, indentation
     kept) with the innermost fence-aware section containing it; a
-    metadata-only match cites the real canonical frontmatter line carrying
-    the term, with no section — never a fabricated body passage.
+    metadata-only match cites the real canonical frontmatter span carrying
+    the matched value, with no section — never a fabricated body passage.
     """
     from lumio_wiki.evidence import body_sections
 
     raw = canonical_content.get(page.path, b"").decode("utf-8", errors="replace")
     lines = raw.splitlines()
     terms = [term.casefold() for term in matched_terms]
-    body_match = "body" in matched_fields
+    if "body" not in matched_fields:
+        return _metadata_match_passage(page, matched_fields, terms, lines)
     # Canonical line ``body_start_line`` begins the body: its first character
     # is that line's terminating newline.
-    first = page.body_start_line - 1 if body_match else 0
-    last = len(lines) if body_match else max(page.body_start_line - 1, 0)
-    sections = body_sections(page.body, page.body_start_line) if body_match else ()
+    first = page.body_start_line - 1
+    last = len(lines)
+    sections = body_sections(page.body, page.body_start_line)
     for index in range(first, min(last, len(lines))):
         folded = lines[index].casefold()
         if any(term in folded for term in terms):

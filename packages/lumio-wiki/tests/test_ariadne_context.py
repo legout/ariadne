@@ -1695,21 +1695,24 @@ def test_admission_rejects_foreign_source_subtree_binding(tmp_path, monkeypatch,
 # ---------------------------------------------------------------------------
 
 # Independently authored visible ordinary documentation page. Canonical line
-# map: 1 '---', 2 id, 3 title, 4 entity_types, 5 '  - reference', 6 tags,
-# 7 '  - guides', 8 '  - halcyon', 9 summary, 10 lifecycle, 11 visibility,
+# map: 1 '---', 2 id plus an inline YAML distractor comment carrying a
+# literal 'halcyon' that no native search field parses, 3 title, 4
+# entity_types, 5 '  - reference', 6 tags, 7 '  - guides', 8 tag authored as
+# the double-quoted YAML escape '  - "\u0068alcyon"' (decodes to 'halcyon',
+# never literal in the raw bytes), 9 summary, 10 lifecycle, 11 visibility,
 # 12 review_after, 13 sources, 14 source id, 15 source title, 16 closing
 # '---' (the body's first character is this line's terminating newline, so
 # body_start_line == 16), 17 blank, 18 H1, 19 blank, 20 intro, 21 blank,
 # 22 '## Ventilation', 23 blank, 24 'The zephyr lane stays open during storms.'
 _AURORA_TEXT = (
     "---\n"
-    'id: "entity:aurora-care-guide"\n'
+    'id: "entity:aurora-care-guide" # halcyon is metadata-only\n'
     'title: "Aurora Care Guide"\n'
     "entity_types:\n"
     "  - reference\n"
     "tags:\n"
     "  - guides\n"
-    "  - halcyon\n"
+    '  - "\\u0068alcyon"\n'
     'summary: "Care notes for the aurora terrarium."\n'
     'lifecycle: "approved"\n'
     'visibility: "public"\n'
@@ -1762,7 +1765,10 @@ def test_scoped_published_navigation_includes_ordinary_pages(tmp_path):
 
     Visible ordinary A, visible profiled policy B and hidden ordinary C share
     the unique body token ``zephyr``; the metadata-only token ``halcyon``
-    exists solely in A's frontmatter (tag, canonical line 8). Expected bytes
+    exists solely in A's frontmatter as the double-quoted YAML escape on
+    canonical line 8 (decoded tag value, never literal in the raw bytes),
+    with a literal-'halcyon' distractor comment on the line-2 id that no
+    native search field parses. Expected bytes
     and coordinates are hand-counted from the authored lines above, never
     observed from implementation output.
     """
@@ -1872,13 +1878,16 @@ def test_scoped_published_navigation_includes_ordinary_pages(tmp_path):
     assert (aurora_hit.line_start, aurora_hit.line_end) == (24, 24)
     assert aurora_hit.section == "Ventilation"
 
-    # --- Metadata-only match cites the real frontmatter passage, never a
-    # fabricated body passage (authored tag line 8, before the body). ---
+    # --- Metadata-only match cites the real canonical metadata passage,
+    # never a fabricated body passage: the escaped tag line 8 decodes to
+    # 'halcyon' for native search but is not literal in the raw bytes, and
+    # the line-2 id distractor comment carrying a literal 'halcyon' is not
+    # the matched field (authored tag line 8, before the body). ---
     (halcyon_hit,) = search_published_context_pages(pinned, expected, "halcyon")
     assert halcyon_hit.page.path == aurora_path
     assert tuple(halcyon_hit.matched_fields) == ("tag",)
     assert tuple(halcyon_hit.matched_terms) == ("halcyon",)
-    assert halcyon_hit.excerpt == "  - halcyon"
+    assert halcyon_hit.excerpt == '  - "\\u0068alcyon"'
     assert (halcyon_hit.line_start, halcyon_hit.line_end) == (8, 8)
     assert halcyon_hit.line_start < aurora.body_start_line
     assert halcyon_hit.section is None
