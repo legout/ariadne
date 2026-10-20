@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 23 — scoped local Q1 qualification owner-approved, 2026-10-20.** Reviewed Q2/L2/A2 are integrated and pushed. The approved Q1 slice below qualifies only that delivered local behavior; original full-target #80 completion, T2/G2, release and publication remain separate. |
+| **Status** | **Revision 24 — PROPOSED G2/T2 execution map after scoped Q1.** Owner requested the rest of #80; the actual Q1 checklist is complete at frozen Coreae3a4f6/SDK26a633b. This proposal names the local capability prerequisites under #79 and the affected #80 qualification. It awaits written spec0029r5/plan24 approval; it is not implementation authority for the new boundary. |
 | **Owner direction** | 2026-10-20: “S3 Anbindung ist für Ariadne zweitrangig. Der bevorzugte Weg bleibt git repo mit lokalem sync.” This approves the priority used for this proposal, not new SDK interfaces or capability expansion. |
 | **Goal** | Make the shared Git Content Repository plus a local checkout the normal operator path, then expand useful local knowledge/analytics capabilities without weakening exact admission or standalone behavior. S3 is optional later work, not a prerequisite. |
 | **Behavioral sources** | [Spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), especially §§2–6 and preserved full-target AC1–AC9; [ADR0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Companion: `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md` r2 / ADR0030. The r2 MVP refusal boundary remains authoritative until the corresponding source amendments are approved. |
@@ -10,7 +10,127 @@
 | **Tracker** | [#76](https://github.com/legout/ariadne/issues/76): full epic; [#79](https://github.com/legout/ariadne/issues/79): consumer continuation; [#80](https://github.com/legout/ariadne/issues/80): remaining adapters/guidance/qualification. [#81](https://github.com/legout/ariadne/issues/81) and [Lumio #2](https://github.com/legout/lumio-wiki/issues/2) have delivered released code but remain open; no closure is authorized here. Their old ticket text must be reconciled before new execution. |
 | **Capture / readiness** | Existing glossary terms suffice. Git/local preference changes sequencing, not ADR0026's architecture; no new ADR is proposed. New operation support and the additive navigation API require written Core/producer source amendments before their writers start. Contract: planning-contract v1; installed catalog provenance unknown. |
 
-## Current execution — approved Q1 for the delivered local scope
+## Proposed next execution — G2/T2 and affected Q1 qualification
+
+**Owner request:** 2026-10-20, “Implementiere den Rest von #80”. This requests
+completion, not a package release or an implicit change to the current written
+Reference refusal boundary. Current #80's eight local-Q1 checklist items are
+all complete; the open full-target prerequisite is under #79. Approve the
+proposed spec0029r5 §§1.4–1.5 and this plan together before dependent coding.
+No tracker body will be silently broadened or marked complete first.
+
+**Exact inputs:** accepted isolated Core
+`ae3a4f6679844d30267fd67985d756803901b5e1`, SDK
+`26a633b4399ddd5e9d6cad2292cbb317944ead90`. Core main remains7e8d84d;
+SDK main remainsb1d63b3. Start the next isolated candidates from those accepted
+Q1 descendants; do not merge them into main to make implementation possible.
+Existing producer profile/navigation interfaces suffice; no producer writer or
+new dependency is assigned. Scope-safe SDK identity, native Core receipts and
+confirmation remain the consumed contracts. Use spec0010/0011 and spec0029
+approved §§2–6; proposed §§1.4–1.5 own only the new continuation behavior.
+
+**Capture:** existing glossary terms and ADR0026/0030 suffice; no new term or
+ADR. No service/credential/architecture change. Remaining owner decision:
+approve this local continuation rather than treating full Core-S3 acceptance
+as already satisfied. Contract planning-contract v1, provenance unknown.
+Read-only source investigation found all required SDK metadata/identity seams.
+Implementation choices (in-memory native input adaptation and reuse of the
+existing proposal evidence store) do not create new authority or schema.
+
+### Execution and ownership after approval
+
+One sequential registered Core Pi writer per isolated worktree under the XDG
+worktree root, `zai/glm-5.3/high`; read-only independent reviewer
+`openai-codex/gpt-6.1-sol/high`, actual host/model/cwd/base verified before
+writes. Keep prior Q1 refs, wheels, logs and failures immutable. Reconcile
+canonical #79/#80 status/scope only as part of the approved handoff; retain
+full-target limits. Tickets own task bodies; do not duplicate a second board.
+
+- [ ] **G2 — normal-risk `new-test`, spec§1.4:** extend `status.py`, only necessary
+  existing CLI/admission help, new `docs/how-to/lumio-git-local.md`, current
+  README/reference/packaged skill guidance; one new test in explicit
+  `tests/lumio_local_context.py::test_sync_does_not_activate_context`. Read-only
+  status discloses HEAD versus the verified release. Parent statically inspects
+  synthetic A/B fixtures and oracle before the assigned invocation. Use native
+  Git/admission and source-free session calls, no revenue replay.
+- [ ] **T2 — high-risk `new-test`, spec§1.5:** `lumio_context.py`, `context.py`,
+  `discovery.py`, `authoring.py`, `admission.py`; `authoring_inputs.py` and
+  `validate.py` only to connect existing native validation/receipt/confirmation
+  seams. Add one focused
+  `tests/lumio_local_context.py::test_reference_term_resolution_requires_real_evidence_and_confirmation`.
+  Change only superseded refusal expectations in `tests/lumio_metric_mvp.py`;
+  keep an actually unsupported producer-valid kind. No parser/schema/ranking
+  replacement, curated mirror, fake receipt or confirmation mock. Parent
+  statically inspects authored fields and native evidence oracle first.
+- [ ] **Affected Q1 — `existing-check/no-new-test`:** update only guidance,
+  actual wrapper gaps and test pairing invalidated by G2/T2. Inspect existing
+  Agent forwarding read-only. Build one new final Core wheel, pair with the
+  unchanged frozen SDK wheel, and update the existing installed proof only
+  where changed runtime/build/support invalidates it. Reuse unchanged
+  producer V4/V5/native wheel/MCP/adapter evidence; no blanket numerical/S3
+  rerun or new matrix. Fresh whole-admission behavior is proved by T2's real
+  native journey, not by relabeling the old SDK-only profile smoke.
+
+### Assigned validation and review boundary
+
+Exactly these existing native nodes form the T2 baseline/compatibility set:
+
+- `tests/test_terms.py::test_order_number_resolves_alternatives_with_exact_bindings_and_unconfirmed_mappings`
+- `tests/test_terms.py::test_resolver_response_parts_stay_under_the_64kib_ceiling`
+- `tests/test_context_admission.py::test_confirmation_flow_selects_displays_and_confirms_exactly_one_assertion`
+- `tests/test_context_admission.py::test_remeasured_evidence_breaks_inheritance_until_reconfirmed`
+
+Assign one serial baseline invocation of these four nodes before modifying the
+shared native Reference/confirmation seams. It protects the exact semantics
+consumed by the new SDK input route. No additional collection or exploratory
+runtime probes are assigned. Then two serial post-implementation invocations:
+
+- **G once:** `$CORE_PY -m pytest -q tests/lumio_local_context.py::test_sync_does_not_activate_context tests/test_status.py`.
+- **T once:** the one new Reference journey, the same four native compatibility
+  nodes above, and exactly
+  `tests/lumio_metric_mvp.py::test_unsupported_ariadne_profile_refuses_before_publication`
+  plus `tests/lumio_metric_mvp.py::test_capability_refusals_and_source_free_catalog`
+  in one invocation. These two changed expectations retire only the superseded
+  Reference/term refusals and preserve the global unsupported-kind/catalog gates.
+  The latter existing test constructs one legacy governed answer as setup for
+  its refused `save_example` call; disclose that affected regression execution,
+  do not claim zero numerical calls or repeat the whole 150/2 journey.
+- **Q once:** after assembly, the existing V3 discovery pair and
+  `tests/test_skill.py::test_skill_teaches_local_cli_as_default_mcp_optional`
+  in one invocation. It checks modified discovery forwarding/registration and
+  revised installed skill guidance; no full Core or Agent suite is assigned.
+
+Thus four planned pytest invocations (native baseline, G, T, Q), each once,
+no auto retries. Native inspection SQL is necessary and explicitly confined to
+approved synthetic sources; it is not a new revenue campaign. Parent grants test preparation first; test execution follows its static
+schema/oracle inspection. No independent oracle is copied from runtime output. One final Core wheel build,
+Core-only optional-import check and the existing paired profile-read proof
+adapted to final exact wheel identity are assigned native artifact commands;
+no SDK rebuild is needed while its candidate remains unchanged. Existing
+native producer verifier/MCP and V4/V5 evidence remains unchanged and reusable.
+No service setup, extra wheel matrix or numerical replay merely for packaging.
+
+Targeted Ruff/syntax/diff checks cover touched Python/Markdown. Required native
+repository gates remain binding and are explicitly reused only while their
+relevant code/tests/fixtures/environment match. Failure freezes the affected
+lane for parent disposition. One small in-scope fix pass and one affected
+recheck/delta review maximum, no automatic retries or borrowing historical
+budgets. No new skips/xfails, weakened or output-derived assertions.
+
+G2 may be parent-inspected before T2 consumes it because no public authority
+contract changes there; the final independent high-risk T2 candidate review
+covers the new G2/T2 contract and assembled qualification effects before any
+later consumer/integration. It does not reopen settled Q2/L2/A2/Q1 findings.
+One bounded correction and one delta recheck; surviving findings go to owner.
+
+**Completion:** committed/frozen clean local candidates, exact final wheel and
+receipt/confirmation identities, actual G/T and affected-installed outputs,
+one independent final review with honest reused/skipped checks. Stop before
+main integration, push, release, issue closure or cleanup. Core S3 remains
+separate optional transport work; neither this plan nor prior Q1 closes its
+full-target acceptance. No production sources, private KB, Agent/Tau or service.
+
+## Historical execution — approved Q1 for the delivered local scope
 
 **Owner approval — 2026-10-20:** after reviewing this exact scoped plan,
 owner answered “Ok. Freigabe. Mach weiter mit Q1”. This approves local-scope
