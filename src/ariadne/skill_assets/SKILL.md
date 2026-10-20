@@ -1,6 +1,6 @@
 ---
 name: ariadne
-description: Work in an ariadne data project — query governed metrics with the local ariadne CLI (caveats attached), resolve shared terminology and identifier knowledge without ever gaining join authority from it, consult the optional Context Routing Map and observed value evidence as guidance (never enums or validation), author context/semantic layers through Git proposals with ariadne-authoring (operator-approved sources, schema refresh, bounded mapping inspection, human-only admission), find labeled answer examples as method references (never cached answers), and draft ad-hoc metrics without ever bypassing the compile gate.
+description: Work in an ariadne data project — query governed metrics with the local ariadne CLI (caveats attached), resolve shared terminology and identifier knowledge without ever gaining join authority from it, consult the optional Context Routing Map and observed value evidence as guidance (never enums or validation), author context/semantic layers through Git proposals with ariadne-authoring (operator-approved sources, schema refresh, bounded mapping inspection, human-only admission), find labeled answer examples as method references (never cached answers), and draft ad-hoc metrics without ever bypassing the compile gate. Where a project carries an admitted Lumio bound release, navigate its pinned published context source-free.
 ---
 
 # Ariadne data projects
@@ -381,6 +381,46 @@ not unadmit definitions or create a background scan. ODCS narrative is metadata,
 never prompt instructions or a Policy; OSI keeps calculation/grain/join authority.
 Shared cross-layer identity/provider integration (#76) is outside this profile.
 
+## Integrated Lumio context — optional bound release
+
+Some projects bind a Lumio knowledge base as their governed context source
+(`context_integration.yaml`, `knowledge/` subtree, one shared Content Commit).
+If the project carries one, an admitted **Bound Release** — activated only by
+the operator's explicit overall admission — is the sole context authority:
+
+- `ariadne search-context "<query>" --project .` navigates that pinned release
+  source-free: native lexical ranking over the operator-scoped published
+  pages, with SDK namespace, Entity ID, Published Version and exact
+  page/passage citations in every hit. MCP and the Ariadne Agent add the
+  read-only `list_context_pages` and `read_context_page` tools over the same
+  pinned snapshot (there are no dedicated CLI commands for them). Ordinary
+  unprofiled pages are documentation, never Core-validated References; hidden
+  or missing pages stay unavailable without leaking why.
+- Governed `get-metric` and `query-metrics` answers carry the full bodies of
+  every Policy their metrics require, resolved in the same pinned snapshot
+  before SQL, with Bound Release identity and version-qualified citations.
+  Restate those Policies and cite the exact paths/citations returned — never
+  a remembered or guessed page.
+- `discover` and `list-metrics` disclose the admitted catalog and the exact
+  supported operation set without opening sources; `list-datasets` remains an
+  approved live-catalog operation, not a source-free one.
+- Only `metric` and `policy` profiles are supported, enforced across the
+  whole captured KB. `query-detail`, `query-records`, `define-metric`,
+  `save-example`, `search-examples` and `resolve-term` refuse in an
+  integrated project — never route around the refusal via legacy context,
+  weaker roots or raw SQL, and never present the refusal as something to fix
+  by widening scope.
+- Git is the standard transport, and sync never activates: pulling or
+  merging a branch never changes what is served. A changed SDK/Core build or
+  support set requires fresh validation and a new matching overall admission;
+  public package versions alone never qualify a source for these
+  capabilities.
+
+If the project has no such selector, everything earlier in this skill applies
+unchanged; the SDK stays an optional dependency the standalone route never
+imports. Source approval and the overall admission remain human-only; no tool
+or agent role exposes them.
+
 ## Skill-led business onboarding
 
 Targeted clarification through the existing proposal interfaces — no
@@ -579,7 +619,8 @@ toolsets over one core — pick the registration at launch:
 `python -m ariadne.serve --project DIR` (combined, the default),
 `--toolset analyst` (Query only: `list_metrics`, `search_context`,
 `get_metric`, `list_datasets`, `define_metric`, `query_metrics`,
-`query_detail`, `query_records`, `resolve_term`, `save_example`,
+`query_detail`, `query_records`, `resolve_term`, `list_context_pages`,
+`read_context_page`, `save_example`,
 `search_examples`), or
 `--toolset authoring` (the Git proposal contract:
 `authoring_start_proposal`, `authoring_read_artifact`,
