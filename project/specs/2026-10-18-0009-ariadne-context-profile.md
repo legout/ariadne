@@ -366,3 +366,91 @@ proposed and unstarted. This amendment grants no target integration, push,
 issue update, software release, production-source permission, private app adoption
 or real KB publication. Earlier planning-only notices record the original
 capture; they do not override this narrowly scoped subsequent L1 authorization.
+
+## Approved local navigation amendment — L2/A2, 2026-10-20
+
+**Status: approved written navigation continuation (r3).** Owner answered “ja” in the current Ariadne BB conversation after being asked to approve this exact written SDK contract and its autonomous L2 → A2 implementation. Existing r2 behavior outside navigation is unchanged.
+This captures the next Ariadne A1 prerequisite identified by the owner before
+#80 qualification. Ariadne's standard is Git with local sync. There is no
+navigation service, background activation, new authoring store or S3 consumer
+in this amendment. A frozen accepted producer result is required before
+consumer A2 can use the additive interface. Existing profile preservation,
+strict Core profile support and native S3 producer behavior remain unchanged.
+
+### Additive SDK contract
+
+Expose three local, immutable-version-pinned operations in `ariadne_context`:
+
+- `list_published_context_pages(location, expected)` returns immutable metadata
+  for every visible ordinary or profiled page, sorted by exact relative path.
+- `read_published_context_page(location, expected, path)` returns one complete
+  canonical page with immutable identity and metadata, selected by exact path.
+- `search_published_context_pages(location, expected, query, *, limit=10)`
+  returns immutable search hits over exactly that same visible page set.
+
+`location` must be an explicitly pinned `PublishedFilesystemLocation` and
+`expected` a complete `ContextIdentity`. Plain/moving/current/latest inputs
+and S3 navigation refuse explicitly. Reuse the existing published-context
+manifest, fingerprint, source-reference, subtree, namespace/profile and native
+completed-admission verification, preserving its error categories and scope-safe
+diagnostics. No second weaker reader or consumer-supplied catalog is introduced.
+If shared verification is extracted internally, its ordering and public
+`open_published_context` behavior remain unchanged, including native S3 support.
+
+Apply the authorized Visibility Scope before selecting paths or constructing
+metadata, rank candidates, snippets, excerpts, counts or citations. Missing and
+hidden paths have the same scope-safe unavailable result; never disclose a
+hidden title, Entity ID, text or topology. The facade returns no raw/unscoped
+snapshot, mutable CompiledPage or private Source Registry. Source references
+retain their native safe public representation; no private artifact is fetched.
+
+Freeze small immutable result records as part of this additive contract:
+
+- Page metadata: namespace, Entity ID, exact path, parsed title, profile kind
+  or explicit `unprofiled`, Published Version, stable native citation and actual
+  public advisory lifecycle/review-after values. No page body in list results.
+- Full page: the metadata above, exact canonical UTF-8 `content`, parsed body
+  and body-start line, immutable declared native Ariadne metadata (empty when
+  unprofiled), and native public provenance. Missing advisory facts remain
+  absent; an ordinary page is documentation, not a Core-validated Reference.
+- Search hit: full page plus native score, matched fields/terms, native snippet,
+  visible-only candidates-seen/results-dropped, and a separately labeled
+  verbatim excerpt with inclusive 1-based canonical line coordinates and actual
+  section when available. Metadata-only matches cite the real canonical
+  metadata passage, never a fabricated matching body passage.
+
+Do not change existing `ContextPageView`, `ContextSnapshot.pages`, bindings or
+profile-v1 shapes to expose all ordinary pages through the metric view. This is
+an additive navigation facade, not a blanket claim of technical validation.
+Exact Python record names may follow local conventions; their observable fields
+and immutable semantics above are the contract, not parallel definitions in Core.
+
+Reuse `page_search.search_pages` for normalization, scoring, deterministic ties,
+query limits and completeness accounting. Do not introduce another ranking
+engine or mandatory LanceDB. Derive canonical passage coordinates only for
+kept visible results using native parsed body offsets and the shared fence-aware
+`evidence` section helpers; snippet compaction is not verbatim Evidence. Keep
+all limits honest: existing Core wrappers refuse if full required output cannot
+fit; no partial read, pagination or truncation API is added by this amendment.
+
+### Acceptance and handoff
+
+One focused native-publication scenario authors visible ordinary page A,
+visible profiled page B and hidden ordinary page C sharing one search token.
+List contains A+B metadata only; read A is byte-equal to canonical content;
+search counts/ranking/excerpts/citations contain no contribution from C. The
+expected passage line range is hand-counted in the fixture. A metadata-only
+hit has a real metadata passage. Publishing v2 changes neither reads nor search
+of v1; a v2 location against v1 expected identity refuses. Native ranking tests
+remain the ranking oracle; no layer-by-layer test matrix or numerical rerun.
+
+The writer must receive exact validation commands/budget, frozen source and a
+qualified environment before dispatch. Independently review the producer's
+new public disclosure contract before Core A2 consumes its exact accepted build.
+A2 preserves existing Core outer list/read/search fields and limits, adds exact
+SDK identity/citations and uses this facade without legacy filesystem/YAML
+fallback. `resolve_term` remains a separate technical Reference slice.
+
+Capture: existing glossary terminology and ADR0030 ownership suffice; no new
+architectural decision. This is owner-approved API precision for already intended
+scoped navigation, not approval of a new service or technical profile kind.
