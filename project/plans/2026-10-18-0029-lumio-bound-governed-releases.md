@@ -1,259 +1,449 @@
-# Implementation plan 0029: Lumio-bound governed releases
+# Implementation plan 0029: Git/local-first Lumio integration
 
 | | |
 | :--- | :--- |
-| **Status** | **Approved revision 12 — one product correction pass.** Owner 2026-10-19 selected “Korrektur + 3 Checks (Recommended)” after the sole M1 review returned fix-first. Bind integrated validation to actual build content, preserve standalone initialization with unrelated knowledge symlinks, and separate required explicit SDK qualification from Core default collection without new dependencies/skips. Three calls only (target red, affected post-check, SDK-free Core collection), then one delta-only recheck; any unexpected failure stops. No integration/publication. |
-| **Historical planning authority** | Owner, Ariadne Pi conversation 2026-10-19: after selecting local Metric MVP/strict profile boundary and approving its complete design, selected “Schriftlich freigeben (Recommended)” for written spec r2, ADR/source notices and subsequent local implementation planning only. No implementation, runtime tests, GitHub changes, integration or publication. |
-| **Goal / source** | First deliver the strict local journey defined by [spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), §§1.1–7 and [ADR-0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Preserve the full #76/#79 target; deferred features remain open. |
-| **Behavioral / correction source identity** | Approved spec SHA256 `22359ad5ab6f01d99b46cb8f8d7a8c6d1df6875d4dc21bb94481b03997a86adf`, unchanged r2. Original native baseline at M1 source `48365534be950e0d1fdcdc911e0a581b59c3b37b` was main `24630dbd404870f30602d66b5d5a2d53fa892f86`. Correction base is frozen unaccepted `39dac6fe3251161efcb1bd56c324dfe66365dd82`, tree `6eba535870648b4296e43f6c33de6ba81bbd11aa`; parent records the new r12 execution source before resuming the verified isolated Sol/high writer. |
-| **Producer** | Accepted Lumio `7cdd6e89030f4f1add06d077143e9953b6258894`, tree `47ce31e965f9887a57553a1ff777567625f010e9`, implementing companion spec0009 approved r2/ADR0030. Exact ABI/fixture identities are in the proposed task. No producer changes or new L1 review. |
-| **Tracker** | [#76](https://github.com/legout/ariadne/issues/76) owns the full target; [#79](https://github.com/legout/ariadne/issues/79) stays the larger A1 parent and [#80](https://github.com/legout/ariadne/issues/80) later full qualification. Canonical [M1/#81](https://github.com/legout/ariadne/issues/81) is a new native child of #79, with the native [Lumio #2](https://github.com/legout/lumio-wiki/issues/2) dependency. Existing full-target task bodies were not narrowed or closed. |
-| **Capture / contract** | Existing glossary terms suffice. ADR-0026 records the delivery refinement without a new architecture/producer contract. Spec r2 owns scope/behavior/acceptance. No unresolved material design choice is delegated to a writer. Planning-contract v1; installed catalog provenance unknown. |
+| **Status** | **Revision 15 — Q2 execution authorized only, 2026-10-20.** Owner requests A1 prerequisites before #80; execute the Q2 slice against spec0029 §1.2 in isolation, then independent review. Other r14 task drafts remain proposed. Previous status: Owner requested a next-issue roadmap and reaffirmed Git with local sync as the standard, S3 secondary. No implementation, test execution, ticket publication, integration or release is authorized by this draft. Historical approved M1 execution r12 is complete and preserved in `v0.5.0` and the immutable result refs. |
+| **Owner direction** | 2026-10-20: “S3 Anbindung ist für Ariadne zweitrangig. Der bevorzugte Weg bleibt git repo mit lokalem sync.” This approves the priority used for this proposal, not new SDK interfaces or capability expansion. |
+| **Goal** | Make the shared Git Content Repository plus a local checkout the normal operator path, then expand useful local knowledge/analytics capabilities without weakening exact admission or standalone behavior. S3 is optional later work, not a prerequisite. |
+| **Behavioral sources** | [Spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), especially §§2–6 and preserved full-target AC1–AC9; [ADR0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Companion: `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md` r2 / ADR0030. The r2 MVP refusal boundary remains authoritative until the corresponding source amendments are approved. |
+| **Starting artifacts** | Published `ariadne-data==0.5.0`, Core `a9dd5f8ff9ae15b55268cad6dad0841caf0057fa`; published `lumio-wiki==0.3.0` / `lumio-lancedb==0.3.0`, producer `a5127c753a6343629ba3fc7adfa44441c8f82baf`. Use exact accepted successors in later handoffs, never floating `main`. |
+| **Tracker** | [#76](https://github.com/legout/ariadne/issues/76): full epic; [#79](https://github.com/legout/ariadne/issues/79): consumer continuation; [#80](https://github.com/legout/ariadne/issues/80): remaining adapters/guidance/qualification. [#81](https://github.com/legout/ariadne/issues/81) and [Lumio #2](https://github.com/legout/lumio-wiki/issues/2) have delivered released code but remain open; no closure is authorized here. Their old ticket text must be reconciled before new execution. |
+| **Capture / readiness** | Existing glossary terms suffice. Git/local preference changes sequencing, not ADR0026's architecture; no new ADR is proposed. New operation support and the additive navigation API require written Core/producer source amendments before their writers start. Contract: planning-contract v1; installed catalog provenance unknown. |
 
-## 1. One coherent vertical slice
+## Current execution — Q2 first independent A1 prerequisite
 
-**L1 accepted -> M1 local Metric MVP -> isolated reviewed candidate -> pause.**
-M1 crosses the joint authored revision, validation, operator preview/admission,
-immutable SDK read and native metric answer. Do not split this into half-working
-storage/API/context tasks, independent writers or extra review boundaries.
-Later S3, additional annotations and integrated Context/multi-metric operations
-are not M1; a local pass does not satisfy or close the complete A1/Q1 target.
+Authority: current owner requests autonomous implementation and selects BB Pi
+worker `zai/glm-5.3/high`, reviewer `openai-codex/gpt-6.1-sol/high`; then directs
+work to unmet A1 before Q1. This supersedes planning-only status for **Q2 only**.
+Source: spec0029 revision3 §1.2, existing §6 and AC3–AC5/AC7–AC9. No new producer
+API, terminology or architecture decision; ADR0026 invariants remain binding.
+The other source amendments and task drafts are not approved by this header.
+No GitHub task publication/closure or software integration/push/release.
 
-The single canonical task is [M1/#81 — local Metric MVP](https://github.com/legout/ariadne/issues/81),
-a native child of #79 with the native Lumio #2 dependency recorded. The accepted
-producer implementation/CI satisfies M1's code prerequisite; Lumio #2 remains
-open on GitHub and this grant does not close or rewrite it. Its issue status is
-not substituted for the exact accepted artifact. The original unpublished
-runtime draft is preserved as proposal history, not a second editable task body.
+Use BB Pi threads bound explicitly to a parent-created registered isolated Git
+worktree under the shared XDG state root. Verify actual child cwd/branch/base
+and configured/effective model plus thinking before granting writes. One writer;
+independent reviewer is read-only. Preserve original main plan draft and all
+prior evidence. Frozen native base is Core0.5.0 a9dd5f8 and producer0.3.0 a5127c7;
+record full identities and runtime details in the existing new run state.
 
-The task owns its exact file list, interfaces, checkbox steps, named tests,
-commands and completion boundary. This thin overview owns sequencing, coverage
-and the shared budget, not a second editable task definition.
+Owned Q2 files and behavior are below. Existing SDK qualification tests outside
+default collection may adapt only the two superseded refusals; preserve every
+remaining integrity/permission/consent oracle. Assigned **one** serial pytest
+invocation after the coherent change, combining:
 
-| Canonical task | Depends on | Produces | Validation / review |
+```sh
+$CORE_PY -m pytest -q tests/lumio_local_context.py tests/lumio_metric_mvp.py tests/test_serve.py::test_list_datasets_returns_demo_tables_with_columns
+```
+
+Only one new focused multi-metric/preflight test is needed. Reuse unchanged
+native planner tests and released producer proof; no producer suite, S3 service,
+full Core suite or numerical wheel rerun is assigned. Static affected-file
+Ruff/syntax/diff inspection is allowed. Failure freezes WIP and stops; no retry
+or widened selector without owner disposition. One fresh Sol/high review with
+the full inline reviewer contract; at most one parent-authorized small fix and
+one delta recheck. Deliver an isolated committed reviewed Q2 candidate, keeping
+remaining A1 and #80 acceptance explicitly open.
+
+## Next-issue roadmap — proposed priority
+
+### Requested #80 execution — prerequisite disposition pending
+
+Owner now requests autonomous #80 execution via BB Pi children: worker
+`zai/glm-5.3` / `high`, reviewer `openai-codex/gpt-6.1-sol` / `high`.
+Both exact pairs are present in the live BB Pi catalog. This grants execution
+of the requested task, but does not establish its missing full-A1 prerequisite:
+approved spec0029 r2 explicitly defers capabilities from the original #79.
+No writer is dispatched until that prerequisite/scope conflict is resolved.
+
+Proposed bounded disposition: **qualify #80 against the released local r2
+Metric MVP**, retaining the full-target remainder under the open parent issues.
+Owned surfaces and low-risk obligations stay those of #80; do not add G2
+status behavior, SDK navigation, multi-metric, Reference validation or S3
+consumer support merely to make qualification pass. Inspect actual CLI/MCP
+forwarding and role exclusions, correct only necessary wrappers/guidance, keep
+optional SDK imports out of base Core, run V3 once, and establish installed
+Core/SDK origins and exact profile identity outside the source checkouts.
+Use frozen producer/consumer commits and candidate-bound wheel digests.
+
+For unchanged producer code, inspect exact existing CI evidence before deciding
+whether its V4/V5 obligations remain applicable; do not assume release status
+alone proves those checks. Producer changes invalidate affected evidence and
+require its named gates. A missing required gate or disposable-service authority
+is reported before that execution, not bypassed. One independent Sol/high
+candidate review, at most one parent-authorized small fix pass and one delta
+recheck. Preserve isolated committed results; no target integration, push,
+release or full #80 closure. The alternative is to complete the separately
+planned full A1 capabilities before running original full-target Q1.
+
+Live GitHub issue reads on 2026-10-20 found six open Ariadne issues. #76,
+#79 and #80 still describe the original r1 planning state; #81 still presents
+the completed r12 correction as pending. Reconcile those descriptions with the
+released baseline before using them as execution handoffs. This local roadmap
+does not update or close GitHub issues.
+
+| Priority | Existing issue / proposed child | Next useful outcome | Readiness |
 | :--- | :--- | :--- | :--- |
-| [M1/#81](https://github.com/legout/ariadne/issues/81) — local Metric MVP | Approved r2/r12 and scoped correction grant; accepted L1; frozen source and verified host/env | One jointly validated synthetic release and local Metric answer, preserving strict unsupported-operation and standalone boundaries | Five historical calls and initial review spent; three correction calls, one fix pass and one delta-only recheck now approved, then supervised pause |
+| First | #80, G2 local-operator child | Document and expose the standard Git/local journey: sync, distinguish checkout from active release, validate, preview and explicitly admit | Local-operator source amendment before implementation; no new SDK API |
+| Second | #79, A2 navigation child; companion Lumio L2 child | Read/search/list ordinary and profiled knowledge through the exact scoped local publication | Producer contract amendment and accepted L2 before A2 |
+| Third | #79, Q2 multi-metric child | Answer several predefined metrics with complete per-metric Policy context before execution | Capability/source amendment; does not technically depend on navigation |
+| Fourth | #79, T2 Reference child | Resolve a technical term using authentic Core evidence and explicit mapping confirmation | Reference validation/consent amendment; no blanket profile expansion |
+| Alongside each slice | #80 remaining adapters/guidance/installed pairing | Expose the delivered capability consistently through CLI/MCP/skills and qualify the exact artifact pairing | Follow the owning accepted slice; avoid a deferred all-at-once adapter project |
+| Coordination only | #76 epic | Track the released MVP, these local milestones and later optional work separately | Keep open while full-target acceptance remains incomplete |
 
-### Approved execution settings; verify before dispatch
+Before the first implementation handoff, reconcile the Core/producer behavioral
+sources and publish approved child tasks under the existing parents. Do not
+dispatch the broad historical #79/#80 bodies unchanged. #81 and Lumio #2 are
+delivered-code reconciliation/closure candidates, not the next coding tasks;
+closure needs its own disposition against their actual bounded acceptance.
 
-- Approved host: **Paseo-hosted Pi**, preserving the shared worktree root
-  `/home/volker/.local/state/worktrees` and Ariadne allocator subdirectory
-  `079pxy11`. Fresh isolated registered writer; no relocation, daemon config
-  change or other-runtime fallback. No child is launched by this plan.
-- Approved M1 task-specific model override: fresh implementer
-  **Pi `openai-codex/gpt-6.1-sol/high`**, not the old GLM worker or the read-only
-  reviewer. One independent fresh **Pi Sol/high** reviewer. The owner selected this override for M1 only,
-  not new global defaults. Verify exact native backend model/thinking/cwd at
-  dispatch.
-- Exact **Python3.14.0** and a fresh run-owned offline environment, Core bound
-  to the new writer and SDK bound to accepted7cdd. Do not reuse the old env's
-  editable Core binding to failed df72. Isolated PEP660/no-deps build discipline
-  remains; no global/online install, new dependency, package bump or pretend
-  published SDK floor. Public 0.2.0 alone does not contain this profile.
-- Use ordinary native Git knowledge edits/reconcile in the same proposal
-  worktree, not a new `kb_page` tool/kind or second proposal store. Reuse existing
-  Core source/contract/model/technical-metadata checks and complete-output
-  accounting. No curated mirror or speculative abstraction.
-- Preserve native public outer result types. `list_metrics` is a list with
-  entries/routing text; make metadata additive and avoid its legacy Ad-hoc
-  fallback hint in integrated MVP mode. `discover` reports unavailable groups
-  without invoking legacy Context; identity failures still refuse globally.
-  CLI/deferred catalog routing must not instantiate live execution merely to
-  disclose the catalog. These callers are concrete ownership, not Q1 expansion.
+**Later backlog:** Core S3 KB consumption follows the useful local capabilities
+and does not block any milestone above. #18 is a separate private-HTTPS
+deployment task requiring a concrete deployment choice; Git sync needs no new
+remote Ariadne service. #52 is a separate private-data evaluation requiring
+reviewed domain oracles, a fixed authorized snapshot and provider readiness.
+Neither is a prerequisite for this local integration continuation. Agent/Tau,
+ad-hoc/record queries and additional technical profile kinds remain outside it.
 
-## 2. Requirement coverage
+## 1. Delivery model and invariants
 
-| Approved spec r2 criterion | M1 proof / exact owner in draft |
+```text
+Shared Content Repository / reviewed Git revision
+                    |
+      explicit fetch / fast-forward local sync
+                    |
+      native candidate + joint validation/review
+                    |
+        one human overall confirmation
+                    |
+  immutable local Lumio publication + Core snapshot
+                    |
+    atomic Core activation; sessions pin that binding
+```
+
+- Git transports authored revisions; it is not a second activation mechanism.
+  `pull`, merge, a scheduler or a remote branch update cannot publish/admit a KB,
+  grant Source Approval or overwrite `.ariadne/current.json`.
+- Use ordinary Git for clone/fetch/fast-forward. Existing native proposal,
+  explicit base-revision and reconcile routes own candidates. Dirty/diverged
+  checkouts stop for the operator; no force-sync, reset or discarded proposal.
+- No new sync daemon, Provider service, proprietary mirror or GitHub runtime
+  requirement. An operator may automate Git transport externally; Core neither
+  installs that automation nor turns it into an approval authority.
+- Knowledge remains authored in `knowledge/`; no editable copy in
+  `context_layer/`. Native Core technical artifacts keep their existing owner.
+  Local publication/snapshot copies are derived immutable materializations.
+- Before admission, a synced newer revision leaves the old active binding
+  unchanged. Existing sessions stay pinned; new sessions use a new binding only
+  after explicit matching admission. No zero-downtime promise across incompatible
+  code upgrades: retain an old deployment or revalidate/readmit explicitly.
+- Source Approval, complete Policy Closure, Visibility Scope, original-time
+  evidence, code identity and atomic-last activation remain mandatory.
+- Capability additions require a new matching validated admission. Do not edit
+  a served manifest in place or merely remove an unsupported-operation guard.
+- This priority concerns **KB transport/publication**. Existing native Core S3
+  data-source/storage backends and their access gates are not removed.
+- Agent, Tau-MCP, the private application, real KB/data migration and automatic
+  production admission remain excluded. Base Core stays SDK-independent.
+
+## 2. Source and tracker gate — before coding
+
+- [ ] Reconcile Core spec0029 into an explicitly approved continuation revision:
+  local Git transport versus activation, staged operation support, ordinary-page
+  disclosure, numeric/mapping safeguards and continued unsupported operations.
+- [ ] Reconcile companion spec0009 for the additive scoped navigation API below;
+  preserve producer0.3's existing profile snapshot/identity/closure behavior.
+- [ ] Update #76/#79/#80 to the released baseline and this local-first ordering.
+  Record completed M1/L1 and release evidence without claiming full A1/Q1 done.
+  Close delivered tickets only with explicit owner authorization.
+- [ ] After plan/source approval, publish the bounded G2/L2/A2/Q2/T2 task drafts
+  below as canonical child tickets, then keep this plan as a thin dependency/
+  coverage/budget map rather than a second editable task definition.
+- [ ] Freeze approved source and producer/consumer refs; assign exact runtime,
+  isolated worktrees, environments and check scope before dispatch. No old
+  M1/V2/Q1 invocation or repair budget is reusable authorization.
+
+**Readiness:** no new writer is ready now. G2 needs the approved local-operator
+contract; L2/A2 need the navigation amendment; Q2/T2 additionally need their
+capability/source changes. The proposals below do not silently override r2.
+
+## 3. Ordered vertical slices — unpublished task drafts
+
+Every Core capability slice also owns the affected expectations in existing
+`tests/lumio_metric_mvp.py`: replace only explicitly superseded refusals,
+preserve money/consent/isolation/unsupported-kind checks. In T2, a Reference
+must cease being the unsupported-kind oracle only after its complete approved
+validation exists; retain a genuinely unsupported producer-valid kind instead.
+Do not delete the strict global gate or rewrite the golden baseline.
+
+### G2 — usable Git/local operator journey (Ariadne)
+
+**Deliverable:** an operator can sync one synthetic Content Repository, see the
+local Git revision separately from the admitted Bound Release, and perform the
+existing exact preview/confirmation workflow. A sync alone never activates it.
+
+**Files:** `src/ariadne/status.py`; only necessary existing dispatch/help in
+`src/ariadne/cli.py` and `src/ariadne/admission.py`; new
+`docs/how-to/lumio-git-local.md`, `README.md`, applicable packaged Core
+`skill_assets/` guidance; `tests/lumio_local_context.py` (new explicit SDK test
+module, deliberately outside default `test_*.py` discovery).
+
+- [ ] Document concrete clone/fetch/fast-forward, native candidate/reconcile,
+  Source Approval when needed, joint validation, preview, explicit confirmation
+  and source-free catalog calls using the existing commands. No sync wrapper.
+- [ ] Add source-free status disclosure: local Git HEAD versus admitted content
+  commit/Bound Release digest, immutable local Published Version and supported
+  operations. Reuse the verified descriptor, expose no private registry or raw
+  Source material. Status does not fetch, mutate or open data sources.
+- [ ] Keep stale/build-mismatched admission a refusal, not “ready” because a
+  checkout exists; distinguish no admission from an invalid admission.
+
+**Validation:** normal integration scenario, `new-test`
+`test_sync_does_not_activate_context`. A local temporary Git remote supplies
+revision B while A is admitted: status reports B versus A; current descriptor
+bytes and session pin remain A until explicit B admission, then a new session
+observes B. No repeated revenue computation is needed. One focused call G.
+Parent inspection suffices for the mechanical status/docs delta; include its
+integration effects in A2's candidate review. Stop if an activation redesign is
+found necessary; it is not hidden in this slice.
+
+### L2 → A2 — ordinary knowledge navigation through the pinned SDK (both repos)
+
+**Why a producer step exists:** producer0.3's `ContextSnapshot.pages` contains
+only profiled pages (`ariadne_context.py:1951–1980`); ordinary unprofiled wiki
+pages are absent. Its native lexical search consumes `CompiledPage`, not
+`ContextPageView`. Do not make Core reparse YAML, reopen an arbitrary directory,
+read an unfiltered snapshot or implement another ranking engine.
+
+**L2, Lumio ownership:** `packages/lumio-wiki/src/lumio_wiki/ariadne_context.py`;
+reuse `page_search.py` and existing page-reading helpers; change those helpers
+only if required for immutable input reuse. Tests:
+`packages/lumio-wiki/tests/test_ariadne_context.py`. No LanceDB requirement.
+
+Proposed additive public functions, to freeze in spec0009 before execution:
+
+- `list_published_context_pages(location, expected)` — scoped page metadata;
+- `read_published_context_page(location, expected, path)` — exact scoped page;
+- `search_published_context_pages(location, expected, query, *, limit=10)` —
+  native deterministic lexical results over that same scoped immutable version.
+
+Inputs are explicit version-pinned local `PublishedFilesystemLocation` and
+`ContextIdentity`; `current`, branches and plain directories still refuse.
+All operations share the existing identity/admission verification, then scope
+filter **before** lookup, ranking, excerpts, counts or citation construction.
+Results retain namespace, Entity ID, path, Published Version and passage identity.
+Proposed read results reuse the immutable `ContextPageView`; navigation may label
+an ordinary page `kind: unprofiled`, never technical validation. List/search
+rows additionally disclose title and, for hits, snippet/matched passage and
+native ranking/completeness metadata. Freeze these additive result contracts in
+the producer amendment before coding; old profile snapshot fields do not change.
+Read preserves canonical text; search uses the existing Lumio scoring/query
+bounds and truthful completeness. No hidden page title/content/topology leaks.
+An ordinary page is explicitly unprofiled documentation, not a Core-validated
+physical reference. Keep the old `ContextSnapshot.pages`/`bindings` API intact;
+no mutable internals or unscoped native snapshot escape through the new facade.
+
+**A2, Ariadne ownership:** `lumio_context.py`, `discovery.py`, `query.py` only
+for deferred source-free forwarding; `cli.py`/`serve.py` only if existing
+forwarding loses identity or errors; the explicit SDK test module above.
+
+- [ ] Enable `list_context_pages`, `read_context_page`, `search_context` and
+  the `discover` pages group using only the new scoped SDK operations.
+- [ ] Preserve existing Core outer result shapes and bounds; add exact SDK
+  citations/binding metadata. Refuse an output that cannot meet required limits.
+- [ ] Preserve source-free startup, role exclusions and standalone paths.
+  No fallback to `context_layer/`, raw checkout or a moving Lumio pointer.
+- [ ] Do not enable `resolve_term` here: Core's resolver discloses technical
+  References/mapping-confirmation state, not merely generic wiki aliases.
+
+**Validation / review:** high-risk disclosure/public-API unit. L2 `new-test`
+`test_scoped_published_navigation_includes_ordinary_pages`: visible ordinary
+and profiled pages, a hidden page with the same search token, exact citation
+and later-version isolation. Native page-search tests remain the ranking oracle.
+Immediate independent L2 contract review before A2 consumes it. A2 `new-test`
+`test_context_navigation_uses_sdk_without_legacy_or_sources`: SDK text wins
+against a deliberately different legacy page; source construction raises if
+reached. One producer call L and one consumer call A; one A2 candidate review
+also covers G2. Completion needs accepted exact producer/consumer refs and
+explicit new support in a newly admitted binding, not just successful imports.
+
+### Q2 — local multi-metric analysis and native catalog (Ariadne)
+
+**Deliverable:** `list_datasets` retains its native approved live-catalog
+contract; `query_metrics` calculates multiple predefined metrics with complete
+context from one exact local SDK binding. This does **not** depend on T2:
+native Core graph/schema/source checks already own execution authority.
+
+**Files:** `src/ariadne/query.py`, `lumio_context.py`, `discovery.py` for necessary
+preflight/deferred routing, `query_results.py` only for existing accounting;
+`tests/lumio_local_context.py`. Do not change the planner/compiler unless a
+separately dispositioned defect requires it.
+
+- [ ] Resolve every requested metric's exact binding and complete Policy Closure
+  before operation planning/live audits/bind/SELECT. The union must fit the
+  existing complete-response budget; never calculate and only then notice that
+  mandatory context is missing or too large.
+- [ ] Return per-metric context/citations from one SDK Published Version;
+  deduplicate shared Policies without losing each metric's association.
+- [ ] Preserve native graph/joins/grain, Source Approval, deadlines, result
+  limits, data signals and pending-attestation semantics. No extra contract
+  inspection or false source-free claim for live `list_datasets`.
+- [ ] Update capability disclosure and the now-retired refusal expectations for
+  only these operations; all other unsupported operations still refuse.
+
+**Validation:** high-risk money/output unit, `new-test`
+`test_multi_metric_context_precedes_execution`. Independently authored orders
+100+50 completed and25 cancelled imply revenue150 and completed-order count2.
+Assert both complete contexts/citations. A complete combined context that cannot
+fit the configured response budget refuses before planner/audit/SELECT, even if
+one metric's context alone fits. Reuse existing planner/containment tests when
+unchanged; include the existing native catalog check in call Q. Immediate
+candidate review before any dependent capability consumes this result.
+
+### T2 — one complete technical Reference/term slice (Ariadne)
+
+**Deliverable:** accept supported SDK `reference` profiles only after the
+existing Core inspection/evidence/mapping gates validate them, and expose
+`resolve_term` with exact scoped provenance and confirmation state.
+
+**Files:** `src/ariadne/lumio_context.py`, `authoring.py`, `admission.py`,
+`context.py`, `discovery.py`; `authoring_inputs.py`/`validate.py` only where
+necessary to reuse current structured validators; explicit integration tests.
+Producer0.3 already represents References; no second schema or assumed Lumio
+change. Additional producer changes need a concrete missing contract first.
+
+- [ ] Match explicit physical Resource/model/ODCS identities, not titles/aliases.
+  Validate every newly supported annotation globally across the candidate.
+- [ ] Reuse Core-owned generated observations and authentic measurement receipts
+  with their actual time/dependencies. A successful query, old sample digest or
+  authored `verified` flag is not evidence. No second curated technical mirror.
+- [ ] Bind human mapping selections to the exact claim/evidence/revision in
+  composite consent. Term resolution never authorizes a join or applies a
+  transform; ambiguity/unconfirmed claims remain explicit.
+- [ ] Keep dataset/table/computation/skill profile kinds and any unsupported
+  extension refused until their own complete consumer validation is planned.
+
+**Validation:** high-risk evidence/authority unit, `new-test`
+`test_reference_term_resolution_requires_real_evidence_and_confirmation`.
+Use genuine native inspection on approved synthetic sources and an explicit
+candidate edit of the unchanged golden Reference input. Assert exact scoped
+field lookup and unconfirmed/confirmed result states; changed dependency/evidence
+must not retain confirmation. One call T and immediate candidate review.
+Completion is a complete candidate→validation→consent→resolution path, not
+metadata preservation alone.
+
+## 4. Dependencies, responsibility and bounded assurance
+
+| Slice | Actual prerequisite, beyond its approved source amendment |
 | :--- | :--- |
-| AC1 | Actual new ODCS contract/binding + OSI + authored cancellation Policy in one synthetic revision, genuine source approval/native review |
-| AC2 | Strict globally checked Metric/Policy boundary; accepted fixture unchanged as input, explicit candidate adaptation; authoritative captured SDK catalog/schema |
-| AC3 | Independently specified 150 from 100+50 excluding25; full source text/citations, actual stale/pending caveats, unchanged native result contract |
-| AC4 | Required-context/scope gate and complete descriptor/manifest/Core/SDK consistency before SQL; no missing-field/latest/standalone fallback |
-| AC5 | Existing complete session survives later Policy/native-current change; mixed valid releases refuse |
-| AC6 | Actual post-publication reader/final-activation faults preserve previous integrated binding and disclose receipts; full-binding expected-current compare even at the same commit |
-| AC7 | Existing native admission/source nodes plus standalone import boundary; unchanged roles and no request-selected scope/capability |
-| AC8 | Actual code/build contents, distinct producer digest semantics and complete composite consent; no invented numeric/installed/live qualification |
-| AC9 | Closed serving operation set, additive source-free CLI/deferred catalog and explicit refusal of other serving paths |
+| G2 | Released local MVP; no new producer API |
+| L2 | Released producer0.3 contract; independent of G2's status/docs code |
+| A2 | Accepted exact L2 API/build |
+| Q2 | Released native Core graph/Metric/Policy binding; no technical dependency on A2 or T2 |
+| T2 | Existing Core inspection/evidence/confirmation contracts and producer Reference schema; no numerical dependency on Q2 |
 
-The prior review remains useful defect evidence, not the new behavioral source.
-M1 must not repeat K1/K2 or R1–R5/R9/R10. R6–R8's full operation implementations
-are deferred; their unsafe legacy execution is replaced by explicit refusal.
-G1 is not falsely declared fixed: unsupported SDK annotations refuse, while
-full technical-reference/evidence support remains later work. Preserve T1/T2's
-independently established fixture/native-receipt lessons, not their wrong
-expectations. The accepted L1 producer is not re-reviewed.
+Recommended delivery order is **G2 → L2/A2 → Q2 → T2** for operator usefulness,
+not an invented code dependency. G2 and L2 could run independently in separate
+repositories after source approval; do not introduce parallel roles just to
+fill that possibility. Use one sequential Core writer because A2/Q2/T2 touch
+shared discovery/binding code. One writer per registered isolated worktree;
+producer acceptance precedes its consumer. Future orchestration uses Pi/verified host and exact roles, not an
+implicit continuation of archived M1 agents or stale editable environments.
 
-## 3. Approved finite M1 assurance boundary
+| Source requirement | Owning slice |
+| :--- | :--- |
+| §§2,4–5; AC1,AC5,AC6,AC8 — Git candidate is not activation | G2; preserve released native admission checks |
+| §§3,4,6; AC2,AC4,AC7,AC9 — scoped pinned knowledge navigation | L2/A2 |
+| §6; AC3–AC5,AC7–AC9 — complete predefined metric answers/catalog | Q2 |
+| §§2–5; AC2,AC4,AC8 — validated physical references/evidence/mappings | T2 |
+| Preserved full-target S3 clause | Separate optional later S3 task; not a local milestone dependency |
 
-### Revision 12 correction: validation identity, standalone scope and SDK qualification
+Proposed **seven manual pytest invocations**, each once after its coherent slice;
+no runtime call is authorized now. New-feature checks need no ceremonial red
+call; an actual bug/refactor repro needs a separately assigned failing-first
+obligation. `$CORE_PY`, `$SDK_PY` and `$BASE_PY` are future run-qualified
+Python>=3.14 environments; Base has no Lumio. Focused development stays serial.
 
-The sole independent M1 review of4836553..39dac6f returned fix-first.
-Parent statically confirmed validation stored only version/config labels while
-actual content identity was first captured at preview, and an unconditional
-knowledge-symlink rejection changed standalone initial authoring. No runtime
-repro was run. Default Core collection also imports the new SDK-only module
-without an installed SDK; owner approved the separate qualification policy.
+```sh
+# G: local Git versus activation
+$CORE_PY -m pytest -q tests/lumio_local_context.py::test_sync_does_not_activate_context
+# L: producer contract before consumer
+$SDK_PY -m pytest -q packages/lumio-wiki/tests/test_ariadne_context.py::test_scoped_published_navigation_includes_ordinary_pages
+# A: Core routing, not a second producer test matrix
+$CORE_PY -m pytest -q tests/lumio_local_context.py::test_context_navigation_uses_sdk_without_legacy_or_sources
+# Q: analytic context + native catalog (existing unchanged catalog oracle)
+$CORE_PY -m pytest -q tests/lumio_local_context.py::test_multi_metric_context_precedes_execution tests/test_serve.py::test_list_datasets_returns_demo_tables_with_columns
+# T: authentic technical Reference contract
+$CORE_PY -m pytest -q tests/lumio_local_context.py::test_reference_term_resolution_requires_real_evidence_and_confirmation
+# W: final changed-wrapper/role boundary, existing checks
+$CORE_PY -m pytest -q tests/test_discovery.py::test_admitted_context_only_discovery_pins_snapshot_and_never_reads_sources tests/test_discovery.py::test_mcp_discovery_starts_source_free_for_every_registration
+# B: final SDK-free default collection, existing capability exclusions only
+$BASE_PY -m pytest -q --collect-only --ignore=tests/test_s3_lakehouse.py --ignore=tests/test_s3_storage_access.py --ignore=tests/test_s3_storage_profiles.py
+```
 
-One correction pass addresses only those issues. Keep standalone validation
-SDK-independent. Preserve build A's identity in integrated validation evidence;
-reject stale/missing identities for reuse/preview/admission, rather than minting
-build B evidence at preview. Restrict knowledge-directory checks to selected
-integration; retain integrated symlink refusal. Move the SDK-only module to
-`tests/lumio_metric_mvp.py` (explicit pytest target, not default `test_*.py`),
-without skips or weaker assertions. Its qualification remains required for M1,
-not silently omitted or claimed by the native Core gate. The standalone new
-regression lives in the existing default Core admission test module.
+These checks target newly reachable failures, not coverage percentages. Retain
+and adapt the existing explicit `tests/lumio_metric_mvp.py` behavioral oracles;
+run affected nodes in the owning invocation if the actual diff invalidates
+prior proof. If that adds required scope, agree the exact combined selector
+before execution, never silently expand the seven-call budget or weaken tests.
+No SDK imports/skips in default Core collection. Required existing repository/
+release gates are **additional binding gates**, not optional alternatives:
+Lumio locked sync/lint, full `pytest -q -n 4`, native S3/onboarding and isolated
+wheel checks; Core's built-wheel suite keeps its three existing S3 exclusions.
+Use CI evidence on the exact candidate when available rather than duplicate
+local runs. Any disposable service/transport needs its own explicit execution
+scope. No paired numerical rerun merely because an artifact was rebuilt.
 
-The two new scenarios are a code-content change between validation and preview,
-and standalone initial proposal creation with an unrelated knowledge symlink.
-Prepare independent bug tests before product repair; parent inspects them before
-the sole red call. Expected red is exactly both reported defects, not a setup,
-SDK/schema/fixture error. Then one affected post-call covers the complete MVP
-module and the named native admission/source scenarios because validation and
-initialization are shared. One SDK-free Core collect-only call checks the owner-
-approved collection boundary; no full Core execution/wheel qualification.
-Use the original qualified SDK environment and a fresh run-owned offline Core-
-only environment with no Lumio distribution; no global/online/new-dependency
-fallback. Stop on any unexpected result. Preserve39dac6f and all earlier logs.
+Old released Core0.5/Lumio0.3 gates are baseline evidence, not proof of new
+interfaces. Unchanged planners/native source controls keep applicable proof;
+new SDK data/identity/scope, admission/support or numerical changes invalidate
+the corresponding evidence. A failure stops the affected lane with real logs,
+no automatic repairs, retries or skipped assertions. At most one subsequently
+parent-authorized fix pass and one delta-only recheck; never a third round.
 
-### Preserved revision 11 exception: documented CLI test invocation
+## 5. Explicitly later / out of this local continuation
 
-Tags-only P2 produced seven successful nodes and one failed Capability node.
-The latter passed native guards/catalog assertions, then called CLI with
-`--project` before the subcommand, contrary to the existing parser and
-`docs/reference/cli.md` examples. Owner approved only reordering the two
-list-metrics/list-datasets test calls plus one P3 of that same failed node.
-No product/parser/assertion relaxation, other node repeats or new review.
-Preserve P2/e3627f4 and its actual log/exit; further failure stops.
+- **Core S3 KB consumption:** later optional transport work with separate
+  location/receipt/failure and native S3 qualification. Keep its refusal today.
+  Existing Lumio S3 support does not prove the Core consumer path.
+- **Record/detail/ad-hoc queries, Examples:** retain integrated refusals for now.
+  Unlike predefined metrics, their required context/Policy/technical binding
+  cannot be inferred from one `metric_ref`. Define those contracts explicitly
+  before implementation; do not enable them with `context: null` or a guessed
+  Policy union. Standalone native behavior is unchanged.
+- **Other technical profile kinds:** require their own authentic Core validation
+  seam, not a blanket expansion of the supported-kind set after Reference works.
+- No Agent/Tau/private-app work, generic search/ontology platform, model-driven
+  ranking, background activation, source-permission grant, production migration,
+  automatic release or premature full #76/#79 closure.
 
-### Preserved revision 10 exception: shared cancellation-page tags
+## 6. Source observations and completion boundary
 
-Original M1-P exited1 with eight named failures: the shared Cancellation page
-omitted required top-level tags, while native tags do not satisfy that field.
-Seven journeys stopped before admission; the Reference/technical-extension
-node stopped in its second subscenario. Governed150/release behavior remained
-unverified. WIP0bfae9a/tree d307c50 and raw/native evidence remain preserved.
-The owner chose a tags-only fixture correction plus one P2 call of those eight
-failed nodes, not the proposed early review. Reuse the unaffected standalone-
-import and two native admission/source successes; do not repeat them. Another
-failure stops with no further repairs/reruns. The existing AST-identical test
-import formatting is archived and explicitly disclosed, not reset silently.
+Planning reads, not runtime probes, established the relevant seams:
 
-### Preserved revision 9 exception: false-positive M1-R
+- `src/ariadne/status.py:_admission_view/build_report` expose native revision
+  but not the full Bound Release/local Git-HEAD distinction.
+- `src/ariadne/discovery.py:search_context/read_context_page/resolve_term`
+  currently refuse integrated use and otherwise read the legacy Core context.
+- `src/ariadne/lumio_context.py:verify_release/metric_context` own the reusable
+  cross-binding and per-metric disclosure; preserve them rather than new stores.
+- `src/ariadne/query.py:_QueryRuntimeSession.query_metrics` currently refuses
+  integration and constructs legacy metric context after execution: Q2 must
+  move its required SDK-context preflight ahead of live operation planning.
+- Lumio `ariadne_context.py:ContextSnapshot/open_published_context` exposes
+  profiled pages only. `page_search.py:search_pages` is existing deterministic,
+  LanceDB-free native ranking and must remain the search implementation.
 
-M1-R exited 0 while accepting a native fixture citation failure: the model name
-was changed to retail_sales but its file remained orders.yml, and the broad
-substring matcher mistook `unsupported` in pytest's temporary path plus
-`reference escapes` for the desired profile refusal. Parent confirmed the
-native evidence/source; test-only WIP1f0bdba is clean and no product code exists.
-The owner approved aligning the fixture/model citation and strengthening the
-oracle, with **one extra invocation of that same node (M1-R2)**. No native gate
-is weakened; diagnostic paths/incidental words cannot establish the expected
-cause. Statically inspect the correction before the call. An unrelated failure
-or another false green stops; no further repair/rerun is allocated. Only the
-intended missing-feature failure unlocks the original product/P continuation.
-The actual WIP/log/native-validation records stay preserved in the parent run.
+This draft intentionally replaces the completed execution map, not its history:
+read the full approved r12 at tag `v0.5.0`; original A1 failed WIP `df72f3f`,
+M1 accepted result `9e2e9c1`, merge `e6d474c`, original-doc archive `30470e1`,
+producer design archive `62bb41c` and run evidence remain preserved. Old failed
+calls/reviews are never reset into a new budget. The published three-package
+release is complete; Agent/Tau are excluded under ADR0018.
 
-
-**One high-risk unit:** money, Source Approval, exact human consent, Scope,
-complete immutable binding and last activation. It needs one immediate
-independent candidate review before later work consumes the result. No
-per-method/per-layer matrices, baseline suite or second live proof.
-
-| Approved call | Timing | Command ownership / expected evidence |
-| :--- | :--- | :--- |
-| M1-R, spent | Before product edits | New strict-profile refusal node only, using existing native Core entrypoints and accepted SDK. A native-valid unsupported Reference profile being ignored is the expected defect; import/setup/contract-fixture errors are not accepted red. Exact command is in the task. |
-| M1-R2, spent intended red | Test-only fixture/oracle correction before any product edits | Same strict-profile node/command as original M1-R, new noclobber logs. Only the intended unsupported-profile defect may be the red; source/contract/citation/setup failures or green stop. |
-| M1-P, spent failed | After intended M1-R2/coherent implementation | Eight named nodes failed on the shared tags fixture before admission; three trailing successful nodes remain reusable. Raw log/exit and native records are preserved. |
-| M1-P2, spent | After tags-only correction | Seven nodes succeeded; Capability node failed on invalid test CLI syntax. Raw progress/evidence retained. |
-| M1-P3, spent passed | After CLI-test argument-order correction | Single Capability node passed; composite P(3)+P2(7)+P3(1), not a combined all-green invocation. |
-| M1-C-R, once | Two prepared bug tests before product correction | Exact two selectors in canonical #81, expect both targeted failures. No SDK-free collection before repair. |
-| M1-C-P, once | After coherent correction and final formatting | Explicit SDK module plus new standalone symlink node and the two original native nodes; named affected validation/initialization paths, no extra suite. |
-| M1-C-C, once | Only after passing post-check | Core-only environment, default collect-only with the existing three capability-locked S3 exclusions. Expected success without SDK or SDK-only module collection. |
-
-Approved M1 budget is now **eight invocations in total**: five spent historical
-calls (invalid-green R, intended-red R2, failed P, partial-success P2 and passed
-single-node P3), plus the three correction calls above. Owner selected
-“Korrektur + 3 Checks (Recommended)”, including one fix pass and one delta-only
-review after applicable success. No third review, retry reserve, budget reset or
-borrowed V2/V3–V5 allocation. The original grant was
-“Plan + M1 starten (Recommended)”; the one extra call/test-only correction was
-separately approved with “Test-only korrigieren +1 Red (Recommended)”. The P2
-tags-only exception was approved with “Nur Tags korrigieren +1 Lauf”. The
-P3 exception was approved with “CLI-Testfix +1 Node (Recommended)”. Static changed-path syntax/Ruff/diff/diagnostics and exact
-upstream blob comparison are the only additional code checks proposed; a
-single isolated import/origin env preflight verifies each new environment's
-actual binding, not product behavior. Only the named M1-C-C collection is newly
-authorized; no other behavior probe, collection run or hidden nested pytest.
-
-New tests use spec/hand-worked/trusted-producer oracles. Fault injection may
-raise at the named SDK-reader/descriptor boundary but never manufacture a
-receipt, successful Context Snapshot or human approval. Temporary code-file
-fixtures may test identity drift; protected real Core/SDK files may not be
-mutated. Preserve exact committed text/metadata and native receipt meanings;
-no output-derived expectations or blanket whitespace relaxation.
-
-Record the tested relevant code/tree after the last formatter pass. If build
-identity needs a pre-test WIP commit, label it honestly and do not create a
-passed-result ref before success. No unnoticed code/identity changes between
-M1-P, freeze and review; a formatter-only delta still needs applicability
-assessment when those bytes are part of the identity contract. Do not reset
-foreign dirt or silently rerun to obtain a new label.
-
-Reuse still-applicable accepted L1 evidence (merged d798c136 exact accepted tree,
-CI39231454102/39231454187, accepted b1/c2 qualification) and exact baseline
-blobs. Do not rerun the producer or describe that evidence as consumer proof.
-The two existing native nodes are rerun only because M1 changes their shared
-admission/source initialization. No extra actor/transport/installed-wheel run.
-
-The one fresh M1 review covered4836553..39dac6f against local r2 and returned
-fix-first. Its slot is spent. Owner now approved only the two parent-accepted
-findings and collection-policy correction above, with one delta-only recheck of
-39dac6f..fixedResult and affected behavior. No re-review of settled areas/L1 or
-deferred #76 features. Reviewer runs no tests/repairs; parent owns disposition.
-An unexpected failure stops with preserved WIP/logs. No third round, unapproved
-budget extension or assertion weakening.
-
-The existing [tag publication workflow](../../.github/workflows/publish.yml)
-retains its built Core wheel suite and the documented exclusion of the three
-capability-locked S3 modules. Those publication gates are neither waived nor
-run by M1; publication requires its own authorization. Lumio/Q1/native S3,
-paired package and role/transport qualification likewise remain later scoped
-work, not a reason to run them now or to claim them from this local proof.
-
-## 4. Historical evidence and protected work
-
-- Original A1 source: `5502300aca23d1afd3f49fb4f73d5fd9374a9b5a`.
-  WIP `df72f3fcf59a8b2d0781f4a012802557d704b056`, tree
-  `a73835a3945178f87363e346e33dbd1f7f077cc3` is **unaccepted**.
-  V2 ran once: **3 passed/6 failed, exit1**. Five new journeys stopped at the
-  first KB edit; their deeper assertions were not proved. Its one initial
-  review was owner-advanced to red WIP and returned fix-first. No slot survives.
-- M1-R invalid-green WIP `1f0bdba1e7aa1447d77c96e0c4961c6f4c2726ec`, tree
-  `8d8cbb5d1cabec7e21a2c17fbab4ec6ba763b94f`: only five test/baseline files;
-  no product changes or passed-result ref. Raw M1-R exit0 and its real native
-  citation failure are not repro/feature proof. M1-P/review remain unused.
-- Original r1–r6 grants, failed producer calls, owner b1/c1/c2 exceptions and
-  retained evidence remain in immutable source history (including source5502300)
-  and the parent-owned run. This new proposal does not reset or rewrite them.
-- Main stays `24630dbd...`; nine original Ariadne document deltas remain reserved.
-  The original six Lumio document bytes are archived at
-  `62bb41c36ce7afdfce9fbfe8f25ac45b7fa62a79`. Keep the accepted SDK reader and old
-  source/result refs. Known post-handback AST-neutral worker formatting remains
-  preserved, not reset or silently imported into a new candidate.
-
-## 5. Approval and handoff gate
-
-The owner separately approved the combined scoped action with “Plan + M1
-starten (Recommended)”: local source freeze, new canonical M1 child and its
-parent/dependency metadata, exact proposed Sol/high roles, the finite M1 checks
-and implementation. This explicit combined grant, not planning approval alone,
-is the authority. Freeze/record the actual source and issue identities, verify
-host/model/worktree/environment readiness, then use `orchestrate-implementation`
-for M1 only. No old/full target ticket is closed or silently rewritten.
-
-After genuine passing evidence, a committed/frozen result and independent
-acceptance, hand back the isolated local MVP candidate and pause. No automatic
-Q1, full-parent closure, main integration, push, tag/release, real sources/KB,
-new permissions, private-app adoption, service, dependency change or cleanup.
-No extra ledgers/sign-off artifacts; existing run state owns runtime facts.
+Next action after owner review: approve/reconcile the source amendments and
+canonical task decomposition, then separately authorize the first bounded
+implementation slice. Delivery remains supervised: accepted isolated candidate
+and pause; integration, push, release, issue closure and real-KB work each keep
+their own authority. No product code, tests or GitHub objects are changed by
+this planning task.

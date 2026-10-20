@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Approved written revision 2 — local Metric MVP.** Written scope was approved with “Schriftlich freigeben (Recommended)”. The subsequent scoped M1 grant is recorded below and in plan r8; full-target revision-1 goals remain deferred where identified. |
+| **Status** | **Revision 3 — scoped Q2 continuation of the approved full-target contract.** Owner 2026-10-20 requests autonomous prerequisite work before #80; §1.2 activates only the already specified local multi-metric/catalog behavior. Revision 2 remains authoritative outside that scope. Historical r2 approval: Written scope was approved with “Schriftlich freigeben (Recommended)”. The subsequent scoped M1 grant is recorded below and in plan r8; full-target revision-1 goals remain deferred where identified. |
 | **Scoped M1 execution approval** | Owner, Ariadne Pi conversation 2026-10-19: “Plan + M1 starten (Recommended)”. Approves plan r8, local source freeze, a new GitHub M1 child of #79 and supervised M1 only via Paseo/Pi: fresh Sol/high writer, exactly M1-R/M1-P, one independent fresh Sol/high candidate review, synthetic local data/KB only. Unexpected failure stops; pause with the isolated candidate. No full A1/Q1, main integration, push, release, real sources/KB or cleanup. |
 | **Historical MVP design/writing approval** | Owner, Ariadne Pi conversation 2026-10-19: selected “Umfang zuerst neu zuschneiden”, “Lokaler Metric-Durchstich (Recommended)”, “Strikte Profilgrenze (Recommended)”, then “So ausarbeiten (Recommended)” for the complete six-part local MVP design. Authorizes this isolated written revision and necessary scoped notices only. No code, runtime tests, new budget, tracker changes, target integration, push, release, production/real-KB work or cleanup. |
 | **Historical full-target approval** | Owner, Pi conversation 2026-10-18 for #76 and Lumio #2: selected one Content Repository, direct Python SDK, integrated-only strict mandatory Policies, one overall human confirmation, and project-wide Visibility Scope defaulting to public. Then selected “Design freigeben (Recommended)” for the complete six-section V1 design and its capture in both repositories. The owner subsequently selected “Schriftliche Fassung freigeben (Recommended)” for both written revision-1 specifications, ADRs, glossaries and scoped source amendments, opening implementation planning. Plan approval, execution and publication remain separate. |
@@ -82,6 +82,45 @@ operation, without reading legacy Context as a fallback. Required text, source,
 semantic, consent, integrity and response-budget guarantees are not deferred.
 No consumer-supporting public package release, private-app integration or
 production qualification follows from this source-pinned local deliverable.
+
+### 1.2 Local Q2 continuation — 2026-10-20
+
+Owner instruction in the current BB conversation: implement #80 autonomously,
+then “Ok. kümmere dich erst um die unerfüllte Voraussetzung”. Together with the
+confirmed Git/local standard and secondary S3 priority, execute the local A1
+prerequisite in bounded slices. This first slice delivers the existing full-target
+multi-metric and live-catalog requirements from §6 and AC3–AC5/AC7–AC9; it does
+not activate the unrelated deferred features or change the producer contract.
+
+For a newly validated/admitted local release, `query_metrics` supports multiple
+predefined native metrics. Before planning, relationship audits, bind or SELECT,
+resolve every requested metric's exact SDK binding and complete required Policy
+Closure in the one pinned snapshot. Reject incomplete, mismatched, hidden or
+unsupported context before those live operations. Complete combined mandatory
+context must fit the existing response/transport bounds; never execute first and
+then discover that necessary context cannot be returned. Preserve existing
+request validation, native planner/graph/grain/join/source/deadline controls,
+per-metric context association, exact citations, data signals and independent
+attestation caveats. Shared Policy content may be deduplicated only without
+losing those associations; no new output contract or ranking system is required.
+
+`list_datasets` retains its native approved live-catalog semantics and Source
+Approval; it is not described as source-free and performs no additional contract
+inspection. Update truthful supported-operation disclosure for only these two
+operations. Existing bindings do not acquire support in place: changed consumer
+build/support requires fresh validation and matching overall admission. All
+remaining r2 unsupported operations and unsupported profile kinds still refuse.
+Standalone behavior and the optional SDK boundary remain unchanged.
+
+Independent acceptance: synthetic completed orders100+50 and cancelled25 give
+revenue150 and completed-order count2, with complete per-metric SDK context and
+exact version-qualified citations. If combined required context exceeds the
+configured response budget even though one metric alone fits, refuse before
+planner/live audit/bind/SELECT. Preserve applicable native catalog and M1
+integrity/consent/standalone checks, changing only the superseded operation
+refusals. One focused invocation and independent candidate review are assigned
+in the reconciled plan; failed checks stop without automatic retry. No S3,
+navigation, Reference, ad-hoc or Agent/Tau support is introduced by Q2.
 
 ## 2. One authored revision
 
