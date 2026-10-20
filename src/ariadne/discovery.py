@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from ariadne import admission, answer_examples, authoring_inputs, context
+from ariadne import admission, answer_examples, authoring_inputs, context, query_results
 from ariadne.context import list_pages, read_page, resolve_term, search_pages
 from ariadne.contracts import (  # pyright: ignore[reportMissingImports] — new module, stale analysis index; resolves in the qualified env
     CONSUMER_PROFILE,
@@ -411,6 +411,11 @@ class _DiscoverySession:
                 groups[kind] = {"status": "available", **group}
             except PlannerError:
                 raise  # admission/identity failures always refuse the whole operation
+            except query_results.QueryResultError:
+                # A2 (spec0029 §1.3): a required-output budget refusal never
+                # becomes one group's unavailability — it refuses the whole
+                # operation on every public surface.
+                raise
             except (OSError, ValueError, RuntimeError) as exc:
                 groups[kind] = {"status": "unavailable", "reason": str(exc)}
         result = {"query": query, "groups": groups}
@@ -418,6 +423,10 @@ class _DiscoverySession:
             assert self._managed is not None
             result["bound_release"] = self._managed["bound_release"]["digest"]
             result["support"] = copy.deepcopy(self._managed["bound_release"]["support"])
+            # A2 (spec0029 §1.3): the embedded SDK pages make the assembled
+            # report required output too — the integrated Core response bound
+            # applies to the FINAL discover result, not each group alone.
+            self._refuse_oversized_response(result)
         return result
 
     async def list_metrics(self) -> list[dict | str]:
@@ -462,7 +471,10 @@ class _DiscoverySession:
                         == self._metrics[entry["name"]]["model"]["semantic_model"][0]["name"]
                     )
                 )
-            hint = "Local integrated MVP: get_metric only; other serving operations refuse."
+            hint = (
+                "Local integrated MVP: get_metric, query_metrics and "
+                "list_datasets; other serving operations refuse."
+            )
         return [*entries, hint]
 
     async def search_examples(
@@ -506,13 +518,41 @@ class _DiscoverySession:
             return []
         raise ValueError("Examples are available only from a Git admission or explicit candidate")
 
+    def _refuse_oversized_response(self, result) -> None:
+        """The host response budget for integrated navigation (A2, spec0029
+        §1.3): required content that cannot fit refuses whole — no elision,
+        no partial listing."""
+        if self._project is None:
+            return
+        limits = query_results.load_host_query_limits(self._project)
+        size = query_results.result_json_bytes(result)
+        if size > limits["response_bytes"]:
+            raise query_results.byte_limit_refusal(
+                limits["response_bytes"], observed={"response_bytes_lower_bound": size}
+            )
+
     async def search_context(self, query: str, limit: int = 10) -> list[dict]:
-        """Search only the admitted Context snapshot."""
+        """Search only the admitted Context snapshot.
+
+        Integrated projects navigate the pinned scoped SDK facade (A2,
+        spec0029 §1.3): native Lumio lexical ranking over the published
+        visible page set with verbatim passages and coordinates — never the
+        legacy context_layer filesystem, never a source connection. The
+        legacy snapshot read remains for standalone admissions."""
         self._refuse_unsupported("search_context")
         if self._source_free:
             return []
         if self._managed is not None:
             self._recheck_pinned()
+        if self._context_snapshot is not None:
+            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+            assert self._managed is not None
+            result = lumio_context.search_context(
+                self._managed["bound_release"], query, limit=limit
+            )
+            self._refuse_oversized_response(result)
+            return result
         return search_pages(query, limit, [(self.context_dir, False)])
 
     async def resolve_term(self, request: str | dict, *, part: int = 1) -> dict:
@@ -559,21 +599,49 @@ class _DiscoverySession:
         return result
 
     async def list_context_pages(self) -> list[dict]:
-        """List admitted Context metadata without opening a source."""
+        """List admitted Context metadata without opening a source.
+
+        Integrated projects list the pinned scoped SDK facade's visible
+        pages (A2, spec0029 §1.3); profiled entries reuse this session's
+        already-verified native metadata for the advisory view, and no page
+        body is read per row. The legacy snapshot read remains for standalone
+        admissions."""
         self._refuse_unsupported("list_context_pages")
         if self._source_free:
             return []
         if self._managed is not None:
             self._recheck_pinned()
+        if self._context_snapshot is not None:
+            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+            assert self._managed is not None
+            verified = {page.path: page.native for page in self._context_snapshot.pages}
+            result = lumio_context.list_context_pages(
+                self._managed["bound_release"], verified_native=verified
+            )
+            self._refuse_oversized_response(result)
+            return result
         return list_pages([(self.context_dir, False)])
 
     async def read_context_page(self, path: str) -> dict:
-        """Read one exact page from the admitted Context snapshot."""
+        """Read one exact page from the admitted Context snapshot.
+
+        Integrated projects read the pinned scoped SDK facade's complete
+        canonical page (A2, spec0029 §1.3); hidden and unknown paths refuse
+        identically. The legacy snapshot read remains for standalone
+        admissions."""
         self._refuse_unsupported("read_context_page")
         if self._source_free:
             raise ValueError("no admitted Context snapshot; use Authoring for a candidate")
         if self._managed is not None:
             self._recheck_pinned()
+        if self._context_snapshot is not None:
+            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+            assert self._managed is not None
+            result = lumio_context.read_context_page(self._managed["bound_release"], path)
+            self._refuse_oversized_response(result)
+            return result
         return read_page(path, self.context_dir, draft=False)
 
 

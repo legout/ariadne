@@ -311,6 +311,13 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
     if args.command == "list-metrics" and discovery._context_snapshot is not None:
         print(json.dumps(asyncio.run(discovery.list_metrics()), default=_json_default))
         return 0
+    if args.command == "search-context":
+        # A2 (spec0029 §1.3): context navigation is source-free discovery —
+        # the query runtime (the only public path that opens a source
+        # connection) is never constructed for it.
+        result = asyncio.run(discovery.search_context(args.query, limit=args.limit))
+        print(json.dumps(result, default=_json_default))
+        return 0
     discovery._refuse_unsupported(args.command.replace("-", "_"))
     limits = query_results.load_host_query_limits(args.project)
     runtime = QueryRuntime.open_project(

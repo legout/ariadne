@@ -393,6 +393,43 @@ def _refusal(exc: QueryResultError):
     return _mcp_refusal_result(exc)
 
 
+def _typed_navigation_result(tool, result, project):
+    """A typed navigation tool's fitting/oversized outcome (A2, spec0029
+    §1.3): the envelope is measured on the REAL SDK conversion — the
+    registered Tool's native ``fn_metadata.convert_result`` CallToolResult
+    through ``_wire_bytes`` (protocol stamp included) — never the dict-tool
+    helper, which assumes ``structured_output=False``. Oversized required
+    content refuses whole; the returned isError ``CallToolResult`` passes
+    through ``convert_result`` untouched."""
+    budget = query_results.load_host_query_limits(project)["mcp_response_bytes"]
+    size = _wire_bytes(tool.fn_metadata.convert_result(result))
+    if size > budget:
+        return _refusal(
+            query_results.mcp_byte_limit_refusal(
+                budget, observed={"transport_bytes_lower_bound": size}
+            )
+        )
+    return result
+
+
+def _refuse_unrepresentable_mcp_ceiling(project):
+    """The source-free navigation transport gate (A2, spec0029 §1.3 + spec
+    0014 §5): the host's MCP envelope ceiling must represent every bounded
+    refusal form BEFORE navigation runs — an unusably small
+    mcp_response_bytes is a configuration error raised here, never answered
+    with an over-budget refusal. The QueryRuntime registration seam performs
+    the same check when a runtime exists; navigation constructs none."""
+    budget = query_results.load_host_query_limits(project)["mcp_response_bytes"]
+    for form in query_results.refusal_forms():
+        size = _refusal_envelope_bytes(form)
+        if size > budget:
+            raise ValueError(
+                "the host query limits' mcp_response_bytes="
+                f"{budget} cannot represent every refusal form on this transport (largest {size} "
+                "bytes) — nothing could ever be answered or refused"
+            )
+
+
 def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str = "combined"):
     """Wire one tool registration of the shared core onto one MCP stdio
         server (spec §6): ``analyst`` registers the Query operations, ``authoring``
@@ -496,8 +533,15 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             Five native groups, snapshot-bound as-of contract evidence and bounded
             term continuation; never executes an answer or authorizes a join.
             """
+            _refuse_unrepresentable_mcp_ceiling(project)
             discovery = DiscoveryRuntime.open_project(project)
-            return await discovery.discover(query, limit=limit)
+            result = await discovery.discover(query, limit=limit)
+            # A2 (spec0029 §1.3): the assembled report (with its embedded SDK
+            # pages) is a typed navigation result too — measured on its real
+            # SDK conversion, refusing whole when it cannot fit.
+            return _typed_navigation_result(
+                app._tool_manager._tools["discover"], result, project
+            )
 
         @app.tool()
         @_tool_errors
@@ -513,13 +557,25 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         @_tool_errors
         async def search_context(query: str) -> list[dict]:
             """Search only Context pages from the admitted Git snapshot."""
-            return await _runtime().search_context(query)
+            # A2 (spec0029 §1.3): source-free discovery, never the query
+            # runtime; the typed result is measured on its real conversion.
+            _refuse_unrepresentable_mcp_ceiling(project)
+            discovery = DiscoveryRuntime.open_project(project)
+            result = await discovery.search_context(query)
+            return _typed_navigation_result(
+                app._tool_manager._tools["search_context"], result, project
+            )
 
         @app.tool()
         @_tool_errors
         async def list_context_pages() -> list[dict]:
             """List Context metadata from the admitted Git snapshot."""
-            return await _runtime().list_context_pages()
+            _refuse_unrepresentable_mcp_ceiling(project)
+            discovery = DiscoveryRuntime.open_project(project)
+            result = await discovery.list_context_pages()
+            return _typed_navigation_result(
+                app._tool_manager._tools["list_context_pages"], result, project
+            )
 
         @app.tool()
         @_tool_errors
@@ -530,7 +586,12 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 path: the exact relative .md path from list_context_pages or a
                     search_context hit (e.g. policies/emea-currency-cutover.md).
             """
-            return await _runtime().read_context_page(path)
+            _refuse_unrepresentable_mcp_ceiling(project)
+            discovery = DiscoveryRuntime.open_project(project)
+            result = await discovery.read_context_page(path)
+            return _typed_navigation_result(
+                app._tool_manager._tools["read_context_page"], result, project
+            )
 
         @app.tool(structured_output=False)
         @_tool_errors
