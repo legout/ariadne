@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 26 — approved test-round correction, 2026-10-20.** Owner explicitly approved the prepared patch b236a9da on frozen4f6f182, one Policy-beleg RED and one seven-node POST, then the already assigned Q1 qualification and independent review. No integration or publication. Earlier grants and exhausted checks remain historical evidence, not renewed budgets. |
+| **Status** | **Revision 27 — approved citation-containment correction, 2026-10-20.** Owner explicitly approved the prepared patch b236a9da on frozen4f6f182, one Policy-beleg RED and one seven-node POST, then the already assigned Q1 qualification and independent review. No integration or publication. Earlier grants and exhausted checks remain historical evidence, not renewed budgets. |
 | **Owner direction** | 2026-10-20: “S3 Anbindung ist für Ariadne zweitrangig. Der bevorzugte Weg bleibt git repo mit lokalem sync.” This approves the priority used for this proposal, not new SDK interfaces or capability expansion. |
 | **Goal** | Make the shared Git Content Repository plus a local checkout the normal operator path, then expand useful local knowledge/analytics capabilities without weakening exact admission or standalone behavior. S3 is optional later work, not a prerequisite. |
 | **Behavioral sources** | [Spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), especially §§2–6 and preserved full-target AC1–AC9; [ADR0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Companion: `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md` r2 / ADR0030. The r2 MVP refusal boundary remains authoritative until the corresponding source amendments are approved. |
@@ -10,7 +10,44 @@
 | **Tracker** | [#76](https://github.com/legout/ariadne/issues/76): full epic; [#79](https://github.com/legout/ariadne/issues/79): consumer continuation; [#80](https://github.com/legout/ariadne/issues/80): remaining adapters/guidance/qualification. [#81](https://github.com/legout/ariadne/issues/81) and [Lumio #2](https://github.com/legout/lumio-wiki/issues/2) have delivered released code but remain open; no closure is authorized here. Their old ticket text must be reconciled before new execution. |
 | **Capture / readiness** | Existing glossary terms suffice. Git/local preference changes sequencing, not ADR0026's architecture; no new ADR is proposed. New operation support and the additive navigation API require written Core/producer source amendments before their writers start. Contract: planning-contract v1; installed catalog provenance unknown. |
 
-## Current approved execution — test-round correction (revision26)
+## Current approved execution — citation containment (revision27)
+
+After the independent final review, the parent confirmed one remaining P2:
+the new KB citation branch classifies escaping relative paths as bundle
+evidence without checking the resolved Knowledge subtree boundary. The owner
+replied “Freigabe” to the concrete proposed product patch27b5294e, test
+patche41bbfe4, one RED/POST of the existing T2 node, an updated Core wheel and
+installed pairing proof, and one independent delta review. No integration or
+publication. This is an explicit additional bounded allowance; historical
+failures/budgets remain unchanged.
+
+Use frozen Core candidatef6e8e20aabdda6c839f8c6859fed631f40977a91 and unchanged
+SDK26a633b4399ddd5e9d6cad2292cbb317944ead90. Product patch SHA256
+`27b5294ea0007a0888d4a15fd93f504494c3c0ae18862429afbaac2f271b8a0e`
+adds resolved containment before the existing KB bundle classification; all
+other citation semantics remain unchanged. Test patch SHA256
+`e41bbfe4e01ff25a5a4e46ff5c92e308e03970e660fe37cb98bad5d99f8e96cf`
+extends the existing third negative validation with an authored real document
+outside the captured release and requires its escaping citation to be refused.
+No fourth validation, new test node, mock, weakened assertion or new authority.
+
+Same registered sequential BB Pi GLM5.3/high writer, then the existing
+Sol6.1/high reviewer for delta-only review. Parent inspects the expected RED
+before granting the exact product patch and one same-node POST. Failure stops;
+no automatic retry or further repair. Parent builds one updated Core wheel,
+checks the affected source/archive/installed pairing outside the checkouts
+with unchanged SDK wheel, and reuses unaffected G/status, native compatibility,
+Q3, optional base-import, SDK/CI/MCP/adapter and numerical proof. Do not replay
+numerical or Core admission journeys merely for packaging.
+
+Behavior remains spec0029r5 §1.5 and native citation/containment rules, especially
+spec0011 §5. No new vocabulary, ADR, dependency, interface, schema or SDK change.
+Canonical #79 owns the bounded correction; #80 owns affected installed proof.
+Parent records exact source/ticket snapshots before dispatch. Capture:
+planning-contract v1, installed provenance unknown. No target integration,
+push, release/publication, issue closure, service/private-source or cleanup.
+
+## Prior approved execution — test-round correction (revision26)
 
 Owner explicitly approved: “Ich genehmige den vorbereiteten Test-Patch
 6c0d6aee und einen Recheck des fehlgeschlagenen T2-Knotens; anschließend die
