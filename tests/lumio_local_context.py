@@ -94,6 +94,8 @@ ariadne_profile:
         title: "Governing policy"
         resource: "policies/cancelled-orders.md"
     governed_by: "policies/cancelled-orders.md"
+    dimensions:
+      - status
     grain:
       primary_key:
         - id
