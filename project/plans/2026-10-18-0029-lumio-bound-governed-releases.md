@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 16 — L2 → A2 execution authorized, 2026-10-20.** Q2 is accepted isolated85dbaab. Owner approved the exact written local navigation contract and its autonomous producer → consumer implementation. G2/T2 and other remaining drafts stay proposed. Previous status: Owner requested a next-issue roadmap and reaffirmed Git with local sync as the standard, S3 secondary. No implementation, test execution, ticket publication, integration or release is authorized by this draft. Historical approved M1 execution r12 is complete and preserved in `v0.5.0` and the immutable result refs. |
+| **Status** | **Revision 17 — L2 → A2 execution authorized, 2026-10-20.** Q2 is accepted isolated85dbaab. Owner approved the exact written local navigation contract and its autonomous producer → consumer implementation. G2/T2 and other remaining drafts stay proposed. Previous status: Owner requested a next-issue roadmap and reaffirmed Git with local sync as the standard, S3 secondary. No implementation, test execution, ticket publication, integration or release is authorized by this draft. Historical approved M1 execution r12 is complete and preserved in `v0.5.0` and the immutable result refs. |
 | **Owner direction** | 2026-10-20: “S3 Anbindung ist für Ariadne zweitrangig. Der bevorzugte Weg bleibt git repo mit lokalem sync.” This approves the priority used for this proposal, not new SDK interfaces or capability expansion. |
 | **Goal** | Make the shared Git Content Repository plus a local checkout the normal operator path, then expand useful local knowledge/analytics capabilities without weakening exact admission or standalone behavior. S3 is optional later work, not a prerequisite. |
 | **Behavioral sources** | [Spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), especially §§2–6 and preserved full-target AC1–AC9; [ADR0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Companion: `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md` r2 / ADR0030. The r2 MVP refusal boundary remains authoritative until the corresponding source amendments are approved. |
@@ -31,13 +31,23 @@ from these focused source checks.
 L2 owns `packages/lumio-wiki/src/lumio_wiki/ariadne_context.py` and its existing
 `packages/lumio-wiki/tests/test_ariadne_context.py`. Native `page_search` and
 `evidence` helpers are reused, not rewritten. Preserve existing profile/S3
-reader behavior. Prefer an additive facade using the current verified reader
-and native immutable resolution; no behavior-changing verification extraction
-without an explicitly pinned characterization obligation. Add one focused native
-publication/navigation test with independently authored pages/coordinates and
-scope/version/mismatch cases from the approved amendment. First return prepared
-test data for parent static schema/oracle inspection before the sole invocation.
-Then implement and run once, serially:
+reader behavior. Reuse one verified snapshot per operation. A private extraction of the
+existing inline verification pipeline is allowed to avoid an unchecked second
+resolution. Preserve its gate order, public reader shapes, keyword arguments
+and refusal semantics. Pin current local and S3 reader behavior before that
+refactor with exactly the existing two journey nodes, serially, once:
+
+```sh
+$SDK_PY -m pytest -q packages/lumio-wiki/tests/test_ariadne_context.py::test_ariadne_context_journey packages/lumio-wiki/tests/test_ariadne_context.py::test_s3_published_context_journey
+```
+
+This is the producer's existing in-memory S3 journey, not Core S3 support or a
+new service. Add one focused native publication/navigation test with independently
+authored pages/coordinates and scope/version/mismatch cases. Its new-function
+imports remain inside the new test so existing baseline nodes collect before
+implementation. First return prepared test data for parent static schema/oracle
+inspection. After baseline passes, implement and run the existing full profile
+module once (its changed verification pipeline invalidates the baseline proof):
 
 ```sh
 $SDK_PY -m pytest -q packages/lumio-wiki/tests/test_ariadne_context.py
