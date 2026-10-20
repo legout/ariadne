@@ -1694,41 +1694,46 @@ def test_admission_rejects_foreign_source_subtree_binding(tmp_path, monkeypatch,
 # navigation over ordinary and profiled pages through the additive SDK.
 # ---------------------------------------------------------------------------
 
-# Independently authored visible ordinary documentation page. Canonical line
+# Independently authored visible ordinary documentation page with every
+# line joined by explicit '\r\n' (CRLF canonical bytes). Canonical line
 # map: 1 '---', 2 id plus an inline YAML distractor comment carrying a
 # literal 'halcyon' that no native search field parses, 3 title, 4
 # entity_types, 5 '  - reference', 6 tags, 7 '  - guides', 8 tag authored as
 # the double-quoted YAML escape '  - "\u0068alcyon"' (decodes to 'halcyon',
-# never literal in the raw bytes), 9 summary, 10 lifecycle, 11 visibility,
-# 12 review_after, 13 sources, 14 source id, 15 source title, 16 closing
-# '---' (the body's first character is this line's terminating newline, so
-# body_start_line == 16), 17 blank, 18 H1, 19 blank, 20 intro, 21 blank,
-# 22 '## Ventilation', 23 blank, 24 'The zephyr lane stays open during storms.'
+# never literal in the raw bytes), 9 'summary: >-' with its folded value on
+# 10 '  borealis care' and 11 '  continues indoors', 12 lifecycle,
+# 13 visibility, 14 review_after, 15 sources, 16 source id, 17 source title,
+# 18 closing '---' (the body's first character is this line's terminating
+# newline, so body_start_line == 18), 19 blank, 20 H1, 21 blank, 22 intro,
+# 23 blank, 24 '## Ventilation', 25 blank, 26 'The zephyr lane stays open
+# during storms.'
 _AURORA_TEXT = (
-    "---\n"
-    'id: "entity:aurora-care-guide" # halcyon is metadata-only\n'
-    'title: "Aurora Care Guide"\n'
-    "entity_types:\n"
-    "  - reference\n"
-    "tags:\n"
-    "  - guides\n"
-    '  - "\\u0068alcyon"\n'
-    'summary: "Care notes for the aurora terrarium."\n'
-    'lifecycle: "approved"\n'
-    'visibility: "public"\n'
-    'review_after: "2027-09-30"\n'
-    "sources:\n"
-    '  - id: "src-aurora-guide"\n'
-    '    title: "Aurora keeper handbook"\n'
-    "---\n"
-    "\n"
-    "# Aurora Care Guide\n"
-    "\n"
-    "Morning care keeps the terrarium calm.\n"
-    "\n"
-    "## Ventilation\n"
-    "\n"
-    "The zephyr lane stays open during storms.\n"
+    "---\r\n"
+    'id: "entity:aurora-care-guide" # halcyon is metadata-only\r\n'
+    'title: "Aurora Care Guide"\r\n'
+    "entity_types:\r\n"
+    "  - reference\r\n"
+    "tags:\r\n"
+    "  - guides\r\n"
+    '  - "\\u0068alcyon"\r\n'
+    "summary: >-\r\n"
+    "  borealis care\r\n"
+    "  continues indoors\r\n"
+    'lifecycle: "approved"\r\n'
+    'visibility: "public"\r\n'
+    'review_after: "2027-09-30"\r\n'
+    "sources:\r\n"
+    '  - id: "src-aurora-guide"\r\n'
+    '    title: "Aurora keeper handbook"\r\n'
+    "---\r\n"
+    "\r\n"
+    "# Aurora Care Guide\r\n"
+    "\r\n"
+    "Morning care keeps the terrarium calm.\r\n"
+    "\r\n"
+    "## Ventilation\r\n"
+    "\r\n"
+    "The zephyr lane stays open during storms.\r\n"
 )
 
 # Independently authored hidden ordinary page (internal visibility) sharing
@@ -1833,7 +1838,7 @@ def test_scoped_published_navigation_includes_ordinary_pages(tmp_path):
     # --- Read: one byte-exact canonical page with immutable identity. ---
     aurora = read_published_context_page(pinned, expected, aurora_path)
     assert aurora.content == _AURORA_TEXT
-    assert aurora.body_start_line == 16  # closing frontmatter delimiter line
+    assert aurora.body_start_line == 18  # closing frontmatter delimiter line
     assert "# Aurora Care Guide" in aurora.body
     assert "The zephyr lane stays open during storms." in aurora.body
     assert "halcyon" not in aurora.body  # metadata stays metadata
@@ -1872,10 +1877,10 @@ def test_scoped_published_navigation_includes_ordinary_pages(tmp_path):
     assert tuple(aurora_hit.matched_terms) == ("zephyr",)
     assert "zephyr" in aurora_hit.snippet
     assert aurora_hit.page.content == _AURORA_TEXT
-    # Hand-counted verbatim excerpt: authored line 24, inside the
-    # 'Ventilation' section (its heading sits on line 22).
+    # Hand-counted verbatim excerpt: authored line 26, inside the
+    # 'Ventilation' section (its heading sits on line 24).
     assert aurora_hit.excerpt == "The zephyr lane stays open during storms."
-    assert (aurora_hit.line_start, aurora_hit.line_end) == (24, 24)
+    assert (aurora_hit.line_start, aurora_hit.line_end) == (26, 26)
     assert aurora_hit.section == "Ventilation"
 
     # --- Metadata-only match cites the real canonical metadata passage,
@@ -1892,6 +1897,21 @@ def test_scoped_published_navigation_includes_ordinary_pages(tmp_path):
     assert halcyon_hit.line_start < aurora.body_start_line
     assert halcyon_hit.section is None
     assert halcyon_hit.candidates_seen == 1 and halcyon_hit.results_dropped == 0
+
+    # --- Summary-only multiline match extends the same metadata-passage
+    # scenario: the folded summary authored on canonical lines 9-11 must be
+    # cited as its verbatim span with the original CRLF separators kept
+    # (hand-counted above) and is a literal substring of the byte-exact
+    # full page content. ---
+    (borealis_hit,) = search_published_context_pages(pinned, expected, "borealis")
+    assert borealis_hit.page.path == aurora_path
+    assert tuple(borealis_hit.matched_fields) == ("summary",)
+    assert tuple(borealis_hit.matched_terms) == ("borealis",)
+    assert borealis_hit.excerpt == "summary: >-\r\n  borealis care\r\n  continues indoors"
+    assert borealis_hit.excerpt in aurora.content
+    assert (borealis_hit.line_start, borealis_hit.line_end) == (9, 11)
+    assert borealis_hit.section is None
+    assert borealis_hit.candidates_seen == 1 and borealis_hit.results_dropped == 0
 
     # --- Honest limit accounting: the native ranking keeps B alone. ---
     (only_hit,) = search_published_context_pages(pinned, expected, "zephyr", limit=1)

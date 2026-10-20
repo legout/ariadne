@@ -2136,7 +2136,7 @@ def _metadata_match_passage(
     page: CompiledPage,
     matched_fields: Sequence[str],
     terms: Sequence[str],
-    lines: Sequence[str],
+    raw: str,
 ) -> tuple[str, int, int, None]:
     """The verbatim canonical raw span of the actually matched metadata value.
 
@@ -2144,8 +2144,10 @@ def _metadata_match_passage(
     canonical source characters: an escaped scalar (``"\\u0068alcyon"``) cites
     its authored raw line, a multiline scalar truthfully cites its whole raw
     span, and a comment on an unrelated key never stands in for the passage.
-    Metadata sits above the body, so no section exists. An unavailable
-    mapping refuses; a body passage is never fabricated.
+    The span is composed from and sliced out of the original canonical text,
+    so its real line separators (CRLF included) stay verbatim. Metadata sits
+    above the body, so no section exists. An unavailable mapping refuses; a
+    body passage is never fabricated.
     """
     import yaml
 
@@ -2158,12 +2160,22 @@ def _metadata_match_passage(
         raise MalformedProfileError(
             f"no citable frontmatter key for matched fields of {page.path!r}"
         )
-    # The frontmatter is every canonical line above the body; composed marks
-    # are 0-based lines of exactly this text, so canonical line == mark + 1.
-    frontmatter = "\n".join(lines[: max(page.body_start_line - 1, 0)])
-    line_starts = [0]
-    for line in lines[: max(page.body_start_line - 1, 0)]:
-        line_starts.append(line_starts[-1] + len(line) + 1)
+    lines = raw.splitlines()
+    frontmatter_lines = lines[: max(page.body_start_line - 1, 0)]
+    # Start offset of every frontmatter line in the original raw text, each
+    # line's real separator kept (CRLF, LF or bare CR), so both the compose
+    # input and the excerpt slice stay byte-verbatim; composed marks are
+    # 0-based lines of exactly this text, so canonical line == mark + 1.
+    raw_starts = []
+    pos = 0
+    for line in frontmatter_lines:
+        raw_starts.append(pos)
+        pos += len(line)
+        if raw[pos : pos + 2] == "\r\n":
+            pos += 2
+        elif raw[pos : pos + 1] in ("\r", "\n"):
+            pos += 1
+    frontmatter = raw[:pos]
     root = yaml.compose(frontmatter, Loader=yaml.SafeLoader)
     if not isinstance(root, yaml.MappingNode):
         raise MalformedProfileError(
@@ -2182,13 +2194,19 @@ def _metadata_match_passage(
             if not any(term in folded for term in terms):
                 continue
             # The raw token span minus its consuming trailing line breaks is
-            # the verbatim passage; character offsets keep spans exact.
-            start = _mark_offset(node.start_mark, line_starts, len(frontmatter))
-            end = _mark_offset(node.end_mark, line_starts, len(frontmatter))
+            # the verbatim passage; original-text character offsets keep the
+            # span and its separators exact down to whole original lines.
+            start = _mark_offset(node.start_mark, raw_starts, len(frontmatter))
+            end = _mark_offset(node.end_mark, raw_starts, len(frontmatter))
             span = frontmatter[start:end].rstrip()
             first = node.start_mark.line
             last = first + len(span.splitlines()) - 1
-            return "\n".join(lines[first : last + 1]), first + 1, last + 1, None
+            return (
+                raw[raw_starts[first] : raw_starts[last] + len(lines[last])],
+                first + 1,
+                last + 1,
+                None,
+            )
     raise MalformedProfileError(
         f"no canonical source span for the matched metadata value of {page.path!r}"
     )
@@ -2213,7 +2231,7 @@ def _canonical_match_passage(
     lines = raw.splitlines()
     terms = [term.casefold() for term in matched_terms]
     if "body" not in matched_fields:
-        return _metadata_match_passage(page, matched_fields, terms, lines)
+        return _metadata_match_passage(page, matched_fields, terms, raw)
     # Canonical line ``body_start_line`` begins the body: its first character
     # is that line's terminating newline.
     first = page.body_start_line - 1
