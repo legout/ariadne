@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 15 — Q2 execution authorized only, 2026-10-20.** Owner requests A1 prerequisites before #80; execute the Q2 slice against spec0029 §1.2 in isolation, then independent review. Other r14 task drafts remain proposed. Previous status: Owner requested a next-issue roadmap and reaffirmed Git with local sync as the standard, S3 secondary. No implementation, test execution, ticket publication, integration or release is authorized by this draft. Historical approved M1 execution r12 is complete and preserved in `v0.5.0` and the immutable result refs. |
+| **Status** | **Revision 16 — L2 → A2 execution authorized, 2026-10-20.** Q2 is accepted isolated85dbaab. Owner approved the exact written local navigation contract and its autonomous producer → consumer implementation. G2/T2 and other remaining drafts stay proposed. Previous status: Owner requested a next-issue roadmap and reaffirmed Git with local sync as the standard, S3 secondary. No implementation, test execution, ticket publication, integration or release is authorized by this draft. Historical approved M1 execution r12 is complete and preserved in `v0.5.0` and the immutable result refs. |
 | **Owner direction** | 2026-10-20: “S3 Anbindung ist für Ariadne zweitrangig. Der bevorzugte Weg bleibt git repo mit lokalem sync.” This approves the priority used for this proposal, not new SDK interfaces or capability expansion. |
 | **Goal** | Make the shared Git Content Repository plus a local checkout the normal operator path, then expand useful local knowledge/analytics capabilities without weakening exact admission or standalone behavior. S3 is optional later work, not a prerequisite. |
 | **Behavioral sources** | [Spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), especially §§2–6 and preserved full-target AC1–AC9; [ADR0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Companion: `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md` r2 / ADR0030. The r2 MVP refusal boundary remains authoritative until the corresponding source amendments are approved. |
@@ -72,7 +72,7 @@ new Core integration effects and prior Q2 correspondence; it does not reopen
 settled Q2 findings. Same one-small-fix/one-delta limit, with all budgets and
 identities recorded in the existing run state, not another ledger.
 
-## Current execution — Q2 first independent A1 prerequisite
+## Historical Q2 execution — accepted first A1 prerequisite
 
 Authority: current owner requests autonomous implementation and selects BB Pi
 worker `zai/glm-5.3/high`, reviewer `openai-codex/gpt-6.1-sol/high`; then directs
