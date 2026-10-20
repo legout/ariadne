@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 18 — L2 → A2 execution authorized, 2026-10-20.** Q2 is accepted isolated85dbaab. Owner approved the exact written local navigation contract and its autonomous producer → consumer implementation. G2/T2 and other remaining drafts stay proposed. Previous status: Owner requested a next-issue roadmap and reaffirmed Git with local sync as the standard, S3 secondary. No implementation, test execution, ticket publication, integration or release is authorized by this draft. Historical approved M1 execution r12 is complete and preserved in `v0.5.0` and the immutable result refs. |
+| **Status** | **Revision 19 — L2 → A2 execution authorized, 2026-10-20.** Q2 is accepted isolated85dbaab. Owner approved the exact written local navigation contract and its autonomous producer → consumer implementation. G2/T2 and other remaining drafts stay proposed. Previous status: Owner requested a next-issue roadmap and reaffirmed Git with local sync as the standard, S3 secondary. No implementation, test execution, ticket publication, integration or release is authorized by this draft. Historical approved M1 execution r12 is complete and preserved in `v0.5.0` and the immutable result refs. |
 | **Owner direction** | 2026-10-20: “S3 Anbindung ist für Ariadne zweitrangig. Der bevorzugte Weg bleibt git repo mit lokalem sync.” This approves the priority used for this proposal, not new SDK interfaces or capability expansion. |
 | **Goal** | Make the shared Git Content Repository plus a local checkout the normal operator path, then expand useful local knowledge/analytics capabilities without weakening exact admission or standalone behavior. S3 is optional later work, not a prerequisite. |
 | **Behavioral sources** | [Spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), especially §§2–6 and preserved full-target AC1–AC9; [ADR0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Companion: `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md` r2 / ADR0030. The r2 MVP refusal boundary remains authoritative until the corresponding source amendments are approved. |
@@ -99,6 +99,28 @@ and unaffected post13 evidence. Targeted Ruff applies to changed files. One delt
 review covers F1 and the correction only; unresolved findings go to the owner.
 This exact red/post pair replaces no other task's budget and grants no broader
 suite, weaker assertion, additional fix round or producer integration.
+
+### L2 CRLF correction — additional owner-approved round, 2026-10-20
+
+Owner answered “Go ahead with the plan” to the concrete remaining CRLF defect
+and an additional bounded correction, focused red/post pair and one delta review,
+followed by the already approved A2 continuation after L2 acceptance. This is
+new explicit authority, not a reset of the exhausted F1 round. Frozen7e7ca6c
+and all earlier refs/evidence remain unchanged and unaccepted as historical results.
+
+One fresh isolated Pi GLM5.3/high worker owns only the same producer module and
+existing navigation test. Preserve the escaped-tag/distractor regression; extend
+the same native publication journey with canonical CRLF text and an independently
+authored multiline summary-only match. Parent statically inspects its raw literal
+and coordinates before one focused red invocation. After the expected failure,
+parent grants one correction preserving original source spans/line endings and
+one same-node post-check. No broader suite, new dependency, ranking/verifier
+rewrite or extra publication matrix. Targeted Ruff covers both files. One
+Sol6.1/high delta review covers7e7ca6c..new result and the text preservation it
+changes; earlier settled findings stay settled. On pass accept L2 and resume A2
+under its original assigned check/review budget. Failure or unresolved review
+returns to owner without another automatic round. No target integration, push,
+issue edits, release, service setup or cleanup is authorized.
 
 ## Historical Q2 execution — accepted first A1 prerequisite
 
