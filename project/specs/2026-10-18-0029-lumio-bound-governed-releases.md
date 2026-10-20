@@ -122,6 +122,45 @@ refusals. One focused invocation and independent candidate review are assigned
 in the reconciled plan; failed checks stop without automatic retry. No S3,
 navigation, Reference, ad-hoc or Agent/Tau support is introduced by Q2.
 
+### 1.3 Approved local A2 navigation continuation — 2026-10-20
+
+Owner answered “ja” after reviewing the concrete companion navigation contract
+and being asked to authorize autonomous L2 → A2 implementation. Companion
+spec0009 approved navigation amendment r3 owns the SDK schema and operations;
+this section owns the Core behavior. Q2 remains accepted in the isolated
+candidate, not integrated software. Source/role/visibility/consent and build
+identity invariants remain those of §§3–6. No new architecture/terms are needed.
+
+Enable `list_context_pages`, exact `read_context_page`, `search_context` and the
+`discover` pages group using only the accepted local version-pinned scoped SDK
+facade. Navigation includes visible ordinary unprofiled documentation alongside
+profiled pages; it never marks an ordinary page as a Core-validated Reference.
+Keep existing Core outer list/read/search fields and response limits, adding
+Bound Release/SDK namespace, Entity ID, Published Version and exact page/passage
+citations. Ranking is native Lumio lexical search, not legacy Core ranking or
+another engine. Preserve SDK-provided canonical content, verbatim passages and
+coordinates. Missing advisory metadata stays unknown/advisory rather than
+inventing verification, freshness or numerical attestation. Source registry,
+private artifacts and hidden-page metadata remain undisclosed.
+
+All navigation is source-free and uses the Query/Discovery session's pinned
+release and operator-authorized scope. No fallback to legacy context_layer,
+mutable checkout, raw/unscoped SDK snapshot, YAML reparsing or moving pointer.
+Missing SDK capability/build, mismatched identity and unadmitted/unsupported
+inputs refuse explicitly. Source construction is not needed for these operations;
+existing role restrictions stay intact. `resolve_term`, technical Reference
+profiles, record/ad-hoc operations and S3 consumption remain deferred/refused.
+Changing supported operations or SDK/consumer build requires new matching
+validation and overall admission; never mutate an existing served manifest.
+
+Independent acceptance: publish/admit visible ordinary documentation whose
+text deliberately differs from a legacy page. List/read/search/discover return
+only the authorized SDK text/identity and real passage, never the legacy body
+or a hidden same-token page. Source construction raises if reached. Preserve
+outer shapes, source-free startup/role boundaries and the accepted Q2 behavior.
+Required output too large for the existing limits refuses without elision.
+The plan assigns the focused A2 check plus affected existing MVP/wrapper checks.
+
 ## 2. One authored revision
 
 Ariadne's project is the Git worktree root; Lumio's Knowledge Base is the

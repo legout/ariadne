@@ -10,6 +10,68 @@
 | **Tracker** | [#76](https://github.com/legout/ariadne/issues/76): full epic; [#79](https://github.com/legout/ariadne/issues/79): consumer continuation; [#80](https://github.com/legout/ariadne/issues/80): remaining adapters/guidance/qualification. [#81](https://github.com/legout/ariadne/issues/81) and [Lumio #2](https://github.com/legout/lumio-wiki/issues/2) have delivered released code but remain open; no closure is authorized here. Their old ticket text must be reconciled before new execution. |
 | **Capture / readiness** | Existing glossary terms suffice. Git/local preference changes sequencing, not ADR0026's architecture; no new ADR is proposed. New operation support and the additive navigation API require written Core/producer source amendments before their writers start. Contract: planning-contract v1; installed catalog provenance unknown. |
 
+## Current execution — approved L2 → A2 navigation
+
+Owner 2026-10-20 answered “ja” to the exact written Lumio navigation contract
+and autonomous producer → consumer implementation. Scope is spec0009 navigation
+r3 at producer source `818dadeb54ddb931f828a362ca5c233999f3ad86` and Core spec0029 §1.3. Q2 is already
+accepted isolated85dbaab; all its existing evidence/review stays valid except
+where this navigation delta directly affects support/build/fixtures.
+Do not re-run Q2's independent numerical scenario for a fresh label.
+
+Pi host remains BB, explicit isolated registered paths under the shared XDG
+root; worker `zai/glm-5.3/high`, reviewer `openai-codex/gpt-6.1-sol/high`.
+One producer writer, immediate independent producer public-contract review,
+then one sequential Core writer on the accepted Q2 candidate. No S3 service,
+new dependency, metadata/version bump, target integration, push, issue changes,
+release, real-KB access or cleanup. Native mandatory repository/CI gates remain
+binding at their owning final qualification/release stage; do not claim them
+from these focused source checks.
+
+L2 owns `packages/lumio-wiki/src/lumio_wiki/ariadne_context.py` and its existing
+`packages/lumio-wiki/tests/test_ariadne_context.py`. Native `page_search` and
+`evidence` helpers are reused, not rewritten. Preserve existing profile/S3
+reader behavior. Prefer an additive facade using the current verified reader
+and native immutable resolution; no behavior-changing verification extraction
+without an explicitly pinned characterization obligation. Add one focused native
+publication/navigation test with independently authored pages/coordinates and
+scope/version/mismatch cases from the approved amendment. First return prepared
+test data for parent static schema/oracle inspection before the sole invocation.
+Then implement and run once, serially:
+
+```sh
+$SDK_PY -m pytest -q packages/lumio-wiki/tests/test_ariadne_context.py
+```
+
+This covers new disclosure plus existing local/S3 identity and profile failures;
+unchanged native ranking tests remain the ranking oracle. Targeted Ruff and
+syntax/diff checks cover changed files. A failed invocation freezes WIP for
+parent disposition; at most one parent-authorized small fix pass with one exact
+affected recheck. Preserve genuine failures, reuse unrelated green nodes, no
+repeat-until-green. A fresh Sol/high public-contract review must pass before A2
+consumes the exact SDK content/build.
+
+A2 owns Core `lumio_context.py`, `discovery.py`, necessary source-free forwarding
+in `query.py`, and only genuinely necessary CLI/MCP forwarding. Tests remain
+explicit optional-SDK modules outside default collection: add one focused A2
+scenario in `tests/lumio_local_context.py`; adapt only navigation refusals and
+now-available pages group in `tests/lumio_metric_mvp.py`. Old unsupported-kind
+and remaining operation/role/consent/source checks stay. No technical resolver,
+Core YAML parse or alternative ranking. First statically inspect its native
+fixture/oracle, then one invocation:
+
+```sh
+$CORE_PY -m pytest -q tests/lumio_local_context.py::test_context_navigation_uses_sdk_without_legacy_or_sources tests/lumio_metric_mvp.py tests/test_discovery.py::test_admitted_context_only_discovery_pins_snapshot_and_never_reads_sources tests/test_discovery.py::test_mcp_discovery_starts_source_free_for_every_registration
+```
+
+The SDK environment consumes the frozen accepted producer source/build; base
+Core still imports without SDK. Reuse Q2 numerical proof while that code/test
+and fixture remain unchanged. If a required change invalidates it, parent assigns
+its exact affected check before execution. One fresh A2 candidate review covers
+new Core integration effects and prior Q2 correspondence; it does not reopen
+settled Q2 findings. Same one-small-fix/one-delta limit, with all budgets and
+identities recorded in the existing run state, not another ledger.
+
 ## Current execution — Q2 first independent A1 prerequisite
 
 Authority: current owner requests autonomous implementation and selects BB Pi
