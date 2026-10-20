@@ -1687,3 +1687,222 @@ def test_admission_rejects_foreign_source_subtree_binding(tmp_path, monkeypatch,
         open_published_context(
             prepared_location, prepared_identity, metadata_store=selected_metadata
         )
+
+
+# ---------------------------------------------------------------------------
+# Approved local navigation amendment r3 (spec 0009): scoped published
+# navigation over ordinary and profiled pages through the additive SDK.
+# ---------------------------------------------------------------------------
+
+# Independently authored visible ordinary documentation page. Canonical line
+# map: 1 '---', 2 id, 3 title, 4 entity_types, 5 '  - reference', 6 tags,
+# 7 '  - guides', 8 '  - halcyon', 9 summary, 10 lifecycle, 11 visibility,
+# 12 review_after, 13 sources, 14 source id, 15 source title, 16 closing
+# '---' (the body's first character is this line's terminating newline, so
+# body_start_line == 16), 17 blank, 18 H1, 19 blank, 20 intro, 21 blank,
+# 22 '## Ventilation', 23 blank, 24 'The zephyr lane stays open during storms.'
+_AURORA_TEXT = (
+    "---\n"
+    'id: "entity:aurora-care-guide"\n'
+    'title: "Aurora Care Guide"\n'
+    "entity_types:\n"
+    "  - reference\n"
+    "tags:\n"
+    "  - guides\n"
+    "  - halcyon\n"
+    'summary: "Care notes for the aurora terrarium."\n'
+    'lifecycle: "approved"\n'
+    'visibility: "public"\n'
+    'review_after: "2027-09-30"\n'
+    "sources:\n"
+    '  - id: "src-aurora-guide"\n'
+    '    title: "Aurora keeper handbook"\n'
+    "---\n"
+    "\n"
+    "# Aurora Care Guide\n"
+    "\n"
+    "Morning care keeps the terrarium calm.\n"
+    "\n"
+    "## Ventilation\n"
+    "\n"
+    "The zephyr lane stays open during storms.\n"
+)
+
+# Independently authored hidden ordinary page (internal visibility) sharing
+# the unique body token 'zephyr' with the two visible pages.
+_HIDDEN_TEXT = (
+    "---\n"
+    'id: "entity:hidden-zephyr-notes"\n'
+    'title: "Hidden Zephyr Notes"\n'
+    "entity_types:\n"
+    "  - reference\n"
+    "tags:\n"
+    "  - internal\n"
+    'summary: "Internal zephyr calibration notes."\n'
+    'lifecycle: "approved"\n'
+    'visibility: "internal"\n'
+    "sources:\n"
+    '  - id: "src-zephyr-calibration"\n'
+    '    title: "Calibration log"\n'
+    "---\n"
+    "\n"
+    "# Hidden Zephyr Notes\n"
+    "\n"
+    "The zephyr calibration table stays internal.\n"
+)
+
+# One authored body section appended to B's disposable copy so all three
+# pages share the unique body token; the committed golden fixture bytes on
+# disk are never modified.
+_POLICY_ZEPHYR_APPEND = "\n## Zephyr handling\n\nThe zephyr lane stays open during winter storms.\n"
+
+
+def test_scoped_published_navigation_includes_ordinary_pages(tmp_path):
+    """One focused native-publication navigation journey (spec0009 r3).
+
+    Visible ordinary A, visible profiled policy B and hidden ordinary C share
+    the unique body token ``zephyr``; the metadata-only token ``halcyon``
+    exists solely in A's frontmatter (tag, canonical line 8). Expected bytes
+    and coordinates are hand-counted from the authored lines above, never
+    observed from implementation output.
+    """
+    # Future public SDK surface (spec0009 r3): imported inside the test body
+    # so the unchanged SDK still collects this module for the baseline nodes.
+    from lumio_wiki.ariadne_context import (
+        list_published_context_pages,
+        read_published_context_page,
+        search_published_context_pages,
+    )
+
+    aurora_path = "references/aurora-care-guide.md"
+    hidden_path = "references/hidden-zephyr-notes.md"
+    policy_path = "policies/retail-return-policy.md"
+
+    repo = _init_repo(tmp_path)
+    # Exactly B comes from the valid policy fixture (``pages={}`` would
+    # silently copy every golden page); A and C are authored via mutate.
+    kb = _write_kb(
+        repo,
+        pages={policy_path: policy_path},
+        mutate={aurora_path: _AURORA_TEXT, hidden_path: _HIDDEN_TEXT},
+    )
+    policy_b_text = (kb / policy_path).read_text() + _POLICY_ZEPHYR_APPEND
+    (kb / policy_path).write_text(policy_b_text)
+
+    revision = _commit(repo)
+    destination = tmp_path / "published"
+    _publish(kb, revision, destination, "none")
+    expected = _expected_identity(kb, destination, revision)
+    pinned = PublishedFilesystemLocation(destination, version=revision)
+
+    # --- Plain, unpinned and S3 navigation inputs refuse explicitly. ---
+    with pytest.raises(UnadmittedInputError, match="plain directories"):
+        list_published_context_pages(FilesystemLocation(kb), expected)
+    with pytest.raises(UnadmittedInputError, match="no exact version pin"):
+        read_published_context_page(PublishedFilesystemLocation(destination), expected, aurora_path)
+    with pytest.raises(UnadmittedInputError):
+        search_published_context_pages(
+            S3Location(InMemoryArtifactStore(), "kb", version=revision), expected, "zephyr"
+        )
+
+    # --- List: exactly A+B metadata sorted by exact relative path, no bodies. ---
+    metas = list_published_context_pages(pinned, expected)
+    assert [meta.path for meta in metas] == [policy_path, aurora_path]
+    policy_meta, aurora_meta = metas
+    assert aurora_meta.namespace == NAMESPACE
+    assert aurora_meta.entity_id == "entity:aurora-care-guide"
+    assert aurora_meta.title == "Aurora Care Guide"
+    assert aurora_meta.kind == "unprofiled"
+    assert aurora_meta.published_version == revision
+    assert aurora_meta.citation == f"{NAMESPACE} entity:aurora-care-guide v{revision} {aurora_path}"
+    assert aurora_meta.lifecycle == "approved"
+    assert str(aurora_meta.review_after) == "2027-09-30"
+    assert policy_meta.title == "Retail Return Policy"
+    assert policy_meta.kind == "policy"
+    assert policy_meta.review_after is None  # absent advisory fact stays absent
+    assert all(not hasattr(meta, "body") and not hasattr(meta, "content") for meta in metas)
+    with pytest.raises((TypeError, AttributeError)):  # records are immutable
+        metas[0].title = "X"
+
+    # --- Read: one byte-exact canonical page with immutable identity. ---
+    aurora = read_published_context_page(pinned, expected, aurora_path)
+    assert aurora.content == _AURORA_TEXT
+    assert aurora.body_start_line == 16  # closing frontmatter delimiter line
+    assert "# Aurora Care Guide" in aurora.body
+    assert "The zephyr lane stays open during storms." in aurora.body
+    assert "halcyon" not in aurora.body  # metadata stays metadata
+    assert disclose_native(aurora.native) == {}  # empty when unprofiled
+    assert [source.id for source in aurora.sources] == ["src-aurora-guide"]
+    assert aurora.kind == "unprofiled"
+    assert aurora.citation == f"{NAMESPACE} entity:aurora-care-guide v{revision} {aurora_path}"
+    policy_view = read_published_context_page(pinned, expected, policy_path)
+    assert policy_view.content == policy_b_text
+    assert policy_view.kind == "policy"
+    assert policy_view.native["status"] == "stable"
+
+    # --- Hidden and unknown paths refuse indistinguishably, without leaks. ---
+    with pytest.raises(UnadmittedInputError) as hidden_refusal:
+        read_published_context_page(pinned, expected, hidden_path)
+    with pytest.raises(UnadmittedInputError) as missing_refusal:
+        read_published_context_page(pinned, expected, "references/no-such-page.md")
+    hidden_msg = str(hidden_refusal.value)
+    missing_msg = str(missing_refusal.value)
+    assert hidden_msg.replace(hidden_path, "<path>") == missing_msg.replace(
+        "references/no-such-page.md", "<path>"
+    )
+    assert "Hidden Zephyr" not in hidden_msg
+    assert "entity:hidden-zephyr-notes" not in hidden_msg
+    assert "calibration" not in hidden_msg
+
+    # --- Body search: A+B visible-only; C never contributes. B carries two
+    # authored body occurrences of the shared token (appended heading and
+    # sentence) against A's one, so the native weighting ranks B first. ---
+    hits = search_published_context_pages(pinned, expected, "zephyr")
+    assert [hit.page.path for hit in hits] == [policy_path, aurora_path]
+    assert all(hit.candidates_seen == 2 and hit.results_dropped == 0 for hit in hits)
+    assert hits[0].score > hits[1].score > 0
+    aurora_hit = next(hit for hit in hits if hit.page.path == aurora_path)
+    assert tuple(aurora_hit.matched_fields) == ("body",)
+    assert tuple(aurora_hit.matched_terms) == ("zephyr",)
+    assert "zephyr" in aurora_hit.snippet
+    assert aurora_hit.page.content == _AURORA_TEXT
+    # Hand-counted verbatim excerpt: authored line 24, inside the
+    # 'Ventilation' section (its heading sits on line 22).
+    assert aurora_hit.excerpt == "The zephyr lane stays open during storms."
+    assert (aurora_hit.line_start, aurora_hit.line_end) == (24, 24)
+    assert aurora_hit.section == "Ventilation"
+
+    # --- Metadata-only match cites the real frontmatter passage, never a
+    # fabricated body passage (authored tag line 8, before the body). ---
+    (halcyon_hit,) = search_published_context_pages(pinned, expected, "halcyon")
+    assert halcyon_hit.page.path == aurora_path
+    assert tuple(halcyon_hit.matched_fields) == ("tag",)
+    assert tuple(halcyon_hit.matched_terms) == ("halcyon",)
+    assert halcyon_hit.excerpt == "  - halcyon"
+    assert (halcyon_hit.line_start, halcyon_hit.line_end) == (8, 8)
+    assert halcyon_hit.line_start < aurora.body_start_line
+    assert halcyon_hit.section is None
+    assert halcyon_hit.candidates_seen == 1 and halcyon_hit.results_dropped == 0
+
+    # --- Honest limit accounting: the native ranking keeps B alone. ---
+    (only_hit,) = search_published_context_pages(pinned, expected, "zephyr", limit=1)
+    assert only_hit.page.path == policy_path
+    assert only_hit.candidates_seen == 2 and only_hit.results_dropped == 1
+
+    # --- A later publication never mutates the pinned v1 reads or search. ---
+    aurora_v2_text = _AURORA_TEXT + "\n## Winter notes\n\nThe aurora dims near the equinox.\n"
+    (kb / aurora_path).write_text(aurora_v2_text)
+    revision2 = _commit(repo)
+    _publish(kb, revision2, destination, revision)
+    assert read_published_context_page(pinned, expected, aurora_path).content == _AURORA_TEXT
+    assert [
+        hit.page.path for hit in search_published_context_pages(pinned, expected, "zephyr")
+    ] == [policy_path, aurora_path]
+    # The v2 pin refuses the v1 expected identity; latest is never substituted.
+    with pytest.raises(IdentityMismatchError, match="published_version"):
+        read_published_context_page(
+            PublishedFilesystemLocation(destination, version=revision2), expected, aurora_path
+        )
+    expected2 = _expected_identity(kb, destination, revision2)
+    pinned2 = PublishedFilesystemLocation(destination, version=revision2)
+    assert read_published_context_page(pinned2, expected2, aurora_path).content == aurora_v2_text
