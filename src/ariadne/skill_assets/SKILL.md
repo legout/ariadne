@@ -404,9 +404,15 @@ the operator's explicit overall admission — is the sole context authority:
 - `discover` and `list-metrics` disclose the admitted catalog and the exact
   supported operation set without opening sources; `list-datasets` remains an
   approved live-catalog operation, not a source-free one.
-- Only `metric` and `policy` profiles are supported, enforced across the
-  whole captured KB. `query-detail`, `query-records`, `define-metric`,
-  `save-example`, `search-examples` and `resolve-term` refuse in an
+- `resolve-term` resolves shared business terms and exact field lookups
+  against the pinned release's validated structured References, source-free:
+  exact bindings, claim/confirmation status with AS-OF evidence freshness,
+  version-qualified citations. A mapping is confirmed only by recorded human
+  admission evidence; an authored page never confirms itself, and a language
+  alias never authorizes a join or a transform.
+- Only `metric`, `policy` and `reference` profiles are supported, enforced
+  across the whole captured KB. `query-detail`, `query-records`,
+  `define-metric`, `save-example` and `search-examples` refuse in an
   integrated project — never route around the refusal via legacy context,
   weaker roots or raw SQL, and never present the refusal as something to fix
   by widening scope.

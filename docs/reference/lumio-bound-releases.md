@@ -62,13 +62,14 @@ manifest):
 | Area | Delivered behavior |
 | --- | --- |
 | Storage | Local immutable Published Versions only. An S3 destination or reader refuses explicitly; mutable/current/latest reads and plain directories refuse. |
-| Profiles | `metric` and `policy` only, checked across the entire captured KB. Any other Ariadne profile kind anywhere in the KB refuses admission — even when no metric references it. Ordinary unprofiled pages stay KB content and are never exposed as Core-validated technical references. |
+| Profiles | `metric`, `policy` and `reference` only, checked across the entire captured KB. A `reference` profile is supported ONLY as a fully validated structured Reference (spec 0010 contract, real Core inspection receipts for asserted mappings, exact human mapping confirmation). Any other Ariadne profile kind anywhere in the KB refuses admission — even when no metric references it. Ordinary unprofiled pages stay KB content and are never exposed as Core-validated technical references. |
 | `get_metric` | Governed calculation with one exact Context Binding and the complete required Policy Closure, resolved in the same pinned snapshot before SQL. |
 | `query_metrics` | Multiple predefined metrics over the admitted multi-fact graph, complete per-metric Policy context, exact citations. |
 | `discover`, `list_metrics` | Source-free disclosure of the admitted catalog, binding identity and available/unavailable operations. No source is opened. |
 | `list_datasets` | Retains its approved live-catalog semantics — it is not source-free. |
 | `list_context_pages`, `read_context_page`, `search_context` | Source-free navigation over the pinned, operator-scoped published pages (see below). |
-| Refused integrated operations | `query_detail`, `query_records`, `define_metric`, `save_example`, `search_examples`, `resolve_term` refuse as unsupported before planning or SQL — never a legacy-context fallback. The same callables keep working in standalone projects. |
+| `resolve_term` | Source-free terminology resolution over the pinned release's validated structured References (spec 0010 §6 semantics through the one shared resolver): exact field bindings, claim/confirmation status, AS-OF evidence freshness, version-qualified citations. No transform, no SQL rewrite, no join authority; an authored evidence value is disclosure, never authority. |
+| Refused integrated operations | `query_detail`, `query_records`, `define_metric`, `save_example`, `search_examples` refuse as unsupported before planning or SQL — never a legacy-context fallback. The same callables keep working in standalone projects. |
 
 Unsupported technical application fields (physical-reference/identifier-mapping
 extensions, SDK computation/executor/attester annotations) cannot be smuggled

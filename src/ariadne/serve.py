@@ -905,7 +905,16 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 part: which bounded part of the matches (default 1; the response
                     carries total_matches/parts/truncated for continuation).
             """
-            return await _runtime().resolve_term(request, part=part)
+            # T2 (spec0029 §1.5): integrated term resolution is source-free —
+            # the pinned discovery session serves it; the query runtime (and
+            # any source connection) is never constructed, and the typed
+            # result keeps the whole-output refusal-budget guarantees.
+            _refuse_unrepresentable_mcp_ceiling(project)
+            discovery = DiscoveryRuntime.open_project(project)
+            result = await discovery.resolve_term(request, part=part)
+            return _typed_navigation_result(
+                app._tool_manager._tools["resolve_term"], result, project
+            )
 
     # ------------------ the Authoring registration (authoring, combined) ----
 

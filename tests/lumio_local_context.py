@@ -523,13 +523,17 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     enabled = {"search_context", "list_context_pages", "read_context_page"}
     assert enabled <= set(support["operations"])
     assert not enabled & set(support["unsupported"])
-    assert "resolve_term" in support["unsupported"]
+    assert "resolve_term" in support["operations"]  # T2 (spec0029 §1.5)
     assert report["groups"]["pages"] == {
         "status": "available",
         "items": hits,
         "completeness": "unknown",
     }
-    assert report["groups"]["terms"]["status"] == "unavailable"
+    # T2 (spec0029 §1.5): resolve_term now serves on integrated admissions —
+    # this release carries no structured References, so the group is honestly
+    # available and empty
+    assert report["groups"]["terms"]["status"] == "available"
+    assert report["groups"]["terms"]["result"]["total_matches"] == 0
     assert report["groups"]["examples"]["status"] == "unavailable"
 
     # the same navigation over the actual CLI, still under the source guards.
@@ -801,3 +805,376 @@ def test_sync_does_not_activate_context(tmp_path, monkeypatch, capsys):
     assert missing["project"]["admission"] == {"state": "none"}
     assert missing["project"]["git"]["head_revision"] == b_rev
     assert missing["ready"] is False
+
+
+# --------------------------- T2 technical Reference (spec0029 §1.5)
+
+# Hand-authored oracle data for the extra order_numbers table in the SAME
+# approved native DuckDB catalog: the global number is the store prefix
+# concatenated with the local number on ALL FOUR rows (including the retained
+# leading-zero example). The asserted mapping is therefore NOT contradicted by
+# its own verified evidence — spec0010/K4 counterevidence rules refuse an
+# asserted claim with any mismatch. Every expected count below is hand-worked
+# from these rows and the authored table definition, never taken from output.
+T2_ORDER_ROWS = [
+    ("ABC", "123123", "ABC123123"),
+    ("XYZ", "123123", "XYZ123123"),
+    ("ABC", "00123", "ABC00123"),
+    ("QQQ", "999999", "QQQ999999"),
+]
+T2_REFERENCE_PAGE = "references/order-number.md"
+T2_MAPPING = "store-prefix-composition"
+T2_SELECTION = f"order-number:{T2_MAPPING}"
+T2_CITATION_PATH = "references/order-number.md"
+# The SDK-authored evidence digest in the submitted golden page (sha256 of
+# empty bytes): disclosure only — it must never surface as verified authority.
+T2_DUMMY_EVIDENCE_DIGEST = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+
+def t2_reference_candidate(root: Path):
+    """One integrated single-metric candidate that explicitly ADAPTS the
+    submitted golden Reference inside the synthetic proposal: the curated
+    Entity/title/body/profile identity is preserved except the declared field
+    bindings, which are realigned to the actually authored order_numbers table
+    in the MEASURED DECLARED order (candidate left store_id then
+    local_order_number), and one common umbrella alias ``order number`` is
+    authored on BOTH representations so the native whole-alias matcher has a
+    genuine shared term. The mapping's MEASURABLE candidate — including the
+    explicit scope predicate honoring the local representation's required
+    store_id scope, with every authored store listed so all four rows stay
+    eligible — is authored BEFORE the first reconcile so native dependency
+    capture can see it. The remaining edits are the accepted single-metric
+    policy closure of the MVP candidate."""
+    import yaml
+
+    from ariadne.sources import table_resource
+    from tests.lumio_metric_mvp import CONTROL
+
+    project = content_project(root)
+    import duckdb  # pyright: ignore[reportMissingImports] — qualified test env is external
+
+    con = duckdb.connect(str(project / "data" / "orders.duckdb"))
+    # test-fixture DDL over test-local column constants
+    # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
+    con.execute(
+        'CREATE TABLE main."order_numbers"('
+        "store_id VARCHAR, local_order_number VARCHAR, global_order_number VARCHAR)"
+    )
+    # parameterized test-fixture insert (bound parameters only)
+    # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
+    con.executemany('INSERT INTO main."order_numbers" VALUES (?, ?, ?)', T2_ORDER_ROWS)
+    con.close()
+    resource = table_resource("orders", "orders", "main", "order_numbers")
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    revision = contracted(
+        api,
+        started,
+        contract=ORDERS_CONTRACT.replace("region", "status").replace("mustBe: 60", "mustBe: 175"),
+        bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+            "model: orders", "model: retail_sales"
+        ),
+    )
+    tree = worktree_of(project, started["proposal"])
+    reference = tree / "knowledge" / T2_REFERENCE_PAGE
+    meta, body = page_parts(reference)
+    extension = meta["ariadne_profile"]["native"]["ariadne"]
+    for representation in extension["representations"]:
+        # the golden declaration order (global THEN local) is preserved
+        if representation["id"] == "global-order-number":
+            representation["fields"] = [{"resource": resource, "column": "global_order_number"}]
+        else:
+            representation["fields"] = [
+                {"resource": resource, "column": "store_id"},
+                {"resource": resource, "column": "local_order_number"},
+            ]
+            representation["scope"] = [{"resource": resource, "column": "store_id"}]
+        representation["aliases"].append("order number")  # authored shared umbrella alias
+    declared_candidate = {
+        "family": "prefix",
+        "left": [
+            {"resource": resource, "column": "store_id"},
+            {"resource": resource, "column": "local_order_number"},
+        ],
+        "right": [{"resource": resource, "column": "global_order_number"}],
+        "separator": "",
+        "scope": [
+            {
+                "resource": resource,
+                "column": "store_id",
+                "op": "in",
+                "value": ["ABC", "XYZ", "QQQ"],
+            }
+        ],
+    }
+    extension["mappings"][0]["candidate"] = declared_candidate
+    write_page(reference, meta, body)
+    (tree / "knowledge/policies/cancelled-orders.md").write_text(CANCELLATION)
+    metric = tree / "knowledge/metrics/retail-revenue.md"
+    meta, body = page_parts(metric)
+    profile = meta["ariadne_profile"]
+    profile["required_policies"].append(
+        {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"}
+    )
+    profile["native"]["sources"].append(
+        {"id": "cancelled-orders", "resource": "policies/cancelled-orders.md"}
+    )
+    profile["ontology_refs"] = [
+        {"namespace": "urn:demo:catalog", "identifier": "retail-hierarchy", "revision": "r7"}
+    ]
+    write_page(metric, meta, body)
+    (tree / "knowledge/lumio.yaml").write_text(
+        CONTROL
+        + yaml.safe_dump(
+            {
+                "ariadne_context": {
+                    "version": 1,
+                    "ontology_catalog": {"urn:demo:catalog": {"retail-hierarchy": "r7"}},
+                }
+            }
+        )
+    )
+    revision = reconcile_knowledge(project, started["proposal"], revision)
+    return project, api, started["proposal"], revision, resource, declared_candidate
+
+
+def test_reference_term_resolution_requires_real_evidence_and_confirmation(
+    tmp_path, monkeypatch, capsys
+):
+    """T2 (spec0029 §1.5): the adapted golden Reference resolves through the
+    pinned SDK release on real operator-approved data. A fully validated
+    admission without selections serves the asserted mapping UNCONFIRMED; the
+    exact existing human selection goes through the native overall preview and
+    confirmation (the composite digest binds it) and serves CONFIRMED; after a
+    fresh remeasure plus explicit final candidate edit and a new admission
+    WITHOUT a new selection, the changed authentic receipt dependency makes
+    the old confirmation not current. Only authentic Core receipts carry
+    evidence authority — the SDK-authored ariadne_evidence digest is
+    disclosure. Exact Resource/column identity, the SDK version-qualified
+    citation, Bound Release identity, pinned scope and no-join-authority
+    semantics hold throughout; serving is source-free, measurement is not."""
+    import json
+
+    from ariadne import admission, serve
+    from ariadne.cli import main as cli
+    from ariadne.discovery import DiscoveryRuntime
+    from tests.lumio_metric_mvp import current_bytes
+    from tests.test_discovery import _source_free_guards
+
+    project, api, proposal, revision, resource, candidate = t2_reference_candidate(tmp_path)
+
+    # REAL native measurement of the DECLARED candidate against the
+    # operator-approved synthetic source (guards are OFF for measurement)
+    envelope = api.inspect_mapping(proposal, revision, candidate)
+    receipt = envelope["receipt"]
+    retained = json.loads(Path(envelope["evidence"]).read_text())
+    assert retained == receipt  # the retained evidence file IS the returned receipt
+    counts = receipt["counts"]
+    assert counts["eligible_left"] == 4  # every composite is non-null and in scope
+    assert counts["eligible_right"] == 4  # every global is non-null
+    assert counts["tested_left"] == 4  # default 1000-row ceiling covers all rows
+    assert receipt["coverage"]["left_in_right"]["matched"] == 4  # all four compose
+    assert receipt["mismatch_count"] == 0  # no counterevidence for the asserted claim
+    assert [column["name"] for column in receipt["dependencies"]["assets"][0]["columns"]] == [
+        "store_id",
+        "local_order_number",
+        "global_order_number",
+    ]  # the authored table definition order
+
+    # the operator's explicit later candidate edit attaches the AUTHENTIC
+    # receipt id to the declared mapping
+    def _attach(receipt_id: str, previous: str) -> str:
+        tree = worktree_of(project, proposal)
+        page = tree / "knowledge" / T2_REFERENCE_PAGE
+        meta, body = page_parts(page)
+        mapping = meta["ariadne_profile"]["native"]["ariadne"]["mappings"][0]
+        assert mapping["id"] == T2_MAPPING and mapping["claim"] == "asserted"
+        mapping["receipt_ids"] = [receipt_id]
+        write_page(page, meta, body)
+        return reconcile_knowledge(project, proposal, previous)
+
+    revision = _attach(receipt["receipt_id"], revision)
+    validated = api.validate_proposal(proposal, revision)
+    assert validated["ok"] is True, validated["errors"]
+    # validation finalizes generated evidence in a NEW final commit: every
+    # later operation uses that actual revision, never the input commit
+    revision = validated["revision"]
+    review = api.review_proposal(proposal)
+    assert review["revision"] == revision
+    [assertion] = review["mapping_assertions"]
+    assert assertion["reference"] == "order-number"
+    assert assertion["mapping"] == T2_MAPPING
+    assert assertion["claim"] == "asserted" and assertion["confirmable"] is True
+    # the reviewed Core-owned summary carries id/digest of the actual receipt
+    assert [item["id"] for item in assertion["receipts"]] == [receipt["receipt_id"]]
+    assert [item["digest"] for item in assertion["receipts"]] == [receipt["integrity_digest"]]
+
+    destination = tmp_path / "published"
+
+    # [1] first overall admission WITHOUT selections: unconfirmed serving
+    activate(project, review, preview(project, review, destination))
+    record = json.loads(current_bytes(project))
+    assert record["confirmed_mappings"] == []
+    digest_a = record["bound_release"]["digest"]
+    citation = f"{NAMESPACE} entity:order-number v{revision} {T2_CITATION_PATH}"
+
+    with monkeypatch.context() as guarded:
+        _source_free_guards(guarded)
+        session = DiscoveryRuntime.open_project(project)
+        served = asyncio.run(session.resolve_term("order number"))
+        assert served["total_matches"] == 2 and served["ambiguous"] is True
+        assert served["truncated"] is False and served["complete"] is True
+        # stable native order follows the declaration order: global THEN local
+        assert [match["representation"] for match in served["matches"]] == [
+            "global-order-number",
+            "local-order-number",
+        ]
+        for match in served["matches"]:
+            assert match["page"] == T2_REFERENCE_PAGE
+            assert match["entity_id"] == "entity:order-number"
+            assert match["published_version"] == revision
+            assert match["bound_release"] == digest_a
+            assert match["citation"] == citation  # the SDK version-qualified citation
+            assert not ({"sql", "transform", "join"} & set(match))
+        # the local representation is located BY identity, not destructured order
+        local = next(
+            match for match in served["matches"] if match["representation"] == "local-order-number"
+        )
+        assert local["level"] == "representation" and local["draft"] is False
+        # exact Resource+column identity in the MEASURED DECLARED order
+        assert local["fields"] == [
+            {"resource": resource, "column": "store_id"},
+            {"resource": resource, "column": "local_order_number"},
+        ]
+        assert local["scope"] == [{"resource": resource, "column": "store_id"}]
+        [mapping_view] = local["mappings"]
+        assert mapping_view["id"] == T2_MAPPING
+        assert mapping_view["family"] == "prefix"
+        assert mapping_view["claim"] == "asserted"
+        assert mapping_view["confirmation"] == "unconfirmed"  # admission is not K4
+        assert mapping_view["receipt_ids"] == [receipt["receipt_id"]]
+        assert {view["digest"] for view in mapping_view["evidence"]} == {
+            receipt["integrity_digest"]
+        }
+        assert all(view["freshness"]["state"] == "as_of" for view in mapping_view["evidence"])
+        assert T2_DUMMY_EVIDENCE_DIGEST not in {
+            view["digest"] for view in mapping_view["evidence"]
+        }  # the SDK-authored digest never poses as authority
+        # native matcher semantics: exact phrase, exact qualified field,
+        # never case-folded fields, whole aliases only
+        exact = asyncio.run(session.resolve_term("GLOBAL Order Number"))
+        assert [match["representation"] for match in exact["matches"]] == ["global-order-number"]
+        assert exact["ambiguous"] is False and exact["total_matches"] == 1
+        field = asyncio.run(
+            session.resolve_term({"resource": resource, "column": "global_order_number"})
+        )
+        assert [match["representation"] for match in field["matches"]] == ["global-order-number"]
+        missed = asyncio.run(
+            session.resolve_term({"resource": resource, "column": "GLOBAL_ORDER_NUMBER"})
+        )
+        assert missed["total_matches"] == 0
+        assert asyncio.run(session.resolve_term("order"))["total_matches"] == 0
+        # one real CLI resolution on the same admitted Reference (JSON default)
+        assert cli(["resolve-term", "order number", "--project", str(project)]) == 0
+        cli_result = json.loads(capsys.readouterr().out)
+        assert [match["representation"] for match in cli_result["matches"]] == [
+            "global-order-number",
+            "local-order-number",
+        ]
+        cli_local = next(
+            match
+            for match in cli_result["matches"]
+            if match["representation"] == "local-order-number"
+        )
+        assert cli_local["mappings"][0]["confirmation"] == "unconfirmed"
+
+    # [2] the ordinary human selection through native preview + confirmation:
+    # the composite digest binds the exact selection on BOTH calls
+    review = api.review_proposal(proposal)
+    composite = admission.overall_review(
+        project,
+        proposal,
+        review["revision"],
+        review["review_digest"],
+        destination=destination,
+        expected_current=review["revision"],
+        confirm_mappings=[T2_SELECTION],
+    )
+    assert composite["mapping_selections"] == [T2_SELECTION]
+    admission.admit_revision(
+        project,
+        proposal,
+        review["revision"],
+        review["review_digest"],
+        confirmed_by="human:synthetic-operator",
+        confirm_mappings=[T2_SELECTION],
+        overall_preview=composite,
+        confirmed_overall_digest=composite["digest"],
+    )
+    confirmed = json.loads(current_bytes(project))
+    [entry] = confirmed["confirmed_mappings"]
+    assert entry["page"] == T2_REFERENCE_PAGE and entry["mapping"] == T2_MAPPING
+    assert [item["digest"] for item in entry["receipts"]] == [receipt["integrity_digest"]]
+
+    with monkeypatch.context() as guarded:
+        _source_free_guards(guarded)
+        session = DiscoveryRuntime.open_project(project)
+        served = asyncio.run(session.resolve_term("order number"))
+        local = next(
+            match for match in served["matches"] if match["representation"] == "local-order-number"
+        )
+        [mapping_view] = local["mappings"]
+        assert mapping_view["confirmation"] == "confirmed"  # exact recorded selection
+        assert all(view["freshness"]["state"] == "as_of" for view in mapping_view["evidence"])
+        # one real MCP resolution on the same admitted Reference: the
+        # documented bare-dict tool form — exactly one JSON text block
+        app = serve.build_app(QueryRuntime, project=str(project))
+        mcp = asyncio.run(app.call_tool("resolve_term", {"request": "order number"}))
+        assert not getattr(mcp, "is_error", False)
+        assert mcp.structured_content is None
+        blocks = list(mcp.content)
+        assert len(blocks) == 1 and blocks[0].type == "text"
+        mcp_result = json.loads(blocks[0].text)
+        assert [match["representation"] for match in mcp_result["matches"]] == [
+            "global-order-number",
+            "local-order-number",
+        ]
+        mcp_local = next(
+            match
+            for match in mcp_result["matches"]
+            if match["representation"] == "local-order-number"
+        )
+        assert mcp_local["mappings"][0]["confirmation"] == "confirmed"
+
+    # [3] a fresh remeasure of the SAME valid data is the changed dependency
+    # (a new authentic receipt id and integrity digest — the native
+    # remeasure-breaks-inheritance rule), then the explicit final candidate
+    # edit re-attaches it and the new admission carries NO new selection
+    remeasured = api.inspect_mapping(proposal, revision, candidate)
+    receipt_b = remeasured["receipt"]
+    assert receipt_b["receipt_id"] != receipt["receipt_id"]
+    assert receipt_b["integrity_digest"] != receipt["integrity_digest"]
+    assert receipt_b["mismatch_count"] == 0  # the data still composes completely
+    assert receipt_b["coverage"]["left_in_right"]["matched"] == 4
+    revision_b = _attach(receipt_b["receipt_id"], revision)
+    validated_b = api.validate_proposal(proposal, revision_b)
+    assert validated_b["ok"] is True, validated_b["errors"]
+    revision_b = validated_b["revision"]
+    review_b = api.review_proposal(proposal)
+    assert review_b["revision"] == revision_b
+    activate(project, review_b, preview(project, review_b, destination, review["revision"]))
+
+    with monkeypatch.context() as guarded:
+        _source_free_guards(guarded)
+        session = DiscoveryRuntime.open_project(project)
+        served = asyncio.run(session.resolve_term("order number"))
+        local = next(
+            match for match in served["matches"] if match["representation"] == "local-order-number"
+        )
+        [mapping_view] = local["mappings"]
+        assert mapping_view["confirmation"] == "unconfirmed"  # the old one is not current
+        assert mapping_view["receipt_ids"] == [receipt_b["receipt_id"]]
+        assert {view["digest"] for view in mapping_view["evidence"]} == {
+            receipt_b["integrity_digest"]
+        }

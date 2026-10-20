@@ -1248,13 +1248,64 @@ def review_proposal(project: str | Path, proposal: str, *, part: int = 1) -> dic
 # ------------------------------------ K4 (issue #44): asserted mappings surface
 
 
+def _kb_reference_view(full_meta: object) -> dict | None:
+    """Adapt one integrated KB Reference page (spec0029 §1.5) to the shared
+    structured Reference shape: an in-memory view over producer-validated
+    native metadata — the curated KB stays the one maintained source, this is
+    never a context_layer mirror or a KB write. Returns None for pages
+    without a structured reference profile."""
+    if not isinstance(full_meta, dict):
+        return None
+    profile = full_meta.get("ariadne_profile")
+    if not isinstance(profile, dict) or profile.get("kind") != "reference":
+        return None
+    native = profile.get("native")
+    if not isinstance(native, dict):
+        return None
+    extension = native.get("ariadne")
+    if not isinstance(extension, dict) or not isinstance(extension.get("mappings"), list):
+        return None
+    return {
+        "type": "reference",
+        "title": native.get("title"),
+        "aliases": list(native.get("aliases") or []),
+        "sources": list(native.get("sources") or []),
+        "ariadne": extension,
+        "ariadne_evidence": native.get("ariadne_evidence"),
+    }
+
+
 def _reference_mapping_pages(tree: Path) -> list[tuple[str, dict, dict]]:
     """Every structured Reference page of one materialized candidate tree:
     (context-relative page path, frontmatter meta, the ariadne extension).
     Legacy References without the extension stay out; malformed draft pages
-    stay out too — the page gate owns their structural errors."""
+    stay out too — the page gate owns their structural errors. Integrated
+    candidates (spec0029 §1.5) carry their ONE maintained curated source in
+    the knowledge/ subtree: those KB Reference pages are consumed through the
+    shared in-memory view above, and a legacy context_layer copy — if any —
+    is never a fallback source."""
+    if (tree / "context_integration.yaml").is_file():
+        pages: list[tuple[str, dict, dict]] = []
+        knowledge = tree / "knowledge"
+        for page in sorted(knowledge.rglob("*.md")) if knowledge.is_dir() else []:
+            if page.name in ("index.md", "log.md"):
+                continue
+            try:
+                full = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
+            except yaml.YAMLError:
+                continue  # the producer/page gate owns the malformed error
+            adapted = _kb_reference_view(full)
+            if adapted is not None:
+                pages.append(
+                    (
+                        page.relative_to(knowledge).as_posix(),
+                        adapted,
+                        adapted["ariadne"],
+                    )
+                )
+        return pages
     context_dir = tree / "context_layer"
-    pages: list[tuple[str, dict, dict]] = []
+    legacy: list[tuple[str, dict, dict]] = []
     for page in sorted(context_dir.rglob("*.md")) if context_dir.is_dir() else []:
         if page.name in _GENERATED_FILES:
             continue
@@ -1267,8 +1318,8 @@ def _reference_mapping_pages(tree: Path) -> list[tuple[str, dict, dict]]:
             continue  # the page gate owns the malformed-draft error
         extension = meta.get("ariadne") if isinstance(meta, dict) else None
         if isinstance(extension, dict) and isinstance(extension.get("mappings"), list):
-            pages.append((rel, meta, extension))
-    return pages
+            legacy.append((rel, meta, extension))
+    return legacy
 
 
 def _asserted_claim_errors(tree: Path) -> list[str]:
@@ -3114,14 +3165,31 @@ def _verify_receipt(
 def _reference_pages_at(project: Path, revision: str) -> dict[str, dict]:
     """The tracked structured Reference pages at one revision: path ->
     {meta, text}. Pages without the ``ariadne`` extension stay out (legacy
-    References never carry mapping evidence)."""
+    References never carry mapping evidence). Integrated candidates carry
+    their structured References in the knowledge/ subtree (spec0029 §1.5):
+    each record also keeps the KB-relative path and the FULL page frontmatter
+    for the Core-owned evidence attach, which rewrites the page through the
+    producer's public parse and checked worktree write — never a
+    context_layer mirror."""
     tracked = proposals._git(["ls-tree", "-r", "--name-only", revision], project).stdout
     pages: dict[str, dict] = {}
+    integrated = "context_integration.yaml" in tracked.split("\n")
     for rel in tracked.split("\n"):
-        if not rel.startswith("context_layer/references/") or not rel.endswith(".md"):
+        kb_path: str | None = None
+        if integrated:
+            if not rel.startswith("knowledge/") or not rel.endswith(".md"):
+                continue
+            kb_path = PurePosixPath(rel).relative_to("knowledge").as_posix()
+            if PurePosixPath(rel).name in proposals._GENERATED_FILES or kb_path in (
+                "index.md",
+                "log.md",
+            ):
+                continue
+        elif not rel.startswith("context_layer/references/") or not rel.endswith(".md"):
             continue
-        if PurePosixPath(rel).name in proposals._GENERATED_FILES:
-            continue
+        else:
+            if PurePosixPath(rel).name in proposals._GENERATED_FILES:
+                continue
         blob = proposals._read_blob(project, revision, rel)
         if blob is None:  # pragma: no cover - ls-tree paths always resolve
             continue
@@ -3130,13 +3198,37 @@ def _reference_pages_at(project: Path, revision: str) -> dict[str, dict]:
             meta = _load_frontmatter_meta(text)
         except yaml.YAMLError:
             continue  # a malformed draft page: the page gate owns the error
-        extension = meta.get("ariadne") if isinstance(meta, dict) else None
-        if isinstance(extension, dict) and extension.get("mappings"):
-            pages[rel] = {"meta": meta, "text": text}
+        if kb_path is not None:
+            adapted = _kb_reference_view(meta)
+            if adapted is None or not adapted["ariadne"].get("mappings"):
+                continue
+            pages[rel] = {"meta": adapted, "text": text, "full": meta, "kb_path": kb_path}
+        else:
+            extension = meta.get("ariadne") if isinstance(meta, dict) else None
+            if isinstance(extension, dict) and extension.get("mappings"):
+                pages[rel] = {"meta": meta, "text": text}
     return pages
 
 
 EVIDENCE_COMMIT_MESSAGE = "ariadne: attach verified mapping evidence"
+
+
+def _kb_evidence_page(page: dict, desired: dict | None) -> str:
+    """Rewrite one integrated KB Reference page's Core-attached evidence slot
+    through the producer's public frontmatter parse (spec0029 §1.5): the
+    curated body bytes and every other frontmatter key are preserved, only
+    ``ariadne_profile.native.ariadne_evidence`` changes. The resulting page
+    is applied by the caller through the producer's checked worktree write —
+    never a Core YAML write of the KB."""
+    from lumio_wiki import parse_frontmatter  # pyright: ignore[reportMissingImports] — optional SDK
+
+    meta, body, _body_start = parse_frontmatter(page["text"], page["kb_path"])
+    native = meta["ariadne_profile"]["native"]
+    if desired:
+        native["ariadne_evidence"] = desired
+    else:
+        native.pop("ariadne_evidence", None)
+    return "---\n" + yaml.safe_dump(meta, sort_keys=False, allow_unicode=True) + "---" + body
 
 
 def _commit_core_pages(project: Path, record: dict, rels: list[str], message: str) -> str | None:
@@ -3290,15 +3382,39 @@ def _finalize_mapping_evidence(
                 desired[str(mapping.get("id"))] = summaries
         current = page["meta"].get("ariadne_evidence")
         if current != (desired or None):
-            rewrites[rel] = context._set_frontmatter_key(
-                page["text"], "ariadne_evidence", desired or None
-            )
+            if page.get("kb_path") is not None:
+                rewrites[rel] = _kb_evidence_page(page, desired)
+            else:
+                rewrites[rel] = context._set_frontmatter_key(
+                    page["text"], "ariadne_evidence", desired or None
+                )
     final = revision
     if rewrites:
+        core_rels: list[str] = []
+        kb_revisions: list[tuple[str, str]] = []
         for rel, text in rewrites.items():
-            proposals._safe_write(worktree, rel, text)
+            if pages[rel].get("kb_path") is not None:
+                kb_revisions.append((pages[rel]["kb_path"], text))
+            else:
+                proposals._safe_write(worktree, rel, text)
+                core_rels.append(rel)
+        if kb_revisions:
+            # the KB evidence attach goes through the producer's public parse
+            # and checked worktree write contract: the curated body, profile
+            # and Entity are preserved, only the Core-attached
+            # ariadne_evidence slot changes (spec0029 §1.5)
+            from lumio_wiki.git_authoring import (  # pyright: ignore[reportMissingImports] — optional SDK
+                revise_pages_in_worktree,
+            )
+
+            revise_pages_in_worktree(
+                worktree / "knowledge",
+                kb_revisions,
+                operation="attach verified mapping evidence",
+            )
+            core_rels.extend(f"knowledge/{kb_path}" for kb_path, _text in kb_revisions)
         final = (
-            _commit_core_pages(project, record, sorted(rewrites), EVIDENCE_COMMIT_MESSAGE)
+            _commit_core_pages(project, record, sorted(core_rels), EVIDENCE_COMMIT_MESSAGE)
             or revision
         )
     return final, errors

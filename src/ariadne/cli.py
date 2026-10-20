@@ -319,6 +319,15 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         result = asyncio.run(discovery.search_context(args.query, limit=args.limit))
         print(json.dumps(result, default=_json_default))
         return 0
+    if args.command == "resolve-term":
+        # T2 (spec0029 §1.5): term resolution is source-free discovery on both
+        # routes — the pinned discovery session serves it (integrated: the SDK
+        # structured References; standalone: the admitted context pages); the
+        # query runtime (and any source connection) is never constructed.
+        assert resolve_request is not None
+        result = asyncio.run(discovery.resolve_term(resolve_request, part=args.part))
+        print(json.dumps(result, default=_json_default))
+        return 0
     discovery._refuse_unsupported(args.command.replace("-", "_"))
     limits = query_results.load_host_query_limits(args.project)
     runtime = QueryRuntime.open_project(
