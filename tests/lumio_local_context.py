@@ -414,14 +414,31 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     # network construction refuses the scenario.
     _source_free_guards(monkeypatch)
 
-    def _text_json(result):
-        blocks = [
-            block
-            for block in getattr(result, "content", ())
-            if getattr(block, "type", None) == "text"
-        ]
-        assert len(blocks) == 1, "typed tool result must carry its JSON text content"
-        return json.loads(blocks[0].text)
+    def _typed_list(result):
+        # Installed-SDK contract (func_metadata._convert_to_content): a list
+        # return emits ONE JSON-object text block PER ITEM, while the typed
+        # structured output wraps the list as {"result": [...]}. Strict shape:
+        # exactly that wrapper, a list value, no error, all blocks text, and
+        # the per-item texts equal the wrapped list.
+        assert not getattr(result, "is_error", False)
+        assert result.structured_content.keys() == {"result"}
+        wrapped = result.structured_content["result"]
+        assert isinstance(wrapped, list)
+        blocks = list(getattr(result, "content", ()))
+        assert blocks and all(block.type == "text" for block in blocks)
+        assert [json.loads(block.text) for block in blocks] == wrapped
+        return wrapped
+
+    def _typed_dict(result):
+        # A typed dict return is one text block whose JSON equals the whole
+        # unwrapped structured_content.
+        assert not getattr(result, "is_error", False)
+        assert isinstance(result.structured_content, dict)
+        blocks = list(getattr(result, "content", ()))
+        assert len(blocks) == 1 and blocks[0].type == "text"
+        payload = json.loads(blocks[0].text)
+        assert payload == result.structured_content
+        return payload
 
     async def _journey(app):
         return {
@@ -435,7 +452,7 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     results = asyncio.run(_journey(app))
 
     # list: every visible page, SDK-sorted by exact path; metadata only.
-    listed = _text_json(results["list"])
+    listed = _typed_list(results["list"])
     assert [entry["path"] for entry in listed] == [
         "metrics/retail-revenue.md",
         "policies/retail-return-policy.md",
@@ -447,24 +464,20 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
         assert glossary.get(key) == value, key
     assert "content" not in glossary  # no page body in list results
     assert glossary["context_signals"]["warnings"] == []  # no fabricated advisories
-    # mcp func_metadata.convert_result wraps a typed list return as {"result": ...}
-    assert results["list"].structured_content == {"result": listed}
 
     # read: the full canonical SDK page; the legacy same-path body never wins.
-    page = _text_json(results["read"])
+    page = _typed_dict(results["read"])
     for key, value in identity.items():
         assert page.get(key) == value, key
     assert page["content"] == GLOSSARY_MD
     assert page["context_signals"]["warnings"] == []
-    assert results["read"].structured_content == page  # typed dict stays unwrapped
 
     # search: one native hit with the verbatim hand-counted passage.
-    hits = _text_json(results["search"])
+    hits = _typed_list(results["search"])
     assert len(hits) == 1
     for key, value in hit_oracle.items():
         assert hits[0].get(key) == value, key
     assert hits[0]["context_signals"]["warnings"] == []
-    assert results["search"].structured_content == {"result": hits}
 
     # hidden and unknown paths refuse identically: the complete documented
     # ToolError messages (mcp.server.mcpserver.exceptions, per installed
@@ -485,8 +498,7 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
 
     # discover: the pages group uses the same SDK hits; still-deferred groups
     # stay honestly unavailable and served support says what is enabled.
-    report = _text_json(results["discover"])
-    assert results["discover"].structured_content == report
+    report = _typed_dict(results["discover"])
     assert report["bound_release"] == manifest["digest"]
     support = report["support"]
     enabled = {"search_context", "list_context_pages", "read_context_page"}
