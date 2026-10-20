@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 24 — approved G2/T2 execution map, 2026-10-20.** Owner answered “Freigabe” to written spec0029r5/plan24 at commit07439a4. Implement isolated local G2/T2 and affected Q1; no target integration/push/release/closure/cleanup. |
+| **Status** | **Revision 25 — approved bounded F1/F2 continuation, 2026-10-20.** Owner explicitly approved the prepared patch b236a9da on frozen4f6f182, one Policy-beleg RED and one seven-node POST, then the already assigned Q1 qualification and independent review. No integration or publication. Earlier grants and exhausted checks remain historical evidence, not renewed budgets. |
 | **Owner direction** | 2026-10-20: “S3 Anbindung ist für Ariadne zweitrangig. Der bevorzugte Weg bleibt git repo mit lokalem sync.” This approves the priority used for this proposal, not new SDK interfaces or capability expansion. |
 | **Goal** | Make the shared Git Content Repository plus a local checkout the normal operator path, then expand useful local knowledge/analytics capabilities without weakening exact admission or standalone behavior. S3 is optional later work, not a prerequisite. |
 | **Behavioral sources** | [Spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), especially §§2–6 and preserved full-target AC1–AC9; [ADR0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Companion: `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md` r2 / ADR0030. The r2 MVP refusal boundary remains authoritative until the corresponding source amendments are approved. |
@@ -10,7 +10,46 @@
 | **Tracker** | [#76](https://github.com/legout/ariadne/issues/76): full epic; [#79](https://github.com/legout/ariadne/issues/79): consumer continuation; [#80](https://github.com/legout/ariadne/issues/80): remaining adapters/guidance/qualification. [#81](https://github.com/legout/ariadne/issues/81) and [Lumio #2](https://github.com/legout/lumio-wiki/issues/2) have delivered released code but remain open; no closure is authorized here. Their old ticket text must be reconciled before new execution. |
 | **Capture / readiness** | Existing glossary terms suffice. Git/local preference changes sequencing, not ADR0026's architecture; no new ADR is proposed. New operation support and the additive navigation API require written Core/producer source amendments before their writers start. Contract: planning-contract v1; installed catalog provenance unknown. |
 
-## Current approved execution — G2/T2 and affected Q1 qualification
+## Current approved execution — bounded F1/F2 remainder (revision25)
+
+**Owner approval — 2026-10-20:** “Ich genehmige eine zusätzliche begrenzte
+F1/F2-Korrekturrunde auf 4f6f182 gemäß dem vorbereiteten Patch b236a9da:
+ein gezielter Policy-Beleg-RED-Test, ein POST-Recheck der sieben T2-Tests,
+danach die geplante Q1-Qualifikation und unabhängige Review.
+Keine Integration oder Veröffentlichung.”
+
+Behavior remains approved spec0029r5 §1.5 and native specs0010/0011;
+no vocabulary, ADR, SDK/API, output schema or dependency change is assigned.
+Canonical [#79](https://github.com/legout/ariadne/issues/79) owns the bounded
+repair/test body; [#80](https://github.com/legout/ariadne/issues/80) owns the
+remaining installed qualification. Parent reconciles their exact snapshots
+before dispatch. Capture: planning-contract v1, installed provenance unknown.
+
+Frozen Core input4f6f1826ab93cae7d82ce623e1772e62d3e0d6ee remains unaccepted:
+F1's Core parser still executes before the KB branch; F2 hashes a knowledge
+Policy but stores the unqualified path consumed by verification. The prepared
+product patch has SHA256
+`b236a9da101f392f74c167bb407aed8de0437c274d11435ba0472447963c746e`.
+SDK26a633b4399ddd5e9d6cad2292cbb317944ead90 and its wheel stay unchanged.
+
+Use the same isolated registered BB Pi GLM5.3/high writer and one final
+read-only Sol6.1/high reviewer. Parent inspects the authored Policy fixture
+before execution. Exactly one focused T2 Policy RED before the product patch,
+then one POST containing the same seven assigned T2 nodes. These are two
+additional invocations, not replacements for the prior green baseline4/G17/
+T7/correction7 results. Failure stops the affected lane; no repair/retry or
+wider suite follows automatically. Preserve original result refs and logs.
+
+After the repair, complete the previously reserved Q invocation (the V3 pair
+and installed optional-MCP skill check), one final Core wheel, Core-only
+optional-import check, paired installed proof using the unchanged SDK wheel,
+and the one independent candidate review. Reuse unchanged producer CI,
+SDK/native wheel/MCP/adapter and numerical evidence. No new matrix or
+packaging-only numerical replay. No further automatic correction round.
+Freeze committed candidates and honest evidence; pause before target
+integration, push, release/publication, issue closure or cleanup.
+
+## Prior approved execution — G2/T2 and affected Q1 qualification (revision24)
 
 **Owner request:** 2026-10-20, “Implementiere den Rest von #80”. This requests
 completion. After reviewing the concrete written specification/plan, owner
