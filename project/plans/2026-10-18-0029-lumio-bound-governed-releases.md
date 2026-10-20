@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 20 — L2 accepted; A2 frozen fix-first; bounded correction proposed, 2026-10-20.** Q2 is accepted isolated85dbaab. Owner approved the exact written local navigation contract and its autonomous producer → consumer implementation. G2/T2 and other remaining drafts stay proposed. Previous status: Owner requested a next-issue roadmap and reaffirmed Git with local sync as the standard, S3 secondary. No implementation, test execution, ticket publication, integration or release is authorized by this draft. Historical approved M1 execution r12 is complete and preserved in `v0.5.0` and the immutable result refs. |
+| **Status** | **Revision 20 — L2 accepted; A2 bounded correction owner-approved, 2026-10-20.** Q2 is accepted isolated85dbaab. Owner approved the exact written local navigation contract and its autonomous producer → consumer implementation. G2/T2 and other remaining drafts stay proposed. Previous status: Owner requested a next-issue roadmap and reaffirmed Git with local sync as the standard, S3 secondary. No implementation, test execution, ticket publication, integration or release is authorized by this draft. Historical approved M1 execution r12 is complete and preserved in `v0.5.0` and the immutable result refs. |
 | **Owner direction** | 2026-10-20: “S3 Anbindung ist für Ariadne zweitrangig. Der bevorzugte Weg bleibt git repo mit lokalem sync.” This approves the priority used for this proposal, not new SDK interfaces or capability expansion. |
 | **Goal** | Make the shared Git Content Repository plus a local checkout the normal operator path, then expand useful local knowledge/analytics capabilities without weakening exact admission or standalone behavior. S3 is optional later work, not a prerequisite. |
 | **Behavioral sources** | [Spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), especially §§2–6 and preserved full-target AC1–AC9; [ADR0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Companion: `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md` r2 / ADR0030. The r2 MVP refusal boundary remains authoritative until the corresponding source amendments are approved. |
@@ -82,7 +82,7 @@ new Core integration effects and prior Q2 correspondence; it does not reopen
 settled Q2 findings. Same one-small-fix/one-delta limit, with all budgets and
 identities recorded in the existing run state, not another ledger.
 
-### A2 candidate disposition — proposed additional correction, 2026-10-20
+### A2 candidate disposition — owner-approved additional correction, 2026-10-20
 
 L2 is accepted at `86db9f14909d095e4fdad270c6ea6d36c326b86b`.
 A2 candidate `2375530b18a8b08401b959dff1cdc5bda4aa7ad7` (tree
@@ -99,7 +99,7 @@ two reachable violations of existing response guarantees, not new behavior:
   unusably small host ceilings before navigation, rather than returning an
   oversized refusal. Reuse the existing refusal forms and wire measurement.
 
-Parent accepts both findings. No code correction has been granted or performed.
+Parent accepts both findings. Owner approved the additional correction below in the current BB conversation on 2026-10-20; no correction has yet been performed.
 The original assigned A2 invocation remains exit1 (12 passes, one mistaken
 bare-dict structured-output test oracle). The worker corrected that oracle,
 completed late parent static-gap requests, repeated all13 nodes and committed
@@ -110,7 +110,7 @@ source independently confirms the corrected strict form; no product output
 flags were changed. Preserve both logs and the committed candidate. The spent
 correction/recheck is not reset at review or candidate assembly.
 
-**Owner decision requested; this section grants no execution:** authorize one
+**Owner approval — 2026-10-20:** “Ich genehmige die zusätzliche A2-Korrekturrunde gemäß Planrevision 20, Commit 84d2fe2: beide Budgetfehler, gezielter RED/POST-Test und eine Delta-Review; keine Integration oder Veröffentlichung.” This authorizes one
 additional bounded A2 correction cycle for exactly these two findings. Use one
 fresh registered Pi `zai/glm-5.3/high` writer based on frozen2375530, one
 read-only Pi `openai-codex/gpt-6.1-sol/high` delta reviewer, and the unchanged
