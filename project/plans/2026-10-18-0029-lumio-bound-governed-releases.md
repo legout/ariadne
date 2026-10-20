@@ -2,13 +2,47 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 21 — Q2, L2 and A2 accepted as isolated source candidates, 2026-10-20.** Q2 is accepted isolated85dbaab. Owner approved the exact written local navigation contract and its autonomous producer → consumer implementation. G2/T2 and other remaining drafts stay proposed. Previous status: Owner requested a next-issue roadmap and reaffirmed Git with local sync as the standard, S3 secondary. No implementation, test execution, ticket publication, integration or release is authorized by this draft. Historical approved M1 execution r12 is complete and preserved in `v0.5.0` and the immutable result refs. |
+| **Status** | **Revision 22 — reviewed local Q2/L2/A2 integrated and pushed, 2026-10-20.** Historical isolated statuses below are preserved as execution evidence. T2/G2 remain proposed; Q1/#80 guidance and paired installed-artifact qualification are still outstanding. No package release or issue closure is claimed. |
 | **Owner direction** | 2026-10-20: “S3 Anbindung ist für Ariadne zweitrangig. Der bevorzugte Weg bleibt git repo mit lokalem sync.” This approves the priority used for this proposal, not new SDK interfaces or capability expansion. |
 | **Goal** | Make the shared Git Content Repository plus a local checkout the normal operator path, then expand useful local knowledge/analytics capabilities without weakening exact admission or standalone behavior. S3 is optional later work, not a prerequisite. |
 | **Behavioral sources** | [Spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), especially §§2–6 and preserved full-target AC1–AC9; [ADR0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Companion: `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md` r2 / ADR0030. The r2 MVP refusal boundary remains authoritative until the corresponding source amendments are approved. |
 | **Starting artifacts** | Published `ariadne-data==0.5.0`, Core `a9dd5f8ff9ae15b55268cad6dad0841caf0057fa`; published `lumio-wiki==0.3.0` / `lumio-lancedb==0.3.0`, producer `a5127c753a6343629ba3fc7adfa44441c8f82baf`. Use exact accepted successors in later handoffs, never floating `main`. |
 | **Tracker** | [#76](https://github.com/legout/ariadne/issues/76): full epic; [#79](https://github.com/legout/ariadne/issues/79): consumer continuation; [#80](https://github.com/legout/ariadne/issues/80): remaining adapters/guidance/qualification. [#81](https://github.com/legout/ariadne/issues/81) and [Lumio #2](https://github.com/legout/lumio-wiki/issues/2) have delivered released code but remain open; no closure is authorized here. Their old ticket text must be reconciled before new execution. |
 | **Capture / readiness** | Existing glossary terms suffice. Git/local preference changes sequencing, not ADR0026's architecture; no new ADR is proposed. New operation support and the additive navigation API require written Core/producer source amendments before their writers start. Contract: planning-contract v1; installed catalog provenance unknown. |
+
+## Integration and cleanup — owner-authorized, 2026-10-20
+
+Owner explicitly requested: “merge. Commit. Push. Clean up.” This authorized
+local merge commits, normal pushes of both paired repository main branches,
+and cleanup of this run's owned resources. It did not request a package release
+or issue closure.
+
+- [Ariadne integration e8ae748](https://github.com/legout/ariadne/commit/e8ae74837414ecb8b5c805d046697c52f2836f35)
+  contains accepted Q2/A2 source36aee079 and accepted plan outcomea527dbf.
+  All product/test files are identical to the reviewed candidate; only the
+  latest accepted execution-plan bytes differ from its tree.
+- [Lumio integration b1d63b3](https://github.com/legout/lumio-wiki/commit/b1d63b3f01c297296aeeb53f7dfef7acafeb0349)
+  has exactly the accepted SDK86db9f1 tree2996ef6.
+- Existing focused and independent-review evidence was reused without duplicate
+  local pytest calls. Remote refs and actual merge/tree identities were checked.
+- Producer [CI39469980783](https://github.com/legout/lumio-wiki/actions/runs/39469980783)
+  passed lock/sync/Ruff, full suite with four workers (1651 passed,9 skipped),
+  onboarding/S3-compatible selection (40 passed,1 skipped), and isolated wiki
+  wheel verification. The separate
+  [LanceDB wheel run39469980838](https://github.com/legout/lumio-wiki/actions/runs/39469980838)
+  also passed. Existing skips remain disclosed; no test/CI configuration changed.
+- Eighteen owned worktrees and three disposable verification environments were
+  removed; eleven finished worktree child threads were archived. Unrelated
+  worktrees and the stopped shared-checkout scout were retained. Source/result
+  refs, run logs, the old main plan draft and six formatter-only states survive
+  in archive commits/byte snapshots. Only the two ephemeral integration branches
+  were deleted. Details remain in the existing run state.
+
+Q1's paired installed Core/SDK proof and public guidance remain unperformed;
+the producer wheel checks are not that paired proof. Core's full tag-triggered
+release CI was not run, and package versions/releases are unchanged. Integrated
+source still requires exact build matching and fresh native admission; merging
+a Git branch does not mutate an existing Bound Release or publish a package.
 
 ## Current execution — approved L2 → A2 navigation
 
