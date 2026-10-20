@@ -306,11 +306,23 @@ HIDDEN_MD = (
     "The restricted Meridian routing table lists every store lane and cutoff.\n"
 )
 
-# The deliberately different LEGACY page at the SAME context path: legacy
-# context_layer reads must never surface through integrated navigation.
+# The deliberately different LEGACY page at the SAME context path: a valid
+# ADR0007 context_layer Reference (the existing REFERENCE_PAGE source-citation
+# idiom, no Ariadne technical extension or mappings) whose body differs from
+# the published SDK page. Legacy context_layer reads must never surface
+# through integrated navigation.
 LEGACY_GLOSSARY_MD = (
-    "# Legacy Fulfilment Glossary\n"
-    "\n"
+    "---\n"
+    "type: reference\n"
+    "title: Legacy Fulfilment Glossary\n"
+    "description: Superseded legacy wording for the fulfilment batch.\n"
+    "tags: [reference]\n"
+    "sources:\n"
+    "  - id: seed-notes\n"
+    "    resource: data/seed_notes.md\n"
+    "    title: Seed notes\n"
+    "---\n\n"
+    "# Legacy Fulfilment Glossary\n\n"
     "LEGACY meridian draft: this superseded legacy context page spells the\n"
     "consolidation batch wording differently from the published knowledge.\n"
 )
@@ -364,7 +376,6 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     the in-process MCP tools, and refuses whole when the required output
     cannot fit the host response budget."""
     import json
-    import re
 
     import yaml
 
@@ -455,13 +466,22 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     assert hits[0]["context_signals"]["warnings"] == []
     assert results["search"].structured_content == {"result": hits}
 
-    # hidden and unknown paths refuse identically, disclosing nothing hidden.
-    refusal = "no visible context page at path"
+    # hidden and unknown paths refuse identically: the complete documented
+    # ToolError messages (mcp.server.mcpserver.exceptions, per installed
+    # server.call_tool) are equal after normalizing only the input path, and
+    # neither discloses a hidden title, Entity identity or body.
+    from mcp.server.mcpserver.exceptions import (  # pyright: ignore[reportMissingImports] — qualified env
+        ToolError,
+    )
+
+    refusals = []
     for refused in (HIDDEN_PATH, "references/does-not-exist.md"):
-        with pytest.raises(
-            Exception, match=re.escape(f"{refusal} '{refused}'")
-        ):
+        with pytest.raises(ToolError) as caught:
             asyncio.run(app.call_tool("read_context_page", {"path": refused}))
+        refusals.append(str(caught.value))
+    assert refusals[0].replace(HIDDEN_PATH, "<path>") == refusals[1].replace(
+        "references/does-not-exist.md", "<path>"
+    )
 
     # discover: the pages group uses the same SDK hits; still-deferred groups
     # stay honestly unavailable and served support says what is enabled.
@@ -489,8 +509,9 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     cli_report = json.loads(capsys.readouterr().out)
     assert cli_report["groups"]["pages"]["items"] == hits
 
-    # no legacy or hidden content ever surfaced through any surface above.
-    everything = json.dumps([listed, page, hits, report, cli_report])
+    # no legacy or hidden content ever surfaced through any surface above,
+    # including the two refusal messages themselves.
+    everything = json.dumps([listed, page, hits, report, cli_report, refusals])
     for marker in (
         "Legacy Fulfilment Glossary",
         "LEGACY meridian draft",
