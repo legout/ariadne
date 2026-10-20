@@ -638,3 +638,166 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     assert ceiling_result is None, "discover answered under a 1-byte MCP ceiling"
     assert ceiling_rejection is not None, "no configuration rejection was raised"
     assert "mcp_response_bytes" in ceiling_rejection
+
+
+# ------------------------------------------- G2 Git/local sync (spec0029 §1.4)
+
+# Hand-authored oracle bytes: admitted revision A publishes the candidate page
+# exactly as committed; operator revision B appends one visible sentence. The
+# served page body therefore identifies the active release without a query,
+# and every expected identity below comes from these authored bytes, git
+# rev-parse and the exact .ariadne/current.json descriptor — never from
+# product status output.
+G2_PAGE = "references/order-number.md"
+G2_B_APPENDIX = "\nOperator B: amended fulfilment wording for the sync journey.\n"
+
+
+def test_sync_does_not_activate_context(tmp_path, monkeypatch, capsys):
+    """G2 (spec0029 §1.4): a plain local Git sync moves the operator checkout
+    from the admitted revision A to B while the verified admission descriptor,
+    its Bound Release and an already-open session stay pinned to A. Only the
+    ordinary reconciled/validated/reviewed/confirmed B admission repoints
+    serving. ``ariadne status`` additively discloses the local HEAD separately
+    from the verified admission without destination or source data; malformed
+    and missing admissions never masquerade as a valid bound release."""
+    import json
+
+    from ariadne import admission
+    from ariadne.cli import main as cli
+    from ariadne.discovery import DiscoveryRuntime
+    from tests.lumio_metric_mvp import current_bytes, ready
+    from tests.test_discovery import _source_free_guards
+
+    # admitted A through the real native chain: contract, synthetic source
+    # approval, candidate edits, validation, review, preview, confirmation
+    project, api, review = ready(tmp_path)
+    destination = tmp_path / "published"
+    activate(project, review, preview(project, review, destination))
+    a_rev = review["revision"]
+    descriptor_a_bytes = current_bytes(project)
+    descriptor_a = json.loads(descriptor_a_bytes)
+    manifest_a = descriptor_a["bound_release"]
+    digest_a = manifest_a["digest"]
+    assert manifest_a["knowledge"]["published_version"] == a_rev
+
+    # the pre-existing session is opened and proven under source-free guards
+    # immediately after the A activation — BEFORE any local Git sync — and
+    # that exact object must survive both later transitions below
+    a_bytes = (worktree_of(project, review["proposal"]) / "knowledge" / G2_PAGE).read_bytes()
+    with monkeypatch.context() as guarded:
+        _source_free_guards(guarded)
+        session_a = DiscoveryRuntime.open_project(project)
+        served = asyncio.run(session_a.read_context_page(G2_PAGE))
+        assert served["content"] == a_bytes.decode()
+        assert served["bound_release"] == digest_a
+
+    # the operator checkout explicitly points at the admitted candidate
+    # revision A; a disposable bare remote and a peer clone then carry one
+    # authored B amendment — real local push/clone/commit/fetch/fast-forward
+    run_git(project, "checkout", "-q", a_rev)
+    page = project / "knowledge" / G2_PAGE
+    assert page.read_bytes() == a_bytes  # the checkout materializes revision A
+    b_bytes = a_bytes + G2_B_APPENDIX.encode()
+    bare = tmp_path / "disposable-origin.git"
+    run_git(tmp_path, "init", "-q", "--bare", "-b", "main", str(bare))
+    run_git(project, "push", "-q", str(bare), f"{a_rev}:refs/heads/main")
+    peer = tmp_path / "peer"
+    run_git(tmp_path, "clone", "-q", str(bare), str(peer))
+    # the clone shares no repo-local identity with the project (globals are
+    # disabled in the isolated environment), so the peer sets its own
+    run_git(peer, "config", "user.name", "synthetic-peer-operator")
+    run_git(peer, "config", "user.email", "peer-operator@example.invalid")
+    (peer / "knowledge" / G2_PAGE).write_bytes(b_bytes)
+    run_git(peer, "add", "--", "knowledge")
+    run_git(peer, "commit", "-q", "-m", "human: operator amends order-number wording")
+    run_git(peer, "push", "-q", "origin", "main")
+    b_rev = run_git(peer, "rev-parse", "HEAD").strip()
+    run_git(project, "fetch", "-q", str(bare), "main")
+    run_git(project, "merge", "-q", "--ff-only", "FETCH_HEAD")
+    assert run_git(project, "rev-parse", "HEAD").strip() == b_rev
+    assert page.read_bytes() == b_bytes  # the checkout really moved to B
+
+    # the sync changed neither the descriptor bytes nor what is served
+    assert current_bytes(project) == descriptor_a_bytes
+    with monkeypatch.context() as guarded:
+        _source_free_guards(guarded)
+        # the pre-existing session still serves the admitted A after the sync
+        still_synced = asyncio.run(session_a.read_context_page(G2_PAGE))
+        assert still_synced["content"] == a_bytes.decode()  # serves A, not HEAD B
+        assert still_synced["bound_release"] == digest_a
+        assert cli(["status", "--json", "--project", str(project)]) == 0
+        synced = json.loads(capsys.readouterr().out)
+        # local HEAD B is disclosed separately from the admitted A
+        assert synced["project"]["git"]["head_revision"] == b_rev
+        # the bound release comes from the verified A descriptor only
+        assert synced["project"]["admission"]["bound_release"] == {
+            "digest": digest_a,
+            "published_version": a_rev,
+            "supported_operations": manifest_a["support"]["operations"],
+        }
+        assert synced["ready"] is True  # a plain sync never invalidates
+
+    # B activates only through the ordinary native chain: the proposal
+    # worktree fast-forwards to the operator's commit, reconcile records
+    # that human-created HEAD, then validation, review, preview, confirm
+    tree = worktree_of(project, review["proposal"])
+    run_git(tree, "merge", "-q", "--ff-only", b_rev)
+    admission.reconcile(project, review["proposal"], a_rev, b_rev)
+    validated = api.validate_proposal(review["proposal"], b_rev)
+    assert validated["ok"] is True, validated["errors"]
+    later = api.review_proposal(review["proposal"])
+    assert later["revision"] == b_rev
+    activate(project, later, preview(project, later, destination, a_rev))
+
+    descriptor_b_bytes = current_bytes(project)
+    assert descriptor_b_bytes != descriptor_a_bytes  # activation, not sync
+    descriptor_b = json.loads(descriptor_b_bytes)
+    manifest_b = descriptor_b["bound_release"]
+    digest_b = manifest_b["digest"]
+    assert descriptor_b["commit"] == b_rev
+    assert manifest_b["knowledge"]["published_version"] == b_rev
+
+    with monkeypatch.context() as guarded:
+        _source_free_guards(guarded)
+        # the already-open session keeps its pinned A record and still
+        # serves A; only a NEW session observes the activated B
+        still_a = asyncio.run(session_a.read_context_page(G2_PAGE))
+        assert still_a["content"] == a_bytes.decode()
+        assert still_a["bound_release"] == digest_a
+        session_b = DiscoveryRuntime.open_project(project)
+        served_b = asyncio.run(session_b.read_context_page(G2_PAGE))
+        assert served_b["content"] == b_bytes.decode()  # a NEW session sees B
+        assert served_b["bound_release"] == digest_b
+        assert cli(["status", "--json", "--project", str(project)]) == 0
+        activated = json.loads(capsys.readouterr().out)
+        assert activated["project"]["git"]["head_revision"] == b_rev
+        # minimal verified view: digest, published version, operations —
+        # no destination, registry or source data can hide in it
+        assert activated["project"]["admission"]["bound_release"] == {
+            "digest": digest_b,
+            "published_version": b_rev,
+            "supported_operations": manifest_b["support"]["operations"],
+        }
+        assert activated["ready"] is True
+
+    # malformed and missing admissions stay distinct diagnostics and can
+    # never masquerade as a valid bound release (same coherent journey)
+    descriptor = project / ".ariadne" / "current.json"
+    descriptor.write_bytes(b"{ not a descriptor")
+    with monkeypatch.context() as guarded:
+        _source_free_guards(guarded)
+        assert cli(["status", "--json", "--project", str(project)]) == 0
+        invalid = json.loads(capsys.readouterr().out)
+    assert invalid["project"]["admission"]["state"] == "invalid"
+    assert "reason" in invalid["project"]["admission"]
+    assert "bound_release" not in invalid["project"]["admission"]
+    assert invalid["project"]["git"]["head_revision"] == b_rev
+    assert invalid["ready"] is False
+    descriptor.unlink()
+    with monkeypatch.context() as guarded:
+        _source_free_guards(guarded)
+        assert cli(["status", "--json", "--project", str(project)]) == 0
+        missing = json.loads(capsys.readouterr().out)
+    assert missing["project"]["admission"] == {"state": "none"}
+    assert missing["project"]["git"]["head_revision"] == b_rev
+    assert missing["ready"] is False

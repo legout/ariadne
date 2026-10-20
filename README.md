@@ -31,7 +31,9 @@ describe the optional integrated context binding: one shared Content Commit, an
 operator-confirmed overall admission activating a local immutable Bound Release,
 strict `metric`/`policy` profiles, full required Policy context on governed
 answers, and source-free navigation over the pinned published pages. Git is the
-standard transport and sync never activates a release; the SDK stays an optional
+standard transport and sync never activates a release — `ariadne status`
+reports the local Git HEAD separately from the admitted release (see
+[the local Git how-to](docs/how-to/lumio-git-local.md)); the SDK stays an optional
 dependency, unsupported integrated operations refuse, and exact build pairing is
 recorded per release rather than assumed from package versions.
 

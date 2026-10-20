@@ -217,7 +217,8 @@ def build_parser() -> _Parser:
         parents=[common],
         help=(
             "read-only Git project readiness, proposal and admission diagnostics — "
-            "no source connection"
+            "no source connection; the local HEAD is reported separately from the "
+            "admitted bound release"
         ),
     )
     status_cmd.add_argument(

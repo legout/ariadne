@@ -411,9 +411,12 @@ the operator's explicit overall admission — is the sole context authority:
   weaker roots or raw SQL, and never present the refusal as something to fix
   by widening scope.
 - Git is the standard transport, and sync never activates: pulling or
-  merging a branch never changes what is served. A changed SDK/Core build or
-  support set requires fresh validation and a new matching overall admission;
-  public package versions alone never qualify a source for these
+  merging a branch never changes what is served. Offline, `ariadne status`
+  discloses the local HEAD separately from the verified admitted bound
+  release (digest, exact Published Version, declared supported operations) —
+  a synced checkout is transport state, never activation. A changed SDK/Core
+  build or support set requires fresh validation and a new matching overall
+  admission; public package versions alone never qualify a source for these
   capabilities.
 
 If the project has no such selector, everything earlier in this skill applies

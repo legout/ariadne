@@ -46,6 +46,14 @@ explicit overall admission below activates a Bound Release, and a served
 manifest is never mutated; a changed build or support set requires fresh
 validation and a new matching admission.
 
+`ariadne status` makes the distinction visible offline: it reports the local
+HEAD of the checkout separately from the verified admission, whose Bound
+Release digest, exact Published Version and declared supported operations are
+disclosed from the verified admission descriptor only — never from the
+working tree, and with no destination or source data. The operator flow for a
+local fast-forward plus the ordinary reconcile/validate/review/confirm chain
+is in [the local Git how-to](../how-to/lumio-git-local.md).
+
 ## Supported and refused operations
 
 The delivered integrated contract (also stated in every Bound Release
