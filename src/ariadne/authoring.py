@@ -2844,7 +2844,7 @@ def _cited_policy_dependencies(
                     f"knowledge/{resource}" if page.get("kb_path") is not None else resource
                 )
                 entries[resource] = {
-                    "resource": resource,
+                    "resource": worktree_resource,
                     "digest": _cited_policy_digest(worktree, worktree_resource),
                 }
     return [entries[resource] for resource in sorted(entries)]
@@ -3258,10 +3258,6 @@ def _reference_pages_at(project: Path, revision: str) -> dict[str, dict]:
         if blob is None:  # pragma: no cover - ls-tree paths always resolve
             continue
         text = blob.decode("utf-8", "replace")
-        try:
-            meta = _load_frontmatter_meta(text)
-        except yaml.YAMLError:
-            continue  # a malformed draft page: the page gate owns the error
         if kb_path is not None:
             parsed = _kb_reference_from_text(text, kb_path)
             if parsed is None:
@@ -3271,6 +3267,10 @@ def _reference_pages_at(project: Path, revision: str) -> dict[str, dict]:
                 continue
             pages[rel] = {"meta": view, "text": text, "full": full, "kb_path": kb_path}
         else:
+            try:
+                meta = _load_frontmatter_meta(text)
+            except yaml.YAMLError:
+                continue  # the native page gate owns malformed legacy pages
             extension = meta.get("ariadne") if isinstance(meta, dict) else None
             if isinstance(extension, dict) and extension.get("mappings"):
                 pages[rel] = {"meta": meta, "text": text}

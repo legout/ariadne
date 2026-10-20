@@ -918,6 +918,13 @@ def t2_reference_candidate(root: Path):
         ],
     }
     extension["mappings"][0]["candidate"] = declared_candidate
+    # plan25 (r25): the Reference's cited source now names the EXISTING
+    # authored KB Policy page (already valid and committed in this candidate
+    # — never a legacy fallback), keeping the mapping's source_ids bound to
+    # that id; the receipt's Policy dependency is therefore real
+    for source in meta["ariadne_profile"]["native"]["sources"]:
+        if source.get("id") == "src-owner-rule":
+            source["resource"] = "policies/retail-return-policy.md"
     write_page(reference, meta, body)
     (tree / "knowledge/policies/cancelled-orders.md").write_text(CANCELLATION)
     metric = tree / "knowledge/metrics/retail-revenue.md"
@@ -993,6 +1000,20 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
         "local_order_number",
         "global_order_number",
     ]  # the authored table definition order
+    # plan25 (r25): the receipt's cited-Policy dependency names the
+    # repository-qualified knowledge path of the EXISTING authored KB Policy
+    # and the sha256 of the actual committed candidate-input bytes —
+    # input-derived, never output-derived. Intended RED: capture currently
+    # stores the unqualified resource path (the measurement itself stays
+    # authentic and otherwise intact).
+    import hashlib
+
+    policy_input = (
+        worktree_of(project, proposal) / "knowledge" / "policies" / "retail-return-policy.md"
+    ).read_bytes()
+    [policy_dependency] = receipt["dependencies"]["policy_osi"]
+    assert policy_dependency["resource"] == "knowledge/policies/retail-return-policy.md"
+    assert policy_dependency["digest"] == hashlib.sha256(policy_input).hexdigest()
 
     # the operator's explicit later candidate edit attaches the AUTHENTIC
     # receipt id to the declared mapping
@@ -1283,6 +1304,19 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
         "# Internal Identifiers\n\n"
         "Hidden internal identifier representations.\n"
     )
+    # plan25 (r25): immediate native dependency invalidation — an explicit
+    # candidate edit to the CITED KB Policy breaks the retained receipt's
+    # bound Policy digest; validation refuses without any new inspection,
+    # alongside the hidden-reference refusal in the existing third native
+    # validation round; the active descriptor stays unchanged
+    policy_page = worktree_of(project, proposal) / "knowledge/policies/retail-return-policy.md"
+    policy_meta, policy_body = page_parts(policy_page)
+    write_page(
+        policy_page,
+        policy_meta,
+        policy_body + "\nRevised return-policy wording (dependency mutation).\n",
+    )
+
     hidden_revision = reconcile_knowledge(project, proposal, revision_b)
     refused = api.validate_proposal(proposal, hidden_revision)
     assert refused["ok"] is False
@@ -1290,3 +1324,6 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
     assert "knowledge/references/internal-identifiers.md" in diagnostics
     assert "unapproved-source" in diagnostics
     assert current_bytes(project) == descriptor_before  # validation ≠ activation
+
+    assert "retail-return-policy" in diagnostics
+    assert "whose content changed since the measurement" in diagnostics
