@@ -2,13 +2,53 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 22 — reviewed local Q2/L2/A2 integrated and pushed, 2026-10-20.** Historical isolated statuses below are preserved as execution evidence. T2/G2 remain proposed; Q1/#80 guidance and paired installed-artifact qualification are still outstanding. No package release or issue closure is claimed. |
+| **Status** | **Revision 23 — scoped local Q1 qualification owner-approved, 2026-10-20.** Reviewed Q2/L2/A2 are integrated and pushed. The approved Q1 slice below qualifies only that delivered local behavior; original full-target #80 completion, T2/G2, release and publication remain separate. |
 | **Owner direction** | 2026-10-20: “S3 Anbindung ist für Ariadne zweitrangig. Der bevorzugte Weg bleibt git repo mit lokalem sync.” This approves the priority used for this proposal, not new SDK interfaces or capability expansion. |
 | **Goal** | Make the shared Git Content Repository plus a local checkout the normal operator path, then expand useful local knowledge/analytics capabilities without weakening exact admission or standalone behavior. S3 is optional later work, not a prerequisite. |
 | **Behavioral sources** | [Spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), especially §§2–6 and preserved full-target AC1–AC9; [ADR0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Companion: `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md` r2 / ADR0030. The r2 MVP refusal boundary remains authoritative until the corresponding source amendments are approved. |
 | **Starting artifacts** | Published `ariadne-data==0.5.0`, Core `a9dd5f8ff9ae15b55268cad6dad0841caf0057fa`; published `lumio-wiki==0.3.0` / `lumio-lancedb==0.3.0`, producer `a5127c753a6343629ba3fc7adfa44441c8f82baf`. Use exact accepted successors in later handoffs, never floating `main`. |
 | **Tracker** | [#76](https://github.com/legout/ariadne/issues/76): full epic; [#79](https://github.com/legout/ariadne/issues/79): consumer continuation; [#80](https://github.com/legout/ariadne/issues/80): remaining adapters/guidance/qualification. [#81](https://github.com/legout/ariadne/issues/81) and [Lumio #2](https://github.com/legout/lumio-wiki/issues/2) have delivered released code but remain open; no closure is authorized here. Their old ticket text must be reconciled before new execution. |
 | **Capture / readiness** | Existing glossary terms suffice. Git/local preference changes sequencing, not ADR0026's architecture; no new ADR is proposed. New operation support and the additive navigation API require written Core/producer source amendments before their writers start. Contract: planning-contract v1; installed catalog provenance unknown. |
+
+## Current execution — approved Q1 for the delivered local scope
+
+**Owner approval — 2026-10-20:** after reviewing this exact scoped plan,
+owner answered “Ok. Freigabe. Mach weiter mit Q1”. This approves local-scope
+Q1 execution, canonical #80 update and the named Pi roles. It grants no new
+capability, service, target integration, push, release or issue closure.
+Original full-target requirements remain open. The approval draft is preserved
+unchanged in the parent run storage; #80 owns the executable task decomposition.
+
+**Sources / inputs:** spec0029 r4 §§1.1–1.3 and §§2–6, ADR0026; producer
+spec0009 navigation r3 and ADR0030. Frozen starting commits: Ariadne
+`7e8d84d0820101719f2b43dd74b8a65dd963fa2e`, Lumio
+`b1d63b3f01c297296aeeb53f7dfef7acafeb0349`. Their accepted behavioral
+candidates are Core36aee079 and SDK86db9f1. No floating-main runtime pin.
+Capture: no new vocabulary, architectural decision or supported behavior;
+planning-contract v1, installed catalog provenance unknown. The owner approved qualification of this local scope instead of original full-A1.
+
+**Deliverable:** coherent public guidance and actual installed artifact proof
+for the delivered Metric/Policy operations, multi-metric context, approved live
+catalog, and source-free scoped SDK navigation. Preserve exact identities,
+consent, visibility, role exclusions, refusals, citations, limits and standalone
+optional-SDK behavior. Git/local sync is the normal operator path; checkout
+sync never activates a release. Do not add G2 status behavior, technical
+Reference/resolve_term, ad-hoc or Core S3 capability, Agent/Tau, numerical replay,
+full-ODCS or production/service claims. This slice alone cannot close full #80.
+
+**Canonical execution:** [GitHub #80](https://github.com/legout/ariadne/issues/80)
+owns Q1 task bodies, owned surfaces and validation scope/budget, reconciled to
+this approval before dispatch. The parent run state records the issue-body
+snapshot/digest and exact frozen candidate identities. Historical drafts below
+are not current grants. One writer per isolated repository; worker
+`zai/glm-5.3/high`, final reviewer `openai-codex/gpt-6.1-sol/high` through BB Pi.
+
+**Completion:** two frozen clean candidate refs, exact wheel/build identities,
+actual installed-origin/profile-resource outputs, applied/reused gate evidence
+with limits, one independent final review, and honest remaining full-target
+scope. Stop before integration, push, release/publication, issue closure or
+cleanup unless separately authorized. The prior merge/cleanup authorization
+covered the previous candidates, not this new qualification slice.
 
 ## Integration and cleanup — owner-authorized, 2026-10-20
 
