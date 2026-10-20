@@ -468,6 +468,39 @@ and errors never disclose credentials, private object keys, or secret-bearing
 URLs; KB Reader-only credentials cannot inspect, fetch, or link Source
 Artifacts.
 
+## 13. Optional Ariadne Context Profile (pinned SDK consumption)
+
+A KB may carry the optional versioned Ariadne Context Profile (native
+Metric/Policy annotations, `ariadne_context.ontology_catalog` in
+`lumio.yaml`). Author, review and publish profiled pages exactly like any
+other Compiled Page: profiles are preserved by native publication, and a
+plain page is unaffected. There is no CLI command for profile consumption —
+readers are public Python surfaces in `lumio_wiki.ariadne_context`.
+
+When a consumer reports pinned-context results:
+
+- Every reader opens ONE exact admitted immutable Published Version under a
+  complete expected `ContextIdentity` (namespace, profile and published
+  version, fingerprint, publication and source-reference digests, subtree,
+  visibility scope). Mismatched identity, plain directories and floating
+  pointers (`main`, `latest`, `current`) refuse explicitly; there is no
+  fallback to latest.
+- `open_published_context` accepts an admitted pinned local or S3 Published
+  Version. The three navigation operations — `list_published_context_pages`,
+  `read_published_context_page`, `search_published_context_pages` — are
+  LOCAL ONLY: pass an explicitly pinned `PublishedFilesystemLocation`; S3
+  navigation refuses explicitly.
+- The authorized Visibility Scope is applied before any selection or
+  ranking; missing and out-of-scope pages share the same scope-safe
+  refusal, so never infer the existence, title or text of hidden pages.
+  Ranking and excerpts are the native lexical search — there is no second
+  engine and no LanceDB requirement.
+- The profile is metadata only: it authorizes no source access, joins, SQL
+  or numerical evidence, and an ordinary documentation page is NOT a
+  Core-validated Reference. The consumer alone validates its supported
+  Metric/Policy subset and owns the overall admission that activates an
+  integrated release; syncing a Git checkout never activates one.
+
 ## Guardrails
 
 - **Cite paths and passages.** Every domain claim must cite the Canonical

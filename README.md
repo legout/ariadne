@@ -25,6 +25,8 @@ For the *why* and the vision, read the domain docs — this README documents
 - [`project/adr/`](project/adr/) — architectural decisions (ADR-0025 records the
   repository split).
 - [`docs/kb-format.md`](docs/kb-format.md) — canonical Compiled Page frontmatter reference.
+- [`docs/ariadne-context.md`](docs/ariadne-context.md) — optional pinned Ariadne Context Profile
+  consumption (exact identity, scoped local navigation, boundaries).
 - [`docs/quickstart.md`](docs/quickstart.md) — canonical onboarding journey
   (`weed mini` → AWS), runnable via [`examples/onboarding-journey/`](examples/onboarding-journey/).
 
@@ -225,6 +227,12 @@ application lives in a separate private repository (ADR-0025).
   interchange.
 - **Maintenance** — lint, cross-link candidates, Dream Cycle diagnostics
   (link, duplicate, synthesis, transitive impact), S3 published-version diff.
+- **Optional Ariadne Context Profile** — versioned native Metric/Policy
+  annotations preserved through authoring and publication, read back through
+  immutable pinned published-context readers and scoped local navigation
+  ([docs/ariadne-context.md](docs/ariadne-context.md)). Purely optional: the
+  base SDK has no Ariadne dependency and adds no CLI command or service for
+  it.
 
 ## License
 
