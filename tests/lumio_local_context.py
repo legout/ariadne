@@ -1259,6 +1259,11 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
     descriptor_before = current_bytes(project)
     tree = worktree_of(project, proposal)
     unapproved = table_resource("unapproved-source", None, "main", "orders")
+    # The operator-owned document is outside the captured candidate. A relative
+    # path escaping the KB must never be classified as frozen bundle evidence.
+    outside = tmp_path / "uncaptured-reference-evidence.md"
+    outside.write_text("Author-owned evidence outside the captured release.\n")
+    escape_resource = "../" * 32 + outside.as_posix().lstrip("/")
     hidden = tree / "knowledge/references/internal-identifiers.md"
     hidden.parent.mkdir(parents=True, exist_ok=True)
     hidden.write_text(
@@ -1288,6 +1293,7 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
         "    sources:\n"
         '      - id: "src-internal-memo"\n'
         '        title: "Internal memo, 2026-10-01"\n'
+        f'        resource: "{escape_resource}"\n'
         "    ariadne:\n"
         "      version: 1\n"
         "      reference_role: identifier\n"
@@ -1323,6 +1329,7 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
     diagnostics = "; ".join(refused["errors"])
     assert "knowledge/references/internal-identifiers.md" in diagnostics
     assert "unapproved-source" in diagnostics
+    assert escape_resource in diagnostics  # escaping evidence is explicitly refused
     assert current_bytes(project) == descriptor_before  # validation ≠ activation
 
     assert "retail-return-policy" in diagnostics

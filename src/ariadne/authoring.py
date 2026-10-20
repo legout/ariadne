@@ -622,7 +622,12 @@ def _verified_citations(
                         "kind": "catalog_asset",
                         "source": parts[0],
                     }
-                elif (knowledge / resource).is_file():
+                elif (
+                    (resolved := (knowledge / resource).resolve()).is_relative_to(
+                        knowledge.resolve()
+                    )
+                    and resolved.is_file()
+                ):
                     # a KB citation resolves INSIDE the knowledge subtree only
                     citations[("bundle", resource)] = {
                         "resource": resource,
