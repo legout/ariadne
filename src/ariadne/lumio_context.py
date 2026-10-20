@@ -16,19 +16,27 @@ import yaml
 SUPPORT = {
     "storage": "local-immutable",
     "profiles": ["metric", "policy"],
-    # Q2 (spec0029 §1.2, 2026-10-20): query_metrics and list_datasets join the
-    # supported integrated operations — every other r2 refusal stands.
-    "operations": ["get_metric", "discover", "list_metrics", "query_metrics", "list_datasets"],
+    # Q2 (spec0029 §1.2, 2026-10-20): query_metrics and list_datasets join
+    # the supported integrated operations. A2 (spec0029 §1.3) adds the three
+    # scoped SDK navigation operations; resolve_term stays a separate
+    # technical Reference slice — every other r2 refusal stands.
+    "operations": [
+        "get_metric",
+        "discover",
+        "list_metrics",
+        "query_metrics",
+        "list_datasets",
+        "list_context_pages",
+        "read_context_page",
+        "search_context",
+    ],
     "unsupported": [
         "query_detail",
         "query_records",
         "define_metric",
         "save_example",
         "search_examples",
-        "search_context",
         "resolve_term",
-        "list_context_pages",
-        "read_context_page",
     ],
 }
 
@@ -268,6 +276,11 @@ def prepare_release(
     selected = selector(root)
     if selected is None:
         raise ValueError("overall admission requires an integrated selector")
+    # A2 (spec0029 §1.3): the Bound Release advertises the scoped navigation
+    # operations, so admitting one requires an SDK that actually provides
+    # them — an older installed SDK refuses admission instead of being
+    # advertised with capabilities it lacks.
+    _navigation_gate()
     require_validation_build(evidence, validation_build_identity(root))
     captured, errors = candidate(root, root / "knowledge", revision)
     if errors:
@@ -538,3 +551,154 @@ def metric_context(snapshot, manifest, context_dir, model, metric, *, _now=None)
             governed_note="governed: true means admitted, not independently value-attested",
         )
     return result
+
+
+# --------------------------------------------- A2 scoped SDK navigation (§1.3)
+
+
+def _navigation_gate():
+    """The three approved scoped-navigation SDK operations (spec0009 r3), or
+    an explicit refusal: an installed SDK that lacks them must never be
+    advertised as supporting navigation it cannot serve."""
+    try:
+        from lumio_wiki.ariadne_context import (
+            list_published_context_pages,
+            read_published_context_page,
+            search_published_context_pages,
+        )
+    except ImportError as exc:
+        raise ValueError(
+            "the installed Lumio SDK provides no approved scoped navigation "
+            "APIs; integrated navigation refuses instead of advertising support"
+        ) from exc
+    return (
+        list_published_context_pages,
+        read_published_context_page,
+        search_published_context_pages,
+    )
+
+
+def _navigation_identity(manifest):
+    """The exact pinned location/expected-identity pair of one Bound Release
+    (the same verified binding ``open_context`` resolves: an immutable
+    version-pinned local location, never a moving pointer)."""
+    from lumio_wiki.ariadne_context import ContextIdentity
+    from lumio_wiki.location import PublishedFilesystemLocation
+
+    identity = dict(manifest["knowledge"])
+    identity["scope"] = tuple(identity["scope"])
+    return (
+        PublishedFilesystemLocation(manifest["destination"], version=identity["published_version"]),
+        ContextIdentity(**identity),
+    )
+
+
+def _list_row(page, manifest, now, meta):
+    """One metadata-only list entry: existing Core outer fields plus the SDK
+    identity additions; no page body (spec0029 §1.3)."""
+    from ariadne import context
+
+    return {
+        "path": page.path,
+        "draft": False,
+        "title": page.title,
+        "kind": page.kind,
+        "namespace": page.namespace,
+        "entity_id": page.entity_id,
+        "published_version": page.published_version,
+        "citation": page.citation,
+        "bound_release": manifest["digest"],
+        "context_signals": context._context_signals([context._page_view(page.path, meta, now)]),
+    }
+
+
+def _full_page_fields(page, manifest, now, meta):
+    """The shared identity/content/advisory fields of one complete canonical
+    page."""
+    from ariadne import context
+
+    return {
+        "path": page.path,
+        "draft": False,
+        "kind": page.kind,
+        "namespace": page.namespace,
+        "entity_id": page.entity_id,
+        "published_version": page.published_version,
+        "citation": page.citation,
+        "bound_release": manifest["digest"],
+        "content": page.content,
+        "context_signals": context._context_signals([context._page_view(page.path, meta, now)]),
+    }
+
+
+def list_context_pages(manifest, verified_native=None):
+    """Every visible page of the pinned Bound Release, SDK-sorted by exact
+    path, metadata only. Profiled entries reuse the session's
+    already-verified native metadata (exact path match) for the Core
+    advisory view — the same disclosure the accepted metric context uses;
+    ordinary unprofiled pages carry no native metadata and stay unknown. No
+    page body is read or reparsed per row."""
+    from lumio_wiki.ariadne_context import disclose_native
+
+    from ariadne import context
+
+    listing, _read, _search = _navigation_gate()
+    location, expected = _navigation_identity(manifest)
+    known = dict(verified_native or {})
+    now = context._assessment_now()
+    return [
+        _list_row(
+            page,
+            manifest,
+            now,
+            disclose_native(known[page.path]) if page.path in known else {},
+        )
+        for page in listing(location, expected)
+    ]
+
+
+def read_context_page(manifest, path):
+    """One complete visible canonical page by exact relative path through
+    the pinned SDK facade; hidden and unknown paths refuse identically with
+    no hidden disclosure."""
+    from lumio_wiki.ariadne_context import disclose_native
+
+    from ariadne import context
+
+    _listing, read, _search = _navigation_gate()
+    location, expected = _navigation_identity(manifest)
+    page = read(location, expected, path)
+    return _full_page_fields(
+        page, manifest, context._assessment_now(), disclose_native(page.native)
+    )
+
+
+def search_context(manifest, query, limit=10):
+    """Native Lumio lexical search over exactly the visible page set of the
+    pinned Bound Release: SDK ranking, verbatim canonical passages with
+    inclusive 1-based coordinates and fence-aware sections, and visible-only
+    completeness counters (spec0029 §1.3)."""
+    from lumio_wiki.ariadne_context import disclose_native
+
+    from ariadne import context
+
+    _listing, _read, search = _navigation_gate()
+    location, expected = _navigation_identity(manifest)
+    now = context._assessment_now()
+    hits = []
+    for hit in search(location, expected, query, limit=limit):
+        hits.append(
+            {
+                **_full_page_fields(hit.page, manifest, now, disclose_native(hit.page.native)),
+                "score": hit.score,
+                "excerpt": hit.excerpt,
+                "line_start": hit.line_start,
+                "line_end": hit.line_end,
+                "section": hit.section,
+                "matched_fields": list(hit.matched_fields),
+                "matched_terms": list(hit.matched_terms),
+                "candidates_seen": hit.candidates_seen,
+                "results_dropped": hit.results_dropped,
+            }
+        )
+    return hits

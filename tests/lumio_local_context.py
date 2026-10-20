@@ -356,7 +356,9 @@ def navigation_release(root: Path):
     write_page(reference, meta, body)
     (tree / "knowledge" / GLOSSARY_PATH).write_text(GLOSSARY_MD)
     (tree / "knowledge" / HIDDEN_PATH).write_text(HIDDEN_MD)
-    (tree / "context_layer" / GLOSSARY_PATH).write_text(LEGACY_GLOSSARY_MD)
+    legacy = tree / "context_layer" / GLOSSARY_PATH
+    legacy.parent.mkdir(parents=True, exist_ok=True)  # references/ is new in the candidate
+    legacy.write_text(LEGACY_GLOSSARY_MD)
     run_git(tree, "add", "-f", "--", "knowledge")
     run_git(tree, "add", "--", f"context_layer/{GLOSSARY_PATH}")
     run_git(tree, "commit", "-q", "-m", "human: add glossary navigation candidate pages")
@@ -430,15 +432,14 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
         return wrapped
 
     def _typed_dict(result):
-        # A typed dict return is one text block whose JSON equals the whole
-        # unwrapped structured_content.
+        # A plain dict return is exactly one JSON text block: the installed
+        # SDK generates no output model (and so no structured_content) for a
+        # bare dict annotation — the observed native form, not a wrapper.
         assert not getattr(result, "is_error", False)
-        assert isinstance(result.structured_content, dict)
+        assert result.structured_content is None
         blocks = list(getattr(result, "content", ()))
         assert len(blocks) == 1 and blocks[0].type == "text"
-        payload = json.loads(blocks[0].text)
-        assert payload == result.structured_content
-        return payload
+        return json.loads(blocks[0].text)
 
     async def _journey(app):
         return {
