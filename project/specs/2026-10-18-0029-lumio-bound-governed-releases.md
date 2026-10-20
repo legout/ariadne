@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 5 — PROPOSED local G2/T2 continuation.** Owner requested “Implementiere den Rest von #80” on 2026-10-20. This records execution intent; written scope below still awaits approval because it extends revision4's explicit capability boundary. Approved revision4 remains binding until that approval. Q2/L2/A2 and scoped local Q1 are delivered; their evidence is preserved. |
+| **Status** | **Revision 5 — approved local G2/T2 continuation, 2026-10-20.** Owner answered “Freigabe” to the concrete written r5/plan24 proposal at commit07439a4. Sections1.4–1.5 activate that bounded scope; approved revision4 remains authoritative elsewhere. No Core S3 or target integration/publication is granted. |
 | **Scoped M1 execution approval** | Owner, Ariadne Pi conversation 2026-10-19: “Plan + M1 starten (Recommended)”. Approves plan r8, local source freeze, a new GitHub M1 child of #79 and supervised M1 only via Paseo/Pi: fresh Sol/high writer, exactly M1-R/M1-P, one independent fresh Sol/high candidate review, synthetic local data/KB only. Unexpected failure stops; pause with the isolated candidate. No full A1/Q1, main integration, push, release, real sources/KB or cleanup. |
 | **Historical MVP design/writing approval** | Owner, Ariadne Pi conversation 2026-10-19: selected “Umfang zuerst neu zuschneiden”, “Lokaler Metric-Durchstich (Recommended)”, “Strikte Profilgrenze (Recommended)”, then “So ausarbeiten (Recommended)” for the complete six-part local MVP design. Authorizes this isolated written revision and necessary scoped notices only. No code, runtime tests, new budget, tracker changes, target integration, push, release, production/real-KB work or cleanup. |
 | **Historical full-target approval** | Owner, Pi conversation 2026-10-18 for #76 and Lumio #2: selected one Content Repository, direct Python SDK, integrated-only strict mandatory Policies, one overall human confirmation, and project-wide Visibility Scope defaulting to public. Then selected “Design freigeben (Recommended)” for the complete six-section V1 design and its capture in both repositories. The owner subsequently selected “Schriftliche Fassung freigeben (Recommended)” for both written revision-1 specifications, ADRs, glossaries and scoped source amendments, opening implementation planning. Plan approval, execution and publication remain separate. |
@@ -161,7 +161,7 @@ outer shapes, source-free startup/role boundaries and the accepted Q2 behavior.
 Required output too large for the existing limits refuses without elision.
 The plan assigns the focused A2 check plus affected existing MVP/wrapper checks.
 
-### 1.4 Proposed G2 — Git/local operator disclosure
+### 1.4 Approved G2 — Git/local operator disclosure
 
 The standard path is one shared Git Content Repository with local sync.
 `ariadne status` remains read-only and source-free: it does not fetch, merge,
@@ -192,7 +192,7 @@ admitted A. Descriptor bytes and an existing source-free session stay on A.
 After the ordinary reviewed B admission, a new session sees B. This proves
 activation isolation without calculating revenue again.
 
-### 1.5 Proposed T2 — validated technical Reference and term resolution
+### 1.5 Approved T2 — validated technical Reference and term resolution
 
 Extend the integrated profile subset from `metric, policy` to
 `metric, policy, reference` ONLY after complete native Core validation of every
