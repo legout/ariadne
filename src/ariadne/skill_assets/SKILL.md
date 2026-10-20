@@ -391,8 +391,8 @@ the operator's explicit overall admission — is the sole context authority:
 - `ariadne search-context "<query>" --project .` navigates that pinned release
   source-free: native lexical ranking over the operator-scoped published
   pages, with SDK namespace, Entity ID, Published Version and exact
-  page/passage citations in every hit. MCP and the Ariadne Agent add the
-  read-only `list_context_pages` and `read_context_page` tools over the same
+  page/passage citations in every hit. The Ariadne Agent adds the read-only
+  `list_context_pages` and `read_context_page` tools over the same
   pinned snapshot (there are no dedicated CLI commands for them). Ordinary
   unprofiled pages are documentation, never Core-validated References; hidden
   or missing pages stay unavailable without leaking why.
@@ -631,7 +631,9 @@ toolsets over one core — pick the registration at launch:
 checks and response contracts as the `ariadne-authoring` commands above. The
 answer-example tools ride the Analyst/Combined registrations with identical
 contracts to `ariadne save-example`/`search-examples` (same confirmation
-rules). No registration exposes source approval, admission, reconciliation,
+rules). In an integrated project, the `search_context`, `list_context_pages`
+and `read_context_page` tools navigate the session's pinned Bound Release
+source-free (see Integrated Lumio context above). No registration exposes source approval, admission, reconciliation,
 or the operator-only `ariadne review` walkthrough. Stdio is local
 and needs no token; the server runs for one project root (`--project`, fixed
 at launch). The authoring tools work in an
