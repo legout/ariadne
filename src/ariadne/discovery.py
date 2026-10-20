@@ -411,6 +411,11 @@ class _DiscoverySession:
                 groups[kind] = {"status": "available", **group}
             except PlannerError:
                 raise  # admission/identity failures always refuse the whole operation
+            except query_results.QueryResultError:
+                # A2 (spec0029 §1.3): a required-output budget refusal never
+                # becomes one group's unavailability — it refuses the whole
+                # operation on every public surface.
+                raise
             except (OSError, ValueError, RuntimeError) as exc:
                 groups[kind] = {"status": "unavailable", "reason": str(exc)}
         result = {"query": query, "groups": groups}

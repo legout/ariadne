@@ -412,6 +412,24 @@ def _typed_navigation_result(tool, result, project):
     return result
 
 
+def _refuse_unrepresentable_mcp_ceiling(project):
+    """The source-free navigation transport gate (A2, spec0029 §1.3 + spec
+    0014 §5): the host's MCP envelope ceiling must represent every bounded
+    refusal form BEFORE navigation runs — an unusably small
+    mcp_response_bytes is a configuration error raised here, never answered
+    with an over-budget refusal. The QueryRuntime registration seam performs
+    the same check when a runtime exists; navigation constructs none."""
+    budget = query_results.load_host_query_limits(project)["mcp_response_bytes"]
+    for form in query_results.refusal_forms():
+        size = _refusal_envelope_bytes(form)
+        if size > budget:
+            raise ValueError(
+                "the host query limits' mcp_response_bytes="
+                f"{budget} cannot represent every refusal form on this transport (largest {size} "
+                "bytes) — nothing could ever be answered or refused"
+            )
+
+
 def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str = "combined"):
     """Wire one tool registration of the shared core onto one MCP stdio
         server (spec §6): ``analyst`` registers the Query operations, ``authoring``
@@ -515,6 +533,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             Five native groups, snapshot-bound as-of contract evidence and bounded
             term continuation; never executes an answer or authorizes a join.
             """
+            _refuse_unrepresentable_mcp_ceiling(project)
             discovery = DiscoveryRuntime.open_project(project)
             result = await discovery.discover(query, limit=limit)
             # A2 (spec0029 §1.3): the assembled report (with its embedded SDK
@@ -540,6 +559,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             """Search only Context pages from the admitted Git snapshot."""
             # A2 (spec0029 §1.3): source-free discovery, never the query
             # runtime; the typed result is measured on its real conversion.
+            _refuse_unrepresentable_mcp_ceiling(project)
             discovery = DiscoveryRuntime.open_project(project)
             result = await discovery.search_context(query)
             return _typed_navigation_result(
@@ -550,6 +570,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         @_tool_errors
         async def list_context_pages() -> list[dict]:
             """List Context metadata from the admitted Git snapshot."""
+            _refuse_unrepresentable_mcp_ceiling(project)
             discovery = DiscoveryRuntime.open_project(project)
             result = await discovery.list_context_pages()
             return _typed_navigation_result(
@@ -565,6 +586,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 path: the exact relative .md path from list_context_pages or a
                     search_context hit (e.g. policies/emea-currency-cutover.md).
             """
+            _refuse_unrepresentable_mcp_ceiling(project)
             discovery = DiscoveryRuntime.open_project(project)
             result = await discovery.read_context_page(path)
             return _typed_navigation_result(

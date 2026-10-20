@@ -254,6 +254,20 @@ def test_multi_metric_context_precedes_execution(tmp_path, monkeypatch):
 # single visible hit under "## Routing vocabulary" (line 19).
 GLOSSARY_PATH = "references/fulfilment-glossary.md"
 GLOSSARY_EXCERPT = "The morning consolidation batch is internally called Meridian. Only the"
+
+# Deterministic canonical bulk (A2 budget correction): ~24 KiB of authored
+# token-free register notes, so the REQUIRED pages output alone cannot fit a
+# tightened Core bound while the shrunken missing-pages report still does.
+# No "meridian" occurrence joins the page: the 40.0 single-hit oracle (body
+# weight 20 x capped occurrences) and every hand-counted line above stay
+# exactly as authored.
+GLOSSARY_REGISTER = "".join(
+    f"Register note {index:03d}: packaging stations confirm the canonical\n"
+    f"fulfilment vocabulary line {index:03d} for routing desks, courier\n"
+    "handover points, consolidation windows and packaging stations.\n\n"
+    for index in range(1, 135)
+)
+
 GLOSSARY_MD = (
     "---\n"
     'id: "entity:fulfilment-glossary"\n'
@@ -277,6 +291,10 @@ GLOSSARY_MD = (
     "\n"
     "The morning consolidation batch is internally called Meridian. Only the\n"
     "visible Meridian note in this glossary is published context for routing.\n"
+    "\n"
+    "## Canonical register\n"
+    "\n"
+    + GLOSSARY_REGISTER
 )
 
 # A valid hidden page sharing the token (title+summary+body would score 160
@@ -554,3 +572,69 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     config.write_text(original)
     assert cli(["search-context", "meridian", "--project", str(project)]) == 0
     capsys.readouterr()
+
+    # A2 budget correction (plan0029r20): both accepted defects are observed
+    # through this same journey BEFORE the strict checks. (1) A Core-only
+    # 8 KiB bound the REQUIRED SDK page cannot fit must refuse the whole CLI
+    # search report and MCP discover operation — never substitute an
+    # unavailable pages group for required content. (2) An MCP-only ceiling
+    # of 1 byte — below every refusal envelope on the wire — must be rejected
+    # BEFORE navigation, never answered with an over-budget isError refusal.
+    required = query_results.result_json_bytes(hits)  # hits == the hand oracle above
+    without_pages = query_results.result_json_bytes(
+        {**report, "groups": {k: v for k, v in report["groups"].items() if k != "pages"}}
+    )
+    # 1024 bytes cover one refusal reason string: refusal representations
+    # are small by construction (fixed messages, counts only — spec 0014 §5).
+    assert without_pages + 1024 < 8192 < required
+
+    document["query"] = {"response_bytes": 8192}
+    config.write_text(yaml.safe_dump(document, sort_keys=False))
+    search_code = cli(["search", "meridian", "--json", "--project", str(project)])
+    search_failure = capsys.readouterr()
+    oversize_result = None
+    oversize_refusal = None
+    try:
+        oversize_result = asyncio.run(app.call_tool("discover", {"query": "meridian"}))
+    except ToolError as exc:  # the documented mcp 2.2.0 tool-error surface
+        oversize_refusal = str(exc)
+    config.write_text(original)
+
+    def _no_query_runtime(*args, **kwargs):
+        raise AssertionError("the MCP ceiling rejection must not construct QueryRuntime")
+
+    monkeypatch.setattr(QueryRuntime, "open_project", _no_query_runtime)
+    document["query"] = {"mcp_response_bytes": 1}
+    config.write_text(yaml.safe_dump(document, sort_keys=False))
+    ceiling_result = None
+    ceiling_rejection = None
+    try:
+        ceiling_result = asyncio.run(app.call_tool("discover", {"query": "meridian"}))
+    except ToolError as exc:  # the documented mcp 2.2.0 tool-error surface
+        ceiling_rejection = str(exc)
+    config.write_text(original)
+
+    # (1) whole-operation refusal on both surfaces (spec 0014 §5: one bounded
+    # refusal, never a successful partial with required pages silently
+    # dropped)
+    ceiling_wire = serve._wire_bytes(ceiling_result) if ceiling_result is not None else None
+    assert search_code == 1 and not search_failure.out, (
+        f"exit={search_code} stdout={len(search_failure.out)}B"
+        f" core_mcp_success={oversize_result is not None}"
+        f" core_mcp_refusal={oversize_refusal}"
+        f" ceiling_returned={ceiling_result is not None}"
+        f" ceiling_error={ceiling_rejection}"
+        f" ceiling_wire_bytes={ceiling_wire}"
+    )
+    cli_refusal = json.loads(search_failure.err)
+    assert cli_refusal["error"]["code"] == "result_byte_limit"
+    assert cli_refusal["error"]["exhausted_bound"]["response_bytes"] == 8192
+    # the MCP whole-operation refusal keeps the documented ToolError surface
+    # with the stable Core byte-refusal message — no new MCP output shape
+    assert oversize_result is None, "MCP discover returned a successful partial"
+    assert oversize_refusal is not None, "MCP discover did not refuse whole"
+    assert "exceeds its byte ceiling" in oversize_refusal
+    # (2) configuration rejection BEFORE navigation, not an oversized refusal
+    assert ceiling_result is None, "discover answered under a 1-byte MCP ceiling"
+    assert ceiling_rejection is not None, "no configuration rejection was raised"
+    assert "mcp_response_bytes" in ceiling_rejection
