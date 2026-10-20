@@ -29,7 +29,7 @@ ODCS compliance, a live health guarantee, or shared cross-layer identity (#76).
 **Development candidate:** [Lumio bound releases](docs/reference/lumio-bound-releases.md)
 describe the optional integrated context binding: one shared Content Commit, an
 operator-confirmed overall admission activating a local immutable Bound Release,
-strict `metric`/`policy` profiles, full required Policy context on governed
+strict `metric`/`policy`/`reference` profiles, full required Policy context on governed
 answers, and source-free navigation over the pinned published pages. Git is the
 standard transport and sync never activates a release — `ariadne status`
 reports the local Git HEAD separately from the admitted release (see

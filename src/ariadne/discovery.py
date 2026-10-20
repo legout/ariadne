@@ -594,8 +594,12 @@ class _DiscoverySession:
                     else None
                 ),
             )
-            self._refuse_oversized_response(result)
+            # F4 (fix pass, spec0029 §1.5 + spec0014 §5): the COMPLETE final
+            # response — admission provenance included — is what the host
+            # ceiling guards; the SDK enrichment already rides the matches
+            # before the shared parts are computed
             result["admission"] = self._admission_view(self._managed)
+            self._refuse_oversized_response(result)
             return result
         result = resolve_term(
             [(self.context_dir, False)],

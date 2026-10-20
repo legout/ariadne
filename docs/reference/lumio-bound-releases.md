@@ -71,9 +71,15 @@ manifest):
 | `resolve_term` | Source-free terminology resolution over the pinned release's validated structured References (spec 0010 §6 semantics through the one shared resolver): exact field bindings, claim/confirmation status, AS-OF evidence freshness, version-qualified citations. No transform, no SQL rewrite, no join authority; an authored evidence value is disclosure, never authority. |
 | Refused integrated operations | `query_detail`, `query_records`, `define_metric`, `save_example`, `search_examples` refuse as unsupported before planning or SQL — never a legacy-context fallback. The same callables keep working in standalone projects. |
 
-Unsupported technical application fields (physical-reference/identifier-mapping
+A fully validated structured Reference (spec0029 §1.5) is the one supported
+exception: its declared representations/mappings and the Core-attached
+`ariadne_evidence` summary slot ARE the Reference contract. Measured authority
+uses authentic Core inspection receipts; source-backed manual assertions keep
+their native eligibility, an authored evidence value never authenticates
+itself, and confirmation remains the exact native human selection. Every other
+unsupported technical application field (physical-reference/identifier-mapping
 extensions, SDK computation/executor/attester annotations) cannot be smuggled
-into a supported kind; they refuse rather than being silently ignored.
+into a supported kind; it refuses rather than being silently ignored.
 
 ## Overall admission
 

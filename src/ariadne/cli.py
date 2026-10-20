@@ -319,11 +319,11 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         result = asyncio.run(discovery.search_context(args.query, limit=args.limit))
         print(json.dumps(result, default=_json_default))
         return 0
-    if args.command == "resolve-term":
-        # T2 (spec0029 §1.5): term resolution is source-free discovery on both
-        # routes — the pinned discovery session serves it (integrated: the SDK
-        # structured References; standalone: the admitted context pages); the
-        # query runtime (and any source connection) is never constructed.
+    if args.command == "resolve-term" and discovery._context_snapshot is not None:
+        # T2/F5 (fix pass, spec0029 §1.5): INTEGRATED term resolution is
+        # source-free — the pinned discovery session serves it; the query
+        # runtime (and any source connection) is never constructed for it.
+        # The standalone route keeps its exact native runtime path below.
         assert resolve_request is not None
         result = asyncio.run(discovery.resolve_term(resolve_request, part=args.part))
         print(json.dumps(result, default=_json_default))

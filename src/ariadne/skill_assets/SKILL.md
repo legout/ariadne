@@ -407,9 +407,11 @@ the operator's explicit overall admission — is the sole context authority:
 - `resolve-term` resolves shared business terms and exact field lookups
   against the pinned release's validated structured References, source-free:
   exact bindings, claim/confirmation status with AS-OF evidence freshness,
-  version-qualified citations. A mapping is confirmed only by recorded human
-  admission evidence; an authored page never confirms itself, and a language
-  alias never authorizes a join or a transform.
+  version-qualified citations. Measured mappings cite authentic Core
+  inspection receipts; source-backed manual assertions keep their native
+  eligibility; a mapping is confirmed only by recorded human admission
+  evidence — an authored page never confirms itself, and a language alias
+  never authorizes a join or a transform.
 - Only `metric`, `policy` and `reference` profiles are supported, enforced
   across the whole captured KB. `query-detail`, `query-records`,
   `define-metric`, `save-example` and `search-examples` refuse in an

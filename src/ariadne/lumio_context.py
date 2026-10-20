@@ -759,14 +759,11 @@ def resolve_term(
         extension = native.get("ariadne")
         if not isinstance(extension, dict) or not isinstance(extension.get("mappings"), list):
             continue  # ordinary pages stay documentation, never References
-        meta = {
-            "type": "reference",
-            "title": native.get("title"),
-            "aliases": list(native.get("aliases") or []),
-            "sources": list(native.get("sources") or []),
-            "ariadne": extension,
-            "ariadne_evidence": native.get("ariadne_evidence"),
-        }
+        # F3 (fix pass): the COMPLETE producer-validated native mapping is
+        # the resolver input — title/description/aliases/sources/status/
+        # stale_after keep their authored values through the EXISTING output
+        # fields; only provenance/draft are serving-layer facts
+        meta = {"type": "reference", **native}
         entries.append((page.path, meta, False))
         identity[page.path] = {
             "namespace": page.namespace,

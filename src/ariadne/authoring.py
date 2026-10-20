@@ -584,6 +584,57 @@ def _verified_citations(
                 }
                 if binding_error:
                     errors.append(f"{rel}: cited document {resource!r}: {binding_error}")
+    knowledge = tree / "knowledge"
+    if (tree / "context_integration.yaml").is_file() and knowledge.is_dir():
+        # F2 (fix pass, spec0029 §1.5): EVERY captured KB Reference — hidden
+        # or unreferenced, with or without mappings — enters the same
+        # citation gate. The producer's public parse feeds the lossless
+        # view; Core never re-parses KB bytes, a legacy context_layer copy
+        # is never a fallback source, and a missing knowledge dependency
+        # stays missing.
+        for page in sorted(knowledge.rglob("*.md")):
+            if page.name in ("index.md", "log.md"):
+                continue
+            rel_kb = page.relative_to(knowledge).as_posix()
+            parsed = _kb_reference_from_text(page.read_text(encoding="utf-8"), rel_kb)
+            if parsed is None:
+                continue  # ordinary/legacy KB pages carry no structured citations
+            view, _full = parsed
+            rel = f"knowledge/{rel_kb}"
+            for resource, source_id in _cited_resources(view):
+                if resource.startswith("ariadne://"):
+                    try:
+                        _kind, parts = parse_resource(resource)
+                    except ValueError as exc:
+                        errors.append(
+                            f"{rel}: cited catalog resource {resource!r} is not canonical: {exc}"
+                        )
+                        continue
+                    if parts[0] not in source_names:
+                        errors.append(
+                            f"{rel}: cited catalog resource {resource!r} names source "
+                            f"{parts[0]!r} which is not an approved registry identity "
+                            f"(approved: {', '.join(sorted(source_names)) or 'none'})"
+                        )
+                        continue
+                    citations[("asset", resource)] = {
+                        "resource": resource,
+                        "kind": "catalog_asset",
+                        "source": parts[0],
+                    }
+                elif (knowledge / resource).is_file():
+                    # a KB citation resolves INSIDE the knowledge subtree only
+                    citations[("bundle", resource)] = {
+                        "resource": resource,
+                        "kind": "bundle",
+                        "path": f"knowledge/{resource}",
+                    }
+                else:
+                    errors.append(
+                        f"{rel}: cited resource {resource!r} does not resolve inside "
+                        "the integrated candidate's knowledge subtree — a same-path "
+                        "legacy context_layer page is never a fallback"
+                    )
     return [citations[key] for key in sorted(citations)], errors
 
 
@@ -1250,8 +1301,12 @@ def review_proposal(project: str | Path, proposal: str, *, part: int = 1) -> dic
 
 def _kb_reference_view(full_meta: object) -> dict | None:
     """Adapt one integrated KB Reference page (spec0029 §1.5) to the shared
-    structured Reference shape: an in-memory view over producer-validated
-    native metadata — the curated KB stays the one maintained source, this is
+    structured Reference input: the COMPLETE producer-validated native
+    mapping rides through — title, description, aliases, sources, status,
+    stale_after and every authored advisory field keep their native
+    semantics (F3 fix pass: a lossy projection that turns authored metadata
+    into unknown is a defect); only ``type`` is added by the view. The
+    curated KB stays the one maintained source: this is an in-memory view,
     never a context_layer mirror or a KB write. Returns None for pages
     without a structured reference profile."""
     if not isinstance(full_meta, dict):
@@ -1265,14 +1320,23 @@ def _kb_reference_view(full_meta: object) -> dict | None:
     extension = native.get("ariadne")
     if not isinstance(extension, dict) or not isinstance(extension.get("mappings"), list):
         return None
-    return {
-        "type": "reference",
-        "title": native.get("title"),
-        "aliases": list(native.get("aliases") or []),
-        "sources": list(native.get("sources") or []),
-        "ariadne": extension,
-        "ariadne_evidence": native.get("ariadne_evidence"),
-    }
+    return {"type": "reference", **native}
+
+
+def _kb_reference_from_text(text: str, path: str) -> tuple[dict, dict] | None:
+    """One KB page's (lossless structured-Reference view, full frontmatter)
+    parsed through the producer's PUBLIC frontmatter parse (F1 fix pass,
+    spec0029 §1.5): Core never re-parses KB bytes with its own YAML loader,
+    directly or indirectly. Returns None for pages without a structured
+    reference profile; malformed pages stay the page gate's own error."""
+    from lumio_wiki import parse_frontmatter  # pyright: ignore[reportMissingImports] — optional SDK
+
+    try:
+        full, _body, _start = parse_frontmatter(text, path)
+    except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
+        return None
+    view = _kb_reference_view(full)
+    return None if view is None else (view, full)
 
 
 def _reference_mapping_pages(tree: Path) -> list[tuple[str, dict, dict]]:
@@ -1290,19 +1354,11 @@ def _reference_mapping_pages(tree: Path) -> list[tuple[str, dict, dict]]:
         for page in sorted(knowledge.rglob("*.md")) if knowledge.is_dir() else []:
             if page.name in ("index.md", "log.md"):
                 continue
-            try:
-                full = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
-            except yaml.YAMLError:
-                continue  # the producer/page gate owns the malformed error
-            adapted = _kb_reference_view(full)
-            if adapted is not None:
-                pages.append(
-                    (
-                        page.relative_to(knowledge).as_posix(),
-                        adapted,
-                        adapted["ariadne"],
-                    )
-                )
+            rel = page.relative_to(knowledge).as_posix()
+            parsed = _kb_reference_from_text(page.read_text(encoding="utf-8"), rel)
+            if parsed is not None:
+                view, _full = parsed
+                pages.append((rel, view, view["ariadne"]))
         return pages
     context_dir = tree / "context_layer"
     legacy: list[tuple[str, dict, dict]] = []
@@ -2779,9 +2835,17 @@ def _cited_policy_dependencies(
                 resource = sources.get(source_id)
                 if not isinstance(resource, str) or not resource or resource in entries:
                     continue
+                # F2 (fix pass, spec0029 §1.5): an integrated Reference's
+                # cited knowledge Policy binds to THAT KB page — the digest
+                # resolves inside the knowledge subtree, never a same-path
+                # legacy context_layer page; a missing dependency stays an
+                # honest unknown
+                worktree_resource = (
+                    f"knowledge/{resource}" if page.get("kb_path") is not None else resource
+                )
                 entries[resource] = {
                     "resource": resource,
-                    "digest": _cited_policy_digest(worktree, resource),
+                    "digest": _cited_policy_digest(worktree, worktree_resource),
                 }
     return [entries[resource] for resource in sorted(entries)]
 
@@ -3199,10 +3263,13 @@ def _reference_pages_at(project: Path, revision: str) -> dict[str, dict]:
         except yaml.YAMLError:
             continue  # a malformed draft page: the page gate owns the error
         if kb_path is not None:
-            adapted = _kb_reference_view(meta)
-            if adapted is None or not adapted["ariadne"].get("mappings"):
+            parsed = _kb_reference_from_text(text, kb_path)
+            if parsed is None:
                 continue
-            pages[rel] = {"meta": adapted, "text": text, "full": meta, "kb_path": kb_path}
+            view, full = parsed
+            if not view["ariadne"].get("mappings"):
+                continue
+            pages[rel] = {"meta": view, "text": text, "full": full, "kb_path": kb_path}
         else:
             extension = meta.get("ariadne") if isinstance(meta, dict) else None
             if isinstance(extension, dict) and extension.get("mappings"):

@@ -829,6 +829,15 @@ T2_CITATION_PATH = "references/order-number.md"
 # The SDK-authored evidence digest in the submitted golden page (sha256 of
 # empty bytes): disclosure only — it must never surface as verified authority.
 T2_DUMMY_EVIDENCE_DIGEST = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+# Hand-copied from the submitted golden page (tests/fixtures/lumio_context_
+# baseline/references/order-number.md): the FULL authored native metadata must
+# survive serving (F3 fix pass, spec0029 §1.5 + spec0011) — a lossy projection
+# that turns the authored description/stale_after into unknown is a defect.
+T2_GOLDEN_DESCRIPTION = (
+    "The shared order-number concept: a globally unique composite order "
+    "number and the store-local number it is built from."
+)
+T2_GOLDEN_STALE_AFTER = "2027-09-30"
 
 
 def t2_reference_candidate(root: Path):
@@ -953,7 +962,10 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
     evidence authority — the SDK-authored ariadne_evidence digest is
     disclosure. Exact Resource/column identity, the SDK version-qualified
     citation, Bound Release identity, pinned scope and no-join-authority
-    semantics hold throughout; serving is source-free, measurement is not."""
+    semantics hold throughout; serving is source-free, measurement is not.
+    The fix-pass legs pin full native metadata retention (F3), the COMPLETE
+    response budget including admission provenance (F4) and global support
+    across hidden unreferenced KB pages (F2)."""
     import json
 
     from ariadne import admission, serve
@@ -1061,6 +1073,11 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
         assert T2_DUMMY_EVIDENCE_DIGEST not in {
             view["digest"] for view in mapping_view["evidence"]
         }  # the SDK-authored digest never poses as authority
+        # F3 (fix pass): the existing match fields retain the authored golden
+        # description and expiry; full input metadata must not be projected
+        # away to unknown or replaced by a new duplicate output schema.
+        assert local["description"] == T2_GOLDEN_DESCRIPTION
+        assert local["freshness"]["stale_after"] == T2_GOLDEN_STALE_AFTER
         # native matcher semantics: exact phrase, exact qualified field,
         # never case-folded fields, whole aliases only
         exact = asyncio.run(session.resolve_term("GLOBAL Order Number"))
@@ -1178,3 +1195,98 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
         assert {view["digest"] for view in mapping_view["evidence"]} == {
             receipt_b["integrity_digest"]
         }
+
+    # F4 (fix pass): the COMPLETE final response — admission provenance
+    # included — must respect the host response budget. A ceiling between the
+    # serialized result without admission and the complete result refuses the
+    # whole CLI operation, still source-free; only the boundary is derived,
+    # from the independently serialized mandatory envelopes (never expected
+    # semantics from output), and the host config is restored afterwards.
+    import yaml
+
+    with monkeypatch.context() as guarded:
+        _source_free_guards(guarded)
+        config = project / "ariadne.yaml"
+        original = config.read_text()
+        session = DiscoveryRuntime.open_project(project)
+        complete = asyncio.run(session.resolve_term("order number"))
+        without_admission = {key: value for key, value in complete.items() if key != "admission"}
+        floor = max(query_results.result_json_bytes(form) for form in query_results.refusal_forms())
+        under = query_results.result_json_bytes(without_admission)
+        full = query_results.result_json_bytes(complete)
+        assert floor < under < full  # a real window exists for the boundary
+        document = yaml.safe_load(original)
+        document["query"] = {"response_bytes": under}
+        config.write_text(yaml.safe_dump(document, sort_keys=False))
+        code = cli(["resolve-term", "order number", "--project", str(project)])
+        failure = capsys.readouterr()
+        assert code == 1 and not failure.out
+        refused = json.loads(failure.err)
+        assert refused["error"]["code"] == "result_byte_limit"
+        config.write_text(original)
+        assert cli(["resolve-term", "order number", "--project", str(project)]) == 0
+        capsys.readouterr()
+
+    # F2 (fix pass): support is GLOBAL across the whole captured KB — a
+    # producer-valid hidden Reference with no mappings and no fabricated
+    # evidence, whose representation names a canonical URI of a synthetic
+    # UNAPPROVED source, must fail native validation naming the knowledge
+    # path and the unapproved source; the already active descriptor stays
+    # byte-identical (validation is not admission)
+    from ariadne.sources import table_resource
+
+    descriptor_before = current_bytes(project)
+    tree = worktree_of(project, proposal)
+    unapproved = table_resource("unapproved-source", None, "main", "orders")
+    hidden = tree / "knowledge/references/internal-identifiers.md"
+    hidden.parent.mkdir(parents=True, exist_ok=True)
+    hidden.write_text(
+        "---\n"
+        'id: "entity:internal-identifiers"\n'
+        'title: "Internal Identifiers"\n'
+        "entity_types:\n"
+        "  - reference\n"
+        "tags:\n"
+        "  - internal\n"
+        'summary: "Hidden internal identifier representations."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "restricted"\n'
+        "sources:\n"
+        '  - id: "src-internal-memo"\n'
+        '    title: "Internal memo, 2026-10-01"\n'
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: reference\n"
+        "  native:\n"
+        "    type: reference\n"
+        '    title: "Internal Identifiers"\n'
+        '    description: "Hidden internal identifier representations."\n'
+        "    tags:\n"
+        "      - internal\n"
+        "    stale_after: 2027-12-31\n"
+        "    sources:\n"
+        '      - id: "src-internal-memo"\n'
+        '        title: "Internal memo, 2026-10-01"\n'
+        "    ariadne:\n"
+        "      version: 1\n"
+        "      reference_role: identifier\n"
+        "      representations:\n"
+        "        - id: internal-order-id\n"
+        "          aliases:\n"
+        "            - internal order id\n"
+        "          fields:\n"
+        f'            - resource: "{unapproved}"\n'
+        '              column: "id"\n'
+        "          scope: []\n"
+        "      mappings: []\n"
+        "---\n\n"
+        "# Internal Identifiers\n\n"
+        "Hidden internal identifier representations.\n"
+    )
+    hidden_revision = reconcile_knowledge(project, proposal, revision_b)
+    refused = api.validate_proposal(proposal, hidden_revision)
+    assert refused["ok"] is False
+    diagnostics = "; ".join(refused["errors"])
+    assert "knowledge/references/internal-identifiers.md" in diagnostics
+    assert "unapproved-source" in diagnostics
+    assert current_bytes(project) == descriptor_before  # validation ≠ activation
