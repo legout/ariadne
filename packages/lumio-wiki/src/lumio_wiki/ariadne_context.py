@@ -39,9 +39,11 @@ Support boundary (v1, frozen with this module's committed result):
   floating/unknown/ambiguous targets refuse.
 
 The SDK surfaces are additive: candidate inspection of one exact captured
-(unadmitted) Authoring Revision, and opening of one exact admitted immutable
+(unadmitted) Authoring Revision, opening of one exact admitted immutable
 Published Version (local or S3 object store) with its full expected Context
-Identity and effective Visibility Scope. Nothing here executes payload
+Identity and effective Visibility Scope, and scoped local navigation
+(list/read/search of the visible ordinary and profiled pages) through the
+same one-shot verified snapshot. Nothing here executes payload
 content, reads a latest pointer as fallback, or grants source/publication/
 database permission.
 """
@@ -1650,6 +1652,63 @@ class ContextSnapshot(msgspec.Struct, frozen=True):
     bindings: tuple[ContextBinding, ...]
 
 
+class PublishedContextPageMetadata(msgspec.Struct, frozen=True):
+    """Immutable scoped navigation metadata for one visible page; no body.
+
+    ``kind`` is the profile kind, or the explicit ``unprofiled`` label of an
+    ordinary documentation page (never a technical validation claim). An
+    absent advisory fact stays ``None`` (spec0009 navigation r3).
+    """
+
+    namespace: str
+    entity_id: str
+    path: str
+    title: str
+    kind: str
+    published_version: str
+    citation: str
+    lifecycle: str | None
+    review_after: str | None
+
+
+class PublishedContextPage(PublishedContextPageMetadata):
+    """One complete visible canonical page with immutable body and views.
+
+    ``native`` is empty when the page is unprofiled; ``native`` and
+    ``sources`` are deep-immutable view containers (compare through
+    :func:`disclose_native`; direct mutation raises ``TypeError``).
+    """
+
+    content: str
+    body: str
+    body_start_line: int
+    native: Any
+    sources: tuple[Source, ...]
+
+
+class PublishedContextSearchHit(msgspec.Struct, frozen=True):
+    """One native lexical hit over the scope-filtered visible page set.
+
+    ``snippet`` is the native compacted snippet; ``excerpt`` is the
+    separately labeled verbatim canonical passage with inclusive 1-based
+    canonical line numbers and the actual fence-aware section when the
+    passage lies in the body (``None`` for a frontmatter passage). The
+    completeness counters describe visible-only candidates.
+    """
+
+    page: PublishedContextPage
+    score: float
+    matched_fields: tuple[str, ...]
+    matched_terms: tuple[str, ...]
+    snippet: str
+    candidates_seen: int
+    results_dropped: int
+    excerpt: str
+    line_start: int | None
+    line_end: int | None
+    section: str | None
+
+
 class AriadneCandidateInspection(msgspec.Struct, frozen=True):
     """Structural/dependency diagnostics of one exact captured revision.
 
@@ -1820,25 +1879,22 @@ def _verify_s3_admission(metadata_store: Any, pinned: str, manifest: Any, locati
         )
 
 
-def open_published_context(
+def _resolve_verified_published_context(
     location: Any,
     expected: ContextIdentity,
     *,
     ontology_catalog: Mapping[str, Mapping[str, str | Sequence[str]]] | None = None,
     metadata_store: Any = None,
-) -> ContextSnapshot:
-    """Open one exact admitted immutable Published Version as a Context Snapshot.
+) -> tuple[Any, Any, str]:
+    """Resolve and fully verify one exact admitted Published Version, once.
 
-    Requires a version-pinned published Location — local or S3 object store —
-    never a plain directory and never a floating current pointer. S3 input
-    additionally requires the producer-side ``metadata_store`` used at
-    publication so the exact native admission facts can be verified; there is
-    no local-path fallback. Every expected Context Identity component
-    (including the selected subtree) is compared before a usable view, and
-    the expected identity's effective Visibility Scope is applied before any
-    lookup, expansion or view construction. A changed or wrong version
-    refuses; there is no fallback to latest. ``ontology_catalog`` is a
-    compatibility assertion only: it must agree with the published Control File.
+    The shared verification front-half of :func:`open_published_context`;
+    its gate order, keyword arguments, exception categories and diagnostics
+    are unchanged: location and exact version-pin admission, publication
+    manifest and identity digests, profile version, non-empty effective
+    Visibility Scope, native admission receipts and profile validation.
+    Returns the verified resolved snapshot, its publication manifest and the
+    pinned version; callers disclose only this one verified snapshot.
     """
     from lumio_wiki.location import PublishedFilesystemLocation, published_version_path
     from lumio_wiki.s3_location import MANIFEST_OBJECT, S3Location, _get_bytes
@@ -1947,6 +2003,32 @@ def open_published_context(
         raise UnresolvedReferenceError(
             "caller ontology_catalog does not agree with the published Control File declaration"
         )
+    return snapshot, manifest, pinned
+
+
+def open_published_context(
+    location: Any,
+    expected: ContextIdentity,
+    *,
+    ontology_catalog: Mapping[str, Mapping[str, str | Sequence[str]]] | None = None,
+    metadata_store: Any = None,
+) -> ContextSnapshot:
+    """Open one exact admitted immutable Published Version as a Context Snapshot.
+
+    Requires a version-pinned published Location — local or S3 object store —
+    never a plain directory and never a floating current pointer. S3 input
+    additionally requires the producer-side ``metadata_store`` used at
+    publication so the exact native admission facts can be verified; there is
+    no local-path fallback. Every expected Context Identity component
+    (including the selected subtree) is compared before a usable view, and
+    the expected identity's effective Visibility Scope is applied before any
+    lookup, expansion or view construction. A changed or wrong version
+    refuses; there is no fallback to latest. ``ontology_catalog`` is a
+    compatibility assertion only: it must agree with the published Control File.
+    """
+    snapshot, manifest, pinned = _resolve_verified_published_context(
+        location, expected, ontology_catalog=ontology_catalog, metadata_store=metadata_store
+    )
     allowed = set(expected.scope)
     in_scope = [
         page
@@ -1988,6 +2070,296 @@ def open_published_context(
         pages=tuple(views.values()),
         bindings=tuple(bindings),
     )
+
+
+def _scoped_visible_pages(snapshot: Any, scope: Sequence[str]) -> list[CompiledPage]:
+    """Authorized-scope pages only, filtered before selection or ranking."""
+    allowed = set(scope)
+    return [page for page in snapshot.pages if (page.visibility or "") in allowed]
+
+
+def _published_page_metadata(
+    page: CompiledPage, *, namespace: str, published_version: str
+) -> PublishedContextPageMetadata:
+    """The immutable advisory metadata of one visible page; no page body."""
+    profile = page.ariadne_profile
+    return PublishedContextPageMetadata(
+        namespace=namespace,
+        entity_id=page.id,
+        path=page.path,
+        title=page.title,
+        kind=profile.kind if profile else "unprofiled",
+        published_version=published_version,
+        citation=f"{namespace} {page.id} v{published_version} {page.path}",
+        lifecycle=page.lifecycle,
+        review_after=page.review_after,
+    )
+
+
+def _published_page_record(
+    page: CompiledPage,
+    *,
+    namespace: str,
+    published_version: str,
+    canonical_content: Mapping[str, bytes],
+) -> PublishedContextPage:
+    """One complete visible canonical page as an immutable navigation record."""
+    profile = page.ariadne_profile
+    raw = canonical_content.get(page.path, b"")
+    metadata = _published_page_metadata(
+        page, namespace=namespace, published_version=published_version
+    )
+    return PublishedContextPage(
+        **msgspec.to_builtins(metadata),
+        content=raw.decode("utf-8", errors="replace"),
+        body=page.body,
+        body_start_line=page.body_start_line,
+        native=_freeze(profile.native) if profile else MappingProxyType({}),
+        sources=tuple(page.sources),
+    )
+
+
+#: Native page-search field -> canonical frontmatter key carrying the decoded
+#: value a metadata-only match must cite.
+_METADATA_FIELD_KEYS = MappingProxyType(
+    {"title": "title", "alias": "aliases", "tag": "tags", "summary": "summary"}
+)
+
+
+def _mark_offset(mark: Any, line_starts: Sequence[int], bound: int) -> int:
+    """Character offset of one composed YAML mark inside its frontmatter text."""
+    base = line_starts[mark.line] if mark.line < len(line_starts) else bound
+    return min(base + mark.column, bound)
+
+
+def _metadata_match_passage(
+    page: CompiledPage,
+    matched_fields: Sequence[str],
+    terms: Sequence[str],
+    raw: str,
+) -> tuple[str, int, int, None]:
+    """The verbatim canonical raw span of the actually matched metadata value.
+
+    Composed YAML node marks map the decoded native search value back to its
+    canonical source characters: an escaped scalar (``"\\u0068alcyon"``) cites
+    its authored raw line, a multiline scalar truthfully cites its whole raw
+    span, and a comment on an unrelated key never stands in for the passage.
+    The span is composed from and sliced out of the original canonical text,
+    so its real line separators (CRLF included) stay verbatim. Metadata sits
+    above the body, so no section exists. An unavailable mapping refuses; a
+    body passage is never fabricated.
+    """
+    import yaml
+
+    keys = {
+        _METADATA_FIELD_KEYS[field]
+        for field in matched_fields
+        if field in _METADATA_FIELD_KEYS
+    }
+    if not keys:
+        raise MalformedProfileError(
+            f"no citable frontmatter key for matched fields of {page.path!r}"
+        )
+    lines = raw.splitlines()
+    frontmatter_lines = lines[: max(page.body_start_line - 1, 0)]
+    # Start offset of every frontmatter line in the original raw text, each
+    # line's real separator kept (CRLF, LF or bare CR), so both the compose
+    # input and the excerpt slice stay byte-verbatim; composed marks are
+    # 0-based lines of exactly this text, so canonical line == mark + 1.
+    raw_starts = []
+    pos = 0
+    for line in frontmatter_lines:
+        raw_starts.append(pos)
+        pos += len(line)
+        if raw[pos : pos + 2] == "\r\n":
+            pos += 2
+        elif raw[pos : pos + 1] in ("\r", "\n"):
+            pos += 1
+    frontmatter = raw[:pos]
+    root = yaml.compose(frontmatter, Loader=yaml.SafeLoader)
+    if not isinstance(root, yaml.MappingNode):
+        raise MalformedProfileError(
+            f"no citable YAML frontmatter mapping at {page.path!r}"
+        )
+    for key, value in root.value:
+        if not (isinstance(key, yaml.ScalarNode) and key.value in keys):
+            continue
+        # A searched field holds one scalar or a sequence of scalars; no
+        # deeper structure is interpreted.
+        values = value.value if isinstance(value, yaml.SequenceNode) else (value,)
+        for node in values:
+            if not isinstance(node, yaml.ScalarNode):
+                continue
+            folded = node.value.casefold()
+            if not any(term in folded for term in terms):
+                continue
+            # The raw token span minus its consuming trailing line breaks is
+            # the verbatim passage; original-text character offsets keep the
+            # span and its separators exact down to whole original lines.
+            start = _mark_offset(node.start_mark, raw_starts, len(frontmatter))
+            end = _mark_offset(node.end_mark, raw_starts, len(frontmatter))
+            span = frontmatter[start:end].rstrip()
+            first = node.start_mark.line
+            last = first + len(span.splitlines()) - 1
+            return (
+                raw[raw_starts[first] : raw_starts[last] + len(lines[last])],
+                first + 1,
+                last + 1,
+                None,
+            )
+    raise MalformedProfileError(
+        f"no canonical source span for the matched metadata value of {page.path!r}"
+    )
+
+
+def _canonical_match_passage(
+    page: CompiledPage,
+    matched_fields: Sequence[str],
+    matched_terms: Sequence[str],
+    canonical_content: Mapping[str, bytes],
+) -> tuple[str, int | None, int | None, str | None]:
+    """The verbatim canonical line passage for one kept visible hit.
+
+    A body match cites its matching canonical line (verbatim, indentation
+    kept) with the innermost fence-aware section containing it; a
+    metadata-only match cites the real canonical frontmatter span carrying
+    the matched value, with no section — never a fabricated body passage.
+    """
+    from lumio_wiki.evidence import body_sections
+
+    raw = canonical_content.get(page.path, b"").decode("utf-8", errors="replace")
+    lines = raw.splitlines()
+    terms = [term.casefold() for term in matched_terms]
+    if "body" not in matched_fields:
+        return _metadata_match_passage(page, matched_fields, terms, raw)
+    # Canonical line ``body_start_line`` begins the body: its first character
+    # is that line's terminating newline.
+    first = page.body_start_line - 1
+    last = len(lines)
+    sections = body_sections(page.body, page.body_start_line)
+    for index in range(first, min(last, len(lines))):
+        folded = lines[index].casefold()
+        if any(term in folded for term in terms):
+            line_number = index + 1
+            section = None
+            for title, start, end, _text in sections:
+                if start <= line_number <= end:
+                    section = title  # innermost (latest) containing section
+            return lines[index], line_number, line_number, section
+    # Defensive tail (a genuine native match always finds its line): the
+    # whole stripped body passage with its page coordinates.
+    body_lines = page.body.splitlines()
+    return (
+        page.body.strip(),
+        page.body_start_line,
+        page.body_start_line + len(body_lines) - 1,
+        None,
+    )
+
+
+def _navigation_snapshot(location: Any, expected: ContextIdentity) -> tuple[Any, Any, str]:
+    """One fully verified pinned snapshot for a local navigation operation.
+
+    The shared reader gate is reused unchanged, so plain directories,
+    unpinned locations and S3 navigation (this facade never supplies the
+    producer-side metadata store) refuse with the reader's categories and
+    message idioms before any store access; each operation then discloses
+    only this one verified snapshot.
+    """
+    return _resolve_verified_published_context(
+        location, expected, ontology_catalog=None, metadata_store=None
+    )
+
+
+def list_published_context_pages(
+    location: Any, expected: ContextIdentity
+) -> tuple[PublishedContextPageMetadata, ...]:
+    """List the immutable metadata of every visible published context page.
+
+    Ordinary documentation pages appear alongside profiled pages with the
+    explicit ``unprofiled`` kind; results carry no page body and are sorted
+    by exact relative path. Requires an immutable-version-pinned local
+    ``PublishedFilesystemLocation`` and the complete expected
+    :class:`ContextIdentity`; the effective Visibility Scope is applied
+    before path selection.
+    """
+    snapshot, manifest, pinned = _navigation_snapshot(location, expected)
+    visible = sorted(_scoped_visible_pages(snapshot, expected.scope), key=lambda page: page.path)
+    return tuple(
+        _published_page_metadata(page, namespace=manifest.namespace, published_version=pinned)
+        for page in visible
+    )
+
+
+def read_published_context_page(
+    location: Any, expected: ContextIdentity, path: str
+) -> PublishedContextPage:
+    """Read one complete visible canonical page by its exact relative path.
+
+    The result carries the exact canonical UTF-8 content, the parsed body
+    with its body-start line, immutable native metadata (empty when
+    unprofiled) and the public Source provenance. Missing and out-of-scope
+    paths refuse with the same scope-safe unavailability, disclosing no
+    hidden title, Entity identity or text.
+    """
+    snapshot, manifest, pinned = _navigation_snapshot(location, expected)
+    canonical_content = snapshot.knowledge_base.canonical_pages
+    for page in _scoped_visible_pages(snapshot, expected.scope):
+        if page.path == path:
+            return _published_page_record(
+                page,
+                namespace=manifest.namespace,
+                published_version=pinned,
+                canonical_content=canonical_content,
+            )
+    raise UnadmittedInputError(
+        f"no visible context page at path {path!r} in Published Version {pinned!r}"
+    )
+
+
+def search_published_context_pages(
+    location: Any, expected: ContextIdentity, query: str, *, limit: int = 10
+) -> tuple[PublishedContextSearchHit, ...]:
+    """Search exactly the visible pages of one verified immutable version.
+
+    Normalization, ranking, deterministic ties, query limits and completeness
+    accounting are the native page search over the scope-filtered page set —
+    no second ranking engine. Each kept hit adds a separately labeled
+    verbatim canonical excerpt with inclusive 1-based line numbers and the
+    actual fence-aware section when available; metadata-only matches cite
+    the real canonical metadata passage.
+    """
+    from lumio_wiki.page_search import search_pages
+
+    snapshot, manifest, pinned = _navigation_snapshot(location, expected)
+    visible = _scoped_visible_pages(snapshot, expected.scope)
+    canonical_content = snapshot.knowledge_base.canonical_pages
+    hits: list[PublishedContextSearchHit] = []
+    for result in search_pages(visible, query, limit=limit):
+        excerpt, line_start, line_end, section = _canonical_match_passage(
+            result.page, result.matched_fields, result.matched_terms, canonical_content
+        )
+        hits.append(
+            PublishedContextSearchHit(
+                page=_published_page_record(
+                    result.page,
+                    namespace=manifest.namespace,
+                    published_version=pinned,
+                    canonical_content=canonical_content,
+                ),
+                score=result.score,
+                matched_fields=tuple(result.matched_fields),
+                matched_terms=tuple(result.matched_terms),
+                snippet=result.snippet,
+                candidates_seen=result.candidates_seen,
+                results_dropped=result.results_dropped,
+                excerpt=excerpt,
+                line_start=line_start,
+                line_end=line_end,
+                section=section,
+            )
+        )
+    return tuple(hits)
 
 
 def _manifest_from_bytes(manifest_raw: bytes) -> Any:
