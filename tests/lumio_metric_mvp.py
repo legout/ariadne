@@ -647,7 +647,6 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
 
     deferred = DeferredQueryRuntime(no_execution, discovery)
     calls = [
-        ("query_metrics", ({"metrics": ["revenue"]},)),
         ("query_detail", ({"dataset": "orders", "fields": ["id"]},)),
         (
             "query_records",
@@ -689,9 +688,11 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
         ("resolve_term", ("Order Number",)),
         ("list_context_pages", ()),
         ("read_context_page", ("policies/cancelled-orders.md",)),
-        ("list_datasets", ()),
     ]
+    # Q2 (spec0029 §1.2): query_metrics and list_datasets left the unsupported
+    # set — the two superseded refusals become their native supported behavior.
     from ariadne.execution import DuckDBExecution
+    from ariadne.planner import PlannerError
 
     try:
         with monkeypatch.context() as m:
@@ -710,6 +711,14 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
             assert groups["metrics"]["status"] == "available"
             assert groups["contracts"]["status"] == "available"
             assert all(groups[k]["status"] == "unavailable" for k in ("pages", "terms", "examples"))
+            # the live catalog serves with its approvals — never source-free
+            datasets = asyncio.run(runtime.list_datasets())
+            orders = next(d for d in datasets if d["table"] == "orders")
+            assert orders["source"] == "orders" and {c["name"] for c in orders["columns"]} >= {
+                "id",
+                "amount",
+                "status",
+            }
             for name, args in calls:
                 with pytest.raises(
                     ValueError, match=f"unsupported integrated MVP operation: {name}"
@@ -721,8 +730,18 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
                     asyncio.run(getattr(deferred, name)(*args))
             assert cli(["list-metrics", "--project", str(project)]) == 0
             assert json.loads(capsys.readouterr().out)[0]["name"] == "revenue"
-            assert cli(["list-datasets", "--project", str(project)]) == 1
-            assert "unsupported integrated MVP operation" in capsys.readouterr().err
+        # Q2 (spec0029 §1.2): the superseded refusals serve natively where
+        # their native admission exists. This fixture pins no multi-fact
+        # graph, so query_metrics now keeps the GRAPH-specific refusal (never
+        # the old unsupported-operation one) while the CLI's live catalog
+        # serves its approved tables — outside the spy block, both natively
+        # construct their runtime.
+        with pytest.raises(PlannerError) as graphless:
+            asyncio.run(runtime.query_metrics({"metrics": ["revenue"]}))
+        assert graphless.value.code == "not_admitted"
+        assert cli(["list-datasets", "--project", str(project)]) == 0
+        listed = json.loads(capsys.readouterr().out)
+        assert next(d for d in listed if d["table"] == "orders")["source"] == "orders"
     finally:
         runtime.con.close()
 

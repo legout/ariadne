@@ -462,7 +462,10 @@ class _DiscoverySession:
                         == self._metrics[entry["name"]]["model"]["semantic_model"][0]["name"]
                     )
                 )
-            hint = "Local integrated MVP: get_metric only; other serving operations refuse."
+            hint = (
+                "Local integrated MVP: get_metric, query_metrics and "
+                "list_datasets; other serving operations refuse."
+            )
         return [*entries, hint]
 
     async def search_examples(

@@ -16,9 +16,10 @@ import yaml
 SUPPORT = {
     "storage": "local-immutable",
     "profiles": ["metric", "policy"],
-    "operations": ["get_metric", "discover", "list_metrics"],
+    # Q2 (spec0029 §1.2, 2026-10-20): query_metrics and list_datasets join the
+    # supported integrated operations — every other r2 refusal stands.
+    "operations": ["get_metric", "discover", "list_metrics", "query_metrics", "list_datasets"],
     "unsupported": [
-        "query_metrics",
         "query_detail",
         "query_records",
         "define_metric",
@@ -28,7 +29,6 @@ SUPPORT = {
         "resolve_term",
         "list_context_pages",
         "read_context_page",
-        "list_datasets",
     ],
 }
 
@@ -491,7 +491,10 @@ def verify_release(record, snapshot):
     return context
 
 
-def metric_context(snapshot, manifest, context_dir, model, metric):
+def metric_context(snapshot, manifest, context_dir, model, metric, *, _now=None):
+    # ``_now`` is the runtime's multi-metric seam: one assessment instant for
+    # every metric of one query_metrics answer (spec 0011 §2); the public
+    # single-metric call keeps its own clock.
     from lumio_wiki.ariadne_context import disclose_native
 
     from ariadne import context
@@ -506,7 +509,7 @@ def metric_context(snapshot, manifest, context_dir, model, metric):
     binding = bindings[0]
     page = next(p for p in snapshot.pages if p.entity_id == binding.metric_entity_id)
     consumed = [page, *binding.required_policies]
-    now = context._assessment_now()
+    now = _now if _now is not None else context._assessment_now()
     signals = [context._page_view(p.citation, disclose_native(p.native), now) for p in consumed]
     computation = context._computation_meta(Path(context_dir), metric)
     if computation is not None:

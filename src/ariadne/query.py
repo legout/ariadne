@@ -431,7 +431,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             hint = (
                 ROUTING_HINT
                 if self._context_snapshot is None
-                else ("Local integrated MVP: get_metric only; no Ad-hoc fallback.")
+                else ("Local integrated MVP: get_metric and query_metrics; no Ad-hoc fallback.")
             )
             raise ValueError(f"unknown metric {name!r}; available metrics: {available}. {hint}")
         if self._managed is not None and self._context_snapshot is None:
@@ -667,6 +667,51 @@ class _QueryRuntimeSession(_DiscoverySession):
             )
         return self._graph, self._admission
 
+    def _sdk_metric_contexts(self, request: dict) -> dict[str, dict] | None:
+        """Q2 (spec0029 §1.2): on an integrated Bound Release, resolve every
+        requested metric's exact SDK Context Binding and complete required
+        Policy Closure from the one pinned published version, then prove the
+        COMBINED mandatory context fits the complete-response budget — all
+        before any planner/live-audit/bind/SELECT work. An unbound, hidden or
+        incomplete binding refuses here; an answer that cannot carry its
+        required context never executes. Returns ``None`` on the standalone
+        route (the unchanged OKF context path applies) and an empty mapping
+        for a malformed request (the planner's structured request validation
+        still owns that refusal, before its own live audits)."""
+        if self._context_snapshot is None:
+            return None
+        assert self._managed is not None
+        from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+        names = request.get("metrics") if isinstance(request, dict) else None
+        if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+            return {}
+        unknown = [name for name in names if name not in self._metrics]
+        if unknown:
+            # the planner's exact unknown-metric refusal contract, kept ahead
+            # of the live operations the SDK preflight must precede
+            raise PlannerError(
+                "unknown_metric",
+                f"unknown metric(s) {unknown}",
+                candidates=tuple(sorted(self._metrics)),
+            )
+        now = context._assessment_now()  # one clock value for every metric (spec 0011 §2)
+        resolved: dict[str, dict] = {}
+        for name in dict.fromkeys(names):
+            meta = self._metrics[name]
+            resolved[name] = lumio_context.metric_context(
+                self._context_snapshot,
+                self._managed["bound_release"],
+                self.context_dir,
+                meta["model"]["semantic_model"][0]["name"],
+                name,
+                _now=now,
+            )
+        envelope = {"context": resolved}
+        query_results.account_rows(self._limits, envelope, [])
+        query_results.finalize_response(self._limits, envelope, response_measure=self._measure)
+        return resolved
+
     async def query_metrics(self, request: dict) -> dict:
         """Governed multi-fact query (issue #30, spec rev 1 "Query and result
         contract"): a nonempty list of PREDEFINED metric names over the ADMITTED
@@ -683,6 +728,13 @@ class _QueryRuntimeSession(_DiscoverySession):
         validated revision."""
         self._refuse_unsupported("query_metrics")
         graph, admission = self._admitted()
+        # Q2 (spec0029 §1.2): on an integrated Bound Release, every requested
+        # metric's exact SDK binding and complete Policy Closure resolve as ONE
+        # unit, and the COMBINED mandatory context must fit the complete-response
+        # budget — BEFORE planning, the live relationship audits, bind or SELECT.
+        # An answer that cannot carry its required context never executes; the
+        # standalone route keeps the unchanged OKF context path below.
+        sdk_contexts = self._sdk_metric_contexts(request)
         # Issue #56/S1 (spec 0014 §6): the shared budget covers the planner's
         # live relationship/grain audits, the EXPLAIN bind and the bounded
         # collection — one allowance for the whole operation.
@@ -724,7 +776,11 @@ class _QueryRuntimeSession(_DiscoverySession):
                 "relationship_audit": plan.relationship_audit,
             },
             "governed": True,
-            "context": {name: self._metric_context(name, _now=now) for name in plan.metrics},
+            "context": (
+                {name: sdk_contexts[name] for name in plan.metrics}
+                if sdk_contexts is not None
+                else {name: self._metric_context(name, _now=now) for name in plan.metrics}
+            ),
             "admission": self._admission_view(admission),
         }
         # Issue #54 (spec 0013 §4): the additive advisory source-quality view
