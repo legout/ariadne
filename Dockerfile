@@ -4,8 +4,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md /build/
-COPY src/ariadne /build/src/ariadne
+COPY packages/ariadne-data/pyproject.toml packages/ariadne-data/README.md /build/
+COPY packages/ariadne-data/src/ariadne /build/src/ariadne
 RUN pip install --no-cache-dir '/build[mcp]' && rm -rf /build
 
 ENV PYTHONUNBUFFERED=1 HOME=/tmp

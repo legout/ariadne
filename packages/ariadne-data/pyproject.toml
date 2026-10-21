@@ -67,13 +67,14 @@ testpaths = ["tests"]
 addopts = "-q"
 
 [tool.pyright]
-venvPath = "."
+# The shared workspace venv lives at the monorepo root; this member moved
+# under packages/ariadne-data (plan 0030 M1).
+venvPath = "../.."
 venv = ".venv"
 exclude = ["build", "**/.venv", "examples/trace-data/data/docs"]
-# The separately installed Agent has its own optional dependency environment.
+# The separately installed Agent keeps its own pyright configuration in
+# ariadne-agent/pyproject.toml (outside this workspace member).
 executionEnvironments = [
-    { root = "ariadne-agent/src", extraPaths = ["src", "ariadne-agent/src", "ariadne-agent/.venv/lib/python3.12/site-packages"] },
-    { root = "ariadne-agent/tests", extraPaths = [".", "src", "ariadne-agent/src", "ariadne-agent/.venv/lib/python3.12/site-packages"] },
     { root = ".", extraPaths = ["src"] },
 ]
 
