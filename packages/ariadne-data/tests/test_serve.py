@@ -18,6 +18,7 @@ import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+MONOREPO_ROOT = Path(__file__).resolve().parents[3]  # examples/, ariadne-agent/ stay root-resident
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -210,7 +211,7 @@ GOLDEN_RESPONSE = json.dumps(
 def seed_demo_db(db_path: Path) -> Path:
     """Deterministic demo.db via examples/retail-demo/seed_db.py (loaded by path, no pkg)."""
     spec = importlib.util.spec_from_file_location(
-        "ariadne_seed_db", REPO_ROOT / "examples" / "retail-demo" / "seed_db.py"
+        "ariadne_seed_db", MONOREPO_ROOT / "examples" / "retail-demo" / "seed_db.py"
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

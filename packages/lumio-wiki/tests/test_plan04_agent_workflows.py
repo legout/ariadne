@@ -16,7 +16,7 @@ from lumio_wiki.distiller import _build_distill_system_prompt
 from lumio_wiki.records import EntityTypeDefinition, Ontology, PredicateDefinition
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
 
 
 def _legacy_kb(tmp_path: Path, name: str = "kb") -> Path:
@@ -263,7 +263,7 @@ def test_protocol_denies_source_content_operational_authority():
 
 
 def test_readme_sample_validates_in_initialized_v2_kb():
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (ROOT / "packages" / "lumio-wiki" / "README.md").read_text(encoding="utf-8")
     assert "entity:technology-stack" in readme
     assert 'entity_types: ["software-system"]' in readme
     assert "lumio-wiki validate ./knowledge-base" in readme

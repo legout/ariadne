@@ -59,7 +59,7 @@ jobs:
       - run: uv sync --locked
       - name: Run onboarding and public S3-compatible suites
         run: |
-          uv run --locked pytest -q tests/test_onboarding_journey.py \
+          uv run --locked pytest -q tests/lumio/test_onboarding_journey.py \
             packages/lumio-wiki/tests/*s3_compat.py \
             packages/lumio-lancedb/tests/*s3_compat.py
 
@@ -79,9 +79,9 @@ jobs:
       - name: Exercise only the installed lumio-wiki wheel
         run: |
           /tmp/lumio-wiki-venv/bin/python -I \
-            scripts/verify_lumio_wiki_wheel.py \
+            scripts/lumio/verify_lumio_wiki_wheel.py \
             dist/lumio-wiki/lumio_wiki-*.whl \
-            tests/fixtures/valid tests/fixtures/categorized_kb
+            tests/lumio/fixtures/valid tests/lumio/fixtures/categorized_kb
       - name: Smoke the lumio-wiki[mcp] wheel (entry point, binding, search)
         run: |
           wheel=$(echo dist/lumio-wiki/lumio_wiki-*.whl)
@@ -89,12 +89,12 @@ jobs:
           uv pip install --python /tmp/lumio-wiki-mcp-venv/bin/python "${wheel}[mcp]"
           # Console entry point: wiring + binding + serve startup; the server
           # exits cleanly on stdin EOF (AC1 from the installed wheel).
-          timeout 60 /tmp/lumio-wiki-mcp-venv/bin/lumio-wiki mcp tests/fixtures/valid < /dev/null
+          timeout 60 /tmp/lumio-wiki-mcp-venv/bin/lumio-wiki mcp tests/lumio/fixtures/valid < /dev/null
           # Invalid KB: must fail fast (never hang), exit non-zero, and emit
           # the bounded message with no traceback. Timeout status 124 would
           # mask a hanging startup, so it is an explicit failure.
           status=0
-          timeout 60 /tmp/lumio-wiki-mcp-venv/bin/lumio-wiki mcp tests/fixtures/invalid < /dev/null > /tmp/mcp-smoke-invalid.log 2>&1 || status=$?
+          timeout 60 /tmp/lumio-wiki-mcp-venv/bin/lumio-wiki mcp tests/lumio/fixtures/invalid < /dev/null > /tmp/mcp-smoke-invalid.log 2>&1 || status=$?
           if [ "$status" -eq 124 ]; then
             echo "invalid-KB startup must fail fast, not hang" >&2
             exit 1
@@ -109,9 +109,9 @@ jobs:
           timeout 60 /tmp/lumio-wiki-mcp-venv/bin/python - <<'EOF'
           from lumio_wiki.location import FilesystemLocation, open_knowledge_base
           from lumio_wiki.mcp_server import build_server, search_rows
-          snapshot = open_knowledge_base(FilesystemLocation("tests/fixtures/valid"))
+          snapshot = open_knowledge_base(FilesystemLocation("tests/lumio/fixtures/valid"))
           rows = search_rows(snapshot, "LanceDB")
           assert rows["results"] and rows["results"][0]["title"] == "Architecture"
-          build_server(FilesystemLocation("tests/fixtures/valid"))
+          build_server(FilesystemLocation("tests/lumio/fixtures/valid"))
           print("mcp wheel smoke ok:", rows["results"][0]["path"])
           EOF

@@ -71,7 +71,7 @@ def assert_installed_wheel(wheel: Path) -> None:
     legacy_hash = archive_info.get("hash", "")
     if legacy_hash.startswith("sha256="):
         assert legacy_hash == f"sha256={digest}", direct
-    source = Path(__file__).resolve().parents[1] / "packages" / name / "src"
+    source = Path(__file__).resolve().parents[2] / "packages" / name / "src"
     members = {}
     with zipfile.ZipFile(wheel) as archive:
         for member in archive.namelist():

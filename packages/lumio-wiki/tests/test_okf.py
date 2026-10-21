@@ -8,7 +8,7 @@ import pytest
 from lumio_wiki.knowledge_base import load_knowledge_base
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
 
 
 def test_okf_export_and_import_use_only_portable_foundation(tmp_path: Path):

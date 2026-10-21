@@ -24,7 +24,7 @@ from lumio_wiki.location import FilesystemLocation, KnowledgeBaseSnapshot, Remot
 from lumio_wiki.records import SourceFingerprint
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
 
 
 def _flat(text: str) -> str:

@@ -23,7 +23,7 @@ import pytest
 from lumio_wiki import KnowledgeBase, load_knowledge_base
 from lumio_wiki.records import CompiledPage, Relationship, Source
 
-from tests._entity_fixtures import claim_for, entity_id_for
+from ._entity_fixtures import claim_for, entity_id_for
 
 
 def _page(

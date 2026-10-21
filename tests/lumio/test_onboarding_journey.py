@@ -26,11 +26,11 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-QUICKSTART = ROOT / "docs" / "quickstart.md"
-S3_GUIDE = ROOT / "docs" / "howto-s3-publish.md"
-SCRIPT = ROOT / "examples" / "onboarding-journey" / "smoke-journey.sh"
-RAW_SOURCE = ROOT / "examples" / "onboarding-journey" / "sources" / "support-runbook.md"
+ROOT = Path(__file__).resolve().parents[2]
+QUICKSTART = ROOT / "docs" / "lumio" / "quickstart.md"
+S3_GUIDE = ROOT / "docs" / "lumio" / "howto-s3-publish.md"
+SCRIPT = ROOT / "examples" / "lumio" / "onboarding-journey" / "smoke-journey.sh"
+RAW_SOURCE = ROOT / "examples" / "lumio" / "onboarding-journey" / "sources" / "support-runbook.md"
 
 
 def _run_cli(args: list[str]) -> str:

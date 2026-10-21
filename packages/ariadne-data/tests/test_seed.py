@@ -22,7 +22,8 @@ import duckdb
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SEED_SCRIPT = REPO_ROOT / "examples" / "retail-demo" / "seed_db.py"
+MONOREPO_ROOT = Path(__file__).resolve().parents[3]  # examples/, ariadne-agent/ stay root-resident
+SEED_SCRIPT = MONOREPO_ROOT / "examples" / "retail-demo" / "seed_db.py"
 FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "expected_metrics.json"
 
 # Fixed row-count contract (spec §8.1: "asserted row counts").
@@ -38,7 +39,7 @@ REGIONS = {"NA", "EMEA", "APAC"}
 def run_seed(db_path: Path) -> None:
     subprocess.run(
         [sys.executable, str(SEED_SCRIPT), str(db_path)],
-        cwd=REPO_ROOT,
+        cwd=MONOREPO_ROOT,
         check=True,
         capture_output=True,
         text=True,
@@ -89,7 +90,7 @@ def seeded_db(tmp_path_factory) -> Path:
 def test_retail_demo_registry_paths_are_relative_to_its_file():
     from ariadne.sources import load_registry
 
-    registry_path = REPO_ROOT / "examples" / "retail-demo" / "ariadne.yaml"
+    registry_path = MONOREPO_ROOT / "examples" / "retail-demo" / "ariadne.yaml"
     sources = {source.name: source for source in load_registry(registry_path).sources}
     assert sources["demo"].path == str(registry_path.parent / "data" / "demo.db")
     assert sources["support"].path == str(

@@ -50,6 +50,7 @@ import pytest  # pyright: ignore[reportMissingImports]
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+MONOREPO_ROOT = Path(__file__).resolve().parents[3]  # examples/, ariadne-agent/ stay root-resident
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -198,8 +199,8 @@ def resolve_served(served: Path) -> Path:
     models_dst = served / "semantic_layer" / "models"
     models_dst.mkdir(parents=True)
     (served / "context_layer").mkdir(parents=True)
-    models_src = REPO_ROOT / "examples" / "retail-demo" / "semantic_layer" / "models"
-    context_src = REPO_ROOT / "examples" / "retail-demo" / "context_layer"
+    models_src = MONOREPO_ROOT / "examples" / "retail-demo" / "semantic_layer" / "models"
+    context_src = MONOREPO_ROOT / "examples" / "retail-demo" / "context_layer"
     if models_src.is_dir():
         shutil.copytree(models_src, models_dst, dirs_exist_ok=True)
         if context_src.is_dir():

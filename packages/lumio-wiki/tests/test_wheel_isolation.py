@@ -935,7 +935,7 @@ def test_isolated_retrieval_ladder(isolated_wheel_env: dict, tmp_path: Path):
     and a corrupt graph artifact never blocks zero-index operation."""
     python = isolated_wheel_env["python"]
     script = python.parent / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
-    fixtures = Path(__file__).parents[3] / "tests" / "fixtures"
+    fixtures = Path(__file__).parents[3] / "tests" / "lumio" / "fixtures"
 
     def run(*args: str) -> str:
         result = subprocess.run([str(script), *args], capture_output=True, text=True)

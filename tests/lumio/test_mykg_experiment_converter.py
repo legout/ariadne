@@ -23,9 +23,9 @@ from pathlib import Path
 import pytest
 from lumio_wiki import as_sources, parse_frontmatter
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-CONVERTER_PATH = REPO_ROOT / "experiments" / "mykg" / "convert_mykg.py"
-SAMPLE_SESSION = REPO_ROOT / "experiments" / "mykg" / "sample"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CONVERTER_PATH = REPO_ROOT / "experiments" / "lumio" / "mykg" / "convert_mykg.py"
+SAMPLE_SESSION = REPO_ROOT / "experiments" / "lumio" / "mykg" / "sample"
 
 
 @pytest.fixture(scope="module")

@@ -25,7 +25,7 @@ from lumio_wiki.knowledge_base import KnowledgeBase
 from lumio_wiki.records import CompiledPage, RetrievalTrace
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
 
 
 @pytest.fixture

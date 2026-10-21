@@ -49,7 +49,7 @@ if not _os.environ.get("LUMIO_S3_ENDPOINT"):  # pragma: no cover
 from lumio_wiki.s3_publish import _publish_s3_working_tree  # noqa: E402
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures" / "valid"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures" / "valid"
 RAW = b"%PDF-1.4 s3_compat source artifact journey bytes"
 
 _ROLE_CREDENTIAL_ENV = {

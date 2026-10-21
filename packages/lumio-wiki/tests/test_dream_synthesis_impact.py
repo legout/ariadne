@@ -18,7 +18,7 @@ import pytest
 from lumio_wiki.cli import main
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
 
 SYN_PAGE = """---
 id: "{id}"

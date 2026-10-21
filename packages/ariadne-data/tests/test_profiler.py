@@ -19,6 +19,7 @@ import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+MONOREPO_ROOT = Path(__file__).resolve().parents[3]  # examples/, ariadne-agent/ stay root-resident
 if str(REPO_ROOT) not in sys.path:  # ariadne/ is not pip-installed until lane #2 lands
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -230,7 +231,7 @@ def test_cli_explicit_db_beats_ambient_registry(tmp_path, demo_db, monkeypatch, 
 
 
 def _seed_real_demo_db(tmp_path):
-    seed = REPO_ROOT / "examples" / "retail-demo" / "seed_db.py"
+    seed = MONOREPO_ROOT / "examples" / "retail-demo" / "seed_db.py"
     if not seed.is_file():
         pytest.skip("examples/retail-demo/seed_db.py arrives with lane #2")
     db = tmp_path / "demo.db"

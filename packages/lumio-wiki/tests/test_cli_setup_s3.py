@@ -37,7 +37,7 @@ from lumio_wiki.source_references import (
 )
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
 
 _S3_KEYS = (
     "LUMIO_KB_PATH",

@@ -22,7 +22,7 @@ from lumio_wiki.ingest import _extract_page_records, prepare_proposal_content
 from lumio_wiki.publish import DestinationConflict, validate_candidate_knowledge_base
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures" / "valid"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures" / "valid"
 
 RELATED_PAGE = """---
 title: "Journey Related Page"

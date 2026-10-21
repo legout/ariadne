@@ -257,7 +257,7 @@ def test_s3_compat_remote_graph_tables_build_load_and_parity(remote_location):
         load_knowledge_base,
     )
 
-    kb, report = load_knowledge_base(ROOT / "tests" / "fixtures" / "categorized_kb")
+    kb, report = load_knowledge_base(ROOT / "tests" / "lumio" / "fixtures" / "categorized_kb")
     assert report.is_valid
 
     graph_prefix = f"{prefix}-graph"
@@ -267,7 +267,7 @@ def test_s3_compat_remote_graph_tables_build_load_and_parity(remote_location):
         store=store,
         sidecar_prefix=graph_prefix,
     )
-    fp = fingerprint_sources(ROOT / "tests" / "fixtures" / "categorized_kb")
+    fp = fingerprint_sources(ROOT / "tests" / "lumio" / "fixtures" / "categorized_kb")
     build_graph_tables(kb, graph_loc, fp)
 
     assert has_graph_tables(graph_loc)

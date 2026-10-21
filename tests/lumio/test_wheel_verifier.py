@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import sys
 import zipfile
 from pathlib import Path
 
-from scripts.verify_lumio_wiki_wheel import _python_roots
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:  # make scripts.lumio importable from the relocated suite
+    sys.path.insert(0, str(ROOT))
+
+from scripts.lumio.verify_lumio_wiki_wheel import _python_roots  # noqa: E402
 
 
 def test_python_roots_includes_packages_top_level_modules_and_extensions(

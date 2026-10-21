@@ -15,6 +15,7 @@ import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+MONOREPO_ROOT = Path(__file__).resolve().parents[3]  # examples/, ariadne-agent/ stay root-resident
 HOST_HOME = Path.home()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -592,6 +593,6 @@ def test_no_mcp_or_native_agent_registration_exposes_walkthrough():
         names = {tool.name for tool in app._tool_manager.list_tools()}
         assert "review" not in names and "ariadne_review" not in names
         assert "authoring_review_proposal" in names or toolset == "analyst"
-    for path in (REPO_ROOT / "ariadne-agent/src/ariadne_agent").glob("*.py"):
+    for path in (MONOREPO_ROOT / "ariadne-agent/src/ariadne_agent").glob("*.py"):
         text = path.read_text()
         assert "ariadne.review" not in text and "ariadne review" not in text

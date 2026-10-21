@@ -30,7 +30,7 @@ from lumio_wiki.location import FilesystemLocation
 from lumio_wiki.s3_location import CURRENT_POINTER_OBJECT, MANIFEST_OBJECT, S3Location, S3Pointer
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
 
 obstore = pytest.importorskip("obstore", reason="obstore required for S3-compatible integration")
 

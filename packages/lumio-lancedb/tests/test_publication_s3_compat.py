@@ -52,7 +52,7 @@ from lumio_wiki.s3_publish import (  # noqa: E402
     _rollback_s3_version as rollback_s3_version,
 )
 
-FIXTURES = ROOT / "tests" / "fixtures"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
 VALID = FIXTURES / "valid"
 
 
@@ -214,7 +214,7 @@ def test_s3_compat_publish_blocks_when_a_graph_table_is_missing(kb, monkeypatch,
     import lumio_lancedb.publish as publish_module
 
     store, prefix, builder, _ = kb
-    root = ROOT / "tests" / "fixtures" / "categorized_kb"
+    root = ROOT / "tests" / "lumio" / "fixtures" / "categorized_kb"
     publish_s3_version(store, prefix, source_root=root, version="v1", index_builder=builder())
     assert _pointer(store, prefix) == "v1"
 
@@ -247,7 +247,7 @@ def test_s3_compat_publish_blocks_when_graph_fingerprint_mismatches(kb, monkeypa
     from lumio_wiki.records import SourceFingerprint
 
     store, prefix, builder, _ = kb
-    root = ROOT / "tests" / "fixtures" / "categorized_kb"
+    root = ROOT / "tests" / "lumio" / "fixtures" / "categorized_kb"
     publish_s3_version(store, prefix, source_root=root, version="v1", index_builder=builder())
     assert _pointer(store, prefix) == "v1"
 
@@ -339,7 +339,7 @@ def test_s3_compat_publish_blocks_when_tables_are_stale_under_current_sidecar(kb
     from lumio_wiki.records import SourceFingerprint
 
     store, prefix, builder, _ = kb
-    root = ROOT / "tests" / "fixtures" / "categorized_kb"
+    root = ROOT / "tests" / "lumio" / "fixtures" / "categorized_kb"
     publish_s3_version(store, prefix, source_root=root, version="v1", index_builder=builder())
     assert _pointer(store, prefix) == "v1"
 
@@ -372,7 +372,7 @@ def test_s3_compat_reader_falls_back_truthfully_when_graph_table_deleted(kb):
     from lumio_wiki.knowledge_base import EXTRACTOR_VERSION
 
     store, prefix, builder, storage_options = kb
-    root = ROOT / "tests" / "fixtures" / "categorized_kb"
+    root = ROOT / "tests" / "lumio" / "fixtures" / "categorized_kb"
     publish_s3_version(store, prefix, source_root=root, version="v1", index_builder=builder())
     snapshot = S3Location(store, prefix).resolve()
     bucket = _os.environ.get("LUMIO_S3_TEST_BUCKET", "lumio-wiki-it")
@@ -405,7 +405,7 @@ def test_s3_compat_publish_builds_graph_projections_and_reader_parity(kb):
     from lumio_wiki.knowledge_base import EXTRACTOR_VERSION
 
     store, prefix, builder, storage_options = kb
-    root = ROOT / "tests" / "fixtures" / "categorized_kb"
+    root = ROOT / "tests" / "lumio" / "fixtures" / "categorized_kb"
     manifest = publish_s3_version(
         store, prefix, source_root=root, version="v1", index_builder=builder()
     )

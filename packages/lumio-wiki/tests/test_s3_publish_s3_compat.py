@@ -27,7 +27,7 @@ from lumio_wiki.s3_location import (
 )
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
 VALID = FIXTURES / "valid"
 CATEGORIZED = FIXTURES / "categorized_kb"
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import tomllib
 
-ROOT = Path(__file__).parents[1]
+ROOT = Path(__file__).parents[2]
 MEMBER = ROOT / "packages" / "lumio-wiki"
 LANCEDB_MEMBER = ROOT / "packages" / "lumio-lancedb"
 
@@ -13,7 +13,7 @@ def _toml(path: Path) -> dict:
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
-def test_uv_workspace_root_is_coordination_only_with_two_members():
+def test_uv_workspace_root_is_coordination_only_with_three_members():
     root = _toml(ROOT / "pyproject.toml")
     # The workspace root is coordination only: it is not itself a distributable
     # package (ADR-0010, issue #102; ADR-0025 repository split — the web
@@ -22,16 +22,18 @@ def test_uv_workspace_root_is_coordination_only_with_two_members():
     assert "project" not in root, "root pyproject.toml must not declare [project]"
     assert root["tool"]["uv"]["package"] is False
     assert root["tool"]["uv"]["workspace"]["members"] == [
+        "packages/ariadne-data",
         "packages/lumio-lancedb",
         "packages/lumio-wiki",
     ]
+    assert root["tool"]["uv"]["sources"]["ariadne-data"] == {"workspace": True}
     assert root["tool"]["uv"]["sources"]["lumio-wiki"] == {"workspace": True}
     assert root["tool"]["uv"]["sources"]["lumio-lancedb"] == {"workspace": True}
     assert root["tool"]["pytest"]["ini_options"]["testpaths"] == [
-        "tests",
+        "tests/lumio",
         "packages/lumio-lancedb/tests",
         "packages/lumio-wiki/tests",
-        "eval",
+        "eval/lumio",
     ]
 
     member = _toml(MEMBER / "pyproject.toml")

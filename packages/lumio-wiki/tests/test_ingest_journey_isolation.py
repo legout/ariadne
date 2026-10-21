@@ -17,7 +17,7 @@ import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures" / "valid"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures" / "valid"
 
 # Authored Compiled Page Markdown the host coding agent would produce. Defined
 # here in the parent (no escaping issues) and passed to the child via a temp

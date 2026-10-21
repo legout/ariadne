@@ -24,7 +24,7 @@ from lumio_wiki.cli import default_index_dir, main
 from lumio_wiki.source_registry import SourceRegistry as _SR
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
 
 # Authored Compiled Page Markdown the host coding agent would produce.
 PAGE_MD = textwrap.dedent(

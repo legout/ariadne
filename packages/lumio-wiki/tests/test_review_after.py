@@ -17,7 +17,7 @@ from lumio_wiki.cli import main
 from lumio_wiki.knowledge_base import load_knowledge_base
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
 
 PAST = "2020-01-15"
 FUTURE = "2999-12-31"

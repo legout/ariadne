@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 import tomllib
 
-ROOT = Path(__file__).parents[1]
+ROOT = Path(__file__).parents[2]
 WIKI_MEMBER = ROOT / "packages" / "lumio-wiki"
 LANCEDB_MEMBER = ROOT / "packages" / "lumio-lancedb"
 ALL_MEMBERS = {

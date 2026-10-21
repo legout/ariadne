@@ -31,7 +31,7 @@ from lumio_wiki.source_references import SourceReferenceManifest
 from lumio_wiki.source_registry import SourceRegistry
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures" / "valid"
+FIXTURES = ROOT / "tests" / "lumio" / "fixtures" / "valid"
 
 # (filename, content_type, expected converter) for AC2. No converter runs —
 # managed ingest derives the converter NAME from routing, so the [documents]

@@ -15,7 +15,7 @@ from lumio_wiki import (
     load_knowledge_base,
 )
 
-from tests.retrieval_testutil import build_lancedb_kb
+from .retrieval_testutil import build_lancedb_kb
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

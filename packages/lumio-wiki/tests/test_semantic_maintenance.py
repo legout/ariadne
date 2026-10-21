@@ -16,7 +16,7 @@ from lumio_wiki.semantic_maintenance import (
 )
 
 ROOT = Path(__file__).parents[3]
-FIXTURE = ROOT / "tests" / "fixtures" / "categorized_kb"
+FIXTURE = ROOT / "tests" / "lumio" / "fixtures" / "categorized_kb"
 
 
 def _response(payload: dict) -> SimpleNamespace:

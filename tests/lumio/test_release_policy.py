@@ -25,12 +25,12 @@ from pathlib import Path
 
 import tomllib
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 MEMBERS = {
     "lumio-wiki": ROOT / "packages" / "lumio-wiki" / "pyproject.toml",
     "lumio-lancedb": ROOT / "packages" / "lumio-lancedb" / "pyproject.toml",
 }
-RELEASE_NOTES = ROOT / "docs" / "release-notes" / "v0.2.0.md"
+RELEASE_NOTES = ROOT / "docs" / "lumio" / "release-notes" / "v0.2.0.md"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 
 MEMBER_NAMES = tuple(MEMBERS)
