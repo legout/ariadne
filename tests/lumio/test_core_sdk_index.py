@@ -1,0 +1,282 @@
+import shutil
+import tempfile
+from pathlib import Path
+
+from lumio_wiki import (
+    Citation,
+    CompiledPage,
+    Evidence,
+    KnowledgeBase,
+    RetrievalResult,
+    RetrievalTrace,
+    SourceFingerprint,
+    fingerprint_sources,
+    is_fresh,
+    load_knowledge_base,
+)
+
+from tests.retrieval_testutil import build_lancedb_kb
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_fingerprint_sources_is_deterministic():
+    fp1 = fingerprint_sources(FIXTURES / "valid")
+    fp2 = fingerprint_sources(FIXTURES / "valid")
+    assert isinstance(fp1, SourceFingerprint)
+    assert fp1.digest == fp2.digest
+
+
+def test_rebuilding_restores_freshness():
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / "valid"
+        index_dir = Path(tmp) / "index"
+        shutil.copytree(FIXTURES / "valid", source)
+
+        kb, _ = load_knowledge_base(source)
+        kb = build_lancedb_kb(kb, index_dir)
+        stored = kb.stored_fingerprint()
+        assert stored is not None
+        assert is_fresh(stored, fingerprint_sources(source))
+
+        overview = source / "overview.md"
+        overview.write_text(overview.read_text() + "\n")
+        stored = kb.stored_fingerprint()
+        assert stored is not None
+        assert not is_fresh(stored, fingerprint_sources(source))
+
+        kb = build_lancedb_kb(kb, index_dir)
+        stored = kb.stored_fingerprint()
+        assert stored is not None
+        assert is_fresh(stored, fingerprint_sources(source))
+
+
+def test_rebuilding_from_source_reproduces_index():
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / "valid"
+        index_dir = Path(tmp) / "index"
+        shutil.copytree(FIXTURES / "valid", source)
+
+        kb, _ = load_knowledge_base(source)
+        kb = build_lancedb_kb(kb, index_dir)
+        before = kb.retrieve("Lumio uses LanceDB", limit=5)
+        assert before
+
+        shutil.rmtree(index_dir)
+        kb = build_lancedb_kb(kb, index_dir)
+        after = kb.retrieve("Lumio uses LanceDB", limit=5)
+        assert after
+
+        assert [r.evidence.id for r in before] == [r.evidence.id for r in after]
+        assert [r.snippet for r in before] == [r.snippet for r in after]
+
+
+def test_lookup_by_title():
+    kb, _ = load_knowledge_base(FIXTURES / "valid")
+    pages = kb.lookup_by_title("Architecture")
+    assert len(pages) == 1
+    assert pages[0].title == "Architecture"
+
+
+def test_lookup_by_alias():
+    kb, _ = load_knowledge_base(FIXTURES / "valid")
+    pages = kb.lookup_by_alias("Stack")
+    assert len(pages) == 1
+    assert pages[0].title == "Technology Stack"
+
+
+def test_lookup_by_tag():
+    kb, _ = load_knowledge_base(FIXTURES / "valid")
+    pages = kb.lookup_by_tag("architecture")
+    assert len(pages) == 1
+    assert pages[0].title == "Architecture"
+
+
+def test_lookup_by_source():
+    kb, _ = load_knowledge_base(FIXTURES / "valid")
+    pages = kb.lookup_by_source("architecture-doc")
+    assert len(pages) == 1
+    assert pages[0].title == "Architecture"
+
+
+def test_lookup_by_lifecycle():
+    kb, _ = load_knowledge_base(FIXTURES / "valid")
+    pages = kb.lookup_by_lifecycle("approved")
+    assert len(pages) == 3
+    assert {p.title for p in pages} == {
+        "Lumio Overview",
+        "Architecture",
+        "Technology Stack",
+    }
+
+
+def test_related_from():
+    kb, _ = load_knowledge_base(FIXTURES / "valid")
+    rels = kb.related_from("Lumio Overview")
+    # Canonical edges are accepted Claims (ADR-0021); the legacy flat fixture
+    # carries none, so the derived Relationship view is empty.
+    assert rels == []
+
+
+def test_graph_path_two_hops():
+    kb, _ = load_knowledge_base(FIXTURES / "valid")
+    path = kb.graph_path("Lumio Overview", "Technology Stack")
+    # No canonical Claim edges in the flat fixture: no path exists.
+    assert path is None
+
+
+def test_graph_path_unreachable_returns_none():
+    kb, _ = load_knowledge_base(FIXTURES / "valid")
+    assert kb.graph_path("Lumio Overview", "Missing Page") is None
+
+
+def test_retrieve_lexical_returns_cited_results():
+    kb, report = load_knowledge_base(FIXTURES / "valid")
+    assert report.is_valid
+
+    with tempfile.TemporaryDirectory() as tmp:
+        index_dir = Path(tmp)
+        kb = build_lancedb_kb(kb, index_dir)
+        results = kb.retrieve("Lumio uses LanceDB", limit=5)
+
+    assert len(results) >= 1
+    result = results[0]
+    assert isinstance(result, RetrievalResult)
+    assert isinstance(result.evidence, Evidence)
+    assert isinstance(result.citation, Citation)
+    assert isinstance(result.trace, RetrievalTrace)
+    assert result.citation.relative_path
+    assert result.citation.page_title
+    assert result.score >= 0
+    assert result.reason
+    assert any("LanceDB" in r.snippet for r in results)
+
+
+def test_retrieve_unknown_fact_returns_no_results():
+    kb, _ = load_knowledge_base(FIXTURES / "valid")
+    with tempfile.TemporaryDirectory() as tmp:
+        index_dir = Path(tmp)
+        kb = build_lancedb_kb(kb, index_dir)
+        results = kb.retrieve("banana", limit=5)
+    assert results == []
+
+
+def _search_page(
+    path: str,
+    title: str,
+    *,
+    aliases: list[str] | None = None,
+    tags: list[str] | None = None,
+    summary: str = "",
+    body: str = "",
+) -> CompiledPage:
+    return CompiledPage(
+        path=path,
+        title=title,
+        aliases=aliases or [],
+        tags=tags or [],
+        summary=summary,
+        lifecycle="approved",
+        visibility="public",
+        body=body,
+    )
+
+
+def test_page_search_matches_all_supported_fields():
+    pages = [
+        _search_page(
+            "title.md",
+            "Canonical Phoenix",
+            summary="unrelated",
+            body="unrelated",
+        ),
+        _search_page(
+            "alias.md",
+            "Alias Page",
+            aliases=["Alias Quartz"],
+            summary="unrelated",
+            body="unrelated",
+        ),
+        _search_page(
+            "tag.md",
+            "Tag Page",
+            tags=["tag-ruby"],
+            summary="unrelated",
+            body="unrelated",
+        ),
+        _search_page(
+            "summary.md",
+            "Summary Page",
+            summary="Summary Indigo",
+            body="unrelated",
+        ),
+        _search_page(
+            "body.md",
+            "Body Page",
+            summary="unrelated",
+            body="Body Copper appears in prose.",
+        ),
+    ]
+    kb = KnowledgeBase(root=Path("."), pages=pages)
+
+    expected = {
+        "Phoenix": "title",
+        "Quartz": "alias",
+        "ruby": "tag",
+        "Indigo": "summary",
+        "Copper": "body",
+    }
+    for query, field in expected.items():
+        results = kb.search_pages(query)
+        assert len(results) == 1
+        assert results[0].matched_fields == [field]
+        assert query.casefold() in results[0].snippet.casefold()
+
+
+def test_page_search_ranks_title_before_body_and_tie_breaks_stably():
+    pages = [
+        _search_page(
+            "z-body.md",
+            "Zeta",
+            summary="unrelated",
+            body="shared token",
+        ),
+        _search_page(
+            "a-title.md",
+            "Shared Token",
+            summary="unrelated",
+            body="unrelated",
+        ),
+    ]
+    kb = KnowledgeBase(root=Path("."), pages=pages)
+    results = kb.search_pages("shared token")
+
+    assert [result.page.title for result in results] == ["Shared Token", "Zeta"]
+    assert results[0].score > results[1].score
+
+
+def test_page_search_normalizes_empty_and_rejects_excessive_queries():
+    kb = KnowledgeBase(
+        root=Path("."),
+        pages=[_search_page("page.md", "Page", body="body")],
+    )
+    assert kb.search_pages("   \t\n") == []
+    try:
+        kb.search_pages("x" * 257)
+    except ValueError as exc:
+        assert "too long" in str(exc)
+    else:
+        raise AssertionError("expected excessive query to fail safely")
+
+
+def test_lancedb_adapter_retrieve_via_kb_slot():
+    from lumio_lancedb import LanceDBRetrievalAdapter
+
+    kb, report = load_knowledge_base(FIXTURES / "valid")
+    assert report.is_valid
+    with tempfile.TemporaryDirectory() as tmp:
+        kb = kb.build_index(tmp, retrieval=LanceDBRetrievalAdapter())
+        results = kb.retrieve("Lumio uses LanceDB", limit=5)
+    assert results
+    details = " ".join(s.detail for r in results for s in r.trace.stages)
+    assert "LanceDB" in details or "BM25" in details or any("BM25" in r.reason for r in results)

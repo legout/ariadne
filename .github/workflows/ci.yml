@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv lock --check
+      - run: uv sync --locked
+      - run: uv run --locked ruff check .
+      - run: uv run --locked pytest -q -n 4
+
+  # Issue #180, AC6: run the canonical onboarding journey (docs/quickstart.md)
+  # against a real S3-compatible service so the documented command sequence
+  # cannot drift from the CLI. The admin/secret values are labelled local-test
+  # credentials on an ephemeral CI container — never real credentials.
+  onboarding-s3-compat-journey:
+    runs-on: ubuntu-latest
+    services:
+      seaweedfs:
+        image: chrislusf/seaweedfs:4.45@sha256:fc9f76fa993ad69966ffeb2f65d0318fcae39c6f8e20cf68ef7b3a5cb97769e5
+        env:
+          AWS_ACCESS_KEY_ID: admin
+          AWS_SECRET_ACCESS_KEY: secret
+          S3_BUCKET: lumio-quickstart
+        ports:
+          - 8333:8333
+        options: >-
+          --health-cmd "curl -fsS http://localhost:9333/cluster/status"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      LUMIO_S3_ENDPOINT: http://localhost:8333
+      LUMIO_S3_ALLOW_HTTP: "1"
+      LUMIO_S3_REGION: us-east-1
+      LUMIO_S3_TEST_BUCKET: lumio-quickstart
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: secret
+      LUMIO_S3_ACCESS_KEY_ID: admin
+      LUMIO_S3_SECRET_ACCESS_KEY: secret
+      AWS_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv lock --check
+      - run: uv sync --locked
+      - name: Run onboarding and public S3-compatible suites
+        run: |
+          uv run --locked pytest -q tests/test_onboarding_journey.py \
+            packages/lumio-wiki/tests/*s3_compat.py \
+            packages/lumio-lancedb/tests/*s3_compat.py
+
+  isolated-lumio-wiki-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv lock --check
+      - run: uv build --package lumio-wiki --wheel --out-dir dist/lumio-wiki
+      - run: uv build --package lumio-lancedb --wheel --out-dir dist/lumio-lancedb
+      - run: uv venv --python 3.14 /tmp/lumio-wiki-venv
+      - run: uv pip install --python /tmp/lumio-wiki-venv/bin/python dist/lumio-wiki/lumio_wiki-*.whl
+      - name: Exercise only the installed lumio-wiki wheel
+        run: |
+          /tmp/lumio-wiki-venv/bin/python -I \
+            scripts/verify_lumio_wiki_wheel.py \
+            dist/lumio-wiki/lumio_wiki-*.whl \
+            tests/fixtures/valid tests/fixtures/categorized_kb
+      - name: Smoke the lumio-wiki[mcp] wheel (entry point, binding, search)
+        run: |
+          wheel=$(echo dist/lumio-wiki/lumio_wiki-*.whl)
+          uv venv --python 3.14 /tmp/lumio-wiki-mcp-venv
+          uv pip install --python /tmp/lumio-wiki-mcp-venv/bin/python "${wheel}[mcp]"
+          # Console entry point: wiring + binding + serve startup; the server
+          # exits cleanly on stdin EOF (AC1 from the installed wheel).
+          timeout 60 /tmp/lumio-wiki-mcp-venv/bin/lumio-wiki mcp tests/fixtures/valid < /dev/null
+          # Invalid KB: must fail fast (never hang), exit non-zero, and emit
+          # the bounded message with no traceback. Timeout status 124 would
+          # mask a hanging startup, so it is an explicit failure.
+          status=0
+          timeout 60 /tmp/lumio-wiki-mcp-venv/bin/lumio-wiki mcp tests/fixtures/invalid < /dev/null > /tmp/mcp-smoke-invalid.log 2>&1 || status=$?
+          if [ "$status" -eq 124 ]; then
+            echo "invalid-KB startup must fail fast, not hang" >&2
+            exit 1
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo "expected a non-zero exit for an invalid Knowledge Base" >&2
+            exit 1
+          fi
+          grep -q "is invalid" /tmp/mcp-smoke-invalid.log
+          ! grep -q "Traceback" /tmp/mcp-smoke-invalid.log
+          # In-process tool seam: the search tool answers the expected hit.
+          timeout 60 /tmp/lumio-wiki-mcp-venv/bin/python - <<'EOF'
+          from lumio_wiki.location import FilesystemLocation, open_knowledge_base
+          from lumio_wiki.mcp_server import build_server, search_rows
+          snapshot = open_knowledge_base(FilesystemLocation("tests/fixtures/valid"))
+          rows = search_rows(snapshot, "LanceDB")
+          assert rows["results"] and rows["results"][0]["title"] == "Architecture"
+          build_server(FilesystemLocation("tests/fixtures/valid"))
+          print("mcp wheel smoke ok:", rows["results"][0]["path"])
+          EOF
