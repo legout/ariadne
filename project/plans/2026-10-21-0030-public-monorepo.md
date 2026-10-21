@@ -1,6 +1,12 @@
 # Public Ariadne–Lumio monorepo: execution plan
 
-Status: **proposed, revision 1** (2026-10-21). Not execution authority.
+Status: **approved, revision 1** (owner, 2026-10-21).
+
+Execution grant: “Ich genehmige Plan 0030 Revision 1 und die isolierte Umsetzung
+M0–M4, einschließlich disposable SeaweedFS 4.45 über eine vorhandene
+Container-Laufzeit mit synthetischen Testdaten. Keine Integration, kein Push,
+keine Repository-Umbenennung oder Veröffentlichung.” This grant covers M0–M4
+only; M5 and all external target changes remain unapproved.
 
 Goal: prepare one reviewable monorepo candidate and a reversible external cutover
 for the existing repository's approved `ariadne-lumio` name.
@@ -241,7 +247,7 @@ none authorizes silent product changes or weakened qualification.
 Spec acceptance 1–3 → M1 + M4; 4 → M2 + M4; 5 → M1 + M5;
 6 → M2 + M4; 7 → M2 + M4; 8 → M2 + M3 + M5; 9 → M3 + M4.
 
-Requested next authority: approve this plan and isolated execution of M0–M4.
-Any disposable-service provisioning must be named explicitly. M5, publication
-and destructive cleanup remain separate. After approval, use
+Granted authority is isolated execution of M0–M4, including disposable SeaweedFS
+4.45 using an existing container runtime and synthetic test data. M5, publication
+and destructive cleanup remain separate. Execute through
 `orchestrate-implementation`; do not invent another execution procedure.

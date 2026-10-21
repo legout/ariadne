@@ -12,7 +12,7 @@ cutover prerequisites still require verification. Design approval authorizes
 planning, not package migration, target integration, push, repository renaming,
 release, archival, issue transfer or credential/environment changes.
 Rationale: [accepted ADR-0027](../adr/0027-public-monorepo.md).
-Execution decomposition: [proposed plan 0030](../plans/2026-10-21-0030-public-monorepo.md).
+Execution decomposition: [approved plan 0030](../plans/2026-10-21-0030-public-monorepo.md).
 
 ## 1. Purpose and baseline
 
@@ -295,6 +295,6 @@ migration, not historical replacement.
 Revision 2 is approved by the owner's “ok. passt” immediately after the
 recommendation to rename the existing repository to `ariadne-lumio`, preserve
 package names, and the linked revision-2 specification/ADR. No additional domain
-or runtime change is inferred. The linked plan remains proposed until approved;
-execution and external-action authority remain separate. The plan must reconcile
+or runtime change is inferred. The linked plan revision 1 subsequently received explicit isolated M0–M4
+execution authority; external-action authority remains separate. The plan must reconcile
 Lumio's affected repository-location records before importing dependent changes.
