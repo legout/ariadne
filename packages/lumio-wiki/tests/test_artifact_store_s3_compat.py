@@ -577,8 +577,9 @@ def test_s3_compat_url_ingest_retains_fetched_bytes_as_artifact(tmp_path, prefix
     from lumio_wiki.git_authoring import ingest_into_worktree
     from lumio_wiki.private_provenance import write_observation_record
     from lumio_wiki.url_fetch import UrlFetchPolicy, fetch_url
-    from test_managed_ingest import _authored_page as managed_page
-    from test_managed_ingest import _kb as managed_kb
+
+    from .test_managed_ingest import _authored_page as managed_page
+    from .test_managed_ingest import _kb as managed_kb
 
     class _Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802

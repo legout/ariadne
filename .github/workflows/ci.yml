@@ -35,7 +35,7 @@ jobs:
           enable-cache: true
       - run: uv lock --check
       - name: Core native lint (member config)
-        run: uv run --locked ruff check .
+        run: uv run --locked --extra dev ruff check .
         working-directory: packages/ariadne-data
       - name: Build the same-commit Core and SDK wheels
         run: |

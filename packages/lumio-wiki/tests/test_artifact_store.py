@@ -530,8 +530,9 @@ def test_saga_registry_failure_leaves_sweepable_orphan(store, tmp_path):
 
 def _native_ingest_fixture(tmp_path):
     from lumio_wiki.git_authoring import ingest_into_worktree
-    from test_managed_ingest import _authored_page as managed_page
-    from test_managed_ingest import _kb as managed_kb
+
+    from .test_managed_ingest import _authored_page as managed_page
+    from .test_managed_ingest import _kb as managed_kb
 
     kb = managed_kb(tmp_path)
     registry = SourceRegistry(tmp_path / "registry")
@@ -840,7 +841,8 @@ def _pages_citing(source_id: str):
 def test_cli_managed_ingest_retains_artifacts_from_env(tmp_path, monkeypatch, capsys):
     from lumio_wiki import cli
     from lumio_wiki.source_references import SourceReferenceManifest
-    from test_git_authoring import _init_repo, _write_kb
+
+    from .test_git_authoring import _init_repo, _write_kb
 
     repo = _init_repo(tmp_path)
     kb_root = _write_kb(
