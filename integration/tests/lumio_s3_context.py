@@ -620,3 +620,34 @@ def test_s3_bound_release_preserves_admission_and_session_pin(tmp_path, monkeypa
         assert served_final["bound_release"] == manifest_b["digest"]
         assert served_final["content"] == JOURNEY_MD + JOURNEY_B_APPENDIX
     assert (project / ".ariadne" / "current.json").read_bytes() == descriptor_b
+
+
+def test_s3_destination_refusal_never_echoes_inline_credentials(tmp_path, capsys):
+    """spec0029 r6: accidental inline credentials never enter CLI diagnostics."""
+    project, api, started, revision = _bound_release(tmp_path)
+    checked = api.validate_proposal(started["proposal"], revision)
+    assert checked["ok"] is True, checked["errors"]
+    review = api.review_proposal(started["proposal"])
+    assert review["revision"] == checked["revision"]
+    # Authored synthetic input markers, not observed product output or real credentials.
+    inline_user = "synthetic-inline-access"
+    inline_secret = "synthetic-inline-secret-never-print"
+    rejected = _destination().replace("s3://", f"s3://{inline_user}:{inline_secret}@", 1)
+    capsys.readouterr()
+    assert admission_main(
+        [
+            "--project", str(project),
+            "--proposal", review["proposal"],
+            "--revision", review["revision"],
+            "--reviewed-digest", review["review_digest"],
+            "--context-destination", rejected,
+            "--context-storage-profile", PROFILE_NAME,
+        ]
+    ) == 1
+    diagnostic = capsys.readouterr()
+    assert diagnostic.out == ""
+    assert json.loads(diagnostic.err)["error"]["type"] == "ValueError"
+    assert inline_secret not in diagnostic.err
+    assert inline_user not in diagnostic.err
+    assert rejected not in diagnostic.err
+    assert not (project / ".ariadne" / "current.json").exists()

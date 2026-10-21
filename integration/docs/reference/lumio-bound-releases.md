@@ -122,9 +122,11 @@ configuration, never a Git-stored secret, and never an analytical Source
 Approval (the Knowledge bucket is not an analytical source). The composite
 consent freezes the declaration, the resolved non-secret binding
 (endpoint/region/URL style/scopes) and the native effective target identity;
-serving rebuilds the reader from that frozen binding, and a drifted endpoint,
-a missing profile value or unavailable private admission records refuse
-before any store access or SQL. The exact private native admission records
+serving rebuilds the reader from that frozen binding: a drifted endpoint or
+a missing profile value refuses before any remote store access, while
+missing or unavailable private admission records refuse before a usable
+Context or SQL (native verification may read the pinned public objects
+first). The exact private native admission records
 stay in the local metadata store of the admitting host — there is no public
 receipt object, no cross-host synchronization and no implicit second-host
 trust. A failed Core activation preserves the previous descriptor bytes and

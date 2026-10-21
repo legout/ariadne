@@ -275,7 +275,7 @@ def _s3_destination_parts(destination: str) -> tuple[str, str]:
     if parts.scheme != "s3" or not parts.netloc or parts.username or parts.password:
         raise ValueError(
             "the integrated S3 destination must be a credential-free "
-            f"s3://bucket/prefix URI, got {destination!r}"
+            "s3://bucket/prefix URI"
         )
     bucket = parts.netloc
     prefix = parts.path.strip("/")
