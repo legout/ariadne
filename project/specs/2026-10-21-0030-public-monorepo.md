@@ -1,16 +1,18 @@
 # Public Ariadne–Lumio monorepo
 
-Status: **proposed, revision 2** (2026-10-21).
+Status: **approved design, revision 2** (owner, 2026-10-21).
 
 The owner selected the existing `legout/ariadne` repository as the target:
 “Welches Zielrepo sollen wir verwenden? Bestehendes ariadne-Repo (empfohlen)”.
-This approves reuse of the existing repository. On the owner's subsequent
-request, revision 2 makes independent and combined use explicit and compares
-repository branding with package renaming. The proposed repository name
-`legout/ariadne-lumio` is not approved or checked for availability. Package names
-remain unchanged in the recommendation. The complete architecture awaits approval; no package migration, integration, push, release, repository archival,
-issue transfer or credential/environment change is authorized by this document.
-Rationale: [proposed ADR-0027](../adr/0027-public-monorepo.md).
+The owner subsequently requested explicit independent and combined use, then
+accepted the revision-2 recommendation and linked documents with “ok. passt”.
+The approved design renames this same repository to `legout/ariadne-lumio` while
+preserving package names and product independence. Name availability and actual
+cutover prerequisites still require verification. Design approval authorizes
+planning, not package migration, target integration, push, repository renaming,
+release, archival, issue transfer or credential/environment changes.
+Rationale: [accepted ADR-0027](../adr/0027-public-monorepo.md).
+Execution decomposition: [proposed plan 0030](../plans/2026-10-21-0030-public-monorepo.md).
 
 ## 1. Purpose and baseline
 
@@ -51,12 +53,12 @@ public Lumio Knowledge Base foundation in every entry point.
 
 ### 1.2 Repository branding versus public package identities
 
-**Recommendation, pending owner decision:** rename the existing GitHub repository
+**Approved design choice:** rename the existing GitHub repository
 from `legout/ariadne` to `legout/ariadne-lumio` as part of an explicitly authorized
 cutover. This is the same existing repository, not a new repository or an import
 of Core into a replacement repository. The combined name gives both independent
-products visibility. Keeping `legout/ariadne` is a valid alternative if avoiding
-a URL change takes precedence; it still must meet the three-entry-path contract.
+products visibility. Retaining `legout/ariadne` was considered as the alternative
+with fewer URL changes; the owner accepted the combined name.
 
 Keep the public distribution names `ariadne-data`, `lumio-wiki` and
 `lumio-lancedb`, their import roots and existing CLI names. Do not introduce
@@ -67,7 +69,7 @@ PyPI distributions, Python imports and CLIs are distinct compatibility changes,
 not consequences of a GitHub repository rename. A future product rebrand would
 need its own deliberate migration and approval.
 
-If the repository rename is chosen, cutover must check name availability and
+The authorized cutover must first check name availability and
 permissions; update canonical documentation, clone instructions, supported local
 remotes, package project URLs and repository-qualified workflow references; and
 verify repository-bound CI/publishing configuration. No other user's clone or
@@ -76,7 +78,7 @@ or reusable-workflow callers if present; ordinary web/Git redirects are not a
 substitute for this check. Retain historical source URLs as historical citations.
 Do not reuse the old repository name, because that would invalidate redirects.
 Existing relative documentation paths remain stable where promised in section 2.
-No rename or permission/configuration mutation is authorized by this draft.
+No rename or permission/configuration mutation is authorized by design approval alone.
 
 Sources: [GitHub repository renaming](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository),
 [Python distribution versus import names](https://packaging.python.org/en/latest/discussions/distribution-package-vs-import-package/).
@@ -270,11 +272,11 @@ to rewriting public history. No data/admission migration is performed.
    the integrated example requires explicit configuration and admission. Merely
    installing both packages never activates integration. Current independent-use
    tests can provide this proof where their actual scope matches.
-8. If repository renaming is approved, the new canonical URL serves the same
+8. At an explicitly authorized cutover, the new canonical URL serves the same
    repository/history; supported clone instructions and workflow references use
    it, historical citations remain identifiable, and no distribution/import/CLI
-   name changes. If renaming is not approved, `legout/ariadne` remains canonical
-   while the three entry paths remain equally explicit.
+   name changes. Before that cutover, the old URL remains operational and the
+   isolated candidate records the new URL as a prepared target.
 9. A Core-only release dry run selects only its Core artifacts and exact paired
    SDK; a Lumio-family dry run selects exactly its two artifacts. A normal push
    and history tag select no publish job. No real publication is performed.
@@ -290,10 +292,9 @@ alternatives. Lumio ADR-0025's private-application exclusion remains intact;
 its named public repository location needs an explicit scoped amendment during
 migration, not historical replacement.
 
-Reusing the existing repository and independent/combined usability are owner
-requirements. Revision 2's complete layout, release policy and branding proposal
-await owner review. The canonical repository name is an unresolved owner choice;
-no final execution handoff may silently choose it. After that approval, write the
-linked implementation plan using the same 0030 prefix and reconcile any affected
-architectural records before implementation. Execution and integration/release
-authority must be explicit; this draft supplies none.
+Revision 2 is approved by the owner's “ok. passt” immediately after the
+recommendation to rename the existing repository to `ariadne-lumio`, preserve
+package names, and the linked revision-2 specification/ADR. No additional domain
+or runtime change is inferred. The linked plan remains proposed until approved;
+execution and external-action authority remain separate. The plan must reconcile
+Lumio's affected repository-location records before importing dependent changes.
