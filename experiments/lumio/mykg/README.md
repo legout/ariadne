@@ -2,7 +2,7 @@
 
 Experiment-only harness for **GitHub issue #146** — *Spike: evaluate myKG as a
 private corpus extractor feeding Lumio Ingest Proposals*. It implements the
-focused experiment recommended by [`project/research/mykg-fit.md`](../../project/research/mykg-fit.md).
+focused experiment recommended by [`project/research/mykg-fit.md`](../../../project/lumio/research/mykg-fit.md).
 
 > **This is an experiment, not a product integration.** Nothing here is a
 > `lumio-wiki` dependency. The converter is a standalone, standard-library-only
@@ -136,7 +136,7 @@ mykg extract --input <CORPUS_DIR> --session <SESSION_ROOT> --schema-review \
 ### 2. Convert the session to a candidate Markdown tree
 
 ```bash
-uv run python experiments/mykg/convert_mykg.py \
+uv run python experiments/lumio/mykg/convert_mykg.py \
   --session <SESSION_ROOT> \
   --out <EXPERIMENT_TREE_DIR> \
   --category entities \
@@ -157,8 +157,8 @@ This writes:
 ### 3. Try the sample (no myKG needed)
 
 ```bash
-uv run python experiments/mykg/convert_mykg.py \
-  --session experiments/mykg/sample \
+uv run python experiments/lumio/mykg/convert_mykg.py \
+  --session experiments/lumio/mykg/sample \
   --out /tmp/mykg-sample-tree
 cat /tmp/mykg-sample-tree/entities/acme.md
 cat /tmp/mykg-sample-tree/relationship-candidates.jsonl

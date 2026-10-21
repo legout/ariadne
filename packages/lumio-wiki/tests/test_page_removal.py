@@ -7,7 +7,8 @@ import lumio_wiki as lw
 from lumio_wiki.git_authoring import remove_page_in_worktree
 from lumio_wiki.knowledge_base import load_knowledge_base
 from lumio_wiki.publish import assemble_page_removal_candidate
-from test_entity_merge import _git_authoring_worktree
+
+from .test_entity_merge import _git_authoring_worktree
 
 
 def _slug(text: str) -> str:

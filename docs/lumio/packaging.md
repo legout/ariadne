@@ -10,10 +10,13 @@ the certification in `tests/lumio/test_workspace_certification.py`.
 
 ## Workspace shape
 
-This repository is a [uv](https://docs.astral.sh/uv/) workspace with two
-independently buildable, independently installable members and one shared
-lockfile (ADR-0025). The web application lives in a separate private
-repository and consumes these published wheels.
+This repository is a [uv](https://docs.astral.sh/uv/) workspace with three
+members; this document covers its **Lumio family** — the two independently
+buildable, independently installable Lumio members sharing one lockfile
+(ADR-0025). The independent Ariadne Core member (`packages/ariadne-data`)
+has its own release channel and is documented on the Ariadne side. The web
+application lives in a separate private repository and consumes these
+published wheels.
 
 | Member | Path | Wheel | Python root |
 |---|---|---|---|
@@ -210,7 +213,7 @@ moves independently and is not published or qualified by this repository.
 The current public family is 0.4.x.
 
 - Both public members carry the **same version** (certified by
-  `test_members_share_one_lockstep_version`). A release tag `vX.Y.Z` builds
+  `test_members_share_one_lockstep_version`). A release tag `lumio-vX.Y.Z` builds
   both public wheels from that one commit; the release workflow refuses a tag
   whose version does not match both members.
 - **`0.MINOR` is the compatibility family.** Breaking changes to any public
@@ -304,7 +307,7 @@ No public candidate validation authorizes target integration or publication.
 
 ### Releases
 
-`release.yml` (issue #181) turns a pushed `vX.Y.Z` tag into a certified
+`release.yml` (issue #181) turns a pushed `lumio-vX.Y.Z` tag into a certified
 publication. One pipeline, no rebuilds:
 
 1. **Build once** — `build-wheels` builds both public wheels from the tagged
@@ -345,8 +348,10 @@ shares an Actions cache with PR-triggered workflows.
    ensure the token's scope permits creating both projects;
    review the narrowest workable scope after creation. Never put tokens in a
    repository file, command argument, release note or conversation.
-3. Protect the `v*` tag pattern (admins/maintainers only) so only
-   authorized pushes can start a release.
+3. Protect the `lumio-v*` tag pattern (admins/maintainers only) so only
+   authorized pushes can start a release. (Core releases use the separate
+   `core-vX.Y.Z` channel; protect that pattern independently for the Core
+   side — neither channel can publish the other family.)
 
 Release notes live in `docs/lumio/release-notes/` per published version. The current
 public-family notes are [`v0.4.0.md`](release-notes/v0.4.0.md); older notes are

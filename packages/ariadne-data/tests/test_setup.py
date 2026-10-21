@@ -473,7 +473,7 @@ def test_skill_and_release_docs_operator_rules_and_distribution():
     readme = (Path(__file__).parents[1] / "README.md").read_text()
     assert "0.6.0" in readme  # selected Core release; historical notes stay unchanged
     assert "Source development" in readme  # checkout entry point stays discoverable
-    tutorial = (Path(__file__).parents[1] / "docs" / "tutorials" / "getting-started.md").read_text()
+    tutorial = (Path(__file__).parents[3] / "docs" / "tutorials" / "getting-started.md").read_text()
     for phrase in (
         "uv tool install ariadne-data",
         "ariadne setup",
@@ -483,14 +483,14 @@ def test_skill_and_release_docs_operator_rules_and_distribution():
         "get-metric",
     ):
         assert phrase in tutorial  # operator onboarding path moved to the tutorial
-    how_to = (Path(__file__).parents[1] / "docs" / "how-to" / "git-authoring.md").read_text()
+    how_to = (Path(__file__).parents[3] / "docs" / "how-to" / "git-authoring.md").read_text()
     assert "approve-sources" in how_to  # the human-only gate stays in the procedure guide
-    cli = (Path(__file__).parents[1] / "docs" / "reference" / "cli.md").read_text()
+    cli = (Path(__file__).parents[3] / "docs" / "reference" / "cli.md").read_text()
     # hosts/adapters stay optional installs that change no governance gate
     # (the ariadne-agent conversational host is out of the Git-only Core docs)
     assert "Installing an adapter does not change the human governance gates" in cli
     explanation = (
-        Path(__file__).parents[1] / "docs" / "explanations" / "how-ariadne-works.md"
+        Path(__file__).parents[3] / "docs" / "explanations" / "how-ariadne-works.md"
     ).read_text()
     assert "independently attested" in explanation  # governed is not value-attested
 

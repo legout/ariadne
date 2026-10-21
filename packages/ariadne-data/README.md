@@ -53,17 +53,23 @@ recorded per release rather than assumed from package versions.
 
 ## Source development
 
-Work on Ariadne itself happens from the package checkout, not inside a data project:
+Work on Ariadne itself happens from the member checkout, not inside a data
+project. Run these from `packages/ariadne-data` inside the repository clone —
+the repository root is a non-distributable uv workspace and must never be
+editable-installed (`-e .` targets this member directory only):
 
 ```bash
+cd packages/ariadne-data
 uv venv --python 3.14 .venv
 uv pip install --python .venv/bin/python -e .
 source .venv/bin/activate
 # Optional MCP example (after creating and admitting a project; requires .[mcp]):
 uv pip install --python .venv/bin/python -e '.[mcp]'
-examples/retail-demo/mcp_client.py --project /path/to/admitted/retail-project
+../../examples/retail-demo/mcp_client.py --project /path/to/admitted/retail-project
 ```
 
-For a candidate-wheel check, run `uv build`, install `dist/ariadne_data-*.whl`
+The `examples/` tree stays at the repository root (the path above is
+member-relative). For a candidate-wheel check, run `uv build` in this member
+directory, install `dist/ariadne_data-*.whl`
 into a fresh virtual environment, and follow the [getting-started tutorial](../../docs/tutorials/getting-started.md)
 with the installed console scripts rather than the editable install.

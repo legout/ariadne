@@ -493,14 +493,14 @@ through complete-candidate validation and explicit Publication Admission.
 Before a real run, choose a private corpus, pin the myKG version and
 model/provider configuration, set a cost/time budget, and choose a private
 artifact directory. The complete runbook and blank evaluation report are in
-[`experiments/mykg/`](../../experiments/lumio/mykg/README.md).
+[`experiments/lumio/mykg/`](../../experiments/lumio/mykg/README.md).
 
 Convert an existing myKG session—or try the included synthetic sample—into a
 temporary Compiled Markdown tree:
 
 ```bash
-uv run python experiments/mykg/convert_mykg.py \
-  --session experiments/mykg/sample \
+uv run python experiments/lumio/mykg/convert_mykg.py \
+  --session experiments/lumio/mykg/sample \
   --out /tmp/mykg-candidates \
   --default-lifecycle review \
   --default-visibility internal

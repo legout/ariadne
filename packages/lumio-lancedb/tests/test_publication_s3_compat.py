@@ -280,7 +280,7 @@ def test_s3_compat_published_corpus_traversal_parity(kb):
     from lumio_wiki.knowledge_base import EXTRACTOR_VERSION
 
     store, prefix, builder, storage_options = kb
-    root = ROOT / "eval" / "ontology_corpus"
+    root = ROOT / "eval" / "lumio" / "ontology_corpus"
     publish_s3_version(store, prefix, source_root=root, version="v1", index_builder=builder())
     snapshot = S3Location(store, prefix).resolve()
     bucket = _os.environ.get("LUMIO_S3_TEST_BUCKET", "lumio-wiki-it")

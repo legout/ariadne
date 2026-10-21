@@ -81,10 +81,10 @@ def _journey_surfaces() -> dict[str, str]:
     root = Path(__file__).parents[3]
     return {
         **dict(_skill_and_protocol()),
-        "docs/usage.md": (root / "docs" / "usage.md").read_text(encoding="utf-8"),
+        "docs/lumio/usage.md": (root / "docs" / "lumio" / "usage.md").read_text(encoding="utf-8"),
         "AGENTS.md": _generated_agents_md(),
-        "examples/real-world-lumio-wiki/README.md": (
-            root / "examples" / "real-world-lumio-wiki" / "README.md"
+        "examples/lumio/real-world-lumio-wiki/README.md": (
+            root / "examples" / "lumio" / "real-world-lumio-wiki" / "README.md"
         ).read_text(encoding="utf-8"),
     }
 

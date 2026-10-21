@@ -39,6 +39,11 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+# Resolve tests/lumio as tests.lumio, never the private application namespace.
+consider_namespace_packages = true
+# Make the repository root importable for the documented serial console runner too,
+# not only under xdist or after test_wheel_verifier's sys.path bootstrap.
+pythonpath = ["."]
 # Root default covers the Lumio side (relocated repository tests, both
 # package test trees, eval). ariadne-data runs its own suite from
 # packages/ariadne-data with its own pytest configuration; the two tests

@@ -840,7 +840,7 @@ def test_ingest_url_with_neither_flag_fails_with_actionable_error(
 # and the hand-authored consulted manifest — never from implementation output.
 # ---------------------------------------------------------------------------
 
-from test_git_authoring import (  # noqa: E402
+from .test_git_authoring import (  # noqa: E402
     _authored_ingest_page,
     _commit,
     _init_repo,

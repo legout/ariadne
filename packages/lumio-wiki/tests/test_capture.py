@@ -848,7 +848,7 @@ def test_quoted_json_credentials_are_redacted_before_capture_staging(tmp_path: P
 # SHA-256 oracle — never from implementation output.
 # ---------------------------------------------------------------------------
 
-from test_git_authoring import (  # noqa: E402
+from .test_git_authoring import (  # noqa: E402
     _authored_ingest_page,
     _commit,
     _init_repo,
