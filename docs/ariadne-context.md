@@ -115,3 +115,11 @@ Bind consumption to exact candidate identities: the source commit and the
 exact wheel hash you actually install. Changed code or build identity
 requires fresh validation and matching readmission; never relabel an old
 admission as a new build.
+
+## Public pairing
+
+The release pair is `lumio-wiki==0.4.0` with `ariadne-data==0.6.0`.
+The public-family adapter, when used, is `lumio-lancedb==0.4.0` and requires
+`lumio-wiki>=0.4.0,<0.5.0`. See [0.4.0 notes](release-notes/v0.4.0.md).
+Exact source/build identities remain required, and upgrading requires genuine
+consumer validation and a new matching admission.

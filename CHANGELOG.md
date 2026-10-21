@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-21
+
+- Add visibility-scoped navigation over admitted, version-pinned local Published
+  Versions: list metadata, read exact canonical pages and search ordinary plus
+  profiled pages through the existing native ranking engine.
+- Preserve verbatim canonical search evidence, including escaped YAML metadata,
+  multiline values and CRLF separators, with inclusive line coordinates.
+  Filter scope before selection, ranking, counts, excerpts and citations.
+- Keep the three navigation APIs local-only: S3, plain directories and moving
+  pointers refuse. The existing typed profile reader retains its local/S3 contract.
+- Document the optional Ariadne integration and the paired Core 0.6.0 local
+  workflow. Producer annotations never grant source access, SQL, joins,
+  Core inspection evidence or admission authority.
+- Release `lumio-wiki` and `lumio-lancedb` together at 0.4.0; the adapter requires
+  `lumio-wiki>=0.4.0,<0.5.0`. Python remains >=3.14, optional extras are unchanged,
+  and the private application is excluded. See [release notes](docs/release-notes/v0.4.0.md).
+
 ## 0.3.0 - 2026-10-19
 
 - Add the versioned Ariadne Context Profile and immutable context SDK: captured
