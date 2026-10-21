@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 0.4.1 - 2026-10-21
+
+- Relocate the public foundation into the shared Ariadne–Lumio development
+  workspace: `lumio-wiki` and `lumio-lancedb` keep their distribution names,
+  import roots, CLI names, extras and Python >=3.14, now with public
+  repository-level paths under `tests/lumio/`, `eval/lumio/`, `scripts/lumio/`,
+  `experiments/lumio/`, `examples/lumio/` and `docs/lumio/` in the current
+  `legout/ariadne` repository (the approved rename to `ariadne-lumio` is
+  pending a separately authorized cutover).
+- Retain fully independent usage: the SDK works without Ariadne, DuckDB,
+  LanceDB, transport SDKs, models or services unless a selected extra
+  requires them; standalone Core usage is unchanged; the optional adapter
+  stays optional and now requires `lumio-wiki>=0.4.1,<0.5.0` under the
+  existing lockstep policy.
+- Fix relocated local/Git onboarding and documentation paths (quickstart,
+  S3 publication guide, experiment runbooks, packaged-skill surface
+  references) and correct development CI test namespace and tool selection
+  (namespace-aware `tests.lumio` collection with relative sibling imports;
+  Core member lint via its existing dev extra).
+- No new runtime feature, API or dependency change; navigation over admitted
+  local Published Versions stays local-only. Release channel tag:
+  `lumio-v0.4.1`. See [release notes](release-notes/v0.4.1.md).
+
 ## 0.4.0 - 2026-10-21
 
 - Add visibility-scoped navigation over admitted, version-pinned local Published

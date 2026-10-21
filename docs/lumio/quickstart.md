@@ -47,7 +47,7 @@ pip install lumio-wiki
 Verify:
 
 ```bash
-lumio-wiki --version                # e.g. lumio-wiki 0.4.0
+lumio-wiki --version                # e.g. lumio-wiki 0.4.1
 lumio-wiki doctor                   # version, detected extras, skill location
 ```
 
