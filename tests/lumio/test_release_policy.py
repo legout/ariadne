@@ -104,7 +104,7 @@ def test_release_workflow_uses_tag_secrets_and_gated_promotion():
     # Tag-driven only: never a pull_request trigger, so forks and PRs can
     # never reach a publishing job.
     assert set(workflow[True]) == {"push"}, workflow[True]
-    assert workflow[True]["push"]["tags"] == ["v*.*.*"]
+    assert workflow[True]["push"]["tags"] == ["lumio-v*.*.*"]
     assert "pull_request" not in workflow
 
     jobs = workflow["jobs"]
