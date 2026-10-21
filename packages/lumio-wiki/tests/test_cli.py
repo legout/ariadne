@@ -3399,7 +3399,8 @@ def test_dream_semantic_stage_composes_link_repairs_into_one_apply(tmp_path, mon
 
 def _residual_git_kb(tmp_path: Path) -> tuple[Path, Path]:
     """A committed manifest-bearing Git worktree KB plus its repo root."""
-    from test_git_authoring import _commit, _init_repo, _write_kb
+
+    from .test_git_authoring import _commit, _init_repo, _write_kb
 
     repo = _init_repo(tmp_path)
     kb = _write_kb(repo)
@@ -3417,7 +3418,8 @@ def test_native_source_writers_refuse_unsafe_private_selections(tmp_path, capsys
     tracked_registry = repo / "tracked-private"
     tracked_registry.mkdir()
     SourceRegistry(tracked_registry).register_source("unsafe-doc", b"seed bytes")
-    from test_git_authoring import _commit
+
+    from .test_git_authoring import _commit
 
     _commit(repo)
     original = tmp_path / "original.txt"
@@ -3495,7 +3497,8 @@ def test_native_register_converges_and_extends_history(tmp_path, capsys):
 
     from lumio_wiki.source_references import parse_source_reference_manifest
     from lumio_wiki.source_registry import SourceRegistry
-    from test_git_authoring import SOURCE_REFERENCE_MANIFEST_BASENAME
+
+    from .test_git_authoring import SOURCE_REFERENCE_MANIFEST_BASENAME
 
     repo, kb = _residual_git_kb(tmp_path)
     registry_root = tmp_path / "registry"

@@ -994,7 +994,8 @@ def test_observation_persistence_failure_refuses_edit_before_worktree_write(
     import io
 
     from lumio_wiki.cli import main
-    from test_git_authoring import _authored_ingest_page, _commit, _init_repo, _write_kb
+
+    from .test_git_authoring import _authored_ingest_page, _commit, _init_repo, _write_kb
 
     repo = _init_repo(tmp_path)
     kb = _write_kb(repo)

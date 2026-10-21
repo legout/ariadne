@@ -124,7 +124,8 @@ def test_distiller_guidance_uses_current_kb_ontology():
 def test_real_anydoc_csv_cli_stages_reviewable_proposal(tmp_path, capsys, monkeypatch):
     pytest.importorskip("anydoc")
     from lumio_wiki.ingest import prepare_proposal_content
-    from test_entity_merge import _git_authoring_worktree
+
+    from .test_entity_merge import _git_authoring_worktree
 
     csv = tmp_path / "records.csv"
     original = b"name,value\nalpha,1\n"
@@ -200,7 +201,8 @@ def test_real_anydoc_csv_cli_stages_reviewable_proposal(tmp_path, capsys, monkey
 
 
 def test_packaged_source_commands_execute_in_order(tmp_path, capsys):
-    from test_git_authoring import _authored_ingest_page, _commit, _init_repo, _write_kb
+
+    from .test_git_authoring import _authored_ingest_page, _commit, _init_repo, _write_kb
 
     repo = _init_repo(tmp_path)
     root = _write_kb(repo)

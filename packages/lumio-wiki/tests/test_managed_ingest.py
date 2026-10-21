@@ -59,7 +59,8 @@ ontology:
 
 def _kb(tmp_path: Path):
     """A manifest-adopted Git authoring KB (native managed ingest route)."""
-    from test_git_authoring import _init_repo, _write_kb
+
+    from .test_git_authoring import _init_repo, _write_kb
 
     repo = _init_repo(tmp_path)
     root = _write_kb(
