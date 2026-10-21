@@ -490,8 +490,11 @@ When a consumer reports pinned-context results:
   `read_published_context_page`, `search_published_context_pages` — accept
   the same pinned local Location, or a pinned `S3Location` with its
   explicitly supplied producer-side `metadata_store` (the same shared
-  exact-admission verifier). Plain directories, unpinned locations and S3
-  without the required store refuse explicitly.
+  exact-admission verifier). That navigation keyword is an unreleased
+  source candidate: the published 0.4.1/0.6.1 pair carries local
+  navigation and `open_published_context` S3 support only. Plain
+  directories, unpinned locations and S3 without the required store refuse
+  explicitly.
 - The authorized Visibility Scope is applied before any selection or
   ranking; missing and out-of-scope pages share the same scope-safe
   refusal, so never infer the existence, title or text of hidden pages.
