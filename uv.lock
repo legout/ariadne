@@ -59,7 +59,7 @@ wheels = [
 
 [[package]]
 name = "ariadne-data"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "packages/ariadne-data" }
 dependencies = [
     { name = "duckdb" },

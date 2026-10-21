@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 0.6.1 - 2026-10-21
+
+- Relocate Core into the monorepo as `packages/ariadne-data` inside the
+  coordination-only root uv workspace; the distribution name, import roots,
+  CLI entry points, optional `mcp`/`documents` extras and Python >=3.14 are
+  unchanged. Independent use remains first-class: base Core works without
+  the Lumio SDK and without the optional MCP transport; the LanceDB adapter
+  stays an optional SDK-side extra. The separately distributed Agent/Tau
+  stack and the repository rename are excluded from this release.
+- Repair relocated local/Git documentation and example paths, and align the
+  same-commit development CI (joint Core+SDK wheel pairing, member-scoped
+  lint via the existing dev extra, native test selection with the original
+  prepared-S3 exclusions).
+- Release qualification pairs Core with the exact published public producer
+  wheel `lumio-wiki==0.4.1` (immutable PyPI URL and SHA-256 recorded in the
+  release workflow), producer-first; the previously qualified 0.6.0/0.4.0
+  tutorial baseline remains the tested numerical example.
+- No new runtime feature, dependency change, numerical attestation or
+  re-admission shortcut; governance and admission semantics are unchanged.
+  Canonical release tag: `core-v0.6.1` in the current public `legout/ariadne`
+  repository (candidate preparation — Core is not yet published).
+
 ## 0.6.0 - 2026-10-21
 
 - **Git/local-first operation** — report the exact local Git HEAD separately
