@@ -7,6 +7,9 @@ delivered against a strict local subset — everything not listed as supported
 below refuses. Projects without the integration keep the standalone behavior
 documented in the other references; nothing here adds a requirement for them.
 
+Start with [the complete local tutorial](../tutorials/lumio-ariadne-local.md)
+for supplied example files, exact commands and expected results.
+
 ## The integrated selector
 
 An integrated project carries `context_integration.yaml` at its root:
@@ -62,7 +65,7 @@ manifest):
 | Area | Delivered behavior |
 | --- | --- |
 | Storage | Local immutable Published Versions only. An S3 destination or reader refuses explicitly; mutable/current/latest reads and plain directories refuse. |
-| Profiles | `metric`, `policy` and `reference` only, checked across the entire captured KB. A `reference` profile is supported ONLY as a fully validated structured Reference (spec 0010 contract, real Core inspection receipts for asserted mappings, exact human mapping confirmation). Any other Ariadne profile kind anywhere in the KB refuses admission — even when no metric references it. Ordinary unprofiled pages stay KB content and are never exposed as Core-validated technical references. |
+| Profiles | `metric`, `policy` and `reference` only, checked across the entire captured KB. A `reference` profile is supported ONLY as a fully validated structured Reference (native Reference contract; authentic Core receipts for measured authority, native source-backed manual assertion eligibility, exact human mapping confirmation). Any other Ariadne profile kind anywhere in the KB refuses admission — even when no metric references it. Ordinary unprofiled pages stay KB content and are never exposed as Core-validated technical references. |
 | `get_metric` | Governed calculation with one exact Context Binding and the complete required Policy Closure, resolved in the same pinned snapshot before SQL. |
 | `query_metrics` | Multiple predefined metrics over the admitted multi-fact graph, complete per-metric Policy context, exact citations. |
 | `discover`, `list_metrics` | Source-free disclosure of the admitted catalog, binding identity and available/unavailable operations. No source is opened. |

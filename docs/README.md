@@ -2,15 +2,17 @@
 
 This documentation targets Ariadne 0.6.0 and is organized by reader goal, following [Diátaxis](https://diataxis.fr/). Choose one type based on what you need to do:
 
-## Tutorial
+## Tutorials
+
+- [Lumio + Ariadne locally](tutorials/lumio-ariadne-local.md) — start here for a complete example: knowledge, reviewed release, 150 EUR result, citations and an explicit update. No Docker, S3 or model key.
 
 - [Get started](tutorials/getting-started.md) — learn by creating a project and reaching a first governed query.
 
 ## How-to guides
 
 - [Local Lumio Git workflow](how-to/lumio-git-local.md) — sync content, inspect admitted identity and explicitly activate a reviewed Bound Release.
-- [Git-backed authoring](how-to/git-authoring.md) — create and review proposals, admit a catalog, or move a legacy project to the Git route.
-- [Multiple S3 storages](how-to/multiple-s3-storages.md) — read two independently credentialed S3-compatible storages through named, credential-free profiles (development candidate).
+- [Git-backed authoring](how-to/git-authoring.md) — create and review proposals, admit a catalog, explicitly reauthor content for a fresh Git project; no legacy-state import.
+- [Multiple S3 storages](how-to/multiple-s3-storages.md) — read two independently credentialed S3-compatible storages through named, credential-free profiles (optional; requires the appropriate runtime extensions).
 - [Context knowledge](how-to/context-knowledge.md) — refresh schema facts, resolve terms, inspect mappings, and author routing guidance.
 - [Docker MCP](how-to/docker-mcp.md) — run the optional containerized MCP service with an external project.
 

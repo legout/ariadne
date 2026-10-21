@@ -1,0 +1,5 @@
+version: 1
+mode: integrated
+subtree: knowledge
+namespace: urn:example:local-retail
+profile: ariadne-context/1

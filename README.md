@@ -9,6 +9,15 @@ Raw text-to-SQL asks an agent to guess tables, joins, filters, and definitions. 
 
 Ariadne is a Python package with embedded DuckDB. Use it locally through the CLI, connect an agent through optional MCP, or add the separately distributed Ariadne Agent. A human remains responsible for source approval and for admitting the exact reviewed Git revision. Ariadne is not a BI dashboard or a high-concurrency metrics API.
 
+## Start locally
+
+Follow [Lumio + Ariadne locally](docs/tutorials/lumio-ariadne-local.md) for a complete
+worked example with three synthetic orders: **150 EUR recognized revenue and two
+completed orders**, returned with the governing policy and citations. It uses the
+published Core 0.6.0 / Lumio 0.4.0 pair, ordinary Git and local files; no Docker, S3
+or model key is needed. The [standalone tutorial](docs/tutorials/getting-started.md)
+remains available when you want Ariadne without Lumio.
+
 ## Documentation
 
 The documentation follows [Diátaxis](https://diataxis.fr/):
@@ -24,7 +33,10 @@ The [documentation index](docs/README.md) lists all guides and references for **
 Core’s limited, pinned ODCS v3.2.0 consumer profile, separate Git bindings and
 as-of evidence. Source-free `ariadne search` includes a contracts group;
 `list-datasets` remains an approved live-catalog operation. This is not full
-ODCS compliance, a live health guarantee, or shared cross-layer identity (#76).
+ODCS compliance or a live health guarantee. Integrated releases bind these local
+contract identities
+alongside their knowledge identity; the contract itself does not become a portable
+cross-system identifier.
 
 **Lumio integration:** [Lumio bound releases](docs/reference/lumio-bound-releases.md)
 describe the optional integrated context binding: one shared Content Commit, an

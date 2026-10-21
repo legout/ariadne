@@ -25,7 +25,7 @@ ariadne-authoring approve-sources --project . --proposal ID \
     --revision REV --source-digest DIGEST
 ```
 
-The proposed file is registry-shaped: optional named `storages:` S3 profile declarations (current development candidate) travel alongside the `sources:` entries, reference already-declared profiles by name, and stay credential-free — only variable *names* and scopes are proposed, nothing is opened and no environment value is read during proposal creation. See [Multiple S3 storages](multiple-s3-storages.md).
+The proposed file is registry-shaped: optional named `storages:` S3 profile declarations (available in Core 0.6.0) travel alongside the `sources:` entries, reference already-declared profiles by name, and stay credential-free — only variable *names* and scopes are proposed, nothing is opened and no environment value is read during proposal creation. See [Multiple S3 storages](multiple-s3-storages.md).
 
 **The second command is human-only.** Use the exact ID, revision, digest, and approval command reported for the proposal. Source approval happens before a declared source is opened for authoring inputs. For named profiles the approval additionally records the resolved effective endpoint binding (endpoint/region, never credentials): a changed endpoint needs its own approval and fresh evidence, while key rotation does not.
 

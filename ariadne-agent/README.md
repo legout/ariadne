@@ -7,6 +7,12 @@ over **native Ariadne Python tools** — no CLI, no shell, no server, no raw SQL
 This revision ships the **Analyst** and **Authoring** roles plus optionally
 configured **role-restricted stdio MCP** tools (issue #25).
 
+> **Compatibility boundary:** this separately versioned Agent/Tau stack was not
+> qualified by the Core 0.6.0 / Lumio 0.4.0 release. The API examples below
+> describe this package, not a certified install of the new pair. Start with
+> the [local CLI tutorial](../docs/tutorials/lumio-ariadne-local.md); optional
+> Core MCP is documented separately in the [CLI reference](../docs/reference/cli.md#mcp).
+
 ## Install
 
 Depends on `ariadne-data` (never the unrelated PyPI `ariadne` GraphQL project),

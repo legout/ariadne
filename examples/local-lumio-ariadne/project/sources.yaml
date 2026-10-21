@@ -1,0 +1,4 @@
+sources:
+  - name: orders
+    type: duckdb
+    path: data/orders.duckdb

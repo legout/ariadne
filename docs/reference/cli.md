@@ -18,6 +18,13 @@ There is no plain-root serving route. The former `--served`, `--sources` and `--
 
 `ariadne setup --project DIR` is read-only with respect to authority and Git configuration: it may scaffold, inspect filenames and print operator handoffs, but it never runs `git init/config`, opens a source, approves sources, or admits. `ariadne status --project DIR [--json]` reports Git prerequisites, proposals, source approval, admission, and readiness without connecting to sources. `ariadne review --project DIR [--proposal ID]` is an operator walkthrough for one Git proposal; without an ID it lists pending proposals. A terminal prompt does not establish authenticated human identity.
 
+For the complete runnable local pair, use [the joint tutorial](../tutorials/lumio-ariadne-local.md).
+The command table below includes standalone capabilities. With
+`context_integration.yaml`, `query-detail`, `query-records`, `define-metric`,
+`save-example` and `search-examples` refuse; use the exact supported set in
+[Bound Releases](lumio-bound-releases.md#supported-and-refused-operations).
+`list-datasets` reads the approved live catalog; it is not source-free.
+
 ## Query and discovery
 
 | Command | Purpose |
@@ -54,6 +61,22 @@ A Git commit, validation result, proposed source, authored status field or succe
 `ariadne-ingest DOC... --project DIR --proposal ID --expected-revision REV` reads operator-authorized external document references and writes authored pages into that proposal revision. `--verbatim` preserves converted text without a model call; `--reconcile` compares against the immutable admitted base and is mutually exclusive with `--verbatim`. Original documents remain external; Core has no upload/archive store.
 
 `ariadne-validate ARTIFACT_DIR` performs source-free compile checks on an explicit artifact directory. Its result is partial structural evidence only: it does not open sources, perform live validation, approve sources, or admit content. Live validation is revision-bound through `ariadne-authoring validate` after human source approval.
+
+## Optional transports and packages
+
+The local CLI needs no server or model key for the deterministic query path.
+Install Core 0.6.0 on Python >=3.14. Choose optional packages for the task:
+
+- `ariadne-data[mcp]==0.6.0` adds the pinned MCP 2.2.0 transport.
+- `ariadne-data[documents]==0.6.0` adds the supported document converters;
+  it does not approve an input or supply model credentials.
+- `lumio-wiki==0.4.0` supplies the optional integrated knowledge binding.
+  `lumio-lancedb==0.4.0` is optional retrieval, not a Core requirement.
+
+The separately distributed Ariadne Agent/Tau stack has its own dependencies;
+it was not qualified by this Core/Lumio release. DuckDB source-format extensions
+and storage credentials remain host prerequisites; package extras do not create
+or approve them.
 
 ## MCP
 

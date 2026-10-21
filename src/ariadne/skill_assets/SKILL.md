@@ -245,7 +245,7 @@ layers, proposal worktrees or `.ariadne/` state).
    entries (the same registry shape, no inline credentials) to the
    candidate's `ariadne.yaml` and returns the RESOLVED source-identity
    digest. The file may also carry optional named `storages:` S3 profile
-   declarations (development candidate): credential-free environment-
+   declarations (Core 0.6.0): credential-free environment-
    variable names plus explicit scopes, referenced by sources as
    `storage: <name>`. Propose them like any other declaration; you never
    read, set or verify the environment values, and human approval stays the

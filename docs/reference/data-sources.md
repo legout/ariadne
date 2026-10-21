@@ -50,7 +50,10 @@ Inline connection strings and URL credentials are rejected. Relative paths resol
 
 ## Storage profiles
 
-> **Candidate feature** — named storage profiles are current development-candidate behavior, not published Ariadne 0.3.0. See [Multiple S3 storages](../how-to/multiple-s3-storages.md) for the task guide and delivery rules.
+> Named storage profiles are available in Core 0.6.0. Appropriate DuckDB
+> extensions and operator-supplied environment values are required. This is
+> data-source access, separate from the local-only integrated knowledge binding.
+> See [Multiple S3 storages](../how-to/multiple-s3-storages.md).
 
 An optional top-level `storages:` block maps profile names to S3 declarations. Values are **environment-variable names**: the executing host process supplies the values, and only the profiles referenced by sources are ever resolved or installed.
 
@@ -92,4 +95,4 @@ adds no source read or second contract inspection; it is not a health check.
 
 ## Document inputs are different
 
-Documents supplied as authoring context are not query sources. Markdown and text are handled natively; the optional `ariadne-data[documents]` extra adds supported PDF, Office, and HTML converters. The `ariadne-ingest` command stages document-derived drafts; it does not serve them automatically. See the [CLI reference](cli.md#document-ingestion).
+Documents supplied as authoring context are not query sources. Markdown and text are handled natively; the optional `ariadne-data[documents]` extra adds supported PDF, Office, and HTML converters. The `ariadne-ingest` command stages document-derived drafts; it does not serve them automatically. See the [CLI reference](cli.md#document-ingestion-and-static-validation).

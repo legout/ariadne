@@ -1,0 +1,11 @@
+version: 2
+mode: categorized
+categories:
+  - name: metrics
+  - name: policies
+  - name: references
+ontology:
+  entity_types:
+    metric: {}
+    policy: {}
+    reference: {}

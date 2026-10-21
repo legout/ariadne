@@ -11,6 +11,9 @@ checking out a commit — including the commit an admission was previewed
 against — never changes what is served. Only the operator's explicit overall
 admission activates a Bound Release, and a served manifest is never mutated.
 
+For a first hands-on project, complete [the local tutorial](../tutorials/lumio-ariadne-local.md)
+first. This guide covers maintaining an already integrated project.
+
 ## First clone
 
 A new machine starts with an ordinary clone of the project repository:
