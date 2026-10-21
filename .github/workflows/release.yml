@@ -1,0 +1,200 @@
+name: release
+
+# Issue #181 / ADR-0025: certified wheel releases on the lumio-v* release
+# channel (spec 0030 §5): a pushed lumio-vX.Y.Z tag builds both inter-member
+# wheels once from that exact commit into one family output directory,
+# records their SHA-256 hashes and SLSA build provenance, verifies the built
+# artifacts, and automatically publishes exactly those two wheels directly to
+# PyPI (the lockstep family — never a Core artifact). Ordinary pushes, pull
+# requests, core-v* tags and the imported lumio-history/* history tags select
+# nothing here.
+#
+# Credential model: PYPI_API_TOKEN in the `pypi` environment.
+# Ordinary CI and pull requests do not receive the publishing token.
+# Build provenance still uses GitHub OIDC; token-based PyPI uploads do not
+# generate PyPI digital attestations. See docs/lumio/packaging.md for owner
+# setup. (Release readiness requires owner verification of the `pypi`
+# environment and the token's scope before any release — see
+# docs/migration-reference.md.)
+#
+# Hardening (zizmor): every action is SHA-pinned, checkout never persists
+# credentials, and no job shares an Actions cache with PR-triggered
+# workflows (setup-uv's cache is explicitly disabled — its "auto" default
+# would restore entries written from pull requests into publishing builds).
+
+on:
+  push:
+    tags: ["lumio-v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-wheels:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.14"
+          enable-cache: false
+      - run: uv lock --check
+      - run: uv build --package lumio-wiki --wheel --out-dir dist
+      - run: uv build --package lumio-lancedb --wheel --out-dir dist
+      - name: Assert both wheels carry the tag version (lockstep policy)
+        run: |
+          version="${GITHUB_REF_NAME#lumio-v}"
+          for member in lumio_wiki lumio_lancedb; do
+            ls "dist/${member}-${version}-"*.whl > /dev/null
+          done
+          test "$(ls dist/*.whl | wc -l)" -eq 2
+      - name: Record wheel SHA-256 hashes
+        run: |
+          (cd dist && sha256sum *.whl > ../wheel-hashes.txt)
+          cat wheel-hashes.txt | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-wheels
+          path: |
+            dist/
+            wheel-hashes.txt
+          if-no-files-found: error
+      # SLSA build provenance bound to the tag commit (issue #181: the tag
+      # "builds both wheels once and records hashes/provenance").
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: dist/*.whl
+
+  verify-wiki:
+    # Verify the exact built wheel in fresh environments before publication.
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-wheels
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.14"
+          enable-cache: false
+      - name: Verify recorded artifact hashes
+        run: (cd dist && sha256sum -c ../wheel-hashes.txt)
+      - name: Fresh-venv install of the candidate wheel
+        run: |
+          uv venv --python 3.14 /tmp/wiki
+          uv pip install --python /tmp/wiki/bin/python dist/lumio_wiki-*.whl
+      - name: Package isolation + local library smoke (verify_lumio_wiki_wheel.py)
+        run: |
+          /tmp/wiki/bin/python scripts/lumio/verify_lumio_wiki_wheel.py \
+            dist/lumio_wiki-*.whl \
+            tests/lumio/fixtures/valid tests/lumio/fixtures/categorized_kb
+      - name: Packaged Agent Skill matches the tagged contract byte-for-byte
+        run: |
+          skill=$(/tmp/wiki/bin/lumio-wiki skill path)
+          protocol=$(/tmp/wiki/bin/lumio-wiki skill protocol)
+          cmp "$skill" packages/lumio-wiki/src/lumio_wiki/data/skill/SKILL.md
+          cmp "$protocol" packages/lumio-wiki/src/lumio_wiki/data/skill/PROTOCOL.md
+          /tmp/wiki/bin/lumio-wiki doctor
+      - name: The candidate heavy extras resolve from public PyPI
+        run: |
+          wheel=$(echo dist/lumio_wiki-*.whl)
+          uv venv --python 3.14 /tmp/extras
+          uv pip install --python /tmp/extras/bin/python "${wheel}[all]"
+          /tmp/extras/bin/python -c "import liteparse, markitdown, openai"
+
+  verify-s3-compat:
+    # Exercise the built wheels against the disposable S3-compatible service.
+    # admin/secret are local-test credentials, never real credentials.
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    services:
+      seaweedfs:
+        image: chrislusf/seaweedfs:4.45@sha256:fc9f76fa993ad69966ffeb2f65d0318fcae39c6f8e20cf68ef7b3a5cb97769e5
+        env:
+          AWS_ACCESS_KEY_ID: admin
+          AWS_SECRET_ACCESS_KEY: secret
+          S3_BUCKET: lumio-release
+        ports:
+          - 8333:8333
+        options: >-
+          --health-cmd "curl -fsS http://localhost:9333/cluster/status"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      LUMIO_S3_ENDPOINT: http://localhost:8333
+      LUMIO_S3_ALLOW_HTTP: "1"
+      LUMIO_S3_REGION: us-east-1
+      LUMIO_S3_TEST_BUCKET: lumio-release
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: secret
+      AWS_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-wheels
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.14"
+          enable-cache: false
+      - name: Verify recorded artifact hashes
+        run: (cd dist && sha256sum -c ../wheel-hashes.txt)
+      - name: Install the candidate wheels with quickstart extras
+        run: |
+          wiki=$(echo dist/lumio_wiki-*.whl)
+          lancedb=$(echo dist/lumio_lancedb-*.whl)
+          uv venv --python 3.14 /tmp/journey
+          uv pip install --python /tmp/journey/bin/python \
+            "${wiki}[s3]" "${lancedb}[s3]"
+      - name: Run the canonical onboarding journey from the installed wheels
+        env:
+          LUMIO_WIKI_BIN: /tmp/journey/bin/lumio-wiki
+          LUMIO_PYTHON: /tmp/journey/bin/python
+        run: bash examples/lumio/onboarding-journey/smoke-journey.sh
+
+  promote-pypi:
+    # Both candidate checks precede automatic upload; no reviewer gate.
+    needs: [verify-wiki, verify-s3-compat]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-wheels
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.14"
+          enable-cache: false
+      - name: Prove byte identity before publication
+        run: (cd dist && sha256sum -c ../wheel-hashes.txt)
+      - name: Require the PyPI environment token
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: test -n "$PYPI_API_TOKEN"
+      - name: Publish the hash-verified artifacts to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: dist/
+          attestations: false # Build provenance remains attached to the tag.
+          # The artifacts were hash-verified against the build record in the
+          # step above; skipping an already-published identical file makes a
+          # re-run after a partial failure safe.
+          skip-existing: true

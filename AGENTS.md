@@ -32,9 +32,20 @@
 
 ### Documentation map
 
-- `CONTEXT.md`: canonical domain vocabulary for the whole repository.
+- `CONTEXT.md`: canonical domain vocabulary for the Ariadne context;
+  `project/lumio/CONTEXT.md` is the Lumio vocabulary (see `CONTEXT-MAP.md`).
 - `project/adr/`: accepted architecture decisions.
 - `project/agents/`: workflow, tracker, and artifact-map configuration.
 - `project/specs/` or the configured tracker: feature behavior and acceptance.
 - implementation plans/tickets: execution entry points and explicit source references.
 <!-- pi-implementation-orchestrator:end -->
+
+## Repository contexts
+
+This repository hosts two independent products. `CONTEXT.md` is the Ariadne
+vocabulary; `project/lumio/CONTEXT.md` is the Lumio vocabulary (ownership
+unchanged; see `CONTEXT-MAP.md`). Scoped package instructions live in
+`packages/lumio-wiki/AGENTS.md` and `packages/lumio-lancedb/AGENTS.md`;
+Lumio records keep their original IDs under `project/lumio/`, where
+`AGENTS.imported.md` is a preserved historical reference, not active
+guidance.

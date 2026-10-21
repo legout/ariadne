@@ -20,3 +20,21 @@ data/support_tickets/
 .pi/
 .codegraph/
 build/
+
+# Imported Lumio-side local state (union with the merged Lumio .gitignore).
+.DS_Store
+.superpowers/
+.worktrees/
+node_modules/
+dist/
+.env.local
+.scratch/
+.tmp/
+*.py[cod]
+*.sqlite
+*.sqlite3
+*.sqlite-*
+/data/
+mockups/shots/live/
+.wiki/
+.pi-subagents/

@@ -1,0 +1,56 @@
+[project]
+name = "lumio-wiki"
+version = "0.4.0"
+description = "Portable, model-free Knowledge Base foundation for Lumio."
+license = "Apache-2.0"
+authors = [{ name = "Volker L.", email = "ligno.blades@gmail.com" }]
+requires-python = ">=3.14"
+dependencies = ["msgpack>=1.0", "msgspec[yaml]>=0.21.1"]
+
+# Issue #98: the standalone ``lumio-wiki`` CLI entry point. Declared here so a
+# built wheel installs an unambiguous ``lumio-wiki`` console script.
+[project.scripts]
+lumio-wiki = "lumio_wiki.cli:main"
+
+# Optional ingestion capabilities (ADR-0010). Declared but NOT installed by
+# default: the base wheel stays lightweight and model-free. Missing extras
+# produce actionable guidance (the CLI ``doctor`` names the exact install
+# command; document-converter and provider Distiller code paths name the
+# extra when invoked without it).
+[project.optional-dependencies]
+documents = ["liteparse>=2.4.0", "markitdown[docx]>=0.1.6", "firecrawl-anydoc==0.1.3"]
+llm = ["openai>=1.40.0"]
+# Issue #120, ADR-0013: the optional S3 capability reads immutable Knowledge
+# Base Snapshots directly from object storage via ``obstore``. Declared but NOT
+# installed by default: the base wheel stays lightweight and cloud-free. obstore
+# is imported lazily inside the S3 location module, so importing ``lumio-wiki``
+# never pulls it in. Missing-extra guidance names the exact install command.
+s3 = ["obstore>=0.11.0"]
+# Plan 06, PRD-0007, ADR-0028: the optional read-only MCP server speaks MCP
+# over stdio through the official ``mcp`` SDK (FastMCP API). Declared but NOT
+# installed by default: the base wheel stays lightweight. The SDK is imported
+# lazily inside the MCP server module, so importing ``lumio-wiki`` never pulls
+# it in. Missing-extra guidance names the exact install command.
+mcp = ["mcp>=2.2.0"]
+all = [
+  "liteparse>=2.4.0",
+  "markitdown[docx]>=0.1.6",
+  "firecrawl-anydoc==0.1.3",
+  "openai>=1.40.0",
+  "obstore>=0.11.0",
+  "mcp>=2.2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lumio_wiki"]
+# Force-include the packaged Agent Skill and short coding-agent protocol as
+# wheel data so a coding agent can resolve them deterministically via
+# importlib.resources (issue #98, ADR-0010). The data subdirectories are also
+# proper Python packages (each has an __init__.py), so this is belt-and-
+# suspenders: hatchling includes package data automatically, but the explicit
+# force-include guarantees the .md files ship even under strict build configs.
+force-include = { "src/lumio_wiki/data/skill/SKILL.md" = "lumio_wiki/data/skill/SKILL.md", "src/lumio_wiki/data/skill/PROTOCOL.md" = "lumio_wiki/data/skill/PROTOCOL.md" }

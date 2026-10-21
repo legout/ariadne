@@ -1,67 +1,82 @@
-# Ariadne
+# ariadne-lumio
 
-**Governed metrics for AI agents.** Ariadne gives agents a reviewed source of truth for business metrics: definitions are compiled and queried by Ariadne, while business policies and caveats travel with the answer.
+One repository, two independent products: **Ariadne Core** (`ariadne-data`)
+for governed metrics, and the **Lumio Knowledge Base foundation**
+(`lumio-wiki`, plus the optional `lumio-lancedb` adapter). Colocation serves
+shared development and review only — no product requires the other, and
+installing both never activates their integration.
 
-Raw text-to-SQL asks an agent to guess tables, joins, filters, and definitions. Ariadne separates those responsibilities into two layers:
+> **Repository naming:** the canonical location is approved to be renamed
+> from `legout/ariadne` to `legout/ariadne-lumio` at an explicitly authorized
+> cutover that has **not happened yet**; until then this repository is served
+> from `legout/ariadne`. See the
+> [migration reference](docs/migration-reference.md).
 
-- **Semantic Layer (OSI):** reviewed metric definitions, compiled to SQL and executed read-only by Ariadne.
-- **Context Layer (OKF):** business policies, source caveats, and terminology that explain how to interpret a result.
+## Choose your entry
 
-Ariadne is a Python package with embedded DuckDB. Use it locally through the CLI, connect an agent through optional MCP, or add the separately distributed Ariadne Agent. A human remains responsible for source approval and for admitting the exact reviewed Git revision. Ariadne is not a BI dashboard or a high-concurrency metrics API.
+### 1. Lumio alone — a portable Knowledge Base
 
-## Start locally
-
-Follow [Lumio + Ariadne locally](docs/tutorials/lumio-ariadne-local.md) for a complete
-worked example with three synthetic orders: **150 EUR recognized revenue and two
-completed orders**, returned with the governing policy and citations. It uses the
-published Core 0.6.0 / Lumio 0.4.0 pair, ordinary Git and local files; no Docker, S3
-or model key is needed. The [standalone tutorial](docs/tutorials/getting-started.md)
-remains available when you want Ariadne without Lumio.
-
-## Documentation
-
-The documentation follows [Diátaxis](https://diataxis.fr/):
-
-- **[Tutorial](docs/tutorials/getting-started.md):** create a project and reach a first governed query.
-- **[How-to guides](docs/README.md#how-to-guides):** complete specific tasks such as Git-backed authoring, private Docker MCP setup, or reading multiple S3 storages.
-- **[Reference](docs/README.md#reference):** look up CLI commands, data-source configuration, and migration mappings.
-- **[Explanation](docs/explanations/how-ariadne-works.md):** understand Ariadne's layers, governance gates, and authority boundaries.
-
-The [documentation index](docs/README.md) lists all guides and references for **Ariadne 0.6.0**.
-
-**Data Contracts:** the [reference](docs/reference/data-contracts.md) describes
-Core’s limited, pinned ODCS v3.2.0 consumer profile, separate Git bindings and
-as-of evidence. Source-free `ariadne search` includes a contracts group;
-`list-datasets` remains an approved live-catalog operation. This is not full
-ODCS compliance or a live health guarantee. Integrated releases bind these local
-contract identities
-alongside their knowledge identity; the contract itself does not become a portable
-cross-system identifier.
-
-**Lumio integration:** [Lumio bound releases](docs/reference/lumio-bound-releases.md)
-describe the optional integrated context binding: one shared Content Commit, an
-operator-confirmed overall admission activating a local immutable Bound Release,
-strict `metric`/`policy`/`reference` profiles, full required Policy context on governed
-answers, and source-free navigation over the pinned published pages. Git is the
-standard transport and sync never activates a release — `ariadne status`
-reports the local Git HEAD separately from the admitted release (see
-[the local Git how-to](docs/how-to/lumio-git-local.md)); the SDK stays an optional
-dependency, unsupported integrated operations refuse, and exact build pairing is
-recorded per release rather than assumed from package versions.
-
-## Source development
-
-Work on Ariadne itself happens from the package checkout, not inside a data project:
+Build, review, search and publish a portable Knowledge Base for your coding
+agents. No Ariadne installation, data source, model or service is required
+for the local flow; `lumio-lancedb` stays an optional retrieval adapter.
 
 ```bash
-uv venv --python 3.14 .venv
-uv pip install --python .venv/bin/python -e .
-source .venv/bin/activate
-# Optional MCP example (after creating and admitting a project; requires .[mcp]):
-uv pip install --python .venv/bin/python -e '.[mcp]'
-examples/retail-demo/mcp_client.py --project /path/to/admitted/retail-project
+pip install lumio-wiki   # load, validate, search, traverse, ingest, publish
 ```
 
-For a candidate-wheel check, run `uv build`, install `dist/ariadne_data-*.whl`
-into a fresh virtual environment, and follow the [getting-started tutorial](docs/tutorials/getting-started.md)
-with the installed console scripts rather than the editable install.
+Runnable local example: the [quickstart](docs/lumio/quickstart.md), scripted
+end-to-end by [`examples/lumio/onboarding-journey/`](examples/lumio/onboarding-journey/).
+Package details: [`packages/lumio-wiki/README.md`](packages/lumio-wiki/README.md).
+
+### 2. Ariadne alone — governed metrics
+
+Define and calculate governed metrics over approved data with an explicit
+human review gate. Standalone mode works without Lumio.
+
+```bash
+pip install ariadne-data   # local CLI + query engine; optional extras: [mcp], [documents]
+```
+
+Runnable local example: the
+[getting-started tutorial](docs/tutorials/getting-started.md).
+Package details: [`packages/ariadne-data/README.md`](packages/ariadne-data/README.md).
+
+### 3. Lumio + Ariadne together — curated context with governed calculations
+
+Use curated Knowledge Base context with governed calculations. Integration is
+explicit: an installed compatible SDK, compatible artifacts, source approval
+and an operator-confirmed overall admission are required — colocation or
+installing both packages activates nothing.
+
+Minimum installation for this route is both published packages
+(`pip install ariadne-data lumio-wiki`); the joint tutorial pins the exact
+compatible pair it exercises (`ariadne-data==0.6.0`, `lumio-wiki==0.4.0`).
+
+Runnable local example: the joint tutorial
+[Lumio + Ariadne locally](docs/tutorials/lumio-ariadne-local.md) — three
+synthetic orders, **150 EUR recognized revenue and two completed orders**
+with the complete governing Policy and citations, then a Git update that
+stays inactive until reviewed confirmation.
+
+## Using versus developing
+
+- **Using the products:** install the published wheels into your own
+  environment (`pip install lumio-wiki` / `pip install ariadne-data`); all
+  packages require Python ≥ 3.14. You do not need this checkout, and
+  standalone use never requires the other product — only the explicit
+  integrated route (entry 3) installs both.
+- **Developing this repository:** one uv workspace with a single development
+  lockfile; the root distributes nothing. Component commands and scope notes:
+  [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Licensing
+
+Licensing is component-specific. The Lumio members are Apache-2.0 (each
+member directory carries its license file); `ariadne-data` currently declares
+no project license. Vendored notices (for example the ODCS schema license)
+stay attached to their artifacts. No repository-wide license is implied by
+colocation.
+
+The private Lumio web application is a separate product, clearly distinct
+from this public foundation; the separately distributed Ariadne Agent is not
+part of the workspace either. Neither is required by any entry above.

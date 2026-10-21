@@ -1,0 +1,373 @@
+#!/usr/bin/env bash
+# Scriptable smoke journey for the canonical onboarding quickstart (issue #180).
+#
+# Executes EXACTLY the commands documented in docs/lumio/quickstart.md (local half),
+# in order: local Maintainer setup -> ontology starter -> seed pages -> managed
+# ingest -> Git review/admission -> retrieval/citation/traversal -> Source
+# Artifact inspection -> (when an S3-compatible endpoint is configured) the
+# commands of docs/lumio/howto-s3-publish.md: publication with and without LanceDB ->
+# read-only Reader project -> expected zero-index fallback.
+#
+# Any command failing or printing an unexpected outcome fails the script, so
+# documentation drift between the quickstart and the CLI is caught here.
+#
+# Usage:
+#   ./smoke-journey.sh [project-dir]        # default: a fresh temp dir
+#
+# Environment:
+#   LUMIO_WIKI_BIN   lumio-wiki invocation (default: "lumio-wiki";
+#                     e.g. "uv --project /path/to/lumio run lumio-wiki")
+#   LUMIO_PYTHON     python with obstore for the bucket usability check
+#                     (default: python3)
+#
+# S3-compatible part runs only when ALL of these are set (same variables the
+# CLI and S3-compatible test suites read):
+#   LUMIO_S3_ENDPOINT, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# Optional: LUMIO_S3_REGION (default us-east-1), LUMIO_S3_TEST_BUCKET
+#           (default lumio-quickstart).
+
+set -euo pipefail
+
+LW=${LUMIO_WIKI_BIN:-lumio-wiki}
+BUCKET=${LUMIO_S3_TEST_BUCKET:-lumio-quickstart}
+# Per-run prefix keeps repeated smoke journeys from colliding with immutable
+# published versions (they cannot be overwritten).
+PREFIX="helpdesk-kb/run-$(date +%Y%m%d%H%M%S)-$$"
+HERE=$(cd "$(dirname "$0")" && pwd)
+PROJ=${1:-$(mktemp -d)}
+S3_READY=0
+if [ -n "${LUMIO_S3_ENDPOINT:-}" ] && [ -n "${AWS_ACCESS_KEY_ID:-}" ] \
+  && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+  S3_READY=1
+fi
+
+step() { printf '\n== %s\n' "$*"; }
+expect_fail() { # expect_fail <label> <cmd...> : command must exit non-zero
+  local label=$1; shift
+  if "$@" >/dev/null 2>&1; then
+    echo "FAIL: expected a non-zero exit (truthful unavailability): $label" >&2
+    exit 1
+  fi
+}
+
+step "0. Project: $PROJ"
+mkdir -p "$PROJ"; cd "$PROJ"
+PROJ=$(pwd -P)
+
+step "1. Maintainer setup"
+if [ "$S3_READY" = 1 ]; then
+  $LW setup ./kb --publish-to "s3://$BUCKET/$PREFIX"
+else
+  echo "(no S3-compatible endpoint configured — plain local setup, S3 steps skipped)"
+  $LW setup ./kb
+fi
+
+step "2. Ontology starter (replace the empty ontology block in kb/lumio.yaml)"
+${LUMIO_PYTHON:-python3} - <<'PYEOF'
+from pathlib import Path
+
+path = Path("kb/lumio.yaml")
+text = path.read_text(encoding="utf-8")
+old = """ontology:
+  entity_types:
+  predicates:
+  redirects:
+"""
+new = """ontology:
+  entity_types:
+    software-system:
+      description: "A deployed software product or platform."
+    database:
+      description: "A persistent storage service backing an application."
+    procedure:
+      description: "A reviewed runbook or operating procedure."
+  predicates:
+    uses:
+      subject_types: [software-system]
+      object_types: [database, software-system]
+      inverse: used-by
+    used-by:
+      subject_types: [database, software-system]
+      object_types: [software-system]
+      inverse: uses
+    described-as:
+      literal_kind: string
+  redirects: {}
+"""
+if old not in text:
+    raise SystemExit("FAIL: seeded empty ontology block not found in kb/lumio.yaml")
+path.write_text(text.replace(old, new), encoding="utf-8")
+PYEOF
+
+step "3. Seed pages (one accepted Claim edge: Aurora uses Starlight DB)"
+mkdir -p kb/entities
+cat > kb/entities/aurora-helpdesk.md <<'PAGEEOF'
+---
+title: "Aurora Helpdesk"
+id: "entity:aurora-helpdesk"
+entity_types: ["software-system"]
+aliases: ["Aurora"]
+tags: ["support", "product"]
+summary: "The Aurora helpdesk product this Knowledge Base documents."
+lifecycle: "approved"
+visibility: "internal"
+sources:
+  - id: "aurora-product-notes"
+    title: "Aurora product notes"
+claims:
+  - id: "claim:aurora-uses-starlight"
+    predicate: "uses"
+    object: "entity:starlight-db"
+    status: "accepted"
+    evidence:
+      - lines: [6, 6]
+---
+
+# Aurora Helpdesk
+
+Aurora is the support helpdesk this Knowledge Base documents. It stores
+tickets and attachments in [Starlight DB](starlight-db.md).
+PAGEEOF
+cat > kb/entities/starlight-db.md <<'PAGEEOF'
+---
+title: "Starlight DB"
+id: "entity:starlight-db"
+entity_types: ["database"]
+tags: ["storage"]
+summary: "The persistent database behind Aurora Helpdesk."
+lifecycle: "approved"
+visibility: "internal"
+sources:
+  - id: "aurora-product-notes"
+    title: "Aurora product notes"
+claims:
+  - id: "claim:starlight-described-as"
+    predicate: "described-as"
+    value: "managed PostgreSQL, region eu-west-1"
+    value_type: "string"
+    status: "accepted"
+    evidence:
+      - lines: [3, 4]
+---
+
+# Starlight DB
+
+Starlight DB is the managed PostgreSQL (region eu-west-1) that stores Aurora
+tickets and attachments.
+PAGEEOF
+$LW validate ./kb
+
+step "3b. Adopt Git authoring (Source Reference Manifest + repository)"
+cat > kb/.lumio-authoring.yaml <<'YAMLEOF'
+version: 1
+namespace: "urn:uuid:onboarding-smoke-2026-0000-000000000001"
+sources: {}
+bindings: {}
+YAMLEOF
+git -C kb init -q
+git -C kb config user.email "maintainer@example.com"
+git -C kb config user.name "Maintainer"
+git -C kb add lumio.yaml entities .lumio-authoring.yaml
+git -C kb commit -qm "Seed knowledge base with adopted authoring manifest"
+export LUMIO_SOURCE_REGISTRY="$PROJ/private-source-registry"
+
+step "4. Managed document ingest (original source + authored page, one identity)"
+cat > password-reset-page.md <<'PAGEEOF'
+---
+title: "Password Reset Runbook"
+category: procedures
+type: runbook
+durability_rationale: "Owned runbook; reviewed yearly by Support Ops."
+id: "entity:password-reset-runbook"
+entity_types: ["procedure"]
+tags: ["support", "runbook"]
+summary: "How Aurora support verifies a requester and forces a password reset."
+lifecycle: "approved"
+visibility: "internal"
+sources:
+  - id: "support-runbook-2026"
+    title: "Support runbook: password reset"
+---
+
+# Password Reset Runbook
+
+Verified steps from the 2026 support runbook. Aurora Helpdesk support
+verifies the requester through the secondary email on file, then forces the
+reset from the requester's profile. The reset link expires after 30 minutes.
+Requests without a secondary email escalate to Support Ops on-call; reset
+volume is tracked in [Starlight DB](../entities/starlight-db.md).
+PAGEEOF
+$LW ingest ./kb "$HERE/sources/support-runbook.md" \
+  --compiled-page password-reset-page.md --source-id support-runbook-2026 \
+  --source-registry "$LUMIO_SOURCE_REGISTRY"
+
+step "5. Git review: diff -> commit -> validate"
+git -C kb add procedures/password_reset_runbook.md .lumio-authoring.yaml
+git -C kb diff --cached --stat | tee /dev/stderr | grep -E 'password_reset_runbook' >/dev/null
+git -C kb commit -qm "Add password-reset runbook via managed ingest"
+REV=$(git -C kb rev-parse HEAD)
+$LW validate ./kb | tee /dev/stderr | grep 'Knowledge base is valid' >/dev/null
+
+# Invoking this disposable smoke journey authorizes its synthetic local
+# publication, never a configured real KB/destination.
+LOCAL_REVIEW=$($LW publish ./kb --revision "$REV" --to "$PROJ/published" \
+  --expected-current none --source-registry "$LUMIO_SOURCE_REGISTRY" --json)
+printf '%s\n' "$LOCAL_REVIEW"
+LOCAL_DIGEST=$(printf '%s' "$LOCAL_REVIEW" | ${LUMIO_PYTHON:-python3} -c \
+  'import json,sys; print(json.load(sys.stdin)["review_digest"])')
+$LW publish ./kb --revision "$REV" --to "$PROJ/published" \
+  --expected-current none --source-registry "$LUMIO_SOURCE_REGISTRY" \
+  --confirm "$LOCAL_DIGEST" --json
+
+step "6. Retrieval, citation open actions, graph traversal"
+$LW search "password reset" --limit 2 | tee /dev/stderr | grep -E '^open:' >/dev/null
+$LW page "Password Reset Runbook" | tee /dev/stderr | grep -E '^source-artifact:' >/dev/null
+$LW related "Aurora Helpdesk" --scope canonical --trace | tee /dev/stderr | grep -E 'Starlight DB' >/dev/null
+$LW paths "Aurora Helpdesk" "Starlight DB" --scope canonical --trace \
+  | tee /dev/stderr | grep -E 'found=true' >/dev/null
+
+step "7. Source Artifact inspection: truthful unavailability (no store configured)"
+$LW source inspect ./kb --source-id support-runbook-2026 \
+  | tee /dev/stderr | grep -E 'not retained' >/dev/null
+expect_fail "local source fetch without a Source Artifact Store" \
+  $LW source fetch ./kb --source-id support-runbook-2026 --output "$PROJ/should-not-exist.md"
+
+if [ "$S3_READY" != 1 ]; then
+  echo
+  echo "PASS: local onboarding journey complete (S3-compatible steps skipped —"
+  echo "set LUMIO_S3_ENDPOINT + AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY to run them)."
+  exit 0
+fi
+
+step "8. Publish immutable S3 version (zero-index) to s3://$BUCKET/$PREFIX"
+export LUMIO_S3_ALLOW_HTTP=${LUMIO_S3_ALLOW_HTTP:-}
+case "$LUMIO_S3_ENDPOINT" in
+  http://*) export LUMIO_S3_ALLOW_HTTP=1 ;;
+esac
+# Verify the startup-created bucket through the same client the CLI uses.
+${LUMIO_PYTHON:-python3} - "$BUCKET" <<'PYEOF'
+import os
+import sys
+
+import obstore
+
+endpoint = os.environ["LUMIO_S3_ENDPOINT"]
+config = {
+    "aws_region": os.environ.get("LUMIO_S3_REGION", "us-east-1"),
+    "aws_endpoint": endpoint,
+    "aws_access_key_id": os.environ["AWS_ACCESS_KEY_ID"],
+    "aws_secret_access_key": os.environ["AWS_SECRET_ACCESS_KEY"],
+}
+client = {"allow_http": True} if endpoint.startswith("http://") else {}
+store = obstore.store.from_url(f"s3://{sys.argv[1]}", config=config, client_options=client)
+try:
+    list(obstore.list(store, prefix="journey-reachability-check/"))
+except Exception as exc:
+    sys.exit(f"FAIL: cannot use bucket s3://{sys.argv[1]} at {endpoint}: {exc}; "
+             f"start or configure 'weed mini' with S3_BUCKET={sys.argv[1]}")
+PYEOF
+# Publish the same reviewed Git revision, not a second reconstructed tree.
+S3_TMP=$(mktemp -d)
+trap 'rm -rf "$S3_TMP"' EXIT
+S3_KB="$PROJ/kb"
+REV1="$REV"
+S3_REGISTRY="$LUMIO_SOURCE_REGISTRY"
+export LUMIO_SOURCE_STORE="$S3_TMP/source-store"
+export LUMIO_ARTIFACT_RETENTION=disabled
+
+publish_s3_revision() {
+  local revision=$1 expected_current=$2
+  shift 2
+  local -a options=("$@")
+  local review digest
+  review=$($LW publish-s3 "$S3_KB" --revision "$revision" \
+    --expected-current "$expected_current" --source-registry "$S3_REGISTRY" \
+    --json "${options[@]}")
+  digest=$(printf '%s' "$review" | ${LUMIO_PYTHON:-python3} -c \
+    'import json, sys; print(json.load(sys.stdin)["review_digest"])')
+  $LW publish-s3 "$S3_KB" --revision "$revision" \
+    --expected-current "$expected_current" --source-registry "$S3_REGISTRY" \
+    --confirm "$digest" --json "${options[@]}"
+}
+publish_s3_revision "$REV1" none
+
+step "9. Reader: read-only project against the S3 Location"
+READER=$(mktemp -d)
+( cd "$READER"
+  unset LUMIO_SOURCE_STORE
+  $LW setup --from "s3://$BUCKET/$PREFIX"
+  $LW search "password reset" --limit 2 | tee /dev/stderr | grep -E '^open:' >/dev/null
+  $LW related "Aurora Helpdesk" --scope canonical | tee /dev/stderr | grep -E 'Starlight DB' >/dev/null
+  # This same test principal is authorized for sealed PRIVATE publication metadata.
+  INSPECTION=$($LW source inspect --source-id support-runbook-2026 \
+    --entity-id entity:password-reset-runbook --published-version "$REV1")
+  INSPECT_REPORT="$INSPECTION" ${LUMIO_PYTHON:-python3} - \
+    "s3://$BUCKET/$PREFIX" "$REV1" "$HERE/sources/support-runbook.md" <<'PYEOF'
+import hashlib
+import os
+import sys
+from pathlib import Path
+
+from lumio_wiki import resolve_manifest_binding
+from lumio_wiki.artifact_store import local_publication_metadata_store
+from lumio_wiki.s3_location import effective_s3_destination_identity
+
+uri, version, original = sys.argv[1:]
+expected = hashlib.sha256(Path(original).read_bytes()).hexdigest()
+fields = dict(line.split(":", 1) for line in os.environ["INSPECT_REPORT"].splitlines())
+fields = {key: value.strip() for key, value in fields.items()}
+assert fields["source_id"] == "support-runbook-2026"
+assert fields["entity_id"] == "entity:password-reset-runbook"
+assert fields["bound_to"] == f"published version {version} (Source Binding Manifest)"
+assert fields["content_hash"] == f"{expected[:12]} (sha256, abbreviated)"
+assert fields["availability"] == "not retained (no Source Artifact Store configured)"
+assert fields["authorization"] == "granted (private publication metadata view)"
+# The CLI intentionally abbreviates digests; verify the FULL pin through its public SDK seam.
+endpoint = os.environ["LUMIO_S3_ENDPOINT"]
+config = {"aws_endpoint": endpoint}
+region = os.environ.get("LUMIO_S3_REGION") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+if region:
+    config["aws_region"] = region
+identity = effective_s3_destination_identity(uri, config=config,
+    client_options={"allow_http": endpoint.startswith("http://")})
+binding = resolve_manifest_binding(local_publication_metadata_store(identity), version,
+    "support-runbook-2026", entity_id="entity:password-reset-runbook")
+assert binding.content_hash == expected
+assert binding.published_version == version
+assert binding.entity_id == "entity:password-reset-runbook"
+assert binding.source_id == "support-runbook-2026"
+PYEOF
+  RAW_OUTPUT="$READER/unretained-source.md"
+  test ! -e "$RAW_OUTPUT"
+  expect_fail "raw fetch when originals were not retained" \
+    $LW source fetch --source-id support-runbook-2026 --published-version "$REV1" \
+      --output "$RAW_OUTPUT"
+  test ! -e "$RAW_OUTPUT"
+)
+
+step "10. Expected zero-index fallback (lancedb requested, index not published yet)"
+READER_LANCE=$(mktemp -d)
+( cd "$READER_LANCE"
+  unset LUMIO_SOURCE_STORE
+  $LW setup --from "s3://$BUCKET/$PREFIX" --retrieval lancedb \
+    | tee /dev/stderr | grep -E 'zero-index page search over the same Published Version' >/dev/null
+  $LW search "password reset" --limit 1 | tee /dev/stderr | grep -E '^open:' >/dev/null
+)
+
+step "11. Publish next Git revision WITH remote LanceDB (CAS guard), reader becomes healthy"
+git -C "$S3_KB" commit --allow-empty -qm "Request the version-bound LanceDB index"
+REV2=$(git -C "$S3_KB" rev-parse HEAD)
+publish_s3_revision "$REV2" "$REV1" --retrieval lancedb
+( cd "$READER_LANCE"
+  unset LUMIO_SOURCE_STORE
+  $LW setup --from "s3://$BUCKET/$PREFIX" --retrieval lancedb \
+    | tee /dev/stderr | grep -E 'lancedb_healthy: +true' >/dev/null
+  # Retrieval MODE stays separate from the backend: lexical works everywhere;
+  # semantic/hybrid truthfully demand an embedder (none configured here).
+  $LW search "password reset" --mode lexical --limit 1 | tee /dev/stderr | grep -E '^open:' >/dev/null
+  expect_fail "hybrid mode without an embedder" \
+    $LW search "password reset" --mode hybrid
+)
+
+echo
+echo "PASS: full onboarding journey complete against $LUMIO_S3_ENDPOINT (bucket $BUCKET)."

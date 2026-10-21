@@ -25,6 +25,16 @@ This documentation targets Ariadne 0.6.0 and is organized by reader goal, follow
 - [Git migration mapping](reference/git-authoring-migration.md) — exact legacy-to-Git behavior and unchanged routes.
 - [Ariadne Agent API](../ariadne-agent/README.md) — Python API and conversation contract.
 
+## Lumio foundation docs
+
+The Lumio Knowledge Base foundation lives in the same repository as an
+independent product (no Ariadne installation needed):
+
+- [Quickstart](lumio/quickstart.md) — build, review and publish a Knowledge Base.
+- [Usage](lumio/usage.md) and [KB format](lumio/kb-format.md).
+- Optional [S3 publication](lumio/howto-s3-publish.md) and [packaging](lumio/packaging.md).
+- Package README: [`packages/lumio-wiki`](../packages/lumio-wiki/README.md).
+
 ## Explanation
 
 - [How Ariadne works](explanations/how-ariadne-works.md) — why the layers are separate and what the governance signals mean.

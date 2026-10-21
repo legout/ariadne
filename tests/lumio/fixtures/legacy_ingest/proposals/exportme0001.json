@@ -1,0 +1,60 @@
+{
+  "id": "exportme0001",
+  "status": "staged",
+  "created_at": "2026-02-02T00:00:00Z",
+  "provenance": {
+    "original_filename": "manual.txt",
+    "content_type": "text/plain",
+    "converted_by": "host-distiller",
+    "source_hash": "c1de271387ed173d21e1d0e8a89412103cbca389083b8b8bbfe45859d5a6255c",
+    "source_id": "manual-src"
+  },
+  "proposed_pages": [
+    {
+      "relative_path": "entities/export-fixture.md",
+      "title": "Export Fixture Entity",
+      "markdown": "---\nid: \"entity:export-fixture\"\ntitle: \"Export Fixture Entity\"\nentity_types:\n  - fact\ntags:\n  - \"fixture\"\nsummary: \"Export fixture entity.\"\nlifecycle: \"approved\"\nvisibility: \"public\"\nsources:\n  - id: \"manual-src\"\n    title: \"Retired Manual\"\n  - id: \"other-src\"\n    title: \"Other Source\"\n---\n\nBody refreshed by the legacy proposal.\n"
+    }
+  ],
+  "affected_pages": [
+    "Export Fixture Entity"
+  ],
+  "diff": "--- entities/export-fixture.md\n+++ entities/export-fixture.md\n@@ body refreshed\n",
+  "validation_report": {
+    "issues": []
+  },
+  "blocked": false,
+  "raw_source_path": null,
+  "blast_radius": null,
+  "control_file": null,
+  "okf_diagnostics": [],
+  "removed_pages": [],
+  "body_link_repairs": [],
+  "entity_merges": [],
+  "preconditions": [
+    {
+      "path": "entities/export-fixture.md",
+      "role": "revision",
+      "kind": "file",
+      "digest": "4fd66b46bcb1f7e195946f5b9911cfd8e759145cdad33118ba3be3bb6ce2228b"
+    },
+    {
+      "path": "lumio.yaml",
+      "role": "control",
+      "kind": "file",
+      "digest": "b045c5f9e82e72d36f93eb67caf64582e487f0004d46ee75d3912d360abcfc66"
+    }
+  ],
+  "reviewed_identity": "0ee2e25d41b4eb8f6a657d7cd49881cf819f3582c33a6405273228e5c99a9171",
+  "source_change": {
+    "action": "reactivate",
+    "source_id": "manual-src",
+    "trigger": "maintainer-request",
+    "impacts": [
+      {
+        "page_title": "Export Fixture Entity",
+        "status": "still-supported"
+      }
+    ]
+  }
+}

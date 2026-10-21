@@ -1,0 +1,36 @@
+[project]
+name = "lumio-lancedb"
+version = "0.4.0"
+description = "Optional LanceDB enhanced-retrieval adapter for the Lumio Knowledge Base."
+license = "Apache-2.0"
+authors = [{ name = "Volker L.", email = "ligno.blades@gmail.com" }]
+requires-python = ">=3.14"
+dependencies = [
+    "lumio-wiki>=0.4.0,<0.5.0",
+    "lancedb>=0.34.0",
+    "pyarrow>=24.0.0",
+    "msgspec[yaml]>=0.21.1",
+]
+
+[project.optional-dependencies]
+# Optional local embedding implementation for semantic/hybrid retrieval (#75).
+# Pulls in sentence-transformers and Torch; the base adapter and lumio-wiki
+# stay Torch-free (ADR-0010). Production deployments that route embeddings
+# through an OpenAI-compatible provider do not need this extra.
+embeddings = [
+    "sentence-transformers>=2.6.0",
+]
+# Optional remote (S3) index support (ADR-0013): enables
+# ``RemoteIndexLocation`` against an immutable S3 Published Version's
+# ``derived/lance/`` prefix. Pulls in ``obstore`` for the metadata sidecars;
+# LanceDB connects to its own S3 URI with its own storage_options.
+s3 = [
+    "obstore>=0.11.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lumio_lancedb"]

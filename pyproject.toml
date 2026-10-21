@@ -1,85 +1,76 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+# Workspace root — coordination only (spec 0030 §2, plan 0030 M1).
+# NOT a distributable package: this file declares the uv workspace, one
+# development lockfile, shared dev tooling and the Lumio-side default
+# test/lint selection. The three members are packages/ariadne-data,
+# packages/lumio-wiki and packages/lumio-lancedb; ariadne-agent keeps its
+# own separate environment and is not a workspace member.
+[tool.uv]
+package = false
 
-[project]
-name = "ariadne-data"
-version = "0.6.0"
-description = "Governed metrics for autonomous agents: OKF context layer + OSI semantic layer behind one MCP facade"
-readme = "README.md"
-requires-python = ">=3.14"  # ADR-0008 scoped amendment (spec 0026): 3.12/3.13 support ends here
-dependencies = [
-    "duckdb>=1.0",
-    "sqlglot>=25.0",  # own compile engine: ariadne/render.py (ADR-0008) + grain guard
-    "openai>=1.40",
-    "pyyaml>=6.0",
-    "jsonschema>=4.18",  # spec 0028 §2: pinned ODCS v3.2.0 structural validation (Draft 2019-09)
+[tool.uv.workspace]
+members = [
+    "packages/ariadne-data",
+    "packages/lumio-lancedb",
+    "packages/lumio-wiki",
 ]
 
-[project.scripts]
-ariadne = "ariadne.cli:main"  # the local JSON CLI (spec 2026-09-23-0001 §4)
-ariadne-ingest = "ariadne.ingest:main"
-ariadne-validate = "ariadne.validate:main"
-ariadne-serve = "ariadne.serve:main"  # the MCP facade; combined toolset by default (G6)
-# The Analyst/Authoring registrations of the same adapter (spec 0009 §6, issue #38):
-# the entry point fixes the toolset — launch ariadne-serve to select one explicitly.
-ariadne-analyst-mcp = "ariadne.serve:analyst_main"
-ariadne-authoring-mcp = "ariadne.serve:authoring_main"
-ariadne-init = "ariadne.init:main"
-ariadne-skill = "ariadne.skill:main"
-ariadne-profiler = "ariadne.profiler:main"
-ariadne-authoring = "ariadne.authoring_cli:main"  # harness-led authoring (issue #13)
-ariadne-admit = "ariadne.admission:main"  # HUMAN-ONLY Git Review Admission (issue #37, G5)
+[tool.uv.sources]
+# Local members for joint development only; published dependency metadata
+# of the members is unchanged (spec 0030 §3).
+ariadne-data = { workspace = true }
+lumio-lancedb = { workspace = true }
+lumio-wiki = { workspace = true }
 
-[project.optional-dependencies]
-# ADR-0012/spec §7: MCP is the optional transport extra — the base install
-# serves the full local interface without importing or installing it.
-mcp = [
-    "mcp==2.2.0",  # spec 0026 §2: the exact official SDK of the Lumio 93951f8 baseline (mcp-types==2.2.0 rides along)
-]
-# ADR-0009 document ingestion: the lumio-wiki-researched converter stack. Optional
-# so the base install stays lightweight; ariadne-ingest fails with install guidance
-# when a converter is missing. dev gains the same deps so the test suite covers them.
-documents = [
-    "liteparse>=2.4.0",  # PDF
-    "markitdown[docx]>=0.1.6",  # docx/pptx/xlsx
-    "firecrawl-anydoc==0.1.3",  # html
-]
+[dependency-groups]
 dev = [
     "pytest>=8.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.6",
-    "mcp==2.2.0",  # dev gains the mcp extra so the test suite covers the adapter
+    # obstore stays an optional wheel extra (lumio-wiki[s3]); the workspace
+    # environment runs the ObjectStore contract suite in every CI/local run.
+    "obstore>=0.11.0",
     "liteparse>=2.4.0",
     "markitdown[docx]>=0.1.6",
     "firecrawl-anydoc==0.1.3",
+    "openai>=1.40.0",
+    # ariadne-data pins the tested SDK version (mcp==2.2.0); this also
+    # satisfies lumio-wiki's >=2.2.0 floor — the union of both native dev sets.
+    "mcp==2.2.0",
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-# The packaged agent skill ships in the wheel, version-locked to the package
-# (ADR-0011); ariadne skill install copies it out.
-ariadne = ["skill_assets/**/*", "schemas/odcs/*"]
-
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"
-
-[tool.pyright]
-venvPath = "."
-venv = ".venv"
-exclude = ["build", "**/.venv", "examples/trace-data/data/docs"]
-# The separately installed Agent has its own optional dependency environment.
-executionEnvironments = [
-    { root = "ariadne-agent/src", extraPaths = ["src", "ariadne-agent/src", "ariadne-agent/.venv/lib/python3.12/site-packages"] },
-    { root = "ariadne-agent/tests", extraPaths = [".", "src", "ariadne-agent/src", "ariadne-agent/.venv/lib/python3.12/site-packages"] },
-    { root = ".", extraPaths = ["src"] },
+# Resolve tests/lumio as tests.lumio, never the private application namespace.
+consider_namespace_packages = true
+# Make the repository root importable for the documented serial console runner too,
+# not only under xdist or after test_wheel_verifier's sys.path bootstrap.
+pythonpath = ["."]
+# Root default covers the Lumio side (relocated repository tests, both
+# package test trees, eval). ariadne-data runs its own suite from
+# packages/ariadne-data with its own pytest configuration; the two tests
+# trees never share one default import namespace (spec 0030 §2).
+testpaths = [
+    "tests/lumio",
+    "packages/lumio-lancedb/tests",
+    "packages/lumio-wiki/tests",
+    "eval/lumio",
+]
+markers = [
+    "slow: tests that build wheels or create isolated virtual environments",
 ]
 
 [tool.ruff]
 line-length = 100
-target-version = "py314"
+# The root selection owns the Lumio-side public trees (tests/lumio, eval/lumio,
+# scripts/lumio, experiments/lumio, examples/, the lumio members). It must not
+# lint the Agent's separate environment (outside current qualification; its own
+# config lives in ariadne-agent/pyproject.toml) or the Core member, which lints
+# itself from packages/ariadne-data with its own rules (E,F,W,I,UP — no B).
+extend-exclude = ["ariadne-agent", "packages/ariadne-data"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP"]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pyright]
+# The uv workspace venv (uv sync creates .venv with the members installed).
+venvPath = "."
+venv = ".venv"

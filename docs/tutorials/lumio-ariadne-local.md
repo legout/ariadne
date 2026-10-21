@@ -36,6 +36,8 @@ packages into a virtual environment. The software checkout and your example
 
 ```bash
 git clone https://github.com/legout/ariadne.git ariadne-tools
+# This repository is approved to be renamed legout/ariadne-lumio; the current
+# URL keeps working through that pending rename.
 cd ariadne-tools
 uv venv --python 3.14 .venv
 uv pip install --python .venv/bin/python \
@@ -232,7 +234,7 @@ owned by the tools. You can inspect every helper action in
 [`demo.py`](../../examples/local-lumio-ariadne/demo.py).
 
 - [Standalone Ariadne setup](getting-started.md) — start your own data project.
-- [Lumio local quickstart](https://github.com/legout/lumio-wiki/blob/main/docs/quickstart.md) — maintain standalone knowledge without Ariadne.
+- [Lumio local quickstart](../lumio/quickstart.md) — maintain standalone knowledge without Ariadne.
 - [Git authoring](../how-to/git-authoring.md) and [local sync](../how-to/lumio-git-local.md) — maintain an integrated project.
 - [Bound Release reference](../reference/lumio-bound-releases.md) — exact support, refusals, scope and build matching.
 - [Optional MCP](../reference/cli.md#mcp) — connect an agent after the local example works.
