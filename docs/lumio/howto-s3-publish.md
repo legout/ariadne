@@ -220,5 +220,5 @@ non-public** bucket/prefix if you use retention.
   guide extends.
 - [`docs/usage.md`](usage.md) — full CLI, Python library, and coding-agent
   reference, including S3 reads and the MCP server.
-- [`examples/onboarding-journey/`](../examples/onboarding-journey/) — the
+- [`examples/onboarding-journey/`](../../examples/lumio/onboarding-journey/) — the
   scriptable journey; its S3 half runs this guide's commands in order.

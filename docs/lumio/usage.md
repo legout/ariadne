@@ -260,17 +260,17 @@ lumio-wiki search s3://my-bucket/kb "technology stack"
 **Quick example against a local KB:**
 
 ```bash
-$ lumio-wiki validate tests/fixtures/valid
+$ lumio-wiki validate tests/lumio/fixtures/valid
 Knowledge base is valid.
 
-$ lumio-wiki search tests/fixtures/valid "stack" --limit 3
+$ lumio-wiki search tests/lumio/fixtures/valid "stack" --limit 3
 ## Technology Stack
 summary: The technologies Lumio uses.
 path:    technology.md
 score:   260.0
 matched: title, alias, tag, body
 
-$ lumio-wiki related tests/fixtures/valid "Technology Stack" --scope discovery --trace
+$ lumio-wiki related tests/lumio/fixtures/valid "Technology Stack" --scope discovery --trace
 Architecture
 # trace: scope=discovery direction=outgoing max_depth=1 max_edges=1000 max_results=50 returned=1
 ```
@@ -334,7 +334,7 @@ lumio sync <source> "<query>" --working-dir <path>  # sync a storage source, the
 Inside that application's own repository checkout, prefix with `uv run`:
 
 ```bash
-uv run lumio ask tests/fixtures/valid "What technology does Lumio use?"
+uv run lumio ask tests/lumio/fixtures/valid "What technology does Lumio use?"
 ```
 
 ---

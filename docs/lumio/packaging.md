@@ -4,9 +4,9 @@ This document is the certified packaging contract for the Lumio workspace:
 what each distribution owns, how dependencies flow, how optional capabilities
 are expressed, how to migrate off the temporary compatibility surface, and
 how the assembled product is verified. It is the authoritative companion to
-[ADR-0010](../project/adr/0010-uv-workspace-and-progressive-packaging.md),
-[ADR-0025](../project/adr/0025-repository-split.md) (repository split), and
-the certification in `tests/test_workspace_certification.py`.
+[ADR-0010](../../project/lumio/adr/0010-uv-workspace-and-progressive-packaging.md),
+[ADR-0025](../../project/lumio/adr/0025-repository-split.md) (repository split), and
+the certification in `tests/lumio/test_workspace_certification.py`.
 
 ## Workspace shape
 
@@ -24,7 +24,7 @@ The workspace root (`pyproject.toml`) is coordination only — it declares the
 workspace, shared dev tooling, and test/lint config. It is **not** a
 distributable package: no `[project]` table, `tool.uv.package = false`.
 
-Invariants (certified in `tests/test_workspace_certification.py`):
+Invariants (certified in `tests/lumio/test_workspace_certification.py`):
 
 - Each member has its own `[project]` metadata and hatchling build backend.
 - Each wheel ships exactly one top-level Python package root.
@@ -59,7 +59,7 @@ The standalone, model-free LLM Wiki toolkit. Owns the canonical contracts:
 **Dependencies:** `msgpack`, `msgspec[yaml]` only. It does **not** depend on
 LanceDB, PyArrow, Stario, Piccolo, OpenAI, LiteParse, MarkItDown, AnyDoc, or
 any application module. Verified in every release by
-`scripts/verify_lumio_wiki_wheel.py` (run from CI in an isolated venv) and
+`scripts/lumio/verify_lumio_wiki_wheel.py` (run from CI in an isolated venv) and
 by `packages/lumio-wiki/tests/test_wheel_isolation.py`.
 
 ### `lumio-lancedb` — enhanced retrieval adapter
@@ -119,7 +119,7 @@ lumio-wiki  ←  lumio-lancedb
   repository.
 
 The public one-way direction is certified at the metadata level in
-`tests/test_workspace_certification.py` (bounded inter-member ranges, one
+`tests/lumio/test_workspace_certification.py` (bounded inter-member ranges, one
 package root per wheel) and re-verified per release by the wheel-isolation
 jobs below.
 
@@ -158,8 +158,8 @@ Every capability is verified in isolation from a built wheel:
 
 | Capability | Test | CI |
 |---|---|---|
-| `lumio-wiki` base (no extras) | `packages/lumio-wiki/tests/test_wheel_isolation.py` + `scripts/verify_lumio_wiki_wheel.py` | `ci.yml` (`isolated-lumio-wiki-wheel` job) |
-| `lumio-wiki[mcp]` | installed-wheel startup + `search` smoke against `tests/fixtures/valid` | `ci.yml` (`isolated-lumio-wiki-wheel` job, `[mcp]` venv step) |
+| `lumio-wiki` base (no extras) | `packages/lumio-wiki/tests/test_wheel_isolation.py` + `scripts/lumio/verify_lumio_wiki_wheel.py` | `ci.yml` (`isolated-lumio-wiki-wheel` job) |
+| `lumio-wiki[mcp]` | installed-wheel startup + `search` smoke against `tests/lumio/fixtures/valid` | `ci.yml` (`isolated-lumio-wiki-wheel` job, `[mcp]` venv step) |
 | `lumio-wiki[documents]` | `packages/lumio-wiki/tests/test_wheel_isolation_documents.py` | `ci.yml` (slow wheel suite) |
 | `lumio-wiki[llm]` | `packages/lumio-wiki/tests/test_wheel_isolation_llm.py` | `ci.yml` (slow wheel suite) |
 | `lumio-wiki[all]` | `packages/lumio-wiki/tests/test_wheel_isolation_llm.py::test_all_extra_installs_documents_and_llm_without_lancedb` | `ci.yml` (slow wheel suite) |
@@ -287,7 +287,7 @@ CI certifies every release:
 1. `ci.yml` (`workspace` job) — locked lint and full suite with four workers.
 2. `ci.yml` (`isolated-lumio-wiki-wheel` job) — builds the two public wheels,
    installs `lumio-wiki` alone in a fresh venv, and runs
-   `scripts/verify_lumio_wiki_wheel.py`: candidate wheel/member/installed-byte
+   `scripts/lumio/verify_lumio_wiki_wheel.py`: candidate wheel/member/installed-byte
    identity, lightweight dependencies, native author/admit/query and Git-free
    reading. Installed MCP gets a separate optional-extra smoke.
 3. `lumio-lancedb-wheel.yml` — builds the `lumio-lancedb` and `lumio-wiki`
@@ -313,9 +313,9 @@ publication. One pipeline, no rebuilds:
 2. **Verify the candidates** — both jobs download the build artifact, verify
    its recorded hashes and install those exact wheel files in fresh venvs:
    - `verify-wiki` — isolation, packaged skill, local-library smoke and
-     optional-extras resolution (`scripts/verify_lumio_wiki_wheel.py`).
+     optional-extras resolution (`scripts/lumio/verify_lumio_wiki_wheel.py`).
    - `verify-s3-compat` — the canonical onboarding journey
-     (`examples/onboarding-journey/smoke-journey.sh`) against the disposable
+     (`examples/lumio/onboarding-journey/smoke-journey.sh`) against the disposable
      SeaweedFS service: local Maintainer journey, S3 publication with and
      without LanceDB, remote LanceDB reader and zero-index fallback.
 3. **Automatic publication** — `promote-pypi` runs after both candidate
@@ -392,13 +392,13 @@ those issues (their scope is the finder/skill behavior), not by this
 certification pass. #104's contract is that the **implementation** of those
 issues, when it lands, must import from `lumio_wiki` — an invariant locked
 at the AST level by
-`tests/test_package_contraction.py::test_production_modules_do_not_import_compatibility_surfaces`.
+`tests/lumio/test_package_contraction.py::test_production_modules_do_not_import_compatibility_surfaces`.
 
 ### Automated dedup guardrails
 
-- `tests/test_workspace_certification.py` — structural ownership (one
+- `tests/lumio/test_workspace_certification.py` — structural ownership (one
   Python root per wheel, bounded inter-member ranges).
-- `tests/test_package_contraction.py` — no internal caller imports
+- `tests/lumio/test_package_contraction.py` — no internal caller imports
   `lumio.core.*` compatibility shims; no compatibility module owns a
   duplicate implementation; dependency direction is one-way.
 

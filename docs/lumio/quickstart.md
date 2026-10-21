@@ -13,7 +13,7 @@ Time: ~15 minutes. You end with a Maintainer project that admits one exact
 reviewed Git revision to a visible local Published Version, then answers
 questions from the Knowledge Base with citations.
 
-> The journey is scriptable: [`examples/onboarding-journey/smoke-journey.sh`](../examples/onboarding-journey/smoke-journey.sh)
+> The journey is scriptable: [`examples/onboarding-journey/smoke-journey.sh`](../../examples/lumio/onboarding-journey/smoke-journey.sh)
 > executes exactly the commands below and fails on drift. Run it with no S3
 > environment for this local journey; CI additionally runs its S3 half
 > against SeaweedFS `weed mini` on every push to main.
@@ -433,5 +433,5 @@ Never point a Maintainer worktree at the S3 prefix as if it were a filesystem.
 - The canonical joint local tutorial (Lumio + Ariadne in one walkthrough) in
   the Ariadne repository:
   [`docs/tutorials/lumio-ariadne-local.md`](https://github.com/legout/ariadne/blob/main/docs/tutorials/lumio-ariadne-local.md).
-- [`examples/onboarding-journey/`](../examples/onboarding-journey/) — the
+- [`examples/onboarding-journey/`](../../examples/lumio/onboarding-journey/) — the
   scriptable journey CI runs.

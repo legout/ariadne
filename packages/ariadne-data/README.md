@@ -11,25 +11,25 @@ Ariadne is a Python package with embedded DuckDB. Use it locally through the CLI
 
 ## Start locally
 
-Follow [Lumio + Ariadne locally](docs/tutorials/lumio-ariadne-local.md) for a complete
+Follow [Lumio + Ariadne locally](../../docs/tutorials/lumio-ariadne-local.md) for a complete
 worked example with three synthetic orders: **150 EUR recognized revenue and two
 completed orders**, returned with the governing policy and citations. It uses the
 published Core 0.6.0 / Lumio 0.4.0 pair, ordinary Git and local files; no Docker, S3
-or model key is needed. The [standalone tutorial](docs/tutorials/getting-started.md)
+or model key is needed. The [standalone tutorial](../../docs/tutorials/getting-started.md)
 remains available when you want Ariadne without Lumio.
 
 ## Documentation
 
 The documentation follows [Diátaxis](https://diataxis.fr/):
 
-- **[Tutorial](docs/tutorials/getting-started.md):** create a project and reach a first governed query.
-- **[How-to guides](docs/README.md#how-to-guides):** complete specific tasks such as Git-backed authoring, private Docker MCP setup, or reading multiple S3 storages.
-- **[Reference](docs/README.md#reference):** look up CLI commands, data-source configuration, and migration mappings.
-- **[Explanation](docs/explanations/how-ariadne-works.md):** understand Ariadne's layers, governance gates, and authority boundaries.
+- **[Tutorial](../../docs/tutorials/getting-started.md):** create a project and reach a first governed query.
+- **[How-to guides](../../docs/README.md#how-to-guides):** complete specific tasks such as Git-backed authoring, private Docker MCP setup, or reading multiple S3 storages.
+- **[Reference](../../docs/README.md#reference):** look up CLI commands, data-source configuration, and migration mappings.
+- **[Explanation](../../docs/explanations/how-ariadne-works.md):** understand Ariadne's layers, governance gates, and authority boundaries.
 
-The [documentation index](docs/README.md) lists all guides and references for **Ariadne 0.6.0**.
+The [documentation index](../../docs/README.md) lists all guides and references for **Ariadne 0.6.0**.
 
-**Data Contracts:** the [reference](docs/reference/data-contracts.md) describes
+**Data Contracts:** the [reference](../../docs/reference/data-contracts.md) describes
 Core’s limited, pinned ODCS v3.2.0 consumer profile, separate Git bindings and
 as-of evidence. Source-free `ariadne search` includes a contracts group;
 `list-datasets` remains an approved live-catalog operation. This is not full
@@ -38,14 +38,16 @@ contract identities
 alongside their knowledge identity; the contract itself does not become a portable
 cross-system identifier.
 
-**Lumio integration:** [Lumio bound releases](docs/reference/lumio-bound-releases.md)
+**Lumio integration:** Lumio is an independent product developed alongside
+Ariadne in this shared repository; neither package requires the other.
+[Lumio bound releases](../../docs/reference/lumio-bound-releases.md)
 describe the optional integrated context binding: one shared Content Commit, an
 operator-confirmed overall admission activating a local immutable Bound Release,
 strict `metric`/`policy`/`reference` profiles, full required Policy context on governed
 answers, and source-free navigation over the pinned published pages. Git is the
 standard transport and sync never activates a release — `ariadne status`
 reports the local Git HEAD separately from the admitted release (see
-[the local Git how-to](docs/how-to/lumio-git-local.md)); the SDK stays an optional
+[the local Git how-to](../../docs/how-to/lumio-git-local.md)); the SDK stays an optional
 dependency, unsupported integrated operations refuse, and exact build pairing is
 recorded per release rather than assumed from package versions.
 
@@ -63,5 +65,5 @@ examples/retail-demo/mcp_client.py --project /path/to/admitted/retail-project
 ```
 
 For a candidate-wheel check, run `uv build`, install `dist/ariadne_data-*.whl`
-into a fresh virtual environment, and follow the [getting-started tutorial](docs/tutorials/getting-started.md)
+into a fresh virtual environment, and follow the [getting-started tutorial](../../docs/tutorials/getting-started.md)
 with the installed console scripts rather than the editable install.

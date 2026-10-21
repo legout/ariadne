@@ -150,7 +150,7 @@ bash tools/install_skill.sh claude-code
 # 5. (Optional) ingest fixtures into an explicitly selected disposable Git worktree.
 # Before writing, copy the KB OUTSIDE this foundation checkout, adopt its stable
 # .lumio-authoring.yaml namespace, initialize/commit Git, and set LUMIO_KB_PATH.
-# Select LUMIO_SOURCE_REGISTRY outside Git/public content; see docs/quickstart.md.
+# Select LUMIO_SOURCE_REGISTRY outside Git/public content; see docs/lumio/quickstart.md.
 # Each ingest writes a Compiled Page and exact Source binding; review,
 # validate the candidate, and publish each exact revision in turn. See "Compiled Page schema"
 # below for the required frontmatter.
@@ -564,7 +564,7 @@ lumio-wiki setup ./knowledge-base \
 lumio-wiki validate
 
 # 4. Select a disposable registered Git authoring worktree and private registry.
-# Adopt its stable namespace/source manifest as in docs/quickstart.md first.
+# Adopt its stable namespace/source manifest as in docs/lumio/quickstart.md first.
 export LUMIO_SOURCE_REGISTRY=/path/outside-git/private-source-registry
 lumio-wiki ingest knowledge-base sources/company-overview.md \
   --compiled-page staging/overview-page.md --source-id overview-src \

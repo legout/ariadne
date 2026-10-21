@@ -9,8 +9,8 @@ This document mirrors the validation rules enforced in
 is correct** — update this page to match.
 For the *language* behind these terms (what a
 Compiled Page, Source, or Claim *means*), see
-[`CONTEXT.md`](../CONTEXT.md) and
-[ADR-0021](../project/adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md).
+[`CONTEXT.md`](../../project/lumio/CONTEXT.md) and
+[ADR-0021](../../project/lumio/adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md).
 
 ## Git authoring metadata
 
@@ -19,7 +19,7 @@ Git authoring additionally adopts `.lumio-authoring.yaml` version 1 beside
 `active`/`retired` intent, and `bindings` mapping stable Entity IDs and Source
 IDs to exact lowercase SHA-256 digests. The four top-level keys (`version`,
 `namespace`, `sources`, `bindings`) are required; maps may be empty. See the
-[normative shape and validation](../project/specs/2026-10-15-0008-git-native-knowledge-authoring.md#31-source-reference-manifest).
+[normative shape and validation](../../project/lumio/specs/2026-10-15-0008-git-native-knowledge-authoring.md#31-source-reference-manifest).
 
 This manifest is reviewed authoring input, not deployment configuration or
 Reader content. Keep the private Source Registry, raw originals, transcripts,
@@ -330,7 +330,7 @@ loading, validation, retrieval, Evidence, and the canonical content
 fingerprint. An `index.md` (or `INDEX.md`) without the valid marker is a
 blocking validation error. Direct edits to a marked index are overwritten on
 the next publish. See
-[ADR-0007](../project/adr/0007-navigation-indexes-and-okf-exchange-profile.md).
+[ADR-0007](../../project/lumio/adr/0007-navigation-indexes-and-okf-exchange-profile.md).
 
 ## Checking a Knowledge Base
 
