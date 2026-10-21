@@ -40,7 +40,7 @@ cd ariadne-tools
 uv venv --python 3.14 .venv
 uv pip install --python .venv/bin/python \
   'ariadne-data==0.6.0' 'lumio-wiki==0.4.0'
-source .venv/bin/activate
+. .venv/bin/activate
 export EXAMPLE="$PWD/examples/local-lumio-ariadne"
 export DEMO="$HOME/ariadne-retail-demo"
 python "$EXAMPLE/demo.py" create "$DEMO"
