@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ariadne-agent"
+version = "0.4.1"
+description = "Installable Ariadne Agent backend: fixed-role conversations over native Ariadne tools"
+readme = "README.md"
+requires-python = ">=3.14"  # aligned with the ariadne-data 0.4.x release line
+dependencies = [
+    # Never bare `ariadne` — that is the unrelated PyPI GraphQL project (ADR-0014).
+    "ariadne-data>=0.2.0",
+    # The release whose embeddable tau_agent.AgentHarness / tau_ai.OpenAICompatibleProvider
+    # import paths were verified for this package (ADR-0014: pin what was tested).
+    "tau-ai==0.4.6",
+    # The owned embeddable stdio MCP core (spec 2026-09-29-0006; dependency
+    # contract legout/tau-mcp spec 2026-09-29-0002, accepted M2).
+    "tau-mcp>=0.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.uv.sources]
+# Local development only: resolve ariadne-data from the repository checkout
+# without publishing it. This is uv tool configuration, never published
+# dependency metadata (issue #23).
+ariadne-data = { path = "../ariadne-data" }
+# Same non-published pattern for the owned tau-mcp core (issue #25): the
+# separate repository checkout, never a PyPI substitute.
+tau-mcp = { path = "/home/volker/coding/tau-mcp" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["../ariadne-data", "../src", "src"]
+executionEnvironments = [
+    { root = "tests", extraPaths = ["../ariadne-data", "../src", "src"] },
+    { root = "src", extraPaths = ["../src", "src"] },
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]

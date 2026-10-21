@@ -24,9 +24,12 @@ for the local flow; `lumio-lancedb` stays an optional retrieval adapter.
 pip install lumio-wiki   # load, validate, search, traverse, ingest, publish
 ```
 
-Runnable local example: the [quickstart](docs/lumio/quickstart.md), scripted
-end-to-end by [`examples/lumio/onboarding-journey/`](examples/lumio/onboarding-journey/).
-Package details: [`packages/lumio-wiki/README.md`](packages/lumio-wiki/README.md).
+Runnable local example: the
+[quickstart](products/lumio/docs/quickstart.md), scripted end-to-end by
+[`products/lumio/examples/onboarding-journey/`](products/lumio/examples/onboarding-journey/);
+capture adapters and a real-world Knowledge Base live under
+[`products/lumio/examples/`](products/lumio/examples/). Package details:
+[`products/lumio/packages/lumio-wiki/README.md`](products/lumio/packages/lumio-wiki/README.md).
 
 ### 2. Ariadne alone — governed metrics
 
@@ -38,8 +41,12 @@ pip install ariadne-data   # local CLI + query engine; optional extras: [mcp], [
 ```
 
 Runnable local example: the
-[getting-started tutorial](docs/tutorials/getting-started.md).
-Package details: [`packages/ariadne-data/README.md`](packages/ariadne-data/README.md).
+[getting-started tutorial](products/ariadne/docs/tutorials/getting-started.md),
+plus standalone source fixtures in
+[`products/ariadne/examples/retail-demo/`](products/ariadne/examples/retail-demo/)
+(an already-admitted project; not the combined onboarding recipe). Package
+details:
+[`products/ariadne/packages/ariadne-data/README.md`](products/ariadne/packages/ariadne-data/README.md).
 
 ### 3. Lumio + Ariadne together — curated context with governed calculations
 
@@ -53,7 +60,9 @@ Minimum installation for this route is both published packages
 compatible pair it exercises (`ariadne-data==0.6.0`, `lumio-wiki==0.4.0`).
 
 Runnable local example: the joint tutorial
-[Lumio + Ariadne locally](docs/tutorials/lumio-ariadne-local.md) — three
+[Lumio + Ariadne locally](integration/docs/tutorials/lumio-ariadne-local.md),
+with its complete synthetic project in
+[`integration/examples/local-lumio-ariadne/`](integration/examples/local-lumio-ariadne/) — three
 synthetic orders, **150 EUR recognized revenue and two completed orders**
 with the complete governing Policy and citations, then a Git update that
 stays inactive until reviewed confirmation.

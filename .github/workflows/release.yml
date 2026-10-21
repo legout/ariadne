@@ -12,7 +12,7 @@ name: release
 # Credential model: PYPI_API_TOKEN in the `pypi` environment.
 # Ordinary CI and pull requests do not receive the publishing token.
 # Build provenance still uses GitHub OIDC; token-based PyPI uploads do not
-# generate PyPI digital attestations. See docs/lumio/packaging.md for owner
+# generate PyPI digital attestations. See products/lumio/docs/packaging.md for owner
 # setup. (Release readiness requires owner verification of the `pypi`
 # environment and the token's scope before any release — see
 # docs/migration-reference.md.)
@@ -94,15 +94,15 @@ jobs:
           uv pip install --python /tmp/wiki/bin/python dist/lumio_wiki-*.whl
       - name: Package isolation + local library smoke (verify_lumio_wiki_wheel.py)
         run: |
-          /tmp/wiki/bin/python scripts/lumio/verify_lumio_wiki_wheel.py \
+          /tmp/wiki/bin/python products/lumio/scripts/verify_lumio_wiki_wheel.py \
             dist/lumio_wiki-*.whl \
-            tests/lumio/fixtures/valid tests/lumio/fixtures/categorized_kb
+            products/lumio/tests/fixtures/valid products/lumio/tests/fixtures/categorized_kb
       - name: Packaged Agent Skill matches the tagged contract byte-for-byte
         run: |
           skill=$(/tmp/wiki/bin/lumio-wiki skill path)
           protocol=$(/tmp/wiki/bin/lumio-wiki skill protocol)
-          cmp "$skill" packages/lumio-wiki/src/lumio_wiki/data/skill/SKILL.md
-          cmp "$protocol" packages/lumio-wiki/src/lumio_wiki/data/skill/PROTOCOL.md
+          cmp "$skill" products/lumio/packages/lumio-wiki/src/lumio_wiki/data/skill/SKILL.md
+          cmp "$protocol" products/lumio/packages/lumio-wiki/src/lumio_wiki/data/skill/PROTOCOL.md
           /tmp/wiki/bin/lumio-wiki doctor
       - name: The candidate heavy extras resolve from public PyPI
         run: |
@@ -162,7 +162,7 @@ jobs:
         env:
           LUMIO_WIKI_BIN: /tmp/journey/bin/lumio-wiki
           LUMIO_PYTHON: /tmp/journey/bin/python
-        run: bash examples/lumio/onboarding-journey/smoke-journey.sh
+        run: bash products/lumio/examples/onboarding-journey/smoke-journey.sh
 
   promote-pypi:
     # Both candidate checks precede automatic upload; no reviewer gate.

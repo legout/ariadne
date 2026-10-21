@@ -6,11 +6,11 @@
         "-m",
         "ariadne.serve",
         "--sources",
-        "examples/retail-demo/ariadne.yaml",
+        "products/ariadne/examples/retail-demo/ariadne.yaml",
         "--semantic",
-        "examples/retail-demo/semantic_layer",
+        "products/ariadne/examples/retail-demo/semantic_layer",
         "--context",
-        "examples/retail-demo/context_layer"
+        "products/ariadne/examples/retail-demo/context_layer"
       ],
       "cwd": "/home/volker/coding/ariadne",
       "lifecycle": "lazy",

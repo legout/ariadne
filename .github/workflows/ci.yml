@@ -16,15 +16,27 @@ jobs:
           enable-cache: true
       - run: uv lock --check
       - run: uv sync --locked
+      # Root defaults are shared coordination coverage only (spec 0031 §4):
+      # the shared tests/ tree plus the two paired integration modules.
       - run: uv run --locked ruff check .
       - run: uv run --locked pytest -q -n 4
+      # Lumio's native full suite and lint run scoped from its product area
+      # with its own tool configuration (products/lumio/pyproject.toml) —
+      # same selection and rules as before the product-area layout.
+      - name: Lumio native lint (product config)
+        run: uv run --locked ruff check .
+        working-directory: products/lumio
+      - name: Lumio native full suite (-n 4, never auto)
+        run: uv run --locked pytest -q -n 4
+        working-directory: products/lumio
 
   # Spec 0030 §5: joint source tests consume Core and SDK from the SAME
   # checked-out commit — no second repository and no public-SDK substitution
   # in this source-development job (the Core RELEASE job keeps its exact
   # published-producer pin). Separates the two test namespaces: this job runs
-  # only Core's member suite under the member's own lint/pytest config, in a
-  # fresh wheel environment without the optional LanceDB adapter.
+  # Core's member suite (plus the two paired integration modules, now under
+  # integration/tests) under the member's own lint/pytest config, in a fresh
+  # wheel environment without the optional LanceDB adapter.
   core-source:
     runs-on: ubuntu-latest
     steps:
@@ -36,7 +48,7 @@ jobs:
       - run: uv lock --check
       - name: Core native lint (member config)
         run: uv run --locked --extra dev ruff check .
-        working-directory: packages/ariadne-data
+        working-directory: products/ariadne/packages/ariadne-data
       - name: Build the same-commit Core and SDK wheels
         run: |
           uv build --package ariadne-data --wheel --out-dir dist/core
@@ -54,10 +66,10 @@ jobs:
             --ignore=tests/test_s3_lakehouse.py \
             --ignore=tests/test_s3_storage_access.py \
             --ignore=tests/test_s3_storage_profiles.py \
-            tests/lumio_metric_mvp.py \
-            tests/lumio_local_context.py \
+            "$GITHUB_WORKSPACE/integration/tests/lumio_metric_mvp.py" \
+            "$GITHUB_WORKSPACE/integration/tests/lumio_local_context.py" \
             tests
-        working-directory: packages/ariadne-data
+        working-directory: products/ariadne/packages/ariadne-data
       # The standalone boundary: a separate Core-only base wheel environment
       # with the SDK and the MCP extra absent, exercising the installed CLI
       # and the human-admission journey outside the checkout with the
@@ -75,10 +87,11 @@ jobs:
         run: |
           cd /tmp
           /tmp/core-standalone/bin/python \
-            "$GITHUB_WORKSPACE/packages/ariadne-data/tests/setup_wheel_walkthrough.py"
+            "$GITHUB_WORKSPACE/products/ariadne/packages/ariadne-data/tests/setup_wheel_walkthrough.py"
 
 
-  # Issue #180, AC6: run the canonical onboarding journey (docs/quickstart.md)
+  # Issue #180, AC6: run the canonical onboarding journey
+  # (products/lumio/docs/quickstart.md)
   # against a real S3-compatible service so the documented command sequence
   # cannot drift from the CLI. The admin/secret values are labelled local-test
   # credentials on an ephemeral CI container — never real credentials.
@@ -118,9 +131,9 @@ jobs:
       - run: uv sync --locked
       - name: Run onboarding and public S3-compatible suites
         run: |
-          uv run --locked pytest -q tests/lumio/test_onboarding_journey.py \
-            packages/lumio-wiki/tests/*s3_compat.py \
-            packages/lumio-lancedb/tests/*s3_compat.py
+          uv run --locked pytest -q products/lumio/tests/test_onboarding_journey.py \
+            products/lumio/packages/lumio-wiki/tests/*s3_compat.py \
+            products/lumio/packages/lumio-lancedb/tests/*s3_compat.py
 
   isolated-lumio-wiki-wheel:
     runs-on: ubuntu-latest
@@ -138,9 +151,9 @@ jobs:
       - name: Exercise only the installed lumio-wiki wheel
         run: |
           /tmp/lumio-wiki-venv/bin/python -I \
-            scripts/lumio/verify_lumio_wiki_wheel.py \
+            products/lumio/scripts/verify_lumio_wiki_wheel.py \
             dist/lumio-wiki/lumio_wiki-*.whl \
-            tests/lumio/fixtures/valid tests/lumio/fixtures/categorized_kb
+            products/lumio/tests/fixtures/valid products/lumio/tests/fixtures/categorized_kb
       - name: Smoke the lumio-wiki[mcp] wheel (entry point, binding, search)
         run: |
           wheel=$(echo dist/lumio-wiki/lumio_wiki-*.whl)
@@ -148,12 +161,12 @@ jobs:
           uv pip install --python /tmp/lumio-wiki-mcp-venv/bin/python "${wheel}[mcp]"
           # Console entry point: wiring + binding + serve startup; the server
           # exits cleanly on stdin EOF (AC1 from the installed wheel).
-          timeout 60 /tmp/lumio-wiki-mcp-venv/bin/lumio-wiki mcp tests/lumio/fixtures/valid < /dev/null
+          timeout 60 /tmp/lumio-wiki-mcp-venv/bin/lumio-wiki mcp products/lumio/tests/fixtures/valid < /dev/null
           # Invalid KB: must fail fast (never hang), exit non-zero, and emit
           # the bounded message with no traceback. Timeout status 124 would
           # mask a hanging startup, so it is an explicit failure.
           status=0
-          timeout 60 /tmp/lumio-wiki-mcp-venv/bin/lumio-wiki mcp tests/lumio/fixtures/invalid < /dev/null > /tmp/mcp-smoke-invalid.log 2>&1 || status=$?
+          timeout 60 /tmp/lumio-wiki-mcp-venv/bin/lumio-wiki mcp products/lumio/tests/fixtures/invalid < /dev/null > /tmp/mcp-smoke-invalid.log 2>&1 || status=$?
           if [ "$status" -eq 124 ]; then
             echo "invalid-KB startup must fail fast, not hang" >&2
             exit 1
@@ -168,9 +181,9 @@ jobs:
           timeout 60 /tmp/lumio-wiki-mcp-venv/bin/python - <<'EOF'
           from lumio_wiki.location import FilesystemLocation, open_knowledge_base
           from lumio_wiki.mcp_server import build_server, search_rows
-          snapshot = open_knowledge_base(FilesystemLocation("tests/lumio/fixtures/valid"))
+          snapshot = open_knowledge_base(FilesystemLocation("products/lumio/tests/fixtures/valid"))
           rows = search_rows(snapshot, "LanceDB")
           assert rows["results"] and rows["results"][0]["title"] == "Architecture"
-          build_server(FilesystemLocation("tests/lumio/fixtures/valid"))
+          build_server(FilesystemLocation("products/lumio/tests/fixtures/valid"))
           print("mcp wheel smoke ok:", rows["results"][0]["path"])
           EOF
