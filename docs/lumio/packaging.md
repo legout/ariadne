@@ -348,7 +348,7 @@ shares an Actions cache with PR-triggered workflows.
 3. Protect the `v*` tag pattern (admins/maintainers only) so only
    authorized pushes can start a release.
 
-Release notes live in `docs/release-notes/` per published version. The current
+Release notes live in `docs/lumio/release-notes/` per published version. The current
 public-family notes are [`v0.4.0.md`](release-notes/v0.4.0.md); older notes are
 historical and may describe the former private three-package workspace.
 

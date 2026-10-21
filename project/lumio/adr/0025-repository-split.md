@@ -81,3 +81,20 @@ is not published to a public index).
   before the private app can adopt them (or a temporary path source).
 - ADR-0010's "Split packages into separate repositories — rejected" option is
   superseded by this decision; everything else in ADR-0010 stands.
+
+## Amendment (2026-10-21): public foundation location
+
+The public foundation — `packages/lumio-wiki` and `packages/lumio-lancedb`
+with their tests, eval assets, scripts, experiments, examples and docs —
+moved from `legout/lumio-wiki` into the `legout/ariadne` repository, approved
+to be renamed `legout/ariadne-lumio` at an explicitly authorized cutover that
+has not happened yet (Ariadne
+[ADR-0027](../../adr/0027-public-monorepo.md) and
+[spec 0030](../../specs/2026-10-21-0030-public-monorepo.md)). This amends
+only the public repository location named in this decision; it is not a
+rewrite of the record above. Everything else stands unchanged: the private
+application repository `legout/lumio` and its exclusion remain binding, and
+package identities, the dependency direction, the lockstep family and the
+release policy are untouched. The imported records keep their original IDs;
+the old public repository remains available until the separately authorized
+cutover.

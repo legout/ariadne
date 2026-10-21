@@ -12,4 +12,12 @@ Mapping: generated defaults. This file is declarative documentation, not executa
 
 Explicit project mappings recorded here override these defaults. Planning artifact and handoff semantics are owned by the `planning-contract` skill from `legout/skills`.
 
+Explicit mappings for this repository:
+
+- `project/lumio/`: imported Lumio records — `adr/`, `specs/`, `plans/`,
+  `research/` and `agents/` keep their original namespaces and IDs under this
+  root; `project/lumio/CONTEXT.md` is the Lumio vocabulary per
+  `project/agents/domain.md`. `project/lumio/AGENTS.imported.md` is a
+  preserved historical reference, not active guidance.
+
 Setup never moves existing documents and never fabricates glossaries, ADRs, or placeholder folders to match this map. A misplaced document is evidence of misclassification, not a mapping rule; resolve conflicts explicitly with the owner.
