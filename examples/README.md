@@ -9,3 +9,7 @@ Core 0.6.0 / Lumio 0.4.0; no model, Docker, S3 or separate Agent is needed.
 [`retail-demo/`](retail-demo/README.md) contains additional standalone source
 fixtures and a small optional MCP client. It assumes an already admitted project
 and is not the combined onboarding recipe.
+
+The [Lumio examples](lumio/) — the scripted onboarding journey, capture
+adapters and a real-world Knowledge Base — belong to the independent Lumio
+foundation and need no Ariadne installation.
