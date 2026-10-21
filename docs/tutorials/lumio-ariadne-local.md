@@ -24,6 +24,8 @@ flowchart LR
 
 This route needs Python **3.14+**, Git, [uv](https://docs.astral.sh/uv/), and a
 POSIX shell. It uses published `ariadne-data==0.6.0` and `lumio-wiki==0.4.0`.
+This tested baseline requires DuckDB 1.x; the explicit constraint below
+excludes the incompatible DuckDB 2.0 relation API.
 No Docker, object store, LanceDB, server, model or API key is required. Allow
 about 15–20 minutes for the first pass. Downloads require internet access;
 the example itself runs locally.
@@ -41,7 +43,7 @@ git clone https://github.com/legout/ariadne.git ariadne-tools
 cd ariadne-tools
 uv venv --python 3.14 .venv
 uv pip install --python .venv/bin/python \
-  'ariadne-data==0.6.0' 'lumio-wiki==0.4.0'
+  'ariadne-data==0.6.0' 'lumio-wiki==0.4.0' 'duckdb>=1.0,<2'
 . .venv/bin/activate
 export EXAMPLE="$PWD/examples/local-lumio-ariadne"
 export DEMO="$HOME/ariadne-retail-demo"
