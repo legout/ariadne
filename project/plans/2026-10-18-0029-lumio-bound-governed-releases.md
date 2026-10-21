@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 27 — approved citation-containment correction, 2026-10-20.** Owner explicitly approved the prepared patch b236a9da on frozen4f6f182, one Policy-beleg RED and one seven-node POST, then the already assigned Q1 qualification and independent review. No integration or publication. Earlier grants and exhausted checks remain historical evidence, not renewed budgets. |
+| **Status** | **Revision 28 — approved integration, push and cleanup, 2026-10-21.** Owner explicitly approved the prepared patch b236a9da on frozen4f6f182, one Policy-beleg RED and one seven-node POST, then the already assigned Q1 qualification and independent review. No integration or publication. Earlier grants and exhausted checks remain historical evidence, not renewed budgets. |
 | **Owner direction** | 2026-10-20: “S3 Anbindung ist für Ariadne zweitrangig. Der bevorzugte Weg bleibt git repo mit lokalem sync.” This approves the priority used for this proposal, not new SDK interfaces or capability expansion. |
 | **Goal** | Make the shared Git Content Repository plus a local checkout the normal operator path, then expand useful local knowledge/analytics capabilities without weakening exact admission or standalone behavior. S3 is optional later work, not a prerequisite. |
 | **Behavioral sources** | [Spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), especially §§2–6 and preserved full-target AC1–AC9; [ADR0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Companion: `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md` r2 / ADR0030. The r2 MVP refusal boundary remains authoritative until the corresponding source amendments are approved. |
@@ -10,7 +10,31 @@
 | **Tracker** | [#76](https://github.com/legout/ariadne/issues/76): full epic; [#79](https://github.com/legout/ariadne/issues/79): consumer continuation; [#80](https://github.com/legout/ariadne/issues/80): remaining adapters/guidance/qualification. [#81](https://github.com/legout/ariadne/issues/81) and [Lumio #2](https://github.com/legout/lumio-wiki/issues/2) have delivered released code but remain open; no closure is authorized here. Their old ticket text must be reconciled before new execution. |
 | **Capture / readiness** | Existing glossary terms suffice. Git/local preference changes sequencing, not ADR0026's architecture; no new ADR is proposed. New operation support and the additive navigation API require written Core/producer source amendments before their writers start. Contract: planning-contract v1; installed catalog provenance unknown. |
 
-## Current approved execution — citation containment (revision27)
+## Current authorization — integrate accepted local candidates (revision28)
+
+Owner explicitly requested on 2026-10-21: “Integriere. Commi. Push. Clean up”.
+This authorizes local merge commits, normal pushes of the two repository main
+branches and cleanup of the completed owned Q1/G2/T2 environments/worktrees.
+Exact accepted inputs: Core2547c8a198488dfaf510d17319484cd779232a4d,
+SDK26a633b4399ddd5e9d6cad2292cbb317944ead90. The final independent candidate
+review's sole P2 was fixed by89f5568, its RED/POST and independent delta passed.
+All historical failures remain evidence; no new implementation or test budget.
+
+Use merge-worktree with isolated temporary integration worktrees and explicit
+source branches. Preserve reviewed trees; only this authorization text is new.
+Reuse still-applicable tests/reviews and exact wheel/member proof, then verify
+actual merge commits, product/resource bytes and remote refs freshly. Push
+normally, never force. Retain source/result refs, logs, wheel artifacts and
+failed/uncertain or unrelated work. Cleanup only released owned resources.
+Do not run a numerical journey again for a merge. Normal push-triggered native
+CI remains repository-owned and is reported honestly.
+
+This is software-source integration, not a package release: no tags, version
+bump, PyPI publication, Agent/Tau, service/private-KB operation or expanded
+S3/ad-hoc capability. The open full-target issues are not closed by this grant.
+No new behavior, vocabulary or ADR; spec0029r5 and producer sources unchanged.
+
+## Prior approved execution — citation containment (revision27)
 
 After the independent final review, the parent confirmed one remaining P2:
 the new KB citation branch classifies escaping relative paths as bundle
