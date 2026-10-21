@@ -1,0 +1,3 @@
+# Core-side examples keep Core's lint rules (E,F,W,I,UP); the repository
+# root's shared rules (including B) must not impose on them.
+extend = "../../products/ariadne/packages/ariadne-data/pyproject.toml"

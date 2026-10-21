@@ -1,2 +1,0 @@
-# Lumio-side examples follow the repository root's Lumio lint rules.
-extend = "../../pyproject.toml"

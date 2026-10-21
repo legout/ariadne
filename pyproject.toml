@@ -1,17 +1,19 @@
-# Workspace root — coordination only (spec 0030 §2, plan 0030 M1).
+# Workspace root — coordination only (spec 0030 §2, spec 0031 §4).
 # NOT a distributable package: this file declares the uv workspace, one
-# development lockfile, shared dev tooling and the Lumio-side default
-# test/lint selection. The three members are packages/ariadne-data,
-# packages/lumio-wiki and packages/lumio-lancedb; ariadne-agent keeps its
-# own separate environment and is not a workspace member.
+# development lockfile, shared dev tooling and the shared coordination test
+# selection. The three members are products/ariadne/packages/ariadne-data,
+# products/lumio/packages/lumio-wiki and products/lumio/packages/lumio-lancedb;
+# the Agent keeps its own separate environment and is not a workspace member.
+# Product-native suites/lint run scoped from their product areas
+# (products/lumio/pytest.ini and .ruff.toml; the Core member's own config).
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
 members = [
-    "packages/ariadne-data",
-    "packages/lumio-lancedb",
-    "packages/lumio-wiki",
+    "products/ariadne/packages/ariadne-data",
+    "products/lumio/packages/lumio-lancedb",
+    "products/lumio/packages/lumio-wiki",
 ]
 
 [tool.uv.sources]
@@ -39,20 +41,20 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-# Resolve tests/lumio as tests.lumio, never the private application namespace.
+# Resolve the shared/integration test trees as packages, never the private
+# lumio application namespace.
 consider_namespace_packages = true
 # Make the repository root importable for the documented serial console runner too,
 # not only under xdist or after test_wheel_verifier's sys.path bootstrap.
 pythonpath = ["."]
-# Root default covers the Lumio side (relocated repository tests, both
-# package test trees, eval). ariadne-data runs its own suite from
-# packages/ariadne-data with its own pytest configuration; the two tests
-# trees never share one default import namespace (spec 0030 §2).
+# Shared coverage only (spec 0031 §4): workspace coordination checks plus the
+# two paired Core/SDK integration modules. This is NOT either product's
+# complete native suite — Lumio runs from products/lumio with its own
+# selection, Core from its member directory with its own config.
 testpaths = [
-    "tests/lumio",
-    "packages/lumio-lancedb/tests",
-    "packages/lumio-wiki/tests",
-    "eval/lumio",
+    "tests",
+    "integration/tests/lumio_metric_mvp.py",
+    "integration/tests/lumio_local_context.py",
 ]
 markers = [
     "slow: tests that build wheels or create isolated virtual environments",
@@ -60,12 +62,14 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-# The root selection owns the Lumio-side public trees (tests/lumio, eval/lumio,
-# scripts/lumio, experiments/lumio, examples/, the lumio members). It must not
-# lint the Agent's separate environment (outside current qualification; its own
-# config lives in ariadne-agent/pyproject.toml) or the Core member, which lints
-# itself from packages/ariadne-data with its own rules (E,F,W,I,UP — no B).
-extend-exclude = ["ariadne-agent", "packages/ariadne-data"]
+# The root selection owns the shared trees only: tests/, integration/ and
+# repository coordination files. Product areas lint themselves under their
+# own configurations — the Core member (E,F,W,I,UP — no B) from
+# products/ariadne/packages/ariadne-data, Lumio's product-wide rules
+# (E,F,I,UP,B) from products/lumio/.ruff.toml, and the Agent from its
+# own separate config. Spec 0031 §4: the root default must not silently
+# mean either product's suite/style.
+extend-exclude = ["products"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

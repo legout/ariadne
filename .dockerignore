@@ -1,13 +1,20 @@
+# Shared repository build-context configuration (spec 0031 §4). The Core
+# image builds with the repository root as context (see
+# products/ariadne/deploy/compose.yaml); the whitelist follows the relocated
+# Core member and its product-owned Dockerfile.
 **
-!Dockerfile
-!packages
-!packages/ariadne-data
-!packages/ariadne-data/pyproject.toml
-!packages/ariadne-data/README.md
-!packages/ariadne-data/src
-!packages/ariadne-data/src/ariadne
-!packages/ariadne-data/src/ariadne/*.py
-!packages/ariadne-data/src/ariadne/skill_assets
-!packages/ariadne-data/src/ariadne/skill_assets/SKILL.md
-!packages/ariadne-data/src/ariadne/skill_assets/references
-!packages/ariadne-data/src/ariadne/skill_assets/references/*.md
+!products
+!products/ariadne
+!products/ariadne/deploy
+!products/ariadne/deploy/Dockerfile
+!products/ariadne/packages
+!products/ariadne/packages/ariadne-data
+!products/ariadne/packages/ariadne-data/pyproject.toml
+!products/ariadne/packages/ariadne-data/README.md
+!products/ariadne/packages/ariadne-data/src
+!products/ariadne/packages/ariadne-data/src/ariadne
+!products/ariadne/packages/ariadne-data/src/ariadne/*.py
+!products/ariadne/packages/ariadne-data/src/ariadne/skill_assets
+!products/ariadne/packages/ariadne-data/src/ariadne/skill_assets/SKILL.md
+!products/ariadne/packages/ariadne-data/src/ariadne/skill_assets/references
+!products/ariadne/packages/ariadne-data/src/ariadne/skill_assets/references/*.md

@@ -43,4 +43,4 @@ jobs:
           # resolution time; it never imports lumio-lancedb.
           /tmp/lumio-lancedb-venv/bin/python -c "import lumio_wiki; import sys; \
             assert not any('lumio_lancedb' in m for m in sys.modules)"
-          /tmp/lumio-lancedb-venv/bin/python packages/lumio-lancedb/tests/test_lancedb_adapter.py
+          /tmp/lumio-lancedb-venv/bin/python products/lumio/packages/lumio-lancedb/tests/test_lancedb_adapter.py

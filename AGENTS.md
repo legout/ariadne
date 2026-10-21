@@ -32,20 +32,26 @@
 
 ### Documentation map
 
-- `CONTEXT.md`: canonical domain vocabulary for the Ariadne context;
-  `project/lumio/CONTEXT.md` is the Lumio vocabulary (see `CONTEXT-MAP.md`).
-- `project/adr/`: accepted architecture decisions.
+- `products/ariadne/CONTEXT.md`: canonical domain vocabulary for the Ariadne
+  context; `products/lumio/CONTEXT.md` is the Lumio vocabulary (see
+  `CONTEXT-MAP.md`).
+- `project/adr/`: shared monorepo architecture decisions; Ariadne-owned
+  decisions live in `products/ariadne/project/adr/`, Lumio-owned in
+  `products/lumio/project/adr/`.
 - `project/agents/`: workflow, tracker, and artifact-map configuration.
-- `project/specs/` or the configured tracker: feature behavior and acceptance.
+- `project/specs/` or the configured tracker: shared repository behavior;
+  product-owned specs live under `products/<product>/project/specs/`.
 - implementation plans/tickets: execution entry points and explicit source references.
 <!-- pi-implementation-orchestrator:end -->
 
 ## Repository contexts
 
-This repository hosts two independent products. `CONTEXT.md` is the Ariadne
-vocabulary; `project/lumio/CONTEXT.md` is the Lumio vocabulary (ownership
+This repository hosts two independent products in two product areas with a
+joint integration area. `products/ariadne/CONTEXT.md` is the Ariadne
+vocabulary; `products/lumio/CONTEXT.md` is the Lumio vocabulary (ownership
 unchanged; see `CONTEXT-MAP.md`). Scoped package instructions live in
-`packages/lumio-wiki/AGENTS.md` and `packages/lumio-lancedb/AGENTS.md`;
-Lumio records keep their original IDs under `project/lumio/`, where
+`products/lumio/packages/lumio-wiki/AGENTS.md` and
+`products/lumio/packages/lumio-lancedb/AGENTS.md`;
+Lumio records keep their original IDs under `products/lumio/project/`, where
 `AGENTS.imported.md` is a preserved historical reference, not active
 guidance.

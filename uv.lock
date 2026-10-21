@@ -60,7 +60,7 @@ wheels = [
 [[package]]
 name = "ariadne-data"
 version = "0.6.1"
-source = { editable = "packages/ariadne-data" }
+source = { editable = "products/ariadne/packages/ariadne-data" }
 dependencies = [
     { name = "duckdb" },
     { name = "jsonschema" },
@@ -850,7 +850,7 @@ wheels = [
 [[package]]
 name = "lumio-lancedb"
 version = "0.4.1"
-source = { editable = "packages/lumio-lancedb" }
+source = { editable = "products/lumio/packages/lumio-lancedb" }
 dependencies = [
     { name = "lancedb" },
     { name = "lumio-wiki" },
@@ -869,7 +869,7 @@ s3 = [
 [package.metadata]
 requires-dist = [
     { name = "lancedb", specifier = ">=0.34.0" },
-    { name = "lumio-wiki", editable = "packages/lumio-wiki" },
+    { name = "lumio-wiki", editable = "products/lumio/packages/lumio-wiki" },
     { name = "msgspec", extras = ["yaml"], specifier = ">=0.21.1" },
     { name = "obstore", marker = "extra == 's3'", specifier = ">=0.11.0" },
     { name = "pyarrow", specifier = ">=24.0.0" },
@@ -880,7 +880,7 @@ provides-extras = ["embeddings", "s3"]
 [[package]]
 name = "lumio-wiki"
 version = "0.4.1"
-source = { editable = "packages/lumio-wiki" }
+source = { editable = "products/lumio/packages/lumio-wiki" }
 dependencies = [
     { name = "msgpack" },
     { name = "msgspec", extra = ["yaml"] },

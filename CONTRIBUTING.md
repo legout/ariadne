@@ -26,16 +26,17 @@ uv sync --package ariadne-data --package lumio-wiki
 
 ## Component commands
 
-Run from the repository root unless noted. The two products' test trees are
-deliberately separate default selections; never merge them into one import
+Three explicit verification profiles (spec 0031 §4): Lumio, Ariadne Core,
+and shared/joint. Never merge the products' test trees into one import
 namespace.
 
-### Lumio foundation (the root's default selection)
+### Lumio (from `products/lumio`)
 
 ```bash
-uv run pytest -q -n 4                                        # full suite: tests/lumio, package tests, eval/lumio
+cd products/lumio
+uv run pytest -q -n 4                                        # full suite: tests, package tests, eval
 uv run pytest -q packages/lumio-wiki/tests/test_capture.py   # focused tests stay serial
-uv run ruff check .                                          # Lumio-side root rules (E,F,I,UP,B)
+uv run ruff check .                                          # Lumio rules (E,F,I,UP,B)
 ```
 
 Fixed four workers — never `-n auto`.
@@ -43,19 +44,30 @@ Fixed four workers — never `-n auto`.
 ### Ariadne Core (from its member directory)
 
 The native routine/release selection — the same selection the Core release
-workflow runs, relative to the member — excludes exactly the three
-prepared-S3 capability modules and names the two non-default Lumio-paired
-modules explicitly alongside the default suite:
+workflow runs — excludes exactly the three prepared-S3 capability modules
+and names the two non-default paired integration modules explicitly
+alongside the default suite:
 
 ```bash
-cd packages/ariadne-data
+cd products/ariadne/packages/ariadne-data
 uv run pytest -q \
   --ignore=tests/test_s3_lakehouse.py \
   --ignore=tests/test_s3_storage_access.py \
   --ignore=tests/test_s3_storage_profiles.py \
-  tests/lumio_metric_mvp.py tests/lumio_local_context.py tests
+  ../../../../integration/tests/lumio_metric_mvp.py \
+  ../../../../integration/tests/lumio_local_context.py tests
 uv run ruff check .     # Core rules (E,F,W,I,UP)
 ```
+
+### Shared / joint (from the repository root)
+
+```bash
+uv run pytest -q -n 4   # shared coverage: tests/ + the two paired integration modules
+uv run ruff check .     # shared trees only; product areas lint under their own configs
+```
+
+This shared profile is workspace coordination plus the paired Core/SDK
+scenarios — not either product's complete native suite.
 
 The three excluded modules are the prepared-S3 qualification gate (spec
 0025 §§6–7): they require Docker, a local SeaweedFS service and an
@@ -69,20 +81,25 @@ skipped.
 Each member builds alone, for example
 `uv build --package lumio-wiki --wheel`. Workspace imports are **not**
 evidence of standalone wheel correctness — the isolated wheel verifiers
-remain the gates (see [docs/lumio/packaging.md](docs/lumio/packaging.md)).
+remain the gates (see [products/lumio/docs/packaging.md](products/lumio/docs/packaging.md)).
 
 ## Scope notes
 
-- `ariadne-agent/` is a separate development environment, intentionally not a
-  workspace member; its Tau dependencies are external to this repository and
-  are not qualified here.
-- Lint rules are component-scoped: the root rules govern Lumio-side files,
-  `packages/ariadne-data` keeps its own, and `examples/` splits accordingly
-  (`examples/.ruff.toml`, `examples/lumio/.ruff.toml`).
-- Vocabularies stay separate: [CONTEXT.md](CONTEXT.md) (Ariadne) and
-  [project/lumio/CONTEXT.md](project/lumio/CONTEXT.md); see
+- `products/ariadne/packages/ariadne-agent/` is a separate development
+  environment, intentionally not a workspace member; its Tau dependencies
+  are external to this repository and are not qualified here.
+- Lint rules are component-scoped: the root rules govern the shared trees,
+  Lumio's product-wide rules live in `products/lumio/.ruff.toml` and its
+  native pytest selection in `products/lumio/pytest.ini`, the
+  Core member keeps its own, and examples split accordingly
+  (`products/ariadne/examples/.ruff.toml`,
+  `products/lumio/examples/.ruff.toml`,
+  `integration/examples/.ruff.toml`).
+- Vocabularies stay separate:
+  [products/ariadne/CONTEXT.md](products/ariadne/CONTEXT.md) (Ariadne) and
+  [products/lumio/CONTEXT.md](products/lumio/CONTEXT.md); see
   [CONTEXT-MAP.md](CONTEXT-MAP.md). Lumio records keep their original IDs
-  under [project/lumio/](project/lumio/).
+  under [products/lumio/project/](products/lumio/project/).
 - Coming from the `legout/lumio-wiki` repository? The
   [migration reference](docs/migration-reference.md) maps old paths to their
   new canonical locations.

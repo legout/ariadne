@@ -33,7 +33,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME#core-v}"
           CORE=$(python3 -c "import tomllib; \
-            print(tomllib.load(open('packages/ariadne-data/pyproject.toml','rb'))['project']['version'])")
+            print(tomllib.load(open('products/ariadne/packages/ariadne-data/pyproject.toml','rb'))['project']['version'])")
           echo "tag=$TAG core=$CORE"
           test "$TAG" = "$CORE" || { echo "core $CORE != tag $TAG"; exit 1; }
 
@@ -77,12 +77,12 @@ jobs:
           # same single run. No skips beyond the three environment
           # exclusions above.
           .ci-venv/bin/python -m pytest -q \
-            --ignore=packages/ariadne-data/tests/test_s3_lakehouse.py \
-            --ignore=packages/ariadne-data/tests/test_s3_storage_access.py \
-            --ignore=packages/ariadne-data/tests/test_s3_storage_profiles.py \
-            packages/ariadne-data/tests/lumio_metric_mvp.py \
-            packages/ariadne-data/tests/lumio_local_context.py \
-            packages/ariadne-data/tests \
+            --ignore=products/ariadne/packages/ariadne-data/tests/test_s3_lakehouse.py \
+            --ignore=products/ariadne/packages/ariadne-data/tests/test_s3_storage_access.py \
+            --ignore=products/ariadne/packages/ariadne-data/tests/test_s3_storage_profiles.py \
+            integration/tests/lumio_metric_mvp.py \
+            integration/tests/lumio_local_context.py \
+            products/ariadne/packages/ariadne-data/tests \
             || { echo "test failures block publishing"; exit 1; }
 
       - name: Publish ariadne-data (core)
