@@ -456,11 +456,15 @@ architectural decision. This is owner-approved API precision for already intende
 scoped navigation, not approval of a new service or technical profile kind.
 
 
-## Proposed navigation amendment r4 — explicit S3 private admission
+## Approved navigation amendment r4 — explicit S3 private admission
 
-**Status: proposed, not approved.** Companion to proposed Ariadne spec0029 r6
-for #79/#80, inspected source `6fb0455e3b24d153c8279bafc0ac13b39424fa64`.
-Approved navigation r3 remains local-only until this amendment is approved.
+**Written-design approval, 2026-10-21:** owner answered “Go ahead with the plan.”
+after the explicit offer to approve both amendments in `b91057c` and prepare
+the bounded execution plan. Companion to approved Ariadne spec0029 r6 for
+#79/#80, inspected source `6fb0455e3b24d153c8279bafc0ac13b39424fa64`.
+This additive amendment supersedes r3's local-only navigation restriction only
+when the explicitly required private S3 admission can be verified. Execution
+and environment authorization still require the bounded plan.
 
 Extend `list_published_context_pages`, `read_published_context_page` and
 `search_published_context_pages` with an optional keyword-only `metadata_store`

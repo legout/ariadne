@@ -254,11 +254,14 @@ Agent/Tau integration, a service, production-data access, historical numerical
 replay or a package release. Original full-target S3 acceptance remains deferred
 and must not be marked complete by these local results.
 
-## Proposed revision 6 — optional S3 continuation for #79/#80
+## Approved revision 6 — optional S3 continuation for #79/#80
 
-**Status: proposed, not approved or executable.** Prepared after the owner's
-2026-10-21 request to continue #79 and #80. Existing approved local sections
-remain authoritative until this amendment is approved. Current inspected source:
+**Written-design approval, 2026-10-21:** owner answered “Go ahead with the plan.”
+after the explicit offer to approve both amendments in `b91057c` and prepare the
+bounded execution plan. This approves the written S3 design, not an unprepared
+execution plan, service, integration or publication. It supersedes local-only
+restrictions only within this amendment; earlier local contracts remain.
+Current inspected source:
 `6fb0455e3b24d153c8279bafc0ac13b39424fa64`. This proposal grants no environment
 setup, source access, integration, push, release or private-data operation.
 
@@ -363,11 +366,12 @@ transport continuation needs no new architecture ADR. Companion producer spec
 native qualification for that behavior. Existing local delivery and releases
 are complete; their historical planning-only text is not current status.
 
-Before implementation, approve this written amendment and companion amendment,
-then reconcile the two canonical ticket bodies and the execution plan. That plan
+Before implementation, approve the bounded execution plan and reconcile the two
+canonical ticket bodies against these approved written amendments. That plan
 must assign exact minimal checks, existing mandatory repository gates, synthetic
 service ownership, Pi writer/reviewer identities and the failure/fix budget.
-A disposable SeaweedFS instance requires a separate explicit environment grant;
+A disposable SeaweedFS instance requires an explicit environment grant, which
+may be included in that plan approval;
 prior removed test containers are not an available or authorized service.
 Planning-contract v1; installed skill provenance unknown. No implementation,
 service, publication or tracker change has been performed for this proposal.

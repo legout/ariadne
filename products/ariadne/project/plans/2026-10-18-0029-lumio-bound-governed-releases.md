@@ -1,5 +1,236 @@
 # Implementation plan 0029: Git/local-first Lumio integration
 
+## Proposed execution revision 29 — optional S3 completion of #79/#80
+
+**Status: proposed; no writer/service dispatch yet.** The owner approved the
+written Core r6 / producer navigation r4 amendments with “Go ahead with the
+plan.” after proposal commit `b91057cafa6a6ee5a3786445ce5a4330553b4092`, requesting
+this bounded plan. Older plan revisions below are retained history, not current
+execution instructions. Contract: planning-contract v1, installed provenance
+unknown. This revision requires explicit plan/environment approval before work.
+
+### Goal, sources and boundaries
+
+Finish optional S3 Knowledge transport through the existing native SDK,
+operator admission and public surfaces. Git/local remains the standard and
+both products remain independently installable. Behavior belongs to
+[Core spec0029 approved r6](../specs/2026-10-18-0029-lumio-bound-governed-releases.md)
+and [producer spec0009 navigation r4](../../../lumio/project/specs/2026-10-18-0009-ariadne-context-profile.md),
+under [ADR-0026](../adr/0026-lumio-sdk-bound-governed-releases.md) and producer
+ADR-0030. Canonical tasks: [#79](https://github.com/legout/ariadne/issues/79)
+(behavior and producer dependency), [#80](https://github.com/legout/ariadne/issues/80)
+(public surfaces and qualification). Before dispatch, parent prepares and updates
+their current task sections to this approved revision; retain historical evidence.
+This proposed map must not be used alongside contradictory old ticket grants.
+
+Inspected baseline: `main` = `6fb0455e3b24d153c8279bafc0ac13b39424fa64`.
+No source/code/services changed since that inspection. Freeze the approved source
+commit before dispatch; its concrete SHA belongs in parent run state and briefs,
+not a self-referential placeholder in this file. Stop if main moved materially.
+
+Capture: existing glossary terms suffice; no terminology changes. Native SDK,
+private operational receipts and atomic-last Core activation are already accepted
+architecture. No new ADR or service. Receipt synchronization/multi-host provisioning,
+private app, Agent/Tau, ad-hoc/record queries and new technical profile kinds are
+excluded. No software target integration, push, release/tag or issue closure.
+
+### Ownership and host
+
+Supervised, current verified BB local host; use its Pi bridge with physically
+bound registered worktrees under `/home/volker/.local/state/worktrees/`.
+One sequential Pi writer: `zai/glm-5.3/high`; independent read-only Pi reviewer:
+`openai-codex/gpt-6.1-sol/high`. Exact installed model/thinking catalog and workspace
+binding must be verified before creation; no alias, alternate host or fallback.
+Current tool observations: uv0.13.3, CPython3.14, Docker server27.4.1. No Agent/Tau env.
+The parent prepares run-owned environments; no worker dependency installation.
+Children do not delegate, run memo or write shared memory. Parent owns oracle
+inspection, failure dispositions, acceptance and candidate assembly.
+
+### 1. SDK S3 navigation — #79 prerequisite
+
+- [ ] Owned product file:
+  `products/lumio/packages/lumio-wiki/src/lumio_wiki/ariadne_context.py`;
+  focused scenario in its existing `tests/test_ariadne_context.py`. Producer-owned
+  README, `products/lumio/docs/ariadne-context.md`/`howto-s3-publish.md` and packaged
+  skill/protocol may receive only the necessary S3 statements in this same slice,
+  before V-SDK; preserve the local-first quickstart. Freeze producer code, guidance
+  and resources together so downstream qualification does not invalidate this gate.
+  Add only the approved optional keyword and shared-verifier forwarding to the
+  three public navigation functions. Local behavior, record schemas, ranking,
+  passage code and profile reader remain unchanged. No new public root exports.
+- [ ] High-risk public contract, `new-test`: one
+  `test_scoped_s3_navigation_requires_exact_private_admission`, using native
+  publication plus an ObjectStore MemoryStore, explicitly supplied private store,
+  independently authored visible/hidden pages and canonical line expectations.
+  Cover scope-safe list/read/search, missing/foreign private admission and v1/v2
+  isolation in that one scenario. Do not copy output into expected values.
+  New behavior needs no ceremonial expected-red run; tests are statically
+  parent-inspected before implementation/execution.
+- [ ] Run the required native producer full selection once (V-SDK below), including
+  this focused scenario and existing local/profile-S3 guards; targeted Ruff/diff.
+  Freeze committed clean producer result. Immediate independent review before the
+  Core writer consumes this changed SDK contract; parent accepts/dispositions.
+  Same writer resumes only from the parent's frozen accepted producer commit.
+
+### 2. Core S3 admission and pinned session — #79
+
+- [ ] Owned code: `lumio_context.py`, `admission.py`, `sources.py`, and only necessary
+  existing `authoring.py`, `discovery.py`, `query.py`, `status.py` under
+  `products/ariadne/packages/ariadne-data/src/ariadne/`. No general refactoring of
+  source registries, DuckDB credentials or local admission. Add the proposed
+  `--context-storage-profile` selection to the existing human admission entrypoint.
+  Reuse profile validation/scope rules with credential-free declarations/effective
+  identities; the Knowledge bucket is not an approved analytical data source.
+- [ ] Pass the same exact resolved SDK location/private metadata store to native
+  preview, publication, profile verification and navigation. Keep the native
+  private local metadata selector keyed by effective destination. Preserve local
+  calls without new S3 keywords/configuration; older local-only producer wheels
+  must not be represented as supporting new S3 navigation.
+- [ ] Bind the explicit target/profile and complete expected states into consent.
+  Preserve actual native residue on publication/open/Core-activation failure.
+  Never update the Core descriptor before native completion and exact verification.
+  A drifted endpoint, stale preview or missing required private admission refuses;
+  no ambient-profile, current-pointer or local fallback, no secret-bearing output.
+- [ ] High-risk state/credential boundary, `new-test`: one new explicit module
+  `integration/tests/lumio_s3_context.py`, one journey
+  `test_s3_bound_release_preserves_admission_and_session_pin`. Use a disposable
+  synthetic local data source for the existing independent 150/2 oracle and the
+  approved S3 bucket for Knowledge only. Real operator preview/confirmation and
+  SDK publication, then source-free navigation through public CLI/MCP entrypoints.
+  Keep session A pinned across B publication/admission; new session sees B only
+  after complete admission. Require a controlled required-write/verification
+  failure to preserve exact prior descriptor bytes and report actual residue;
+  stale retry/foreign endpoint/private-record refusal precedes SQL. Any fault
+  injection is confined to a leaf transport/persistence operation, not a fake
+  completed SDK publication or admission response. Public malformed/missing
+  prerequisite is a hard failure, never skip/importorskip. Parent inspects the
+  complete authored fixture, native schema and independent oracle before the run.
+- [ ] Run V-S3 once; save descriptor/native receipts/fixture input hashes under
+  private run state for review. Source URLs and fixtures remain synthetic.
+  No live-model, external bucket or real credential/source request.
+
+### 3. Public surfaces and assembled qualification — #80
+
+- [ ] Owned surfaces: Core `serve.py`, `cli.py`, `authoring_cli.py`, packaged
+  `skill_assets/SKILL.md`; `integration/docs/reference/lumio-bound-releases.md`,
+  relevant existing joint how-to/tutorial navigation and Core product README.
+  Verify the already-frozen producer guidance from slice1; do not edit it again
+  after V-SDK without an assigned affected check. Preserve the local
+  quickstart as primary, real `get_metric` calculation wording, optional-MCP
+  placement and role guards. No new privileged model-facing tool.
+- [ ] `existing-check/no-new-test`: forward complete results/errors/citations and
+  response-size refusals; document explicit profile/env references, private local
+  receipt prerequisites and failure residue. No automatic cross-host trust claim.
+  Change only superseded local-only assertions where the approved behavior changes;
+  preserve current default local tests/fixture oracles. Required SDK gate remains
+  explicit for S3 admission, without making base Core import Lumio/obstore.
+- [ ] `.github/workflows/ci.yml`: extend the existing owned SeaweedFS selection
+  with the new explicit integration module, run against the exact same-commit
+  SDK/Core pair and expose hard failures if prerequisites are missing. Preserve
+  existing service image/configuration and sibling jobs. If source-native runs
+  use editables, bind the candidate origins explicitly and distinguish them from
+  installed-wheel proof. No new publish triggers, action pins, secrets or versions.
+- [ ] Run V-Core once, then build one final Core and SDK wheel and the unchanged
+  adapter wheel only where the existing verifier requires it. Use existing native
+  isolated verifier/MCP/base-only walkthrough and adapter certification, retaining
+  their documented subprocess checks/builds. Check exact source/archive/installed
+  identities and real profile/navigation resources outside the checkout without
+  PYTHONPATH/source overrides; no second numerical/S3 journey merely for wheels.
+  Core-only base env must lack Lumio/MCP; SDK-only base keeps optional imports lazy.
+- [ ] One final independent candidate review covers Core, changed public guidance,
+  CI wiring and assembled integration effects; reuse settled producer review.
+  Parent verifies source-result correspondence, actual logs, receipts and wheel
+  identities, freezes a clean candidate and stops before target integration.
+
+### Assigned invocation budget and required checks
+
+No baseline replay: use main `6fb0455`'s green CI39641879894/39641877252 and adapter
+CI39641879950/39641877156 for unchanged shared layout, packaging and local evidence.
+Changed SDK/Core runtime requires the following native postchecks, each once.
+These are three planned pytest invocations, not hidden per-layer passes:
+
+**V-SDK**, from `products/lumio`, source-bound qualified environment:
+
+```sh
+uv run --locked pytest -q -n 4
+```
+
+**V-S3**, from repo root, after accepted SDK + coherent Core implementation, against
+only the separately approved disposable synthetic service:
+
+```sh
+uv run --locked pytest -q \
+  integration/tests/lumio_s3_context.py \
+  products/lumio/tests/test_onboarding_journey.py \
+  products/lumio/packages/lumio-wiki/tests/*s3_compat.py \
+  products/lumio/packages/lumio-lancedb/tests/*s3_compat.py
+```
+
+**V-Core**, from `products/ariadne/packages/ariadne-data`, exact accepted SDK and
+Core candidate bound in the source qualification env; never the stale canonical
+user `.venv`. The two explicit local modules and native suite are the existing
+CI selection; the new S3 module already ran in V-S3, no duplicate journey:
+
+```sh
+$CORE_PY -m pytest -q \
+  --ignore=tests/test_s3_lakehouse.py \
+  --ignore=tests/test_s3_storage_access.py \
+  --ignore=tests/test_s3_storage_profiles.py \
+  "$CANDIDATE/integration/tests/lumio_metric_mvp.py" \
+  "$CANDIDATE/integration/tests/lumio_local_context.py" tests
+```
+
+Reuse the root shared-only25-pass layout proof unless root test/config/manifest
+inputs change; then stop to assign affected checks before execution. No `-n auto`.
+Run native `uv lock --check`, `uv sync --locked` and component-configured Ruff on
+changed trees, with logs. Do not regenerate dependencies or bump versions. Parent
+prepares compatible run-owned environments from existing tooling/locked inputs;
+missing tools/cache/runtime is a blocker, not silent provisioning of another stack.
+Native builds/verifiers/walkthroughs above may spawn their documented subprocesses;
+record/disclose actual commands rather than claiming only three commands total.
+
+Any failed assigned invocation freezes that lane: preserve the true exit/log/JUnit
+and investigate only its cause. No automatic retry, broader suites, new skips/xfails,
+weakened oracles or relabeling an old failure. Parent may authorize one small
+in-scope fix and one affected recheck per validation/review unit; unused green
+checks are reused. One fix pass and one delta review; unresolved material findings
+return to the owner. No new round from candidate assembly or publication.
+
+### Explicit environment grant requested with this plan
+
+One disposable SeaweedFS4.45 instance through the existing Docker27.4.1 runtime,
+CI-pinned image
+`chrislusf/seaweedfs@sha256:fc9f76fa993ad69966ffeb2f65d0318fcae39c6f8e20cf68ef7b3a5cb97769e5`
+(cached arm64 image observed). Unique owned name and temporary private storage;
+loopback-only unused S3 port, CI's synthetic bucket/labelled admin-secret test
+credentials. Scrub inherited AWS/LUMIO/profile credential values and populate only
+named synthetic test bindings. No real buckets, retained containers, production
+credentials, new runtime, public listener, privileged mounts or unrelated service
+restart. Stop/remove only this owned instance after its evidence consumers finish;
+retain logs/artifacts. Worker cannot start/stop services; parent owns lifecycle.
+The grant includes normal run-owned qualification environments/build installs,
+not canonical user environments, global package upgrades or general host setup.
+
+### Producer-first release boundary and completion
+
+Current `.github/workflows/publish.yml` deliberately pairs published SDK0.4.1;
+it must not silently substitute an unreleased workspace wheel. Leave its pin and
+release triggers unchanged in this implementation. S3 source/installed candidate
+qualification uses the exact newly built accepted SDK, and cannot be called a
+published-pair proof. A separately authorized SDK release must precede a future
+Core S3 release; only then may a separate release change pin the actual public
+SDK URL/SHA and verify that public pair. No invented future version/artifact.
+
+Completion is a reviewed, parent-accepted isolated source candidate, truthful
+capability/docs/CI, exact wheels plus actual V-SDK/V-S3/V-Core evidence and honest
+limits. Ticket closure and target integration/push remain separate decisions.
+#76 remains the coordination parent, #18/#52 separate unrelated work. No work is
+authorized until the owner approves this plan/environment and current ticket
+amendments are frozen. The prose above is the proposed execution map, not a new
+implementation permission inferred from source-file location.
+
+---
+
 | | |
 | :--- | :--- |
 | **Status** | **Revision 28 — approved integration, push and cleanup, 2026-10-21.** Owner approved normal source integration/push and scoped cleanup for accepted Core2547c8a and SDK26a633b. Earlier isolation restrictions and exhausted test budgets remain historical; no package release or new behavior is authorized. |
