@@ -29,7 +29,7 @@ dev = [
 # Local development only: resolve ariadne-data from the repository checkout
 # without publishing it. This is uv tool configuration, never published
 # dependency metadata (issue #23).
-ariadne-data = { path = ".." }
+ariadne-data = { path = "../packages/ariadne-data" }
 # Same non-published pattern for the owned tau-mcp core (issue #25): the
 # separate repository checkout, never a PyPI substitute.
 tau-mcp = { path = "/home/volker/coding/tau-mcp" }

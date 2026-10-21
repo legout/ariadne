@@ -1,0 +1,65 @@
+# Workspace root — coordination only (spec 0030 §2, plan 0030 M1).
+# NOT a distributable package: this file declares the uv workspace, one
+# development lockfile, shared dev tooling and the Lumio-side default
+# test/lint selection. The three members are packages/ariadne-data,
+# packages/lumio-wiki and packages/lumio-lancedb; ariadne-agent keeps its
+# own separate environment and is not a workspace member.
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+    "packages/ariadne-data",
+    "packages/lumio-lancedb",
+    "packages/lumio-wiki",
+]
+
+[tool.uv.sources]
+# Local members for joint development only; published dependency metadata
+# of the members is unchanged (spec 0030 §3).
+ariadne-data = { workspace = true }
+lumio-lancedb = { workspace = true }
+lumio-wiki = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.6",
+    # obstore stays an optional wheel extra (lumio-wiki[s3]); the workspace
+    # environment runs the ObjectStore contract suite in every CI/local run.
+    "obstore>=0.11.0",
+    "liteparse>=2.4.0",
+    "markitdown[docx]>=0.1.6",
+    "firecrawl-anydoc==0.1.3",
+    "openai>=1.40.0",
+    # ariadne-data pins the tested SDK version (mcp==2.2.0); this also
+    # satisfies lumio-wiki's >=2.2.0 floor — the union of both native dev sets.
+    "mcp==2.2.0",
+]
+
+[tool.pytest.ini_options]
+# Root default covers the Lumio side (relocated repository tests, both
+# package test trees, eval). ariadne-data runs its own suite from
+# packages/ariadne-data with its own pytest configuration; the two tests
+# trees never share one default import namespace (spec 0030 §2).
+testpaths = [
+    "tests/lumio",
+    "packages/lumio-lancedb/tests",
+    "packages/lumio-wiki/tests",
+    "eval/lumio",
+]
+markers = [
+    "slow: tests that build wheels or create isolated virtual environments",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pyright]
+# The uv workspace venv (uv sync creates .venv with the members installed).
+venvPath = "."
+venv = ".venv"
