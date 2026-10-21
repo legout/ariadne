@@ -55,6 +55,12 @@ markers = [
 
 [tool.ruff]
 line-length = 100
+# The root selection owns the Lumio-side public trees (tests/lumio, eval/lumio,
+# scripts/lumio, experiments/lumio, examples/, the lumio members). It must not
+# lint the Agent's separate environment (outside current qualification; its own
+# config lives in ariadne-agent/pyproject.toml) or the Core member, which lints
+# itself from packages/ariadne-data with its own rules (E,F,W,I,UP — no B).
+extend-exclude = ["ariadne-agent", "packages/ariadne-data"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
