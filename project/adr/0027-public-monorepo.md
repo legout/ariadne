@@ -60,3 +60,53 @@ migration is executed.
 This ADR records rationale, not execution, integration, publication, repository
 archival or credential-configuration authority. Specification 0030 owns the
 observable migration contract; its future plan owns task order and validation.
+
+## Product-area amendment — 2026-10-21
+
+**Direction accepted; detailed follow-up design under review.** After the first
+consolidation and patch releases, the owner objected to the remaining asymmetric
+layout: Ariadne documentation/records occupied `docs/` and `project/`, Lumio
+occupied `docs/lumio/` and `project/lumio/`, and the Agent remained at the root.
+The owner then selected product areas: “Ja, arbeite die Produktbereiche als
+Zieldesign aus und halte sie in Spec und ADR fest. Zunächst keine Migration.”
+
+The next target groups product-owned content under `products/ariadne/` and
+`products/lumio/`, with the shared user journey under `integration/`. The root
+coordinates the workspace, repository tooling, shared records and shared entry
+documentation. Each product owns its packages, guides, glossary and project
+records. The Agent belongs in Ariadne's area while retaining its separate
+environment; a source directory does not confer workspace membership or qualify
+its external Tau dependency.
+
+The alternative was symmetric file-type namespaces such as `docs/ariadne/` and
+`project/ariadne/` alongside their Lumio counterparts, while retaining root
+`packages/`. That requires fewer moves and keeps familiar monorepo paths, but
+leaves the contents of one product distributed across several parallel trees.
+Product areas make ownership and independent use easier to discover as a unit.
+The neutral `products/` container also keeps source-area names distinct from
+the root-level Python import names. Shared integration remains explicit rather
+than being implicitly assigned to either product.
+
+This choice costs another deliberate path/link/build/test migration. It does not
+justify changes to runtime APIs, public package names, independent release
+versions, licensing, activation/admission rules or dependency directions. One
+development workspace/lock still coordinates the same three public members;
+there is no new umbrella package or nested product workspace. Only genuinely
+shared repository concerns stay at the root, with tool-required configuration
+locations documented explicitly.
+
+The observable path mapping, current-vs-target ownership, retained native gates
+and acceptance are in [specification 0031 revision 1](../specs/2026-10-21-0031-product-oriented-layout.md).
+That detailed document is a draft for review. The selected direction replaces
+the earlier asymmetry as the **future layout goal**, without rewriting why the
+completed first migration preserved Ariadne paths. In particular, an approved
+follow-up must explicitly supersede spec 0030's old path-preservation promise
+for affected source documentation; it must not imply that GitHub redirects moved
+files or that old floating-main URLs remain valid.
+
+This amendment records the owner's architectural direction, not migration or
+integration authority. Current filesystem paths, active artifact/domain maps,
+workflows, package manifests and published releases stay in force until a
+separately planned and approved transition lands. Repository renaming remains
+a separate cutover. The original sections above remain the historical record of
+the first consolidation decision.
