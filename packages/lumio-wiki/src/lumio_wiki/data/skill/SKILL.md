@@ -391,6 +391,27 @@ Visibility filtering on graph export is enforced, not disclosed:
    edge. Use OKF or `--scope all` deliberately when privileged exchange is
    intended. `graph.json` node fields are additive-only once shipped.
 
+## Workflow: optional Ariadne Context Profile
+
+A Knowledge Base may carry the optional, versioned **Ariadne Context
+Profile**: native Metric/Policy annotations on ordinary Compiled Pages,
+validated against the `ariadne_context.ontology_catalog` declared in
+`lumio.yaml` and preserved unchanged by ordinary authoring, review and
+publication. Pages without a profile are unaffected, and the base SDK never
+depends on Ariadne — this is metadata on content, not a service, CLI
+command or runtime requirement.
+
+If a consumer asks about pinned context consumption: it is a Python library
+surface (`lumio_wiki.ariadne_context`), never a CLI command. Readers open one
+exact admitted immutable Published Version under a complete expected
+identity and refuse any mismatch or floating pointer; the three navigation
+operations (list/read/search published context pages) are local, pinned and
+visibility-scoped. The profile is metadata only — it grants no source
+access, joins, SQL or numerical evidence — and the consumer alone validates
+its supported Metric/Policy subset and owns overall admission. Syncing a
+checkout never activates an integrated release. See the pinned-reading
+contract in [PROTOCOL.md](PROTOCOL.md).
+
 ## Optional capabilities
 
 The base install handles text and Markdown. Optional extras are declared but
