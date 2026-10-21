@@ -4,13 +4,17 @@ How to use Lumio three ways: from the **CLI**, as a **Python library**, and
 inside a **coding-agent harness** (opencode, Claude Code, Codex, etc.).
 
 > New here? **[`docs/quickstart.md`](quickstart.md)** is the canonical
-> onboarding journey (issue #180): one linear path — Maintainer setup,
-> ontology starter, managed ingest, Git review/admission, S3 publication with and
-> without LanceDB, read-only Reader setup, retrieval, traversal, citation
-> opening, Source Artifact inspection — ending with a grounded agent answer.
-> This guide is the reference the journey links into.
+> onboarding journey (issue #180): one linear local path — Maintainer setup,
+> ontology starter, managed ingest, Git review/admission, exact-revision
+> publication to a visible local Published Version, retrieval, traversal,
+> citation opening, Source Artifact inspection — ending with a grounded agent
+> answer. The optional S3 publication and Reader path is a separate guide:
+> [`docs/howto-s3-publish.md`](howto-s3-publish.md). This guide is the
+> reference the journey links into.
 
-> Lumio ships as three progressively enhanced wheels. This guide uses
+> Lumio's public foundation ships as two progressively enhanced wheels (the
+> deployable `lumio` web application lives in a separate private repository
+> and is not published from this one). This guide uses
 > `lumio-wiki` (the portable, model-free foundation) unless noted — it works
 > everywhere with no model provider, no LanceDB, no web server.
 
@@ -29,14 +33,15 @@ pip install 'lumio-wiki[all]'                # documents + llm (still no LanceDB
 pip install 'lumio-wiki[s3]'                 # + S3-native KB Locations (ADR-0013)
 pip install 'lumio-wiki[mcp]'                # + read-only MCP server over stdio (official SDK)
 pip install lumio-lancedb                    # + enhanced BM25/semantic/hybrid retrieval
-pip install lumio                            # the full deployable web application
 ```
 
-The base wheel depends only on `msgspec[yaml]` and `msgpack`. Verify your
-install:
+The base wheel depends only on `msgspec[yaml]` and `msgpack`. The full
+`lumio` web application (chat UI, auth, roles, providers) is a separate
+private repository and is not installable from this one.
+Verify your install:
 
 ```bash
-lumio-wiki --version         # lumio-wiki 0.1.1
+lumio-wiki --version         # lumio-wiki 0.4.0
 lumio-wiki doctor            # version, detected extras, packaged skill path
 ```
 
@@ -44,8 +49,10 @@ lumio-wiki doctor            # version, detected extras, packaged skill path
 
 ## 1. CLI
 
-Lumio ships two CLIs. `lumio-wiki` is the portable, model-free Knowledge Base
-toolkit. `lumio` adds cited answers, storage sync, and the web server.
+The public CLI is `lumio-wiki` — the portable, model-free Knowledge Base
+toolkit. (The `lumio` application CLI — cited answers, storage sync, the web
+server — belongs to the separate private application repository; see the
+boundary note at the end of this section.)
 
 ### One-command project setup
 
@@ -181,6 +188,7 @@ lumio-wiki related <kb> "<title>"            # list pages related to a title
               [--depth N] [--max-edges N] [--max-results N] [--trace]
 lumio-wiki paths <kb> "<src>" "<dst>"        # shortest typed path between two titles
               [--scope canonical|discovery] [--max-depth N] [--trace]
+lumio-wiki entity <kb> "<name>"              # resolve a stable Entity from an exact ID, title, or alias
 lumio-wiki hot <kb>                          # Maintainer-pinned Hot Index (retrieval ladder step 0)
 lumio-wiki index <kb> [dir]                  # generated Navigation Index (step 1)
 lumio-wiki ingest <kb> <file> [--distiller passthrough|llm]   # ordinary Git worktree edits
@@ -189,14 +197,24 @@ lumio-wiki ingest-url <kb> <url> --compiled-page <page.md> --source-id <id> # sa
               [--max-bytes N] [--timeout S] [--max-redirects N]
               [--allow-http] [--allow-private-destination]   # explicit escape hatches for trusted local endpoints
 lumio-wiki ingest-research <kb> <report.md> --manifest <manifest.yaml> --source-id <id>  # bounded research bundle (consulted URLs = provenance; issue #178)
+lumio-wiki capture session <kb> --compiled-page <page.md> --manifest <capture.yaml> --source-id <id> [--transcript <path>] [--yes]  # explicit, preview-first session capture (issue #179)
+lumio-wiki capture sessions --client codex|pi [--project PATH] [--since ISO] [--limit N]  # read-only past-session discovery
+lumio-wiki capture export --client codex|pi --session-id <id> --output <empty-dir>          # read-only transcript + manifest export
+lumio-wiki remove-page <kb> "<title>" [--reason <text>]       # stage an explicit Page Removal as worktree edits
+lumio-wiki merge-entity <kb> <retired-id> <survivor-id> [--reason <text>]  # reviewed Entity Merge: retarget Claims/links, record redirect
+lumio-wiki rename-page <kb> "<title>" --to "<new-title>" [--category <c>] [--alias ...]  # rename/recategorize/re-alias one page in the worktree
 lumio-wiki publish <kb> --revision <full-commit-id> --to <dest> --expected-current <version-or-none> [--json]  # preview only
 # Only after explicit operator authorization of that displayed review:
 lumio-wiki publish <kb> --revision <full-commit-id> --to <dest> --expected-current <version-or-none> --confirm <review-digest> [--json]
+lumio-wiki rollback <dest> --version <version> --expected-current <version-or-none> [--confirm <review-digest>]  # activate a complete local Published Version (preview/confirm)
 lumio-wiki legacy-proposals inventory <kb> [--ingest-dir <private-store>]  # read-only inventory
 lumio-wiki legacy-proposals export <kb> <id> --baseline <full-commit-id> --branch <name> [--confirm]  # unadmitted export
+lumio-wiki lint <kb>                        # read-only cross-page QA report with graph scope disclosed
 lumio-wiki cross-link <kb> [--stage]         # missing-link candidates (Extracted References); --stage repairs as links
 lumio-wiki dream <kb> [--stage] [--semantic] # read-only Dream Cycle reflection; Source Drift diagnostics are
                                              #   advisory (never staged, never blocking, no exit-code change)
+lumio-wiki export-graph <kb> [--scope public|all] [--out-dir <dir>]  # Discovery Graph to graph.json + graph.graphml
+lumio-wiki import-graph <kb> <graph.json>   # apply stub pages from graph.json as ordinary Git worktree edits
 lumio-wiki source list [<kb>]                    # list private Source identities (ADR-0014)
 lumio-wiki source retire [<kb>] --source-id <id> # edit Git retirement intent; remaining support must validate
 lumio-wiki source reactivate [<kb>] --source-id <id> --file <path> --entity <entity-id> # explicitly select all still-declaring Entities
@@ -210,6 +228,7 @@ lumio-wiki rollback-s3 <dest> --version <historical-version> --expected-current 
               [--confirm <review-digest>]          # preview first; never rebuilds historical bytes
 lumio-wiki cleanup-s3 <dest>                     # report inactive incomplete version prefixes
                                                   #   (interrupted builds); deletes nothing
+lumio-wiki diff-s3 <dest> --from <version> --to <version> [--json]  # deterministic delta between two immutable S3 versions (read-only)
 lumio-wiki health <kb> [--rebuild]           # page counts, validation, Discovery Graph health
 lumio-wiki status [<kb>] [--json]            # effective config + retrieval state, one secret-free summary (#175)
 lumio-wiki eval <kb> [--gold-set <f>] [--semantic [--model <name>]] [--json]  # recall@k per retrieval stage (#138)
@@ -296,11 +315,13 @@ An `s3://` Location binds the same read-only surface (requires
 `LUMIO_S3_*` / `AWS_*` environment rules — never from the URI, which must be
 credential-free.
 
-### lumio — application CLI
+### lumio — application CLI (separate private repository)
 
-Adds the Agent Runtime, storage sync, and the web server on top of
-`lumio-wiki`. All commands work offline; `ask` uses the FakeProvider when no
-provider is configured.
+Documented for boundary awareness only: the `lumio` CLI (Agent Runtime,
+storage sync, `lumio serve` web server) is owned by the separate private
+application repository (ADR-0025). It is not built, published, or tested
+from this public foundation, and nothing here claims it is installable from
+it. On top of `lumio-wiki` it adds:
 
 ```bash
 lumio validate <kb-path>                          # exit 0 if valid, 1 otherwise
@@ -310,7 +331,7 @@ lumio sync <source> "<query>" --working-dir <path>  # sync a storage source, the
               [--kb-path <p>] [--ref <branch>] [--mode git|shared|hybrid]
 ```
 
-In a checked-out repository, prefix with `uv run`:
+Inside that application's own repository checkout, prefix with `uv run`:
 
 ```bash
 uv run lumio ask tests/fixtures/valid "What technology does Lumio use?"
@@ -786,9 +807,10 @@ results = adapter.retrieve(kb.pages, "how does authentication work?", limit=5)
 # Same RetrievalResult contract as ZeroIndexRetrieval
 ```
 
-The full `lumio` app selects zero-index or LanceDB via `LUMIO_RETRIEVAL_BACKEND`
-(default: `lancedb`). Switch without code changes — just install/uninstall the
-adapter and flip the env var.
+The separate private `lumio` app selects zero-index or LanceDB retrieval via
+`LUMIO_RETRIEVAL_BACKEND` (its default is `lancedb`); the public foundation's
+zero-index retrieval needs no configuration. Switch without code changes —
+just install/uninstall the adapter and flip the env var.
 
 ### Scoring a real embedder in `eval`
 

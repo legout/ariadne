@@ -28,6 +28,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 QUICKSTART = ROOT / "docs" / "quickstart.md"
+S3_GUIDE = ROOT / "docs" / "howto-s3-publish.md"
 SCRIPT = ROOT / "examples" / "onboarding-journey" / "smoke-journey.sh"
 RAW_SOURCE = ROOT / "examples" / "onboarding-journey" / "sources" / "support-runbook.md"
 
@@ -60,8 +61,10 @@ def _collapse(text: str) -> str:
 
 def test_quickstart_uses_nothing_secret_beyond_labelled_local_test_credentials():
     """Non-secret placeholders everywhere except the explicitly labelled local
-    S3-compatible test credentials (issue #180 acceptance criterion)."""
-    text = QUICKSTART.read_text(encoding="utf-8")
+    S3-compatible test credentials (issue #180 acceptance criterion). The
+    walkthrough spans the quickstart and the optional S3 guide that now
+    carries its credential block."""
+    text = QUICKSTART.read_text(encoding="utf-8") + S3_GUIDE.read_text(encoding="utf-8")
     assert "AKIA" not in text, "no AWS-style access-key ids in the walkthrough"
     assert re.search(r"admin[^\n]*#[^\n]*local test credential", text) or re.search(
         r"local test credential[^\n]*admin", text

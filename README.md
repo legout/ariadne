@@ -27,8 +27,15 @@ For the *why* and the vision, read the domain docs — this README documents
 - [`docs/kb-format.md`](docs/kb-format.md) — canonical Compiled Page frontmatter reference.
 - [`docs/ariadne-context.md`](docs/ariadne-context.md) — optional pinned Ariadne Context Profile
   consumption (exact identity, scoped local navigation, boundaries).
-- [`docs/quickstart.md`](docs/quickstart.md) — canonical onboarding journey
-  (`weed mini` → AWS), runnable via [`examples/onboarding-journey/`](examples/onboarding-journey/).
+- [`docs/quickstart.md`](docs/quickstart.md) — canonical local/Git-first
+  onboarding journey (empty project → reviewed publication → grounded search);
+  the optional S3/Docker publication path lives in
+  [`docs/howto-s3-publish.md`](docs/howto-s3-publish.md). Runnable via
+  [`examples/onboarding-journey/`](examples/onboarding-journey/).
+- Joint local tutorial (Lumio + Ariadne), canonical and cross-repository:
+  [`docs/tutorials/lumio-ariadne-local.md`](https://github.com/legout/ariadne/blob/main/docs/tutorials/lumio-ariadne-local.md)
+  in the Ariadne repository. The SDK links to it; the joint walkthrough lives
+  only there.
 
 ## Install
 
@@ -78,24 +85,42 @@ from any coding agent with no model provider and no LanceDB.
 
 ```bash
 lumio-wiki --version
-lumio-wiki init <path>                           # scaffold a categorized Knowledge Base
+lumio-wiki setup <path> [--publish-to <s3-uri>] [--retrieval zero-index|lancedb] [--source-store <s3-uri|path>]  # project bootstrap: KB + .env + AGENTS.md (+ optional skill)
+lumio-wiki init <path>                           # lower-level KB-only: scaffold a categorized Knowledge Base
 lumio-wiki validate <kb-path>                    # exit 0 if valid, 1 otherwise
+lumio-wiki status [<kb-path>]                    # effective config + retrieval state, one secret-free summary
 lumio-wiki search <kb-path> "<query>"            # lexical search over titles, aliases, tags, summaries, bodies
 lumio-wiki page [<kb-path>] "<title>" [--raw|--json] # lossless or bounded Compiled Page read
 lumio-wiki related <kb-path> "<title>"           # list pages related to a title
 lumio-wiki paths <kb-path> "<src>" "<dst>"       # shortest typed path between two titles
+lumio-wiki entity <kb-path> "<name>"             # resolve a stable Entity from an exact ID, title, or alias
+lumio-wiki hot <kb-path>                         # Maintainer-pinned Hot Index (retrieval ladder step 0)
+lumio-wiki index <kb-path> [dir]                 # generated Navigation Index (step 1)
 lumio-wiki ingest <kb-path> <source> [--distiller passthrough|llm]   # edit the selected Git worktree
+lumio-wiki ingest <kb-path> <source> --compiled-page <page.md> --source-id <id>  # managed ingest: bind original source + authored page
 lumio-wiki ingest-url <kb-path> <url> --compiled-page <page.md> --source-id <id>  # safe URL ingestion (HTTPS-only, bounded, SSRF-safe)
 lumio-wiki ingest-research <kb-path> <report.md> --manifest <manifest.yaml> --source-id <id>  # research bundle (consulted URLs = provenance)
+lumio-wiki capture session <kb> --compiled-page <page.md> --manifest <capture.yaml> --source-id <id> [--yes]  # explicit, preview-first session capture
+lumio-wiki remove-page <kb> "<title>" [--reason <text>]        # stage an explicit Page Removal as worktree edits
+lumio-wiki merge-entity <kb> <retired-id> <survivor-id>        # reviewed Entity Merge: retarget Claims/links, record redirect
+lumio-wiki rename-page <kb> "<title>" --to "<new-title>"       # rename/recategorize/re-alias one page in the worktree
 lumio-wiki publish <kb-path> --revision <full-commit-id> --to <destination> --expected-current <version-or-none>  # preview only
 # Only after explicit operator authorization of that displayed review:
 lumio-wiki publish <kb-path> --revision <full-commit-id> --to <destination> --expected-current <version-or-none> --confirm <review-digest>
+lumio-wiki rollback <dest> --version <version> --expected-current <version-or-none>  # activate a complete local Published Version (preview/confirm)
 lumio-wiki legacy-proposals inventory <kb-path>    # read-only migration inventory
 lumio-wiki legacy-proposals export <kb-path> <id> --baseline <full-commit-id> --branch <name>  # preview unadmitted export
 lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]  # secret-free metadata for the exact bound Source Version
 lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>  # byte-exact original, digest re-verified
 lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]   # short-lived signed GET URL (max 1h; bearer secret)
+lumio-wiki lint <kb-path>                        # read-only cross-page QA: validation, graph health, structural diagnostics
+lumio-wiki cross-link <kb-path> [--stage]        # missing-link candidates ranked by Discovery Graph impact
+lumio-wiki dream <kb-path> [--stage] [--semantic]  # Dream Cycle reflection; --stage applies top repairs as worktree edits
+lumio-wiki export-graph <kb> [--scope public|all] [--out-dir <dir>]  # Discovery Graph to graph.json + graph.graphml
+lumio-wiki import-graph <kb> <graph.json>        # apply stub pages from graph.json as ordinary worktree edits
 lumio-wiki health <kb-path>                      # Knowledge Base health and diagnostics
+lumio-wiki eval <kb-path> [--gold-set <f>] [--semantic [--model <name>]] [--json]  # recall@k per retrieval stage
+lumio-wiki eval-ontology <kb-path> [--gold-set <f>] [--json]  # entity resolution / traversal / scope separation
 lumio-wiki mcp <kb-path-or-s3-uri>               # read-only MCP stdio server over ONE KB (requires [mcp])
 lumio-wiki doctor                                # install shape: version, optionals, packaged skill location
 lumio-wiki skill path                              # locate packaged SKILL.md
@@ -103,6 +128,10 @@ lumio-wiki skill protocol                          # locate packaged PROTOCOL.md
 lumio-wiki skill install --scope user              # explicit skill installation
 lumio-wiki skill status --scope user               # inspect installed skill drift
 lumio-wiki skill update --scope user               # explicitly refresh the skill
+lumio-wiki publish-s3 <kb> [dest] --revision <full-commit-id> --expected-current <version-or-none> [--retrieval lancedb]  # immutable S3 version (same admission gate)
+lumio-wiki rollback-s3 <dest> --version <v> --expected-current <active>  # reactivate a historical S3 version (preview/confirm)
+lumio-wiki cleanup-s3 <dest>                      # report incomplete S3 version prefixes; deletes nothing
+lumio-wiki diff-s3 <dest> --from <v1> --to <v2>   # deterministic delta between two immutable S3 versions
 ```
 
 Git is required for authoring and admission, not ordinary reads, queries or

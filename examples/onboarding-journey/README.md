@@ -3,16 +3,18 @@
 This is the executable companion to the canonical quickstart
 ([`docs/quickstart.md`](../../docs/quickstart.md), issue #180). It contains the
 one Knowledge Source the journey ingests and a scriptable smoke journey that
-runs the quickstart's exact commands, in order, and fails on any unexpected
-outcome — so documentation drift between the quickstart and the CLI is caught
-by CI rather than by a reader.
+runs the quickstart's exact local commands, in order, and fails on any
+unexpected outcome — so documentation drift between the quickstart and the
+CLI is caught by CI rather than by a reader. When an S3-compatible endpoint
+is configured, the same script continues through the optional
+[`docs/howto-s3-publish.md`](../../docs/howto-s3-publish.md) commands.
 
 ## Contents
 
 | Path | Role |
 |---|---|
 | `sources/support-runbook.md` | The raw Knowledge Source the journey ingests (managed ingest input; you never commit raw sources into a Knowledge Base). |
-| `smoke-journey.sh` | The scriptable journey: Maintainer setup → ontology starter → seed pages → managed ingest → proposal review → publish → retrieval/citation/traversal → Source Artifact inspection → S3 publication with and without LanceDB → read-only Reader project → expected zero-index fallback. |
+| `smoke-journey.sh` | The scriptable journey: Maintainer setup → ontology starter → seed pages → managed ingest → Git review and exact-revision admission → local publish → retrieval/citation/traversal → Source Artifact inspection → (S3 endpoint configured) S3 publication with and without LanceDB → read-only Reader project → expected zero-index fallback. |
 
 ## Run it
 
@@ -24,8 +26,8 @@ Local steps only (no object store needed):
 
 Full journey including S3-compatible publication (same environment variables
 the CLI and S3-compatible test suites read). Start SeaweedFS `weed mini` with
-the bucket and **labelled local-test credentials** shown in the canonical
-quickstart, then run:
+the bucket and **labelled local-test credentials** shown in the optional S3
+guide ([`docs/howto-s3-publish.md`](../../docs/howto-s3-publish.md)), then run:
 
 ```bash
 export LUMIO_S3_ENDPOINT=http://localhost:8333
@@ -52,9 +54,9 @@ LUMIO_WIKI_BIN="uv --project /path/to/lumio run lumio-wiki" ./smoke-journey.sh
 ## What a PASS proves
 
 - The quickstart's command sequence works verbatim in a fresh project: setup,
-  ontology starter, seeded Entity pages, managed document ingest, proposal
-  review and publish, retrieval with citation open actions, canonical graph
-  traversal, and truthful Source Artifact unavailability (retention is
+  ontology starter, seeded Entity pages, managed document ingest, Git review
+  and exact-revision publish, retrieval with citation open actions, canonical
+  graph traversal, and truthful Source Artifact unavailability (retention is
   disabled by default and the CLI says so).
 - Against an S3-compatible endpoint: immutable publication (`publish-s3`) with zero-index and
   LanceDB artifacts, read-only Reader setup (`setup --from`), pathless reads,
