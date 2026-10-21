@@ -27,7 +27,7 @@ The documentation follows [Diátaxis](https://diataxis.fr/):
 - **[Reference](../../docs/README.md#reference):** look up CLI commands, data-source configuration, and migration mappings.
 - **[Explanation](../../docs/explanations/how-ariadne-works.md):** understand Ariadne's layers, governance gates, and authority boundaries.
 
-The [documentation index](../../docs/README.md) lists all guides and references for **Ariadne 0.6.0**.
+The [documentation index](../../docs/README.md) lists all guides and references for **Ariadne 0.6.1**.
 
 **Data Contracts:** the [reference](../../docs/reference/data-contracts.md) describes
 Core’s limited, pinned ODCS v3.2.0 consumer profile, separate Git bindings and
