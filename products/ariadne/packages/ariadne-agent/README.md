@@ -2,16 +2,16 @@
 
 The installable Ariadne Agent backend: a fixed-role, in-memory conversation
 over **native Ariadne Python tools** — no CLI, no shell, no server, no raw SQL
-([spec 2026-09-29-0006](../project/specs/2026-09-29-0006-ariadne-agent-backend.md),
-[ADR-0014](../project/adr/0014-embedded-tau-agent-backend.md), issue #23).
+([spec 2026-09-29-0006](../../project/specs/2026-09-29-0006-ariadne-agent-backend.md),
+[ADR-0014](../../project/adr/0014-embedded-tau-agent-backend.md), issue #23).
 This revision ships the **Analyst** and **Authoring** roles plus optionally
 configured **role-restricted stdio MCP** tools (issue #25).
 
 > **Compatibility boundary:** this separately versioned Agent/Tau stack was not
 > qualified by the Core 0.6.0 / Lumio 0.4.0 release. The API examples below
 > describe this package, not a certified install of the new pair. Start with
-> the [local CLI tutorial](../docs/tutorials/lumio-ariadne-local.md); optional
-> Core MCP is documented separately in the [CLI reference](../docs/reference/cli.md#mcp).
+> the [local CLI tutorial](../../../../integration/docs/tutorials/lumio-ariadne-local.md); optional
+> Core MCP is documented separately in the [CLI reference](../../docs/reference/cli.md#mcp).
 
 ## Install
 
@@ -30,7 +30,7 @@ only; the published dependency metadata names the distribution); `tau-mcp`
 resolves the same way from its own repository checkout:
 
 ```bash
-cd ariadne-agent && uv run pytest -q tests/test_analyst.py
+cd products/ariadne/packages/ariadne-agent && uv run pytest -q tests/test_analyst.py
 ```
 
 ## Use
@@ -131,7 +131,7 @@ the session.
   `edit_proposal` accept `contract` and separate `contract_bindings` kinds,
   preserving producer identity/content. Static validity is not live conformance;
   dependent admission needs complete passing evidence plus the human gate.
-  See [the limited ODCS v3.2.0 profile](../docs/reference/data-contracts.md);
+  See [the limited ODCS v3.2.0 profile](../../docs/reference/data-contracts.md);
   no full ODCS, current source health or #76 integration claim is implied.
 - **Guidance**: the version-matched packaged `ariadne/skill_assets/SKILL.md`
   from the installed `ariadne-data`, plus a short native-tool mapping. No

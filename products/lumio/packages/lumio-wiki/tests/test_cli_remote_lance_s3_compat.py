@@ -27,7 +27,7 @@ from lumio_wiki.source_references import (
 )
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
+FIXTURES = ROOT / "tests" / "fixtures"
 
 obstore = pytest.importorskip("obstore", reason="obstore required for S3-compatible integration")
 pytest.importorskip("lumio_lancedb", reason="lumio-lancedb required for the CLI binding journey")

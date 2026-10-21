@@ -11,7 +11,7 @@ Ariadne is a Python package with embedded DuckDB. Use it locally through the CLI
 
 ## Start locally
 
-Follow [Lumio + Ariadne locally](../../docs/tutorials/lumio-ariadne-local.md) for a complete
+Follow [Lumio + Ariadne locally](../../../../integration/docs/tutorials/lumio-ariadne-local.md) for a complete
 worked example with three synthetic orders: **150 EUR recognized revenue and two
 completed orders**, returned with the governing policy and citations. It uses the
 published Core 0.6.0 / Lumio 0.4.0 pair, ordinary Git and local files; no Docker, S3
@@ -40,26 +40,26 @@ cross-system identifier.
 
 **Lumio integration:** Lumio is an independent product developed alongside
 Ariadne in this shared repository; neither package requires the other.
-[Lumio bound releases](../../docs/reference/lumio-bound-releases.md)
+[Lumio bound releases](../../../../integration/docs/reference/lumio-bound-releases.md)
 describe the optional integrated context binding: one shared Content Commit, an
 operator-confirmed overall admission activating a local immutable Bound Release,
 strict `metric`/`policy`/`reference` profiles, full required Policy context on governed
 answers, and source-free navigation over the pinned published pages. Git is the
 standard transport and sync never activates a release — `ariadne status`
 reports the local Git HEAD separately from the admitted release (see
-[the local Git how-to](../../docs/how-to/lumio-git-local.md)); the SDK stays an optional
+[the local Git how-to](../../../../integration/docs/how-to/lumio-git-local.md)); the SDK stays an optional
 dependency, unsupported integrated operations refuse, and exact build pairing is
 recorded per release rather than assumed from package versions.
 
 ## Source development
 
 Work on Ariadne itself happens from the member checkout, not inside a data
-project. Run these from `packages/ariadne-data` inside the repository clone —
-the repository root is a non-distributable uv workspace and must never be
-editable-installed (`-e .` targets this member directory only):
+project. Run these from `products/ariadne/packages/ariadne-data` inside the
+repository clone — the repository root is a non-distributable uv workspace and
+must never be editable-installed (`-e .` targets this member directory only):
 
 ```bash
-cd packages/ariadne-data
+cd products/ariadne/packages/ariadne-data
 uv venv --python 3.14 .venv
 uv pip install --python .venv/bin/python -e .
 source .venv/bin/activate
@@ -68,7 +68,7 @@ uv pip install --python .venv/bin/python -e '.[mcp]'
 ../../examples/retail-demo/mcp_client.py --project /path/to/admitted/retail-project
 ```
 
-The `examples/` tree stays at the repository root (the path above is
+The `examples/` tree stays in the Ariadne product area (the path above is
 member-relative). For a candidate-wheel check, run `uv build` in this member
 directory, install `dist/ariadne_data-*.whl`
 into a fresh virtual environment, and follow the [getting-started tutorial](../../docs/tutorials/getting-started.md)

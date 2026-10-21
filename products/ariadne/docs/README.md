@@ -4,13 +4,13 @@ This documentation targets Ariadne 0.6.1 and is organized by reader goal, follow
 
 ## Tutorials
 
-- [Lumio + Ariadne locally](tutorials/lumio-ariadne-local.md) — start here for a complete example: knowledge, reviewed release, 150 EUR result, citations and an explicit update. No Docker, S3 or model key.
+- [Lumio + Ariadne locally](../../../integration/docs/tutorials/lumio-ariadne-local.md) — start here for a complete example: knowledge, reviewed release, 150 EUR result, citations and an explicit update. No Docker, S3 or model key.
 
 - [Get started](tutorials/getting-started.md) — learn by creating a project and reaching a first governed query.
 
 ## How-to guides
 
-- [Local Lumio Git workflow](how-to/lumio-git-local.md) — sync content, inspect admitted identity and explicitly activate a reviewed Bound Release.
+- [Local Lumio Git workflow](../../../integration/docs/how-to/lumio-git-local.md) — sync content, inspect admitted identity and explicitly activate a reviewed Bound Release.
 - [Git-backed authoring](how-to/git-authoring.md) — create and review proposals, admit a catalog, explicitly reauthor content for a fresh Git project; no legacy-state import.
 - [Multiple S3 storages](how-to/multiple-s3-storages.md) — read two independently credentialed S3-compatible storages through named, credential-free profiles (optional; requires the appropriate runtime extensions).
 - [Context knowledge](how-to/context-knowledge.md) — refresh schema facts, resolve terms, inspect mappings, and author routing guidance.
@@ -20,19 +20,19 @@ This documentation targets Ariadne 0.6.1 and is organized by reader goal, follow
 
 - [CLI](reference/cli.md) — commands, options, project selectors, and transport entry points.
 - [Data sources](reference/data-sources.md) — supported source types and registry fields.
-- [Lumio bound releases](reference/lumio-bound-releases.md) — supported local profiles, exact package pairing, scope and overall admission.
+- [Lumio bound releases](../../../integration/docs/reference/lumio-bound-releases.md) — supported local profiles, exact package pairing, scope and overall admission.
 - [Context knowledge](reference/context-knowledge.md) — page types, structured metadata, limits, and role capabilities.
 - [Git migration mapping](reference/git-authoring-migration.md) — exact legacy-to-Git behavior and unchanged routes.
-- [Ariadne Agent API](../ariadne-agent/README.md) — Python API and conversation contract.
+- [Ariadne Agent API](../packages/ariadne-agent/README.md) — Python API and conversation contract.
 
 ## Lumio foundation docs
 
 The Lumio Knowledge Base foundation lives in the same repository as an
 independent product (no Ariadne installation needed):
 
-- [Quickstart](lumio/quickstart.md) — build, review and publish a Knowledge Base.
-- [Usage](lumio/usage.md) and [KB format](lumio/kb-format.md).
-- Optional [S3 publication](lumio/howto-s3-publish.md) and [packaging](lumio/packaging.md).
+- [Quickstart](../../lumio/docs/quickstart.md) — build, review and publish a Knowledge Base.
+- [Usage](../../lumio/docs/usage.md) and [KB format](../../lumio/docs/kb-format.md).
+- Optional [S3 publication](../../lumio/docs/howto-s3-publish.md) and [packaging](../../lumio/docs/packaging.md).
 - Lumio SDK package README: [`lumio-wiki`](../../lumio/packages/lumio-wiki/README.md).
 
 ## Explanation

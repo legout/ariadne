@@ -16,7 +16,7 @@ from lumio_wiki.distiller import _build_distill_system_prompt
 from lumio_wiki.records import EntityTypeDefinition, Ontology, PredicateDefinition
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
+FIXTURES = ROOT / "tests" / "fixtures"
 
 
 def _legacy_kb(tmp_path: Path, name: str = "kb") -> Path:

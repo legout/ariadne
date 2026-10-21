@@ -235,11 +235,11 @@ and printed operator commands. Native proposals, evidence and activation remain
 owned by the tools. You can inspect every helper action in
 [`demo.py`](../../examples/local-lumio-ariadne/demo.py).
 
-- [Standalone Ariadne setup](getting-started.md) — start your own data project.
-- [Lumio local quickstart](../lumio/quickstart.md) — maintain standalone knowledge without Ariadne.
-- [Git authoring](../how-to/git-authoring.md) and [local sync](../how-to/lumio-git-local.md) — maintain an integrated project.
+- [Standalone Ariadne setup](../../../products/ariadne/docs/tutorials/getting-started.md) — start your own data project.
+- [Lumio local quickstart](../../../products/lumio/docs/quickstart.md) — maintain standalone knowledge without Ariadne.
+- [Git authoring](../../../products/ariadne/docs/how-to/git-authoring.md) and [local sync](../how-to/lumio-git-local.md) — maintain an integrated project.
 - [Bound Release reference](../reference/lumio-bound-releases.md) — exact support, refusals, scope and build matching.
-- [Optional MCP](../reference/cli.md#mcp) — connect an agent after the local example works.
+- [Optional MCP](../../../products/ariadne/docs/reference/cli.md#mcp) — connect an agent after the local example works.
 
 A different Core/SDK build requires genuine revalidation and fresh matching
 admission. S3 and LanceDB are optional later topics; the integrated knowledge

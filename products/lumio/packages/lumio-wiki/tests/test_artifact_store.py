@@ -55,7 +55,7 @@ from lumio_wiki.s3_publish import (  # noqa: E402
 )
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures" / "valid"
+FIXTURES = ROOT / "tests" / "fixtures" / "valid"
 
 RAW = b"%PDF-1.4 original source bytes for the artifact suite"
 

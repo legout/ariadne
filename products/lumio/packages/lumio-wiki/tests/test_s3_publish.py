@@ -70,7 +70,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from obstore.store import ObjectStore
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
+FIXTURES = ROOT / "tests" / "fixtures"
 VALID = FIXTURES / "valid"
 CATEGORIZED = FIXTURES / "categorized_kb"
 

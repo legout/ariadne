@@ -23,7 +23,7 @@
   Core member lint via its existing dev extra).
 - No new runtime feature, API or dependency change; navigation over admitted
   local Published Versions stays local-only. Release channel tag:
-  `lumio-v0.4.1`. See [release notes](release-notes/v0.4.1.md).
+  `lumio-v0.4.1`. See [release notes](docs/release-notes/v0.4.1.md).
 
 ## 0.4.0 - 2026-10-21
 
@@ -40,7 +40,7 @@
   Core inspection evidence or admission authority.
 - Release `lumio-wiki` and `lumio-lancedb` together at 0.4.0; the adapter requires
   `lumio-wiki>=0.4.0,<0.5.0`. Python remains >=3.14, optional extras are unchanged,
-  and the private application is excluded. See [release notes](release-notes/v0.4.0.md).
+  and the private application is excluded. See [release notes](docs/release-notes/v0.4.0.md).
 
 ## 0.3.0 - 2026-10-19
 
@@ -59,7 +59,7 @@
   verification, tag restrictions and environment-scoped credentials remain.
 - The base SDK stays model-free and independent of Ariadne, DuckDB and SQLGlot.
   The private application and Ariadne's deferred full integration are not part
-  of this release. See [release notes](release-notes/v0.3.0.md).
+  of this release. See [release notes](docs/release-notes/v0.3.0.md).
 
 ## 0.2.0 - 2026-10-18
 
@@ -82,6 +82,6 @@
 - Publish directly to PyPI using one environment-scoped token, retain build
   provenance and byte checks, and preserve manual production approval.
 
-See [release notes](release-notes/v0.2.0.md) for migration, extras, Python
+See [release notes](docs/release-notes/v0.2.0.md) for migration, extras, Python
 requirements and verification limits. The private application and joint Ariadne
 context profile are outside this release.

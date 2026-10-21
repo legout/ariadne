@@ -27,7 +27,7 @@ from lumio_wiki.records import CompiledPage
 from lumio_wiki.source_registry import SourceRegistry
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
+FIXTURES = ROOT / "tests" / "fixtures"
 
 #: Raw bytes for the private Knowledge Source used in Source Drift tests.
 DRIFT_RAW = b"drift diagnostic source bytes (#196)"

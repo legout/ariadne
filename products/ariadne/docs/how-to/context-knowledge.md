@@ -4,8 +4,8 @@ Use these procedures when maintaining schemas, business terms, identifier mappin
 
 The paths and page-edit examples below describe standalone Core. Integrated
 projects keep curated context in the Lumio `knowledge/` subtree and use the
-[Bound Release contract](../reference/lumio-bound-releases.md); do not create a
-second editable context mirror. [The local tutorial](../tutorials/lumio-ariadne-local.md)
+[Bound Release contract](../../../../integration/docs/reference/lumio-bound-releases.md); do not create a
+second editable context mirror. [The local tutorial](../../../../integration/docs/tutorials/lumio-ariadne-local.md)
 shows that route with supplied files.
 
 ## Refresh a table schema

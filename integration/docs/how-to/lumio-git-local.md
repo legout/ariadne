@@ -4,7 +4,7 @@ Use this guide when an integrated project (`context_integration.yaml`, one
 shared Content Commit) receives new commits through ordinary local Git. It is
 a task guide: for the binding model see the [bound releases reference](
 ../reference/lumio-bound-releases.md), and for the base authoring flow see
-[How to author a Git-managed project](git-authoring.md).
+[How to author a Git-managed project](../../../products/ariadne/docs/how-to/git-authoring.md).
 
 The invariant is: **Git sync never activates a release.** Fetching, merging or
 checking out a commit — including the commit an admission was previewed
@@ -28,7 +28,7 @@ admission: source approvals, proposals and the active admission descriptor
 live in the project's local `.ariadne` state and do not travel with Git. Where
 they are absent, start the native chain first — `ariadne-authoring start`,
 source approval, candidate edits, validation and review — as described in
-[How to author a Git-managed project](git-authoring.md). Nothing in this
+[How to author a Git-managed project](../../../products/ariadne/docs/how-to/git-authoring.md). Nothing in this
 guide replaces that chain.
 
 ## Inspect before and after a sync

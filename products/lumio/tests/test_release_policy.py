@@ -25,13 +25,14 @@ from pathlib import Path
 
 import tomllib
 
-ROOT = Path(__file__).resolve().parents[2]
+PRODUCT_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]  # .github/ stays at the repository root
 MEMBERS = {
-    "lumio-wiki": ROOT / "packages" / "lumio-wiki" / "pyproject.toml",
-    "lumio-lancedb": ROOT / "packages" / "lumio-lancedb" / "pyproject.toml",
+    "lumio-wiki": PRODUCT_ROOT / "packages" / "lumio-wiki" / "pyproject.toml",
+    "lumio-lancedb": PRODUCT_ROOT / "packages" / "lumio-lancedb" / "pyproject.toml",
 }
-RELEASE_NOTES = ROOT / "docs" / "lumio" / "release-notes" / "v0.2.0.md"
-RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+RELEASE_NOTES = PRODUCT_ROOT / "docs" / "release-notes" / "v0.2.0.md"
+RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
 
 MEMBER_NAMES = tuple(MEMBERS)
 

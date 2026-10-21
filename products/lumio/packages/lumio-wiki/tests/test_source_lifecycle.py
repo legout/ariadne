@@ -62,7 +62,7 @@ Policy text.
 
 def _categorized_knowledge_base(tmp_path: Path):
     root = tmp_path / "categorized-kb"
-    fixtures = Path(__file__).parents[3] / "tests" / "lumio" / "fixtures"
+    fixtures = Path(__file__).parents[3] / "tests" / "fixtures"
     shutil.copytree(fixtures / "categorized_kb", root)
     kb, report = lw.load_knowledge_base(root)
     assert report.is_valid, report

@@ -16,7 +16,7 @@ import pytest
 from lumio_wiki.cli import main
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
+FIXTURES = ROOT / "tests" / "fixtures"
 
 DUP_PAGE = """---
 id: "{id}"

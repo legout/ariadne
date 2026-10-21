@@ -291,7 +291,7 @@ def test_url_fetch_policy_defaults_are_bounded():
 # ---------------------------------------------------------------------------
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures" / "valid"
+FIXTURES = ROOT / "tests" / "fixtures" / "valid"
 
 
 def _kb(tmp_path: Path) -> Path:

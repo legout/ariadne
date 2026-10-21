@@ -33,7 +33,7 @@ from lumio_wiki.legacy_proposals import (
 from lumio_wiki.source_registry import SourceRegistry, SourceRegistryError
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures" / "legacy_ingest"
+FIXTURES = ROOT / "tests" / "fixtures" / "legacy_ingest"
 
 BASELINE_PAGE = """---
 id: "entity:export-fixture"

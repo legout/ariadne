@@ -89,7 +89,8 @@ remain the gates (see [products/lumio/docs/packaging.md](products/lumio/docs/pac
   environment, intentionally not a workspace member; its Tau dependencies
   are external to this repository and are not qualified here.
 - Lint rules are component-scoped: the root rules govern the shared trees,
-  Lumio's product-wide rules live in `products/lumio/pyproject.toml`, the
+  Lumio's product-wide rules live in `products/lumio/.ruff.toml` and its
+  native pytest selection in `products/lumio/pytest.ini`, the
   Core member keeps its own, and examples split accordingly
   (`products/ariadne/examples/.ruff.toml`,
   `products/lumio/examples/.ruff.toml`,

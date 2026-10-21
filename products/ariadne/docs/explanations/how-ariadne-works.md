@@ -19,7 +19,7 @@ Ariadne owns metric execution and checks the supported Metric/Policy/Reference
 profiles. One reviewed Git commit captures the knowledge and analytics inputs.
 The operator confirms the combined release, after which navigation and metric
 context use its pinned immutable knowledge. A plain Git update never activates
-a new release or repins an existing session. See [the local tutorial](../tutorials/lumio-ariadne-local.md).
+a new release or repins an existing session. See [the local tutorial](../../../../integration/docs/tutorials/lumio-ariadne-local.md).
 
 An ordinary knowledge page can explain a term without becoming an executable
 metric or an approved technical mapping. The Semantic Layer owns calculation;

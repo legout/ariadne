@@ -20,8 +20,9 @@ A linked checkout with a `.git` file needs its common Git directory mounted at
 the same path too; other worktrees the operator uses also need their actual
 paths. This minimal template assumes the standalone root.
 
-Set the `.env.example` Docker entries in an existing `.env` (do not overwrite
-existing credentials), or export them in your shell:
+Set the Docker entries from `products/ariadne/deploy/.env.example` in an
+existing `.env` (do not overwrite existing credentials), or export them in
+your shell:
 
 ```bash
 export ARIADNE_PROJECT_DIR=/srv/ariadne/retail  # existing absolute project root
@@ -31,6 +32,7 @@ export ARIADNE_MCP_HOST=mcp.example.org
 export ARIADNE_MCP_ORIGIN=https://mcp.example.org
 export ARIADNE_TOOLSET=authoring  # bootstrap; combined needs a usable catalog
 
+cd products/ariadne/deploy   # from the repository root; Compose and .env resolve here
 docker compose config --quiet
 docker compose build
 docker compose up -d
@@ -109,7 +111,7 @@ Readiness does not attest every source connection or metric result.
 Run the focused disposable-container check after building:
 
 ```bash
-ARIADNE_DOCKER_TEST_IMAGE=ariadne-mcp:local uv run pytest tests/test_docker_mcp.py
+ARIADNE_DOCKER_TEST_IMAGE=ariadne-mcp:local uv run pytest products/ariadne/packages/ariadne-data/tests/test_docker_mcp.py
 ```
 
 It uses a synthetic external Git project, a separate container client, an

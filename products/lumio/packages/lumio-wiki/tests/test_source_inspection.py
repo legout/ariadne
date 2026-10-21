@@ -42,7 +42,7 @@ from lumio_wiki.source_inspection import (
 from lumio_wiki.source_registry import SourceRegistry
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
+FIXTURES = ROOT / "tests" / "fixtures"
 RAW = b"%PDF-1.4 exact original source artifact bytes (#165)"
 
 

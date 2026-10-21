@@ -40,7 +40,7 @@ from lumio_wiki.capture import (
 )
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
+FIXTURES = ROOT / "tests" / "fixtures"
 CAPTURE_FIXTURES = FIXTURES / "capture"
 SECRET_FIXTURES = [
     # (label, secret-bearing text, category asserted in redaction_counts)

@@ -4,7 +4,7 @@ services:
     # .dockerignore keeps governing it); the Dockerfile moved with the
     # product's deploy files.
     build:
-      context: ../..
+      context: ../../..
       dockerfile: products/ariadne/deploy/Dockerfile
     image: ${ARIADNE_IMAGE:-ariadne-mcp:local}
     user: "${ARIADNE_UID:-1000}:${ARIADNE_GID:-1000}"

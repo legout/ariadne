@@ -1,2 +1,2 @@
 # Lumio-side examples follow the product-wide Lumio lint rules.
-extend = "../pyproject.toml"
+extend = "../.ruff.toml"

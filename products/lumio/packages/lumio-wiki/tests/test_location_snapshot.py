@@ -39,7 +39,7 @@ from lumio_wiki.records import (
 )
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
+FIXTURES = ROOT / "tests" / "fixtures"
 
 # Every equivalence assertion runs over both shipped filesystem fixtures: the
 # legacy-flat ``valid`` KB (root-level pages with Relationships) and the

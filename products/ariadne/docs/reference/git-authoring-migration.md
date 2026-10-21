@@ -1,6 +1,6 @@
 # Git-only authoring and route reference
 
-For a complete local integrated example, see [Lumio + Ariadne locally](../tutorials/lumio-ariadne-local.md).
+For a complete local integrated example, see [Lumio + Ariadne locally](../../../../integration/docs/tutorials/lumio-ariadne-local.md).
 
 Core exposes one durable authoring route: revision-checked Git proposals followed by explicit human approval and admission. Project queries and discovery use only the exact human-admitted snapshot. This reference describes the supported contract; it is not a migration tool.
 

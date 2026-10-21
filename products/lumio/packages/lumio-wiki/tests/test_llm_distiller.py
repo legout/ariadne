@@ -35,7 +35,7 @@ from lumio_wiki.ingest import _extract_page_records, prepare_proposal_content
 from lumio_wiki.source_processor import TextMarkdownSourceProcessor
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures" / "valid"
+FIXTURES = ROOT / "tests" / "fixtures" / "valid"
 
 # A minimal valid Compiled Page Markdown the provider would return. It carries
 # the routing/durability fields a distilled page is expected to declare.

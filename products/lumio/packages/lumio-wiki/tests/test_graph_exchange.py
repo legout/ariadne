@@ -39,8 +39,8 @@ from lumio_wiki.okf import ExportVisibilityScope, select_export_pages
 from lumio_wiki.records import CompiledPage
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
-EVAL_KB = ROOT / "eval" / "lumio" / "fixture_kb"
+FIXTURES = ROOT / "tests" / "fixtures"
+EVAL_KB = ROOT / "eval" / "fixture_kb"
 GUARDRAILS_KB = FIXTURES / "guardrails"
 CATEGORIZED_KB = FIXTURES / "categorized_kb"
 

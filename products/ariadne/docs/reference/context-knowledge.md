@@ -5,7 +5,7 @@ This page describes the context-layer artifacts, generated facts, and tool roles
 These `context_layer/` paths describe standalone Core projects. In an integrated
 project, curated Metric/Policy/Reference pages live once under `knowledge/`, carry
 the supported Lumio profile and are consumed through the pinned SDK; ordinary
-unprofiled pages are documentation. See [Bound Releases](lumio-bound-releases.md).
+unprofiled pages are documentation. See [Bound Releases](../../../../integration/docs/reference/lumio-bound-releases.md).
 Generated Core technical artifacts remain Core-owned.
 
 ## Page types and ownership

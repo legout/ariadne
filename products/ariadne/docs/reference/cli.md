@@ -18,11 +18,11 @@ There is no plain-root serving route. The former `--served`, `--sources` and `--
 
 `ariadne setup --project DIR` is read-only with respect to authority and Git configuration: it may scaffold, inspect filenames and print operator handoffs, but it never runs `git init/config`, opens a source, approves sources, or admits. `ariadne status --project DIR [--json]` reports Git prerequisites, proposals, source approval, admission, and readiness without connecting to sources. `ariadne review --project DIR [--proposal ID]` is an operator walkthrough for one Git proposal; without an ID it lists pending proposals. A terminal prompt does not establish authenticated human identity.
 
-For the complete runnable local pair, use [the joint tutorial](../tutorials/lumio-ariadne-local.md).
+For the complete runnable local pair, use [the joint tutorial](../../../../integration/docs/tutorials/lumio-ariadne-local.md).
 The command table below includes standalone capabilities. With
 `context_integration.yaml`, `query-detail`, `query-records`, `define-metric`,
 `save-example` and `search-examples` refuse; use the exact supported set in
-[Bound Releases](lumio-bound-releases.md#supported-and-refused-operations).
+[Bound Releases](../../../../integration/docs/reference/lumio-bound-releases.md#supported-and-refused-operations).
 `list-datasets` reads the approved live catalog; it is not source-free.
 
 ## Query and discovery

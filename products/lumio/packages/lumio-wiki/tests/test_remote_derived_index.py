@@ -26,7 +26,7 @@ from lumio_wiki.s3_location import (
 )
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
+FIXTURES = ROOT / "tests" / "fixtures"
 
 obstore = pytest.importorskip("obstore", reason="obstore required for the descriptor suite")
 

@@ -87,7 +87,7 @@ unambiguous server identifier. Neither that server's URL nor a binding creates
 a source, supplies credentials, changes an approved endpoint or widens S3 scope.
 The host's Source Approval and frozen effective Storage Binding remain required.
 These remain repository-local contract identities, not portable OSI/Lumio IDs.
-For an integrated project the [Bound Release](lumio-bound-releases.md) records
+For an integrated project the [Bound Release](../../../../integration/docs/reference/lumio-bound-releases.md) records
 these identities alongside its exact knowledge pin; it does not merge their
 meaning or make a binding into source permission.
 

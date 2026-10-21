@@ -42,7 +42,7 @@ from lumio_wiki.s3_location import (
 )
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
+FIXTURES = ROOT / "tests" / "fixtures"
 
 # Every equivalence assertion runs over both shipped filesystem fixtures: the
 # legacy-flat ``valid`` KB and the categorized ``categorized_kb``.

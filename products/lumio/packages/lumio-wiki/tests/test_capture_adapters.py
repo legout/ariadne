@@ -301,7 +301,7 @@ def test_export_then_preview_composes_through_capture_contract(
     assert manifest.transcript == "transcript.jsonl"
 
     kb_root = tmp_path / "kb"
-    shutil.copytree(ROOT / "tests" / "lumio" / "fixtures" / "valid", kb_root)
+    shutil.copytree(ROOT / "tests" / "fixtures" / "valid", kb_root)
     kb, report = lw.load_knowledge_base(kb_root)
     assert report.is_valid, report
     before = {p.relative_to(kb_root): p.read_bytes() for p in kb_root.rglob("*") if p.is_file()}

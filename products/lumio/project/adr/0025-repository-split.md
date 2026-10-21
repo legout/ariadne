@@ -89,8 +89,8 @@ with their tests, eval assets, scripts, experiments, examples and docs —
 moved from `legout/lumio-wiki` into the `legout/ariadne` repository, approved
 to be renamed `legout/ariadne-lumio` at an explicitly authorized cutover that
 has not happened yet (Ariadne
-[ADR-0027](../../adr/0027-public-monorepo.md) and
-[spec 0030](../../specs/2026-10-21-0030-public-monorepo.md)). This amends
+[ADR-0027](../../../../project/adr/0027-public-monorepo.md) and
+[spec 0030](../../../../project/specs/2026-10-21-0030-public-monorepo.md)). This amends
 only the public repository location named in this decision; it is not a
 rewrite of the record above. Everything else stands unchanged: the private
 application repository `legout/lumio` and its exclusion remain binding, and

@@ -38,7 +38,7 @@ from lumio_wiki.knowledge_base import (
 )
 from lumio_wiki.records import CLAIM_STATUS_ACCEPTED
 
-CORPUS = Path(__file__).resolve().parents[3] / "eval" / "lumio" / "ontology_corpus"
+CORPUS = Path(__file__).resolve().parents[3] / "eval" / "ontology_corpus"
 
 
 @pytest.fixture(scope="module")

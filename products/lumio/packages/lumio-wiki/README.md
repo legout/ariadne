@@ -1,7 +1,7 @@
 # lumio-wiki
 
 > Portable, model-free Knowledge Base foundation for
-> [Lumio](../../project/lumio/CONTEXT.md) — a compiled Markdown knowledge base your coding agents
+> [Lumio](../../CONTEXT.md) — a compiled Markdown knowledge base your coding agents
 > can load, validate, search, traverse, ingest, and publish, with citations
 > and Git-native authoring with explicit Publication Admission. The deployable Lumio web application (chat UI,
 > auth, roles, providers) lives in a separate private repository and consumes
@@ -22,20 +22,20 @@ For the *why* and the vision, read the domain docs — this README documents
 > and expected current version. A commit, passing validation or general coding
 > request is not permission to publish. Hosted clients enforce their own roles.
 
-- [`CONTEXT.md`](../../project/lumio/CONTEXT.md) — ubiquitous language (glossary).
-- [`project/specs/0002-core-sdk.md`](../../project/lumio/specs/0002-core-sdk.md) — Core SDK PRD.
-- [`project/adr/`](../../project/lumio/adr/) — architectural decisions (ADR-0025 records the
+- [`CONTEXT.md`](../../CONTEXT.md) — ubiquitous language (glossary).
+- [`project/specs/0002-core-sdk.md`](../../project/specs/0002-core-sdk.md) — Core SDK PRD.
+- [`project/adr/`](../../project/adr/) — architectural decisions (ADR-0025 records the
   repository split).
-- [`docs/kb-format.md`](../../docs/lumio/kb-format.md) — canonical Compiled Page frontmatter reference.
-- [`docs/ariadne-context.md`](../../docs/lumio/ariadne-context.md) — optional pinned Ariadne Context Profile
+- [`docs/kb-format.md`](../../docs/kb-format.md) — canonical Compiled Page frontmatter reference.
+- [`docs/ariadne-context.md`](../../docs/ariadne-context.md) — optional pinned Ariadne Context Profile
   consumption (exact identity, scoped local navigation, boundaries).
-- [`docs/quickstart.md`](../../docs/lumio/quickstart.md) — canonical local/Git-first
+- [`docs/quickstart.md`](../../docs/quickstart.md) — canonical local/Git-first
   onboarding journey (empty project → reviewed publication → grounded search);
   the optional S3/Docker publication path lives in
-  [`docs/howto-s3-publish.md`](../../docs/lumio/howto-s3-publish.md). Runnable via
-  [`examples/onboarding-journey/`](../../examples/lumio/onboarding-journey/).
+  [`docs/howto-s3-publish.md`](../../docs/howto-s3-publish.md). Runnable via
+  [`examples/onboarding-journey/`](../../examples/onboarding-journey/).
 - Joint local tutorial (Lumio + Ariadne), canonical and cross-repository:
-  [`docs/tutorials/lumio-ariadne-local.md`](../../docs/tutorials/lumio-ariadne-local.md)
+  [`docs/tutorials/lumio-ariadne-local.md`](../../../../integration/docs/tutorials/lumio-ariadne-local.md)
   in this repository's Ariadne-side docs. The SDK links to it; the joint
   walkthrough lives only there.
 
@@ -144,7 +144,7 @@ Git/public KB content; select `--source-registry <private-dir>` explicitly for
 managed ingest/publication. Setup does not initialize Git or infer adoption.
 Legacy export needs explicit `--confirm` using the preview's captured baseline;
 it preserves the original store and creates an unadmitted branch, never a
-publication. See the [quickstart](../../docs/lumio/quickstart.md).
+publication. See the [quickstart](../../docs/quickstart.md).
 
 `ingest --distiller llm` requires `lumio-wiki[llm]`; PDF/DOCX/image sources
 require `lumio-wiki[documents]`. Both fail with actionable guidance if the
@@ -202,11 +202,11 @@ Python-first: msgspec, LanceDB (optional adapter).
 lumio-wiki validate ./knowledge-base
 ```
 
-For the full field table, see **[`docs/kb-format.md`](../../docs/lumio/kb-format.md)**. A
+For the full field table, see **[`docs/kb-format.md`](../../docs/kb-format.md)**. A
 categorized Knowledge Base additionally carries a versioned root Control File
 (`lumio.yaml`) and marked reserved artifacts (Navigation Index `index.md`, Hot
 Index `hot.md`, Activity Log `log.md`); see
-[ADR-0008](../../project/lumio/adr/0008-knowledge-base-control-file-and-published-artifacts.md).
+[ADR-0008](../../project/adr/0008-knowledge-base-control-file-and-published-artifacts.md).
 
 ## Development
 
@@ -215,11 +215,15 @@ Requirements: **Python ≥ 3.14** and [uv](https://docs.astral.sh/uv/).
 ```bash
 uv sync                                       # install the workspace members (from the repository root)
 uv lock --check                               # verify the lockfile is current
-uv run pytest -q -n 4                         # full suite (four parallel workers; never -n auto)
+cd products/lumio                             # Lumio's native development profile
+uv run pytest -q -n 4                         # Lumio native full suite (four workers; never -n auto)
 uv run pytest -q packages/lumio-wiki/tests    # focused tests stay serial
-uv run ruff check .                           # lint
-uv run lumio-wiki validate tests/lumio/fixtures/valid   # sanity check the sample KB
+uv run ruff check .                           # lint (Lumio product rules)
+uv run lumio-wiki validate tests/fixtures/valid   # sanity check the sample KB
 ```
+
+The repository-root default is shared coordination coverage only — the
+Lumio-native commands above are this package's full qualification.
 
 ### Codebase layout
 
@@ -230,7 +234,7 @@ packages/lumio-lancedb/src/lumio_lancedb/ # Optional LanceDB enhanced-retrieval 
 
 ## Packaging, ownership, and migration
 
-Quick reference (full contract in [`docs/packaging.md`](../../docs/lumio/packaging.md)):
+Quick reference (full contract in [`docs/packaging.md`](../../docs/packaging.md)):
 
 - **`lumio-wiki`** owns the canonical Knowledge Base model, loading,
   validation, Navigation/Hot Indexes, deterministic zero-index retrieval, typed
@@ -261,7 +265,7 @@ application lives in a separate private repository (ADR-0025).
 - **Optional Ariadne Context Profile** — versioned native Metric/Policy
   annotations preserved through authoring and publication, read back through
   immutable pinned published-context readers and scoped local navigation
-  ([docs/ariadne-context.md](../../docs/lumio/ariadne-context.md)). Purely optional: the
+  ([docs/ariadne-context.md](../../docs/ariadne-context.md)). Purely optional: the
   base SDK has no Ariadne dependency and adds no CLI command or service for
   it.
 

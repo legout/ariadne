@@ -5,7 +5,7 @@
 # products/lumio/packages/lumio-wiki and products/lumio/packages/lumio-lancedb;
 # the Agent keeps its own separate environment and is not a workspace member.
 # Product-native suites/lint run scoped from their product areas
-# (products/lumio/pyproject.toml; the Core member's own config).
+# (products/lumio/pytest.ini and .ruff.toml; the Core member's own config).
 [tool.uv]
 package = false
 
@@ -66,7 +66,7 @@ line-length = 100
 # repository coordination files. Product areas lint themselves under their
 # own configurations — the Core member (E,F,W,I,UP — no B) from
 # products/ariadne/packages/ariadne-data, Lumio's product-wide rules
-# (E,F,I,UP,B) from products/lumio/pyproject.toml, and the Agent from its
+# (E,F,I,UP,B) from products/lumio/.ruff.toml, and the Agent from its
 # own separate config. Spec 0031 §4: the root default must not silently
 # mean either product's suite/style.
 extend-exclude = ["products"]

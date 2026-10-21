@@ -34,7 +34,7 @@ from lumio_wiki.s3_location import (  # noqa: E402
 )
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
+FIXTURES = ROOT / "tests" / "fixtures"
 CATEGORIZED = FIXTURES / "categorized_kb"
 
 ADDED_PAGE = (

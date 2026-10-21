@@ -18,8 +18,8 @@ from pathlib import Path
 import pytest  # type: ignore[import-not-found]
 from lumio_wiki import cli
 
-ROOT = Path(__file__).parents[2]
-FIXTURES = ROOT / "tests" / "lumio" / "fixtures"
+ROOT = Path(__file__).parents[1]
+FIXTURES = ROOT / "tests" / "fixtures"
 
 _ENV_KEYS = ("LUMIO_KB_PATH", "LUMIO_PUBLISH_TO", "LUMIO_RETRIEVAL_BACKEND")
 

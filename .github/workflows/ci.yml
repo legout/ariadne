@@ -21,7 +21,8 @@ jobs:
       - run: uv run --locked ruff check .
       - run: uv run --locked pytest -q -n 4
       # Lumio's native full suite and lint run scoped from its product area
-      # with its own tool configuration (products/lumio/pyproject.toml) —
+      # with its own tool configuration (products/lumio/pytest.ini,
+      # products/lumio/.ruff.toml) —
       # same selection and rules as before the product-area layout.
       - name: Lumio native lint (product config)
         run: uv run --locked ruff check .
