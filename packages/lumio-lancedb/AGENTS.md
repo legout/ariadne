@@ -9,7 +9,9 @@ and ownership.
 
 - Validation follows the root suite: focused tests serial, full suite
   `uv run pytest -q -n 4`, never `-n auto`.
-- Depends only on `lumio-wiki` with its bounded lockstep range; Torch stays
-  behind the optional `embeddings` extra and never enters the base adapter.
+- The SDK is its only sibling dependency, bounded by the lockstep range; on
+  top of it the adapter's actual runtime dependencies are `lancedb`,
+  `pyarrow` and `msgspec[yaml]`, with the optional `embeddings` (Torch stays
+  behind it, never in the base adapter) and `s3` extras.
 - Apache-2.0; the license file sits beside this package.
 - The private Lumio web application is excluded (ADR-0025).

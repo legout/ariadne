@@ -1,8 +1,10 @@
 # Migration reference: lumio-wiki → this repository
 
 The public Lumio foundation moved from its own repository (`legout/lumio-wiki`)
-into this one, preserving the complete public commit history — both source
-histories are reachable from the default branch. Authority: Ariadne
+into this one, preserving the complete public commit history. In the current
+isolated migration candidate both histories are reachable from the migration
+branch; default-branch reachability follows only from the separately
+authorized integration. Authority: Ariadne
 [ADR-0027](../project/adr/0027-public-monorepo.md) and
 [spec 0030](../project/specs/2026-10-21-0030-public-monorepo.md); the scoped
 location amendment to the Lumio decision is in
@@ -35,8 +37,27 @@ location amendment to the Lumio decision is in
   redirect, so existing links keep working.
 - A cutover notice on the old `legout/lumio-wiki` repository and stopping its
   duplicate development/release workflows.
-- The release-channel configuration in this repository (`core-v*` /
-  `lumio-v*` tags).
+- Configuring release credentials in this repository (see below).
 
 None of these are live yet. Historical citations of the old URLs remain
 valid as history and are not rewritten automatically.
+
+## Release-credential prerequisites (owner actions, honestly scoped)
+
+Migration copies no credentials and creates no settings; token values and
+scopes were never read or inferred, only secret/environment **names** were
+inventoried:
+
+- The target repository (`legout/ariadne`) currently has **no GitHub
+  environments**. The old SDK repository has `pypi` and `testpypi`
+  environments.
+- `PYPI_API_TOKEN` secret names exist in both repositories. Core publishing
+  keeps its current model — a repository secret, no environment. The Lumio
+  family channel keeps its native model — the `pypi` environment plus
+  `PYPI_API_TOKEN`. Any credential-model change is an owner decision, not a
+  migration side effect.
+- Until the owner configures the `pypi` environment in this repository, a
+  `lumio-v*` release tag cannot complete its publication step; the Core
+  channel depends only on the existing repository secret.
+- Neither native release workflow creates GitHub Releases; none was added
+  here. External configuration gaps are disclosed rather than papered over.

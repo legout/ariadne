@@ -32,7 +32,8 @@
 
 ### Documentation map
 
-- `CONTEXT.md`: canonical domain vocabulary for the whole repository.
+- `CONTEXT.md`: canonical domain vocabulary for the Ariadne context;
+  `project/lumio/CONTEXT.md` is the Lumio vocabulary (see `CONTEXT-MAP.md`).
 - `project/adr/`: accepted architecture decisions.
 - `project/agents/`: workflow, tracker, and artifact-map configuration.
 - `project/specs/` or the configured tracker: feature behavior and acceptance.

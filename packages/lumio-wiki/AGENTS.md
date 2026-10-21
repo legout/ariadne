@@ -20,5 +20,6 @@ amendment). Root instructions and
 - Workspace imports are not standalone-wheel proof: keep the isolated wheel
   verifiers meaningful (ADR-0010).
 - Apache-2.0; the license file sits beside this package.
-- The private Lumio web application is excluded (ADR-0025); nothing here may
-  name or require it.
+- The private Lumio web application is excluded (ADR-0025): this package
+  must not import or require it; explanatory references to that boundary
+  remain allowed.
