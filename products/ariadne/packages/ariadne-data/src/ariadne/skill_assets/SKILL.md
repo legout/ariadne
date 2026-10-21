@@ -396,6 +396,13 @@ the operator's explicit overall admission — is the sole context authority:
   pinned snapshot (there are no dedicated CLI commands for them). Ordinary
   unprofiled pages are documentation, never Core-validated References; hidden
   or missing pages stay unavailable without leaking why.
+- The pinned release may live in local immutable publication (released) or,
+  in the unreleased source candidate, in S3 object storage admitted through an
+  explicitly selected declared storage profile. Serving rebuilds the reader
+  from the release's frozen transport binding; a drifted endpoint or missing
+  private local admission records refuses before SQL, public bucket objects
+  alone never satisfy admission, and no agent tool gains publication or
+  credential authority.
 - Governed `get-metric` and `query-metrics` answers carry the full bodies of
   every Policy their metrics require, resolved in the same pinned snapshot
   before SQL, with Bound Release identity and version-qualified citations.
