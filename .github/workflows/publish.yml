@@ -1,17 +1,20 @@
 name: publish
 
-# Core-only release (owner decision 2026-10-19, ADR-0018): a v* tag builds
-# and publishes ariadne-data only. ariadne-agent and tau-mcp are excluded
-# until separately authorized; their versions and sources stay unchanged.
-# The pinned lumio-wiki wheel built below is a test-pairing input only and
-# is never published; the tag must equal the root pyproject version. PyPI
-# auth remains the PYPI_API_TOKEN repository secret; no credential-model
-# change.
+# Core-only release (owner decision 2026-10-19, ADR-0018) on the core-v*
+# release channel (spec 0030 §5): a core-vX.Y.Z tag builds and publishes
+# ariadne-data only, from one Core output directory (dist/core). ariadne-agent
+# and tau-mcp are excluded until separately authorized; their versions and
+# sources stay unchanged. Release qualification pairs the exact PUBLISHED
+# lumio-wiki 0.4.0 producer wheel, fetched by immutable PyPI URL and verified
+# against its recorded SHA-256 — never a workspace or source-built unreleased
+# substitute (producer-first public pairing, spec 0030 §5). The tag must equal
+# the ariadne-data member version. PyPI auth remains the PYPI_API_TOKEN
+# repository secret; no credential-model change.
 
 on:
   push:
     tags:
-      - "v*"
+      - "core-v*"
 
 permissions:
   contents: read # token publishing needs no OIDC
@@ -28,41 +31,38 @@ jobs:
 
       - name: Verify tag matches the core project version
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
+          TAG="${GITHUB_REF_NAME#core-v}"
           CORE=$(python3 -c "import tomllib; \
-            print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+            print(tomllib.load(open('packages/ariadne-data/pyproject.toml','rb'))['project']['version'])")
           echo "tag=$TAG core=$CORE"
           test "$TAG" = "$CORE" || { echo "core $CORE != tag $TAG"; exit 1; }
 
-      - name: Build ariadne-data (core)
-        run: uv build
+      - name: Build ariadne-data (core) into its own output directory
+        run: uv build --package ariadne-data --out-dir dist/core
 
-      - name: Check out the pinned accepted Lumio producer source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: legout/lumio-wiki
-          ref: dfdd57e6000ca37bff67cb3bbc36032956a300bb
-          path: .ci-sdk-source
-
-      - name: Build the pinned lumio-wiki SDK wheel for test pairing
-        # Exact Lumio 0.4.0 release source, never floating main. Publish
-        # this producer source before pushing the Core release tag so the
-        # pinned checkout is available. The CI-built wheel is a test input;
-        # this job publishes only ariadne-data.
+      - name: Fetch the exact published lumio-wiki producer wheel for pairing
+        # Producer-first public pairing: the identity below is the real public
+        # PyPI artifact (parent-fetched metadata, recorded in the migration
+        # run state), pinned by immutable URL and SHA-256. This wheel is a
+        # test-pairing input only and is never published by this job.
         run: |
-          uv build --package lumio-wiki --wheel --out-dir .ci-sdk-dist
-          echo "lumio-wiki source ref: dfdd57e6000ca37bff67cb3bbc36032956a300bb"
-          sha256sum .ci-sdk-dist/lumio_wiki-*.whl
-        working-directory: .ci-sdk-source
+          mkdir -p .ci-sdk-dist
+          sdk_wheel=.ci-sdk-dist/lumio_wiki-0.4.0-py3-none-any.whl
+          sha=a7f871957a7a17b8ce31066641aea0c7bd27b5ef2360bbe0452c22fdb8e8a2d7
+          curl -fsSL -o "$sdk_wheel" \
+            "https://files.pythonhosted.org/packages/fc/44/b6cc61e4505ea38d6c3aa2b3bfb1a78a39df855d7fb52312a10120b51805/lumio_wiki-0.4.0-py3-none-any.whl"
+          echo "lumio-wiki producer: published PyPI wheel lumio-wiki==0.4.0"
+          echo "$sha  $sdk_wheel" | sha256sum -c -
+          sha256sum "$sdk_wheel"
 
       - name: Run the core test suite on the built candidate
         run: |
           uv venv --python 3.14 .ci-venv
-          WHEEL=$(ls dist | grep whl)
-          SDK_WHEEL=$(ls .ci-sdk-source/.ci-sdk-dist | grep whl)
+          WHEEL=$(ls dist/core | grep whl)
+          SDK_WHEEL=$(ls .ci-sdk-dist | grep whl)
           uv pip install --python .ci-venv/bin/python \
-            "./dist/$WHEEL[mcp,dev]" \
-            "./.ci-sdk-source/.ci-sdk-dist/$SDK_WHEEL"
+            "./dist/core/$WHEEL[mcp,dev]" \
+            "./.ci-sdk-dist/$SDK_WHEEL"
           # The three storage-profile/Lakehouse qualification modules are
           # capability-locked by spec 0025 (§§6–7): they require the prepared
           # environment (Docker + local SeaweedFS + installable httpfs) and
@@ -73,19 +73,20 @@ jobs:
           # versions asserted in the tests themselves).
           # The two Lumio SDK-paired modules carry non-default filenames and
           # are named explicitly so the exact pairing is visible; the
-          # explicit `tests` path adds the default test_*.py suite in the
+          # explicit tests path adds the default test_*.py suite in the
           # same single run. No skips beyond the three environment
           # exclusions above.
           .ci-venv/bin/python -m pytest -q \
-            --ignore=tests/test_s3_lakehouse.py \
-            --ignore=tests/test_s3_storage_access.py \
-            --ignore=tests/test_s3_storage_profiles.py \
-            tests/lumio_metric_mvp.py \
-            tests/lumio_local_context.py \
-            tests \
+            --ignore=packages/ariadne-data/tests/test_s3_lakehouse.py \
+            --ignore=packages/ariadne-data/tests/test_s3_storage_access.py \
+            --ignore=packages/ariadne-data/tests/test_s3_storage_profiles.py \
+            packages/ariadne-data/tests/lumio_metric_mvp.py \
+            packages/ariadne-data/tests/lumio_local_context.py \
+            packages/ariadne-data/tests \
             || { echo "test failures block publishing"; exit 1; }
 
       - name: Publish ariadne-data (core)
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        run: uv publish
+        # Exact Core selection: only the artifacts built into dist/core.
+        run: uv publish dist/core/*
