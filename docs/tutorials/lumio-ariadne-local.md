@@ -11,6 +11,17 @@ the operator-confirmed version. You explicitly approve the example source and
 confirm the overall release. The helper prints those human commands; it never
 executes them for you.
 
+```mermaid
+flowchart LR
+    K[Lumio knowledge pages] --> G[One reviewed Git commit]
+    M[Ariadne metric definitions] --> G
+    G --> H[Validation and operator confirmation]
+    H --> B[Pinned Bound Release]
+    D[Approved local orders] --> Q[Ariadne calculation]
+    B --> Q
+    Q --> R[150 EUR and 2 orders with full Policy and citations]
+```
+
 This route needs Python **3.14+**, Git, [uv](https://docs.astral.sh/uv/), and a
 POSIX shell. It uses published `ariadne-data==0.6.0` and `lumio-wiki==0.4.0`.
 No Docker, object store, LanceDB, server, model or API key is required. Allow
