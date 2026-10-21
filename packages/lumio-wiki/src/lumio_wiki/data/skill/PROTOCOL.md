@@ -498,8 +498,14 @@ When a consumer reports pinned-context results:
 - The profile is metadata only: it authorizes no source access, joins, SQL
   or numerical evidence, and an ordinary documentation page is NOT a
   Core-validated Reference. The consumer alone validates its supported
-  Metric/Policy subset and owns the overall admission that activates an
-  integrated release; syncing a Git checkout never activates one.
+  profiles and owns the overall admission that activates an integrated release.
+  Core 0.6 supports Metric, Policy and fully native-validated structured
+  References. Source-free `resolve_term` preserves native mapping eligibility
+  and exact human confirmation: measured authority uses authentic Core
+  receipts, source-backed manual assertions retain native eligibility, and
+  authored evidence never authenticates itself. Resolution grants no join,
+  SQL rewrite or numerical authority. Syncing a Git checkout never activates
+  an integrated release.
 
 ## Guardrails
 

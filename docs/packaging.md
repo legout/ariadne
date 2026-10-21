@@ -180,11 +180,13 @@ adapter types in client modules. Its documented contract, owned there:
   inside its LanceDB branch, so zero-index deployments never force client
   modules to name `lumio_lancedb` symbols.
 
-The public foundation's matching rule is the one-way dependency graph above:
-the canonical `lumio_wiki` package never names `lumio_lancedb`; explicitly
-selected CLI/evaluation composition may discover and lazily load the
-separately installed adapter only when an operator selects a LanceDB backend.
-That boundary is re-verified per release by the isolated wheel jobs below.
+The public foundation has no mandatory dependency on `lumio-lancedb`:
+a base install and package-root import work without the adapter. The existing
+CLI/evaluation composition seam may name, discover and lazily load the
+separately installed `lumio_lancedb` package. Retrieval loads it when the
+LanceDB backend is selected. `lumio-wiki eval` includes LanceDB stages when
+the adapter is installed; pass `--no-lancedb` to omit those stages. The
+isolated wheel jobs below verify base-install and import independence.
 
 ## Versioning and compatibility
 
