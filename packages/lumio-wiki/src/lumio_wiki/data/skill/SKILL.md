@@ -394,8 +394,9 @@ Visibility filtering on graph export is enforced, not disclosed:
 ## Workflow: optional Ariadne Context Profile
 
 A Knowledge Base may carry the optional, versioned **Ariadne Context
-Profile**: native Metric/Policy annotations on ordinary Compiled Pages,
-validated against the `ariadne_context.ontology_catalog` declared in
+Profile**: native Metric, Policy and structured Reference annotations on
+ordinary Compiled Pages, validated against the
+`ariadne_context.ontology_catalog` declared in
 `lumio.yaml` and preserved unchanged by ordinary authoring, review and
 publication. Pages without a profile are unaffected, and the base SDK never
 depends on Ariadne — this is metadata on content, not a service, CLI
@@ -408,9 +409,14 @@ identity and refuse any mismatch or floating pointer; the three navigation
 operations (list/read/search published context pages) are local, pinned and
 visibility-scoped. The profile is metadata only — it grants no source
 access, joins, SQL or numerical evidence — and the consumer alone validates
-its supported Metric/Policy subset and owns overall admission. Syncing a
-checkout never activates an integrated release. See the pinned-reading
-contract in [PROTOCOL.md](PROTOCOL.md).
+its supported profiles and owns overall admission. Core 0.6 supports Metric,
+Policy and fully native-validated structured References; ordinary glossary
+pages are not Core-validated References. Reference `resolve_term` grants no
+join or numerical authority: measured claims use authentic Core receipts,
+source-backed manual assertions keep native eligibility, and confirmation
+requires the exact human mapping selection. Authored evidence never grants
+authority. Syncing a checkout never activates an integrated release. See the
+pinned-reading contract in [PROTOCOL.md](PROTOCOL.md).
 
 ## Optional capabilities
 

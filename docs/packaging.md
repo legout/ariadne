@@ -4,9 +4,9 @@ This document is the certified packaging contract for the Lumio workspace:
 what each distribution owns, how dependencies flow, how optional capabilities
 are expressed, how to migrate off the temporary compatibility surface, and
 how the assembled product is verified. It is the authoritative companion to
-[ADR-0010](../project/adr/0010-uv-workspace-and-progressive-packaging.md) and the
-certification in `tests/test_workspace_certification.py` /
-`tests/test_adapter_selection_contract.py`.
+[ADR-0010](../project/adr/0010-uv-workspace-and-progressive-packaging.md),
+[ADR-0025](../project/adr/0025-repository-split.md) (repository split), and
+the certification in `tests/test_workspace_certification.py`.
 
 ## Workspace shape
 
@@ -28,8 +28,10 @@ Invariants (certified in `tests/test_workspace_certification.py`):
 
 - Each member has its own `[project]` metadata and hatchling build backend.
 - Each wheel ships exactly one top-level Python package root.
-- The three roots (`lumio_wiki`, `lumio_lancedb`, `lumio`) are disjoint —
-  no two wheels own the same concrete Python module path.
+- The two public roots (`lumio_wiki`, `lumio_lancedb`) are disjoint — no wheel
+  owns the other's concrete Python module path. (The private application's
+  `lumio` root, owned and consumed by the separate private repository, remains
+  a third, separately owned root.)
 - One shared lockfile (`uv.lock`); no member carries its own.
 
 ## Distribution ownership
@@ -84,39 +86,42 @@ explicitly selects a LanceDB backend — the dependency graph remains one-way.
 beside `lumio-wiki` alone in a fresh venv and asserts Stario/Piccolo/OpenAI/
 LiteParse/MarkItDown are absent.
 
-### `lumio` — full deployable application
+### `lumio` — full deployable application (separate private repository)
 
-The existing deployable product and the backward-compatible
-`pip install lumio` path. Consumes `lumio-wiki` and `lumio-lancedb` upward
-and selects zero-index or LanceDB retrieval through `LUMIO_RETRIEVAL_BACKEND`
-and the single public seam `build_retrieval_index` in `lumio.retrieval`.
-Owns Stario/Datastar presentation, the Chat Gateway, the Agent Runtime,
-authentication and roles, operational SQLite/Piccolo state, storage and
-synchronization, background work, provider integration, and browser
-ingest/review workflows.
+The deployable product lives in a separate private repository (ADR-0025) and
+is **not** a member of this public workspace: nothing here builds, publishes,
+or tests it. It consumes the published `lumio-wiki` and `lumio-lancedb` wheels
+upward and selects zero-index or LanceDB retrieval through
+`LUMIO_RETRIEVAL_BACKEND` and its single selection seam (`build_retrieval_index`
+in `lumio.retrieval`). It owns Stario/Datastar presentation, the Chat Gateway,
+the Agent Runtime, authentication and roles, operational SQLite/Piccolo state,
+storage and synchronization, background work, provider integration, and
+browser ingest/review workflows.
 
-**Dependencies:** `lumio-wiki>=0.1.1,<0.2.0`, `lumio-lancedb>=0.1.1,<0.2.0`,
-plus the operational stack (`stario`, `piccolo[sqlite]`, `openai`,
-`liteparse`, `markitdown[docx]`, `firecrawl-anydoc`, `lancedb`, `pyarrow`,
-`gitPython`, `msgspec[yaml]`). Optional `semantic` extra pulls in
-`sentence-transformers` for local embeddings.
+Its exact dependency ranges are owned and certified by that private
+repository. The last ranges certified inside the former three-package
+workspace (`lumio-wiki>=0.1.1,<0.2.0`, `lumio-lancedb>=0.1.1,<0.2.0`) predate
+the current 0.4.x public family; the private application's compatibility
+with the current family remains a separate integration and release decision,
+not a claim of this repository.
 
 ## Dependency direction
 
 ```text
 lumio-wiki  ←  lumio-lancedb
     ↑              ↑
-    └────  lumio ──┘
+    └────  lumio ──┘   (private application repository; consumes both wheels)
 ```
 
 - `lumio-wiki` has no inter-member dependency.
 - `lumio-lancedb` depends only on `lumio-wiki`.
-- `lumio` consumes both upward.
+- The private `lumio` application consumes both upward, from its own
+  repository.
 
-AST-certified in `tests/test_package_contraction.py`:
-`test_dependency_direction_remains_one_way` walks every import in the three
-packages and fails if `lumio-wiki` ever names `lumio` / `lumio_lancedb` /
-heavyweight deps, or if `lumio-lancedb` ever names `lumio`.
+The public one-way direction is certified at the metadata level in
+`tests/test_workspace_certification.py` (bounded inter-member ranges, one
+package root per wheel) and re-verified per release by the wheel-isolation
+jobs below.
 
 ## Optional capabilities
 
@@ -139,7 +144,7 @@ respective distributions:
 |---|---|---|
 | `lumio-lancedb` | LanceDB, PyArrow | BM25 / vector / semantic / hybrid retrieval over the same Knowledge Base. |
 | `lumio-lancedb[embeddings]` | `sentence-transformers` | Local embeddings for the LanceDB adapter. |
-| `lumio[semantic]` | `sentence-transformers` | Local embeddings for the full app's LanceDB backend. |
+| `lumio[semantic]` | `sentence-transformers` | Local embeddings for the private application's LanceDB backend (owned by its repository). |
 
 **Actionable missing-extra errors.** Invoking a capability without its extra
 fails with the exact install command. PDF/DOCX/image ingestion from a base
@@ -162,35 +167,40 @@ Every capability is verified in isolation from a built wheel:
 
 ## Adapter selection contract
 
-The full `lumio` application selects retrieval through configuration and
-dependency injection — never by importing adapter types in client modules.
+The private `lumio` application (separate private repository) selects
+retrieval through configuration and dependency injection — never by importing
+adapter types in client modules. Its documented contract, owned there:
 
 - **Single seam.** `lumio.retrieval.build_retrieval_index(kb, index_dir, *,
-  backend=None, embedder=None)` is the only sanctioned entry point. It is
-  called by `app.py` and `cli.py`.
-- **Config.** `LUMIO_RETRIEVAL_BACKEND=zero-index|lancedb` (default
+  backend=None, embedder=None)` is the only sanctioned entry point.
+- **Config.** `LUMIO_RETRIEVAL_BACKEND=zero-index|lancedb` (its default is
   `lancedb`). Invalid values raise `RetrievalBackendConfigError` with
   migration guidance.
 - **Local import.** `build_retrieval_index` imports `LanceDBRetrievalAdapter`
   inside its LanceDB branch, so zero-index deployments never force client
   modules to name `lumio_lancedb` symbols.
 
-Certified in `tests/test_adapter_selection_contract.py` and
-`tests/test_retrieval_selection.py`, and AST-locked in
-`tests/test_package_contraction.py::test_app_and_cli_select_retrieval_through_factory_not_adapter_types`.
+The public foundation has no mandatory dependency on `lumio-lancedb`:
+a base install and package-root import work without the adapter. The existing
+CLI/evaluation composition seam may name, discover and lazily load the
+separately installed `lumio_lancedb` package. Retrieval loads it when the
+LanceDB backend is selected. `lumio-wiki eval` includes LanceDB stages when
+the adapter is installed; pass `--no-lancedb` to omit those stages. The
+isolated wheel jobs below verify base-install and import independence.
 
 ## Versioning and compatibility
 
 - Members share one workspace lockfile for development reproducibility.
 - The lockfile is **not** a public compatibility contract. Every published
   inter-member dependency declares a bounded range
-  (`lumio-wiki>=0.1.1,<0.2.0`). This is certified at the metadata level
+  (e.g. `lumio-wiki>=0.4.0,<0.5.0`, declared by `lumio-lancedb`). This is
+  certified at the metadata level
   (`test_published_member_dependencies_declare_compatible_version_ranges`)
   and at the built-wheel METADATA level
   (`test_built_wheels_declare_bounded_inter_member_ranges`).
 - Versions may move together initially. Breaking changes to `lumio-wiki`'s
-  public contracts require bumping the upper bound in `lumio-lancedb` and
-  `lumio` in the same change.
+  public contracts require bumping the upper bound in `lumio-lancedb` in the
+  same change.
 
 ### Pre-1.0 release policy (issue #181)
 
@@ -209,8 +219,8 @@ The current public family is 0.4.x.
   a new member version with an older sibling.
 - **Partial upgrades fail at install time, actionably.** Because every
   member-to-member range is bounded to the family (`>=X.Y.Z,<0.N+1.0`), a
-  family-crossing combination (e.g. `lumio==0.2.0` with
-  `lumio-wiki==0.1.1`) is rejected by `pip`/`uv` resolution with a conflict
+  family-crossing combination (e.g. `lumio-lancedb==0.5.0` with
+  `lumio-wiki==0.4.0`) is rejected by `pip`/`uv` resolution with a conflict
   naming both ranges — never a runtime failure. Certified by
   `test_inter_member_bounds_track_the_released_family`.
 
@@ -234,22 +244,15 @@ The protocol and skill are force-included into the wheel via the
 importable `lumio_wiki.data` package, so `importlib.resources` resolves them
 even under strict build configs.
 
-## Temporary `lumio.core` compatibility
+## Temporary `lumio.core` compatibility (owned by the private application)
 
 Canonical Knowledge Base behavior lives under `lumio_wiki`. The pre-1.0
-`lumio.core` and `lumio.core.<module>` imports are **temporary** public
-re-exports so external consumers continue to work during migration.
-
-- **Internal callers** (production `lumio.*` modules and the test suite)
-  import final package owners (`lumio_wiki`, `lumio_lancedb`) directly.
-  AST-locked in
-  `tests/test_package_contraction.py::test_production_modules_do_not_import_compatibility_surfaces`.
-- **Compatibility modules** are thin re-exports only — they own no
-  duplicate implementation. AST-locked in
-  `test_compatibility_core_modules_are_thin_reexports_only`.
-- **Removal** is time-bounded to pre-1.0 and will ship only through a
-  separately documented migration issue that replaces the re-exports with
-  explicit migration guidance.
+`lumio.core` and `lumio.core.<module>` re-exports were compatibility shims of
+the former three-package workspace; with the repository split (ADR-0025) they
+belong to the private application's `lumio` package. Nothing in this public
+workspace ships or certifies them — their removal timeline is the private
+repository's decision. Consumers still importing `lumio.core` should move to
+the final owners below; the mapping remains accurate guidance:
 
 ### Migration cheat sheet
 

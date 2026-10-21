@@ -1,102 +1,78 @@
 # Lumio agent onboarding quickstart (canonical)
 
 This is the **one canonical onboarding journey** (issue #180): a single linear
-path from prerequisites to a grounded, citation-backed agent answer. It runs
-against local SeaweedFS `weed mini` so every S3 step is real, and closes with
-the AWS/S3 production variant. You do not need to read any ADR, the repository
-tests, or the rest of the docs to finish it.
+path from an empty project to a grounded, citation-backed agent answer —
+entirely on your local machine. No object storage, no Docker, and no model
+provider are required: the base `lumio-wiki` wheel, plain Git, and you (the
+host coding agent) as the Distiller are enough. Publishing immutable versions
+to S3-compatible object storage — and read-only Reader projects against them
+— is a separate optional guide:
+[`docs/howto-s3-publish.md`](howto-s3-publish.md).
 
-Time: ~20 minutes. You end with a Maintainer project that publishes immutable
-Knowledge Base versions to object storage, and a read-only Reader project that
-answers questions from them with citations.
+Time: ~15 minutes. You end with a Maintainer project that admits one exact
+reviewed Git revision to a visible local Published Version, then answers
+questions from the Knowledge Base with citations.
 
 > The journey is scriptable: [`examples/onboarding-journey/smoke-journey.sh`](../examples/onboarding-journey/smoke-journey.sh)
-> executes exactly the commands below and fails on drift. CI runs it against
-> SeaweedFS `weed mini` on every push.
+> executes exactly the commands below and fails on drift. Run it with no S3
+> environment for this local journey; CI additionally runs its S3 half
+> against SeaweedFS `weed mini` on every push to main.
 
 ## What you are building
 
 Lumio compiles trusted knowledge into a **Knowledge Base**: a directory of
 Compiled Markdown pages plus a root `lumio.yaml` Control File. A **Maintainer**
-authors and reviews locally; `publish-s3` writes an **immutable Published
-Version** to object storage; a **Reader** project reads that version
-read-only. One loop, two roles:
+authors and reviews locally in a selected Git worktree; `publish` admits one
+exact commit as a **Published Version** only after the operator authorizes
+the displayed review. One loop:
 
 ```text
-setup → status → ingest → Git review → exact-revision publish
-      → publish-s3 → reader setup → search/page/related → open citation/source
+setup → ontology starter → seed pages → managed ingest → Git review
+      → exact-revision publish (preview → operator-authorized confirm)
+      → search / page / related → open citation → grounded answer
 ```
 
 ## 0. Prerequisites
 
-- Python **≥ 3.14** and a shell.
-- A `weed` binary or Docker (only for the local S3-compatible store in Part 1).
+- Python **≥ 3.14**, a shell, and Git (authoring and admission only — plain
+  reads, queries and validation never need Git).
 
-Install the portable foundation with the S3 extra, and — when you want the
-enhanced retrieval backend — the LanceDB adapter with its S3 extra:
+Install the portable foundation. The base wheel carries the whole local
+journey — no S3 extra, no retrieval adapter, no model provider:
 
 ```bash
-pip install 'lumio-wiki[s3]'        # Knowledge Base CLI + S3 Locations
-pip install 'lumio-lancedb[s3]'     # optional: LanceDB backend over S3
+pip install lumio-wiki
 ```
 
 Verify:
 
 ```bash
-lumio-wiki --version                # e.g. lumio-wiki 0.1.1
+lumio-wiki --version                # e.g. lumio-wiki 0.4.0
 lumio-wiki doctor                   # version, detected extras, skill location
 ```
 
-## 1. Local SeaweedFS `weed mini` with a dedicated bucket
+The optional capabilities — `lumio-lancedb` for enhanced retrieval,
+`lumio-wiki[s3]` for object storage — are not needed below; see
+[`docs/usage.md`](usage.md) and the [S3 guide](howto-s3-publish.md).
 
-Start a throwaway `weed mini`; `S3_BUCKET` creates the journey bucket at
-startup. The `admin`/`secret` values below are **labelled local-test
-credentials** — fine on localhost, never production credentials.
-
-With the `weed` binary (leave it running in this terminal):
-
-```bash
-AWS_ACCESS_KEY_ID=admin AWS_SECRET_ACCESS_KEY=secret \
-  S3_BUCKET=lumio-quickstart weed mini
-```
-
-Or with Docker:
-
-```bash
-docker run -d --name lumio-quickstart-seaweedfs -p 8333:8333 \
-  -e AWS_ACCESS_KEY_ID=admin -e AWS_SECRET_ACCESS_KEY=secret \
-  -e S3_BUCKET=lumio-quickstart \
-  chrislusf/seaweedfs:4.45@sha256:fc9f76fa993ad69966ffeb2f65d0318fcae39c6f8e20cf68ef7b3a5cb97769e5
-```
-
-Point Lumio at it — standard AWS credential variables plus the endpoint
-override; exported values win, nothing is written to any file:
-
-```bash
-export AWS_ACCESS_KEY_ID=admin             # local test credential
-export AWS_SECRET_ACCESS_KEY=secret        # local test credential
-export AWS_REGION=us-east-1
-export LUMIO_S3_ENDPOINT=http://localhost:8333
-export LUMIO_S3_ALLOW_HTTP=1               # plain HTTP is localhost-only
-```
-
-## 2. Maintainer: local project setup
+## 1. Maintainer: local project setup
 
 Create a fresh project directory and run the canonical bootstrap. It creates
 the Knowledge Base (seeded `lumio.yaml` + derived-index directory), writes project
-`.env`, writes the `AGENTS.md` protocol section, and records the S3
-publication destination:
+`.env`, and writes the `AGENTS.md` protocol section:
 
 ```bash
 mkdir helpdesk-project && cd helpdesk-project
-lumio-wiki setup ./kb --publish-to s3://lumio-quickstart/helpdesk-kb
+lumio-wiki setup ./kb
 ```
 
 `setup` ends with a status summary — role, location, retrieval backend/mode,
 graph state, artifact retention, validation, and one next action. Re-run it
-any time with `lumio-wiki status`.
+any time with `lumio-wiki status`. With `--publish-to <s3-uri>` the same
+command additionally records an S3 publication destination
+([S3 guide](howto-s3-publish.md)).
 
-## 3. Ontology starter
+## 2. Ontology starter
 
 A fresh Knowledge Base seeds a **valid-empty ontology**: `lumio.yaml` carries
 the version-2 Control File, but `ontology.entity_types` and
@@ -141,7 +117,7 @@ ontology:
   redirects: {}
 ```
 
-## 4. Seed pages with one accepted Claim
+## 3. Seed pages with one accepted Claim
 
 In a version-2 Knowledge Base every page declares a stable Entity ID and at
 least one entity type, and lives under a configured Content Category. Create
@@ -214,13 +190,15 @@ A Claim needs `id`, `predicate`, exactly one object (`object` **or**
 (`lines` and/or `section`) into the page body — a Claim is a graph edge, never
 answer Evidence by itself.
 
-## 5. Managed document ingest (you are the Distiller)
+## 4. Managed document ingest (you are the Distiller)
 
 Take a raw document — any file your team actually owns, here a support runbook
-— and author its Compiled Page yourself (the host coding agent is the default
-Distiller; no model provider, no `[documents]` extra). The managed mode binds
-the ORIGINAL bytes and your authored page under one stable source identity, so
-provenance records the real file:
+— and author its Compiled Page yourself. Lumio never generates content for
+you: the **Distiller** is whoever writes the page — you at the keyboard or a
+coding agent. No model provider, no coding-agent host, and no `[documents]`
+extra is required; the supplied page below can be copied verbatim. The
+managed mode binds the ORIGINAL bytes and your authored page under one stable
+source identity, so provenance records the real file:
 
 ```bash
 cat > support-runbook.md <<'EOF'
@@ -286,7 +264,7 @@ The authored page declares `category`, a free-form `type`, and a
 `support-runbook-2026` id in `sources[].id` — that is the binding. Raw bytes
 never enter the Knowledge Base; they are registered privately.
 
-## 6. Git review: diff → commit → exact-revision publish
+## 5. Git review: diff → commit → exact-revision publish
 
 Git owns the review; publication is a separate explicit admission of one
 exact commit:
@@ -305,14 +283,16 @@ lumio-wiki publish ./kb --revision "$REV" --to ./published \
   --confirm <review-digest>
 ```
 
-A commit alone never publishes. Legacy stores from the retired proposal
-pipeline migrate with `lumio-wiki legacy-proposals inventory` and
-`legacy-proposals export` (never publication). Preview can resolve an explicit
-ref; confirm using the captured full baseline commit printed by preview, not
-the floating ref. The baseline must carry the operator-adopted namespace;
-unknown exact history or stale original assumptions block conversion.
+A commit alone never publishes. After the confirm, `./published` holds the
+admitted Published Version — visible, reviewed, and reproducible from that
+exact commit. Legacy stores from the retired proposal pipeline migrate with
+`lumio-wiki legacy-proposals inventory` and `legacy-proposals export` (never
+publication). Preview can resolve an explicit ref; confirm using the captured
+full baseline commit printed by preview, not the floating ref. The baseline
+must carry the operator-adopted namespace; unknown exact history or stale
+original assumptions block conversion.
 
-## 7. Retrieval, citations with open actions, traversal
+## 6. Retrieval, citations with open actions, traversal
 
 Every retrieval result and page read labels how to **open** what it cites —
 reuse the labels verbatim when you answer:
@@ -356,7 +336,12 @@ Aurora Helpdesk (entity:aurora-helpdesk) -> Starlight DB (entity:starlight-db)
 # trace: scope=canonical direction=outgoing max_depth=5 max_edges=1000 found=true hops=1
 ```
 
-## 8. Source Artifact inspection — truthful unavailability
+These reads run against the **authoring tree** (`./kb`) — the Maintainer's
+current worktree view, resolved through the `LUMIO_KB_PATH` that `setup`
+recorded in `.env`. The immutable admitted copy sits separately under
+`./published`; nothing in this section claims to read it.
+
+## 7. Source Artifact inspection — truthful unavailability
 
 Retention of raw Source Artifacts is **disabled by default**; nothing was
 configured in `setup`, so inspection says exactly that (secret-free metadata,
@@ -378,137 +363,18 @@ authorization:   granted (private registry view)
 equally actionable message (naming `--source-store`) rather than substituting
 something else. Retention is **not retroactive**: raw bytes are retained at
 managed-ingest time, only when a store is already configured. To retain
-originals, configure the store when you set the project up — `lumio-wiki
-setup ./kb --publish-to s3://lumio-quickstart/helpdesk-kb --source-store
-s3://lumio-private-sources/helpdesk` (a **separate, non-public** bucket;
-retention is opt-in) — and re-ingest; `source fetch --source-id
-support-runbook-2026 --output out.md` then returns the byte-exact original.
+originals, configure a private store when you set the project up and
+re-ingest — see the [S3 guide](howto-s3-publish.md) (`--source-store` accepts
+an S3 URI or a local path; the store is always separate from public content,
+and retention is opt-in).
 
-## 9. Publish an immutable S3 version (zero-index)
+## 8. A grounded agent answer
 
-Publication validates, writes canonical content plus the Discovery Graph
-under a version prefix, then advances the active pointer
-(`current.json`) — compare-and-swap guarded:
-
-```bash
-REV1=$(git -C ./kb rev-parse HEAD)
-lumio-wiki publish-s3 ./kb --revision "$REV1" --expected-current none \
-  --source-registry "$LUMIO_SOURCE_REGISTRY"  # preview only
-# Only after operator authorization of the displayed S3 review:
-lumio-wiki publish-s3 ./kb --revision "$REV1" --expected-current none \
-  --source-registry "$LUMIO_SOURCE_REGISTRY" --confirm <review-digest>
-```
-
-The destination comes from `.env` (`LUMIO_PUBLISH_TO`, recorded by `setup`);
-pass one explicitly to override. The Published Version identity is the full
-commit (`REV1` below), not an operator-chosen `v1` label. The immutable bytes
-and private exact bindings identify that captured revision. An identical
-confirmed retry returns its receipt without rewriting or reactivating history.
-
-## 10. Reader: read-only project against S3
-
-In a second directory, bind a read-only project to the Location. Pathless
-commands resolve the active Published Version — no local copy of the KB:
-
-```bash
-mkdir ../helpdesk-reader && cd ../helpdesk-reader
-lumio-wiki setup --from s3://lumio-quickstart/helpdesk-kb
-lumio-wiki search "password reset" --limit 2     # pathless, reads REV1
-lumio-wiki related "Aurora Helpdesk" --scope canonical
-lumio-wiki source inspect --source-id support-runbook-2026
-```
-
-Private source metadata is not public Reader content. In this controlled
-same-principal walkthrough, the operator is also authorized to read the private
-publication metadata sealed during admission. `source inspect --published-version
-<REV1>` can therefore report the exact version, Entity/Source identity and digest
-abbreviation with `not retained (no Source Artifact Store configured)`.
-Metadata inspection does not grant access to raw bytes: `source fetch` must fail
-and create no output when originals were not retained. Unavailable or
-unauthorized private metadata remains a bounded refusal; it never falls back to
-registry-latest. This lab does not certify cross-role authorization policies.
-
-## 11. LanceDB: expected zero-index fallback, then a healthy index
-
-The **retrieval backend** (`zero-index` | `lancedb`) and the **retrieval
-mode** (`lexical` | `semantic` | `hybrid`) are separate settings. Lexical
-works on every backend; semantic/hybrid additionally need an embedder.
-
-Request the LanceDB backend while the active version has no remote index
-(REV1 was published zero-index) — `status` discloses the **expected zero-index
-fallback** instead of hiding it:
-
-```bash
-lumio-wiki setup --from s3://lumio-quickstart/helpdesk-kb --retrieval lancedb
-lumio-wiki search "password reset" --limit 1    # still answers — zero-index
-```
-
-```text
-lancedb_requested:           true
-lancedb_healthy:             false
-lancedb_fallback:            LanceDB index missing ...; zero-index page search over the same Published Version
-```
-
-Create a new explicit Git revision (`REV2`) requesting the remote index,
-built and health-checked **before** activation (needs `lumio-lancedb`).
-Use the exact expected-current guard because `REV1` is active. Keep the
-captured `REV1` value from Part 9 in the Maintainer shell:
-
-```bash
-cd ../helpdesk-project
-git -C ./kb commit --allow-empty -m "Request version-bound LanceDB retrieval"
-REV2=$(git -C ./kb rev-parse HEAD)
-lumio-wiki publish-s3 ./kb --revision "$REV2" --expected-current "$REV1" \
-  --source-registry "$LUMIO_SOURCE_REGISTRY" --retrieval lancedb  # preview
-# Only after operator authorization of this new review:
-lumio-wiki publish-s3 ./kb --revision "$REV2" --expected-current "$REV1" \
-  --source-registry "$LUMIO_SOURCE_REGISTRY" --retrieval lancedb --confirm <review-digest>
-cd ../helpdesk-reader
-lumio-wiki setup --from s3://lumio-quickstart/helpdesk-kb --retrieval lancedb
-```
-
-```text
-lancedb_requested:           true
-lancedb_healthy:             true
-lancedb_fingerprint_matches: true
-```
-
-The Reader resolved the new pointer automatically. Lexical mode now ranks
-through LanceDB (BM25); the contract — results, `open:` actions — is
-identical, only ranking quality changes. Semantic and hybrid stay separate
-rungs and demand an embedder; without one the CLI refuses truthfully:
-
-```bash
-lumio-wiki search "reset link expiry" --mode semantic
-```
-
-```text
-error: semantic/hybrid search needs an embedder: install 'lumio-lancedb[embeddings]' (local) or set LUMIO_PROVIDER_BASE_URL + LUMIO_PROVIDER_API_KEY + (LUMIO_EMBEDDING_MODEL or --model) for a remote endpoint.
-```
-
-Install `'lumio-lancedb[embeddings]'` (local sentence-transformers) or point
-`LUMIO_PROVIDER_*` at an OpenAI-compatible `/embeddings` endpoint to enable
-them — `--mode semantic` and `--mode hybrid` are then two separately
-demonstrable rungs (the error text is identical until an embedder exists):
-
-```bash
-lumio-wiki search "reset link expiry" --mode semantic
-lumio-wiki search "reset link expiry" --mode hybrid
-```
-
-To revert a bad activation, preview `lumio-wiki rollback-s3
-s3://lumio-quickstart/helpdesk-kb --version "$REV1" --expected-current "$REV2"`
-in the Maintainer shell, then repeat with `--confirm <review-digest>` only
-after operator authorization. Rollback verifies historical bytes/bindings,
-never rebuilds them. `lumio-wiki cleanup-s3
-s3://lumio-quickstart/helpdesk-kb` reports residue and deletes nothing.
-
-## 12. A grounded agent answer
-
-This is what the journey was for. A coding agent in the Reader project (or a
-Maintainer with `LUMIO_KB_PATH` exported) follows the retrieval ladder — hot
-index, navigation index, search, page read — and answers **citing pages, not
-memory**:
+This is what the journey was for. A coding agent in the project — or you at
+the keyboard, with `LUMIO_KB_PATH` from `setup`'s `.env` — follows the
+retrieval ladder — hot index, navigation index, search, page read — over the
+**authoring tree** (`./kb`, here identical to the admitted revision because
+the worktree is clean) and answers **citing pages, not memory**:
 
 > **Q: How long is an Aurora password reset link valid?**
 >
@@ -523,24 +389,14 @@ Every domain claim carries a citation with an open action; a question the
 Knowledge Base cannot support returns **"not covered by this knowledge
 base"** — never a fabricated answer.
 
-## AWS/S3 variant (production)
+## Optional next rung: immutable versions on S3
 
-The same journey against real S3 drops only Part 1's local-endpoint
-variables — credentials resolve through the standard AWS chain (environment,
-`~/.aws`, instance role), so **no secrets are committed** and none are needed
-in `.env` (setup writes locations, never credentials):
-
-```bash
-export AWS_REGION=eu-west-1                    # standard resolution; no keys exported
-lumio-wiki setup ./kb --publish-to s3://example-public-kb/team-kb
-lumio-wiki publish-s3 ./kb --revision <full-commit-id> --expected-current none \
-  --source-registry <private-dir>  # preview; confirm only after operator authorization
-lumio-wiki setup --from s3://example-public-kb/team-kb --retrieval lancedb
-```
-
-`example-public-kb` is a non-secret placeholder — substitute your bucket.
-Keep the private Source Artifact Store (`--source-store`) in a **separate,
-non-public** bucket/prefix if you use retention.
+When the local journey works, the same admission gate publishes immutable
+versions to S3-compatible object storage (a local SeaweedFS `weed mini` works
+for testing) and binds read-only Reader projects to them — including optional
+LanceDB retrieval with its truthful zero-index fallback. That path needs the
+`[s3]` extra and is documented step by step in
+[`docs/howto-s3-publish.md`](howto-s3-publish.md).
 
 ## Operating model notes
 
@@ -550,7 +406,7 @@ emitted). *Empty file or empty mapping* → treated the same as missing for
 content; establish the Control File deliberately. *Valid-empty* (what `setup`
 seeds) → version 2 with the category catalog and an **empty ontology**: fully
 valid, and sufficient until the first `entity_types`/`claims` declaration —
-from then on the vocabulary must be declared (Part 3).
+from then on the vocabulary must be declared (Part 2).
 
 **Backend vs mode.** `LUMIO_RETRIEVAL_BACKEND` = `zero-index` (deterministic,
 in-memory, always available) or `lancedb` (BM25/vector/hybrid ranking; needs
@@ -572,7 +428,10 @@ Never point a Maintainer worktree at the S3 prefix as if it were a filesystem.
   reference.
 - [`docs/kb-format.md`](kb-format.md) — every frontmatter field and validation
   rule.
-- [`docs/chat-sources.md`](chat-sources.md) — private document chat in the web
-  app.
+- [`docs/howto-s3-publish.md`](howto-s3-publish.md) — the optional S3 journey:
+  `weed mini` locally, immutable Published Versions, Reader projects, LanceDB.
+- The canonical joint local tutorial (Lumio + Ariadne in one walkthrough) in
+  the Ariadne repository:
+  [`docs/tutorials/lumio-ariadne-local.md`](https://github.com/legout/ariadne/blob/main/docs/tutorials/lumio-ariadne-local.md).
 - [`examples/onboarding-journey/`](../examples/onboarding-journey/) — the
   scriptable journey CI runs.

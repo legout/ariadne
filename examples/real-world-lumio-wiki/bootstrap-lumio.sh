@@ -11,10 +11,12 @@
 # `lumio --version`, then `tools/smoke_lumio.sh` boots `lumio serve` over the
 # published Atlas Heatworks Knowledge Base.
 #
-# `lumio` (packages/lumio) is a SEPARATE package from both lumio-wiki and
-# lumio-lancedb. It HARD-DEPENDS on lumio-lancedb (>=0.1.1) plus lancedb and
-# pyarrow (see packages/lumio/pyproject.toml): the deployable app ships with
-# LanceDB retrieval wired in and degrades to zero-index when no published
+# `lumio` is a SEPARATE distribution from both lumio-wiki and lumio-lancedb,
+# owned by the SEPARATE PRIVATE application repository (ADR-0025; the
+# repository split removed packages/lumio from this public foundation). It
+# HARD-DEPENDS on lumio-lancedb (>=0.1.1, as last certified in the former
+# three-package workspace) plus lancedb and pyarrow: the deployable app ships
+# with LanceDB retrieval wired in and degrades to zero-index when no published
 # LanceDB index is present. That hard dependency is why this script does NOT
 # guard on lumio-lancedb being present (installing `lumio` always pulls it) —
 # see "Finally" > "Product findings" in README.md for the deviation from the
@@ -26,6 +28,16 @@ EXAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$EXAMPLE_DIR/../.." && pwd)"
 VENV="$EXAMPLE_DIR/.venv"
 PACKAGE_LUMIO="$REPO_ROOT/packages/lumio"
+
+# Truthful early refusal: this stage requires the private application
+# checkout, which is not part of this public foundation repository.
+if [[ ! -d "$PACKAGE_LUMIO" ]]; then
+	echo "error: $PACKAGE_LUMIO not found." >&2
+	echo "The full 'lumio' application lives in a separate PRIVATE repository" >&2
+	echo "(ADR-0025) and cannot be installed from this public foundation checkout." >&2
+	echo "Run this script from the private application repository's checkout instead." >&2
+	exit 1
+fi
 
 command -v uv >/dev/null 2>&1 || {
 	echo "error: uv is required (https://docs.astral.sh/uv/)" >&2

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Scriptable smoke journey for the canonical onboarding quickstart (issue #180).
 #
-# Executes EXACTLY the commands documented in docs/quickstart.md, in order:
-# local Maintainer setup -> ontology starter -> seed pages -> managed ingest ->
-# Git review/admission -> retrieval/citation/traversal -> Source Artifact
-# inspection -> (when an S3-compatible endpoint is configured) publication with and without
-# LanceDB -> read-only Reader project -> expected zero-index fallback.
+# Executes EXACTLY the commands documented in docs/quickstart.md (local half),
+# in order: local Maintainer setup -> ontology starter -> seed pages -> managed
+# ingest -> Git review/admission -> retrieval/citation/traversal -> Source
+# Artifact inspection -> (when an S3-compatible endpoint is configured) the
+# commands of docs/howto-s3-publish.md: publication with and without LanceDB ->
+# read-only Reader project -> expected zero-index fallback.
 #
 # Any command failing or printing an unexpected outcome fails the script, so
 # documentation drift between the quickstart and the CLI is caught here.

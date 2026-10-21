@@ -10,7 +10,7 @@ is correct** — update this page to match.
 For the *language* behind these terms (what a
 Compiled Page, Source, or Claim *means*), see
 [`CONTEXT.md`](../CONTEXT.md) and
-[ADR-0021](adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md).
+[ADR-0021](../project/adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md).
 
 ## Git authoring metadata
 
@@ -330,7 +330,7 @@ loading, validation, retrieval, Evidence, and the canonical content
 fingerprint. An `index.md` (or `INDEX.md`) without the valid marker is a
 blocking validation error. Direct edits to a marked index are overwritten on
 the next publish. See
-[ADR-0007](adr/0007-navigation-indexes-and-okf-exchange-profile.md).
+[ADR-0007](../project/adr/0007-navigation-indexes-and-okf-exchange-profile.md).
 
 ## Checking a Knowledge Base
 

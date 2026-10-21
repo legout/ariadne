@@ -28,10 +28,18 @@ This is an **optional integration**, not a feature of the base product:
   `ContextIdentity`, `ContextSnapshot`, `ContextBinding`, `ContextPageView`,
   `ARIADNE_PROFILE_VERSION` and the reader error types.
 
-The SDK schema knows several native profile kinds; **Ariadne's consumer
-validates only its supported Metric/Policy subset** and rejects any other
-kind anywhere in the captured content. The consumer owns that check and the
-overall admission — never the producer SDK.
+The SDK schema knows several native profile kinds. **Ariadne Core 0.6 supports
+Metric, Policy and fully native-validated structured Reference profiles**;
+any other profile kind anywhere in the captured content refuses admission.
+Structured References support source-free `resolve_term`, with exact field
+bindings and human mapping confirmation. Measured authority requires authentic
+Core inspection receipts; source-backed manual assertions retain their native
+eligibility. Authored evidence never authenticates itself, and resolution grants
+no join, SQL rewrite or numerical authority. Ordinary glossary pages remain
+unprofiled content, not Core-validated References. The consumer owns validation
+and overall admission — never the producer SDK. See the
+[consumer reference](https://github.com/legout/ariadne/blob/main/docs/reference/lumio-bound-releases.md)
+for the complete supported set and constraints.
 
 ## Exact identity and admission
 

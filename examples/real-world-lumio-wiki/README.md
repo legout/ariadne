@@ -4,7 +4,7 @@ This folder is a staged, realistic test of Lumio's progressive product layers:
 
 1. **Now:** `lumio-wiki[documents]` only — portable Knowledge Base setup, mixed-format ingestion into a Git authoring worktree, exact-revision publication, validation, and zero-index retrieval through a coding agent.
 2. **Later:** add `lumio-lancedb` and compare enhanced retrieval against the same published Knowledge Base. Tracked in #156.
-3. **Finally:** add the full `lumio` application and exercise the same knowledge through Lumio's browser UI. Tracked in #157.
+3. **Finally (legacy/private stage):** add the full `lumio` application and exercise the same knowledge through Lumio's browser UI. Tracked in #157. **The `lumio` application lives in a separate private repository (ADR-0025) and is not installable from this public foundation** — see the boundary note on that stage below before attempting it.
 
 The corpus describes **Atlas Heatworks**, a fictional heat-pump installer. It is synthetic, non-sensitive, and deliberately shaped like a small operational corpus: company context, product data, support policy, an installation procedure, an annual impact report, and an internal office-format pricing reference. Facts overlap across documents so the coding agent must reconcile entities, provenance, and Relationships rather than merely copying isolated files.
 
@@ -35,7 +35,7 @@ The corpus describes **Atlas Heatworks**, a fictional heat-pump installer. It is
 │   └── smoke_lumio.sh     # "Finally" browser/API smoke over lumio serve (#157)
 ├── bootstrap.sh
 ├── bootstrap-lancedb.sh   # "Later" stage: layer lumio-lancedb onto the venv
-└── bootstrap-lumio.sh     # "Finally" stage: layer the full lumio app (#157)
+└── bootstrap-lumio.sh     # "Finally" stage: layer the private lumio app (#157; refuses in this checkout)
 ```
 
 The "Finally" stage also writes `lumio-smoke/` (one transcript per smoke run),
@@ -361,6 +361,7 @@ numbers were a fixture artifact. BM25 still leads semantic alone (0.950 vs
 floor can return `(none)` for off-distribution questions — the designed
 "not covered" behavior, not a bug.
 
+The #156 comparison adapts the issue's ask
 to the shipped CLI rather than the issue's literal command shapes (the issue
 hedges twice: "or the lexical stage appropriate to current CLI" and "or
 lumio-lancedb directly, whichever the packaging layout requires"):
@@ -377,14 +378,23 @@ lumio-lancedb directly, whichever the packaging layout requires"):
 - a **refusal/answer-quality harness does not exist yet** — refusal questions
   are carried in the gold set but cannot be scored by recall\@k.
 
-## Finally: bundled `lumio` app browser smoke (#157)
+## Finally: bundled `lumio` app browser smoke (#157, legacy/private stage)
+
+> **Boundary note (ADR-0025).** This stage belongs to the **separate private
+> Lumio application repository**: `bootstrap-lumio.sh` and
+> `tools/smoke_lumio.sh` install and boot the private `lumio` app, which is
+> not published from — and no longer present in — this public foundation
+> checkout (`packages/lumio` does not exist here, so the bootstrap refuses
+> early with exactly that message). The scripts are kept for use from the
+> private repository's own checkout; nothing in this README claims the
+> private app works from here.
 
 After the Knowledge Base is published with `lumio-wiki[documents]`, the
 "Finally" stage layers the full deployable `lumio` application onto the
 **same** venv and proves the same published Knowledge Base is consumable through
 Lumio's HTTP surface — Chat, Reading Room, and the OpenAI-compatible API. This
 is a **read-only** stage: the smoke only asks questions; it publishes nothing,
-so the proposal-first publication contract is never bypassed.
+so the exact-revision publication contract is never bypassed.
 
 ```bash
 # 1. Base install first (creates .venv with lumio-wiki[documents]).
@@ -506,9 +516,10 @@ deployed rather than the issue's literal endpoint names:
   JSON POST; `/v1/chat/completions` is the scriptable equivalent and returns
   `{lumio: {covered, citations: [{page_title, …}]}}`;
 - the issue's refusal guard "refuse to run if `lumio-lancedb` is already
-  installed without the lancedb extra" is **necessarily void**: `lumio`
-  (packages/lumio) **hard-depends** on `lumio-lancedb` plus `lancedb` and
-  `pyarrow` (see `packages/lumio/pyproject.toml`), so installing the app
+  installed without the lancedb extra" is **necessarily void**: the private
+  `lumio` application hard-depends on `lumio-lancedb` plus `lancedb` and
+  `pyarrow` (as last certified in the former three-package workspace; its
+  manifest now lives in the private repository), so installing the app
   always installs the adapter. `bootstrap-lumio.sh` instead enforces the
   meaningful, symmetric stage-separation guard — **refuse if `lumio` is already
   installed** — mirroring `bootstrap-lancedb.sh`'s "refuse if `lumio` is
