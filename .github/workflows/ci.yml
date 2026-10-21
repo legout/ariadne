@@ -19,6 +19,65 @@ jobs:
       - run: uv run --locked ruff check .
       - run: uv run --locked pytest -q -n 4
 
+  # Spec 0030 §5: joint source tests consume Core and SDK from the SAME
+  # checked-out commit — no second repository and no public-SDK substitution
+  # in this source-development job (the Core RELEASE job keeps its exact
+  # published-producer pin). Separates the two test namespaces: this job runs
+  # only Core's member suite under the member's own lint/pytest config, in a
+  # fresh wheel environment without the optional LanceDB adapter.
+  core-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv lock --check
+      - name: Core native lint (member config)
+        run: uv run --locked ruff check .
+        working-directory: packages/ariadne-data
+      - name: Build the same-commit Core and SDK wheels
+        run: |
+          uv build --package ariadne-data --wheel --out-dir dist/core
+          uv build --package lumio-wiki --wheel --out-dir dist/sdk
+      - name: Fresh pair environment (Core + same-commit SDK, no adapter)
+        run: |
+          WHEEL=$(ls dist/core | grep whl)
+          SDK=$(ls dist/sdk | grep whl)
+          uv venv --python 3.14 /tmp/core-pair
+          uv pip install --python /tmp/core-pair/bin/python \
+            "./dist/core/$WHEEL[mcp,dev]" "./dist/sdk/$SDK"
+      - name: Core native test selection (pair-installed, member config)
+        run: |
+          /tmp/core-pair/bin/python -m pytest -q \
+            --ignore=tests/test_s3_lakehouse.py \
+            --ignore=tests/test_s3_storage_access.py \
+            --ignore=tests/test_s3_storage_profiles.py \
+            tests/lumio_metric_mvp.py \
+            tests/lumio_local_context.py \
+            tests
+        working-directory: packages/ariadne-data
+      # The standalone boundary: a separate Core-only base wheel environment
+      # with the SDK and the MCP extra absent, exercising the installed CLI
+      # and the human-admission journey outside the checkout with the
+      # existing native walkthrough (tests/setup_wheel_walkthrough.py).
+      - name: Standalone Core base wheel (SDK and MCP absent)
+        run: |
+          uv venv --python 3.14 /tmp/core-standalone
+          uv pip install --python /tmp/core-standalone/bin/python \
+            dist/core/ariadne_data-*.whl
+          ! /tmp/core-standalone/bin/python -c 'import lumio_wiki' \
+            || { echo 'SDK leaked into the standalone Core env'; exit 1; }
+          ! /tmp/core-standalone/bin/python -c 'import mcp' \
+            || { echo 'MCP leaked into the standalone Core env'; exit 1; }
+      - name: Installed-wheel walkthrough outside the checkout
+        run: |
+          cd /tmp
+          /tmp/core-standalone/bin/python \
+            "$GITHUB_WORKSPACE/packages/ariadne-data/tests/setup_wheel_walkthrough.py"
+
+
   # Issue #180, AC6: run the canonical onboarding journey (docs/quickstart.md)
   # against a real S3-compatible service so the documented command sequence
   # cannot drift from the CLI. The admin/secret values are labelled local-test

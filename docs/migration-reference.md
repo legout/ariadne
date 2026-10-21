@@ -56,8 +56,14 @@ inventoried:
   family channel keeps its native model — the `pypi` environment plus
   `PYPI_API_TOKEN`. Any credential-model change is an owner decision, not a
   migration side effect.
-- Until the owner configures the `pypi` environment in this repository, a
-  `lumio-v*` release tag cannot complete its publication step; the Core
-  channel depends only on the existing repository secret.
+- Whether a `lumio-v*` release can publish is not guaranteed either way by
+  configuration alone: GitHub Actions makes repository secrets available to
+  jobs, with same-named environment secrets taking precedence when
+  configured, and this repository already carries a `PYPI_API_TOKEN`
+  repository-secret name whose package scope is unknown (never read or
+  inferred). M5 readiness therefore requires owner verification of the
+  `pypi` environment and the token's scope **before any release** — the
+  missing environment is an owner prerequisite to verify, not a fail-closed
+  runtime guard.
 - Neither native release workflow creates GitHub Releases; none was added
   here. External configuration gaps are disclosed rather than papered over.

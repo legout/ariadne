@@ -13,8 +13,9 @@ name: release
 # Ordinary CI and pull requests do not receive the publishing token.
 # Build provenance still uses GitHub OIDC; token-based PyPI uploads do not
 # generate PyPI digital attestations. See docs/lumio/packaging.md for owner
-# setup. (The `pypi` environment must exist in this repository before a
-# release can complete; see docs/migration-reference.md.)
+# setup. (Release readiness requires owner verification of the `pypi`
+# environment and the token's scope before any release — see
+# docs/migration-reference.md.)
 #
 # Hardening (zizmor): every action is SHA-pinned, checkout never persists
 # credentials, and no job shares an Actions cache with PR-triggered
