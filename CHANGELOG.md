@@ -19,8 +19,12 @@
   wheel `lumio-wiki==0.4.1` (immutable PyPI URL and SHA-256 recorded in the
   release workflow), producer-first; the previously qualified 0.6.0/0.4.0
   tutorial baseline remains the tested numerical example.
-- No new runtime feature, dependency change, numerical attestation or
-  re-admission shortcut; governance and admission semantics are unchanged.
+- Bound the DuckDB runtime dependency to `duckdb>=1.0,<2`: DuckDB 2.0.0
+  (published 2026-10-21, immediately before release CI) removes the relation
+  `fetchmany`/`fetchone` APIs the unchanged engine uses, so Core keeps the
+  existing 1.x compatibility family; no other dependency changed. No new
+  runtime feature, numerical attestation or re-admission shortcut; governance
+  and admission semantics are unchanged.
   Canonical release tag: `core-v0.6.1` in the current public `legout/ariadne`
   repository (candidate preparation — Core is not yet published).
 
