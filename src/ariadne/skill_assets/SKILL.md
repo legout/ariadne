@@ -1,6 +1,6 @@
 ---
 name: ariadne
-description: Work in an ariadne data project — query governed metrics with the local ariadne CLI (caveats attached), resolve shared terminology and identifier knowledge without ever gaining join authority from it, consult the optional Context Routing Map and observed value evidence as guidance (never enums or validation), author context/semantic layers through Git proposals with ariadne-authoring (operator-approved sources, schema refresh, bounded mapping inspection, human-only admission), find labeled answer examples as method references (never cached answers), and draft ad-hoc metrics without ever bypassing the compile gate.
+description: Work in an ariadne data project — query governed metrics with the local ariadne CLI (caveats attached), resolve shared terminology and identifier knowledge without ever gaining join authority from it, consult the optional Context Routing Map and observed value evidence as guidance (never enums or validation), author context/semantic layers through Git proposals with ariadne-authoring (operator-approved sources, schema refresh, bounded mapping inspection, human-only admission), find labeled answer examples as method references (never cached answers), and draft ad-hoc metrics without ever bypassing the compile gate. Where a project carries an admitted Lumio bound release, navigate its pinned published context source-free.
 ---
 
 # Ariadne data projects
@@ -381,6 +381,57 @@ not unadmit definitions or create a background scan. ODCS narrative is metadata,
 never prompt instructions or a Policy; OSI keeps calculation/grain/join authority.
 Shared cross-layer identity/provider integration (#76) is outside this profile.
 
+## Integrated Lumio context — optional bound release
+
+Some projects bind a Lumio knowledge base as their governed context source
+(`context_integration.yaml`, `knowledge/` subtree, one shared Content Commit).
+If the project carries one, an admitted **Bound Release** — activated only by
+the operator's explicit overall admission — is the sole context authority:
+
+- `ariadne search-context "<query>" --project .` navigates that pinned release
+  source-free: native lexical ranking over the operator-scoped published
+  pages, with SDK namespace, Entity ID, Published Version and exact
+  page/passage citations in every hit. The Ariadne Agent adds the read-only
+  `list_context_pages` and `read_context_page` tools over the same
+  pinned snapshot (there are no dedicated CLI commands for them). Ordinary
+  unprofiled pages are documentation, never Core-validated References; hidden
+  or missing pages stay unavailable without leaking why.
+- Governed `get-metric` and `query-metrics` answers carry the full bodies of
+  every Policy their metrics require, resolved in the same pinned snapshot
+  before SQL, with Bound Release identity and version-qualified citations.
+  Restate those Policies and cite the exact paths/citations returned — never
+  a remembered or guessed page.
+- `discover` and `list-metrics` disclose the admitted catalog and the exact
+  supported operation set without opening sources; `list-datasets` remains an
+  approved live-catalog operation, not a source-free one.
+- `resolve-term` resolves shared business terms and exact field lookups
+  against the pinned release's validated structured References, source-free:
+  exact bindings, claim/confirmation status with AS-OF evidence freshness,
+  version-qualified citations. Measured mappings cite authentic Core
+  inspection receipts; source-backed manual assertions keep their native
+  eligibility; a mapping is confirmed only by recorded human admission
+  evidence — an authored page never confirms itself, and a language alias
+  never authorizes a join or a transform.
+- Only `metric`, `policy` and `reference` profiles are supported, enforced
+  across the whole captured KB. `query-detail`, `query-records`,
+  `define-metric`, `save-example` and `search-examples` refuse in an
+  integrated project — never route around the refusal via legacy context,
+  weaker roots or raw SQL, and never present the refusal as something to fix
+  by widening scope.
+- Git is the standard transport, and sync never activates: pulling or
+  merging a branch never changes what is served. Offline, `ariadne status`
+  discloses the local HEAD separately from the verified admitted bound
+  release (digest, exact Published Version, declared supported operations) —
+  a synced checkout is transport state, never activation. A changed SDK/Core
+  build or support set requires fresh validation and a new matching overall
+  admission; public package versions alone never qualify a source for these
+  capabilities.
+
+If the project has no such selector, everything earlier in this skill applies
+unchanged; the SDK stays an optional dependency the standalone route never
+imports. Source approval and the overall admission remain human-only; no tool
+or agent role exposes them.
+
 ## Skill-led business onboarding
 
 Targeted clarification through the existing proposal interfaces — no
@@ -579,7 +630,8 @@ toolsets over one core — pick the registration at launch:
 `python -m ariadne.serve --project DIR` (combined, the default),
 `--toolset analyst` (Query only: `list_metrics`, `search_context`,
 `get_metric`, `list_datasets`, `define_metric`, `query_metrics`,
-`query_detail`, `query_records`, `resolve_term`, `save_example`,
+`query_detail`, `query_records`, `resolve_term`, `list_context_pages`,
+`read_context_page`, `save_example`,
 `search_examples`), or
 `--toolset authoring` (the Git proposal contract:
 `authoring_start_proposal`, `authoring_read_artifact`,
@@ -590,7 +642,9 @@ toolsets over one core — pick the registration at launch:
 checks and response contracts as the `ariadne-authoring` commands above. The
 answer-example tools ride the Analyst/Combined registrations with identical
 contracts to `ariadne save-example`/`search-examples` (same confirmation
-rules). No registration exposes source approval, admission, reconciliation,
+rules). In an integrated project, the `search_context`, `list_context_pages`
+and `read_context_page` tools navigate the session's pinned Bound Release
+source-free (see Integrated Lumio context above). No registration exposes source approval, admission, reconciliation,
 or the operator-only `ariadne review` walkthrough. Stdio is local
 and needs no token; the server runs for one project root (`--project`, fixed
 at launch). The authoring tools work in an

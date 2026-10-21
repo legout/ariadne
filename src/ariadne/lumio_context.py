@@ -15,11 +15,15 @@ import yaml
 
 SUPPORT = {
     "storage": "local-immutable",
-    "profiles": ["metric", "policy"],
+    # T2 (spec0029 §1.5, 2026-10-20): the `reference` profile joins the
+    # supported integrated kinds — ONLY after complete native validation of
+    # every Reference annotation across the captured candidate. Dataset/
+    # table/computation/skill profiles and unrelated extensions still refuse.
+    "profiles": ["metric", "policy", "reference"],
     # Q2 (spec0029 §1.2, 2026-10-20): query_metrics and list_datasets join
     # the supported integrated operations. A2 (spec0029 §1.3) adds the three
-    # scoped SDK navigation operations; resolve_term stays a separate
-    # technical Reference slice — every other r2 refusal stands.
+    # scoped SDK navigation operations; T2 (spec0029 §1.5) adds resolve_term
+    # over the pinned structured References — every other r2 refusal stands.
     "operations": [
         "get_metric",
         "discover",
@@ -29,6 +33,7 @@ SUPPORT = {
         "list_context_pages",
         "read_context_page",
         "search_context",
+        "resolve_term",
     ],
     "unsupported": [
         "query_detail",
@@ -36,7 +41,6 @@ SUPPORT = {
         "define_metric",
         "save_example",
         "search_examples",
-        "resolve_term",
     ],
 }
 
@@ -100,6 +104,24 @@ def candidate(root, kb_root, revision):
         where = f"knowledge/{page.path}"
         if profile.kind not in SUPPORT["profiles"]:
             errors.append(f"{where}: unsupported Ariadne profile kind '{profile.kind}'")
+        elif profile.kind == "reference":
+            # T2 (spec0029 §1.5): the structured declaration (native.ariadne)
+            # and the Core-attached disclosure slot (native.ariadne_evidence)
+            # ARE the Reference contract; every other technical extension —
+            # and any authored evidence value as authority — still refuses.
+            if (
+                set(profile.native)
+                & {
+                    "resource",
+                    "observed_value_columns",
+                    "attestation",
+                    "attester",
+                    "runtime",
+                    "dataset_sources",
+                }
+                or profile.core_ref is not None
+            ):
+                errors.append(f"{where}: unsupported technical Ariadne profile extension")
         elif (
             set(profile.native)
             & {
@@ -702,3 +724,63 @@ def search_context(manifest, query, limit=10):
             }
         )
     return hits
+
+
+def resolve_term(
+    manifest,
+    request,
+    *,
+    part: int = 1,
+    confirmations=None,
+    evidence_max_age_hours: float | None = None,
+):
+    """T2 (spec0029 §1.5): resolve one shared business term or exact field
+    lookup against the pinned Bound Release's captured structured References
+    through the ONE shared native resolver (the structured-entry seam in
+    :func:`ariadne.context.resolve_term_entries` — there is no second matcher
+    or ranking engine). The SDK's already-validated native metadata is
+    adapted in memory; the operator Visibility Scope is applied by the pinned
+    SDK context BEFORE matching, counting or citations; there is no legacy
+    context_layer fallback and no Core-side KB YAML parse. Each match carries
+    the version-qualified SDK identity and the Bound Release digest — the
+    enrichment happens before the shared part/byte ceilings are computed, so
+    the whole-output bounds always bind the enriched form."""
+    from lumio_wiki.ariadne_context import disclose_native
+
+    from ariadne import context
+
+    published = open_context(manifest)
+    identity = {}
+    entries: list[tuple[str, dict, bool]] = []
+    for page in published.pages:
+        native = disclose_native(page.native)
+        if not isinstance(native, dict):
+            continue
+        extension = native.get("ariadne")
+        if not isinstance(extension, dict) or not isinstance(extension.get("mappings"), list):
+            continue  # ordinary pages stay documentation, never References
+        # F3 (fix pass): the COMPLETE producer-validated native mapping is
+        # the resolver input — title/description/aliases/sources/status/
+        # stale_after keep their authored values through the EXISTING output
+        # fields; only provenance/draft are serving-layer facts
+        meta = {"type": "reference", **native}
+        entries.append((page.path, meta, False))
+        identity[page.path] = {
+            "namespace": page.namespace,
+            "entity_id": page.entity_id,
+            "published_version": page.published_version,
+            "citation": page.citation,
+            "bound_release": manifest["digest"],
+        }
+
+    def _enrich(match):
+        return {**match, **identity[match["page"]]}
+
+    return context.resolve_term_entries(
+        entries,
+        request,
+        part=part,
+        confirmations=confirmations,
+        evidence_max_age_hours=evidence_max_age_hours,
+        enrich=_enrich,
+    )

@@ -40,6 +40,19 @@ def _git_identity_ok(root: Path) -> bool:
     )
 
 
+def _git_head_revision(root: Path, repo_root: str | None) -> str | None:
+    """G2 (spec0029 §1.4): the full exact HEAD of THIS checkout, read from Git
+    only — or None when it is unknown (no repository, unborn HEAD), never an
+    invented revision. It is transport state, disclosed separately from the
+    verified admitted Content Commit."""
+    if repo_root is None:
+        return None
+    proc = proposals._git(["rev-parse", "--verify", "HEAD"], root, check=False)
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
 def _catalog(snapshot: Path) -> dict:
     models = snapshot / "semantic_layer" / "models"
     files = sorted((*models.glob("*.yml"), *models.glob("*.yaml"))) if models.is_dir() else []
@@ -248,10 +261,35 @@ def _skill_targets(selection: set[tuple[str, str | None]] | None = None) -> list
     return views
 
 
+def _bound_release_view(record: dict) -> dict | None:
+    """G2 (spec0029 §1.4): the verified admission's Bound Release digest, its
+    exact immutable local Published Version and its declared supported
+    operations — from the verified descriptor only, never the working tree,
+    with no destination, registry or source data disclosed. A record without a
+    well-formed bound release simply discloses none."""
+    manifest = record.get("bound_release")
+    if not isinstance(manifest, dict):
+        return None
+    knowledge = manifest.get("knowledge")
+    support = manifest.get("support")
+    if not isinstance(knowledge, dict) or not isinstance(support, dict):
+        return None
+    digest = manifest.get("digest")
+    version = knowledge.get("published_version")
+    operations = support.get("operations")
+    if not digest or not version or not isinstance(operations, list):
+        return None
+    return {
+        "digest": digest,
+        "published_version": version,
+        "supported_operations": operations,
+    }
+
+
 def _admission_view(admitted: dict) -> dict:
     if admitted["state"] == "valid":
         catalog = admitted["catalog"]
-        return {
+        view = {
             "state": "valid",
             "revision": admitted["revision"],
             "artifact_digest": admitted["artifact_digest"],
@@ -259,6 +297,10 @@ def _admission_view(admitted: dict) -> dict:
             "context_only": catalog["context_only"],
             "catalog": catalog,
         }
+        bound = _bound_release_view(admitted["record"])
+        if bound is not None:
+            view["bound_release"] = bound
+        return view
     return {key: admitted.get(key) for key in ("state", "reason") if admitted.get(key) is not None}
 
 
@@ -379,6 +421,7 @@ def build_report(args: argparse.Namespace, *, skill_targets=None) -> dict:
     git.update(
         repository_root=repo_root,
         commit_identity=identity_ok if repo_root is not None else None,
+        head_revision=_git_head_revision(root, repo_root),
     )
 
     admitted = _managed_admission(root)
@@ -445,9 +488,33 @@ def _render(report: dict) -> str:
                 if git["commit_identity"]
                 else "missing",
             ),
+            # G2: transport state, separate from the admitted Content Commit
+            _row("local HEAD:", git["head_revision"] or "unknown"),
             _row("admission:", report["project"]["admission"]["state"]),
         ]
     )
+    bound = project["admission"].get("bound_release")
+    if bound is not None:
+        lines.append(
+            _row(
+                "bound release:",
+                f"{bound['digest'][:12]}… (published {bound['published_version']})",
+            )
+        )
+        lines.append(
+            _row(
+                "supported ops:",
+                f"{len(bound['supported_operations'])} (see --json for the exact list)",
+            )
+        )
+        if git["head_revision"] and git["head_revision"] != bound["published_version"]:
+            lines.append(
+                _row(
+                    "",
+                    "local HEAD differs from the admitted revision — sync alone never "
+                    "activates a release",
+                )
+            )
     catalog = project.get("catalog")
     if catalog is not None:
         lines.append(

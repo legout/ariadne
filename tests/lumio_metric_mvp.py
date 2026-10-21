@@ -145,9 +145,70 @@ def native_candidate(root):
     return project, api, started, revision
 
 
+# T2 (spec0029 §1.5): the Reference kind became supported through complete
+# native validation, so the still-unsupported oracle is a genuinely
+# producer-VALID `skill` profile — native base (title/description/tags/
+# sources) only, no required_policies/metric_ref/core_ref — never a malformed
+# kind. The producer's kind set is {dataset, table, reference, policy, metric,
+# computation, skill} with NATIVE_REQUIRED_FIELDS["skill"] = the base tuple.
+SKILL_PROFILE_PAGE = """---
+id: "entity:run-the-demo"
+title: "Run the Demo"
+entity_types:
+  - skill
+tags:
+  - demo
+summary: "Operator steps for the synthetic local demo run."
+lifecycle: "approved"
+visibility: "public"
+sources:
+  - id: "src-demo-runbook"
+    title: "Demo runbook, 2026-10-05"
+ariadne_profile:
+  version: 1
+  kind: skill
+  native:
+    type: skill
+    title: "Run the Demo"
+    description: "Operator steps for the synthetic local demo run."
+    tags:
+      - demo
+    stale_after: 2027-06-30
+    sources:
+      - id: "src-demo-runbook"
+        title: "Demo runbook, 2026-10-05"
+---
+
+# Run the Demo
+
+The packaged runbook for the synthetic local demo.
+"""
+
+
 def test_unsupported_ariadne_profile_refuses_before_publication(tmp_path):
-    """The SDK-valid, unreferenced Reference must not be silently ignored."""
-    project, api, started, revision = native_candidate(tmp_path)
+    """The SDK-valid, unreferenced profile must not be silently ignored."""
+    project, api, started, revision = supported_candidate(tmp_path)
+    tree = worktree_of(project, started["proposal"])
+    (tree / "knowledge/skills").mkdir(parents=True, exist_ok=True)
+    (tree / "knowledge/skills/run-the-demo.md").write_text(SKILL_PROFILE_PAGE)
+    # the disposable candidate's KB control file must DECLARE the new category
+    # and ontology type (CONTROL covers policies/references/metrics only) —
+    # extended while preserving the accepted ontology_catalog, so the skill
+    # page is genuinely producer-valid, never a malformed-kind oracle
+    (tree / "knowledge/lumio.yaml").write_text(
+        CONTROL.replace("  - name: metrics\n", "  - name: metrics\n  - name: skills\n").replace(
+            "    metric: {}\n", "    metric: {}\n    skill: {}\n"
+        )
+        + yaml.safe_dump(
+            {
+                "ariadne_context": {
+                    "version": 1,
+                    "ontology_catalog": {"urn:demo:catalog": {"retail-hierarchy": "r7"}},
+                }
+            }
+        )
+    )
+    revision = reconcile_knowledge(project, started["proposal"], revision)
     inspection = inspect_ariadne_candidate(
         str(worktree_of(project, started["proposal"]) / "knowledge"),
         revision,
@@ -174,15 +235,15 @@ def test_unsupported_ariadne_profile_refuses_before_publication(tmp_path):
     assert {name: checks[name]["outcome"] for name in native_checks} == dict.fromkeys(
         native_checks, "passed"
     ), "An unrelated failed native check is not the expected red"
-    assert validated["ok"] is False, "M1 must refuse the unsupported Reference profile"
+    assert validated["ok"] is False, "M1 must refuse the unsupported skill profile"
     assert len(validated["errors"]) == 1, "Only the unsupported KB profile may fail"
     artifact, _, cause = validated["errors"][0].partition(": ")
-    assert artifact == "knowledge/references/order-number.md"
+    assert artifact == "knowledge/skills/run-the-demo.md"
     assert re.search(
-        r"\bunsupported\s+(?:Ariadne\s+)?profile(?:\s+kind)?\s+['\"]?reference\b",
+        r"\bunsupported\s+(?:Ariadne\s+)?profile(?:\s+kind)?\s+['\"]?skill\b",
         cause,
         flags=re.IGNORECASE,
-    ), "The KB diagnostic must identify the unsupported Ariadne Reference profile"
+    ), "The KB diagnostic must identify the unsupported Ariadne skill profile"
     assert not (project / ".ariadne" / "current.json").exists()
 
     # A supported kind must not hide an unsupported execution annotation either.
@@ -681,12 +742,14 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
             },
         )),
         ("search_examples", ("revenue",)),
-        ("resolve_term", ("Order Number",)),
     ]
     # Q2 (spec0029 §1.2): query_metrics and list_datasets left the unsupported
     # set — the two superseded refusals become their native supported behavior.
     # A2 (spec0029 §1.3): search_context/list_context_pages/read_context_page
-    # serve through the pinned scoped SDK; the remaining refusals stand.
+    # serve through the pinned scoped SDK. T2 (spec0029 §1.5) also moves
+    # resolve_term out of the unsupported set on a fresh matching integrated
+    # admission — the dedicated reference journey proves that serving; the
+    # remaining refusals stand.
     from ariadne.execution import DuckDBExecution
     from ariadne.planner import PlannerError
 
@@ -707,7 +770,12 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
             assert groups["metrics"]["status"] == "available"
             assert groups["contracts"]["status"] == "available"
             assert groups["pages"]["status"] == "available"  # A2 SDK navigation serves
-            assert all(groups[k]["status"] == "unavailable" for k in ("terms", "examples"))
+            # T2 (spec0029 §1.5): resolve_term serves on a fresh matching
+            # integrated admission; THIS release carries no structured
+            # References, so the served group is available and empty
+            assert groups["terms"]["status"] == "available"
+            assert groups["terms"]["result"]["total_matches"] == 0
+            assert groups["examples"]["status"] == "unavailable"
             # the live catalog serves with its approvals — never source-free
             datasets = asyncio.run(runtime.list_datasets())
             orders = next(d for d in datasets if d["table"] == "orders")

@@ -2,13 +2,206 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 22 — reviewed local Q2/L2/A2 integrated and pushed, 2026-10-20.** Historical isolated statuses below are preserved as execution evidence. T2/G2 remain proposed; Q1/#80 guidance and paired installed-artifact qualification are still outstanding. No package release or issue closure is claimed. |
+| **Status** | **Revision 27 — approved citation-containment correction, 2026-10-20.** Owner explicitly approved the prepared patch b236a9da on frozen4f6f182, one Policy-beleg RED and one seven-node POST, then the already assigned Q1 qualification and independent review. No integration or publication. Earlier grants and exhausted checks remain historical evidence, not renewed budgets. |
 | **Owner direction** | 2026-10-20: “S3 Anbindung ist für Ariadne zweitrangig. Der bevorzugte Weg bleibt git repo mit lokalem sync.” This approves the priority used for this proposal, not new SDK interfaces or capability expansion. |
 | **Goal** | Make the shared Git Content Repository plus a local checkout the normal operator path, then expand useful local knowledge/analytics capabilities without weakening exact admission or standalone behavior. S3 is optional later work, not a prerequisite. |
 | **Behavioral sources** | [Spec0029 approved r2](../specs/2026-10-18-0029-lumio-bound-governed-releases.md), especially §§2–6 and preserved full-target AC1–AC9; [ADR0026](../adr/0026-lumio-sdk-bound-governed-releases.md). Companion: `legout/lumio-wiki:project/specs/2026-10-18-0009-ariadne-context-profile.md` r2 / ADR0030. The r2 MVP refusal boundary remains authoritative until the corresponding source amendments are approved. |
 | **Starting artifacts** | Published `ariadne-data==0.5.0`, Core `a9dd5f8ff9ae15b55268cad6dad0841caf0057fa`; published `lumio-wiki==0.3.0` / `lumio-lancedb==0.3.0`, producer `a5127c753a6343629ba3fc7adfa44441c8f82baf`. Use exact accepted successors in later handoffs, never floating `main`. |
 | **Tracker** | [#76](https://github.com/legout/ariadne/issues/76): full epic; [#79](https://github.com/legout/ariadne/issues/79): consumer continuation; [#80](https://github.com/legout/ariadne/issues/80): remaining adapters/guidance/qualification. [#81](https://github.com/legout/ariadne/issues/81) and [Lumio #2](https://github.com/legout/lumio-wiki/issues/2) have delivered released code but remain open; no closure is authorized here. Their old ticket text must be reconciled before new execution. |
 | **Capture / readiness** | Existing glossary terms suffice. Git/local preference changes sequencing, not ADR0026's architecture; no new ADR is proposed. New operation support and the additive navigation API require written Core/producer source amendments before their writers start. Contract: planning-contract v1; installed catalog provenance unknown. |
+
+## Current approved execution — citation containment (revision27)
+
+After the independent final review, the parent confirmed one remaining P2:
+the new KB citation branch classifies escaping relative paths as bundle
+evidence without checking the resolved Knowledge subtree boundary. The owner
+replied “Freigabe” to the concrete proposed product patch27b5294e, test
+patche41bbfe4, one RED/POST of the existing T2 node, an updated Core wheel and
+installed pairing proof, and one independent delta review. No integration or
+publication. This is an explicit additional bounded allowance; historical
+failures/budgets remain unchanged.
+
+Use frozen Core candidatef6e8e20aabdda6c839f8c6859fed631f40977a91 and unchanged
+SDK26a633b4399ddd5e9d6cad2292cbb317944ead90. Product patch SHA256
+`27b5294ea0007a0888d4a15fd93f504494c3c0ae18862429afbaac2f271b8a0e`
+adds resolved containment before the existing KB bundle classification; all
+other citation semantics remain unchanged. Test patch SHA256
+`e41bbfe4e01ff25a5a4e46ff5c92e308e03970e660fe37cb98bad5d99f8e96cf`
+extends the existing third negative validation with an authored real document
+outside the captured release and requires its escaping citation to be refused.
+No fourth validation, new test node, mock, weakened assertion or new authority.
+
+Same registered sequential BB Pi GLM5.3/high writer, then the existing
+Sol6.1/high reviewer for delta-only review. Parent inspects the expected RED
+before granting the exact product patch and one same-node POST. Failure stops;
+no automatic retry or further repair. Parent builds one updated Core wheel,
+checks the affected source/archive/installed pairing outside the checkouts
+with unchanged SDK wheel, and reuses unaffected G/status, native compatibility,
+Q3, optional base-import, SDK/CI/MCP/adapter and numerical proof. Do not replay
+numerical or Core admission journeys merely for packaging.
+
+Behavior remains spec0029r5 §1.5 and native citation/containment rules, especially
+spec0011 §5. No new vocabulary, ADR, dependency, interface, schema or SDK change.
+Canonical #79 owns the bounded correction; #80 owns affected installed proof.
+Parent records exact source/ticket snapshots before dispatch. Capture:
+planning-contract v1, installed provenance unknown. No target integration,
+push, release/publication, issue closure, service/private-source or cleanup.
+
+## Prior approved execution — test-round correction (revision26)
+
+Owner explicitly approved: “Ich genehmige den vorbereiteten Test-Patch
+6c0d6aee und einen Recheck des fehlgeschlagenen T2-Knotens; anschließend die
+geplante Q1-Qualifikation und unabhängige Review. Keine Integration oder
+Veröffentlichung.”
+
+The r25 RED reproduced the Policy resource defect. Its POST preserves six
+passing compatibility nodes but fails the journey's optional last leg at the
+native three-round validation limit. This is a fixture-ordering defect; the
+limit and assertions remain unchanged. Apply only prepared test patch SHA256
+`6c0d6aee350171917ca7b3e476eb06291324681973a1e3584eae98ec89378a1b`:
+combine the Policy mutation and hidden-reference edit before the existing
+third validation and require both diagnostic families from that result.
+Run the failed T2 node once; reuse the six unchanged compatibility passes.
+No new product repair or retry is authorized. Preserve r25 failed evidence.
+Then complete the previously assigned Q1 wheel/Q/installed proof and one
+independent candidate review. All prior behavior sources, roles, ownership,
+non-goals and integration/publication restrictions remain unchanged.
+Capture: no new vocabulary, ADR or behavior; planning-contract v1,
+installed provenance unknown. Canonical #79/#80 are reconciled before dispatch.
+
+## Prior approved execution — bounded F1/F2 remainder (revision25)
+
+**Owner approval — 2026-10-20:** “Ich genehmige eine zusätzliche begrenzte
+F1/F2-Korrekturrunde auf 4f6f182 gemäß dem vorbereiteten Patch b236a9da:
+ein gezielter Policy-Beleg-RED-Test, ein POST-Recheck der sieben T2-Tests,
+danach die geplante Q1-Qualifikation und unabhängige Review.
+Keine Integration oder Veröffentlichung.”
+
+Behavior remains approved spec0029r5 §1.5 and native specs0010/0011;
+no vocabulary, ADR, SDK/API, output schema or dependency change is assigned.
+Canonical [#79](https://github.com/legout/ariadne/issues/79) owns the bounded
+repair/test body; [#80](https://github.com/legout/ariadne/issues/80) owns the
+remaining installed qualification. Parent reconciles their exact snapshots
+before dispatch. Capture: planning-contract v1, installed provenance unknown.
+
+Frozen Core input4f6f1826ab93cae7d82ce623e1772e62d3e0d6ee remains unaccepted:
+F1's Core parser still executes before the KB branch; F2 hashes a knowledge
+Policy but stores the unqualified path consumed by verification. The prepared
+product patch has SHA256
+`b236a9da101f392f74c167bb407aed8de0437c274d11435ba0472447963c746e`.
+SDK26a633b4399ddd5e9d6cad2292cbb317944ead90 and its wheel stay unchanged.
+
+Use the same isolated registered BB Pi GLM5.3/high writer and one final
+read-only Sol6.1/high reviewer. Parent inspects the authored Policy fixture
+before execution. Exactly one focused T2 Policy RED before the product patch,
+then one POST containing the same seven assigned T2 nodes. These are two
+additional invocations, not replacements for the prior green baseline4/G17/
+T7/correction7 results. Failure stops the affected lane; no repair/retry or
+wider suite follows automatically. Preserve original result refs and logs.
+
+After the repair, complete the previously reserved Q invocation (the V3 pair
+and installed optional-MCP skill check), one final Core wheel, Core-only
+optional-import check, paired installed proof using the unchanged SDK wheel,
+and the one independent candidate review. Reuse unchanged producer CI,
+SDK/native wheel/MCP/adapter and numerical evidence. No new matrix or
+packaging-only numerical replay. No further automatic correction round.
+Freeze committed candidates and honest evidence; pause before target
+integration, push, release/publication, issue closure or cleanup.
+
+## Prior approved execution — G2/T2 and affected Q1 qualification (revision24)
+
+**Owner request:** 2026-10-20, “Implementiere den Rest von #80”. This requests
+completion. After reviewing the concrete written specification/plan, owner
+answered “Freigabe”. This approves spec0029r5 §§1.4–1.5, plan24, isolated
+implementation and canonical #79/#80 reconciliation. The prior Q1 checklist
+is complete; these are the newly activated local prerequisites. No package
+release or full-target S3 completion follows.
+
+**Exact inputs:** accepted isolated Core
+`ae3a4f6679844d30267fd67985d756803901b5e1`, SDK
+`26a633b4399ddd5e9d6cad2292cbb317944ead90`. Core main remains7e8d84d;
+SDK main remainsb1d63b3. Start the next isolated candidates from those accepted
+Q1 descendants; do not merge them into main to make implementation possible.
+Existing producer profile/navigation interfaces suffice; no producer writer or
+new dependency is assigned. Scope-safe SDK identity, native Core receipts and
+confirmation remain the consumed contracts. Use spec0010/0011 and spec0029
+approved §§2–6; approved §§1.4–1.5 own only the new continuation behavior.
+
+**Capture:** existing glossary terms and ADR0026/0030 suffice; no new term or
+ADR. No service/credential/architecture change. Owner approved this local continuation; Core-S3 acceptance remains separate. Contract planning-contract v1, provenance unknown.
+Read-only source investigation found all required SDK metadata/identity seams.
+Implementation choices (in-memory native input adaptation and reuse of the
+existing proposal evidence store) do not create new authority or schema.
+
+### Canonical execution and assurance
+
+[#79](https://github.com/legout/ariadne/issues/79) owns G2/T2 task bodies,
+owned surfaces and native baseline/G/T checks;
+[#80](https://github.com/legout/ariadne/issues/80) owns affected Q1 qualification,
+installed proof and Q. Parent reconciles both before dispatch; exact issue
+snapshots/digests and source/SDK identities are in the existing parent run.
+The reviewed proposal07439a4 preserves the approved detailed decomposition;
+these ticket bodies are now the executable copy, not a parallel task ledger.
+
+Four pytest invocations once each: native Reference/confirmation baseline,
+G2 + existing status checks, T2 + affected native/strict-kind/catalog checks,
+Q1 discovery/installed-skill checks. No hidden collection/broader suites.
+New tests use independent authored oracles inspected before execution.
+Necessary native inspection SQL is synthetic and explicit; the changed legacy
+capability test constructs one governed answer, disclosed rather than hidden.
+Unchanged producer/native numerical/S3/wheel/MCP evidence is reused.
+One final independent Pi Sol/high candidate review; at most one parent-authorized
+small fix pass and one affected recheck/delta review, no automatic third round.
+
+Use BB Pi GLM5.3/high, one sequential isolated registered Core writer under
+shared XDG worktrees. Accepted SDK26a633b remains unchanged. G2 can be
+parent-inspected before T2; final high-risk review covers new G2/T2 and assembled
+qualification effects without re-reviewing settled Q2/L2/A2/Q1 findings.
+
+Completion: frozen clean candidate, exact final wheel/receipt/confirmation
+identities, actual checks and explicit reuse/limits, independent review.
+Pause before main integration, push, release, issue closure or cleanup.
+No service, production data/private KB, Agent/Tau or Core S3 is assigned.
+
+## Historical execution — approved Q1 for the delivered local scope
+
+**Owner approval — 2026-10-20:** after reviewing this exact scoped plan,
+owner answered “Ok. Freigabe. Mach weiter mit Q1”. This approves local-scope
+Q1 execution, canonical #80 update and the named Pi roles. It grants no new
+capability, service, target integration, push, release or issue closure.
+Original full-target requirements remain open. The approval draft is preserved
+unchanged in the parent run storage; #80 owns the executable task decomposition.
+
+**Sources / inputs:** spec0029 r4 §§1.1–1.3 and §§2–6, ADR0026; producer
+spec0009 navigation r3 and ADR0030. Frozen starting commits: Ariadne
+`7e8d84d0820101719f2b43dd74b8a65dd963fa2e`, Lumio
+`b1d63b3f01c297296aeeb53f7dfef7acafeb0349`. Their accepted behavioral
+candidates are Core36aee079 and SDK86db9f1. No floating-main runtime pin.
+Capture: no new vocabulary, architectural decision or supported behavior;
+planning-contract v1, installed catalog provenance unknown. The owner approved qualification of this local scope instead of original full-A1.
+
+**Deliverable:** coherent public guidance and actual installed artifact proof
+for the delivered Metric/Policy operations, multi-metric context, approved live
+catalog, and source-free scoped SDK navigation. Preserve exact identities,
+consent, visibility, role exclusions, refusals, citations, limits and standalone
+optional-SDK behavior. Git/local sync is the normal operator path; checkout
+sync never activates a release. Do not add G2 status behavior, technical
+Reference/resolve_term, ad-hoc or Core S3 capability, Agent/Tau, numerical replay,
+full-ODCS or production/service claims. This slice alone cannot close full #80.
+
+**Canonical execution:** [GitHub #80](https://github.com/legout/ariadne/issues/80)
+owns Q1 task bodies, owned surfaces and validation scope/budget, reconciled to
+this approval before dispatch. The parent run state records the issue-body
+snapshot/digest and exact frozen candidate identities. Historical drafts below
+are not current grants. One writer per isolated repository; worker
+`zai/glm-5.3/high`, final reviewer `openai-codex/gpt-6.1-sol/high` through BB Pi.
+
+**Completion:** two frozen clean candidate refs, exact wheel/build identities,
+actual installed-origin/profile-resource outputs, applied/reused gate evidence
+with limits, one independent final review, and honest remaining full-target
+scope. Stop before integration, push, release/publication, issue closure or
+cleanup unless separately authorized. The prior merge/cleanup authorization
+covered the previous candidates, not this new qualification slice.
 
 ## Integration and cleanup — owner-authorized, 2026-10-20
 

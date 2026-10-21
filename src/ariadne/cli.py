@@ -217,7 +217,8 @@ def build_parser() -> _Parser:
         parents=[common],
         help=(
             "read-only Git project readiness, proposal and admission diagnostics — "
-            "no source connection"
+            "no source connection; the local HEAD is reported separately from the "
+            "admitted bound release"
         ),
     )
     status_cmd.add_argument(
@@ -316,6 +317,15 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         # the query runtime (the only public path that opens a source
         # connection) is never constructed for it.
         result = asyncio.run(discovery.search_context(args.query, limit=args.limit))
+        print(json.dumps(result, default=_json_default))
+        return 0
+    if args.command == "resolve-term" and discovery._context_snapshot is not None:
+        # T2/F5 (fix pass, spec0029 §1.5): INTEGRATED term resolution is
+        # source-free — the pinned discovery session serves it; the query
+        # runtime (and any source connection) is never constructed for it.
+        # The standalone route keeps its exact native runtime path below.
+        assert resolve_request is not None
+        result = asyncio.run(discovery.resolve_term(resolve_request, part=args.part))
         print(json.dumps(result, default=_json_default))
         return 0
     discovery._refuse_unsupported(args.command.replace("-", "_"))

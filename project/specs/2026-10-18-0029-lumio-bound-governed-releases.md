@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Revision 4 — local A1 continuation.** Q2 §1.2 is accepted isolated. Owner 2026-10-20 explicitly approved the written navigation contract and autonomous L2 → A2 implementation; §1.3 activates that local navigation scope. Revision 2 remains authoritative outside §§1.2–1.3. Historical r2 approval: Written scope was approved with “Schriftlich freigeben (Recommended)”. The subsequent scoped M1 grant is recorded below and in plan r8; full-target revision-1 goals remain deferred where identified. |
+| **Status** | **Revision 5 — approved local G2/T2 continuation, 2026-10-20.** Owner answered “Freigabe” to the concrete written r5/plan24 proposal at commit07439a4. Sections1.4–1.5 activate that bounded scope; approved revision4 remains authoritative elsewhere. No Core S3 or target integration/publication is granted. |
 | **Scoped M1 execution approval** | Owner, Ariadne Pi conversation 2026-10-19: “Plan + M1 starten (Recommended)”. Approves plan r8, local source freeze, a new GitHub M1 child of #79 and supervised M1 only via Paseo/Pi: fresh Sol/high writer, exactly M1-R/M1-P, one independent fresh Sol/high candidate review, synthetic local data/KB only. Unexpected failure stops; pause with the isolated candidate. No full A1/Q1, main integration, push, release, real sources/KB or cleanup. |
 | **Historical MVP design/writing approval** | Owner, Ariadne Pi conversation 2026-10-19: selected “Umfang zuerst neu zuschneiden”, “Lokaler Metric-Durchstich (Recommended)”, “Strikte Profilgrenze (Recommended)”, then “So ausarbeiten (Recommended)” for the complete six-part local MVP design. Authorizes this isolated written revision and necessary scoped notices only. No code, runtime tests, new budget, tracker changes, target integration, push, release, production/real-KB work or cleanup. |
 | **Historical full-target approval** | Owner, Pi conversation 2026-10-18 for #76 and Lumio #2: selected one Content Repository, direct Python SDK, integrated-only strict mandatory Policies, one overall human confirmation, and project-wide Visibility Scope defaulting to public. Then selected “Design freigeben (Recommended)” for the complete six-section V1 design and its capture in both repositories. The owner subsequently selected “Schriftliche Fassung freigeben (Recommended)” for both written revision-1 specifications, ADRs, glossaries and scoped source amendments, opening implementation planning. Plan approval, execution and publication remain separate. |
@@ -160,6 +160,99 @@ or a hidden same-token page. Source construction raises if reached. Preserve
 outer shapes, source-free startup/role boundaries and the accepted Q2 behavior.
 Required output too large for the existing limits refuses without elision.
 The plan assigns the focused A2 check plus affected existing MVP/wrapper checks.
+
+### 1.4 Approved G2 — Git/local operator disclosure
+
+The standard path is one shared Git Content Repository with local sync.
+`ariadne status` remains read-only and source-free: it does not fetch, merge,
+measure, query a source, publish, grant approval or activate anything.
+For an integrated project it additionally reports the local full Git HEAD
+separately from the already admitted Content Commit. An unborn HEAD is unknown,
+never an invented revision. New integrated information is additive to existing
+status sections: the admitted Bound Release digest, its exact immutable local
+Published Version and its declared supported operations come only from the
+verified admission. Do not turn unverified descriptor fields into active facts.
+
+Keep the existing diagnostic states `none`, `invalid` with a reason, and `valid`.
+A stale/build-mismatched, malformed or unverifiable admission cannot produce
+ready/valid integrated status. Missing admission is distinct from an invalid
+one. No new SDK import is required on the standalone status route. Status output
+adds no raw Source, private registry, credential or source-object disclosure.
+
+The operator guide shows existing clone/fetch/fast-forward, native candidate
+reconcile, Source Approval if needed, validation, composite preview, explicit
+confirmation and source-free discovery. It introduces no sync wrapper or
+second admission command. Git sync alone preserves the active descriptor and
+already-open session pin; only a newly reviewed/confirmed admission changes
+what a new session serves. Existing role exclusions and native failures apply.
+
+Independent acceptance: admit synthetic revision A, fast-forward a local clone
+from a disposable local Git remote to B, then observe local HEAD B versus
+admitted A. Descriptor bytes and an existing source-free session stay on A.
+After the ordinary reviewed B admission, a new session sees B. This proves
+activation isolation without calculating revenue again.
+
+### 1.5 Approved T2 — validated technical Reference and term resolution
+
+Extend the integrated profile subset from `metric, policy` to
+`metric, policy, reference` ONLY after complete native Core validation of every
+newly supported Reference annotation across the captured candidate. Reuse
+spec0010's structured Reference/Resource/mapping contract, spec0011's advisory
+trust signals, existing authentic inspection receipts and human confirmation.
+SDK preservation or an authored `verified`/`ariadne_evidence` value cannot
+create Core evidence, grant Source Approval, confirm a mapping or authorize a
+join. Dataset/table/computation/skill profiles and unrelated extensions remain
+unsupported; no generic profile widening or silent projection is permitted.
+
+Curated Reference content has one maintained source: the KB. Consume the
+producer-validated native metadata and immutable SDK page identity. No second
+curated `context_layer/` copy, Core-side KB YAML parser or alternative matching
+engine is introduced. Core-owned generated observations retain their existing
+ownership and validation. Existing producer SDK interfaces are sufficient;
+a newly discovered public SDK contract gap returns for a scoped amendment.
+
+Measurement stays explicit through the existing Core inspection operation on
+operator-approved synthetic sources. Use the same declared mapping candidate
+and native candidate/endpoint/source/OSI/Policy identity checks. Native receipt
+records stay in the existing proposal evidence area; integrated validation
+verifies them under the current age/dependency rules before attaching their
+Core-owned summaries. Inline SDK evidence alone never satisfies receipt
+verification. Any required generated-metadata change is an explicit candidate
+edit and new final Content Commit, preserving the curated body/profile identity
+through the existing producer write contract; it cannot mutate an admitted KB.
+
+The composite preview and its digest bind exact human mapping selections to
+the reviewed Reference path, assertion, endpoint correspondence and verified
+receipt identities. Retain the existing selection syntax and confirmation
+semantics; no second confirmation store or Agent/MCP admission permission is
+added. No selection means unconfirmed. Changed declaration, endpoints, source,
+evidence, expiry or relevant build requires existing native revalidation and
+cannot inherit a current confirmation merely from a stable title or Entity ID.
+
+`resolve_term` then uses the one pinned SDK release and operator scope. Reuse
+native exact term/qualified-field matching, stable ordering, ambiguity,
+confirmation/freshness disclosure and bounded part/byte semantics. Filter scope
+before matching/counting/citations; all cited identities and passages identify
+the same Published Version and Bound Release. Missing metadata stays unknown.
+No legacy-root fallback, inferred equivalence, transform execution or join
+permission follows. Whole-operation response guards and role exclusions remain.
+A changed support set requires fresh matching validation/overall admission;
+existing releases are never upgraded in place. Standalone behavior is preserved.
+
+Independent acceptance: explicitly adapt the submitted golden Reference in a
+synthetic proposal (never rewrite the baseline fixture). Produce real native
+inspection receipts against declared local fields, verify the complete
+candidate and serve a scoped unconfirmed mapping. Confirm exactly the reviewed
+asserted mapping through ordinary human admission and observe confirmed status.
+A changed endpoint/dependency or receipt must refuse or become unconfirmed under
+the native rules; the old confirmation cannot remain current. Assert exact
+Resource/column identity and SDK version-qualified citation. Preserve a
+producer-valid unsupported profile as the global refusal oracle.
+
+These two local continuations do not implement Core S3, ad-hoc/record queries,
+Agent/Tau integration, a service, production-data access, historical numerical
+replay or a package release. Original full-target S3 acceptance remains deferred
+and must not be marked complete by these local results.
 
 ## 2. One authored revision
 

@@ -905,6 +905,22 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 part: which bounded part of the matches (default 1; the response
                     carries total_matches/parts/truncated for continuation).
             """
+            # T2/F5 (fix pass, spec0029 §1.5): INTEGRATED term resolution is
+            # source-free — the pinned discovery session serves it through
+            # the typed-result refusal-budget seam; the query runtime (and
+            # any source connection) is never constructed for it, and the
+            # routing check never constructs one either. The standalone
+            # route keeps the EXACT supplied-facade handler path.
+            from ariadne import admission as _admission
+
+            record = _admission.load_current(Path(project))
+            if record is not None and isinstance(record.get("bound_release"), dict):
+                _refuse_unrepresentable_mcp_ceiling(project)
+                discovery = DiscoveryRuntime.open_project(project)
+                result = await discovery.resolve_term(request, part=part)
+                return _typed_navigation_result(
+                    app._tool_manager._tools["resolve_term"], result, project
+                )
             return await _runtime().resolve_term(request, part=part)
 
     # ------------------ the Authoring registration (authoring, combined) ----

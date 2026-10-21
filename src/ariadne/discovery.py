@@ -573,6 +573,34 @@ class _DiscoverySession:
             return resolve_term([], request, part=part)
         if self._managed is not None:
             self._recheck_pinned()
+        if self._context_snapshot is not None:
+            # T2 (spec0029 §1.5): integrated term resolution is source-free —
+            # the pinned SDK's captured structured References feed the ONE
+            # shared resolver; confirmations and the operator evidence-age
+            # budget ride it exactly like the standalone route.
+            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+            assert self._managed is not None
+            result = lumio_context.resolve_term(
+                self._managed["bound_release"],
+                request,
+                part=part,
+                confirmations=self._managed.get("confirmed_mappings"),
+                evidence_max_age_hours=(
+                    authoring_inputs.project_inspection_limits(self._project)[
+                        "receipt_max_age_hours"
+                    ]
+                    if self._project is not None
+                    else None
+                ),
+            )
+            # F4 (fix pass, spec0029 §1.5 + spec0014 §5): the COMPLETE final
+            # response — admission provenance included — is what the host
+            # ceiling guards; the SDK enrichment already rides the matches
+            # before the shared parts are computed
+            result["admission"] = self._admission_view(self._managed)
+            self._refuse_oversized_response(result)
+            return result
         result = resolve_term(
             [(self.context_dir, False)],
             request,

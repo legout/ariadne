@@ -2783,12 +2783,54 @@ def resolve_term(
     confirmations: list[dict] | None = None,
     evidence_max_age_hours: float | None = None,
 ) -> dict:
-    """The shared read-only terminology resolver (spec 0010 §6, plan §2):
-    bounded matching concept/representation identities, exact field bindings,
-    required scope, ambiguity, claim/confirmation/freshness status and actual
-    page/source citations over the given context roots — Query passes its
-    pinned admitted context dir, Authoring its explicitly selected candidate
-    revision.
+    """The shared read-only terminology resolver (spec 0010 §6, plan §2) over
+    the given context ROOTS: Query passes its pinned admitted context dir,
+    Authoring its explicitly selected candidate revision. Semantics, bounds
+    and confirmation handling are exactly the shared core in
+    :func:`resolve_term_entries` — this is only the filesystem collector for
+    context-layer roots (the integrated pinned-SDK route feeds the same core
+    through structured entries, spec0029 §1.5; there is no second matcher)."""
+    entries: list[tuple[str, dict, bool]] = []
+    for root, draft in roots:
+        references = Path(root) / "references"
+        if not references.is_dir():
+            continue
+        for path in sorted(references.rglob("*.md")):
+            if path.name in ("index.md", "log.md"):
+                continue  # system bookkeeping, never a Reference
+            rel = path.relative_to(Path(root)).as_posix()
+            try:
+                meta = _load_frontmatter_meta(path.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError) as exc:
+                raise ValueError(f"malformed reference page {rel}: {exc}") from None
+            if meta.get("type") != "reference" or "ariadne" not in meta:
+                continue  # legacy/non-reference pages stay readable, unstructured
+            entries.append((rel, meta, draft))
+    return resolve_term_entries(
+        entries,
+        request,
+        part=part,
+        limit=limit,
+        confirmations=confirmations,
+        evidence_max_age_hours=evidence_max_age_hours,
+    )
+
+
+def resolve_term_entries(
+    entries: list[tuple[str, dict, bool]],
+    request: str | dict,
+    *,
+    part: int = 1,
+    limit: int = RESOLVE_TERM_LIMIT,
+    confirmations: list[dict] | None = None,
+    evidence_max_age_hours: float | None = None,
+    enrich=None,
+) -> dict:
+    """The ONE shared resolver core over explicit structured Reference entries
+    (spec 0010 §6, plan §2): ``(page path, frontmatter-shaped meta, draft)``
+    triples — bounded matching concept/representation identities, exact field
+    bindings, required scope, ambiguity, claim/confirmation/freshness status
+    and actual page/source citations.
 
     Matching is deterministic: casefolded whole-alias/phrase equality for
     natural language (never substring fuzzy inference) and exact qualified
@@ -2802,7 +2844,10 @@ def resolve_term(
     bounded fields and an explicit elision marker — never silently dropped
     nor overflowed. No match yields an empty match list; a malformed supported
     Reference or request fails explicitly. The resolver applies no transform,
-    rewrites no SQL and authorizes no join.
+    rewrites no SQL and authorizes no join. ``enrich`` (spec0029 §1.5)
+    optionally decorates each match — the integrated route's version-qualified
+    SDK/Bound-Release provenance — BEFORE the bounded parts are computed, so
+    the whole-output ceilings always bind the enriched form.
 
     ``confirmations`` (K4, issue #44) are the ADMITTED human confirmation
     records of the served revision's admission evidence — a mapping reports
@@ -2855,31 +2900,19 @@ def resolve_term(
     matches: list[dict] = []
     now = _assessment_now()
     admitted = confirmation_lookup(confirmations)
-    for root, draft in roots:
-        references = Path(root) / "references"
-        if not references.is_dir():
-            continue
-        for path in sorted(references.rglob("*.md")):
-            if path.name in ("index.md", "log.md"):
-                continue  # system bookkeeping, never a Reference
-            rel = path.relative_to(Path(root)).as_posix()
-            try:
-                meta = _load_frontmatter_meta(path.read_text(encoding="utf-8"))
-            except (OSError, yaml.YAMLError) as exc:
-                raise ValueError(f"malformed reference page {rel}: {exc}") from None
-            if meta.get("type") != "reference" or "ariadne" not in meta:
-                continue  # legacy/non-reference pages stay readable, unstructured
-            errors = _reference_extension_errors(rel, meta)
-            if errors:
-                raise ValueError(
-                    f"malformed reference page — {'; '.join(errors)} — the resolver "
-                    "resolves only well-formed supported declarations"
-                )
-            matches.extend(
-                _page_matches(
-                    rel, meta, draft, query, needle, now, admitted or None, evidence_max_age_hours
-                )
+    for rel, meta, draft in entries:
+        errors = _reference_extension_errors(rel, meta)
+        if errors:
+            raise ValueError(
+                f"malformed reference page — {'; '.join(errors)} — the resolver "
+                "resolves only well-formed supported declarations"
             )
+        page_matches = _page_matches(
+            rel, meta, draft, query, needle, now, admitted or None, evidence_max_age_hours
+        )
+        if enrich is not None:
+            page_matches = [enrich(match) for match in page_matches]
+        matches.extend(page_matches)
     total = len(matches)
     response_parts = _resolve_response_parts(matches, limit=limit, max_bytes=RESOLVE_TERM_MAX_BYTES)
     parts = len(response_parts)

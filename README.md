@@ -26,6 +26,17 @@ as-of evidence. Source-free `ariadne search` includes a contracts group;
 `list-datasets` remains an approved live-catalog operation. This is not full
 ODCS compliance, a live health guarantee, or shared cross-layer identity (#76).
 
+**Development candidate:** [Lumio bound releases](docs/reference/lumio-bound-releases.md)
+describe the optional integrated context binding: one shared Content Commit, an
+operator-confirmed overall admission activating a local immutable Bound Release,
+strict `metric`/`policy`/`reference` profiles, full required Policy context on governed
+answers, and source-free navigation over the pinned published pages. Git is the
+standard transport and sync never activates a release — `ariadne status`
+reports the local Git HEAD separately from the admitted release (see
+[the local Git how-to](docs/how-to/lumio-git-local.md)); the SDK stays an optional
+dependency, unsupported integrated operations refuse, and exact build pairing is
+recorded per release rather than assumed from package versions.
+
 ## Source development
 
 Work on Ariadne itself happens from the package checkout, not inside a data project:

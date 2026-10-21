@@ -3,8 +3,10 @@ name: publish
 # Core-only release (owner decision 2026-10-19, ADR-0018): a v* tag builds
 # and publishes ariadne-data only. ariadne-agent and tau-mcp are excluded
 # until separately authorized; their versions and sources stay unchanged.
-# The tag must equal the root pyproject version. PyPI auth remains the
-# PYPI_API_TOKEN repository secret; no credential-model change.
+# The pinned lumio-wiki wheel built below is a test-pairing input only and
+# is never published; the tag must equal the root pyproject version. PyPI
+# auth remains the PYPI_API_TOKEN repository secret; no credential-model
+# change.
 
 on:
   push:
@@ -18,9 +20,8 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 pi-lens-ignore line-length
-
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5 pi-lens-ignore line-length
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: false # no cache in the publishing job: a poisoned cache
           # must not reach released artifacts
@@ -36,12 +37,36 @@ jobs:
       - name: Build ariadne-data (core)
         run: uv build
 
+      - name: Check out the pinned accepted Lumio producer source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: legout/lumio-wiki
+          ref: b1d63b3f01c297296aeeb53f7dfef7acafeb0349
+          path: .ci-sdk-source
+
+      - name: Build the pinned lumio-wiki SDK wheel for test pairing
+        # Exact accepted published runtime source b1d63b3 (runtime
+        # tree-identical to the accepted SDK86db9f1), never floating main,
+        # the public 0.3 version floor or an unpublished future SHA. This
+        # CI-built wheel only pairs the test suite with the runtime source;
+        # the final-candidate resource proof uses the separately frozen
+        # wheels and is not claimed byte-identical to this archive. If the
+        # producer runtime/tests/lock unexpectedly change under this pin,
+        # this pairing decision stops for re-evaluation.
+        run: |
+          uv build --package lumio-wiki --wheel --out-dir .ci-sdk-dist
+          echo "lumio-wiki source ref: b1d63b3f01c297296aeeb53f7dfef7acafeb0349"
+          sha256sum .ci-sdk-dist/lumio_wiki-*.whl
+        working-directory: .ci-sdk-source
+
       - name: Run the core test suite on the built candidate
         run: |
           uv venv --python 3.14 .ci-venv
           WHEEL=$(ls dist | grep whl)
+          SDK_WHEEL=$(ls .ci-sdk-source/.ci-sdk-dist | grep whl)
           uv pip install --python .ci-venv/bin/python \
-            "./dist/$WHEEL[mcp,dev]"
+            "./dist/$WHEEL[mcp,dev]" \
+            "./.ci-sdk-source/.ci-sdk-dist/$SDK_WHEEL"
           # The three storage-profile/Lakehouse qualification modules are
           # capability-locked by spec 0025 (§§6–7): they require the prepared
           # environment (Docker + local SeaweedFS + installable httpfs) and
@@ -50,10 +75,18 @@ jobs:
           # here instead of being silently skipped; the recorded qualification
           # evidence comes from that prepared environment (actual extension
           # versions asserted in the tests themselves).
+          # The two Lumio SDK-paired modules carry non-default filenames and
+          # are named explicitly so the exact pairing is visible; the
+          # explicit `tests` path adds the default test_*.py suite in the
+          # same single run. No skips beyond the three environment
+          # exclusions above.
           .ci-venv/bin/python -m pytest -q \
             --ignore=tests/test_s3_lakehouse.py \
             --ignore=tests/test_s3_storage_access.py \
             --ignore=tests/test_s3_storage_profiles.py \
+            tests/lumio_metric_mvp.py \
+            tests/lumio_local_context.py \
+            tests \
             || { echo "test failures block publishing"; exit 1; }
 
       - name: Publish ariadne-data (core)
