@@ -1,0 +1,38 @@
+version: 0.2.0.dev0
+semantic_model:
+  - name: retail_sales
+    description: Synthetic local retail orders
+    datasets:
+      - name: orders
+        source: orders.main.orders
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+          - name: amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: amount
+          - name: status
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: status
+            dimension: {}
+    metrics:
+      - name: revenue
+        description: Recognized revenue in EUR, excluding cancelled orders
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)
+      - name: completed_orders
+        description: Count of completed orders
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(CASE WHEN status <> 'cancelled' THEN 1 ELSE 0 END)

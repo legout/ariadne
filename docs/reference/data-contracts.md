@@ -1,6 +1,6 @@
 # Data Contract reference
 
-**Development candidate — limited consumer profile, not full ODCS compliance.**
+**Ariadne 0.6.0 — limited consumer profile, not full ODCS compliance.**
 Producer expectations, local bindings, measured observations and human admission
 are separate facts. OSI retains calculation, grain and join authority; OKF owns
 explanatory knowledge and business Policies. Contract narrative/context is inert
@@ -86,8 +86,10 @@ OSI identities are unsupported, never guessed equivalent.
 unambiguous server identifier. Neither that server's URL nor a binding creates
 a source, supplies credentials, changes an approved endpoint or widens S3 scope.
 The host's Source Approval and frozen effective Storage Binding remain required.
-These are repository-local identities, not portable OSI/Lumio IDs, a shared
-release manifest, or the identity/provider/admission interface of [#76](https://github.com/legout/ariadne/issues/76).
+These remain repository-local contract identities, not portable OSI/Lumio IDs.
+For an integrated project the [Bound Release](lumio-bound-releases.md) records
+these identities alongside its exact knowledge pin; it does not merge their
+meaning or make a binding into source permission.
 
 ## Small supported field and quality profile
 

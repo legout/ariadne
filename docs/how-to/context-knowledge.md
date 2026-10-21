@@ -2,6 +2,12 @@
 
 Use these procedures when maintaining schemas, business terms, identifier mappings, and routing guidance in an Ariadne project. They assume the relevant source identity is operator-approved and you are working in the intended project route. For artifact shapes, limits, and role capabilities, see the [context knowledge reference](../reference/context-knowledge.md). For the authority model, see [How Ariadne works](../explanations/how-ariadne-works.md).
 
+The paths and page-edit examples below describe standalone Core. Integrated
+projects keep curated context in the Lumio `knowledge/` subtree and use the
+[Bound Release contract](../reference/lumio-bound-releases.md); do not create a
+second editable context mirror. [The local tutorial](../tutorials/lumio-ariadne-local.md)
+shows that route with supplied files.
+
 ## Refresh a table schema
 
 Schema facts are generated from an approved source; do not hand-edit the generated Schema or Observations sections. In an active Git proposal, identify the exact asset and refresh it:

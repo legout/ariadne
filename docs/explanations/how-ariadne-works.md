@@ -12,6 +12,19 @@ Metrics are declared in OSI YAML. Ariadne validates and compiles the declaration
 
 Context pages describe policies, tables, schemas, business terms, and other guidance. Ariadne can return the relevant pages and policies with a result so the agent can explain caveats. A term alias, observed value, schema measurement, example answer, or routing-map pointer is guidance—not permission to join tables, rewrite a query, or override a required policy.
 
+## When Lumio supplies the knowledge
+
+Lumio maintains the curated knowledge pages and their stable identities;
+Ariadne owns metric execution and checks the supported Metric/Policy/Reference
+profiles. One reviewed Git commit captures the knowledge and analytics inputs.
+The operator confirms the combined release, after which navigation and metric
+context use its pinned immutable knowledge. A plain Git update never activates
+a new release or repins an existing session. See [the local tutorial](../tutorials/lumio-ariadne-local.md).
+
+An ordinary knowledge page can explain a term without becoming an executable
+metric or an approved technical mapping. The Semantic Layer owns calculation;
+required Policies must travel completely with each answer.
+
 ## The governed path
 
 ```text

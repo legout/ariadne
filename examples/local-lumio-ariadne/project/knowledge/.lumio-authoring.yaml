@@ -1,0 +1,4 @@
+version: 1
+namespace: "urn:example:local-retail"
+sources: {}
+bindings: {}

@@ -1,5 +1,7 @@
 # Git-only authoring and route reference
 
+For a complete local integrated example, see [Lumio + Ariadne locally](../tutorials/lumio-ariadne-local.md).
+
 Core exposes one durable authoring route: revision-checked Git proposals followed by explicit human approval and admission. Project queries and discovery use only the exact human-admitted snapshot. This reference describes the supported contract; it is not a migration tool.
 
 ## Project route
@@ -8,7 +10,7 @@ Create a fresh project scaffold with `ariadne-init DIR`, initialize and configur
 
 Public query and discovery entry points are project-bound:
 
-- `ariadne --project DIR` and `QueryRuntime.open_project(DIR)` require a valid Git admission for governed queries.
+- `ariadne COMMAND --project DIR` and `QueryRuntime.open_project(DIR)` require a valid Git admission for governed queries.
 - `DiscoveryRuntime.open_project(DIR)` exposes only admitted context; without admission it returns no project content.
 - Plain artifact roots and the former `--served`, `--sources` and `--db` query selectors are not serving routes. Direct runtime construction is not a supported public API.
 - `ariadne status --project DIR` is read-only. `ariadne setup --project DIR` may scaffold and report handoffs but never runs `git init/config`, approves sources or admits a revision.

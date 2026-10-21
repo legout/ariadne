@@ -1,0 +1,4 @@
+.ariadne/
+.demo-state.json
+data/*.duckdb*
+__pycache__/

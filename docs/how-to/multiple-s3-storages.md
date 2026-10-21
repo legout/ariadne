@@ -5,9 +5,8 @@ Ariadne connection using named **Storage Profiles**: the registry names the
 environment variables, and the executing host process supplies their values.
 Credentials never live in the registry, a proposal, or Git.
 
-> **Candidate feature.** Named storage profiles and this guide describe the
-> current development candidate; they are **not** part of published Ariadne
-> 0.3.0. Compatibility was verified in the development environment against
+> **Optional data-source configuration in Core 0.6.0.** This is separate from
+> the local-only Lumio knowledge binding. Compatibility was verified against
 > local loopback S3-compatible endpoints with synthetic credentials and the
 > runtime's actual `httpfs`/`delta`/`iceberg`/`ducklake` extensions. That
 > evidence does not verify your production TLS/CA/IAM configuration or
@@ -164,5 +163,5 @@ retained-format check stands).
   explicit refusal, not a fallback.
 - HTTPS stays verified: no insecure fallback, and existing host CA
   configuration applies. Verifying your real endpoints' TLS, CA and IAM
-  setup remains an operator task — the development candidate was validated
+  setup remains an operator task — the recorded runtime qualification was performed
   against signed loopback endpoints only.
