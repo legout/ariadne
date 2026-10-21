@@ -23,7 +23,8 @@ This is an **optional integration**, not a feature of the base product:
   candidate inspection (`inspect_ariadne_candidate`, `disclose_native`), and
   the pinned published-context readers.
 - `lumio_wiki.location.PublishedFilesystemLocation` — the pinned local
-  published location used by navigation.
+  published location used by navigation; `lumio_wiki.s3_location.S3Location`
+  (opt-in `[s3]` extra) is the pinned object-store counterpart.
 - `lumio_wiki` (package root) re-exports `open_published_context`,
   `ContextIdentity`, `ContextSnapshot`, `ContextBinding`, `ContextPageView`,
   `ARIADNE_PROFILE_VERSION` and the reader error types.
@@ -60,7 +61,7 @@ at publication). It returns a `ContextSnapshot` of immutable
 complete required Policy closure resolved through explicit typed Entity
 references — never aliases, provenance Sources or navigation.
 
-## Scoped local navigation (three operations)
+## Scoped navigation (three operations)
 
 ```python
 from lumio_wiki.ariadne_context import (
@@ -70,10 +71,15 @@ from lumio_wiki.ariadne_context import (
 )
 ```
 
-These navigation operations are **local only**: the location must be an
-explicitly pinned `PublishedFilesystemLocation`. Plain directories, moving
-or current pointers, and **S3 navigation refuse explicitly** with the
-reader's existing error categories before any store access. Each operation:
+These navigation operations open a **pinned published Location**: an
+explicitly pinned `PublishedFilesystemLocation` (local), or an explicitly
+pinned `S3Location` together with the producer-side `metadata_store` used
+at its publication — the same shared exact-admission verifier as
+`open_published_context` verifies the private native admission records.
+Plain directories, moving or current pointers, unpinned locations and
+**S3 without the required `metadata_store` refuse explicitly** with the
+reader's existing error categories before any store access; there is no
+local-path, current-pointer or public-receipt fallback. Each operation:
 
 - applies the authorized Visibility Scope **before** path selection,
   ranking, snippets, excerpts, counts and citations;

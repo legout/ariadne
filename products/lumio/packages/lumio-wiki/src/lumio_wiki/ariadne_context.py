@@ -2257,33 +2257,41 @@ def _canonical_match_passage(
     )
 
 
-def _navigation_snapshot(location: Any, expected: ContextIdentity) -> tuple[Any, Any, str]:
-    """One fully verified pinned snapshot for a local navigation operation.
+def _navigation_snapshot(
+    location: Any, expected: ContextIdentity, *, metadata_store: Any = None
+) -> tuple[Any, Any, str]:
+    """One fully verified pinned snapshot for a navigation operation.
 
-    The shared reader gate is reused unchanged, so plain directories,
-    unpinned locations and S3 navigation (this facade never supplies the
-    producer-side metadata store) refuse with the reader's categories and
-    message idioms before any store access; each operation then discloses
-    only this one verified snapshot.
+    The shared reader gate is reused unchanged, so plain directories and
+    unpinned locations refuse with the reader's categories and message
+    idioms before any store access; an S3 location additionally requires
+    the explicitly supplied producer-side ``metadata_store`` whose private
+    native admission records are verified (spec0009 navigation r4). Each
+    operation then discloses only this one verified snapshot.
     """
     return _resolve_verified_published_context(
-        location, expected, ontology_catalog=None, metadata_store=None
+        location, expected, ontology_catalog=None, metadata_store=metadata_store
     )
 
 
 def list_published_context_pages(
-    location: Any, expected: ContextIdentity
+    location: Any, expected: ContextIdentity, *, metadata_store: Any = None
 ) -> tuple[PublishedContextPageMetadata, ...]:
     """List the immutable metadata of every visible published context page.
 
     Ordinary documentation pages appear alongside profiled pages with the
     explicit ``unprofiled`` kind; results carry no page body and are sorted
-    by exact relative path. Requires an immutable-version-pinned local
-    ``PublishedFilesystemLocation`` and the complete expected
-    :class:`ContextIdentity`; the effective Visibility Scope is applied
-    before path selection.
+    by exact relative path. Requires an immutable-version-pinned published
+    Location — local ``PublishedFilesystemLocation`` or S3 ``S3Location``
+    with its explicitly supplied producer-side ``metadata_store`` so the
+    shared exact-admission verifier can verify the private native records
+    (spec0009 navigation r4; S3 without it still refuses) — and the complete
+    expected :class:`ContextIdentity`; the effective Visibility Scope is
+    applied before path selection.
     """
-    snapshot, manifest, pinned = _navigation_snapshot(location, expected)
+    snapshot, manifest, pinned = _navigation_snapshot(
+        location, expected, metadata_store=metadata_store
+    )
     visible = sorted(_scoped_visible_pages(snapshot, expected.scope), key=lambda page: page.path)
     return tuple(
         _published_page_metadata(page, namespace=manifest.namespace, published_version=pinned)
@@ -2292,17 +2300,22 @@ def list_published_context_pages(
 
 
 def read_published_context_page(
-    location: Any, expected: ContextIdentity, path: str
+    location: Any, expected: ContextIdentity, path: str, *, metadata_store: Any = None
 ) -> PublishedContextPage:
     """Read one complete visible canonical page by its exact relative path.
 
-    The result carries the exact canonical UTF-8 content, the parsed body
-    with its body-start line, immutable native metadata (empty when
-    unprofiled) and the public Source provenance. Missing and out-of-scope
-    paths refuse with the same scope-safe unavailability, disclosing no
-    hidden title, Entity identity or text.
+    Accepts the same pinned local Location or pinned S3 Location with
+    explicit producer-side ``metadata_store`` as
+    :func:`list_published_context_pages`. The result carries the exact
+    canonical UTF-8 content, the parsed body with its body-start line,
+    immutable native metadata (empty when unprofiled) and the public Source
+    provenance. Missing and out-of-scope paths refuse with the same
+    scope-safe unavailability, disclosing no hidden title, Entity identity
+    or text.
     """
-    snapshot, manifest, pinned = _navigation_snapshot(location, expected)
+    snapshot, manifest, pinned = _navigation_snapshot(
+        location, expected, metadata_store=metadata_store
+    )
     canonical_content = snapshot.knowledge_base.canonical_pages
     for page in _scoped_visible_pages(snapshot, expected.scope):
         if page.path == path:
@@ -2318,20 +2331,30 @@ def read_published_context_page(
 
 
 def search_published_context_pages(
-    location: Any, expected: ContextIdentity, query: str, *, limit: int = 10
+    location: Any,
+    expected: ContextIdentity,
+    query: str,
+    *,
+    limit: int = 10,
+    metadata_store: Any = None,
 ) -> tuple[PublishedContextSearchHit, ...]:
     """Search exactly the visible pages of one verified immutable version.
 
-    Normalization, ranking, deterministic ties, query limits and completeness
-    accounting are the native page search over the scope-filtered page set —
-    no second ranking engine. Each kept hit adds a separately labeled
-    verbatim canonical excerpt with inclusive 1-based line numbers and the
-    actual fence-aware section when available; metadata-only matches cite
-    the real canonical metadata passage.
+    Accepts the same pinned local Location or pinned S3 Location with
+    explicit producer-side ``metadata_store`` as
+    :func:`list_published_context_pages`. Normalization, ranking,
+    deterministic ties, query limits and completeness accounting are the
+    native page search over the scope-filtered page set — no second ranking
+    engine. Each kept hit adds a separately labeled verbatim canonical
+    excerpt with inclusive 1-based line numbers and the actual fence-aware
+    section when available; metadata-only matches cite the real canonical
+    metadata passage.
     """
     from lumio_wiki.page_search import search_pages
 
-    snapshot, manifest, pinned = _navigation_snapshot(location, expected)
+    snapshot, manifest, pinned = _navigation_snapshot(
+        location, expected, metadata_store=metadata_store
+    )
     visible = _scoped_visible_pages(snapshot, expected.scope)
     canonical_content = snapshot.knowledge_base.canonical_pages
     hits: list[PublishedContextSearchHit] = []

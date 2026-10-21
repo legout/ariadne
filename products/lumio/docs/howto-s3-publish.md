@@ -110,6 +110,15 @@ lumio-wiki related "Aurora Helpdesk" --scope canonical
 lumio-wiki source inspect --source-id support-runbook-2026
 ```
 
+The pinned Ariadne Context readers work the same way over S3:
+`open_published_context` and the three scoped navigation operations
+(`list_published_context_pages`, `read_published_context_page`,
+`search_published_context_pages`) accept a pinned `S3Location` plus the
+producer-side `metadata_store` used at publication. The same shared
+exact-admission verifier refuses an unpinned location, a missing store or
+foreign private admission records — public objects alone never satisfy
+admission.
+
 Private source metadata is not public Reader content. In this controlled
 same-principal walkthrough, the operator is also authorized to read the private
 publication metadata sealed during admission. `source inspect --published-version

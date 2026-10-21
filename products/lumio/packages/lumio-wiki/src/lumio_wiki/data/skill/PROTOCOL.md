@@ -487,9 +487,11 @@ When a consumer reports pinned-context results:
   fallback to latest.
 - `open_published_context` accepts an admitted pinned local or S3 Published
   Version. The three navigation operations — `list_published_context_pages`,
-  `read_published_context_page`, `search_published_context_pages` — are
-  LOCAL ONLY: pass an explicitly pinned `PublishedFilesystemLocation`; S3
-  navigation refuses explicitly.
+  `read_published_context_page`, `search_published_context_pages` — accept
+  the same pinned local Location, or a pinned `S3Location` with its
+  explicitly supplied producer-side `metadata_store` (the same shared
+  exact-admission verifier). Plain directories, unpinned locations and S3
+  without the required store refuse explicitly.
 - The authorized Visibility Scope is applied before any selection or
   ranking; missing and out-of-scope pages share the same scope-safe
   refusal, so never infer the existence, title or text of hidden pages.
