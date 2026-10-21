@@ -18,15 +18,15 @@ The documentation follows [Diátaxis](https://diataxis.fr/):
 - **[Reference](docs/README.md#reference):** look up CLI commands, data-source configuration, and migration mappings.
 - **[Explanation](docs/explanations/how-ariadne-works.md):** understand Ariadne's layers, governance gates, and authority boundaries.
 
-The [documentation index](docs/README.md) lists all guides and references for **Ariadne 0.3.0**.
+The [documentation index](docs/README.md) lists all guides and references for **Ariadne 0.6.0**.
 
-**Development candidate:** [Data Contracts](docs/reference/data-contracts.md) describes
+**Data Contracts:** the [reference](docs/reference/data-contracts.md) describes
 Core’s limited, pinned ODCS v3.2.0 consumer profile, separate Git bindings and
 as-of evidence. Source-free `ariadne search` includes a contracts group;
 `list-datasets` remains an approved live-catalog operation. This is not full
 ODCS compliance, a live health guarantee, or shared cross-layer identity (#76).
 
-**Development candidate:** [Lumio bound releases](docs/reference/lumio-bound-releases.md)
+**Lumio integration:** [Lumio bound releases](docs/reference/lumio-bound-releases.md)
 describe the optional integrated context binding: one shared Content Commit, an
 operator-confirmed overall admission activating a local immutable Bound Release,
 strict `metric`/`policy`/`reference` profiles, full required Policy context on governed

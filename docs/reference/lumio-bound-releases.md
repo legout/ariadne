@@ -167,3 +167,18 @@ it lacks. Public package version strings alone do not qualify a source for
 these capabilities: the exact candidate wheel pairing (Core and producer
 source refs and wheel digests) is recorded with the qualification run
 evidence, not assumed from published versions.
+
+### Release 0.6.0 / 0.4.0
+
+The public pairing is `ariadne-data==0.6.0` with
+`lumio-wiki==0.4.0` (Python >=3.14). Install the exact pair:
+
+```sh
+pip install 'ariadne-data[mcp]==0.6.0' 'lumio-wiki==0.4.0'
+```
+
+Omit `[mcp]` for CLI-only use; `lumio-lancedb==0.4.0` is an optional retrieval
+adapter, not a Core requirement. Base Core still imports without either SDK
+or MCP. Qualification records the exact producer source commit and each built
+wheel hash. A different installed build needs genuine validation and a fresh
+overall admission; it never upgrades an old Bound Release in place.

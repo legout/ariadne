@@ -1,6 +1,6 @@
 # Ariadne documentation
 
-This documentation targets Ariadne 0.3.0 and is organized by reader goal, following [Diátaxis](https://diataxis.fr/). Choose one type based on what you need to do:
+This documentation targets Ariadne 0.6.0 and is organized by reader goal, following [Diátaxis](https://diataxis.fr/). Choose one type based on what you need to do:
 
 ## Tutorial
 
@@ -8,6 +8,7 @@ This documentation targets Ariadne 0.3.0 and is organized by reader goal, follow
 
 ## How-to guides
 
+- [Local Lumio Git workflow](how-to/lumio-git-local.md) — sync content, inspect admitted identity and explicitly activate a reviewed Bound Release.
 - [Git-backed authoring](how-to/git-authoring.md) — create and review proposals, admit a catalog, or move a legacy project to the Git route.
 - [Multiple S3 storages](how-to/multiple-s3-storages.md) — read two independently credentialed S3-compatible storages through named, credential-free profiles (development candidate).
 - [Context knowledge](how-to/context-knowledge.md) — refresh schema facts, resolve terms, inspect mappings, and author routing guidance.
@@ -17,6 +18,7 @@ This documentation targets Ariadne 0.3.0 and is organized by reader goal, follow
 
 - [CLI](reference/cli.md) — commands, options, project selectors, and transport entry points.
 - [Data sources](reference/data-sources.md) — supported source types and registry fields.
+- [Lumio bound releases](reference/lumio-bound-releases.md) — supported local profiles, exact package pairing, scope and overall admission.
 - [Context knowledge](reference/context-knowledge.md) — page types, structured metadata, limits, and role capabilities.
 - [Git migration mapping](reference/git-authoring-migration.md) — exact legacy-to-Git behavior and unchanged routes.
 - [Ariadne Agent API](../ariadne-agent/README.md) — Python API and conversation contract.

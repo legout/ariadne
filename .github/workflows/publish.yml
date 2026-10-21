@@ -41,21 +41,17 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: legout/lumio-wiki
-          ref: b1d63b3f01c297296aeeb53f7dfef7acafeb0349
+          ref: dfdd57e6000ca37bff67cb3bbc36032956a300bb
           path: .ci-sdk-source
 
       - name: Build the pinned lumio-wiki SDK wheel for test pairing
-        # Exact accepted published runtime source b1d63b3 (runtime
-        # tree-identical to the accepted SDK86db9f1), never floating main,
-        # the public 0.3 version floor or an unpublished future SHA. This
-        # CI-built wheel only pairs the test suite with the runtime source;
-        # the final-candidate resource proof uses the separately frozen
-        # wheels and is not claimed byte-identical to this archive. If the
-        # producer runtime/tests/lock unexpectedly change under this pin,
-        # this pairing decision stops for re-evaluation.
+        # Exact Lumio 0.4.0 release source, never floating main. Publish
+        # this producer source before pushing the Core release tag so the
+        # pinned checkout is available. The CI-built wheel is a test input;
+        # this job publishes only ariadne-data.
         run: |
           uv build --package lumio-wiki --wheel --out-dir .ci-sdk-dist
-          echo "lumio-wiki source ref: b1d63b3f01c297296aeeb53f7dfef7acafeb0349"
+          echo "lumio-wiki source ref: dfdd57e6000ca37bff67cb3bbc36032956a300bb"
           sha256sum .ci-sdk-dist/lumio_wiki-*.whl
         working-directory: .ci-sdk-source
 

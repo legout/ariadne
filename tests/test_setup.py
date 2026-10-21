@@ -471,7 +471,7 @@ def test_skill_and_release_docs_operator_rules_and_distribution():
         assert path in text
     assert "universal-only" in text
     readme = (Path(__file__).parents[1] / "README.md").read_text()
-    assert "0.3.0" in readme  # current release, replaces the stale 0.2.0/unreleased boundary
+    assert "0.6.0" in readme  # selected Core release; historical notes stay unchanged
     assert "Source development" in readme  # checkout entry point stays discoverable
     tutorial = (Path(__file__).parents[1] / "docs" / "tutorials" / "getting-started.md").read_text()
     for phrase in (

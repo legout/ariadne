@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-10-21
+
+- **Git/local-first operation** — report the exact local Git HEAD separately
+  from the verified admitted Bound Release, Published Version and supported
+  operations. Sync never activates a release or repins an existing session;
+  the ordinary reconcile/validate/review/overall-confirm chain remains required.
+- **Scoped immutable knowledge navigation** — source-free discovery and
+  `search-context`, plus the existing MCP/Agent page tools, preserve SDK page
+  identity, full canonical content, citations, native ranking and verbatim
+  passages. Hidden and unknown paths refuse without hidden-content disclosure.
+- **Governed multi-metric queries** — resolve complete per-metric Policy closure
+  and the shared pinned context before planning or execution; required context
+  that cannot fit refuses the whole operation without dropping content.
+  `list-datasets` retains its source-approved live-catalog behavior.
+- **Technical References and term resolution** — validate every captured
+  Reference through native Core citation/evidence rules, including hidden pages.
+  Reuse one resolver for exact bindings, ambiguity, freshness and exact human
+  mapping confirmation; measured authority uses authentic Core receipts, while
+  manual source-backed assertions retain their existing native eligibility.
+  Policy changes invalidate dependent evidence; escaped KB citations cannot
+  become captured bundle evidence. Resolution grants no SQL/join authority.
+- **Bounded adapters and public guidance** — oversized required discovery
+  content refuses as a whole, and source-free MCP tools reject unusably small
+  refusal ceilings. Keep optional MCP guidance in its optional skill section.
+- **Release pairing** — optional integrated use pairs `ariadne-data==0.6.0`
+  with `lumio-wiki==0.4.0`. Base Core remains SDK-independent. Changed software
+  builds require genuine revalidation and a fresh matching admission.
+  Python remains >=3.14; Agent/Tau, ad-hoc integrated operations and Core KB
+  bindings over S3 remain excluded. Admission is not numerical attestation.
+
 ## 0.5.0 - 2026-10-19
 
 - **ODCS contract consumer (#75, #77, #78)** — consume the official ODCS
