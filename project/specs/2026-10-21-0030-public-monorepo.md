@@ -1,11 +1,14 @@
 # Public Ariadne–Lumio monorepo
 
-Status: **proposed, revision 1** (2026-10-21).
+Status: **proposed, revision 2** (2026-10-21).
 
 The owner selected the existing `legout/ariadne` repository as the target:
 “Welches Zielrepo sollen wir verwenden? Bestehendes ariadne-Repo (empfohlen)”.
-This approves the target choice only. The complete architecture below awaits
-approval; no package migration, integration, push, release, repository archival,
+This approves reuse of the existing repository. On the owner's subsequent
+request, revision 2 makes independent and combined use explicit and compares
+repository branding with package renaming. The proposed repository name
+`legout/ariadne-lumio` is not approved or checked for availability. Package names
+remain unchanged in the recommendation. The complete architecture awaits approval; no package migration, integration, push, release, repository archival,
 issue transfer or credential/environment change is authorized by this document.
 Rationale: [proposed ADR-0027](../adr/0027-public-monorepo.md).
 
@@ -24,6 +27,59 @@ The published versions remain unchanged during migration. These are software
 source refs, not user Content Commits or admission authority. Before execution,
 the plan must reconcile any newer accepted source changes rather than silently
 migrating a stale snapshot.
+
+### 1.1 Independent products and three supported entry paths
+
+The owner explicitly requires Ariadne and Lumio to be understandable and usable
+both independently and together. This is an acceptance requirement, not merely
+a developer packaging property. Repository membership does not imply a product
+or installation dependency.
+
+| User intent | Product and installable distribution | Required relationship |
+| --- | --- | --- |
+| Build, review, search and publish a portable Knowledge Base | Lumio foundation: `lumio-wiki` | No Ariadne installation, data source, model or service required for the base local flow. `lumio-lancedb` remains an optional retrieval adapter. |
+| Define and calculate governed metrics over approved data | Ariadne Core: `ariadne-data` | Standalone mode works without Lumio; its native context/semantic contracts remain supported. |
+| Use curated KB context with governed calculations | Ariadne + Lumio: `ariadne-data` and `lumio-wiki` | Explicit integrated configuration, compatible artifacts, source approval and overall admission remain required; colocation or installing both does not activate integration. |
+
+The root README opens with these three choices, each with purpose, minimum
+installation, a runnable local example and a link to the appropriate tutorial.
+Product READMEs and package metadata must state whether the other product is
+optional. The root contributor guide separately explains shared development;
+users do not need to clone the monorepo or install its complete workspace to use
+one product. The private Lumio application is clearly distinguished from the
+public Lumio Knowledge Base foundation in every entry point.
+
+### 1.2 Repository branding versus public package identities
+
+**Recommendation, pending owner decision:** rename the existing GitHub repository
+from `legout/ariadne` to `legout/ariadne-lumio` as part of an explicitly authorized
+cutover. This is the same existing repository, not a new repository or an import
+of Core into a replacement repository. The combined name gives both independent
+products visibility. Keeping `legout/ariadne` is a valid alternative if avoiding
+a URL change takes precedence; it still must meet the three-entry-path contract.
+
+Keep the public distribution names `ariadne-data`, `lumio-wiki` and
+`lumio-lancedb`, their import roots and existing CLI names. Do not introduce
+`ariadne-knowledge` or `ariadne-lancedb` aliases, replacement distributions,
+deprecations or compatibility shims in this migration. Those names suggest that
+the general-purpose Lumio foundation belongs to or requires Ariadne. Renaming
+PyPI distributions, Python imports and CLIs are distinct compatibility changes,
+not consequences of a GitHub repository rename. A future product rebrand would
+need its own deliberate migration and approval.
+
+If the repository rename is chosen, cutover must check name availability and
+permissions; update canonical documentation, clone instructions, supported local
+remotes, package project URLs and repository-qualified workflow references; and
+verify repository-bound CI/publishing configuration. No other user's clone or
+unrelated local worktree is rewritten automatically. Verify known hosted-action
+or reusable-workflow callers if present; ordinary web/Git redirects are not a
+substitute for this check. Retain historical source URLs as historical citations.
+Do not reuse the old repository name, because that would invalidate redirects.
+Existing relative documentation paths remain stable where promised in section 2.
+No rename or permission/configuration mutation is authorized by this draft.
+
+Sources: [GitHub repository renaming](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository),
+[Python distribution versus import names](https://packaging.python.org/en/latest/discussions/distribution-package-vs-import-package/).
 
 ## 2. Repository and package layout
 
@@ -188,8 +244,9 @@ to rewriting public history. No data/admission migration is performed.
 
 ## 7. Observable acceptance
 
-1. A fresh clone of `legout/ariadne` contains the three package members and can
-   resolve the approved workspace with the committed lock. Core/SDK development
+1. A fresh clone of the existing repository at its approved canonical name
+   contains the three package members and can resolve the approved workspace
+   with the committed lock. Core/SDK development
    is documented without a machine-specific external checkout or LanceDB need.
 2. Built distributions retain their public names, versions, console scripts,
    import roots, extras, licenses and co-packaged resources. Base SDK and
@@ -207,7 +264,18 @@ to rewriting public history. No data/admission migration is performed.
 6. All current entry points and example/resource paths resolve in the assembled
    tree. Contexts remain separately owned; scoped historical record IDs and
    license ownership remain unambiguous.
-7. A Core-only release dry run selects only its Core artifacts and exact paired
+7. A new user can choose Lumio alone, Ariadne alone or both from the root README
+   without inferring mandatory sibling installation. The two standalone local
+   examples run in separate wheel environments with the other product absent;
+   the integrated example requires explicit configuration and admission. Merely
+   installing both packages never activates integration. Current independent-use
+   tests can provide this proof where their actual scope matches.
+8. If repository renaming is approved, the new canonical URL serves the same
+   repository/history; supported clone instructions and workflow references use
+   it, historical citations remain identifiable, and no distribution/import/CLI
+   name changes. If renaming is not approved, `legout/ariadne` remains canonical
+   while the three entry paths remain equally explicit.
+9. A Core-only release dry run selects only its Core artifacts and exact paired
    SDK; a Lumio-family dry run selects exactly its two artifacts. A normal push
    and history tag select no publish job. No real publication is performed.
 
@@ -222,8 +290,10 @@ alternatives. Lumio ADR-0025's private-application exclusion remains intact;
 its named public repository location needs an explicit scoped amendment during
 migration, not historical replacement.
 
-Only the target repository choice is approved. Revision 1's complete scope,
-layout and release policy await owner review. After that approval, write the
+Reusing the existing repository and independent/combined usability are owner
+requirements. Revision 2's complete layout, release policy and branding proposal
+await owner review. The canonical repository name is an unresolved owner choice;
+no final execution handoff may silently choose it. After that approval, write the
 linked implementation plan using the same 0030 prefix and reconcile any affected
 architectural records before implementation. Execution and integration/release
 authority must be explicit; this draft supplies none.
