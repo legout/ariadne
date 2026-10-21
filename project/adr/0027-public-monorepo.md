@@ -63,7 +63,7 @@ observable migration contract; its future plan owns task order and validation.
 
 ## Product-area amendment — 2026-10-21
 
-**Direction accepted; detailed follow-up design under review.** After the first
+**Direction and specification 0031 revision 1 accepted.** After the first
 consolidation and patch releases, the owner objected to the remaining asymmetric
 layout: Ariadne documentation/records occupied `docs/` and `project/`, Lumio
 occupied `docs/lumio/` and `project/lumio/`, and the Agent remained at the root.
@@ -97,7 +97,7 @@ locations documented explicitly.
 
 The observable path mapping, current-vs-target ownership, retained native gates
 and acceptance are in [specification 0031 revision 1](../specs/2026-10-21-0031-product-oriented-layout.md).
-That detailed document is a draft for review. The selected direction replaces
+The owner subsequently approved implementation: “Ok. Setze das um.” The selected direction replaces
 the earlier asymmetry as the **future layout goal**, without rewriting why the
 completed first migration preserved Ariadne paths. In particular, an approved
 follow-up must explicitly supersede spec 0030's old path-preservation promise

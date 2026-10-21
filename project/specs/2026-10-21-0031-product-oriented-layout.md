@@ -1,13 +1,16 @@
 # Product-oriented Ariadne–Lumio repository layout
 
-Status: **detailed design draft, revision 1** (2026-10-21).
+Status: **approved, revision 1** (2026-10-21).
+
+Owner approval after the recorded draft handoff: “Ok. Setze das um.” This
+authorizes isolated implementation of revision 1; no target integration, push,
+publication or repository rename.
 
 The owner selected product areas after reviewing the alternative of symmetric
 directories grouped by file type: “Ja, arbeite die Produktbereiche als
 Zieldesign aus und halte sie in Spec und ADR fest. Zunächst keine Migration.”
-That approves the direction and this documentation task. The detailed rules
-below are submitted for review; no implementation plan, filesystem migration,
-target integration, push, release or repository rename is authorized here.
+The initial instruction authorized design only. The subsequent approval above
+authorizes its implementation; integration and publication remain separate.
 
 Rationale: [ADR-0027, product-area amendment](../adr/0027-public-monorepo.md#product-area-amendment--2026-10-21).
 Prior migration: [specification 0030 revision 2](2026-10-21-0030-public-monorepo.md).
@@ -305,8 +308,8 @@ repeat an unchanged numerical journey solely for a folder or wheel label.
   the earlier layout's historical role are captured in the ADR-0027 amendment.
 - **Behavior:** this document defines the proposed path/ownership contract and
   acceptance; spec 0030's independent-product/runtime/release constraints persist.
-- **Uncertainty/authority:** detailed revision 1 awaits review. No implementation
-  plan or migration is dispatched. Current artifact/domain maps and all runtime,
-  workspace, workflow, deployment and package files remain unchanged today.
+- **Uncertainty/authority:** revision 1 is now approved by the subsequent owner request.
+  Plan 0031 owns the isolated migration sequence and checks. Target integration,
+  push, publication and repository renaming remain outside this authorization.
 
 Planning Contract version: 1; installed skill revision provenance: unknown.
