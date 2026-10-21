@@ -493,7 +493,7 @@ through complete-candidate validation and explicit Publication Admission.
 Before a real run, choose a private corpus, pin the myKG version and
 model/provider configuration, set a cost/time budget, and choose a private
 artifact directory. The complete runbook and blank evaluation report are in
-[`experiments/mykg/`](../experiments/mykg/README.md).
+[`experiments/mykg/`](../../experiments/lumio/mykg/README.md).
 
 Convert an existing myKG session—or try the included synthetic sample—into a
 temporary Compiled Markdown tree:

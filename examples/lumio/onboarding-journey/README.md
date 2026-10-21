@@ -1,13 +1,13 @@
 # Onboarding journey (focused example)
 
 This is the executable companion to the canonical quickstart
-([`docs/quickstart.md`](../../docs/lumio/quickstart.md), issue #180). It contains the
+([`docs/quickstart.md`](../../../docs/lumio/quickstart.md), issue #180). It contains the
 one Knowledge Source the journey ingests and a scriptable smoke journey that
 runs the quickstart's exact local commands, in order, and fails on any
 unexpected outcome — so documentation drift between the quickstart and the
 CLI is caught by CI rather than by a reader. When an S3-compatible endpoint
 is configured, the same script continues through the optional
-[`docs/howto-s3-publish.md`](../../docs/lumio/howto-s3-publish.md) commands.
+[`docs/howto-s3-publish.md`](../../../docs/lumio/howto-s3-publish.md) commands.
 
 ## Contents
 
@@ -27,7 +27,7 @@ Local steps only (no object store needed):
 Full journey including S3-compatible publication (same environment variables
 the CLI and S3-compatible test suites read). Start SeaweedFS `weed mini` with
 the bucket and **labelled local-test credentials** shown in the optional S3
-guide ([`docs/howto-s3-publish.md`](../../docs/lumio/howto-s3-publish.md)), then run:
+guide ([`docs/howto-s3-publish.md`](../../../docs/lumio/howto-s3-publish.md)), then run:
 
 ```bash
 export LUMIO_S3_ENDPOINT=http://localhost:8333
