@@ -354,7 +354,7 @@ shares an Actions cache with PR-triggered workflows.
    side — neither channel can publish the other family.)
 
 Release notes live in `docs/lumio/release-notes/` per published version. The current
-public-family notes are [`v0.4.0.md`](release-notes/v0.4.0.md); older notes are
+public-family notes are [`v0.4.1.md`](release-notes/v0.4.1.md); older notes are
 historical and may describe the former private three-package workspace.
 
 ## Issue graph certification (issue #104, AC7)
