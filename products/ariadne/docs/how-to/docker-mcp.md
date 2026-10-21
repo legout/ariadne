@@ -111,7 +111,7 @@ Readiness does not attest every source connection or metric result.
 Run the focused disposable-container check after building:
 
 ```bash
-ARIADNE_DOCKER_TEST_IMAGE=ariadne-mcp:local uv run pytest products/ariadne/packages/ariadne-data/tests/test_docker_mcp.py
+ARIADNE_DOCKER_TEST_IMAGE=ariadne-mcp:local uv run pytest ../packages/ariadne-data/tests/test_docker_mcp.py
 ```
 
 It uses a synthetic external Git project, a separate container client, an
