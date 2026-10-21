@@ -48,6 +48,10 @@ explicit: an installed compatible SDK, compatible artifacts, source approval
 and an operator-confirmed overall admission are required — colocation or
 installing both packages activates nothing.
 
+Minimum installation for this route is both published packages
+(`pip install ariadne-data lumio-wiki`); the joint tutorial pins the exact
+compatible pair it exercises (`ariadne-data==0.6.0`, `lumio-wiki==0.4.0`).
+
 Runnable local example: the joint tutorial
 [Lumio + Ariadne locally](docs/tutorials/lumio-ariadne-local.md) — three
 synthetic orders, **150 EUR recognized revenue and two completed orders**
@@ -57,8 +61,10 @@ stays inactive until reviewed confirmation.
 ## Using versus developing
 
 - **Using the products:** install the published wheels into your own
-  environment (`pip install lumio-wiki` / `pip install ariadne-data`). You do
-  not need this checkout, and you never need both products.
+  environment (`pip install lumio-wiki` / `pip install ariadne-data`); all
+  packages require Python ≥ 3.14. You do not need this checkout, and
+  standalone use never requires the other product — only the explicit
+  integrated route (entry 3) installs both.
 - **Developing this repository:** one uv workspace with a single development
   lockfile; the root distributes nothing. Component commands and scope notes:
   [CONTRIBUTING.md](CONTRIBUTING.md).
