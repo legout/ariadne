@@ -9,7 +9,7 @@ description = "Governed metrics for autonomous agents: OKF context layer + OSI s
 readme = "README.md"
 requires-python = ">=3.14"  # ADR-0008 scoped amendment (spec 0026): 3.12/3.13 support ends here
 dependencies = [
-    "duckdb>=1.0",
+    "duckdb>=1.0,<2",  # 2.0 removed relation fetchmany/fetchone used by the engine (2026-10-21 CI 39602964323)
     "sqlglot>=25.0",  # own compile engine: ariadne/render.py (ADR-0008) + grain guard
     "openai>=1.40",
     "pyyaml>=6.0",

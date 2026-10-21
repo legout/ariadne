@@ -89,7 +89,7 @@ mcp = [
 
 [package.metadata]
 requires-dist = [
-    { name = "duckdb", specifier = ">=1.0" },
+    { name = "duckdb", specifier = ">=1.0,<2" },
     { name = "firecrawl-anydoc", marker = "extra == 'dev'", specifier = "==0.1.3" },
     { name = "firecrawl-anydoc", marker = "extra == 'documents'", specifier = "==0.1.3" },
     { name = "jsonschema", specifier = ">=4.18" },
