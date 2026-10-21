@@ -1,13 +1,16 @@
 # Implementation plan 0029: Git/local-first Lumio integration
 
-## Proposed execution revision 29 — optional S3 completion of #79/#80
+## Approved execution revision 29 — optional S3 completion of #79/#80
 
-**Status: proposed; no writer/service dispatch yet.** The owner approved the
-written Core r6 / producer navigation r4 amendments with “Go ahead with the
-plan.” after proposal commit `b91057cafa6a6ee5a3786445ce5a4330553b4092`, requesting
-this bounded plan. Older plan revisions below are retained history, not current
-execution instructions. Contract: planning-contract v1, installed provenance
-unknown. This revision requires explicit plan/environment approval before work.
+**Owner approval, 2026-10-21:** “Ich genehmige Plan 0029 Revision 29 in bacbc32
+einschließlich Ticket-Aktualisierung, isolierter Pi-Umsetzung und disposable
+SeaweedFS 4.45 über Docker mit synthetischen Testdaten. Keine Integration, kein
+Push oder Veröffentlichung.” Exact approved proposal:
+`bacbc32cfb70ebb3b6e50228dcb56e446bd319c0`. Written Core r6 / producer navigation r4
+amendments were approved with “Go ahead with the plan.” after proposal `b91057c`.
+Older revisions below are history, not current execution instructions. Contract:
+planning-contract v1; installed provenance unknown. Only the named isolated work,
+current ticket sections and disposable environment below are authorized.
 
 ### Goal, sources and boundaries
 
@@ -196,7 +199,7 @@ in-scope fix and one affected recheck per validation/review unit; unused green
 checks are reused. One fix pass and one delta review; unresolved material findings
 return to the owner. No new round from candidate assembly or publication.
 
-### Explicit environment grant requested with this plan
+### Explicit approved environment grant
 
 One disposable SeaweedFS4.45 instance through the existing Docker27.4.1 runtime,
 CI-pinned image
@@ -225,9 +228,9 @@ Completion is a reviewed, parent-accepted isolated source candidate, truthful
 capability/docs/CI, exact wheels plus actual V-SDK/V-S3/V-Core evidence and honest
 limits. Ticket closure and target integration/push remain separate decisions.
 #76 remains the coordination parent, #18/#52 separate unrelated work. No work is
-authorized until the owner approves this plan/environment and current ticket
-amendments are frozen. The prose above is the proposed execution map, not a new
-implementation permission inferred from source-file location.
+authorized before the current ticket amendments and source commit are frozen.
+This owner-approved execution map grants only its named isolated work; integration,
+push, publication and closure remain separately gated.
 
 ---
 
