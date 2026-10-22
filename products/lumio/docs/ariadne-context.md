@@ -76,10 +76,9 @@ explicitly pinned `PublishedFilesystemLocation` (local), or an explicitly
 pinned `S3Location` together with the producer-side `metadata_store` used
 at its publication — the same shared exact-admission verifier as
 `open_published_context` verifies the private native admission records.
-The `metadata_store` navigation keyword is part of the **unreleased source
-candidate**: the published `lumio-wiki` 0.4.1 / `ariadne-data` 0.6.1 pair
-carries the released local navigation and the S3 support of
-`open_published_context`, not this keyword.
+The `metadata_store` navigation keyword ships from the `lumio-wiki` 0.5.0
+release family; the published 0.4.1 pair carried local navigation only
+(that local-only 0.4.1 baseline is historical).
 Plain directories, moving or current pointers, unpinned locations and
 **S3 without the required `metadata_store` refuse explicitly** with the
 reader's existing error categories before any store access; there is no
@@ -136,10 +135,13 @@ admission as a new build.
 
 ## Public pairing
 
-The release pair is `lumio-wiki==0.4.1` with `ariadne-data==0.6.1`.
-The public-family adapter, when used, is `lumio-lancedb==0.4.1` and requires
-`lumio-wiki>=0.4.1,<0.5.0`. See [0.4.1 notes](release-notes/v0.4.1.md).
-The S3 `metadata_store` navigation keyword described above is not in this
-published pair; it exists only in the unreleased source candidate.
+The current public release pair for this family is `lumio-wiki==0.5.0`
+with the optional adapter `lumio-lancedb==0.5.0`, which requires
+`lumio-wiki>=0.5.0,<0.6.0`. See [0.5.0 notes](release-notes/v0.5.0.md).
+The S3 `metadata_store` navigation keyword described above is part of this
+0.5.0 family. Integrated Core consumption of it requires a matching
+S3-capable Core release/build; the published `ariadne-data` 0.6.1 does not
+carry the Core-side S3 transport, and no Core release carrying it is
+published at the time of this candidate.
 Exact source/build identities remain required, and upgrading requires genuine
 consumer validation and a new matching admission.

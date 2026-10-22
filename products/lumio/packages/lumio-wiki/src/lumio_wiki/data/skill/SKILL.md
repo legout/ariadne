@@ -406,8 +406,10 @@ If a consumer asks about pinned context consumption: it is a Python library
 surface (`lumio_wiki.ariadne_context`), never a CLI command. Readers open one
 exact admitted immutable Published Version under a complete expected
 identity and refuse any mismatch or floating pointer; the three navigation
-operations (list/read/search published context pages) are local, pinned and
-visibility-scoped. The profile is metadata only — it grants no source
+operations (list/read/search published context pages) are pinned and
+visibility-scoped over an admitted local Location, or over a pinned S3
+Location together with its explicitly supplied producer-side private
+metadata store. The profile is metadata only — it grants no source
 access, joins, SQL or numerical evidence — and the consumer alone validates
 its supported profiles and owns overall admission. Core 0.6 supports Metric,
 Policy and fully native-validated structured References; ordinary glossary
