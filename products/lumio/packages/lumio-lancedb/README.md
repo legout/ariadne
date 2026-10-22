@@ -14,7 +14,7 @@ pip install lumio-lancedb
 ```
 
 The adapter depends on `lumio-wiki`, LanceDB, PyArrow and `msgspec[yaml]`.
-The 0.5.0 adapter requires `lumio-wiki>=0.5.0,<0.6.0`.
+The 0.5.1 adapter requires `lumio-wiki>=0.5.1,<0.6.0`.
 Installing the adapter alone does not build an index; select and configure
 it explicitly through the supported SDK or CLI composition.
 

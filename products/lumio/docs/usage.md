@@ -41,7 +41,7 @@ private repository and is not installable from this one.
 Verify your install:
 
 ```bash
-lumio-wiki --version         # lumio-wiki 0.5.0
+lumio-wiki --version         # lumio-wiki 0.5.1
 lumio-wiki doctor            # version, detected extras, packaged skill path
 ```
 

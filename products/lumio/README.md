@@ -58,7 +58,8 @@ The [joint local tutorial](../../integration/docs/tutorials/lumio-ariadne-local.
 shows the complete flow with synthetic orders and Policy citations. Its
 historical baseline and the newer query extension are labeled separately.
 See [current pairing and boundaries](docs/ariadne-context.md) for the
-Core 0.7.0 / Lumio 0.5.0 family and optional pinned S3 consumption.
+Core 0.7.0 pairing with the Lumio 0.5 family and optional pinned S3
+consumption.
 
 ## Documentation and examples
 
@@ -67,6 +68,7 @@ Core 0.7.0 / Lumio 0.5.0 family and optional pinned S3 consumption.
 - [Optional S3 publication](docs/howto-s3-publish.md)
 - [Capture adapters](examples/capture-adapters/)
 - [Packaging and optional dependencies](docs/packaging.md)
-- [Changelog](CHANGELOG.md) and [0.5.0 release notes](docs/release-notes/v0.5.0.md)
+- [Changelog](CHANGELOG.md), [0.5.1 patch notes](docs/release-notes/v0.5.1.md)
+  and the [0.5.0 feature baseline](docs/release-notes/v0.5.0.md)
 - [Development instructions](../../CONTRIBUTING.md)
 - [Report an issue](https://github.com/legout/ariadne/issues)

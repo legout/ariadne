@@ -1,13 +1,13 @@
 [project]
 name = "lumio-lancedb"
-version = "0.5.0"
+version = "0.5.1"
 description = "Optional LanceDB enhanced-retrieval adapter for the Lumio Knowledge Base."
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "Volker L.", email = "ligno.blades@gmail.com" }]
 requires-python = ">=3.14"
 dependencies = [
-    "lumio-wiki>=0.5.0,<0.6.0",
+    "lumio-wiki>=0.5.1,<0.6.0",
     "lancedb>=0.34.0",
     "pyarrow>=24.0.0",
     "msgspec[yaml]>=0.21.1",

@@ -54,7 +54,7 @@ def test_uv_workspace_root_is_coordination_only_with_three_members():
     assert lancedb_member["project"]["name"] == "lumio-lancedb"
     assert lancedb_member["project"]["requires-python"] == ">=3.14"
     assert lancedb_member["project"]["license"] == "Apache-2.0"
-    assert "lumio-wiki>=0.5.0,<0.6.0" in lancedb_member["project"]["dependencies"]
+    assert "lumio-wiki>=0.5.1,<0.6.0" in lancedb_member["project"]["dependencies"]
     assert "lancedb>=0.34.0" in lancedb_member["project"]["dependencies"]
     assert "pyarrow>=24.0.0" in lancedb_member["project"]["dependencies"]
     # Torch stays out of the base adapter (ADR-0010): the embeddings extra is
