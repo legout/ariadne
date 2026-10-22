@@ -2695,20 +2695,6 @@ def normalize_record_request(
             ) from exc
 
     non_temporal, temporal = _parse_record_filters(request.get("filters"), entry, timestamp_field)
-    temporal_instants: dict[tuple[str, str, Any], datetime] = {}
-    if timestamp_field is not None and zone is not None:
-        # Q1-F3 (owner-approved Timestamp unit, spec0032 §7/§10.5 stage 1):
-        # every caller-supplied temporal COMPARISON literal is validated and
-        # normalized HERE — by the existing NATIVE pure validator
-        # ``_record_instant`` (encoding/type, strict parse, both DST
-        # rejections) — inside the shared static normalization, BEFORE
-        # mandatory Context and before any SQL construction, connection use
-        # or live probing. The validated UTC-naive instant is carried forward
-        # as a normalized fact keyed by the original caller predicate: the
-        # SQL builder consumes it directly and never re-interprets the wall
-        # time, and the public filter disclosure keeps the original input.
-        for field, op, value in temporal:
-            temporal_instants[(field, op, value)] = _record_instant(value, zone, field)
 
     raw_order = request.get("order")
     if not isinstance(raw_order, list) or not raw_order:
@@ -2750,6 +2736,24 @@ def normalize_record_request(
             f"'limit' must be a positive integer of at most "
             f"{min(MAX_RECORD_LIMIT, row_ceiling)} (booleans are not integers)",
         )
+    temporal_instants: dict[tuple[str, str, Any], datetime] = {}
+    if timestamp_field is not None and zone is not None:
+        # Q1-F3 (owner-approved Timestamp unit, spec0032 §7/§10.5 stage 1,
+        # native static precedence preserved): every caller-supplied
+        # temporal COMPARISON literal is validated and normalized HERE — by
+        # the existing NATIVE pure validator ``_record_instant``
+        # (encoding/type, strict parse, both DST rejections) — AFTER the
+        # native filter-shape/order/limit checks and BEFORE mandatory
+        # Context, any SQL construction, connection use or live probing
+        # (the pre-extraction native plan validated order and limit ahead of
+        # its SQL-time temporal interpretation; a combined-invalid request
+        # keeps its order_invalid/limit_invalid precedence). The validated
+        # UTC-naive instant is carried forward as a normalized fact keyed by
+        # the original caller predicate: the SQL builder consumes it
+        # directly and never re-interprets the wall time, and the public
+        # filter disclosure keeps the original input.
+        for field, op, value in temporal:
+            temporal_instants[(field, op, value)] = _record_instant(value, zone, field)
     return {
         "entry": entry,
         "fields": fields,
