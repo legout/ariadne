@@ -69,7 +69,7 @@ semantic_layer/            # served OSI: datasets/, models/, metrics/
 ## 7. Failure behavior
 
 - Invalid OSI/OKF after 3 compile rounds → stop; errors recorded in the staging file's frontmatter as `status: review_needed`.
-- Datus absent/broken → `serve.py` fails fast at startup with an install hint.
+- **Compiler (rev 7, ADR-0008):** query runtime initialization rejects served models that do not compile through `ariadne.render` (SQLGlot). Datus is no longer a dependency; its absence or a blocked legacy import is not a startup failure.
 - Unknown metric requested → error response lists available metrics from `semantic_layer/` **and names the ad-hoc path**: `list_datasets()` + `define_metric` for anything unmodeled.
 - Invalid ad-hoc definition → Datus compiler errors returned verbatim; nothing staged, nothing executed. The facade stays stateless — retry discipline is the consuming agent's concern.
 - Promotion conflict → manual `mv`; the human resolves. No merge machinery.

@@ -44,9 +44,14 @@ if not _os.environ.get("LUMIO_S3_ENDPOINT"):  # pragma: no cover
 # Live Git-admission certification remains the separate G5 gate.
 from lumio_wiki.s3_publish import (  # noqa: E402
     S3PublicationConflict,
-    _publish_s3_working_tree,
-    _rollback_s3_version,
     list_cleanup_candidates,
+)
+from lumio_wiki.s3_publish import (  # noqa: E402
+    _activate_existing_s3_version as _rollback_s3_version,
+)
+
+from tests._s3_fixtures import (  # noqa: E402
+    publish_legacy_s3_version as _publish_s3_working_tree,
 )
 
 

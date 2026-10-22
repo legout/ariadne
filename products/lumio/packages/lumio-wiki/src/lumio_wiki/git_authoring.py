@@ -69,7 +69,6 @@ from lumio_wiki.s3_publish import (
     _activate_existing_s3_version,
     _load_complete_version,
     _publish_s3_captured_revision,
-    _rollback_s3_version,
     _serialize_graph_bytes,
     _validate_graph_state,
     _verify_and_encode_completion,
@@ -575,38 +574,28 @@ def _captured_binding_entries(
         raise GitAuthoringError(
             "exact Source Binding Manifest entries require the selected private registry"
         )
-    pages = {page.id: page for page in captured.kb.pages if getattr(page, "id", None)}
-    entries: list[SourceBindingEntry] = []
-    for entity_id, bindings in sorted(captured.manifest.bindings.items()):
-        page = pages.get(entity_id)
-        if page is None:
+    entries = _coverage_entries(captured.kb.pages, captured.manifest.bindings)
+    enriched: list[SourceBindingEntry] = []
+    for entry in entries:
+        version = (
+            registry.find_version(entry.source_id, entry.content_hash)
+            if registry is not None
+            else None
+        )
+        if version is None:
             raise GitAuthoringError(
-                f"source binding refers to missing candidate entity {entity_id!r}"
+                f"bound Source Version {entry.source_id!r}@{entry.content_hash} cannot be resolved "
+                "for the private binding record"
             )
-        for source_id, digest in sorted(bindings.items()):
-            version = registry.find_version(source_id, digest) if registry is not None else None
-            if version is None:
-                raise GitAuthoringError(
-                    f"bound Source Version {source_id!r}@{digest} cannot be resolved "
-                    "for the private binding record"
-                )
-            if not any(source.id == source_id for source in page.sources):
-                raise GitAuthoringError(
-                    f"source binding {source_id!r} is not cited by candidate entity {entity_id!r}"
-                )
-            entries.append(
-                SourceBindingEntry(
-                    entity_id=entity_id,
-                    page_title=page.title,
-                    source_id=source_id,
-                    content_hash=digest,
-                    content_type=version.content_type,
-                    filename=version.filename,
-                    size=version.size,
-                    synthetic_page=bool(getattr(page, "synthetic", False)),
-                )
+        enriched.append(
+            msgspec.structs.replace(
+                entry,
+                content_type=version.content_type,
+                filename=version.filename,
+                size=version.size,
             )
-    return entries
+        )
+    return enriched
 
 
 def _coverage_entries(
@@ -1885,7 +1874,9 @@ def _retry_s3_publication(
             captured.kb.pages,
             _captured_coverage_entries(captured),
         )
-    _activate_existing_s3_version(location.store, location.prefix, version, expected_pointer)
+    _activate_existing_s3_version(
+        location.store, location.prefix, version=version, expected_pointer_version=expected_pointer
+    )
     _persist_s3_activation(metadata_store, receipt)
     return msgspec.structs.replace(receipt, activated=True)
 
@@ -2960,7 +2951,7 @@ def rollback_publication(
                 source_artifact_store=artifact_store,
             )
         _reconcile_active_s3_activation(s3_location, private_store)
-        manifest = _rollback_s3_version(
+        manifest = _activate_existing_s3_version(
             s3_location.store,
             s3_location.prefix,
             version=review.version,

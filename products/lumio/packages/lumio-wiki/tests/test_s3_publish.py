@@ -55,16 +55,17 @@ from lumio_wiki.s3_publish import (
     list_cleanup_candidates,
 )
 from lumio_wiki.s3_publish import (
-    _publish_s3_working_tree as publish_s3_version,
-)
-from lumio_wiki.s3_publish import (
-    _rollback_s3_version as rollback_s3_version,
+    _activate_existing_s3_version as rollback_s3_version,
 )
 from lumio_wiki.source_references import (
     SourceReferenceManifest,
     serialize_source_reference_manifest,
 )
 from lumio_wiki.source_registry import SourceRegistry
+
+from tests._s3_fixtures import (
+    publish_legacy_s3_version as publish_s3_version,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from obstore.store import ObjectStore

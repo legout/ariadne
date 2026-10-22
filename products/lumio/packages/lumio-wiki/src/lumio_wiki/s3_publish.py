@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import msgspec
@@ -60,13 +59,7 @@ from lumio_wiki.graph_state import (
     deserialize_graph,
     serialize_graph,
 )
-from lumio_wiki.knowledge_base import (
-    KnowledgeBaseError,
-    _capture_source,
-    _FilesystemKbSource,
-    _load_and_validate,
-    canonical_content,
-)
+from lumio_wiki.knowledge_base import KnowledgeBaseError
 from lumio_wiki.records import EXTRACTOR_VERSION, EmbeddingModelInfo, SourceFingerprint
 from lumio_wiki.s3_location import (
     CURRENT_POINTER_OBJECT,
@@ -216,110 +209,6 @@ class CleanupCandidate(msgspec.Struct, frozen=True):
 # ---------------------------------------------------------------------------
 # Publication: observe -> preflight -> prepare -> build -> validate -> activate.
 # ---------------------------------------------------------------------------
-
-
-def _publish_s3_working_tree(
-    store: ObjectStore,
-    prefix: str,
-    *,
-    source_root: str | Path,
-    version: str,
-    expected_pointer_version: str | None = None,
-    index_builder: IndexBuilder | None = None,
-    before_activation: ActivationHook | None = None,
-) -> S3Manifest:
-    """Publish a filesystem Knowledge Base as one complete immutable S3 version.
-
-    Deep prepare/build/validate/activate operation (issue #163, ADR-0019):
-
-    1. Observe the active pointer (version + ETag) and check the caller's
-       expectation **before** any expensive work.
-    2. Require a previously absent version prefix.
-    3. Load and validate canonical content and the derived Discovery Graph.
-    4. Write canonical files and the graph (create-only). When ``index_builder``
-       is provided, build the remote LanceDB index under
-       ``{prefix}/{version}/derived/lance/``, record its completion metadata,
-       and gate activation on its success (a missing index stays valid when no
-       builder was requested).
-    5. Write the manifest last, run the optional ``before_activation`` hook,
-       then advance ``current.json`` with one conditional put against the
-       *originally observed* pointer. Concurrent or stale publishers fail
-       closed via :class:`S3PublicationConflict`.
-
-    Parameters
-    ----------
-    store:
-        An obstore ``ObjectStore`` (``S3Store``, ``MemoryStore``, ...).
-    prefix:
-        The object-key prefix the Knowledge Base root lives under.
-    source_root:
-        The local filesystem Knowledge Base root to publish (read-only).
-    version:
-        The immutable version label for the new Published Version.
-    expected_pointer_version:
-        The version the caller expects to replace. ``None`` means the pointer
-        may exist or not; the compare-and-swap still guards every race.
-    index_builder:
-        Requested remote LanceDB index builder (see :data:`IndexBuilder`).
-        ``None`` (the default) publishes without a LanceDB index — existing
-        S3-without-LanceDB publication stays compatible.
-    before_activation:
-        Optional pre-activation hook (see :data:`ActivationHook`).
-
-    Returns
-    -------
-    S3Manifest
-        The manifest written for the new immutable version.
-
-    Raises
-    ------
-    KnowledgeBaseError
-        If validation fails, the version prefix already exists, LanceDB was
-        requested and its build/health check failed, or the store cannot
-        support conditional pointer writes.
-    S3PublicationConflict
-        If the pointer does not match the expectation, or a concurrent
-        publication advanced it first.
-    """
-    obstore = _require_obstore()
-    clean_prefix = str(prefix).strip("/")
-    root = Path(source_root)
-
-    # 1. Observe the pointer before any expensive preparation (issue #163):
-    #    the captured ETag is the compare-and-swap intent used at activation.
-    observed = observe_current_pointer(store, clean_prefix)
-    _check_expectation(observed, expected_pointer_version, version)
-
-    # 2. Require a previously absent version prefix — interrupted or retried
-    #    builds never mutate an existing immutable version.
-    _require_absent_version_prefix(obstore, store, clean_prefix, version)
-
-    # 3. Prepare: capture canonical bytes once, then validate/hash that same
-    # immutable candidate. Later builders and hooks must not reread ``root``.
-    source, fingerprint = _capture_source(_FilesystemKbSource(root.resolve()))
-    kb, report = _load_and_validate(source, fingerprint=fingerprint)
-    if not report.is_valid:
-        blocking = sum(1 for issue in report.issues if issue.severity == "error")
-        raise KnowledgeBaseError(
-            f"cannot publish {version!r}: canonical Knowledge Base content at "
-            f"{root!s} has {blocking} blocking validation error(s)"
-        )
-    content = canonical_content(source)
-
-    return _publish_s3_candidate(
-        obstore,
-        store,
-        clean_prefix,
-        version=version,
-        observed=observed,
-        expected_pointer_version=expected_pointer_version,
-        kb=kb,
-        report=report,
-        content=content,
-        fingerprint=fingerprint,
-        index_builder=index_builder,
-        before_activation=before_activation,
-    )
 
 
 def _publish_s3_captured_revision(
@@ -492,7 +381,7 @@ def _publish_s3_candidate(
     return manifest
 
 
-def _rollback_s3_version(
+def _activate_existing_s3_version(
     store: ObjectStore,
     prefix: str,
     *,
@@ -633,26 +522,6 @@ def _check_expectation(observed: PointerObservation, expected: str | None, versi
             f"cannot activate {version!r}: the object store does not provide an "
             f"ETag for the activation pointer, so a safe conditional write is "
             f"impossible"
-        )
-
-
-def _require_absent_version_prefix(
-    obstore: Any, store: ObjectStore, prefix: str, version: str
-) -> None:
-    """Require that the version prefix holds no objects at all.
-
-    The manifest being written last means an interrupted earlier build leaves
-    objects without a manifest; a retried build must never mutate them (issue
-    #163). Create-only puts remain the hard immutability guarantee; this
-    preflight turns a would-be mid-write failure into an early, actionable
-    error that names the cleanup path.
-    """
-    if _list_keys(obstore, store, _join(prefix, version, "")):
-        raise KnowledgeBaseError(
-            f"cannot publish {version!r}: version prefix already exists at "
-            f"{_join(prefix, version, '')!r} — immutable versions cannot be "
-            f"overwritten; an interrupted build's residue is reported by "
-            f"list_cleanup_candidates()"
         )
 
 
@@ -978,19 +847,6 @@ def _get_pointer_bytes(obstore: Any, store: ObjectStore, key: str) -> bytes:
     except Exception as exc:  # pragma: no cover - head proved existence
         raise KnowledgeBaseError(f"could not read activation pointer {key!r}: {exc}") from exc
     return bytes(result.bytes())
-
-
-def _activate_existing_s3_version(
-    store: ObjectStore, prefix: str, version: str, expected_pointer_version: str | None
-) -> S3Manifest:
-    """Activate one already-complete version against the exact observed pointer."""
-    obstore = _require_obstore()
-    clean_prefix = str(prefix).strip("/")
-    observed = observe_current_pointer(store, clean_prefix)
-    _check_expectation(observed, expected_pointer_version, version)
-    manifest = _load_complete_version(obstore, store, clean_prefix, version)
-    _activate_pointer(obstore, store, clean_prefix, version, observed, expected_pointer_version)
-    return manifest
 
 
 def _activate_pointer(

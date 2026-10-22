@@ -475,18 +475,6 @@ def _effective_grant(
     return record
 
 
-def _approved_identity(project: Path, digest: str, proposal: str, revision: str) -> dict:
-    """The operator's approval record for ``digest`` (the historical seam),
-    effective-identity aware: when the candidate declares storage profiles
-    the grant must match the CURRENT effective binding (spec 0025 §4)."""
-    resolved, resolved_digest = candidate_sources(project, revision)
-    if resolved_digest is not None and resolved_digest != digest:
-        # the caller's digest is not what the revision resolves to; the
-        # effective-grant path below reports the precise mismatch
-        pass
-    return _effective_grant(project, resolved, digest, proposal, revision)
-
-
 def approval_state(project: Path, resolved: list[dict] | None, digest: str | None) -> dict:
     """The OFFLINE effective-approval state of one resolved identity (spec
     0025 §4): distinguishes declaration history from the current effective

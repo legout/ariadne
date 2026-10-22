@@ -3711,11 +3711,10 @@ def _cmd_import_graph(args: argparse.Namespace) -> int:
 
 
 def _cmd_health(args: argparse.Namespace) -> int:
-    report = validate(args.path)
     try:
-        kb, _load_report = load_knowledge_base(args.path)
+        kb, report = load_knowledge_base(args.path)
     except (KnowledgeBaseError, ControlFileError) as exc:
-        print(f"validation: {report}")
+        print(f"validation: {validate(args.path)}")
         print(f"load_error: {exc}", file=sys.stderr)
         return 1
     index_dir = _resolve_index_dir(args, kb.root)
@@ -4959,24 +4958,6 @@ def _read_source_file(args: argparse.Namespace) -> bytes:
         return source_path.read_bytes()
     except OSError:
         raise CliError("source file could not be read", exit_code=1) from None
-
-
-def _kb_adopted_git_authoring(kb) -> bool:
-    """Whether the KB adopted Git authoring, with bounded strict errors (D7).
-
-    An invalid manifest is an actionable CLI error at the dispatch boundary,
-    never an escaping ``SourceReferenceError`` traceback.
-    """
-    from lumio_wiki.source_references import SourceReferenceError, load_source_reference_manifest
-
-    try:
-        return load_source_reference_manifest(kb.root) is not None
-    except SourceReferenceError as exc:
-        raise CliError(
-            "error: the .lumio-authoring.yaml beside the Knowledge Base is "
-            f"invalid ({exc}); fix the manifest before this operation",
-            exit_code=1,
-        ) from exc
 
 
 def _require_git_source_registry(args: argparse.Namespace):

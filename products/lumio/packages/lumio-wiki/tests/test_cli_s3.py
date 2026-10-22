@@ -531,7 +531,10 @@ def _legacy_indexed_adoption_fixture(
         SourceBindingManifest,
     )
     from lumio_wiki.s3_location import S3ManifestFile
-    from lumio_wiki.s3_publish import _publish_s3_working_tree
+
+    from tests._s3_fixtures import (
+        publish_legacy_s3_version as _publish_s3_working_tree,
+    )
 
     control = """\
 version: 2

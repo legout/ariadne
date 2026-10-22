@@ -2572,7 +2572,10 @@ def test_source_legacy_store_denial_maps_to_cli_and_json_refusals(
     from lumio_wiki import cli
     from lumio_wiki.artifact_store import ArtifactAccessDenied, InMemoryArtifactStore
     from lumio_wiki.s3_location import S3Location
-    from lumio_wiki.s3_publish import _publish_s3_working_tree
+
+    from tests._s3_fixtures import (
+        publish_legacy_s3_version as _publish_s3_working_tree,
+    )
 
     legacy_kb = tmp_path / "legacy-kb"
     shutil.copytree(FIXTURES / "valid", legacy_kb)

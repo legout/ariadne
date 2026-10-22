@@ -1906,65 +1906,68 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         surface structural problems for maintenance awareness. It does not call
         an LLM and does not replace the publish validation gate.
         """
-        missing_summaries = sorted(entry.path for entry in self.registry() if not entry.summary)
-
-        validation = validate(self.root)
-
-        broken_relationships: set[str] = set()
-        unknown_relationship_types: set[str] = set()
-        invalid_fields: set[str] = set()
-        for issue in validation.issues:
-            message = issue.message
-            if ": dangling object entity: " in message:
-                broken_relationships.add(issue.file)
-            elif ": unknown predicate: " in message or message.startswith("unknown entity type: "):
-                unknown_relationship_types.add(issue.file)
-            elif issue.severity == "error":
-                if not (
-                    message.startswith("duplicate alias: ")
-                    or message.startswith("duplicate canonical title: ")
-                ):
-                    invalid_fields.add(issue.file)
-
-        alias_locations: dict[str, list[str]] = {}
-        for page in self.pages:
-            for alias in page.aliases:
-                if alias:
-                    alias_locations.setdefault(alias, []).append(page.path)
-        duplicate_aliases = sorted(
-            alias for alias, paths in alias_locations.items() if len(paths) > 1
+        return _health_report(
+            self.pages,
+            validate(self.root),
+            stale_index=self.index_dir is not None and not self.is_fresh(),
         )
 
-        title_locations: dict[str, list[str]] = {}
-        for page in self.pages:
-            if page.title:
-                title_locations.setdefault(page.title, []).append(page.path)
-        duplicate_titles = sorted(
-            title for title, paths in title_locations.items() if len(paths) > 1
-        )
 
-        stale_index = self.index_dir is not None and not self.is_fresh()
+def _health_report(
+    pages: list[CompiledPage], validation: ValidationReport, *, stale_index: bool = False
+) -> HealthReport:
+    """Classify supplied validation and pages without rereading their source."""
+    missing_summaries = sorted(page.path for page in pages if not page.summary)
 
-        is_healthy = (
-            not stale_index
-            and not missing_summaries
-            and not broken_relationships
-            and not duplicate_aliases
-            and not duplicate_titles
-            and not invalid_fields
-            and not unknown_relationship_types
-        )
+    broken_relationships: set[str] = set()
+    unknown_relationship_types: set[str] = set()
+    invalid_fields: set[str] = set()
+    for issue in validation.issues:
+        message = issue.message
+        if ": dangling object entity: " in message:
+            broken_relationships.add(issue.file)
+        elif ": unknown predicate: " in message or message.startswith("unknown entity type: "):
+            unknown_relationship_types.add(issue.file)
+        elif issue.severity == "error":
+            if not (
+                message.startswith("duplicate alias: ")
+                or message.startswith("duplicate canonical title: ")
+            ):
+                invalid_fields.add(issue.file)
 
-        return HealthReport(
-            stale_index=stale_index,
-            missing_summaries=missing_summaries,
-            broken_relationships=sorted(broken_relationships),
-            duplicate_aliases=duplicate_aliases,
-            duplicate_titles=duplicate_titles,
-            invalid_fields=sorted(invalid_fields),
-            unknown_relationship_types=sorted(unknown_relationship_types),
-            is_healthy=is_healthy,
-        )
+    alias_locations: dict[str, list[str]] = {}
+    for page in pages:
+        for alias in page.aliases:
+            if alias:
+                alias_locations.setdefault(alias, []).append(page.path)
+    duplicate_aliases = sorted(alias for alias, paths in alias_locations.items() if len(paths) > 1)
+
+    title_locations: dict[str, list[str]] = {}
+    for page in pages:
+        if page.title:
+            title_locations.setdefault(page.title, []).append(page.path)
+    duplicate_titles = sorted(title for title, paths in title_locations.items() if len(paths) > 1)
+
+    is_healthy = (
+        not stale_index
+        and not missing_summaries
+        and not broken_relationships
+        and not duplicate_aliases
+        and not duplicate_titles
+        and not invalid_fields
+        and not unknown_relationship_types
+    )
+
+    return HealthReport(
+        stale_index=stale_index,
+        missing_summaries=missing_summaries,
+        broken_relationships=sorted(broken_relationships),
+        duplicate_aliases=duplicate_aliases,
+        duplicate_titles=duplicate_titles,
+        invalid_fields=sorted(invalid_fields),
+        unknown_relationship_types=sorted(unknown_relationship_types),
+        is_healthy=is_healthy,
+    )
 
 
 def export_bundle(kb: KnowledgeBase) -> str:
@@ -4756,21 +4759,19 @@ def _load_and_validate(
     diagnostics; read-only loading never touches the filesystem through it.
     """
     pages, issues = _load_pages_and_validate(source)
-    issues.extend(_cross_page_issues(pages, _KnowledgeIndex(pages)))
     control, control_issues = _load_and_validate_control_file(source, pages)
-    issues.extend(control_issues)
-    # Entity/Claim ontology validation (ADR-0021, issue #168): runs with the
-    # parsed ontology when a Control File is present, and in identity-only
-    # mode (uniqueness + dangling objects) in Legacy Flat Mode.
-    issues.extend(_ontology_issues(pages, control.ontology if control else None))
-    captured_fingerprint = fingerprint or _fingerprint_sources(source)
-    return KnowledgeBase(
+    kb = KnowledgeBase(
         root=source.root,
         pages=pages,
         control=control,
-        source_fingerprint=captured_fingerprint,
+        source_fingerprint=fingerprint or _fingerprint_sources(source),
         canonical_pages=canonical_content(source),
-    ), ValidationReport(issues=issues)
+    )
+    issues.extend(_cross_page_issues(pages, kb._knowledge_index()))
+    issues.extend(control_issues)
+    # Ontology checks also run in identity-only mode for Legacy Flat Mode.
+    issues.extend(_ontology_issues(pages, control.ontology if control else None))
+    return kb, ValidationReport(issues=issues)
 
 
 def load_knowledge_base(path: str | Path) -> tuple[KnowledgeBase, ValidationReport]:

@@ -777,7 +777,10 @@ def test_s3_health_reports_a_published_derived_graph(tmp_path):
     """
     pytest.importorskip("mcp")
     from lumio_wiki.mcp_server import build_server, health_rows
-    from lumio_wiki.s3_publish import _publish_s3_working_tree
+
+    from tests._s3_fixtures import (
+        publish_legacy_s3_version as _publish_s3_working_tree,
+    )
 
     kb_copy = tmp_path / "kb"
     shutil.copytree(CATEGORIZED, kb_copy)

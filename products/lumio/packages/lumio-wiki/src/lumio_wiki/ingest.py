@@ -17,8 +17,6 @@ OpenAI-compatible Distiller is an adapter in the full application
 from __future__ import annotations
 
 import difflib
-import hashlib
-import tempfile
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -33,7 +31,6 @@ from lumio_wiki.knowledge_base import (
     _as_string_list,
     _parse_frontmatter,
     extend_control_file_categories,
-    validate,
 )
 from lumio_wiki.okf import (
     OkfImportDiagnostic,
@@ -44,7 +41,6 @@ from lumio_wiki.records import (
     Claim,
     CompiledPage,
     ValidationIssue,
-    ValidationReport,
 )
 
 if TYPE_CHECKING:
@@ -441,33 +437,6 @@ class ManagedIngestError(ValueError):
     (active-with-different-bytes, retired) are raised by the Source Registry
     as :class:`SourceRegistryError`.
     """
-
-
-def _managed_provenance(
-    raw_bytes: bytes,
-    content_type: str | None,
-    filename: str | None,
-    source_id: str,
-) -> SourceProvenance:
-    """Build provenance for managed ingest from the ORIGINAL raw bytes.
-
-    The converter name is derived from routing alone
-    (:func:`lumio_wiki.source_processor.source_converter_name`) — the host
-    agent already converted the source and authored the page, so the
-    ``[documents]`` extra is never required and no converter runs. The hash is
-    over the original bytes, identical to the Source Registry's
-    ``content_hash`` so private provenance and registry identity agree
-    (ADR-0014: original raw bytes determine identity and the version hash).
-    """
-    from lumio_wiki.source_processor import source_converter_name
-
-    return SourceProvenance(
-        original_filename=filename,
-        content_type=content_type,
-        converted_by=source_converter_name(filename, content_type),
-        source_hash=hashlib.sha256(raw_bytes).hexdigest(),
-        source_id=source_id,
-    )
 
 
 def _declared_source_ids(markdown: str) -> set[str]:
@@ -1086,17 +1055,6 @@ def _compute_diff(
             lines.extend(page.markdown.splitlines())
         lines.append("")
     return "\n".join(lines)
-
-
-def _validate_proposed_pages(proposed_pages: Iterable[ProposedPage]) -> ValidationReport:
-    """Run Core SDK validation over the proposed pages in a temporary directory."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        root = Path(tmpdir)
-        for page in proposed_pages:
-            path = root / page.relative_path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(page.markdown, encoding="utf-8")
-        return validate(root)
 
 
 def _existing_page_markdown(kb) -> dict[str, str]:

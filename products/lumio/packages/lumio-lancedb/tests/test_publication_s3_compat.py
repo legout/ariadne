@@ -46,10 +46,11 @@ from lumio_wiki.s3_publish import (  # noqa: E402
     list_cleanup_candidates,  # noqa: E402
 )
 from lumio_wiki.s3_publish import (  # noqa: E402
-    _publish_s3_working_tree as publish_s3_version,
+    _activate_existing_s3_version as rollback_s3_version,
 )
-from lumio_wiki.s3_publish import (  # noqa: E402
-    _rollback_s3_version as rollback_s3_version,
+
+from tests._s3_fixtures import (  # noqa: E402
+    publish_legacy_s3_version as publish_s3_version,
 )
 
 FIXTURES = ROOT / "tests" / "fixtures"

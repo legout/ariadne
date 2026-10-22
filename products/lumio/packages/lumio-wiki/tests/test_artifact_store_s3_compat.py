@@ -46,7 +46,9 @@ if not _os.environ.get("LUMIO_S3_ENDPOINT"):  # pragma: no cover
 
 # Private transport-kernel coverage, NOT public exact-revision admission.
 # Live Git-admission certification remains the separate G5 gate.
-from lumio_wiki.s3_publish import _publish_s3_working_tree  # noqa: E402
+from tests._s3_fixtures import (  # noqa: E402
+    publish_legacy_s3_version as _publish_s3_working_tree,  # noqa: E402
+)
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures" / "valid"

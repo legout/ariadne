@@ -539,9 +539,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             # A2 (spec0029 §1.3): the assembled report (with its embedded SDK
             # pages) is a typed navigation result too — measured on its real
             # SDK conversion, refusing whole when it cannot fit.
-            return _typed_navigation_result(
-                app._tool_manager._tools["discover"], result, project
-            )
+            return _typed_navigation_result(app._tool_manager._tools["discover"], result, project)
 
         @app.tool()
         @_tool_errors
@@ -1496,17 +1494,7 @@ def main(argv: list[str] | None = None) -> int:
 
         facade = _no_runtime
     else:
-        try:
-            from ariadne.query import _DATUS_IMPORT_ERROR, INSTALL_HINT
-
-            if _DATUS_IMPORT_ERROR is not None:
-                raise RuntimeError(f"{INSTALL_HINT}: {_DATUS_IMPORT_ERROR}")
-            facade = DeferredQueryRuntime(_deferred_runtime, _new_discovery)
-        except Exception as exc:  # keep Combined's Authoring surface available
-            if args.toolset != "combined" or _mcp_sdk_absent():
-                print(f"error: {exc}", file=sys.stderr)
-                return 1
-            facade = DeferredQueryRuntime(_deferred_runtime, _new_discovery)
+        facade = DeferredQueryRuntime(_deferred_runtime, _new_discovery)
     try:
         app = build_app(facade, toolset=args.toolset)  # project anchored by the chdir
     except ModuleNotFoundError as exc:  # the optional transport is not installed

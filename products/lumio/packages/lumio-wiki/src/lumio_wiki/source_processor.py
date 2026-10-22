@@ -127,9 +127,7 @@ def _sections(filename: str | None, text: str, digest: str) -> list[NormalizedSe
                 )
             )
     return result or [
-        NormalizedSection(
-            f"{digest[:16]}:section:1", label, 1, max(len(lines), 1), text.strip()
-        )
+        NormalizedSection(f"{digest[:16]}:section:1", label, 1, max(len(lines), 1), text.strip())
     ]
 
 
@@ -138,6 +136,7 @@ def _is_markdown(filename: str | None, content_type: str | None) -> bool:
     if suffix in {".md", ".markdown"}:
         return True
     return (content_type or "").split(";")[0].strip().lower() == "text/markdown"
+
 
 # ---------------------------------------------------------------------------
 # Document conversion infrastructure (issue #100)
@@ -171,19 +170,32 @@ _ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 _LITEPARSE_CONTENT_TYPES = frozenset({"application/pdf"})
 _LITEPARSE_EXTENSIONS = frozenset({".pdf"})
 _IMAGE_CONTENT_TYPE_PREFIX = "image/"
-_IMAGE_EXTENSIONS = frozenset(
-    {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp"}
-)
+_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp"})
 # AnyDoc office-format superset (issue #154, ADR-0018): Word, PowerPoint, Excel,
 # OpenDocument, RTF, EPUB, and CSV, including the legacy binary (.doc/.ppt/.xls)
 # and macro-enabled/container variants. AnyDoc dominates MarkItDown on these.
 _ANYDOC_EXTENSIONS = frozenset(
     {
-        ".doc", ".docx", ".docm",
-        ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
-        ".xls", ".xlsx", ".xlsm", ".xlsb",
-        ".odt", ".ods", ".odp",
-        ".rtf", ".epub", ".csv",
+        ".doc",
+        ".docx",
+        ".docm",
+        ".ppt",
+        ".pps",
+        ".pot",
+        ".pptx",
+        ".pptm",
+        ".ppsx",
+        ".ppsm",
+        ".xls",
+        ".xlsx",
+        ".xlsm",
+        ".xlsb",
+        ".odt",
+        ".ods",
+        ".odp",
+        ".rtf",
+        ".epub",
+        ".csv",
     }
 )
 # MarkItDown retains HTML and the broad formats AnyDoc does not cover.
@@ -244,9 +256,7 @@ def _require_docx_bytes(content: bytes) -> None:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             names = archive.namelist()
             if sum(info.file_size for info in archive.infolist()) > MAX_DOCX_ARCHIVE_BYTES:
-                raise SourceProcessorError(
-                    "the DOCX expands beyond the safe conversion limit"
-                )
+                raise SourceProcessorError("the DOCX expands beyond the safe conversion limit")
     except zipfile.BadZipFile as exc:
         raise SourceProcessorError(
             "the file is not a valid DOCX archive (corrupted or truncated ZIP)"
@@ -272,9 +282,7 @@ def _bound_text(text: str, *, limit: int = MAX_EXTRACTED_CHARS) -> str:
     return truncated
 
 
-def _conversion_worker(
-    output: Queue, fn: Callable[..., Any], args: tuple[Any, ...]
-) -> None:
+def _conversion_worker(output: Queue, fn: Callable[..., Any], args: tuple[Any, ...]) -> None:
     """Run a converter in a spawned process; put (success, result) on the queue."""
     try:
         output.put((True, fn(*args)))
@@ -282,9 +290,7 @@ def _conversion_worker(
         output.put((False, f"{type(exc).__name__}: {exc}"))
 
 
-def run_conversion(
-    fn: Callable[..., Any], *args: Any, timeout: float = CONVERSION_TIMEOUT
-) -> Any:
+def run_conversion(fn: Callable[..., Any], *args: Any, timeout: float = CONVERSION_TIMEOUT) -> Any:
     """Run a synchronous converter in a spawned process with a bounded timeout.
 
     LiteParse and MarkItDown are synchronous and may hang on malformed or
@@ -384,9 +390,7 @@ def _pages_to_sections(
     sections: list[NormalizedSection] = []
     total_chars = 0
     for page in pages:
-        text = (
-            getattr(page, "markdown", "") or getattr(page, "text", "") or ""
-        ).strip()
+        text = (getattr(page, "markdown", "") or getattr(page, "text", "") or "").strip()
         if not text:
             continue
         if len(sections) >= max_sections or total_chars >= max_chars:
@@ -463,9 +467,7 @@ class DocumentSourceProcessor:
     converter name so it flows into ``SourceProvenance`` unchanged.
     """
 
-    def __init__(
-        self, converted_by: str, convert: Callable[[bytes, str | None], str]
-    ) -> None:
+    def __init__(self, converted_by: str, convert: Callable[[bytes, str | None], str]) -> None:
         self._converted_by = converted_by
         self._convert = convert  # type: ignore[assignment]
 
@@ -520,9 +522,7 @@ class PdfSourceProcessor:
         if not content:
             raise SourceProcessorError("Knowledge Source is empty")
         if len(content) > MAX_SOURCE_BYTES:
-            raise SourceProcessorError(
-                "Knowledge Source exceeds the 25 MiB size limit"
-            )
+            raise SourceProcessorError("Knowledge Source exceeds the 25 MiB size limit")
         # Validate the PDF signature only for actual PDF sources. Images
         # (PNG, JPEG, etc.) are also routed here because LiteParse handles
         # OCR, but they do not carry a %PDF- header.
@@ -542,9 +542,7 @@ class PdfSourceProcessor:
         except (SourceProcessorError, MissingDocumentExtraError):
             raise
         except Exception as exc:
-            raise SourceProcessorError(
-                f"the source could not be converted: {exc}"
-            ) from exc
+            raise SourceProcessorError(f"the source could not be converted: {exc}") from exc
         pages = list(getattr(result, "pages", []) or [])
         digest = hashlib.sha256(content).hexdigest()
         text, sections = _pages_to_sections(
@@ -566,6 +564,52 @@ class PdfSourceProcessor:
             filename=filename,
             content_type=content_type,
         )
+
+
+def _process_document(
+    filename: str | None,
+    content_type: str | None,
+    content: bytes,
+    *,
+    converted_by: str,
+    converter: Callable[[bytes, str | None], str] | None,
+    default_converter: Callable[[bytes, str | None], str],
+    max_chars: int,
+    timeout: float,
+    runner: Callable[..., Any] | None,
+) -> NormalizedSource:
+    """Convert a bounded document blob into heading-addressable sections."""
+    if not content:
+        raise SourceProcessorError("Knowledge Source is empty")
+    if len(content) > MAX_SOURCE_BYTES:
+        raise SourceProcessorError("Knowledge Source exceeds the 25 MiB size limit")
+    suffix = PurePath(filename or "").suffix.lower()
+    if converted_by == "markitdown" and suffix == ".docx":
+        _require_docx_bytes(content)
+    runner = runner or run_conversion
+    if converter is None:
+        # Check the extra before spawning so the error type survives.
+        _require_documents_extra(converted_by)
+        converter = default_converter
+    try:
+        raw_text = runner(converter, content, filename, timeout=timeout)
+    except (SourceProcessorError, MissingDocumentExtraError):
+        raise
+    except Exception as exc:
+        raise SourceProcessorError(f"the document could not be converted: {exc}") from exc
+    text = _bound_text((raw_text or "").strip(), limit=max_chars)
+    if not text:
+        raise SourceProcessorError("the document contained no extractable text; it may be empty")
+    digest = hashlib.sha256(content).hexdigest()
+    sections = _sections(filename, text, digest)[:MAX_SECTIONS]
+    return NormalizedSource(
+        text=text,
+        sections=sections,
+        converted_by=converted_by,
+        source_hash=digest,
+        filename=filename,
+        content_type=content_type,
+    )
 
 
 class MarkItDownSourceProcessor:
@@ -599,44 +643,16 @@ class MarkItDownSourceProcessor:
     def process(
         self, filename: str | None, content_type: str | None, content: bytes
     ) -> NormalizedSource:
-        if not content:
-            raise SourceProcessorError("Knowledge Source is empty")
-        if len(content) > MAX_SOURCE_BYTES:
-            raise SourceProcessorError(
-                "Knowledge Source exceeds the 25 MiB size limit"
-            )
-        suffix = PurePath(filename or "").suffix.lower()
-        if suffix == ".docx":
-            _require_docx_bytes(content)
-        runner = self._runner or run_conversion
-        if self._converter is not None:
-            converter = self._converter
-        else:
-            # Check the extra before spawning so the error type survives.
-            _require_documents_extra("markitdown")
-            converter = _default_markitdown_converter
-        try:
-            raw_text = runner(converter, content, filename, timeout=self._timeout)
-        except (SourceProcessorError, MissingDocumentExtraError):
-            raise
-        except Exception as exc:
-            raise SourceProcessorError(
-                f"the document could not be converted: {exc}"
-            ) from exc
-        text = _bound_text((raw_text or "").strip(), limit=self._max_chars)
-        if not text:
-            raise SourceProcessorError(
-                "the document contained no extractable text; it may be empty"
-            )
-        digest = hashlib.sha256(content).hexdigest()
-        sections = _sections(filename, text, digest)[:MAX_SECTIONS]
-        return NormalizedSource(
-            text=text,
-            sections=sections,
+        return _process_document(
+            filename,
+            content_type,
+            content,
             converted_by="markitdown",
-            source_hash=digest,
-            filename=filename,
-            content_type=content_type,
+            converter=self._converter,
+            default_converter=_default_markitdown_converter,
+            max_chars=self._max_chars,
+            timeout=self._timeout,
+            runner=self._runner,
         )
 
 
@@ -679,42 +695,16 @@ class AnyDocSourceProcessor:
     def process(
         self, filename: str | None, content_type: str | None, content: bytes
     ) -> NormalizedSource:
-        if not content:
-            raise SourceProcessorError("Knowledge Source is empty")
-        if len(content) > MAX_SOURCE_BYTES:
-            raise SourceProcessorError(
-                "Knowledge Source exceeds the 25 MiB size limit"
-            )
-        runner = self._runner or run_conversion
-        if self._converter is not None:
-            converter = self._converter
-        else:
-            # Check the extra before spawning so the error type survives
-            # (spawn serializes exceptions as strings).
-            _require_documents_extra("anydoc")
-            converter = _default_anydoc_converter
-        try:
-            raw_text = runner(converter, content, filename, timeout=self._timeout)
-        except (SourceProcessorError, MissingDocumentExtraError):
-            raise
-        except Exception as exc:
-            raise SourceProcessorError(
-                f"the document could not be converted: {exc}"
-            ) from exc
-        text = _bound_text((raw_text or "").strip(), limit=self._max_chars)
-        if not text:
-            raise SourceProcessorError(
-                "the document contained no extractable text; it may be empty"
-            )
-        digest = hashlib.sha256(content).hexdigest()
-        sections = _sections(filename, text, digest)[:MAX_SECTIONS]
-        return NormalizedSource(
-            text=text,
-            sections=sections,
+        return _process_document(
+            filename,
+            content_type,
+            content,
             converted_by="anydoc",
-            source_hash=digest,
-            filename=filename,
-            content_type=content_type,
+            converter=self._converter,
+            default_converter=_default_anydoc_converter,
+            max_chars=self._max_chars,
+            timeout=self._timeout,
+            runner=self._runner,
         )
 
 

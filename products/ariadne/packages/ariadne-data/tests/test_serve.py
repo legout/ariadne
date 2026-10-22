@@ -968,39 +968,6 @@ def test_startup_fails_fast_without_models(tmp_path):
         Facade(tmp_path / "semantic_layer", tmp_path / "context_layer", tmp_path / "demo.db")
 
 
-def test_startup_fails_fast_when_datus_absent(tmp_path, monkeypatch):
-    import ariadne.query as query_module
-
-    monkeypatch.setattr(query_module, "_DATUS_IMPORT_ERROR", ImportError("no datus"))
-    with pytest.raises(RuntimeError, match="datus-semantic-osi"):
-        Facade(tmp_path / "semantic_layer", tmp_path / "context_layer", tmp_path / "demo.db")
-
-
-def test_serve_cli_fails_fast_with_hint_when_datus_missing(tmp_path):
-    """A blocked legacy compiler import is reported without a raw traceback."""
-    import os
-    import subprocess
-
-    code = "\n".join(
-        [
-            "import sys",
-            "sys.modules['datus_semantic_osi'] = None",
-            "sys.modules['datus_semantic_osi.adapter'] = None",
-            "sys.modules['datus_semantic_osi.config'] = None",
-            "import ariadne.serve  # must not raise",
-            "sys.exit(ariadne.serve.main(['--toolset', 'analyst', "
-            f"'--project', {str(tmp_path)!r}]))",
-        ]
-    )
-    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
-    proc = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, env=env, timeout=120, check=False
-    )
-    assert proc.returncode == 1  # fail-fast exit, not a traceback
-    assert b"datus-semantic-osi is required" in proc.stderr
-    assert b"Traceback" not in proc.stderr
-
-
 # --- Measured Context Layer retrieval (spec 2026-09-23-0002, issue #10) -------
 
 

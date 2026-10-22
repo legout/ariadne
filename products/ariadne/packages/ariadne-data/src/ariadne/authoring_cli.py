@@ -372,12 +372,6 @@ def _read_inspection_request(file: str) -> tuple[object, object]:
     return data, None
 
 
-def _read_source_entries(file: str) -> list[dict]:
-    """The typed source entries of a registry-shaped Git proposal intake
-    document: its ``sources:`` list."""
-    return _read_source_intake(file)[0]
-
-
 def _read_source_intake(file: str) -> tuple[list[dict], dict | None]:
     """The registry-shaped intake document's ``sources:`` list plus its
     optional ``storages:`` block (spec 0025 §5 — the CLI's existing

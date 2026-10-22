@@ -50,8 +50,9 @@ from lumio_wiki.source_registry import (
 obstore = pytest.importorskip("obstore", reason="obstore required for publication coverage")
 
 from lumio_wiki.s3_location import CURRENT_POINTER_OBJECT, S3Location  # noqa: E402
-from lumio_wiki.s3_publish import (  # noqa: E402
-    _publish_s3_working_tree as publish_s3_version,
+
+from tests._s3_fixtures import (  # noqa: E402
+    publish_legacy_s3_version as publish_s3_version,
 )
 
 ROOT = Path(__file__).parents[3]

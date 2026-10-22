@@ -53,13 +53,10 @@ tool arguments to ``duckdb.execute`` that bypasses the compiler.
 Invariants and failure behavior (spec §6/§7): ``get_metric`` accepts only named
 governed metrics — never raw SQL; unknown metric -> error listing the available
 metrics and naming the ad-hoc path (``list_datasets()`` + ``define_metric``);
-unrenderable served models -> fail fast at startup; an environment that
-actively blocks the retired datus packages -> fail fast with the historical
-install hint.
+unrenderable served models -> fail fast at query runtime initialization.
 """
 
 import re
-import sys
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -142,23 +139,6 @@ from ariadne.validate import (  # pyright: ignore[reportMissingImports] — drif
     served_tree_digest,
 )
 
-# ADR-0008: the compile path is ariadne.render (own sqlglot compiler) — datus is
-# no longer imported at all. The historical spec §7 fail-fast contract stays
-# testable: an environment that ACTIVELY BLOCKS datus (the ``sys.modules[name] =
-# None`` sentinel the offline tests install) still surfaces the original install
-# hint at runtime init, while a plain datus-free install serves through
-# render().
-_DATUS_IMPORT_ERROR: ImportError | None = (
-    ImportError("import of datus_semantic_osi halted; None in sys.modules")
-    if sys.modules.get("datus_semantic_osi", 1) is None
-    else None
-)
-
-INSTALL_HINT = (
-    "datus-semantic-osi is required to serve governed metrics "
-    "(uv pip install 'datus-semantic-osi[metricflow]' on Python 3.12)"
-)
-
 # MetricFlow's metric-name schema, enforced again at lowering time — reject up
 # front with an actionable message (lowercase snake_case, no double underscore).
 _SLUG_RE = re.compile(r"[a-z][a-z0-9_]*[a-z0-9]")
@@ -200,9 +180,6 @@ class _QueryRuntimeSession(_DiscoverySession):
         construction (CLI invocation / lazy MCP factory) shares between source
         setup and its first operation (fix pass 1, finding 1) — long-lived
         eager runtimes omit it and every operation starts a fresh budget."""
-        if _DATUS_IMPORT_ERROR is not None:  # spec §7: fail fast with the hint
-            raise RuntimeError(f"{INSTALL_HINT}: {_DATUS_IMPORT_ERROR}")
-
         self._load_catalog(semantic_dir, context_dir, admission_record)
         models = Path(semantic_dir) / "models"
         try:

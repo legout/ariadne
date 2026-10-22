@@ -13,6 +13,24 @@ from lumio_wiki.retrieval import ZeroIndexRetrieval
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def test_loaded_knowledge_base_reuses_validation_index(monkeypatch):
+    import lumio_wiki.knowledge_base as module
+
+    original = module._KnowledgeIndex
+    builds = []
+
+    def count_build(pages):
+        builds.append(pages)
+        return original(pages)
+
+    monkeypatch.setattr(module, "_KnowledgeIndex", count_build)
+    kb, report = load_knowledge_base(FIXTURES / "valid")
+    assert report.is_valid
+    assert [page.title for page in kb.lookup_by_title("Architecture")] == ["Architecture"]
+    assert [page.title for page in kb.lookup_by_alias("Stack")] == ["Technology Stack"]
+    assert len(builds) == 1
+
+
 def test_zero_index_adapter_retrieve_returns_cited_results():
     kb, report = load_knowledge_base(FIXTURES / "valid")
     assert report.is_valid

@@ -37,6 +37,7 @@ from lumio_wiki.knowledge_base import (
     DEFAULT_GRAPH_MAX_RESULTS,
     NAV_INDEX_BASENAME,
     KnowledgeBaseError,
+    _health_report,
     generate_hot_index,
     generate_navigation_indexes,
 )
@@ -270,51 +271,20 @@ def _graph_disclosure(snapshot: KnowledgeBaseSnapshot) -> tuple[dict[str, Any], 
 
 
 def health_rows(snapshot: KnowledgeBaseSnapshot) -> dict[str, Any]:
-    """Answer the v1 ``health`` contract from in-memory Snapshot data only.
-
-    Mirrors ``KnowledgeBase.health_report()``'s derivation of the
-    broken/unknown/invalid sets from validation issues, but reads the
-    Snapshot's own ``validation_report`` (never a filesystem revalidation,
-    which is invalid for S3 Snapshots) and the Snapshot's pages. Pure read.
-    """
+    """Answer the v1 health contract from Snapshot data, never live validation."""
     knowledge_base = snapshot.knowledge_base
     report = snapshot.validation_report
-
-    broken_relationships: set[str] = set()
-    unknown_relationship_types: set[str] = set()
-    invalid_fields: set[str] = set()
-    for issue in report.issues:
-        message = issue.message
-        if ": dangling object entity: " in message:
-            broken_relationships.add(issue.file)
-        elif ": unknown predicate: " in message or message.startswith("unknown entity type: "):
-            unknown_relationship_types.add(issue.file)
-        elif issue.severity == "error":
-            if not (
-                message.startswith("duplicate alias: ")
-                or message.startswith("duplicate canonical title: ")
-            ):
-                invalid_fields.add(issue.file)
-
-    alias_locations: dict[str, list[str]] = {}
-    for page in knowledge_base.pages:
-        for alias in page.aliases:
-            if alias:
-                alias_locations.setdefault(alias, []).append(page.path)
-    duplicate_aliases = sorted(alias for alias, paths in alias_locations.items() if len(paths) > 1)
-
+    health = _health_report(knowledge_base.pages, report)
     graph, derived_available, derived_kind = _graph_disclosure(snapshot)
     return {
         "valid": report.is_valid,
         "pages": len(knowledge_base.pages),
         "issues": len(report.issues),
-        "broken_relationships": sorted(broken_relationships),
-        "unknown_relationship_types": sorted(unknown_relationship_types),
-        "invalid_fields": sorted(invalid_fields),
-        "duplicate_aliases": duplicate_aliases,
-        "missing_summaries": sorted(
-            entry.path for entry in knowledge_base.registry() if not entry.summary
-        ),
+        "broken_relationships": health.broken_relationships,
+        "unknown_relationship_types": health.unknown_relationship_types,
+        "invalid_fields": health.invalid_fields,
+        "duplicate_aliases": health.duplicate_aliases,
+        "missing_summaries": health.missing_summaries,
         "graph": graph,
         "derived_index": {"available": derived_available, "kind": derived_kind},
     }
