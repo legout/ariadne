@@ -2,6 +2,75 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-10-22
+
+- **Optional S3 Bound Release transport (#79, #80)** — overall admission
+  additionally accepts `--context-destination s3://bucket/prefix` together
+  with an explicitly selected `storages:` profile declared in the project
+  `ariadne.yaml` (environment-variable names plus literal scopes — never
+  ambient AWS configuration or a Git-stored secret, and never an analytical
+  Source Approval). The composite consent freezes the declaration and the
+  resolved non-secret binding; serving rebuilds the reader from that frozen
+  transport binding, and the private native admission records stay in the
+  local metadata store of the admitting host — no public receipt object and
+  no cross-host synchronization. Mutable/current/latest reads, plain
+  directories and drifted endpoints refuse before any store access; Git
+  with a local checkout remains the standard operator path.
+- **Revision-scoped technical profiles and exact Policy bindings (#82, #83)**
+  — a project may opt its integration selector into support revision 2 (an
+  explicit exact-integer `support_revision: 2` plus the versioned authored
+  `policy_bindings` inventory): the captured KB may then also carry the
+  native `dataset`, `table` and `computation` technical profiles, each bound
+  by exact `core_ref` identity. Explicit schema refresh generates Table and
+  Dataset pages while preserving curated text and authored meanings. Every binding's
+  enforcement must name an existing check that actually executes for its
+  operation: a request the named check does not run for refuses rather than
+  labeling the narrative enforced, and authored `generated`/`verified`
+  stamps never authenticate evidence. Revision-1 admissions keep their
+  frozen capability table — no silent upgrade.
+- **Integrated revision-3 query operations (#84)** — `support_revision: 3`
+  with the same `policy_bindings` block additionally serves `query_detail`
+  (governed detail projection over proven lookup paths), `query_records`
+  (bounded single-dataset selection, always ungoverned) and one-shot unsaved
+  `define_metric` (always ungoverned, `context: null`). Each resolves its
+  exact physical dependencies statically and preflights the complete
+  mandatory Context — every consumed table's full published page view and
+  the applicable `policy_bindings` Policy inventory — into the additive
+  `input_context` before any planner, live audit, bind or SELECT; native
+  static request validation (order/limit precedence ahead of
+  temporal-literal validation, pure temporal literals, pure scalar IN-list
+  elements) runs before Context work. A missing, hidden or ambiguous Table
+  view refuses by canonical resource identity; an unproved path keeps its
+  native planner refusal; explanatory Policies never filter records or
+  ad-hoc reads, and no proposal, page or Computation record is ever created.
+- **Audited-query and rendering fixes** — managed sessions re-check the
+  pinned admission before ad-hoc `define_metric` and the `list_datasets`
+  live catalog (a revoked or changed source identity refuses again); metric
+  rendering resolves root field aliases and dimension/time fields through
+  the model's field expressions and carries the dependencies of mixed-depth
+  derived metrics through outer levels. Shared-library internals were
+  simplified and obsolete paths retired with no intended behavior change.
+- **Product-area layout relocation and CI collection fix (spec 0031)** —
+  Core now lives at `products/ariadne/packages/ariadne-data` inside the
+  product-oriented monorepo layout; the distribution name, import roots, CLI
+  entry points, optional extras and Python >=3.14 are unchanged and
+  independent use remains first-class. The mixed root CI test selection
+  qualifies the shared S3 fixture imports so the S3 compatibility modules
+  collect again; the Docker doc check follows the relocated deploy path.
+- **Release qualification** — Core 0.7.0 pairs with the exact published
+  public producer wheel `lumio-wiki==0.5.0`
+  (`lumio_wiki-0.5.0-py3-none-any.whl`, immutable PyPI URL
+  `https://files.pythonhosted.org/packages/1a/60/01f0a81772abcf69fa07103bb523323eb8ddacf247b6c794e0dab00761fc/lumio_wiki-0.5.0-py3-none-any.whl`,
+  SHA-256
+  `df0890b75aa273352ee8d1d02170ac63ef9f3d24ff0236e2251edc439bc8533e`),
+  producer-first; the earlier qualified 0.6.1/0.4.1 pairing and the tested
+  numerical 0.6.0/0.4.0 tutorial baseline remain historical. Governance,
+  admission semantics and the `duckdb>=1.0,<2` bound are unchanged; the
+  separately distributed Agent/Tau stack remains excluded from this
+  release.
+  Canonical release tag: `core-v0.7.0` in the public `legout/ariadne`
+  repository (candidate preparation — Core is not yet published).
+
 ## 0.6.1 - 2026-10-21
 
 - Relocate Core into the monorepo as `packages/ariadne-data` inside the

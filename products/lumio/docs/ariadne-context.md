@@ -29,9 +29,13 @@ This is an **optional integration**, not a feature of the base product:
   `ContextIdentity`, `ContextSnapshot`, `ContextBinding`, `ContextPageView`,
   `ARIADNE_PROFILE_VERSION` and the reader error types.
 
-The SDK schema knows several native profile kinds. **Ariadne Core 0.6 supports
-Metric, Policy and fully native-validated structured Reference profiles**;
-any other profile kind anywhere in the captured content refuses admission.
+The SDK schema knows several native profile kinds. **Ariadne Core 0.7
+supports Metric, Policy and fully native-validated structured Reference
+profiles at revision 1, and additionally the native
+`dataset`/`table`/`computation` technical profiles behind an explicit
+support-revision 2/3 selector opt-in**; outside the admission's declared
+revision any other profile kind anywhere in the captured content refuses
+admission.
 Structured References support source-free `resolve_term`, with exact field
 bindings and human mapping confirmation. Measured authority requires authentic
 Core inspection receipts; source-backed manual assertions retain their native
@@ -140,8 +144,9 @@ with the optional adapter `lumio-lancedb==0.5.0`, which requires
 `lumio-wiki>=0.5.0,<0.6.0`. See [0.5.0 notes](release-notes/v0.5.0.md).
 The S3 `metadata_store` navigation keyword described above is part of this
 0.5.0 family. Integrated Core consumption of it requires a matching
-S3-capable Core release/build; the published `ariadne-data` 0.6.1 does not
-carry the Core-side S3 transport, and no Core release carrying it is
-published at the time of this candidate.
+S3-capable Core release/build; the current integration pair is
+`ariadne-data` 0.7.0 with this 0.5.0 family (candidate preparation at the
+time of this writing — Core 0.7.0 is not yet published), while the
+historical `ariadne-data` 0.6.1 did not carry the Core-side S3 transport.
 Exact source/build identities remain required, and upgrading requires genuine
 consumer validation and a new matching admission.

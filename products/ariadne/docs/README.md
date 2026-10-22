@@ -1,6 +1,6 @@
 # Ariadne documentation
 
-This documentation targets Ariadne 0.6.1 and is organized by reader goal, following [Diátaxis](https://diataxis.fr/). Choose one type based on what you need to do:
+This documentation targets Ariadne 0.7.0 and is organized by reader goal, following [Diátaxis](https://diataxis.fr/). Choose one type based on what you need to do:
 
 ## Tutorials
 

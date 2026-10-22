@@ -396,9 +396,9 @@ the operator's explicit overall admission — is the sole context authority:
   pinned snapshot (there are no dedicated CLI commands for them). Ordinary
   unprofiled pages are documentation, never Core-validated References; hidden
   or missing pages stay unavailable without leaking why.
-- The pinned release may live in local immutable publication (released) or,
-  in the unreleased source candidate, in S3 object storage admitted through an
-  explicitly selected declared storage profile. Serving rebuilds the reader
+- The pinned release may live in local immutable publication or, since
+  Core 0.7.0, in S3 object storage admitted through an explicitly selected
+  declared storage profile. Serving rebuilds the reader
   from the release's frozen transport binding; a drifted endpoint or missing
   private local admission records refuses before SQL, public bucket objects
   alone never satisfy admission, and no agent tool gains publication or
@@ -432,9 +432,9 @@ the operator's explicit overall admission — is the sole context authority:
   obligation is satisfied only by the plan's executed relationship audit; a
   request the audit does not run for refuses rather than labeling the
   narrative enforced, and authored `generated`/`verified` stamps never
-  authenticate evidence. These revision-2 contracts are implemented in this
-  repository's source candidate; published package pairs have not acquired
-  them. `save-example` and `search-examples` refuse in an integrated project
+  authenticate evidence. These revision-2 contracts are released with
+  Core 0.7.0; older published package pairs do not carry them.
+  `save-example` and `search-examples` refuse in an integrated project
   — never route around a refusal via legacy context, weaker roots or raw
   SQL, and never present the refusal as something to fix by widening scope.
 - A project may further opt its selector into **support revision 3**
