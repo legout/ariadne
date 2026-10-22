@@ -651,3 +651,132 @@ def test_s3_destination_refusal_never_echoes_inline_credentials(tmp_path, capsys
     assert inline_user not in diagnostic.err
     assert rejected not in diagnostic.err
     assert not (project / ".ariadne" / "current.json").exists()
+def test_s3_revision3_query_operations_serve_full_context_from_bound_release(tmp_path, monkeypatch):
+    """#84 final S3 qualification (spec0032 §6, acceptance §8.7) over the
+    parent-owned labelled synthetic SeaweedFS service: the three revision-3
+    query operations run UNCHANGED — their exact authored oracles reused
+    from the local Q1 tests, never copied — with only the test-fixture
+    storage backend changed: every created project declares the
+    credential-free Knowledge S3 profile in ariadne.yaml BEFORE its proposal,
+    publishes through the real reviewed overall-admission surface to its OWN
+    unique in-scope S3 destination, and activates the Core descriptor last.
+    The reused records A/B pinned-session leg then proves the answers served
+    from the S3-published Bound Release, never a local fallback."""
+    from integration.tests import lumio_local_context as local_context
+
+    original_project = local_context._p1_project
+    # the exact six labelled parent-owned synthetic bindings, snapshotted at
+    # entry (this module's autouse fixture has already validated them) —
+    # real inherited AWS_/LUMIO_ values are never sourced
+    labelled = {name: os.environ[name] for name in REQUIRED_SYNTHETIC}
+    run_prefix = f"ariadne-s3/{tmp_path.parent.name}/q1"
+    destinations: dict[Path, str] = {}
+    publications: list[tuple[Path, str]] = []
+
+    def wrapped_project(root, bindings, unused_alias=False):
+        project = original_project(root, bindings, unused_alias=unused_alias)
+        # the unique in-scope destination of THIS project, derived from the
+        # invocation-owned run prefix plus the stable project-relative id —
+        # never a shared publication pointer, never a baked port or bucket
+        destination = f"s3://{_bucket()}/{run_prefix}/{root.relative_to(tmp_path).as_posix()}"
+        (project / "ariadne.yaml").write_text(
+            (project / "ariadne.yaml").read_text()
+            + (
+                "storages:\n"
+                f"  {PROFILE_NAME}:\n"
+                "    type: s3\n"
+                "    access_key_id_env: LUMIO_S3_ACCESS_KEY_ID\n"
+                "    secret_access_key_env: LUMIO_S3_SECRET_ACCESS_KEY\n"
+                "    endpoint_url_env: LUMIO_S3_ENDPOINT\n"
+                "    region_env: LUMIO_S3_REGION\n"
+                "    url_style: path\n"
+                "    scopes:\n"
+                f"      - {destination}/\n"
+            )
+        )
+        run_git(project, "add", "--", "ariadne.yaml")
+        run_git(project, "commit", "-q", "-m", "human: declare Knowledge S3 profile")
+        destinations[project.resolve()] = destination
+        return project
+
+    def wrapped_preview(project, review, destination, expected="none", scope=("public",)):
+        # the authored LOCAL fixture destination argument is intentionally
+        # ignored: the project's OWN unique S3 target is the real one. The
+        # native overall review is called directly (same surface as
+        # _s3_preview) so the authored scope is TRULY forwarded, never
+        # silently pinned to public
+        mapped = destinations[Path(project).resolve()]
+        publications.append((Path(project).resolve(), mapped))
+        return admission.overall_review(
+            project,
+            review["proposal"],
+            review["revision"],
+            review["review_digest"],
+            destination=mapped,
+            expected_current=expected,
+            scope=scope,
+            storage_profile=PROFILE_NAME,
+        )
+
+    with monkeypatch.context() as adapter:
+        adapter.setattr(local_context, "_p1_project", wrapped_project)
+        adapter.setattr(local_context, "preview", wrapped_preview)
+        for child_name, test_name in (
+            ("detail", "test_integrated_detail_requires_complete_input_context"),
+            ("records", "test_integrated_records_keep_calculation_policies_scoped"),
+            ("adhoc", "test_integrated_ad_hoc_metric_is_unsaved_and_context_bound"),
+        ):
+            child = tmp_path / child_name
+            child.mkdir()
+            test = getattr(local_context, test_name)
+            takes_monkeypatch = "monkeypatch" in inspect.signature(test).parameters
+            # the reused tests' own autouse isolation (private HOME, scrubbed
+            # env), applied through the fixture's real wrapped body — then the
+            # six labelled parent-owned synthetic bindings re-overlaid from
+            # the entry snapshot: the local scrub would otherwise remove the
+            # service bindings the publication needs. The context manager
+            # restores environment and patches even on failure; evidence,
+            # projects and public objects are never deleted
+            with pytest.MonkeyPatch.context() as inner:
+                # pytest's FixtureFunctionDefinition sets __wrapped__ via
+                # functools.update_wrapper — the real fixture body, called
+                # directly with the child dir and this patcher
+                local_context.isolated_environment.__wrapped__(child, inner)  # pyright: ignore[reportAttributeAccessIssue]
+                for name in REQUIRED_SYNTHETIC:
+                    inner.setenv(name, labelled[name])
+                if takes_monkeypatch:
+                    test(child, inner)
+                else:
+                    test(child)
+
+    # every created project published to its OWN unique in-scope S3 target
+    # through the adapter (the records leg publishes its project twice: A
+    # then B); nothing shared, nothing local
+    assert destinations
+    assert len(set(destinations.values())) == len(destinations)
+    seen: dict[Path, int] = {}
+    for project_root, destination in publications:
+        assert destination in destinations.values()
+        seen[project_root] = seen.get(project_root, 0) + 1
+    assert set(seen) == set(destinations)
+    assert any(count > 1 for count in seen.values())  # the reused A/B leg
+    # the descriptors prove the REAL S3 publications: the digest-bound
+    # destination equals the mapped s3:// target (a mistakenly local
+    # preview would leave a local path here and fail), the explicit profile
+    # selection, revision-3 capability with the three query operations, and
+    # no secret material anywhere in the descriptor
+    for project_root, destination in sorted(destinations.items()):
+        descriptor_path = project_root / ".ariadne" / "current.json"
+        dumped = descriptor_path.read_text()
+        manifest = json.loads(dumped)["bound_release"]
+        assert manifest["destination"] == destination
+        assert destination.startswith("s3://")
+        assert manifest["storage_profile"] == PROFILE_NAME
+        assert manifest["support_revision"] == 3
+        assert manifest["support"]["storage"] == "s3-immutable"
+        assert {"query_detail", "query_records", "define_metric"} <= set(
+            manifest["support"]["operations"]
+        )
+        _no_secret_material(dumped)
+    # all tmp state (projects, descriptors, published prefixes) is left in
+    # place for parent proof — no cleanup runs in this journey
