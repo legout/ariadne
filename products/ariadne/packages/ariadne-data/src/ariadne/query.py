@@ -776,31 +776,23 @@ class _QueryRuntimeSession(_DiscoverySession):
                     resources.append(resource)
         return resources
 
-    def _records_static_resource(self, request: object) -> str | None:
-        """Q1/#84 (spec0032 §10.5 stage 3): the ONE named catalog dataset's
-        canonical resource — the planner's own exact identity resolution
-        (``_resolve_record_dataset``), a pure built-catalog lookup with no
-        live work. ``None`` for a malformed request shape (the planner's
-        structured request validation owns that refusal); the resolver's own
-        unknown/ambiguous-dataset refusals are the native stage-3 identity
-        refusals."""
-        from ariadne.planner import (  # pyright: ignore[reportPrivateUsage] — drift
-            _RECORD_REQUEST_KEYS,
-            _resolve_record_dataset,
-        )
+    def _records_static_resource(self, request: object) -> str:
+        """Q1/#84 (spec0032 §10.5 stage 1+3; review F3 shared seam): the
+        request's NATIVE static normalization/validation —
+        ``normalize_record_request``, the exact pure checks and structured
+        codes ``plan_records`` itself applies (mapping, request keys, dataset
+        identity, fields/types/columns, the declared timestamp, filter
+        literal shapes, the required order and the bounded limit, under the
+        caller's own row ceiling) — runs FIRST and owns every malformed
+        request BEFORE the mandatory Context preflight; the validated
+        request's one catalog dataset then feeds its canonical resource to
+        the Context lookup. No SQL is constructed, no connection is touched
+        and no live RE2 probing happens here."""
+        from ariadne.planner import normalize_record_request
 
-        if not isinstance(request, dict) or set(request) - _RECORD_REQUEST_KEYS:
-            return None
-        # F3: the native plan_records shape validation owns malformed fields —
-        # a non-empty list of names — BEFORE this seam resolves identity or
-        # preflights Context, so a malformed request never surfaces as a
-        # Context error (the planner's own request_invalid fires at stage 5)
-        fields = request.get("fields")
-        if not isinstance(fields, list) or not fields:
-            return None
-        if not all(isinstance(name, str) for name in fields):
-            return None
-        return _resolve_record_dataset(self.catalog, request.get("dataset"))["resource"]
+        return normalize_record_request(
+            self.catalog, request, row_ceiling=self._limits["max_rows"]
+        )["entry"]["resource"]
 
     def _adhoc_static_resources(self, params: dict) -> tuple[list[str], list[str]]:
         """Q1/#84 (spec0032 §§3, §10.5 stage 3; review F1/F2): EVERY physical
@@ -1191,9 +1183,12 @@ class _QueryRuntimeSession(_DiscoverySession):
         # unchanged path below
         records_context = None
         if self._context_snapshot is not None:
-            resource = self._records_static_resource(request)
-            if resource is not None:
-                records_context = self._input_context_preflight("query_records", [resource])
+            # F3 shared seam: the NATIVE static validation (single ownership,
+            # unchanged codes/precedence) runs inside the resource resolution
+            # and owns every malformed request BEFORE the Context preflight
+            records_context = self._input_context_preflight(
+                "query_records", [self._records_static_resource(request)]
+            )
         budget = self._claim_operation_budget()
         with self._phase(budget):
             plan = plan_records(

@@ -3767,6 +3767,7 @@ Q1_REVIEW_CASES = [
     pytest.param("detail-fields-shape", id="detail-fields-shape"),
     pytest.param("detail-dataset-shape", id="detail-dataset-shape"),
     pytest.param("records-fields-shape", id="records-fields-shape"),
+    pytest.param("records-order-shape", id="records-order-shape"),
 ]
 
 
@@ -3899,6 +3900,34 @@ def test_integrated_query_review_refusals(case, tmp_path, monkeypatch):
             with pytest.raises(PlannerError) as caught:
                 asyncio.run(runtime.query_detail({"dataset": {}, "fields": ["id"]}))
             assert caught.value.code == "unknown_dataset"
+        finally:
+            runtime.con.close()
+        return
+
+    if case == "records-order-shape":
+        # F3 follow-up (owner-approved bounded unit): the native STATIC order
+        # contract — plan_records' own "'order' is required: a non-empty
+        # list" refusal — owns the malformed request BEFORE the integrated
+        # Context preflight: the known status dataset's deliberately absent
+        # Table Context must not turn a request-shape error into a
+        # Context-preparation refusal (spec0032 §7, §10.5 stage 1; spec0014
+        # order contract). Nothing in this request needs a live engine to
+        # establish the native error (no filters, no regex, no timestamp)
+        project, _review = _q1_release(tmp_path, status_context=False)
+        runtime = QueryRuntime.open_project(project)
+        try:
+            with pytest.raises(PlannerError) as caught:
+                asyncio.run(
+                    runtime.query_records(
+                        {
+                            "dataset": "orders.main.order_status",
+                            "fields": ["status"],
+                            "order": [],
+                            "limit": 10,
+                        }
+                    )
+                )
+            assert caught.value.code == "order_invalid"
         finally:
             runtime.con.close()
         return

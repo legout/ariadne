@@ -2597,31 +2597,24 @@ def _validate_regex(connection: Any, pattern: str, field: str) -> None:
         ) from exc
 
 
-def plan_records(
+def normalize_record_request(
     catalog: list,
-    request: dict,
-    connection: Any = None,
+    request: object,
     *,
     row_ceiling: int = MAX_RECORD_LIMIT,
-) -> RecordPlan:
-    """Compile ONE bounded single-dataset record selection (spec 0014 §3,
-    issue #57/S2): strict known fields/request keys, AND-combined typed
-    predicates, one optional declared timestamp interpretation (mandatory
-    semantics apply wherever the request orders that field), a required
-    deterministic order with explicit NULLS LAST and the selected-value tie
-    tuple, and a requested top-N within the ceilings. The plan's executed
-    statement carries the SAME-execution lookahead indicator — ``ROW_NUMBER``
-    over the deterministic order plus a ``LEAD`` existence boolean on the last
-    returned row — so the extra row never transfers payload cells and no
-    second mutable-source query or COUNT runs. No relationship traversal, no
-    aggregates, no caller SQL: the FROM identity is a built catalog entry and
-    every value binds as a planner-built literal (``connection`` is accepted
-    for the shared plan interface; a record selection runs no live audits).
-    Regex pattern validity is DuckDB's RE2 judgement, probed on
-    ``connection`` when supplied — the runtime always supplies its
-    connection, so the guaranteed validation point is covered; a
-    connection-less plan defers an invalid pattern to execution's own bind
-    refusal."""
+) -> dict:
+    """The PURE static Record-request normalization/validation — the native
+    ownership seam shared by :func:`plan_records` and the integrated
+    revision-3 request preflight (spec0032 §10.5 stage 1, Q1-F3): the exact
+    native structured checks in their exact order — mapping, request keys,
+    dataset identity, fields/types, catalog columns, the declared timestamp
+    interpretation, AND-combined filter literal shapes, the required
+    non-empty order and the bounded limit — with their structured codes,
+    messages and precedence, and with NO SQL construction, no connection
+    use and no live RE2 probing (regex validity stays a live-engine
+    judgement owned by the executing plan, which probes it after these
+    static checks). Returns the normalized head: entry, fields,
+    column_types, timestamp field/zone, parsed filters, order and limit."""
     if not isinstance(request, dict):
         raise PlannerError(
             "request_invalid",
@@ -2702,10 +2695,6 @@ def plan_records(
             ) from exc
 
     non_temporal, temporal = _parse_record_filters(request.get("filters"), entry, timestamp_field)
-    if connection is not None:  # the runtime always supplies its connection
-        for field, op, value in non_temporal + temporal:
-            if op == "regex":
-                _validate_regex(connection, value, field)
 
     raw_order = request.get("order")
     if not isinstance(raw_order, list) or not raw_order:
@@ -2747,6 +2736,61 @@ def plan_records(
             f"'limit' must be a positive integer of at most "
             f"{min(MAX_RECORD_LIMIT, row_ceiling)} (booleans are not integers)",
         )
+    return {
+        "entry": entry,
+        "fields": fields,
+        "column_types": column_types,
+        "timestamp_field": timestamp_field,
+        "zone": zone,
+        "zone_name": zone_name,
+        "non_temporal": non_temporal,
+        "temporal": temporal,
+        "order": order,
+        "limit": raw_limit,
+    }
+
+
+def plan_records(
+    catalog: list,
+    request: dict,
+    connection: Any = None,
+    *,
+    row_ceiling: int = MAX_RECORD_LIMIT,
+) -> RecordPlan:
+    """Compile ONE bounded single-dataset record selection (spec 0014 §3,
+    issue #57/S2): strict known fields/request keys, AND-combined typed
+    predicates, one optional declared timestamp interpretation (mandatory
+    semantics apply wherever the request orders that field), a required
+    deterministic order with explicit NULLS LAST and the selected-value tie
+    tuple, and a requested top-N within the ceilings. The plan's executed
+    statement carries the SAME-execution lookahead indicator — ``ROW_NUMBER``
+    over the deterministic order plus a ``LEAD`` existence boolean on the last
+    returned row — so the extra row never transfers payload cells and no
+    second mutable-source query or COUNT runs. No relationship traversal, no
+    aggregates, no caller SQL: the FROM identity is a built catalog entry and
+    every value binds as a planner-built literal (``connection`` is accepted
+    for the shared plan interface; a record selection runs no live audits).
+    Regex pattern validity is DuckDB's RE2 judgement, probed on
+    ``connection`` when supplied — the runtime always supplies its
+    connection, so the guaranteed validation point is covered; a
+    connection-less plan defers an invalid pattern to execution's own bind
+    refusal. The native static request validation is the shared pure seam
+    :func:`normalize_record_request` (single ownership, unchanged codes and
+    precedence); the live RE2 probe runs after those static checks."""
+    normalized = normalize_record_request(catalog, request, row_ceiling=row_ceiling)
+    entry = normalized["entry"]
+    fields = normalized["fields"]
+    column_types = normalized["column_types"]
+    timestamp_field = normalized["timestamp_field"]
+    zone = normalized["zone"]
+    zone_name = normalized["zone_name"]
+    non_temporal, temporal = normalized["non_temporal"], normalized["temporal"]
+    order = normalized["order"]
+    raw_limit = normalized["limit"]
+    if connection is not None:  # the runtime always supplies its connection
+        for field, op, value in non_temporal + temporal:
+            if op == "regex":
+                _validate_regex(connection, value, field)
 
     # ---- the deterministic order: requested keys, then the remaining selected
     # sortable scalar columns ascending NULLS LAST (ties disclosed in the plan)
