@@ -267,6 +267,182 @@ def _binding_inventory(captured, scope):
     return sorted(inventory, key=lambda item: (item["model"], item["metric"]))
 
 
+def _s3_destination_parts(destination: str) -> tuple[str, str]:
+    """Split one credential-free ``s3://bucket/prefix`` destination."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(str(destination))
+    if parts.scheme != "s3" or not parts.netloc or parts.username or parts.password:
+        raise ValueError(
+            "the integrated S3 destination must be a credential-free "
+            "s3://bucket/prefix URI"
+        )
+    bucket = parts.netloc
+    prefix = parts.path.strip("/")
+    if not prefix or any(segment in (".", "..") for segment in prefix.split("/")):
+        raise ValueError(
+            f"the integrated S3 destination needs a nonempty key prefix: {destination!r}"
+        )
+    return bucket, prefix
+
+
+def _declared_knowledge_profile(root: Path, name: str):
+    """The candidate's own declared Knowledge storage profile (env NAMES)."""
+    from ariadne import sources
+
+    registry = sources.load_registry(Path(root) / "ariadne.yaml")
+    profile = (registry.storages or {}).get(name)
+    if profile is None:
+        raise ValueError(
+            f"storage profile {name!r} is not declared in the candidate ariadne.yaml; "
+            "an S3 Knowledge destination requires its explicit declaration"
+        )
+    return profile
+
+
+def _require_scope_coverage(profile, destination: str) -> None:
+    """The declared scopes must contain the complete publication destination."""
+    if not any(
+        destination == scope.rstrip("/") or destination.startswith(scope)
+        for scope in profile.scopes
+    ):
+        raise ValueError(
+            f"storage profile {profile.name!r} scopes do not contain the complete "
+            f"publication destination {destination}"
+        )
+
+
+def _s3_transport(profile, binding, bucket: str):
+    """The obstore client plus the exact non-secret transport settings the
+    native effective-identity builder AND the client both honor (the SDK
+    CLI's documented ``from_url`` wiring: endpoint/region into the target
+    config, the HTTP scheme into ``allow_http``, and the declared native
+    URL style honored through obstore's documented option). Credentials come
+    only from the declared ENV NAMES and never enter the returned identity
+    view; the optional obstore dependency resolves only inside this call,
+    so standalone Core never imports it."""
+    import os
+
+    try:
+        import obstore  # pyright: ignore[reportMissingImports] — optional [s3] extra
+    except ImportError as exc:
+        raise ValueError(
+            "the S3 Knowledge transport needs the optional obstore dependency "
+            "(lumio-wiki[s3]); there is no local fallback"
+        ) from exc
+
+    def _value(variable: str, what: str) -> str:
+        value = os.environ.get(variable)
+        if value is None or not value.strip():
+            raise ValueError(
+                f"storage profile {profile.name!r}: environment variable {variable} "
+                f"({what}) is not set — the host process supplies declared values; "
+                "no credential fallback"
+            )
+        return value
+
+    config: dict[str, str | bool] = {
+        "aws_region": binding.region,
+        "aws_endpoint": binding.endpoint,
+        "aws_access_key_id": _value(profile.access_key_id_env, "access key id"),
+        "aws_secret_access_key": _value(profile.secret_access_key_env, "secret access key"),
+    }
+    if profile.session_token_env is not None:
+        config["aws_session_token"] = _value(profile.session_token_env, "session token")
+    if binding.url_style == "vhost":
+        config["virtual_hosted_style_request"] = True  # obstore-documented S3 option
+    client_options: dict[str, bool] = {"allow_http": not binding.use_ssl}
+    store = obstore.store.from_url(f"s3://{bucket}", config=config, client_options=client_options)
+    # The frozen identity view is credential-free: exactly the non-secret
+    # endpoint/region/transport keys the native identity builder reads.
+    target_config = {
+        key: value
+        for key, value in config.items()
+        if key not in ("aws_access_key_id", "aws_secret_access_key", "aws_session_token")
+    }
+    return store, target_config, client_options
+
+
+def _admission_s3_binding(root: Path, storage_profile, destination: str):
+    """Resolve the explicitly selected Knowledge profile at admission: the
+    candidate's declared env-NAMES profile, its resolved non-secret binding,
+    scope coverage of the exact destination and the native effective target
+    identity — every piece frozen into the composite consent (spec0029 r6)."""
+    from lumio_wiki.s3_location import S3Location
+
+    from ariadne import sources
+
+    profile = _declared_knowledge_profile(root, storage_profile)
+    binding = sources.resolve_binding(profile)  # env values; never a secret in output
+    bucket, prefix = _s3_destination_parts(destination)
+    _require_scope_coverage(profile, destination)
+    store, target_config, client_options = _s3_transport(profile, binding, bucket)
+    # The admission-side transport view stays unpinned: native preview and
+    # publication observe and advance the pointer through the same store.
+    location = S3Location(
+        store,
+        prefix,
+        store_uri=f"s3://{bucket}",
+        target_config=target_config,
+        client_options=client_options,
+    )
+    return profile, binding, location
+
+
+def _frozen_s3_runtime(manifest: dict):
+    """Rebuild the pinned S3 reader from the FROZEN Bound Release binding.
+
+    The declaration's env NAMES supply values in the executing process; the
+    resolved endpoint/region/URL style/scopes and the native effective target
+    identity must equal the frozen non-secret binding — any drift refuses
+    before store access, SQL or an analytical-registry fallback (r6)."""
+    from lumio_wiki.artifact_store import local_publication_metadata_store
+    from lumio_wiki.s3_location import S3Location
+
+    from ariadne import sources
+
+    name = manifest.get("storage_profile")
+    declaration = manifest.get("storage_declaration") or {}
+    if not isinstance(name, str) or not name or not isinstance(declaration, dict):
+        raise ValueError("the S3 Bound Release carries no frozen storage profile declaration")
+    profile = sources.profile_from_identity(name, declaration)
+    binding = sources.resolve_binding(profile)
+    frozen = manifest.get("storage_binding") or {}
+    if (
+        binding.endpoint != frozen.get("endpoint")
+        or binding.region != frozen.get("region")
+        or binding.url_style != frozen.get("url_style")
+        or sorted(binding.scopes) != sorted(frozen.get("scopes") or [])
+    ):
+        raise ValueError(
+            "the resolved storage endpoint/region/style/scopes do not match the "
+            "frozen Bound Release binding; a drifted endpoint refuses before any "
+            "store access or SQL"
+        )
+    identity = manifest.get("storage_target_identity")
+    if not isinstance(identity, str) or not identity:
+        raise ValueError("the S3 Bound Release carries no frozen target identity")
+    bucket, prefix = _s3_destination_parts(manifest["destination"])
+    store, target_config, client_options = _s3_transport(profile, binding, bucket)
+    # The reader is IMMUTABLY pinned to the admitted Published Version —
+    # never the moving pointer (the SDK verifier refuses an unpinned
+    # location before any read).
+    location = S3Location(
+        store,
+        prefix,
+        version=manifest["knowledge"]["published_version"],
+        store_uri=f"s3://{bucket}",
+        target_config=target_config,
+        client_options=client_options,
+    )
+    if location.effective_target_identity != identity:
+        raise ValueError(
+            "the effective S3 target identity does not match the frozen Bound "
+            "Release identity; refusing before any store access or SQL"
+        )
+    return location, local_publication_metadata_store(identity)
+
+
 def prepare_release(
     project,
     proposal,
@@ -277,6 +453,7 @@ def prepare_release(
     expected_current,
     scope,
     mapping_selections=(),
+    storage_profile=None,
 ):
     """Stateless composite preview; future receipts never enter its consent digest."""
     import msgspec
@@ -285,8 +462,17 @@ def prepare_release(
 
     from ariadne import admission, proposals
 
-    if not isinstance(destination, (str, Path)) or str(destination).startswith("s3://"):
-        raise ValueError("unsupported integrated S3 destination; local immutable publication only")
+    s3_destination = str(destination).startswith("s3://")
+    if s3_destination:
+        if not isinstance(storage_profile, str) or not storage_profile.strip():
+            raise ValueError(
+                "an S3 Knowledge destination requires the explicit storage-profile "
+                "selection (--context-storage-profile) of a declared profile"
+            )
+    elif storage_profile is not None:
+        raise ValueError("a storage-profile selection requires an s3:// destination")
+    if not isinstance(destination, (str, Path)):
+        raise ValueError("the publication destination must be a path or an s3:// URI")
     if (
         not isinstance(scope, (list, tuple))
         or not scope
@@ -301,23 +487,53 @@ def prepare_release(
     # A2 (spec0029 §1.3): the Bound Release advertises the scoped navigation
     # operations, so admitting one requires an SDK that actually provides
     # them — an older installed SDK refuses admission instead of being
-    # advertised with capabilities it lacks.
+    # advertised with capabilities it lacks. An S3 destination additionally
+    # needs the r4 private-admission navigation keyword (plan0029 r29).
     _navigation_gate()
+    support = copy.deepcopy(SUPPORT)
+    storage_fields: dict = {}
+    s3_location = None
+    if s3_destination:
+        _s3_navigation_capability()
+        profile, binding, s3_location = _admission_s3_binding(
+            root, storage_profile, str(destination)
+        )
+        support["storage"] = "s3-immutable"
+        storage_fields = {
+            "storage_profile": storage_profile,
+            "storage_binding": binding.record(),
+            "storage_declaration": profile.identity(),
+            "storage_target_identity": s3_location.effective_target_identity,
+        }
     require_validation_build(evidence, validation_build_identity(root))
     captured, errors = candidate(root, root / "knowledge", revision)
     if errors:
         raise ValueError("; ".join(errors))
     assert captured is not None
-    publication = native.preview_publication(
-        root / "knowledge", revision, destination, expected_current
-    )
+    if s3_destination:
+        publication = native.preview_publication(
+            root / "knowledge", revision, destination, expected_current, s3_location=s3_location
+        )
+    else:
+        publication = native.preview_publication(
+            root / "knowledge", revision, destination, expected_current
+        )
     if publication.blocking_diagnostics:
         raise ValueError("; ".join(publication.blocking_diagnostics))
+    if s3_destination:
+        from lumio_wiki.s3_publish import _GRAPH_REL, _serialize_graph_bytes
+
+        # Native S3 publication carries the graph only; local adds navigation indexes.
+        derived_content = {
+            _GRAPH_REL: _serialize_graph_bytes(captured.kb, captured.fingerprint)
+        }
+    else:
+        derived_content = native._derived_content(captured)
     manifest = build_published_manifest(
         revision,
         captured.fingerprint.digest,
         captured.content,
-        derived_content=native._derived_content(captured),
+        derived_content=derived_content,
         revision=revision,
         subtree=captured.subtree,
         source_reference_digest=captured.manifest_digest,
@@ -341,11 +557,12 @@ def prepare_release(
         "content_commit": revision,
         "selector": selected,
         "input_scopes": {"core": ".", "knowledge": selected["subtree"]},
-        "support": copy.deepcopy(SUPPORT),
+        "support": support,
         "core": core_binding(pseudo, evidence),
         "execution": evidence["execution_identity"],
         "visibility_scope": scope,
-        "destination": str(Path(destination).resolve()),
+        "destination": (str(destination) if s3_destination else str(Path(destination).resolve())),
+        **storage_fields,
         "knowledge": {
             "namespace": captured.manifest.namespace,
             "profile_version": 1,
@@ -387,33 +604,77 @@ class OverallAdmissionError(ValueError):
         super().__init__(f"{message}; observed overall-admission outcome: {json.dumps(outcome)}")
 
 
+def _s3_navigation_capability() -> None:
+    """The approved r4 ``metadata_store`` navigation keyword, or an explicit
+    refusal: an older local-only SDK generation must never be admitted or
+    advertised as S3-capable (plan0029 r29)."""
+    import inspect
+
+    for function in _navigation_gate():
+        parameter = inspect.signature(function).parameters.get("metadata_store")
+        if parameter is None or parameter.kind is not inspect.Parameter.KEYWORD_ONLY:
+            raise ValueError(
+                "the installed Lumio SDK provides no private-admission S3 "
+                "navigation (metadata_store); an older local-only SDK refuses "
+                "S3 publication instead of being advertised as S3-capable"
+            )
+
+
 def publish_and_verify(preview):
     import msgspec
-    from lumio_wiki.git_authoring import publish_revision
+    from lumio_wiki.git_authoring import S3PublicationRecord, publish_revision
 
     review = preview["publication_review"]
+    manifest = preview["manifest"]
+    s3_destination = str(review["destination"]).startswith("s3://")
     try:
-        receipt = publish_revision(
-            review["kb_path"],
-            review["revision"],
-            review["destination"],
-            review["expected_current"],
-            review["review_digest"],
-        )
+        if s3_destination:
+            # The SAME exact resolved location/private metadata store as the
+            # preview: rebuilt from the frozen binding, drift-checked again.
+            location, metadata_store = _frozen_s3_runtime(manifest)
+            receipt = publish_revision(
+                review["kb_path"],
+                review["revision"],
+                review["destination"],
+                review["expected_current"],
+                review["review_digest"],
+                s3_location=location,
+                metadata_store=metadata_store,
+            )
+        else:
+            receipt = publish_revision(
+                review["kb_path"],
+                review["revision"],
+                review["destination"],
+                review["expected_current"],
+                review["review_digest"],
+            )
     except Exception as exc:
-        from lumio_wiki.git_authoring import PublicationReceipt, _receipt_path
-        from lumio_wiki.location import PublishedFilesystemLocation
-
         outcome = {"integrated_activated": False, "publication_completion": "unverified"}
         try:
-            outcome["observed_native_current"] = PublishedFilesystemLocation(
-                review["destination"]
-            ).read_pointer()
-            path = _receipt_path(Path(review["destination"]), review["revision"])
-            if path.is_file():
+            if s3_destination:
+                from lumio_wiki.s3_publish import observe_current_pointer
+
+                location, metadata_store = _frozen_s3_runtime(manifest)
+                outcome["observed_native_current"] = observe_current_pointer(
+                    location.store, location.prefix
+                ).version
+                raw = metadata_store.get_publication_record(review["revision"])
                 outcome["publication_receipt"] = msgspec.to_builtins(
-                    msgspec.json.decode(path.read_bytes(), type=PublicationReceipt)
-                )
+                    msgspec.json.decode(raw, type=S3PublicationRecord)
+                )["receipt"]
+            else:
+                from lumio_wiki.git_authoring import PublicationReceipt, _receipt_path
+                from lumio_wiki.location import PublishedFilesystemLocation
+
+                outcome["observed_native_current"] = PublishedFilesystemLocation(
+                    review["destination"]
+                ).read_pointer()
+                path = _receipt_path(Path(review["destination"]), review["revision"])
+                if path.is_file():
+                    outcome["publication_receipt"] = msgspec.to_builtins(
+                        msgspec.json.decode(path.read_bytes(), type=PublicationReceipt)
+                    )
         except Exception:
             outcome["native_residue_inspection"] = "unavailable"
         raise OverallAdmissionError(str(exc), outcome) from exc
@@ -427,10 +688,16 @@ def publish_and_verify(preview):
 
 def open_context(manifest):
     from lumio_wiki.ariadne_context import ContextIdentity, open_published_context
-    from lumio_wiki.location import PublishedFilesystemLocation
 
     identity = dict(manifest["knowledge"])
     identity["scope"] = tuple(identity["scope"])
+    if str(manifest["destination"]).startswith("s3://"):
+        location, metadata_store = _frozen_s3_runtime(manifest)
+        return open_published_context(
+            location, ContextIdentity(**identity), metadata_store=metadata_store
+        )
+    from lumio_wiki.location import PublishedFilesystemLocation
+
     return open_published_context(
         PublishedFilesystemLocation(manifest["destination"], version=identity["published_version"]),
         ContextIdentity(**identity),
@@ -460,6 +727,20 @@ def verify_release(record, snapshot):
     if evidence is None or not evidence["ok"]:
         raise ValueError("Bound Release lacks native Core validation")
     validation = record.get("validation") or {}
+    s3_destination = str(manifest.get("destination") or "").startswith("s3://")
+    expected_support = copy.deepcopy(SUPPORT)
+    if s3_destination:
+        # The frozen S3 transport binding is part of the digest-protected
+        # identity; every piece must be present before any comparison.
+        expected_support["storage"] = "s3-immutable"
+        for key in (
+            "storage_profile",
+            "storage_binding",
+            "storage_declaration",
+            "storage_target_identity",
+        ):
+            if key not in manifest:
+                raise ValueError("incomplete Bound Release identity")
     for key in (
         "commit",
         "ok",
@@ -481,7 +762,7 @@ def verify_release(record, snapshot):
             and manifest["content_commit"] == record["commit"]
             and manifest["selector"] == selected
             and manifest["input_scopes"] == {"core": ".", "knowledge": selected["subtree"]}
-            and manifest["support"] == SUPPORT
+            and manifest["support"] == expected_support
             and manifest["core"] == core_binding(record, evidence)
             and manifest["execution"] == evidence.get("execution_identity") == execution_identity()
             and record["overall_confirmation"]["manifest_digest"] == manifest["digest"]
@@ -495,7 +776,6 @@ def verify_release(record, snapshot):
             and manifest["knowledge"]["subtree"] == selected["subtree"]
             and manifest["knowledge"]["published_version"] == record["commit"]
             and manifest["knowledge"]["scope"] == manifest["visibility_scope"]
-            and not manifest["destination"].startswith("s3://")
         )
     except (KeyError, TypeError, AttributeError) as exc:
         raise ValueError("incomplete Bound Release identity") from exc
@@ -603,15 +883,20 @@ def _navigation_gate():
 def _navigation_identity(manifest):
     """The exact pinned location/expected-identity pair of one Bound Release
     (the same verified binding ``open_context`` resolves: an immutable
-    version-pinned local location, never a moving pointer)."""
+    version-pinned location — local, or S3 rebuilt from the frozen storage
+    binding with its private metadata store — never a moving pointer)."""
     from lumio_wiki.ariadne_context import ContextIdentity
     from lumio_wiki.location import PublishedFilesystemLocation
 
     identity = dict(manifest["knowledge"])
     identity["scope"] = tuple(identity["scope"])
+    if str(manifest["destination"]).startswith("s3://"):
+        location, metadata_store = _frozen_s3_runtime(manifest)
+        return location, ContextIdentity(**identity), metadata_store
     return (
         PublishedFilesystemLocation(manifest["destination"], version=identity["published_version"]),
         ContextIdentity(**identity),
+        None,
     )
 
 
@@ -665,9 +950,13 @@ def list_context_pages(manifest, verified_native=None):
     from ariadne import context
 
     listing, _read, _search = _navigation_gate()
-    location, expected = _navigation_identity(manifest)
+    location, expected, metadata_store = _navigation_identity(manifest)
     known = dict(verified_native or {})
     now = context._assessment_now()
+    if metadata_store is None:  # local: exact pre-r4 call shape (SDK 0.4.1 compatible)
+        pages = listing(location, expected)
+    else:
+        pages = listing(location, expected, metadata_store=metadata_store)
     return [
         _list_row(
             page,
@@ -675,7 +964,7 @@ def list_context_pages(manifest, verified_native=None):
             now,
             disclose_native(known[page.path]) if page.path in known else {},
         )
-        for page in listing(location, expected)
+        for page in pages
     ]
 
 
@@ -688,8 +977,11 @@ def read_context_page(manifest, path):
     from ariadne import context
 
     _listing, read, _search = _navigation_gate()
-    location, expected = _navigation_identity(manifest)
-    page = read(location, expected, path)
+    location, expected, metadata_store = _navigation_identity(manifest)
+    if metadata_store is None:  # local: exact pre-r4 call shape (SDK 0.4.1 compatible)
+        page = read(location, expected, path)
+    else:
+        page = read(location, expected, path, metadata_store=metadata_store)
     return _full_page_fields(
         page, manifest, context._assessment_now(), disclose_native(page.native)
     )
@@ -705,10 +997,14 @@ def search_context(manifest, query, limit=10):
     from ariadne import context
 
     _listing, _read, search = _navigation_gate()
-    location, expected = _navigation_identity(manifest)
+    location, expected, metadata_store = _navigation_identity(manifest)
     now = context._assessment_now()
+    if metadata_store is None:  # local: exact pre-r4 call shape (SDK 0.4.1 compatible)
+        results = search(location, expected, query, limit=limit)
+    else:
+        results = search(location, expected, query, limit=limit, metadata_store=metadata_store)
     hits = []
-    for hit in search(location, expected, query, limit=limit):
+    for hit in results:
         hits.append(
             {
                 **_full_page_fields(hit.page, manifest, now, disclose_native(hit.page.native)),

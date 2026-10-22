@@ -727,6 +727,7 @@ def overall_review(
     expected_current="none",
     scope=("public",),
     confirm_mappings=None,
+    storage_profile=None,
 ):
     """Operator-only composite preview; no publication or activation."""
     from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
@@ -747,6 +748,7 @@ def overall_review(
         expected_current,
         scope,
         confirm_mappings or [],
+        storage_profile=storage_profile,
     )
 
 
@@ -940,6 +942,7 @@ def admit_revision(
                     previous_review["expected_current"],
                     overall_preview["manifest"]["visibility_scope"],
                     confirm_mappings or [],
+                    storage_profile=overall_preview["manifest"].get("storage_profile"),
                 )
                 if recomputed != overall_preview:
                     raise ValueError("composite review changed; new overall consent is required")
@@ -1437,6 +1440,11 @@ def main(argv: list[str] | None = None) -> int:
         "--by", default=None, help="operator identity recorded with the confirmation"
     )
     parser.add_argument("--context-destination", help="local immutable Lumio publication target")
+    parser.add_argument(
+        "--context-storage-profile",
+        default=None,
+        help="declared Knowledge storage profile required for an s3:// context destination",
+    )
     parser.add_argument("--context-expected-current", default="none")
     parser.add_argument("--visibility", action="append", default=None)
     parser.add_argument("--overall-digest", help="exact displayed composite confirmation digest")
@@ -1452,6 +1460,7 @@ def main(argv: list[str] | None = None) -> int:
                 expected_current=args.context_expected_current,
                 scope=args.visibility or ["public"],
                 confirm_mappings=args.confirm_mappings,
+                storage_profile=args.context_storage_profile,
             )
             if args.context_destination
             else None

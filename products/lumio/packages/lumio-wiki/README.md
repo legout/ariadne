@@ -28,7 +28,7 @@ For the *why* and the vision, read the domain docs — this README documents
   repository split).
 - [`docs/kb-format.md`](../../docs/kb-format.md) — canonical Compiled Page frontmatter reference.
 - [`docs/ariadne-context.md`](../../docs/ariadne-context.md) — optional pinned Ariadne Context Profile
-  consumption (exact identity, scoped local navigation, boundaries).
+  consumption (exact identity, scoped pinned navigation, boundaries).
 - [`docs/quickstart.md`](../../docs/quickstart.md) — canonical local/Git-first
   onboarding journey (empty project → reviewed publication → grounded search);
   the optional S3/Docker publication path lives in
@@ -264,7 +264,10 @@ application lives in a separate private repository (ADR-0025).
   (link, duplicate, synthesis, transitive impact), S3 published-version diff.
 - **Optional Ariadne Context Profile** — versioned native Metric/Policy
   annotations preserved through authoring and publication, read back through
-  immutable pinned published-context readers and scoped local navigation
+  immutable pinned published-context readers and scoped navigation (local in
+  the published release; pinned S3 with its explicit producer-side metadata
+  store is an unreleased source candidate, not in the published
+  lumio-wiki/ariadne-data pair)
   ([docs/ariadne-context.md](../../docs/ariadne-context.md)). Purely optional: the
   base SDK has no Ariadne dependency and adds no CLI command or service for
   it.

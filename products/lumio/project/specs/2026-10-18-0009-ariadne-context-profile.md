@@ -454,3 +454,47 @@ fallback. `resolve_term` remains a separate technical Reference slice.
 Capture: existing glossary terminology and ADR0030 ownership suffice; no new
 architectural decision. This is owner-approved API precision for already intended
 scoped navigation, not approval of a new service or technical profile kind.
+
+
+## Approved navigation amendment r4 — explicit S3 private admission
+
+**Written-design approval, 2026-10-21:** owner answered “Go ahead with the plan.”
+after the explicit offer to approve both amendments in `b91057c` and prepare
+the bounded execution plan. Companion to approved Ariadne spec0029 r6 for
+#79/#80, inspected source `6fb0455e3b24d153c8279bafc0ac13b39424fa64`.
+This additive amendment supersedes r3's local-only navigation restriction only
+when the explicitly required private S3 admission can be verified. Execution
+and environment authorization still require the bounded plan.
+
+Extend `list_published_context_pages`, `read_published_context_page` and
+`search_published_context_pages` with an optional keyword-only `metadata_store`
+argument, defaulting to `None`. Preserve existing positional arguments, search
+`limit`, return records and local behavior. Accept an exact-version-pinned
+`S3Location` only when its private native publication/admission records can be
+verified through the explicitly supplied store, using the same shared verifier
+as `open_published_context`. Do not introduce a new verifier or ranking engine.
+
+An S3 location without a pin or required private metadata store still refuses;
+there is no implicit current-pointer, local-directory or public-receipt fallback.
+All existing publication identity, admission cross-binding, scope-before-selection,
+canonical text/line endings/coordinates, evidence and immutability rules bind
+unchanged. A metadata-only match cites its actual canonical metadata passage.
+
+Private records keep the existing native Source Artifact Store boundary. This
+amendment adds no receipt transfer protocol, Source Approval, credential loading
+policy or public metadata objects. The Core caller constructs an explicitly
+configured location and legitimately provisioned metadata store. A read does
+not require publication credentials, and missing authorization is never empty
+success. Ordinary pages remain unprofiled content rather than Core-validated
+technical annotations.
+
+Acceptance extends the existing scoped-navigation scenario through native S3
+publication: the same authored visible/hidden pages, canonical passage oracles
+and v1/v2 isolation must hold; missing/foreign admission and unpinned location
+refuse. Reuse existing deterministic ranking and profile-S3 verification evidence
+where unchanged. Required real-service qualification and exact commands belong
+to the subsequently approved execution plan, not a speculative test matrix.
+
+This is an additive SDK transport extension under ADR-0030's existing direct-SDK
+and immutable-admission decisions; no new glossary term or architecture ADR.
+No implementation, tests, service setup, integration, push or release authorized.

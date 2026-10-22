@@ -64,7 +64,7 @@ manifest):
 
 | Area | Delivered behavior |
 | --- | --- |
-| Storage | Local immutable Published Versions only. An S3 destination or reader refuses explicitly; mutable/current/latest reads and plain directories refuse. |
+| Storage | Local immutable Published Versions (released). Optional S3 object storage is an **unreleased source candidate**: an `s3://` destination is admitted only with an explicitly selected declared storage profile, its verified private local admission records and the frozen transport binding; mutable/current/latest reads and plain directories always refuse. |
 | Profiles | `metric`, `policy` and `reference` only, checked across the entire captured KB. A `reference` profile is supported ONLY as a fully validated structured Reference (native Reference contract; authentic Core receipts for measured authority, native source-backed manual assertion eligibility, exact human mapping confirmation). Any other Ariadne profile kind anywhere in the KB refuses admission — even when no metric references it. Ordinary unprofiled pages stay KB content and are never exposed as Core-validated technical references. |
 | `get_metric` | Governed calculation with one exact Context Binding and the complete required Policy Closure, resolved in the same pinned snapshot before SQL. |
 | `query_metrics` | Multiple predefined metrics over the admitted multi-fact graph, complete per-metric Policy context, exact citations. |
@@ -108,6 +108,31 @@ standalone Lumio publication may remain after failed overall activation — that
 residue was a disclosed part of the confirmed operation, but it is not an
 active integrated release. Rollback is another explicit reviewed activation,
 not a permission grant or history rewrite.
+
+### Optional S3 Knowledge transport (unreleased source candidate)
+
+Git with a local checkout stays the standard operator path. The unreleased
+source candidate additionally accepts `--context-destination
+s3://bucket/prefix` together with `--context-storage-profile NAME`, where
+`NAME` is a `storages:` profile declared in the project `ariadne.yaml`:
+environment-variable NAMES plus literal scopes that must contain the complete
+publication prefix. Values (endpoint, region, credentials) come only from the
+declared variables in the executing process — never ambient AWS
+configuration, never a Git-stored secret, and never an analytical Source
+Approval (the Knowledge bucket is not an analytical source). The composite
+consent freezes the declaration, the resolved non-secret binding
+(endpoint/region/URL style/scopes) and the native effective target identity;
+serving rebuilds the reader from that frozen binding: a drifted endpoint or
+a missing profile value refuses before any remote store access, while
+missing or unavailable private admission records refuse before a usable
+Context or SQL (native verification may read the pinned public objects
+first). The exact private native admission records
+stay in the local metadata store of the admitting host — there is no public
+receipt object, no cross-host synchronization and no implicit second-host
+trust. A failed Core activation preserves the previous descriptor bytes and
+discloses the actual native publication residue. The published
+`lumio-wiki` 0.4.1 / `ariadne-data` 0.6.1 pair does not carry this
+behavior; it exists only in the unreleased source candidate.
 
 ## The Bound Release manifest
 

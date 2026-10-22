@@ -1935,3 +1935,170 @@ def test_scoped_published_navigation_includes_ordinary_pages(tmp_path):
     expected2 = _expected_identity(kb, destination, revision2)
     pinned2 = PublishedFilesystemLocation(destination, version=revision2)
     assert read_published_context_page(pinned2, expected2, aurora_path).content == aurora_v2_text
+
+
+def test_scoped_s3_navigation_requires_exact_private_admission(tmp_path):
+    """The scoped-navigation journey over a real native S3 publication (r4).
+
+    The r3 authored visible/hidden ordinary+profiled fixture is published
+    natively to an obstore MemoryStore with an explicitly supplied producer
+    private metadata store. Scope-safe list/read/search, hand-counted
+    canonical passage/CRLF/metadata coordinates, immutable v1 after v2 and
+    exact-identity admission hold unchanged; an unpinned location, a missing
+    metadata store, foreign private admission and a wrong expected identity
+    refuse. Expected values derive from the authored fixture and published
+    artifact bytes, never from observed navigation output.
+    """
+    # Future public SDK keyword (spec0009 navigation r4): called inside the
+    # test body so the unchanged SDK still collects this module.
+    import obstore
+    from lumio_wiki.ariadne_context import (
+        list_published_context_pages,
+        read_published_context_page,
+        search_published_context_pages,
+    )
+    from lumio_wiki.s3_location import MANIFEST_OBJECT
+
+    aurora_path = "references/aurora-care-guide.md"
+    hidden_path = "references/hidden-zephyr-notes.md"
+    policy_path = "policies/retail-return-policy.md"
+
+    repo = _init_repo(tmp_path)
+    # The same r3 authoring: profiled B from the golden fixture, visible CRLF
+    # ordinary A and hidden ordinary C authored via mutate.
+    kb = _write_kb(
+        repo,
+        pages={policy_path: policy_path},
+        mutate={aurora_path: _AURORA_TEXT, hidden_path: _HIDDEN_TEXT},
+    )
+    policy_b_text = (kb / policy_path).read_text() + _POLICY_ZEPHYR_APPEND
+    (kb / policy_path).write_text(policy_b_text)
+    revision = _commit(repo)
+
+    store = obstore.store.MemoryStore()
+    publishing = S3Location(store, "kb", store_uri="s3://test-bucket")
+    metadata = InMemoryArtifactStore()
+
+    def expected_identity(version: str) -> ContextIdentity:
+        # Independent oracle: hashlib over the exact manifest bytes the
+        # publication wrote to the store plus the authored KB manifest bytes.
+        manifest_raw = _get_bytes(store, f"kb/{version}/{MANIFEST_OBJECT}")
+        manifest = msgspec.json.decode(manifest_raw, type=S3Manifest)
+        return ContextIdentity(
+            namespace=NAMESPACE,
+            profile_version=1,
+            published_version=version,
+            fingerprint=manifest.fingerprint,
+            publication_manifest_digest=hashlib.sha256(manifest_raw).hexdigest(),
+            source_reference_digest=hashlib.sha256(
+                (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+            ).hexdigest(),
+            subtree="kb",
+            scope=PUBLIC_VISIBILITY_SCOPE,
+        )
+
+    def publish(version: str, expected_current: str):
+        review = preview_publication(
+            kb,
+            version,
+            "s3://test-bucket/kb",
+            expected_current,
+            s3_location=publishing,
+            metadata_store=metadata,
+        )
+        return publish_revision(
+            kb,
+            version,
+            "s3://test-bucket/kb",
+            expected_current,
+            review.review_digest,
+            s3_location=publishing,
+            metadata_store=metadata,
+        )
+
+    assert publish(revision, "none").activated is True
+    expected = expected_identity(revision)
+    pinned = S3Location(store, "kb", version=revision, store_uri="s3://test-bucket")
+
+    # --- Unpinned, missing, foreign and mismatched admission refuse. ---
+    with pytest.raises(UnadmittedInputError, match="no exact version pin"):
+        list_published_context_pages(publishing, expected, metadata_store=metadata)
+    with pytest.raises(UnadmittedInputError, match="producer-side metadata store"):
+        read_published_context_page(pinned, expected, aurora_path)
+    with pytest.raises(UnadmittedInputError, match="no completed private admission"):
+        search_published_context_pages(
+            pinned, expected, "zephyr", metadata_store=InMemoryArtifactStore()
+        )
+    wrong = msgspec.structs.replace(expected, fingerprint="0" * 64)
+    with pytest.raises(IdentityMismatchError, match="fingerprint"):
+        read_published_context_page(pinned, wrong, aurora_path, metadata_store=metadata)
+
+    # --- Scope-safe list and byte-exact reads through the pinned version. ---
+    metas = list_published_context_pages(pinned, expected, metadata_store=metadata)
+    assert [meta.path for meta in metas] == [policy_path, aurora_path]
+    assert [meta.kind for meta in metas] == ["policy", "unprofiled"]
+    assert all(meta.published_version == revision for meta in metas)
+    assert all(not hasattr(meta, "content") for meta in metas)
+    aurora = read_published_context_page(pinned, expected, aurora_path, metadata_store=metadata)
+    assert aurora.content == _AURORA_TEXT  # authored CRLF bytes survive the trip
+    assert aurora.body_start_line == 18
+    assert aurora.kind == "unprofiled"
+    assert aurora.citation == f"{NAMESPACE} entity:aurora-care-guide v{revision} {aurora_path}"
+    policy = read_published_context_page(pinned, expected, policy_path, metadata_store=metadata)
+    assert policy.content == policy_b_text
+    assert policy.kind == "policy"
+    # Public Knowledge stays the authored bytes: no private receipt or
+    # binding bytes ride along into the public page object (spec r4).
+    assert _get_bytes(store, f"kb/{revision}/{aurora_path}") == _AURORA_TEXT.encode()
+    with pytest.raises(UnadmittedInputError) as hidden_refusal:
+        read_published_context_page(pinned, expected, hidden_path, metadata_store=metadata)
+    assert "Hidden Zephyr" not in str(hidden_refusal.value)
+
+    # --- Visible-only search with hand-counted canonical passages. ---
+    hits = search_published_context_pages(pinned, expected, "zephyr", metadata_store=metadata)
+    assert [hit.page.path for hit in hits] == [policy_path, aurora_path]
+    assert all(hit.candidates_seen == 2 and hit.results_dropped == 0 for hit in hits)
+    aurora_hit = hits[1]
+    assert tuple(aurora_hit.matched_terms) == ("zephyr",)
+    assert aurora_hit.excerpt == "The zephyr lane stays open during storms."
+    assert (aurora_hit.line_start, aurora_hit.line_end) == (26, 26)
+    assert aurora_hit.section == "Ventilation"
+    (halcyon_hit,) = search_published_context_pages(
+        pinned, expected, "halcyon", metadata_store=metadata
+    )
+    assert tuple(halcyon_hit.matched_fields) == ("tag",)
+    assert halcyon_hit.excerpt == '  - "\\u0068alcyon"'
+    assert (halcyon_hit.line_start, halcyon_hit.line_end) == (8, 8)
+    assert halcyon_hit.section is None
+    (borealis_hit,) = search_published_context_pages(
+        pinned, expected, "borealis", metadata_store=metadata
+    )
+    assert tuple(borealis_hit.matched_fields) == ("summary",)
+    assert borealis_hit.excerpt == "summary: >-\r\n  borealis care\r\n  continues indoors"
+    assert (borealis_hit.line_start, borealis_hit.line_end) == (9, 11)
+    assert borealis_hit.excerpt in aurora.content
+
+    # --- A later publication never mutates the pinned v1 view. ---
+    aurora_v2_text = _AURORA_TEXT + "\n## Winter notes\n\nThe aurora dims near the equinox.\n"
+    (kb / aurora_path).write_text(aurora_v2_text)
+    revision2 = _commit(repo)
+    assert publish(revision2, revision).activated is True
+    assert (
+        read_published_context_page(pinned, expected, aurora_path, metadata_store=metadata).content
+        == _AURORA_TEXT
+    )
+    assert [
+        hit.page.path
+        for hit in search_published_context_pages(
+            pinned, expected, "zephyr", metadata_store=metadata
+        )
+    ] == [policy_path, aurora_path]
+    pinned2 = S3Location(store, "kb", version=revision2, store_uri="s3://test-bucket")
+    # The v2 pin refuses the v1 expected identity; latest is never substituted.
+    with pytest.raises(IdentityMismatchError, match="published_version"):
+        read_published_context_page(pinned2, expected, aurora_path, metadata_store=metadata)
+    expected2 = expected_identity(revision2)
+    aurora_v2 = read_published_context_page(
+        pinned2, expected2, aurora_path, metadata_store=metadata
+    )
+    assert aurora_v2.content == aurora_v2_text

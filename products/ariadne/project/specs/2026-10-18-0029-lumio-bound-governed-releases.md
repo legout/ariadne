@@ -254,6 +254,128 @@ Agent/Tau integration, a service, production-data access, historical numerical
 replay or a package release. Original full-target S3 acceptance remains deferred
 and must not be marked complete by these local results.
 
+## Approved revision 6 — optional S3 continuation for #79/#80
+
+**Written-design approval, 2026-10-21:** owner answered “Go ahead with the plan.”
+after the explicit offer to approve both amendments in `b91057c` and prepare the
+bounded execution plan. This approves the written S3 design, not an unprepared
+execution plan, service, integration or publication. It supersedes local-only
+restrictions only within this amendment; earlier local contracts remain.
+Current inspected source:
+`6fb0455e3b24d153c8279bafc0ac13b39424fa64`. This proposal grants no environment
+setup, source access, integration, push, release or private-data operation.
+
+### Purpose and choices
+
+Git authoring plus local sync remains the default. Add S3 as an optional
+publication/read transport for the same jointly admitted Content Commit and
+existing Metric, Policy, Reference and ordinary-page operations. This is Knowledge
+publication, distinct from analytical source storage and Source Approval.
+
+Recommended: reuse native Lumio S3 publication, its private operational records
+and the direct SDK reader. Extend the SDK navigation facade to accept the same
+explicit private metadata store as its existing S3 profile reader. This keeps
+one identity/admission verifier and one ranking implementation.
+
+A metrics-only S3 slice would be smaller but leave navigation and #80 unfinished.
+A separate local materialization/admission path would add a second authority
+boundary; it is not proposed. No Provider service or maintained KB mirror.
+
+### Proposed observable contract
+
+1. The existing operator preview/overall-confirmation flow accepts either a local
+   publication destination or a credential-free `s3://bucket/prefix`. There is
+   no second human admission command and no automatic activation on Git sync.
+   Publication/read/verification must use the same effective target identity.
+2. Bind bucket/prefix, effective endpoint, region and relevant transport settings
+   in the credential-free Bound Release identity. Reuse Core's existing named
+   Storage Profile declarations/environment references for S3 configuration;
+   explicitly select it with `--context-storage-profile NAME` alongside
+   `--context-destination s3://bucket/prefix` on the existing admission command.
+   Its declared scopes must contain the complete publication prefix; they grant
+   no analytical Source Approval. Local destinations do not select this flag.
+   Freeze both the declaration and resolved non-secret target in the preview.
+   Do not borrow an
+   analytical source approval, infer the first profile, or silently switch an
+   endpoint from ambient AWS configuration. Secret values never enter Git,
+   manifests, review output or diagnostics. Overall consent authorizes only its
+   displayed publication destination/side effects; it is not Source Approval.
+3. Use Lumio's native private publication metadata store, keyed by its effective
+   destination identity, for the operator's publication and runtime verification.
+   Keep receipts/private source bindings out of public Knowledge objects and
+   model-facing outputs. Missing private admission records refuse. This slice
+   does not introduce receipt synchronization, a public receipt endpoint or
+   automatic trust on a second host; another process needs the same legitimately
+   provisioned native private records. Reader credentials need not grant writes.
+4. Preview binds native expected-current state, complete Core binding, Visibility
+   Scope, target identity and exact SDK/build identity. Any relevant drift between
+   preview and confirmation requires a new preview/review as under the local
+   contract. Existing local records are not silently upgraded to new support or
+   new build identity; applicable build gates/new admission remain binding.
+5. Publication uses the native S3 immutable-version and conditional activation
+   behavior. Verify the completed exact publication and its private native
+   admission before atomically replacing Core's current descriptor last.
+   A failed write/open/verification or Core activation leaves the previous Core
+   descriptor unchanged. A completed standalone Lumio publication may remain;
+   disclose actual native outcome/residue without claiming distributed rollback.
+   Retrying requires the native expected-state/complete-binding checks, not blind
+   re-publication or overwriting an immutable version.
+6. Query sessions pin one exact Content Commit/Published Version. Later S3
+   current-pointer changes never change that session's view. Metric contexts,
+   multi-metric preflight, Reference confirmation/evidence and page navigation
+   retain all existing identity, visibility, response-size and source gates.
+   List/read/search use the producer facade; no Core YAML reader or fallback to
+   `context_layer/`, a mutable pointer or a different local publication.
+7. All currently delivered integrated operations retain their existing shapes,
+   complete Policy content, exact citations, passages and honest limits. Storage
+   capability disclosure distinguishes supported local and S3 transports. S3
+   transport does not enable record/ad-hoc queries, additional technical profile
+   kinds, Agent/Tau work, automatic background admission or historical SQL replay.
+
+### Proposed acceptance examples
+
+- A synthetic reviewed release A is admitted through real native S3 publication;
+  metric/Policy and ordinary-page/Reference reads name A's exact identity. The
+  existing 100+50 completed / 25 cancelled fixture still implies revenue 150
+  and completed count 2; reuse its existing independent oracle rather than
+  deriving expected results from the changed implementation.
+- Publish/admit B after opening session A: A retains its original version and
+  citations; a newly opened session sees B only after complete Core admission.
+- Missing private admission, a foreign endpoint/manifest/version, hidden required
+  Policy or unavailable required output refuses before governed SQL. Missing
+  credentials never cause local fallback or print secret values.
+- Interrupt required S3 completion or verification before Core activation: the
+  exact previous Core descriptor remains. If native Lumio activation completed,
+  report that real residue. A stale retry cannot activate mismatched state.
+- Source-free navigation never opens analytical sources; hidden ordinary pages
+  affect neither visible ranking/counts nor excerpts. Existing native ranking,
+  canonical CRLF/escaped-metadata passages and Core refusal ceilings remain.
+- Core standalone and the Git/local integrated workflow remain independently
+  usable. Base Core acquires no mandatory Lumio, S3 or adapter dependency.
+
+### Scope capture and handoff
+
+No vocabulary change: existing Bound Release, Published Version, Storage Profile,
+Visibility Scope and Source Approval keep their owning definitions. ADR-0026's
+SDK/atomic-last/no-distributed-transaction decisions remain applicable; this
+transport continuation needs no new architecture ADR. Companion producer spec
+0009 needs its explicit local-only navigation restriction amended first.
+
+#79 owns the producer/consumer S3 behavior and its failure/isolation proof.
+#80 owns accurate public guidance/wrappers, exact installed pairing and required
+native qualification for that behavior. Existing local delivery and releases
+are complete; their historical planning-only text is not current status.
+
+Before implementation, approve the bounded execution plan and reconcile the two
+canonical ticket bodies against these approved written amendments. That plan
+must assign exact minimal checks, existing mandatory repository gates, synthetic
+service ownership, Pi writer/reviewer identities and the failure/fix budget.
+A disposable SeaweedFS instance requires an explicit environment grant, which
+may be included in that plan approval;
+prior removed test containers are not an available or authorized service.
+Planning-contract v1; installed skill provenance unknown. No implementation,
+service, publication or tracker change has been performed for this proposal.
+
 ## 2. One authored revision
 
 Ariadne's project is the Git worktree root; Lumio's Knowledge Base is the

@@ -1,5 +1,157 @@
 # Implementation plan 0029: Git/local-first Lumio integration
 
+## Approved execution revision 29 — optional S3 completion of #79/#80
+
+**Owner approval, 2026-10-21:** “Ich genehmige Plan 0029 Revision 29 in bacbc32
+einschließlich Ticket-Aktualisierung, isolierter Pi-Umsetzung und disposable
+SeaweedFS 4.45 über Docker mit synthetischen Testdaten. Keine Integration, kein
+Push oder Veröffentlichung.” Exact approved proposal:
+`bacbc32cfb70ebb3b6e50228dcb56e446bd319c0`. Written Core r6 / producer navigation r4
+amendments were approved with “Go ahead with the plan.” after proposal `b91057c`.
+Older revisions below are history, not current execution instructions. Contract:
+planning-contract v1; installed provenance unknown. Only the named isolated work,
+current ticket sections and disposable environment below are authorized.
+
+### Goal, sources and boundaries
+
+Finish optional S3 Knowledge transport through the existing native SDK,
+operator admission and public surfaces. Git/local remains the standard and
+both products remain independently installable. Behavior belongs to
+[Core spec0029 approved r6](../specs/2026-10-18-0029-lumio-bound-governed-releases.md)
+and [producer spec0009 navigation r4](../../../lumio/project/specs/2026-10-18-0009-ariadne-context-profile.md),
+under [ADR-0026](../adr/0026-lumio-sdk-bound-governed-releases.md) and producer
+ADR-0030. Canonical tasks: [#79](https://github.com/legout/ariadne/issues/79)
+(behavior and producer dependency), [#80](https://github.com/legout/ariadne/issues/80)
+(public surfaces and qualification). Before dispatch, parent prepares and updates
+their current task sections to this approved revision; retain historical evidence.
+This proposed map must not be used alongside contradictory old ticket grants.
+
+Inspected baseline: `main` = `6fb0455e3b24d153c8279bafc0ac13b39424fa64`.
+No source/code/services changed since that inspection. Freeze the approved source
+commit before dispatch; its concrete SHA belongs in parent run state and briefs,
+not a self-referential placeholder in this file. Stop if main moved materially.
+
+Capture: existing glossary terms suffice; no terminology changes. Native SDK,
+private operational receipts and atomic-last Core activation are already accepted
+architecture. No new ADR or service. Receipt synchronization/multi-host provisioning,
+private app, Agent/Tau, ad-hoc/record queries and new technical profile kinds are
+excluded. No software target integration, push, release/tag or issue closure.
+
+### Ownership and host
+
+Supervised, current verified BB local host; use its Pi bridge with physically
+bound registered worktrees under `/home/volker/.local/state/worktrees/`.
+One sequential Pi writer: `zai/glm-5.3/high`; independent read-only Pi reviewer:
+`openai-codex/gpt-6.1-sol/high`. Exact installed model/thinking catalog and workspace
+binding must be verified before creation; no alias, alternate host or fallback.
+Current tool observations: uv0.13.3, CPython3.14, Docker server27.4.1. No Agent/Tau env.
+The parent prepares run-owned environments; no worker dependency installation.
+Children do not delegate, run memo or write shared memory. Parent owns oracle
+inspection, failure dispositions, acceptance and candidate assembly.
+
+### Canonical task ownership and sequence
+
+| Order | Canonical task | Consumes / produces | Review boundary |
+| --- | --- | --- | --- |
+| 1 | [#79: SDK S3 navigation](https://github.com/legout/ariadne/issues/79) | Approved producer r4 → frozen SDK navigation contract, native V-SDK evidence and guidance | Immediate independent review before consumer |
+| 2 | [#79: Core S3 admission/session](https://github.com/legout/ariadne/issues/79) | Accepted SDK → full native Core publication/admission and pinned-session journey, V-S3 | Final candidate review includes Core behavior |
+| 3 | [#80: surfaces and qualification](https://github.com/legout/ariadne/issues/80) | Accepted producer + Core candidate → coherent public guidance, V-Core, exact installed identities | One final independent assembled review, settled SDK reused |
+
+The current r29 sections of these two issues own exact task bodies/owned files;
+the parent transfers the approved definitions verbatim before dispatch. This
+plan owns shared order, readiness, validation budget and environment constraints.
+Historical task definitions below refer to old local execution and are not a
+second editable task store for r29.
+
+### Assigned invocation budget and required checks
+
+No baseline replay: use main `6fb0455`'s green CI39641879894/39641877252 and adapter
+CI39641879950/39641877156 for unchanged shared layout, packaging and local evidence.
+Changed SDK/Core runtime requires the following native postchecks, each once.
+These are three planned pytest invocations, not hidden per-layer passes:
+
+**V-SDK**, from `products/lumio`, source-bound qualified environment:
+
+```sh
+uv run --locked pytest -q -n 4
+```
+
+**V-S3**, from repo root, after accepted SDK + coherent Core implementation, against
+only the separately approved disposable synthetic service:
+
+```sh
+uv run --locked pytest -q \
+  integration/tests/lumio_s3_context.py \
+  products/lumio/tests/test_onboarding_journey.py \
+  products/lumio/packages/lumio-wiki/tests/*s3_compat.py \
+  products/lumio/packages/lumio-lancedb/tests/*s3_compat.py
+```
+
+**V-Core**, from `products/ariadne/packages/ariadne-data`, exact accepted SDK and
+Core candidate bound in the source qualification env; never the stale canonical
+user `.venv`. The two explicit local modules and native suite are the existing
+CI selection; the new S3 module already ran in V-S3, no duplicate journey:
+
+```sh
+$CORE_PY -m pytest -q \
+  --ignore=tests/test_s3_lakehouse.py \
+  --ignore=tests/test_s3_storage_access.py \
+  --ignore=tests/test_s3_storage_profiles.py \
+  "$CANDIDATE/integration/tests/lumio_metric_mvp.py" \
+  "$CANDIDATE/integration/tests/lumio_local_context.py" tests
+```
+
+Reuse the root shared-only25-pass layout proof unless root test/config/manifest
+inputs change; then stop to assign affected checks before execution. No `-n auto`.
+Run native `uv lock --check`, `uv sync --locked` and component-configured Ruff on
+changed trees, with logs. Do not regenerate dependencies or bump versions. Parent
+prepares compatible run-owned environments from existing tooling/locked inputs;
+missing tools/cache/runtime is a blocker, not silent provisioning of another stack.
+Native builds/verifiers/walkthroughs above may spawn their documented subprocesses;
+record/disclose actual commands rather than claiming only three commands total.
+
+Any failed assigned invocation freezes that lane: preserve the true exit/log/JUnit
+and investigate only its cause. No automatic retry, broader suites, new skips/xfails,
+weakened oracles or relabeling an old failure. Parent may authorize one small
+in-scope fix and one affected recheck per validation/review unit; unused green
+checks are reused. One fix pass and one delta review; unresolved material findings
+return to the owner. No new round from candidate assembly or publication.
+
+### Explicit approved environment grant
+
+One disposable SeaweedFS4.45 instance through the existing Docker27.4.1 runtime,
+CI-pinned image
+`chrislusf/seaweedfs@sha256:fc9f76fa993ad69966ffeb2f65d0318fcae39c6f8e20cf68ef7b3a5cb97769e5`
+(cached arm64 image observed). Unique owned name and temporary private storage;
+loopback-only unused S3 port, CI's synthetic bucket/labelled admin-secret test
+credentials. Scrub inherited AWS/LUMIO/profile credential values and populate only
+named synthetic test bindings. No real buckets, retained containers, production
+credentials, new runtime, public listener, privileged mounts or unrelated service
+restart. Stop/remove only this owned instance after its evidence consumers finish;
+retain logs/artifacts. Worker cannot start/stop services; parent owns lifecycle.
+The grant includes normal run-owned qualification environments/build installs,
+not canonical user environments, global package upgrades or general host setup.
+
+### Producer-first release boundary and completion
+
+Current `.github/workflows/publish.yml` deliberately pairs published SDK0.4.1;
+it must not silently substitute an unreleased workspace wheel. Leave its pin and
+release triggers unchanged in this implementation. S3 source/installed candidate
+qualification uses the exact newly built accepted SDK, and cannot be called a
+published-pair proof. A separately authorized SDK release must precede a future
+Core S3 release; only then may a separate release change pin the actual public
+SDK URL/SHA and verify that public pair. No invented future version/artifact.
+
+Completion is a reviewed, parent-accepted isolated source candidate, truthful
+capability/docs/CI, exact wheels plus actual V-SDK/V-S3/V-Core evidence and honest
+limits. Ticket closure and target integration/push remain separate decisions.
+#76 remains the coordination parent, #18/#52 separate unrelated work. No work is
+authorized before the current ticket amendments and source commit are frozen.
+This owner-approved execution map grants only its named isolated work; integration,
+push, publication and closure remain separately gated.
+
+---
+
 | | |
 | :--- | :--- |
 | **Status** | **Revision 28 — approved integration, push and cleanup, 2026-10-21.** Owner approved normal source integration/push and scoped cleanup for accepted Core2547c8a and SDK26a633b. Earlier isolation restrictions and exhausted test budgets remain historical; no package release or new behavior is authorized. |

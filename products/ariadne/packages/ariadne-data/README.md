@@ -44,7 +44,11 @@ Ariadne in this shared repository; neither package requires the other.
 describe the optional integrated context binding: one shared Content Commit, an
 operator-confirmed overall admission activating a local immutable Bound Release,
 strict `metric`/`policy`/`reference` profiles, full required Policy context on governed
-answers, and source-free navigation over the pinned published pages. Git is the
+answers, and source-free navigation over the pinned published pages. An optional S3
+Knowledge transport (`--context-destination s3://…` plus a declared
+`--context-storage-profile`) exists only in the unreleased source candidate — the
+published 0.6.1/0.4.1 pair carries the local transport, and its private native admission
+records stay local to the admitting host. Git is the
 standard transport and sync never activates a release — `ariadne status`
 reports the local Git HEAD separately from the admitted release (see
 [the local Git how-to](../../../../integration/docs/how-to/lumio-git-local.md)); the SDK stays an optional
