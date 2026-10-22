@@ -142,6 +142,10 @@ _Avoid_: merged codebase, published version, shared draft store
 An explicit association between an identified metric, its knowledge Entity and its required Policies in one knowledge snapshot. It grants neither source access nor calculation or join authority.
 _Avoid_: title match, Contract Binding, inferred dependency
 
+**Policy Binding**:
+The versioned consumer-owned association naming one required Policy's subject, its applicable operations and, when executable, the existing Core check that actually enforces it. Authored in the integration selector and captured by admission; explanatory records prove no SQL equivalence and no binding grants new authority.
+_Avoid_: Policy rule, narrative filter, producer applicability field
+
 **Policy Closure**:
 The complete finite set of required Policies reached through explicit Policy dependencies for a metric in one knowledge snapshot. Provenance citations and navigation links are not Policy dependencies.
 _Avoid_: all linked pages, search results, source closure
@@ -153,6 +157,10 @@ _Avoid_: user role, authored permission, visibility hierarchy
 **Bound Release**:
 An immutable, human-admitted association of exact knowledge, analytics, evidence and execution identities. It is distinct from a package release and does not freeze mutable business data.
 _Avoid_: latest, software version, historical answer cache
+
+**Support Revision**:
+The per-admission revision of the integrated consumer capability table (profile kinds, operations), declared by the authored integration selector and recorded in a Bound Release. Older revisions stay valid for their previously qualified operations under their admitted build identity — capability-table evolution never waives existing build, content or approval checks; capabilities beyond a recorded revision refuse on that release, and expansions require a new admission.
+_Avoid_: SDK version, global feature flag, automatic upgrade
 
 ### Querying
 

@@ -1,6 +1,6 @@
 # Specification 0029: Lumio-bound governed releases
 
-**Approved follow-up design — 2026-10-22:** [specification 0032 revision 1](2026-10-22-0032-integrated-query-and-profile-expansion.md) defines future integrated detail/record/Ad-hoc operations and Dataset/Table/Computation consumption, complete source Context coverage, explicit existing-rule enforcement and evidence lifecycle. It scopes the corresponding deferred target below; it does not enable these capabilities in existing code/admissions or qualify a release. Earlier delivery amendments and their evidence remain unchanged. Owner authorized written Spec/ADR capture only, no implementation.
+**Approved follow-up design — 2026-10-22:** [specification 0032 revision 2](2026-10-22-0032-integrated-query-and-profile-expansion.md) defines future integrated detail/record/Ad-hoc operations and Dataset/Table/Computation consumption, complete source Context coverage, explicit existing-rule enforcement and evidence lifecycle, with the exact §10 contracts grounded in the inspected current source. It scopes the corresponding deferred target below; it does not enable these capabilities in existing code/admissions or qualify a release. Earlier delivery amendments and their evidence remain unchanged. Owner authorized written Spec/ADR capture, then the exact-contract completion; no implementation.
 
 | | |
 | :--- | :--- |
@@ -690,3 +690,49 @@ design-document bytes are retained in the separately approved archive
 `62bb41c36ce7afdfce9fbfe8f25ac45b7fa62a79`; their removed worktree is not a runtime
 dependency. The exact accepted producer pin remains required; no floating main
 or public 0.2.0 version label substitutes for it.
+
+## Approved expansion contract precision — 2026-10-22
+
+Owner-approved amendment for the specification 0032 expansion (its §10 owns
+the exact contracts; this section records only the scoped changes to this
+specification's owned artifacts):
+
+- `context_integration.yaml` (§2) gains exactly two optional top-level
+  keys: `support_revision` (an exact integer — the authored revision
+  opt-in) and a `policy_bindings` block with its own exact version. The five
+  existing keys and the file's `version: 1` semantics are unchanged.
+  Absence of both keys is the legacy revision-1 configuration (an explicit
+  `support_revision: 1` is the same revision; `policy_bindings` is forbidden
+  there); revision ≥2 requires both. No implicit higher revision arises from
+  block presence alone; unknown, newer-than-implemented or unimplemented
+  revisions, boolean values and mismatched fields refuse. #83 implements
+  revisions 1–2; #84 adds 3.
+- The Bound Release manifest (§4) gains two digest-bound, admission-captured
+  fields: `support_revision` (the exact integer declared by the reviewed
+  selector) and `policy_bindings` (the validated binding inventory
+  from the reviewed Content Commit); the selector source and stored manifest
+  must agree exactly, and a legacy manifest missing both fields is
+  interpreted as revision 1 without rewriting its bytes or digest.
+- Support verification (§4/§6) becomes per-revision table equality: a stored
+  manifest's support set must exactly equal the frozen table **for its
+  recorded revision**, never the currently newest set — capabilities beyond
+  a recorded revision refuse on that release, and revisions unknown to the
+  installed consumer refuse. Capability-table evolution alone never
+  invalidates a matching qualified revision and never waives any existing
+  build/content/approval/scope check (including exact execution-identity
+  equality); changed execution content retains its existing
+  revalidation/re-admission requirement, and a re-admission may stay at the
+  previous revision rather than force profile backfill. This implements
+  §1.2/§7's already-approved migration semantics (no in-place support
+  acquisition, no automatic backfill) and supersedes reading those sections
+  as global support-set equality.
+- Revision staging: revision 2 (profile-expanded, #83) adds the
+  `dataset, table, computation` profile kinds and requires `policy_bindings`;
+  the three query operations remain unsupported on revision-2 admissions.
+  Revision 3 (query-expanded, #84) adds them with specification 0032
+  §10.4/§10.5. The producer schema, SDK and companion contracts are
+  unchanged; Dataset/Table/Computation envelopes remain the producer-native
+  spec 0009 §2 shapes.
+
+No implementation, integration or publication is authorized by this
+amendment; #83/#84 execution follows their own approvals.

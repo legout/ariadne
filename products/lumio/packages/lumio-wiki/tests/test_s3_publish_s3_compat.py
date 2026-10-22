@@ -49,8 +49,7 @@ from lumio_wiki.s3_publish import (  # noqa: E402
 from lumio_wiki.s3_publish import (  # noqa: E402
     _activate_existing_s3_version as _rollback_s3_version,
 )
-
-from tests._s3_fixtures import (  # noqa: E402
+from products.lumio.tests._s3_fixtures import (  # noqa: E402
     publish_legacy_s3_version as _publish_s3_working_tree,
 )
 

@@ -25,6 +25,17 @@ ariadne-authoring refresh-schema --project . --proposal ID \
 
 Use the current proposal revision. A refresh edits a candidate; it does not validate, review, or admit it. An identical refresh is a no-op. Review generated facts and retain authored column meanings; a changed or removed column is not treated as a guessed rename.
 
+In an integrated project whose selector opted into support revision 2, the
+same refresh writes the generated technical pages as producer-native
+Dataset/Table profile pages inside `knowledge/tables/` and
+`knowledge/datasets/` — bound by exact `core_ref` resource identity,
+validated with the whole captured KB, and served through the pinned SDK.
+Curated descriptions, authored native metadata and page bodies survive
+regeneration; the legacy `context_layer` route is unchanged for revision-1
+and standalone projects. These revision-2 contracts are implemented in this
+repository's source candidate; published package pairs have not acquired
+them.
+
 ## Resolve a business term
 
 Query the admitted project when answering an analyst question, or the selected proposal while authoring:

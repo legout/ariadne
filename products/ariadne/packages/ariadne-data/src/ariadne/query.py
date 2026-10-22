@@ -691,6 +691,290 @@ class _QueryRuntimeSession(_DiscoverySession):
         query_results.finalize_response(self._limits, envelope, response_measure=self._measure)
         return resolved
 
+    def _input_context_preflight(
+        self,
+        operation: str,
+        resources: list[str],
+        *,
+        check_targets: dict[str, set[str]] | None = None,
+    ) -> dict:
+        """Q1/#84 (spec0032 §§3–4, §10.2, §10.4–§10.5 stage 4): assemble the
+        complete ``input_context`` of one revision-3 query operation from the
+        pinned, verified Bound Release — every consumed physical resource's
+        full published Table view bound by exact ``core_ref`` identity, the
+        applicable Policy inventory with full page views, native signals and
+        evidence caveats — then prove the COMPLETE mandatory Context alone
+        fits the host budget through the existing public accounting seam,
+        exactly as ``_sdk_metric_contexts`` does. A missing/hidden/ambiguous
+        Table view, an unavailable applicable Policy page or a Context that
+        cannot fit refuses here, BEFORE any planner, live audit, bind or
+        SELECT work — never a fallback and never a partial answer.
+        ``check_targets`` (review F2) names, per §10.2 catalog check id, the
+        exact consumed-resource identities that the check ACTUALLY attests
+        on this operation's unchanged live path — an executable binding whose
+        declared target lies outside its check's attested inventory refuses
+        here instead of executing with an unattested obligation."""
+        assert self._managed is not None
+        from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+        value = lumio_context.input_context(
+            self._managed["bound_release"],
+            self._context_snapshot,
+            operation,
+            resources,
+            check_targets=check_targets,
+        )
+        envelope = {"input_context": value}
+        query_results.account_rows(self._limits, envelope, [])
+        query_results.finalize_response(self._limits, envelope, response_measure=self._measure)
+        return value
+
+    def _detail_static_resources(self, graph: SemanticGraph, request: object) -> list[str] | None:
+        """Q1/#84 (spec0032 §10.5 stage 3): the consumed physical tables of a
+        detail request — the requested root dataset plus every dataset its
+        requested lookup fields reach — resolved by STATIC traversal of the
+        admitted graph's proven edges using the planner's own unique-forward
+        lookup-path resolver. Nothing is granted and no live check runs;
+        ``plan_detail``'s own proofs (stage 5) still refuse unproven paths.
+        Returns ``None`` for any request that does not statically resolve
+        (malformed, unknown/ambiguous field, unproved or child-side path):
+        the planner's structured refusal then owns it unchanged."""
+        from ariadne.planner import _lookup_path  # pyright: ignore[reportPrivateUsage] — drift
+
+        if not isinstance(request, dict) or set(request) - {"dataset", "fields"}:
+            return None
+        dataset = request.get("dataset")
+        fields = request.get("fields")
+        # F3: type checks precede any hashing or graph membership — the
+        # native planner's structured request_invalid/unknown_dataset
+        # refusals own every malformed shape (this seam only defers)
+        if not isinstance(dataset, str) or dataset not in graph.datasets:
+            return None
+        if not isinstance(fields, list) or not fields:
+            return None
+        if not all(isinstance(field, str) for field in fields):
+            return None
+        datasets = [dataset]
+        for field in dict.fromkeys(fields):
+            if field in graph.datasets[dataset].fields:
+                continue
+            owners = sorted(name for name, node in graph.datasets.items() if field in node.fields)
+            if len(owners) != 1:
+                return None
+            path = _lookup_path(graph, dataset, owners[0])
+            if path is None:  # unproved/child-side: the planner's native refusal
+                return None
+            for edge in path:
+                if edge.to_dataset not in datasets:
+                    datasets.append(edge.to_dataset)
+        resources: list[str] = []
+        for name in datasets:
+            for resource in self._dataset_resources(graph.datasets[name].source):
+                if resource is None:
+                    return None
+                if resource not in resources:
+                    resources.append(resource)
+        return resources
+
+    def _records_static_resource(self, request: object) -> str:
+        """Q1/#84 (spec0032 §10.5 stage 1+3; review F3 shared seam): the
+        request's NATIVE static normalization/validation —
+        ``normalize_record_request``, the exact pure checks and structured
+        codes ``plan_records`` itself applies (mapping, request keys, dataset
+        identity, fields/types/columns, the declared timestamp, filter
+        literal shapes, the required order and the bounded limit, under the
+        caller's own row ceiling) — runs FIRST and owns every malformed
+        request BEFORE the mandatory Context preflight; the validated
+        request's one catalog dataset then feeds its canonical resource to
+        the Context lookup. No SQL is constructed, no connection is touched
+        and no live RE2 probing happens here."""
+        from ariadne.planner import normalize_record_request
+
+        return normalize_record_request(
+            self.catalog, request, row_ceiling=self._limits["max_rows"]
+        )["entry"]["resource"]
+
+    def _adhoc_static_resources(self, params: dict) -> tuple[list[str], list[str]]:
+        """Q1/#84 (spec0032 §§3, §10.5 stage 3; review F1/F2): EVERY physical
+        dependency of the ad-hoc definition — the whole normalized nested
+        SOURCE tree AND the whole normalized EXPRESSION tree, including
+        SEMI/ANTI right-hand tables, nested CTE/derived physical origins and
+        scalar/predicate subquery reads — extracted AFTER the static
+        IO-authority check through the installed SQLGlot Scope's own
+        physical origins (``_scope_physical_read_refs``, no parallel parser)
+        and matched against the built catalog by exact qualified identity.
+        Each fragment is interpreted EXACTLY as the compiler and the
+        IO-authority boundary interpret it, normalized to a SELECT-rooted
+        statement: a SELECT/WITH fragment passes through, a bare source
+        becomes ``SELECT * FROM <source>`` and an expression becomes
+        ``SELECT <expression>``. Returns ``(every physical read, the source's
+        own physical reads)`` — the complete inventory for Context coverage
+        and the source-only inventory that names the ACTUAL target of the
+        unchanged grain check on the live path. An integrated operation NEVER
+        bypasses mandatory Context through extraction failure: an unparseable
+        fragment or an unresolved physical identity refuses here, before the
+        grain guard (a data read), compile, bind or any execution; only a
+        provably tableless EXPRESSION (no physical read of its own)
+        contributes no resource."""
+        from ariadne.sql_authority import (  # pyright: ignore[reportPrivateUsage] — drift
+            _SOURCE_PREFIX_RE,
+        )
+
+        catalog = self._catalog_resource_map()
+        everything: list[str] = []
+        source_only: list[str] = []
+        for kind, fragment in (("source", params["source"]), ("expression", params["expression"])):
+            text = fragment.strip()
+            if _SOURCE_PREFIX_RE.match(text):
+                normalized = text
+            elif kind == "source":
+                normalized = f"SELECT * FROM {text}"
+            else:
+                normalized = f"SELECT {text}"
+            try:
+                sqlglot.parse_one(normalized)
+            except Exception as exc:
+                raise ValueError(
+                    f"the ad-hoc {kind} has an unresolvable physical dependency "
+                    f"({type(exc).__name__}) — the integrated Context preflight "
+                    "refuses before the grain guard, compile, bind or any "
+                    "execution (spec0032 §3)"
+                ) from exc
+            for ref in _scope_physical_read_refs(normalized):
+                resource = None if ref is None else catalog.get(ref)
+                if resource is None and ref is None and kind == "expression":
+                    continue  # provably tableless expression: no physical read
+                if resource is None:
+                    raise ValueError(
+                        f"the ad-hoc {kind} reads physical relation {ref!r} which "
+                        "resolves to no exact built-catalog identity — the "
+                        "integrated Context preflight refuses before the grain "
+                        "guard, compile, bind or any execution (spec0032 §3)"
+                    )
+                if resource not in everything:
+                    everything.append(resource)
+                if kind == "source" and resource not in source_only:
+                    source_only.append(resource)
+        return everything, source_only
+
+    def _attest_bound_checks(self, plan, graph) -> None:
+        """#83 (spec0032 §10.2): an executable policy binding of this admission
+        is satisfied only by the ACTUAL executed check for the consumed
+        subject — a plan audit reporting not-run establishes nothing, and
+        authored generated/verified stamps on pages are never proof. F3: the
+        consumed subjects are the COMPLETE transitive dependency closure of
+        each requested definition — the existing planner ``_closure`` walker
+        (branch metrics alone miss the post-aggregate/cross-fact intermediate
+        definitions that carry owner=None), never requested-only — and a
+        binding's declared physical dependencies are
+        proven only by the PASSED relationship-audit records of this plan's
+        edges incident to a dataset of the dependency that actually
+        PARTICIPATES in the consumed lineage (D3: one physical Resource may
+        back several semantic datasets — an unrelated catalog alias never
+        replaces consumed lineage) — a passing
+        audit on unrelated branches is not proof. The obligation must be
+        established before any result SQL executes; get_metric bindings stay
+        explanatory in this revision (their gates are invariants only)."""
+        if self._context_snapshot is None or self._managed is None:
+            return
+        manifest = self._managed.get("bound_release") or {}
+        bindings = (manifest.get("policy_bindings") or {}).get("bindings") or []
+        if not bindings:
+            return
+        from ariadne.planner import _closure
+
+        consumed = set()
+        for requested in plan.metrics:
+            # F3 completeness: the actual transitive dependency closure of
+            # each requested definition — the EXISTING planner walker, which
+            # also reaches post-aggregate/cross-fact intermediates (owner=None
+            # members) that never appear inside a branch's aggregated metrics
+            for name in _closure(graph, requested):
+                meta = self._metrics.get(name)
+                if meta is None:
+                    continue
+                consumed.add(f"{meta['model']['semantic_model'][0]['name']}::{name}")
+        passed_edges = {
+            audit.name.removeprefix("relationship:")
+            for audit in plan.audits
+            if audit.name.startswith("relationship:") and audit.outcome == "passed"
+        }
+        branch_datasets = {branch.dataset for branch in plan.branches}
+        from ariadne import lumio_context
+
+        # D3 (#83 delta review): one physical Resource may back MANY semantic
+        # datasets — proof resolves through the dependency's datasets that
+        # actually PARTICIPATE in this plan's consumed lineage, never a
+        # global last-wins (or arbitrary first) catalog alias
+        datasets_of_resource: dict[str, set[str]] = {}
+        for dataset in graph.datasets.values():
+            try:
+                datasets_of_resource.setdefault(
+                    lumio_context._dataset_source_resource(dataset.source), set()
+                ).add(dataset.name)
+            except ValueError:
+                continue  # an unresolvable source stays the graph gate's own failure
+        for binding in bindings:
+            if not isinstance(binding, dict):
+                continue
+            enforcement = binding.get("enforcement")
+            if not isinstance(enforcement, dict):
+                continue  # explanatory disclosure claims no executed check
+            if enforcement.get("check") != "graph.relationship_audit":
+                continue  # the one catalog check that executes for query_metrics
+            if "query_metrics" not in (binding.get("operations") or []):
+                continue
+            subject = binding.get("subject") or {}
+            identity = subject.get("identity")
+            if subject.get("kind") not in ("metric", "computation") or identity not in consumed:
+                continue
+            if plan.relationship_audit != "passed":
+                raise PlannerError(
+                    "binding_not_attested",
+                    "executable policy binding declares check 'graph.relationship_audit' "
+                    f"for subject {identity!r}, but the executed plan reports relationship "
+                    f"audit '{plan.relationship_audit}' — authored evidence stamps are "
+                    "not proof; the operation refuses instead of labeling the narrative "
+                    "enforced",
+                )
+            for dependency in enforcement.get("dependencies") or []:
+                # an empty declared inventory has no physical dependency to
+                # prove — the whole-plan passed audit above is already its proof
+                participating = {
+                    name
+                    for name in datasets_of_resource.get(dependency, ())
+                    if name in branch_datasets
+                }
+                if not participating:
+                    raise PlannerError(
+                        "binding_not_attested",
+                        "executable policy binding declares check "
+                        "'graph.relationship_audit' "
+                        f"for subject {identity!r}, but no semantic dataset of its "
+                        f"declared dependency {dependency!r} participates in this "
+                        "executed plan's consumed lineage — the executed check "
+                        "proves nothing for it; the operation refuses instead of "
+                        "labeling the narrative enforced",
+                    )
+                if not any(
+                    edge.name in passed_edges
+                    and any(
+                        dataset in (edge.from_dataset, edge.to_dataset) for dataset in participating
+                    )
+                    for edge in graph.relationships
+                ):
+                    raise PlannerError(
+                        "binding_not_attested",
+                        "executable policy binding declares check "
+                        "'graph.relationship_audit' "
+                        f"for subject {identity!r}, but no passed relationship audit "
+                        f"of this plan is incident to its declared dependency "
+                        f"{dependency!r} (participating datasets "
+                        f"{sorted(participating)!r}) — a passing audit on unrelated "
+                        "branches is not proof; the operation refuses instead of "
+                        "labeling the narrative enforced",
+                    )
+
     async def query_metrics(self, request: dict) -> dict:
         """Governed multi-fact query (issue #30, spec rev 1 "Query and result
         contract"): a nonempty list of PREDEFINED metric names over the ADMITTED
@@ -720,6 +1004,8 @@ class _QueryRuntimeSession(_DiscoverySession):
         budget = self._claim_operation_budget()
         with self._phase(budget):
             plan = plan_query(graph, request, self.con)
+            # §10.2: real executed-check proof, before result SQL
+            self._attest_bound_checks(plan, graph)
             assert_single_statement(plan.sql)
             self._execution.bind(plan.sql)
             bounded = self._collect(plan.sql, budget)
@@ -813,6 +1099,21 @@ class _QueryRuntimeSession(_DiscoverySession):
         single-statement, and EXPLAIN bind gauntlet."""
         self._refuse_unsupported("query_detail")
         graph, admission = self._admitted()
+        # Q1/#84 (spec0032 §10.5): stage 3 static dependency resolution over
+        # the admitted graph's proven edges, then the stage-4 complete
+        # Context/enforcement/budget preflight — an integrated Bound Release
+        # consumes its exact physical lookup tables with full published
+        # views before ANY planner, live audit, bind or SELECT work; the
+        # standalone route keeps the unchanged path below
+        detail_context = None
+        if self._context_snapshot is not None:
+            resources = self._detail_static_resources(graph, request)
+            if resources is not None:
+                # F2: detail.path_proof's actual target is the request's own
+                # statically resolved root + proven lookup path
+                detail_context = self._input_context_preflight(
+                    "query_detail", resources, check_targets={"detail.path_proof": set(resources)}
+                )
         budget = self._claim_operation_budget()
         with self._phase(budget):
             plan = plan_detail(graph, request, self.con)
@@ -842,6 +1143,8 @@ class _QueryRuntimeSession(_DiscoverySession):
             "governed": True,
             "admission": self._admission_view(admission),
         }
+        if detail_context is not None:  # additive, integrated mode only (§10.4)
+            result["input_context"] = detail_context
         # Issue #56/S1 (spec 0014 §5): completeness metadata + full-envelope
         # accounting + the selected transport's actual-representation preflight.
         result["result"] = query_results.completeness(len(bounded.rows))
@@ -872,6 +1175,20 @@ class _QueryRuntimeSession(_DiscoverySession):
             # approved-source rechecks; a stale pin or withdrawn approval
             # refuses here, never a legacy fallback.
             self._recheck_pinned()
+        # Q1/#84 (spec0032 §10.5): stage 3 static resolution of the ONE named
+        # catalog dataset's canonical resource, then the stage-4 complete
+        # Context/enforcement/budget preflight — an integrated Bound Release
+        # consumes its exact physical table with a full published view before
+        # ANY planner work, bind or SELECT; the standalone route keeps the
+        # unchanged path below
+        records_context = None
+        if self._context_snapshot is not None:
+            # F3 shared seam: the NATIVE static validation (single ownership,
+            # unchanged codes/precedence) runs inside the resource resolution
+            # and owns every malformed request BEFORE the Context preflight
+            records_context = self._input_context_preflight(
+                "query_records", [self._records_static_resource(request)]
+            )
         budget = self._claim_operation_budget()
         with self._phase(budget):
             plan = plan_records(
@@ -955,6 +1272,8 @@ class _QueryRuntimeSession(_DiscoverySession):
                 "has_more_matching": has_more,
             },
         }
+        if records_context is not None:  # additive, integrated mode only (§10.4)
+            result["input_context"] = records_context
         query_results.account_rows(self._limits, result, rows)
         query_results.finalize_response(self._limits, result, response_measure=self._measure)
         if budget.expired():  # the last check before return
@@ -1071,6 +1390,32 @@ class _QueryRuntimeSession(_DiscoverySession):
             assert_ad_hoc_authority(
                 params["expression"], kind="expression", authority=self._ad_hoc_authority
             )
+            # Q1/#84 (spec0032 §10.5): stage 3 continues with the static
+            # physical-reference extraction over the whole normalized nested
+            # source tree (scope-aware, never shallow name extraction), then
+            # the stage-4 complete Context/enforcement/budget preflight — an
+            # integrated Bound Release consumes every allowed nested source
+            # with a full published Table view BEFORE the grain guard (a data
+            # read), compile, bind or SELECT; the standalone route keeps the
+            # unchanged path below
+            adhoc_context = None
+            if self._context_snapshot is not None:
+                # the extraction above never returns "skip": an unresolved
+                # physical dependency refuses inside it — on an integrated
+                # Bound Release the complete Context preflight is mandatory.
+                # F2 check-target truth: adhoc.static_io_authority runs over
+                # BOTH source and expression (its target is the complete
+                # inventory); adhoc.grain_preserving receives ONLY the source
+                # (its target is the source's own tables — nothing else)
+                everything, source_only = self._adhoc_static_resources(params)
+                adhoc_context = self._input_context_preflight(
+                    "define_metric",
+                    everything,
+                    check_targets={
+                        "adhoc.static_io_authority": set(everything),
+                        "adhoc.grain_preserving": set(source_only),
+                    },
+                )
             # Grain guard BEFORE envelope expansion/compile (spec rev 5 §13): a
             # source that fans out the fact grain is rejected outright — the
             # compiler would aggregate at joined-row grain
@@ -1106,6 +1451,11 @@ class _QueryRuntimeSession(_DiscoverySession):
             "persistence": {"status": "not_saved"},
             "result": query_results.completeness(len(bounded.rows)),
         }
+        # spec0032 §7/§10.4: the bound source Context is disclosed SEPARATELY
+        # as the pinned input_context — additive, integrated mode only; the
+        # ephemeral definition never gains a metric-context field or governance
+        if adhoc_context is not None:
+            result["input_context"] = adhoc_context
         query_results.account_rows(self._limits, result, bounded.rows)
         query_results.finalize_response(self._limits, result, response_measure=self._measure)
         if budget.expired():
@@ -1242,6 +1592,41 @@ def _timestamp_refusal(exc: BaseException) -> QueryResultError | None:
     if index < 0:
         return None
     return QueryResultError(TIMESTAMP_REFUSAL_CODE, text[index:])
+
+
+def _scope_physical_read_refs(fragment: str) -> list[str | None]:
+    """The COMPLETE physical table reads of one normalized SQL fragment
+    (Q1/#84 review F1, spec0032 §3/§10.5 stage 3) through the installed
+    SQLGlot Scope's own physical origins — no second parser, no shallow name
+    collection: ``scope.sources`` resolves every referenced name to its
+    physical ``exp.Table`` or its nested CTE/derived ``Scope`` (a nested
+    scope's own reads are recursed, never conflated with a table name);
+    ``scope.references`` includes the SEMI/ANTI right-hand tables that
+    ``selected_sources`` deliberately drops; and scalar/predicate subqueries
+    are reached through their own scopes. Returns qualified dotted names —
+    identity resolution against the built catalog stays with the caller.
+    ``[None]`` for an unparseable fragment (the caller owns that refusal)."""
+    try:
+        root = build_scope(sqlglot.parse_one(fragment.strip()))
+    except Exception:
+        return [None]
+    refs: list[str | None] = []
+
+    def visit(scope: Scope) -> None:
+        for name, _node in scope.references:
+            source = scope.sources.get(name)
+            if isinstance(source, exp.Table):
+                refs.append(".".join(part.name for part in source.parts))
+            elif isinstance(source, Scope):  # a CTE/derived body: recurse
+                visit(source)
+        for subquery in scope.subqueries:  # scalar/predicate subquery reads
+            nested = build_scope(subquery)
+            if nested is not None:
+                visit(nested)
+
+    if root is not None:
+        visit(root)
+    return refs or [None]
 
 
 def _qualified_source_refs(source: object) -> list[str | None]:

@@ -1427,6 +1427,233 @@ def _history_entries(flags: dict, observed_at: str, retained: dict[str, str]) ->
     return entries
 
 
+def build_native_table_page(
+    *,
+    asset: dict,
+    columns: list[dict],
+    profile: dict,
+    existing_meta: dict | None,
+    existing_body: str,
+    now: str,
+    source_binding: str | None = None,
+) -> tuple[str, dict]:
+    """Generate one producer-native Table profile page (spec0032 §5/§6,
+    producer spec 0009 §2) for a revision-2 candidate: the complete
+    ``ariadne_profile`` envelope — ``core_ref`` resource identity, the native
+    base metadata and the core-owned ``native.ariadne`` schema/observations
+    facts — with authored summary/base metadata and the curated body
+    preserved verbatim outside the core-owned sections. The physical row
+    fields (column/type/nullable/default/comment) regenerate from the
+    INSPECTED source columns on every refresh (#83 review fix F5, spec0010
+    §4): a prior same-name/type row never launders stale declared DDL facts,
+    and curated meaning lives in the authored description/body and preserved
+    native extras. The producer-parsed native ``observed_value_columns``
+    selection is fulfilled by the real measured profile through the existing
+    selection/value-evidence validators (#83 review fix F4, spec0024 §3) —
+    preserve-or-refuse, never a silent evidence drop. The observation
+    timestamp is REUSED when the schema and the measurements are unchanged
+    (identical inputs produce identical bytes). The caller parses any
+    existing KB page through the producer's public frontmatter parse; this
+    builder never parses KB bytes itself.
+    Returns ``(page text, change flags)``."""
+    resource = asset["resource"]
+    existing_profile = (
+        existing_meta.get("ariadne_profile") if isinstance(existing_meta, dict) else None
+    )
+    existing_profile = existing_profile if isinstance(existing_profile, dict) else None
+    existing_native = existing_profile.get("native") if existing_profile is not None else None
+    existing_native = existing_native if isinstance(existing_native, dict) else {}
+    existing_ariadne = existing_native.get("ariadne")
+    existing_ariadne = existing_ariadne if isinstance(existing_ariadne, dict) else {}
+    old_schema = existing_ariadne.get("schema")
+    old_schema = old_schema if isinstance(old_schema, list) else None
+    # F5 (spec0010 §4): the physical row fields regenerate from the INSPECTED
+    # columns on every refresh — a prior same-name/type row never launders
+    # stale declared nullability/default/comment; curated meaning lives in the
+    # authored description/body and the preserved native extras.
+    authored: list[dict] = [dict(column) for column in columns]
+    flags = _schema_flags(old_schema, authored)
+    # F4 (spec0024 §3): the producer-parsed native selection (existing_meta is
+    # the producer's public frontmatter view — never a Core YAML parse of KB
+    # bytes, never _authored_selection over raw page text) is fulfilled by the
+    # REAL measured profile through the existing validators; a malformed
+    # selection refuses the whole refresh and unsupported states stay honest.
+    selection = existing_native.get("observed_value_columns")
+    selection_errors = _selection_shape_errors(selection)
+    if selection_errors:
+        raise ValueError(
+            f"{resource}: authored observed_value_columns is not a valid selection "
+            f"({'; '.join(selection_errors)}) — fix the page metadata; nothing "
+            "was written"
+        )
+    value_evidence = (
+        _value_evidence(selection=selection, columns=authored, profile=profile, where=resource)
+        if selection
+        else None
+    )
+    facts = _observation_facts(
+        resource=resource,
+        profile=profile,
+        value_evidence=value_evidence,
+        source_binding=source_binding,
+    )
+    old_observations = existing_ariadne.get("observations")
+    old_observations = old_observations if isinstance(old_observations, dict) else {}
+    old_observed_at = (
+        old_observations.get("observed_at")
+        if isinstance(old_observations.get("observed_at"), str)
+        else None
+    )
+    reuse_timestamp = (
+        old_observed_at is not None
+        and old_schema is not None
+        and old_schema == authored
+        and {key: value for key, value in old_observations.items() if key != "observed_at"} == facts
+    )
+    observed_at = old_observed_at if reuse_timestamp and old_observed_at is not None else now
+    observations = {"observed_at": observed_at, **facts}
+    citation = {
+        "id": f"catalog-{asset['source']}-{asset['schema']}-{asset['table']}",
+        "resource": resource,
+        "title": f"catalog and profile of {asset['source']}.{asset['schema']}.{asset['table']}",
+    }
+    title = f"{asset['source']}.{asset['schema']}.{asset['table']}"
+    description = (
+        f"Physical table {asset['table']} of source {asset['source']} "
+        f"(schema {asset['schema']}). Row meaning: unknown — not yet authored."
+    )
+    if existing_meta is None:
+        meta: dict = {
+            "id": f"entity:table-{hashlib.sha256(resource.encode('utf-8')).hexdigest()}",
+            "entity_types": ["table"],
+            "tags": ["table", "schema"],  # canonical contract: nonempty tags list
+            "title": title,
+            "summary": description.split(". ")[0] + ".",
+            "lifecycle": "approved",
+            "visibility": "public",
+            "sources": [citation],
+        }
+    else:
+        meta = dict(existing_meta)
+    native = {
+        "type": "table",
+        "title": existing_native.get("title") or title,
+        "description": existing_native.get("description") or description,
+        "tags": existing_native.get("tags") or ["table", "schema"],
+        "sources": _ensure_citation(existing_native.get("sources"), citation),
+        "resource": resource,
+        "ariadne": {"schema": authored, "observations": observations},
+    }
+    for key, value in existing_native.items():
+        if key not in native and key != "ariadne":
+            native[key] = value  # authored native extras preserved verbatim
+    meta["ariadne_profile"] = {
+        "version": 1,
+        "kind": "table",
+        "core_ref": {"kind": "resource", "id": resource},
+        **{
+            key: value
+            for key, value in (existing_profile or {}).items()
+            if key not in ("version", "kind", "core_ref", "native")
+        },
+        "native": native,
+    }
+    body = existing_body
+    if not body.strip():
+        body = (
+            f"# {title}\n\nGenerated physical table profile of the approved "
+            "catalog asset; the schema and observation facts live in the "
+            "technical envelope. This body is curated operator space.\n"
+        )
+    front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    return f"---\n{front}---\n{body}", flags
+
+
+def build_native_dataset_page(
+    *,
+    collection: dict,
+    tables: list[dict],
+    existing_meta: dict | None,
+    existing_body: str,
+) -> tuple[str, dict]:
+    """Generate one producer-native Dataset Overview profile page
+    (spec0032 §3/§5): ``core_ref`` collection identity and the
+    ``native.ariadne.tables`` links to EXACTLY the tables this refresh
+    documents — never every approved source. Authored base metadata and the
+    curated body are preserved verbatim; links are regenerated. Returns
+    ``(page text, flags)`` with the linked-table additions/removals."""
+    resource = collection["resource"]
+    existing_profile = (
+        existing_meta.get("ariadne_profile") if isinstance(existing_meta, dict) else None
+    )
+    existing_profile = existing_profile if isinstance(existing_profile, dict) else None
+    existing_native = existing_profile.get("native") if existing_profile is not None else None
+    existing_native = existing_native if isinstance(existing_native, dict) else {}
+    existing_ariadne = existing_native.get("ariadne")
+    existing_ariadne = existing_ariadne if isinstance(existing_ariadne, dict) else {}
+    old_tables = existing_ariadne.get("tables")
+    old_tables = old_tables if isinstance(old_tables, list) else []
+    linked = [table["resource"] for table in tables]
+    flags = {
+        "added": sorted(set(linked) - set(old_tables)),
+        "removed": sorted(set(old_tables) - set(linked)),
+    }
+    citation = {
+        "id": f"catalog-{collection['source']}-{collection['schema']}",
+        "resource": resource,
+        "title": f"catalog of {collection['source']}.{collection['schema']}",
+    }
+    title = f"{collection['source']}.{collection['schema']}"
+    description = (
+        f"Physical collection {collection['schema']} of source "
+        f"{collection['source']}. Collection meaning: unknown — not yet authored."
+    )
+    if existing_meta is None:
+        meta: dict = {
+            "id": f"entity:dataset-{hashlib.sha256(resource.encode('utf-8')).hexdigest()}",
+            "entity_types": ["dataset"],
+            "tags": ["dataset", "schema"],  # canonical contract: nonempty tags list
+            "title": title,
+            "summary": description.split(". ")[0] + ".",
+            "lifecycle": "approved",
+            "visibility": "public",
+            "sources": [citation],
+        }
+    else:
+        meta = dict(existing_meta)
+    native = {
+        "type": "dataset",
+        "title": existing_native.get("title") or title,
+        "description": existing_native.get("description") or description,
+        "tags": existing_native.get("tags") or ["dataset", "schema"],
+        "sources": _ensure_citation(existing_native.get("sources"), citation),
+        "ariadne": {"tables": linked},
+    }
+    for key, value in existing_native.items():
+        if key not in native and key != "ariadne":
+            native[key] = value  # authored native extras preserved verbatim
+    meta["ariadne_profile"] = {
+        "version": 1,
+        "kind": "dataset",
+        "core_ref": {"kind": "resource", "id": resource},
+        **{
+            key: value
+            for key, value in (existing_profile or {}).items()
+            if key not in ("version", "kind", "core_ref", "native")
+        },
+        "native": native,
+    }
+    body = existing_body
+    if not body.strip():
+        body = (
+            f"# {title}\n\nGenerated Dataset Overview of the approved "
+            "collection; the table links live in the technical envelope. This "
+            "body is curated operator space.\n"
+        )
+    front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    return f"---\n{front}---\n{body}", flags
+
+
 def build_table_page(
     *,
     asset: dict,

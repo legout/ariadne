@@ -227,6 +227,84 @@ The search now includes the added Policy sentence under a new Published Version
 and Bound Release. Sessions opened before activation stay pinned to their
 previous release; the CLI commands above open new sessions.
 
+## 8. Query the sources directly (UNRELEASED source-candidate extension)
+
+> **This section needs unreleased software.** The published
+> `ariadne-data 0.6.0` / `lumio-wiki 0.4.0` pair this tutorial installed
+> cannot execute it, and opting a selector into a higher support revision is
+> an *admission* choice, not a software upgrade. The revision-3 query
+> operations ship in this repository's **unreleased source candidate**: to
+> follow along you must (1) install a matching source-candidate build of
+> both packages, (2) give every consumed table a technical page through an
+> explicit schema inspection (`refresh_schema`) with each required Policy
+> classified in the authored `policy_bindings` inventory, and (3) pass the
+> whole thing through a NEW human review and admission — the earlier
+> admission of this walkthrough keeps refusing the three operations.
+
+With those prerequisites met, extend `context_integration.yaml` — the five
+> baseline keys above plus exactly the two revision-3 opt-in keys:
+
+```yaml
+version: 1
+mode: integrated
+subtree: knowledge
+namespace: urn:example:retail
+profile: ariadne-context/1
+support_revision: 3
+policy_bindings:
+  version: 1
+  bindings: []   # one reviewed entry per required (subject, policy) pair
+```
+
+Each operation then answers with an additive `input_context`: the pinned
+Bound Release digest, the immutable Published Version, every consumed table's
+full published page view, and the applicable Policy entries — proven to fit
+the host budget before any SQL runs. A consumed table without a visible
+unambiguous Table page refuses by name; explanatory Policies never filter.
+
+Detail — one governed row projection of the demo's own `orders` dataset
+(fields `id`, `amount`, `status` — this walkthrough's model has no lookup
+table; a lookup field would additionally need its graph-proven edge and the
+lookup table's own Table page):
+
+```bash
+cat > /tmp/detail.json <<'JSON'
+{"dataset": "orders", "fields": ["id", "status"]}
+JSON
+ariadne query-detail --file /tmp/detail.json --project "$DEMO"
+# {"dataset": "orders", "fields": ["id", "status"], "governed": true,
+#  "input_context": {"resources": ["…the orders table's full view…"]}, …}
+```
+
+Records — bounded selection from the demo's one named catalog dataset,
+always ungoverned; a calculation-specific exclusion (say, cancelled orders
+out of recognized revenue) never filters the records you explicitly select:
+
+```bash
+cat > /tmp/records.json <<'JSON'
+{"dataset": "orders.main.orders", "fields": ["id", "amount", "status"],
+ "order": [{"field": "id", "direction": "asc"}], "limit": 10}
+JSON
+ariadne query-records --file /tmp/records.json --project "$DEMO"
+# {"dataset": "orders.main.orders", "governed": false,
+#  "rows": [{"id": 1, "amount": 100.0, "status": "completed"}, …], …}
+```
+
+Ad-hoc — one unsaved definition over the approved relations; it reports
+`governed: false` with `context: null` and its source Context disclosed
+separately as `input_context`; nothing is written:
+
+```bash
+cat > /tmp/adhoc.json <<'JSON'
+{"name": "all_orders_value", "source": "orders.main.orders",
+ "expression": "SUM(amount)", "description": "Every order, cancelled included"}
+JSON
+ariadne define-metric --file /tmp/adhoc.json --project "$DEMO"
+# {"metric": "all_orders_value", "governed": false, "context": null,
+#  "persistence": {"status": "not_saved"},
+#  "input_context": {"resources": ["…the consumed table's full view…"]}, …}
+```
+
 ## Continue with your own project
 
 The helper is a tutorial companion, not a new Ariadne API or sync service.

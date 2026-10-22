@@ -2597,31 +2597,24 @@ def _validate_regex(connection: Any, pattern: str, field: str) -> None:
         ) from exc
 
 
-def plan_records(
+def normalize_record_request(
     catalog: list,
-    request: dict,
-    connection: Any = None,
+    request: object,
     *,
     row_ceiling: int = MAX_RECORD_LIMIT,
-) -> RecordPlan:
-    """Compile ONE bounded single-dataset record selection (spec 0014 §3,
-    issue #57/S2): strict known fields/request keys, AND-combined typed
-    predicates, one optional declared timestamp interpretation (mandatory
-    semantics apply wherever the request orders that field), a required
-    deterministic order with explicit NULLS LAST and the selected-value tie
-    tuple, and a requested top-N within the ceilings. The plan's executed
-    statement carries the SAME-execution lookahead indicator — ``ROW_NUMBER``
-    over the deterministic order plus a ``LEAD`` existence boolean on the last
-    returned row — so the extra row never transfers payload cells and no
-    second mutable-source query or COUNT runs. No relationship traversal, no
-    aggregates, no caller SQL: the FROM identity is a built catalog entry and
-    every value binds as a planner-built literal (``connection`` is accepted
-    for the shared plan interface; a record selection runs no live audits).
-    Regex pattern validity is DuckDB's RE2 judgement, probed on
-    ``connection`` when supplied — the runtime always supplies its
-    connection, so the guaranteed validation point is covered; a
-    connection-less plan defers an invalid pattern to execution's own bind
-    refusal."""
+) -> dict:
+    """The PURE static Record-request normalization/validation — the native
+    ownership seam shared by :func:`plan_records` and the integrated
+    revision-3 request preflight (spec0032 §10.5 stage 1, Q1-F3): the exact
+    native structured checks in their exact order — mapping, request keys,
+    dataset identity, fields/types, catalog columns, the declared timestamp
+    interpretation, AND-combined filter literal shapes, the required
+    non-empty order and the bounded limit — with their structured codes,
+    messages and precedence, and with NO SQL construction, no connection
+    use and no live RE2 probing (regex validity stays a live-engine
+    judgement owned by the executing plan, which probes it after these
+    static checks). Returns the normalized head: entry, fields,
+    column_types, timestamp field/zone, parsed filters, order and limit."""
     if not isinstance(request, dict):
         raise PlannerError(
             "request_invalid",
@@ -2702,10 +2695,6 @@ def plan_records(
             ) from exc
 
     non_temporal, temporal = _parse_record_filters(request.get("filters"), entry, timestamp_field)
-    if connection is not None:  # the runtime always supplies its connection
-        for field, op, value in non_temporal + temporal:
-            if op == "regex":
-                _validate_regex(connection, value, field)
 
     raw_order = request.get("order")
     if not isinstance(raw_order, list) or not raw_order:
@@ -2747,6 +2736,104 @@ def plan_records(
             f"'limit' must be a positive integer of at most "
             f"{min(MAX_RECORD_LIMIT, row_ceiling)} (booleans are not integers)",
         )
+    for field, op, value in non_temporal:
+        # Q1-F3 (owner-approved IN-list unit, spec0032 §7/§10.5 stage 1,
+        # native static precedence preserved): an IN predicate takes a
+        # literal list of SCALAR values (spec0014 §3). None/dict elements
+        # already refuse at filter-parse time; the nested-list element
+        # formerly surfaced only in SQL predicate construction (after
+        # order/limit, after Context) — this PURE scalar check owns it AFTER
+        # the complete order/limit validation (never preempting
+        # order_invalid/limit_invalid on combined-invalid input) and BEFORE
+        # the temporal conversion (the native SQL builder builds its
+        # non-temporal predicates, including IN, ahead of temporal
+        # comparisons), with the existing native filter_invalid code and
+        # message. No SQL AST is constructed here; ``_direct_literal`` stays
+        # in the builder, and non-JSON scalar-shaped objects remain outside
+        # this unit's scope
+        if op == "in":
+            for element in value:
+                if isinstance(element, list):
+                    raise PlannerError(
+                        "filter_invalid",
+                        f"filter on {field!r}: IN list elements are scalars "
+                        "(use is_null for nulls)",
+                    )
+    temporal_instants: dict[tuple[str, str, Any], datetime] = {}
+    if timestamp_field is not None and zone is not None:
+        # Q1-F3 (owner-approved Timestamp unit, spec0032 §7/§10.5 stage 1,
+        # native static precedence preserved): every caller-supplied
+        # temporal COMPARISON literal is validated and normalized HERE — by
+        # the existing NATIVE pure validator ``_record_instant``
+        # (encoding/type, strict parse, both DST rejections) — AFTER the
+        # native filter-shape/order/limit checks and BEFORE mandatory
+        # Context, any SQL construction, connection use or live probing
+        # (the pre-extraction native plan validated order and limit ahead of
+        # its SQL-time temporal interpretation; a combined-invalid request
+        # keeps its order_invalid/limit_invalid precedence). The validated
+        # UTC-naive instant is carried forward as a normalized fact keyed by
+        # the original caller predicate: the SQL builder consumes it
+        # directly and never re-interprets the wall time, and the public
+        # filter disclosure keeps the original input.
+        for field, op, value in temporal:
+            temporal_instants[(field, op, value)] = _record_instant(value, zone, field)
+    return {
+        "entry": entry,
+        "fields": fields,
+        "column_types": column_types,
+        "timestamp_field": timestamp_field,
+        "zone": zone,
+        "zone_name": zone_name,
+        "non_temporal": non_temporal,
+        "temporal": temporal,
+        "temporal_instants": temporal_instants,
+        "order": order,
+        "limit": raw_limit,
+    }
+
+
+def plan_records(
+    catalog: list,
+    request: dict,
+    connection: Any = None,
+    *,
+    row_ceiling: int = MAX_RECORD_LIMIT,
+) -> RecordPlan:
+    """Compile ONE bounded single-dataset record selection (spec 0014 §3,
+    issue #57/S2): strict known fields/request keys, AND-combined typed
+    predicates, one optional declared timestamp interpretation (mandatory
+    semantics apply wherever the request orders that field), a required
+    deterministic order with explicit NULLS LAST and the selected-value tie
+    tuple, and a requested top-N within the ceilings. The plan's executed
+    statement carries the SAME-execution lookahead indicator — ``ROW_NUMBER``
+    over the deterministic order plus a ``LEAD`` existence boolean on the last
+    returned row — so the extra row never transfers payload cells and no
+    second mutable-source query or COUNT runs. No relationship traversal, no
+    aggregates, no caller SQL: the FROM identity is a built catalog entry and
+    every value binds as a planner-built literal (``connection`` is accepted
+    for the shared plan interface; a record selection runs no live audits).
+    Regex pattern validity is DuckDB's RE2 judgement, probed on
+    ``connection`` when supplied — the runtime always supplies its
+    connection, so the guaranteed validation point is covered; a
+    connection-less plan defers an invalid pattern to execution's own bind
+    refusal. The native static request validation is the shared pure seam
+    :func:`normalize_record_request` (single ownership, unchanged codes and
+    precedence); the live RE2 probe runs after those static checks."""
+    normalized = normalize_record_request(catalog, request, row_ceiling=row_ceiling)
+    entry = normalized["entry"]
+    fields = normalized["fields"]
+    column_types = normalized["column_types"]
+    timestamp_field = normalized["timestamp_field"]
+    zone = normalized["zone"]
+    zone_name = normalized["zone_name"]
+    non_temporal, temporal = normalized["non_temporal"], normalized["temporal"]
+    temporal_instants = normalized["temporal_instants"]
+    order = normalized["order"]
+    raw_limit = normalized["limit"]
+    if connection is not None:  # the runtime always supplies its connection
+        for field, op, value in non_temporal + temporal:
+            if op == "regex":
+                _validate_regex(connection, value, field)
 
     # ---- the deterministic order: requested keys, then the remaining selected
     # sortable scalar columns ascending NULLS LAST (ties disclosed in the plan)
@@ -2800,7 +2887,10 @@ def plan_records(
             )
         helper = ts_helper if field == timestamp_field else None
         if helper is not None and zone is not None:
-            instant = _record_instant(value, zone, field)
+            # the shared static normalization already validated this caller
+            # literal and normalized it to its UTC instant — consume that
+            # normalized fact; the builder never re-interprets wall times
+            instant = temporal_instants[(field, op, value)]
             literal = exp.Cast(
                 this=exp.Literal.string(instant.strftime(_RECORD_TIMESTAMP_FORMAT)),
                 to=exp.DataType.build("TIMESTAMP"),

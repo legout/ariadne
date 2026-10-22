@@ -27,6 +27,16 @@ expected KB namespace and the `ariadne-context/1` profile. It carries portable
 selectors only — never credentials, private registry locations, publication
 destinations, active pointers or a human-approval flag.
 
+The selector additionally gains exactly two optional opt-in keys
+(`support_revision` and its `policy_bindings` block of version 1, spec0032
+§10.1): absence of both is the legacy revision 1; an explicit exact-integer
+`support_revision: 2` opts the admission into the native `dataset`/
+`table`/`computation` technical profiles and requires the authored, closed
+`policy_bindings` inventory; `support_revision: 3` additionally opts in the
+integrated query operations below. Older admissions keep their own frozen
+capability tables — a revision-1/2 admission never silently gains operations,
+and a revision the installed consumer does not implement refuses.
+
 - Absence of the selector keeps the existing standalone route.
 - A malformed or unsupported selector refuses; it never downgrades to
   standalone.
@@ -65,14 +75,17 @@ manifest):
 | Area | Delivered behavior |
 | --- | --- |
 | Storage | Local immutable Published Versions (released). Optional S3 object storage is an **unreleased source candidate**: an `s3://` destination is admitted only with an explicitly selected declared storage profile, its verified private local admission records and the frozen transport binding; mutable/current/latest reads and plain directories always refuse. |
-| Profiles | `metric`, `policy` and `reference` only, checked across the entire captured KB. A `reference` profile is supported ONLY as a fully validated structured Reference (native Reference contract; authentic Core receipts for measured authority, native source-backed manual assertion eligibility, exact human mapping confirmation). Any other Ariadne profile kind anywhere in the KB refuses admission — even when no metric references it. Ordinary unprofiled pages stay KB content and are never exposed as Core-validated technical references. |
+| Profiles | Revision-scoped, always checked across the entire captured KB. **Revision 1 (the released pairing):** `metric`, `policy` and `reference` only. A `reference` profile is supported ONLY as a fully validated structured Reference (native Reference contract; authentic Core receipts for measured authority, native source-backed manual assertion eligibility, exact human mapping confirmation). Any other Ariadne profile kind anywhere in the KB refuses admission — even when no metric references it. Ordinary unprofiled pages stay KB content and are never exposed as Core-validated technical references. **Revisions ≥2 (unreleased source candidate only):** the native `dataset`, `table` and `computation` technical profiles additionally join the supported set behind the revision opt-in below — this is candidate-build capability, not released profile availability, and `skill` profiles remain refused on every revision. |
 | `get_metric` | Governed calculation with one exact Context Binding and the complete required Policy Closure, resolved in the same pinned snapshot before SQL. |
 | `query_metrics` | Multiple predefined metrics over the admitted multi-fact graph, complete per-metric Policy context, exact citations. |
 | `discover`, `list_metrics` | Source-free disclosure of the admitted catalog, binding identity and available/unavailable operations. No source is opened. |
 | `list_datasets` | Retains its approved live-catalog semantics — it is not source-free. |
 | `list_context_pages`, `read_context_page`, `search_context` | Source-free navigation over the pinned, operator-scoped published pages (see below). |
 | `resolve_term` | Source-free terminology resolution over the pinned release's validated structured References (spec 0010 §6 semantics through the one shared resolver): exact field bindings, claim/confirmation status, AS-OF evidence freshness, version-qualified citations. No transform, no SQL rewrite, no join authority; an authored evidence value is disclosure, never authority. |
-| Refused integrated operations | `query_detail`, `query_records`, `define_metric`, `save_example`, `search_examples` refuse as unsupported before planning or SQL — never a legacy-context fallback. The same callables keep working in standalone projects. |
+| `query_detail` (revision 3) | Governed detail projection over the admitted graph's proven lookup paths. Resolves the root dataset and the requested lookup tables statically, consumes each with its full published Table view in the additive `input_context` before any planner, live audit, bind or SELECT; an unproved path keeps its native planner refusal — wiki text never authorizes a join. |
+| `query_records` (revision 3) | Bounded single-dataset record selection, always `governed: false`. The one consumed table's full published view and the applicable Policy inventory ride the additive `input_context`; a calculation-specific exclusion (for example cancelled-order revenue) never filters records. |
+| `define_metric` (revision 3) | One-shot unsaved Ad-hoc execution, always `governed: false` with `context: null` and a separate pinned `input_context` covering every allowed nested source table. The static IO-authority boundary still runs first; no proposal, page or Computation record is ever created. |
+| Refused integrated operations | Operations outside the admission's declared support revision refuse as unsupported before planning or SQL — never a legacy-context fallback. Revision ≤2 admissions keep refusing `query_detail`, `query_records` and `define_metric`; `save_example`/`search_examples` refuse on every revision. The same callables keep working in standalone projects. |
 
 A fully validated structured Reference (spec0029 §1.5) is the one supported
 exception: its declared representations/mappings and the Core-attached
@@ -83,6 +96,33 @@ itself, and confirmation remains the exact native human selection. Every other
 unsupported technical application field (physical-reference/identifier-mapping
 extensions, SDK computation/executor/attester annotations) cannot be smuggled
 into a supported kind; it refuses rather than being silently ignored.
+
+### Complete input Context for the query operations (revision 3)
+
+Each revision-3 query operation resolves its exact physical dependencies
+statically — the detail root and its proven lookup tables, the one named
+record dataset, or every table of the normalized nested Ad-hoc source tree
+after the static IO-authority check — and preflights the complete mandatory
+Context before any planner, live audit, bind or SELECT work:
+
+- Every consumed table requires one unambiguous, visible Table profile bound
+  to that exact resource; a missing, hidden, ambiguous or out-of-scope Table
+  view refuses, naming the canonical resource identity, without fallback and
+  without leaking hidden content. A Dataset Overview view appears only when
+  the collection itself is consumed or referenced.
+- The applicable Policy inventory mirrors the admission-captured
+  `policy_bindings` for this operation over the consumed subjects, each with
+  its full published Policy page view; explanatory associations never filter
+  anything, and no check outside the §10.2 catalog may back an executable
+  obligation.
+- The response's additive `input_context` carries the Bound Release digest,
+  the immutable Published Version, every consumed resource with its full
+  published page view (canonical content, exact body coordinates, disclosed
+  native metadata, public source provenance), the applicable Policy entries,
+  native context signals and evidence caveats — no private records, storage
+  credentials or admission receipts. A mandatory Context that cannot fit the
+  host budget refuses without execution; the final whole-response safeguards
+  never elide required content.
 
 ## Overall admission
 
