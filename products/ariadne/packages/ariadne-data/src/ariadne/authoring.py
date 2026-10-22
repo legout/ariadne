@@ -628,6 +628,30 @@ def _verified_citations(
                         "kind": "catalog_asset",
                         "source": parts[0],
                     }
+                # #83 review fix F2: the RELATIVE native provenance citations
+                # (bundle paths) resolve inside the integrated candidate's
+                # knowledge subtree or refuse — a same-path legacy
+                # context_layer page is never a fallback, and containment is
+                # never papered over with string filtering.
+                for resource in _kb_relative_provenance(page_text, rel_kb):
+                    rel = f"knowledge/{rel_kb}"
+                    resolved = (tree / "knowledge" / resource).resolve()
+                    if (
+                        resolved.is_relative_to((tree / "knowledge").resolve())
+                        and resolved.is_file()
+                    ):
+                        citations[("bundle", resource)] = {
+                            "resource": resource,
+                            "kind": "bundle",
+                            "path": f"knowledge/{resource}",
+                        }
+                    else:
+                        errors.append(
+                            f"{rel}: native provenance citation {resource!r} does not "
+                            "resolve inside the integrated candidate's knowledge "
+                            "subtree — a same-path legacy context_layer page is "
+                            "never a fallback"
+                        )
                 continue  # ordinary/legacy KB pages carry no structured citations
             view, _full = parsed
             rel = f"knowledge/{rel_kb}"
@@ -842,32 +866,60 @@ def _contract_evidence_eligible(
 
 
 def _stale_schema_binding_errors(tree: Path, approval_digest: str | None) -> list[str]:
-    """spec 0025 §4 (measurement invalidation): every generated table page
-    whose measured observations carry a ``source_binding`` must carry the
-    CURRENT effective approval digest — schema and selected-value evidence
-    measured under a different endpoint is stale provenance and refuses
-    validation until the schema is refreshed under the current binding.
-    Pages without a measured binding make no endpoint claim."""
-    tables_dir = tree / "context_layer" / "tables"
-    if not tables_dir.is_dir() or approval_digest is None:
-        return []
+    """spec 0025 §4 (measurement invalidation): every generated table page —
+    the classic context_layer route AND the integrated producer-native
+    knowledge/ route (#83 review fix F2, read through the producer's public
+    frontmatter parse) — whose measured observations carry a
+    ``source_binding`` must carry the CURRENT effective approval digest:
+    schema and selected-value evidence measured under a different endpoint
+    is stale provenance and refuses validation until the schema is refreshed
+    under the current binding. Pages without a measured binding make no
+    endpoint claim; a missing optional stamp proves nothing."""
     errors: list[str] = []
-    for page in sorted(tables_dir.rglob("*.md")):
-        rel = f"context_layer/tables/{page.relative_to(tables_dir)}"
-        try:
-            meta = context._load_frontmatter_meta(page.read_text(encoding="utf-8"))
-        except yaml.YAMLError:
-            continue  # the page-contract gate owns malformed pages
-        ariadne_meta = meta.get("ariadne") if isinstance(meta, dict) else None
-        observations = ariadne_meta.get("observations") if isinstance(ariadne_meta, dict) else None
-        bound = observations.get("source_binding") if isinstance(observations, dict) else None
-        if isinstance(bound, str) and bound and bound != approval_digest:
-            errors.append(
-                f"{rel}: its measured schema/value observations are bound to a "
-                f"different effective storage identity ({bound[:12]}, the candidate "
-                f"now validates under {approval_digest[:12]}) — refresh_schema under "
-                "the current endpoint before validation (spec 0025 §4)"
+    tables_dir = tree / "context_layer" / "tables"
+    if tables_dir.is_dir() and approval_digest is not None:
+        for page in sorted(tables_dir.rglob("*.md")):
+            rel = f"context_layer/tables/{page.relative_to(tables_dir)}"
+            try:
+                meta = context._load_frontmatter_meta(page.read_text(encoding="utf-8"))
+            except yaml.YAMLError:
+                continue  # the page-contract gate owns malformed pages
+            ariadne_meta = meta.get("ariadne") if isinstance(meta, dict) else None
+            observations = (
+                ariadne_meta.get("observations") if isinstance(ariadne_meta, dict) else None
             )
+            bound = observations.get("source_binding") if isinstance(observations, dict) else None
+            if isinstance(bound, str) and bound and bound != approval_digest:
+                errors.append(
+                    f"{rel}: its measured schema/value observations are bound to a "
+                    f"different effective storage identity ({bound[:12]}, the candidate "
+                    f"now validates under {approval_digest[:12]}) — refresh_schema under "
+                    "the current endpoint before validation (spec 0025 §4)"
+                )
+    knowledge_tables = tree / "knowledge" / "tables"
+    if knowledge_tables.is_dir() and approval_digest is not None:
+        from lumio_wiki import (  # pyright: ignore[reportMissingImports] — optional SDK
+            parse_frontmatter,
+        )
+
+        for page in sorted(knowledge_tables.rglob("*.md")):
+            rel = f"knowledge/tables/{page.relative_to(knowledge_tables)}"
+            try:
+                full, _body, _start = parse_frontmatter(page.read_text(encoding="utf-8"), rel)
+            except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
+                continue
+            profile = full.get("ariadne_profile") if isinstance(full, dict) else None
+            native = profile.get("native") if isinstance(profile, dict) else None
+            extension = native.get("ariadne") if isinstance(native, dict) else None
+            observations = extension.get("observations") if isinstance(extension, dict) else None
+            bound = observations.get("source_binding") if isinstance(observations, dict) else None
+            if isinstance(bound, str) and bound and bound != approval_digest:
+                errors.append(
+                    f"{rel}: its measured schema/value observations are bound to a "
+                    f"different effective storage identity ({bound[:12]}, the candidate "
+                    f"now validates under {approval_digest[:12]}) — refresh_schema under "
+                    "the current endpoint before validation (spec 0025 §4)"
+                )
     return errors
 
 
@@ -1356,13 +1408,14 @@ def _kb_reference_view(full_meta: object) -> dict | None:
 
 
 def _kb_technical_resources(text: str, path: str) -> list[str]:
-    """The canonical resource identities one technical (dataset/table)
-    profile page binds, parsed through the producer's PUBLIC frontmatter
-    parse (#83, spec0032 §§3/§5 — Core never re-parses KB bytes with its own
-    YAML loader): the core_ref resource, the native resource field and the
-    dataset tables links — exactly the identity-bearing fields the citation
-    gate checks against the approved registry. Malformed pages stay the
-    producer page gate's own error."""
+    """The canonical resource identities one technical profile page binds,
+    parsed through the producer's PUBLIC frontmatter parse (#83, spec0032
+    §§3/§5 — Core never re-parses KB bytes with its own YAML loader): the
+    core_ref resource, the native resource field, the dataset tables links,
+    the supported observation citations and the CANONICAL native source
+    entries — exactly the identity-bearing fields the citation gate checks
+    against the approved registry (#83 review fix F2: full native
+    provenance). Malformed pages stay the producer page gate's own error."""
     from lumio_wiki import parse_frontmatter  # pyright: ignore[reportMissingImports] — optional SDK
 
     try:
@@ -1370,7 +1423,11 @@ def _kb_technical_resources(text: str, path: str) -> list[str]:
     except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
         return []
     profile = full.get("ariadne_profile") if isinstance(full, dict) else None
-    if not isinstance(profile, dict) or profile.get("kind") not in ("table", "dataset"):
+    if not isinstance(profile, dict) or profile.get("kind") not in (
+        "table",
+        "dataset",
+        "computation",
+    ):
         return []
     resources: list[str] = []
     core_ref = profile.get("core_ref")
@@ -1385,7 +1442,46 @@ def _kb_technical_resources(text: str, path: str) -> list[str]:
         for table in extension.get("tables") or []:
             if isinstance(table, str):
                 resources.append(table)
+        observations = extension.get("observations")
+        citation = observations.get("citation") if isinstance(observations, dict) else None
+        if isinstance(citation, str):
+            resources.append(citation)
+    for entry in native.get("sources") or []:
+        resource = entry.get("resource") if isinstance(entry, dict) else None
+        if isinstance(resource, str) and resource.startswith("ariadne://"):
+            resources.append(resource)
     return [resource for resource in dict.fromkeys(resources) if resource.startswith("ariadne://")]
+
+
+def _kb_relative_provenance(text: str, path: str) -> list[str]:
+    """The RELATIVE native provenance citations of one technical profile page
+    (native ``sources[].resource`` bundle paths), parsed through the
+    producer's PUBLIC frontmatter parse (#83 review fix F2, spec0032 §§5–6):
+    these must resolve inside the integrated candidate's knowledge subtree
+    through the existing containment gate — an operator-owned document
+    outside the captured KB never becomes frozen bundle evidence, and a
+    same-path legacy context_layer page is never a fallback."""
+    from lumio_wiki import parse_frontmatter  # pyright: ignore[reportMissingImports] — optional SDK
+
+    try:
+        full, _body, _start = parse_frontmatter(text, path)
+    except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
+        return []
+    profile = full.get("ariadne_profile") if isinstance(full, dict) else None
+    if not isinstance(profile, dict) or profile.get("kind") not in (
+        "table",
+        "dataset",
+        "computation",
+    ):
+        return []
+    native = profile.get("native")
+    native = native if isinstance(native, dict) else {}
+    relative: list[str] = []
+    for entry in native.get("sources") or []:
+        resource = entry.get("resource") if isinstance(entry, dict) else None
+        if isinstance(resource, str) and resource and not resource.startswith("ariadne://"):
+            relative.append(resource)
+    return relative
 
 
 def _kb_reference_from_text(text: str, path: str) -> tuple[dict, dict] | None:

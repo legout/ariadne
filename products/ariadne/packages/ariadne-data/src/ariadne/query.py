@@ -691,26 +691,56 @@ class _QueryRuntimeSession(_DiscoverySession):
         query_results.finalize_response(self._limits, envelope, response_measure=self._measure)
         return resolved
 
-    def _attest_bound_checks(self, plan) -> None:
+    def _attest_bound_checks(self, plan, graph) -> None:
         """#83 (spec0032 §10.2): an executable policy binding of this admission
         is satisfied only by the ACTUAL executed check for the consumed
         subject — a plan audit reporting not-run establishes nothing, and
-        authored generated/verified stamps on pages are never proof. The
-        obligation must be established before any result SQL executes;
-        get_metric bindings stay explanatory in this revision (their gates
-        are invariants only)."""
+        authored generated/verified stamps on pages are never proof. F3: the
+        consumed subjects are the COMPLETE transitive dependency closure of
+        each requested definition — the existing planner ``_closure`` walker
+        (branch metrics alone miss the post-aggregate/cross-fact intermediate
+        definitions that carry owner=None), never requested-only — and a
+        binding's declared physical dependencies are
+        proven only by the PASSED relationship-audit records of this plan's
+        edges incident to the dependency's participating dataset — a passing
+        audit on unrelated branches is not proof. The obligation must be
+        established before any result SQL executes; get_metric bindings stay
+        explanatory in this revision (their gates are invariants only)."""
         if self._context_snapshot is None or self._managed is None:
             return
         manifest = self._managed.get("bound_release") or {}
         bindings = (manifest.get("policy_bindings") or {}).get("bindings") or []
         if not bindings:
             return
+        from ariadne.planner import _closure
+
         consumed = set()
-        for name in plan.metrics:
-            meta = self._metrics.get(name)
-            if meta is None:
-                continue
-            consumed.add(f"{meta['model']['semantic_model'][0]['name']}::{name}")
+        for requested in plan.metrics:
+            # F3 completeness: the actual transitive dependency closure of
+            # each requested definition — the EXISTING planner walker, which
+            # also reaches post-aggregate/cross-fact intermediates (owner=None
+            # members) that never appear inside a branch's aggregated metrics
+            for name in _closure(graph, requested):
+                meta = self._metrics.get(name)
+                if meta is None:
+                    continue
+                consumed.add(f"{meta['model']['semantic_model'][0]['name']}::{name}")
+        passed_edges = {
+            audit.name.removeprefix("relationship:")
+            for audit in plan.audits
+            if audit.name.startswith("relationship:") and audit.outcome == "passed"
+        }
+        branch_datasets = {branch.dataset for branch in plan.branches}
+        from ariadne import lumio_context
+
+        dataset_of_resource: dict[str, str] = {}
+        for dataset in graph.datasets.values():
+            try:
+                dataset_of_resource[lumio_context._dataset_source_resource(dataset.source)] = (
+                    dataset.name
+                )
+            except ValueError:
+                continue  # an unresolvable source stays the graph gate's own failure
         for binding in bindings:
             if not isinstance(binding, dict):
                 continue
@@ -734,6 +764,34 @@ class _QueryRuntimeSession(_DiscoverySession):
                     "not proof; the operation refuses instead of labeling the narrative "
                     "enforced",
                 )
+            for dependency in enforcement.get("dependencies") or []:
+                # an empty declared inventory has no physical dependency to
+                # prove — the whole-plan passed audit above is already its proof
+                dataset = dataset_of_resource.get(dependency)
+                if dataset is None or dataset not in branch_datasets:
+                    raise PlannerError(
+                        "binding_not_attested",
+                        "executable policy binding declares check "
+                        "'graph.relationship_audit' "
+                        f"for subject {identity!r}, but its declared dependency "
+                        f"{dependency!r} is not a dataset this executed plan consumes "
+                        "— the executed check proves nothing for it; the operation "
+                        "refuses instead of labeling the narrative enforced",
+                    )
+                if not any(
+                    edge.name in passed_edges and dataset in (edge.from_dataset, edge.to_dataset)
+                    for edge in graph.relationships
+                ):
+                    raise PlannerError(
+                        "binding_not_attested",
+                        "executable policy binding declares check "
+                        "'graph.relationship_audit' "
+                        f"for subject {identity!r}, but no passed relationship audit "
+                        f"of this plan is incident to its declared dependency "
+                        f"{dependency!r} (dataset {dataset!r}) — a passing audit on "
+                        "unrelated branches is not proof; the operation refuses "
+                        "instead of labeling the narrative enforced",
+                    )
 
     async def query_metrics(self, request: dict) -> dict:
         """Governed multi-fact query (issue #30, spec rev 1 "Query and result
@@ -764,7 +822,8 @@ class _QueryRuntimeSession(_DiscoverySession):
         budget = self._claim_operation_budget()
         with self._phase(budget):
             plan = plan_query(graph, request, self.con)
-            self._attest_bound_checks(plan)  # §10.2: real executed-check proof, before result SQL
+            # §10.2: real executed-check proof, before result SQL
+            self._attest_bound_checks(plan, graph)
             assert_single_statement(plan.sql)
             self._execution.bind(plan.sql)
             bounded = self._collect(plan.sql, budget)

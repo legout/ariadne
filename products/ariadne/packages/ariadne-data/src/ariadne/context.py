@@ -1442,12 +1442,19 @@ def build_native_table_page(
     ``ariadne_profile`` envelope — ``core_ref`` resource identity, the native
     base metadata and the core-owned ``native.ariadne`` schema/observations
     facts — with authored summary/base metadata and the curated body
-    preserved verbatim outside the core-owned sections, authored per-column
-    nullable/default/comment meanings surviving identical column
-    identity/type, and the observation timestamp REUSED when the schema and
-    the measurements are unchanged (identical inputs produce identical
-    bytes). The caller parses any existing KB page through the producer's
-    public frontmatter parse; this builder never parses KB bytes itself.
+    preserved verbatim outside the core-owned sections. The physical row
+    fields (column/type/nullable/default/comment) regenerate from the
+    INSPECTED source columns on every refresh (#83 review fix F5, spec0010
+    §4): a prior same-name/type row never launders stale declared DDL facts,
+    and curated meaning lives in the authored description/body and preserved
+    native extras. The producer-parsed native ``observed_value_columns``
+    selection is fulfilled by the real measured profile through the existing
+    selection/value-evidence validators (#83 review fix F4, spec0024 §3) —
+    preserve-or-refuse, never a silent evidence drop. The observation
+    timestamp is REUSED when the schema and the measurements are unchanged
+    (identical inputs produce identical bytes). The caller parses any
+    existing KB page through the producer's public frontmatter parse; this
+    builder never parses KB bytes itself.
     Returns ``(page text, change flags)``."""
     resource = asset["resource"]
     existing_profile = (
@@ -1460,16 +1467,36 @@ def build_native_table_page(
     existing_ariadne = existing_ariadne if isinstance(existing_ariadne, dict) else {}
     old_schema = existing_ariadne.get("schema")
     old_schema = old_schema if isinstance(old_schema, list) else None
-    old_rows = {entry["column"]: entry for entry in old_schema or [] if isinstance(entry, dict)}
-    authored: list[dict] = []
-    for column in columns:
-        prior = old_rows.get(column["column"])
-        if prior is not None and prior.get("type") == column["type"]:
-            authored.append(prior)  # authored meanings survive identical identity/type
-        else:
-            authored.append(column)
+    # F5 (spec0010 §4): the physical row fields regenerate from the INSPECTED
+    # columns on every refresh — a prior same-name/type row never launders
+    # stale declared nullability/default/comment; curated meaning lives in the
+    # authored description/body and the preserved native extras.
+    authored: list[dict] = [dict(column) for column in columns]
     flags = _schema_flags(old_schema, authored)
-    facts = _observation_facts(resource=resource, profile=profile, source_binding=source_binding)
+    # F4 (spec0024 §3): the producer-parsed native selection (existing_meta is
+    # the producer's public frontmatter view — never a Core YAML parse of KB
+    # bytes, never _authored_selection over raw page text) is fulfilled by the
+    # REAL measured profile through the existing validators; a malformed
+    # selection refuses the whole refresh and unsupported states stay honest.
+    selection = existing_native.get("observed_value_columns")
+    selection_errors = _selection_shape_errors(selection)
+    if selection_errors:
+        raise ValueError(
+            f"{resource}: authored observed_value_columns is not a valid selection "
+            f"({'; '.join(selection_errors)}) — fix the page metadata; nothing "
+            "was written"
+        )
+    value_evidence = (
+        _value_evidence(selection=selection, columns=authored, profile=profile, where=resource)
+        if selection
+        else None
+    )
+    facts = _observation_facts(
+        resource=resource,
+        profile=profile,
+        value_evidence=value_evidence,
+        source_binding=source_binding,
+    )
     old_observations = existing_ariadne.get("observations")
     old_observations = old_observations if isinstance(old_observations, dict) else {}
     old_observed_at = (

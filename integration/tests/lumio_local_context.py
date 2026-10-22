@@ -1490,6 +1490,91 @@ P1_LOOKUP_OKF_METRIC_PAGE = (
     "# label_count\n"
 )
 
+# F3 (#83 review fix, spec0032 §10.2): a real DERIVED metric in the same
+# valid single-dataset retail_sales model — the expression names the metric
+# revenue, so the graph derives deps=(revenue,) while the model keeps exactly
+# one dataset. The +1 oracle is hand-worked from the authored 150.0/0.0
+# revenue result, never from any product output.
+P1_DERIVED_METRIC = """\
+      - name: revenue_plus_one
+        description: Derived recognized revenue plus one
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: revenue + 1
+"""
+
+# The derived metric's classic graph-admission page (issue #30: every graph
+# metric needs a context_layer metric page citing an EXISTING contained
+# policy — explicit human-authored compatibility input, not a KB mirror).
+P1_DERIVED_OKF_METRIC_PAGE = (
+    "---\n"
+    "type: metric\n"
+    "status: draft\n"
+    "title: revenue_plus_one\n"
+    "description: Derived recognized revenue plus one; classic graph-admission page.\n"
+    "tags: [metric]\n"
+    "sources:\n"
+    "  - id: all-orders-count\n"
+    "    resource: policies/all-orders-count.md\n"
+    "    title: All orders count\n"
+    "---\n\n"
+    "# revenue_plus_one\n"
+)
+
+# The derived metric's inert KB Metric page (native completeness requires
+# one Context Binding per model metric): empty typed closure — no binding
+# classification is consumed for it, and governed_by names the semantic
+# layer, never a policies/ path.
+P1_DERIVED_METRIC_PAGE = (
+    "---\n"
+    'id: "entity:revenue-plus-one"\n'
+    "entity_types:\n"
+    "  - metric\n"
+    "tags:\n"
+    "  - retail\n"
+    "  - finance\n"
+    'title: "Recognized Revenue Plus One (Metric)"\n'
+    'summary: "Derived recognized revenue plus one; scaffolding for the bound model metric."\n'
+    'lifecycle: "approved"\n'
+    'visibility: "public"\n'
+    "sources:\n"
+    '  - id: "src-ops-derived"\n'
+    '    title: "Operations derived-metric review, 2026-10-22"\n'
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: metric\n"
+    "  metric_ref:\n"
+    '    model: "retail_sales"\n'
+    '    metric: "revenue_plus_one"\n'
+    "  required_policies: []\n"
+    "  native:\n"
+    "    type: metric\n"
+    '    status: "stable"\n'
+    '    title: "Recognized revenue plus one"\n'
+    '    description: "Derived recognized revenue plus one."\n'
+    "    tags:\n"
+    "      - finance\n"
+    "    stale_after: 2027-06-30\n"
+    "    sources:\n"
+    '      - id: "src-ops-derived"\n'
+    '        title: "Operations derived-metric review, 2026-10-22"\n'
+    '    governed_by: "semantic_layer retail_sales::revenue_plus_one"\n'
+    "    dimensions:\n"
+    "      - status\n"
+    "    grain:\n"
+    "      primary_key:\n"
+    "        - id\n"
+    '      cardinality_enforcement: "strict_1_to_1"\n'
+    "---\n"
+    "\n"
+    "# Recognized Revenue Plus One (Metric)\n"
+    "\n"
+    "Fixture scaffolding metric for the derived closure: it adds one to the\n"
+    "sanctioned revenue exclusion, carries an empty Policy closure and\n"
+    "participates in no binding classification.\n"
+)
+
 P1_GRAPH = """\
 version: 1
 relationships:
@@ -1725,14 +1810,14 @@ def _p1_project(root: Path, bindings: dict):
     # lookup collection lives in its own single-dataset status_lookup model.
     model = project / "semantic_layer" / "models" / "retail_sales.yml"
     model.write_text(
-        model.read_text().replace(
-            "WHEN status <> 'cancelled'", "WHEN orders.status <> 'cancelled'"
-        )
+        model.read_text().replace("WHEN status <> 'cancelled'", "WHEN orders.status <> 'cancelled'")
+        + P1_DERIVED_METRIC
     )
     (project / "semantic_layer" / "models" / "status_lookup.yml").write_text(P1_LOOKUP_MODEL)
     (project / "semantic_layer" / "graph.yml").write_text(P1_GRAPH)
-    (project / "context_layer" / "metrics" / "label_count.md").write_text(
-        P1_LOOKUP_OKF_METRIC_PAGE
+    (project / "context_layer" / "metrics" / "label_count.md").write_text(P1_LOOKUP_OKF_METRIC_PAGE)
+    (project / "context_layer" / "metrics" / "revenue_plus_one.md").write_text(
+        P1_DERIVED_OKF_METRIC_PAGE
     )
     (project / "context_integration.yaml").write_text(_p1_selector_text(bindings))
     run_git(
@@ -1743,6 +1828,7 @@ def _p1_project(root: Path, bindings: dict):
         "semantic_layer/models/retail_sales.yml",
         "semantic_layer/models/status_lookup.yml",
         "context_layer/metrics/label_count.md",
+        "context_layer/metrics/revenue_plus_one.md",
         "context_integration.yaml",
     )
     run_git(project, "commit", "-q", "-m", "human: lookup collection, graph, revision-2 selector")
@@ -1762,6 +1848,7 @@ def _p1_kb_candidate(project: Path, api: AuthoringProject, started: dict, revisi
     (tree / "knowledge/policies/cancelled-orders.md").write_text(CANCELLATION)
     (tree / "knowledge/policies/order-label-hygiene.md").write_text(P1_HYGIENE_POLICY)
     (tree / "knowledge/metrics/label-count.md").write_text(P1_LOOKUP_METRIC_PAGE)
+    (tree / "knowledge/metrics/revenue-plus-one.md").write_text(P1_DERIVED_METRIC_PAGE)
     metric = tree / "knowledge/metrics/retail-revenue.md"
     meta, body = page_parts(metric)
     meta["ariadne_profile"]["required_policies"].append(
@@ -1822,9 +1909,294 @@ def _p1_refusal_bindings(case: str, bindings: dict) -> dict:
     return mutated
 
 
+# The #83 review-fix refusal cases (parent-dispositioned F1/F2): unlike the
+# five binding mutations above, these keep the authored §10.1 inventory
+# VALID and add exactly ONE producer-valid KB page whose defect is visible
+# only to the Core consumer contract.
+P1_PAGE_REFUSAL_CASES = frozenset(
+    {
+        "table-identity-contradiction",
+        "computation-unknown-semantic",
+        "native-source-unapproved",
+        "native-source-escape",
+    }
+)
+
+
+def _p1_refusal_extra_page(
+    case: str, tree: Path, tmp_path: Path, orders_resource: str, status_resource: str
+) -> str | None:
+    """Write the one offending review-fix page into the candidate's knowledge
+    subtree. Every page is PRODUCER-VALID (the caller's inspect guard proves
+    it): F1 — a table page whose core_ref and native.resource name two
+    DIFFERENT approved physical tables, and a hidden computation whose
+    semantic core_ref no admitted metric carries; F2 — a table page whose
+    retained native provenance (a canonical resource of an unapproved
+    source; a relative citation that RESOLVES to a real file outside the
+    captured KB but inside tmp_path) escapes the approved-source/containment
+    gates. The escape file is created here and its placement asserted, so
+    the case tests CONTAINMENT, never missing-file behavior. Returns the
+    authored escape citation for the refusal-token assertion, else None."""
+    from ariadne.sources import table_resource
+
+    knowledge = tree / "knowledge"
+    # the negative cases never refresh, so the tables/ category does not
+    # exist yet in these disposable candidates — create it before the writes
+    (knowledge / "tables").mkdir(parents=True, exist_ok=True)
+    if case == "table-identity-contradiction":
+        (knowledge / "tables/contradictory-binding.md").write_text(
+            "---\n"
+            'id: "entity:contradictory-binding"\n'
+            "entity_types:\n"
+            "  - table\n"
+            "tags:\n"
+            "  - internal\n"
+            'title: "Contradictory Binding"\n'
+            'summary: "Table page whose two physical identities disagree."\n'
+            'lifecycle: "approved"\n'
+            'visibility: "public"\n'
+            "sources:\n"
+            '  - id: "src-contradiction"\n'
+            '    title: "Synthetic catalog memo, 2026-10-22"\n'
+            "ariadne_profile:\n"
+            "  version: 1\n"
+            "  kind: table\n"
+            "  core_ref:\n"
+            "    kind: resource\n"
+            f'    id: "{orders_resource}"\n'
+            "  native:\n"
+            "    type: table\n"
+            '    title: "Contradictory Binding"\n'
+            '    description: "Table page whose two physical identities disagree."\n'
+            "    tags:\n"
+            "      - internal\n"
+            "    stale_after: 2027-12-31\n"
+            "    sources:\n"
+            '      - id: "src-contradiction"\n'
+            '        title: "Synthetic catalog memo, 2026-10-22"\n'
+            f'    resource: "{status_resource}"\n'
+            "---\n"
+            "\n"
+            "# Contradictory Binding\n"
+            "\n"
+            "A producer-valid table page binding two different approved\n"
+            "physical tables: core_ref names the orders table while the native\n"
+            "resource names the status table.\n"
+        )
+        return None
+    if case == "computation-unknown-semantic":
+        (knowledge / "computations/ghost-revenue.md").write_text(
+            "---\n"
+            'id: "entity:ghost-revenue-computation"\n'
+            "entity_types:\n"
+            "  - computation\n"
+            "tags:\n"
+            "  - finance\n"
+            'title: "Ghost Revenue Computation"\n'
+            'summary: "Hidden computation naming a semantic identity no metric carries."\n'
+            'lifecycle: "approved"\n'
+            'visibility: "restricted"\n'
+            "sources:\n"
+            '  - id: "src-ghost-review"\n'
+            '    title: "Ghost computation review, 2026-10-22"\n'
+            "ariadne_profile:\n"
+            "  version: 1\n"
+            "  kind: computation\n"
+            "  core_ref:\n"
+            "    kind: semantic\n"
+            '    id: "retail_sales::ghost_revenue"\n'
+            "  native:\n"
+            "    type: computation\n"
+            '    status: "stable"\n'
+            '    title: "Ghost revenue computation"\n'
+            '    description: "Names a semantic identity no admitted metric carries."\n'
+            "    tags:\n"
+            "      - finance\n"
+            "    stale_after: 2020-01-01\n"
+            "    attestation: pending\n"
+            "    sources:\n"
+            '      - id: "src-ghost-review"\n'
+            '        title: "Ghost computation review, 2026-10-22"\n'
+            "---\n"
+            "\n"
+            "# Ghost Revenue Computation\n"
+            "\n"
+            "Hidden, unreferenced computation page whose semantic core\n"
+            "reference resolves to no sanctioned definition.\n"
+        )
+        return None
+    if case == "native-source-unapproved":
+        unapproved = table_resource("unapproved-source", None, "main", "orders")
+        (knowledge / "tables/shadow-sourced.md").write_text(
+            "---\n"
+            'id: "entity:shadow-sourced"\n'
+            "entity_types:\n"
+            "  - table\n"
+            "tags:\n"
+            "  - retail\n"
+            'title: "Shadow Sourced"\n'
+            'summary: "Table page whose native provenance names an unapproved source."\n'
+            'lifecycle: "approved"\n'
+            'visibility: "public"\n'
+            "sources:\n"
+            '  - id: "src-shadow-catalog"\n'
+            '    title: "Synthetic shadow catalog memo, 2026-10-22"\n'
+            "ariadne_profile:\n"
+            "  version: 1\n"
+            "  kind: table\n"
+            "  core_ref:\n"
+            "    kind: resource\n"
+            f'    id: "{orders_resource}"\n'
+            "  native:\n"
+            "    type: table\n"
+            '    title: "Shadow Sourced"\n'
+            '    description: "Native provenance naming an unapproved source."\n'
+            "    tags:\n"
+            "      - retail\n"
+            "    stale_after: 2027-12-31\n"
+            "    sources:\n"
+            '      - id: "src-shadow-catalog"\n'
+            '        title: "Synthetic shadow catalog memo, 2026-10-22"\n'
+            f'        resource: "{unapproved}"\n'
+            f'    resource: "{orders_resource}"\n'
+            "---\n"
+            "\n"
+            "# Shadow Sourced\n"
+            "\n"
+            "A producer-valid table page whose retained native source entry\n"
+            "names a canonical resource of an unapproved source.\n"
+        )
+        return None
+    if case == "native-source-escape":
+        outside = tmp_path / "uncaptured-table-evidence.md"
+        outside.write_text("Author-owned table evidence outside the captured release.\n")
+        escape = Path(os.path.relpath(outside.resolve(), knowledge.resolve())).as_posix()
+        assert escape.startswith("../") and "://" not in escape  # producer-relative form
+        resolved = (knowledge / escape).resolve()
+        assert resolved == outside.resolve() and outside.is_file()
+        assert resolved.is_relative_to(tmp_path.resolve())  # really inside tmp_path
+        assert not resolved.is_relative_to(knowledge.resolve())  # really outside the KB
+        (knowledge / "tables/escaped-source.md").write_text(
+            "---\n"
+            'id: "entity:escaped-source"\n'
+            "entity_types:\n"
+            "  - table\n"
+            "tags:\n"
+            "  - retail\n"
+            'title: "Escaped Source"\n'
+            'summary: "Table page whose native citation escapes the captured KB."\n'
+            'lifecycle: "approved"\n'
+            'visibility: "public"\n'
+            "sources:\n"
+            '  - id: "src-escaped-evidence"\n'
+            '    title: "Synthetic escaped evidence memo, 2026-10-22"\n'
+            "ariadne_profile:\n"
+            "  version: 1\n"
+            "  kind: table\n"
+            "  core_ref:\n"
+            "    kind: resource\n"
+            f'    id: "{orders_resource}"\n'
+            "  native:\n"
+            "    type: table\n"
+            '    title: "Escaped Source"\n'
+            '    description: "Native citation escaping the captured KB subtree."\n'
+            "    tags:\n"
+            "      - retail\n"
+            "    stale_after: 2027-12-31\n"
+            "    sources:\n"
+            '      - id: "src-escaped-evidence"\n'
+            '        title: "Synthetic escaped evidence memo, 2026-10-22"\n'
+            f'        resource: "{escape}"\n'
+            f'    resource: "{orders_resource}"\n'
+            "---\n"
+            "\n"
+            "# Escaped Source\n"
+            "\n"
+            "A producer-valid table page whose native source citation\n"
+            "resolves to a real file outside the captured knowledge subtree.\n"
+        )
+        return escape
+    raise AssertionError(case)  # pragma: no cover - the case table is closed
+
+
+def _p1_bound_table_page(resource: str, source_binding: str) -> str:
+    """A producer-valid native Table page with complete measured observations
+    (hand-counted over the authored orders rows: 3 rows, id/amount distinct 3,
+    status distinct 2, no nulls) stamped with the given effective endpoint
+    binding — a fixture INPUT for the endpoint-provenance gate; the authored
+    stamp asserts no measurement or admission authority of its own."""
+    return (
+        "---\n"
+        'id: "entity:bound-observations"\n'
+        "entity_types:\n"
+        "  - table\n"
+        "tags:\n"
+        "  - retail\n"
+        'title: "Bound Observations"\n'
+        'summary: "Native table observations stamped with an effective binding."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "sources:\n"
+        '  - id: "src-bound-catalog"\n'
+        '    title: "Synthetic bound catalog memo, 2026-10-22"\n'
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: table\n"
+        "  core_ref:\n"
+        "    kind: resource\n"
+        f'    id: "{resource}"\n'
+        "  native:\n"
+        "    type: table\n"
+        '    title: "Bound Observations"\n'
+        '    description: "Native table observations stamped with an effective binding."\n'
+        "    tags:\n"
+        "      - retail\n"
+        "    stale_after: 2027-06-30\n"
+        "    sources:\n"
+        '      - id: "src-bound-catalog"\n'
+        '        title: "Synthetic bound catalog memo, 2026-10-22"\n'
+        f'    resource: "{resource}"\n'
+        "    ariadne:\n"
+        "      schema:\n"
+        "        - column: id\n"
+        "          type: INTEGER\n"
+        "          nullable: true\n"
+        "          default: null\n"
+        "          comment: unknown\n"
+        "        - column: amount\n"
+        "          type: DOUBLE\n"
+        "          nullable: true\n"
+        "          default: null\n"
+        "          comment: unknown\n"
+        "        - column: status\n"
+        "          type: VARCHAR\n"
+        "          nullable: true\n"
+        "          default: null\n"
+        "          comment: unknown\n"
+        "      observations:\n"
+        '        observed_at: "2026-10-22T12:00:00+00:00"\n'
+        "        scope: full\n"
+        "        row_count: 3\n"
+        "        candidate_keys: [id]\n"
+        "        columns:\n"
+        "          id: {null_count: 0, distinct_count: 3}\n"
+        "          amount: {null_count: 0, distinct_count: 3}\n"
+        "          status: {null_count: 0, distinct_count: 2}\n"
+        f'        citation: "{resource}"\n'
+        f'        source_binding: "{source_binding}"\n'
+        "---\n"
+        "\n"
+        "# Bound Observations\n"
+        "\n"
+        "Fixture page carrying measured observations under an explicit\n"
+        "effective endpoint binding stamp.\n"
+    )
+
+
 # The one focused case family: the real positive admission journey plus
-# exactly the five declared refusal cases as finite parameters (plan0032
-# shared verification, P1 assignment).
+# exactly the five declared §10.1/§10.2 binding refusal cases and the four
+# parent-dispositioned #83 review-fix refusal cases as finite parameters
+# (plan0032 shared verification, P1 assignment).
 P1_CASES = [
     pytest.param("admission", id="admission"),
     pytest.param("unknown-check", id="refusal-unknown-check"),
@@ -1832,6 +2204,10 @@ P1_CASES = [
     pytest.param("missing-classification", id="refusal-missing-classification"),
     pytest.param("invented-obligation", id="refusal-invented-obligation"),
     pytest.param("wrong-revision-operation", id="refusal-wrong-revision-operation"),
+    pytest.param("table-identity-contradiction", id="refusal-table-identity-contradiction"),
+    pytest.param("computation-unknown-semantic", id="refusal-computation-unknown-semantic"),
+    pytest.param("native-source-unapproved", id="refusal-native-source-unapproved"),
+    pytest.param("native-source-escape", id="refusal-native-source-escape"),
 ]
 # Each refusal must name its §10 identifier: the unknown check id, the known
 # check id that never executes for the bound operation (with the operation),
@@ -1859,12 +2235,15 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     support_revision 2 with the authored binding inventory; the three
     revision-3 query operations keep refusing through the existing documented
     gate while a legacy revision-1 admission under the SAME candidate build
-    keeps its own frozen capability table; and each declared closed-validation
+    keeps its own frozen capability table; each declared closed-validation
     refusal names its §10 identifier through the established public
-    validation seam."""
+    validation seam; and the parent-dispositioned review-fix refusals name
+    their offending physical/semantic/provenance identities from producer-
+    valid pages only."""
     import hashlib
     import json
 
+    import duckdb  # pyright: ignore[reportMissingImports] — qualified test env is external
     from ariadne.planner import PlannerError
     from ariadne.sources import collection_resource, parse_resource, table_resource
     from lumio_wiki.ariadne_context import (  # pyright: ignore[reportMissingImports]
@@ -1879,7 +2258,10 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     if case != "admission":
         # independent disposable candidates: one project/proposal and ONE
         # validation per refusal case (the native round guard stays intact)
-        project = _p1_project(tmp_path, _p1_refusal_bindings(case, authored))
+        bindings = (
+            authored if case in P1_PAGE_REFUSAL_CASES else _p1_refusal_bindings(case, authored)
+        )
+        project = _p1_project(tmp_path, bindings)
         api = AuthoringProject(project)
         started = api.start_proposal()
         approved(api, project, started)
@@ -1893,10 +2275,19 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
                 "model: orders", "model: retail_sales"
             ),
         )
+        tree = worktree_of(project, started["proposal"])
         revision = _p1_kb_candidate(project, api, started, revision)
+        escape_citation = None
+        if case in P1_PAGE_REFUSAL_CASES:
+            # the authored §10.1 inventory stays VALID: the refusal comes from
+            # exactly one producer-valid page the Core consumer contract refuses
+            escape_citation = _p1_refusal_extra_page(
+                case, tree, tmp_path, orders_resource, status_resource
+            )
+            revision = reconcile_knowledge(project, started["proposal"], revision)
         assert (
             inspect_ariadne_candidate(
-                str(worktree_of(project, started["proposal"]) / "knowledge"),
+                str(tree / "knowledge"),
                 revision,
                 namespace=NAMESPACE,
             ).diagnostics
@@ -1905,7 +2296,32 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         refused = api.validate_proposal(started["proposal"], revision)
         assert refused["ok"] is False, case
         diagnostics = "; ".join(refused["errors"])
-        for token in P1_REFUSAL_TOKENS[case]:
+        if case in P1_PAGE_REFUSAL_CASES:
+            # frozen oracles (parent disposition): the page path plus BOTH
+            # authored physical identities (F1), the qualified semantic id,
+            # the unapproved source name, and the authored escape citation
+            tokens = {
+                "table-identity-contradiction": (
+                    "knowledge/tables/contradictory-binding.md",
+                    orders_resource,
+                    status_resource,
+                ),
+                "computation-unknown-semantic": (
+                    "knowledge/computations/ghost-revenue.md",
+                    "retail_sales::ghost_revenue",
+                ),
+                "native-source-unapproved": (
+                    "knowledge/tables/shadow-sourced.md",
+                    "unapproved-source",
+                ),
+                "native-source-escape": (
+                    "knowledge/tables/escaped-source.md",
+                    escape_citation,
+                ),
+            }[case]
+        else:
+            tokens = P1_REFUSAL_TOKENS[case]
+        for token in tokens:
             assert token in diagnostics, (case, token, diagnostics)
         assert not (project / ".ariadne" / "current.json").exists()
         return
@@ -1944,9 +2360,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         (collection, "dataset"),
     }
     for resource, kind in generated:
-        assert parse_resource(resource)[0] == (
-            "collection" if kind == "dataset" else kind
-        )
+        assert parse_resource(resource)[0] == ("collection" if kind == "dataset" else kind)
     # the native pages live in knowledge/, bound by exact core_ref identity,
     # and carry the authored DDL facts and hand-counted observations
     schema_oracle = {
@@ -1985,14 +2399,27 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     assert context_mirror.read_bytes() == mirror_before
     assert not (tree / "context_layer" / "datasets").exists()
 
-    # the handwritten curated marker survives a real second inspection of the
-    # identical assets (authored summary/meaning preservation, §6)
+    # the handwritten curated marker survives a real second inspection
+    # (authored summary/meaning preservation, §6) — and the #83 review-fix
+    # legs ride the SAME second refresh: F4 (spec0024 §3) authors the
+    # selected-value declaration and F5 (spec0010 §4) changes the approved
+    # source's DECLARED DDL facts (nullability/default) without any
+    # name/type change, so the refreshed page must carry real measured value
+    # evidence and the INSPECTED declared facts, never stale prior rows
     orders_page = table_pages[orders_resource]
     meta, body = page_parts(orders_page)
     meta["ariadne_profile"]["native"]["description"] = (
         "One row per retail order; " + P1_CURATED_MARKER + "."
     )
+    meta["ariadne_profile"]["native"]["observed_value_columns"] = {"status": "VARCHAR"}
     write_page(orders_page, meta, body + f"\n{P1_CURATED_MARKER}\n")
+    connection = duckdb.connect(str(project / "data" / "orders.duckdb"))
+    # test-fixture DDL: declared-constraint change, no identity/type change
+    # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
+    connection.execute("ALTER TABLE main.orders ALTER COLUMN status SET NOT NULL")
+    # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
+    connection.execute("ALTER TABLE main.orders ALTER COLUMN amount SET DEFAULT 7")
+    connection.close()
     revision = reconcile_knowledge(project, started["proposal"], revision)
     retained = api.refresh_schema(started["proposal"], revision, [P1_ORDERS_ASSET, P1_STATUS_ASSET])
     revision = retained["revision"]
@@ -2000,9 +2427,32 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     native = meta["ariadne_profile"]["native"]
     assert P1_CURATED_MARKER in native["description"]
     assert P1_CURATED_MARKER in body
+    schema_rows = {row["column"]: row for row in native["ariadne"]["schema"]}
     assert [
         (row["column"], row["type"]) for row in native["ariadne"]["schema"]
     ] == P1_ORDERS_COLUMNS
+    # F5 oracle from the authored DDL: status is NOT NULL and keeps no
+    # default, amount carries DEFAULT 7, untouched id stays nullable with no
+    # default, and no comment source exists (unknown stays unknown)
+    assert schema_rows["status"]["nullable"] is False
+    assert schema_rows["status"]["default"] is None
+    assert schema_rows["amount"]["nullable"] is True
+    assert schema_rows["amount"]["default"] == "7"
+    assert schema_rows["id"]["nullable"] is True
+    assert schema_rows["id"]["default"] is None
+    assert all(row["comment"] == "unknown" for row in schema_rows.values())
+    # F4 oracle from the authored rows (completed 2, cancelled 1): the
+    # authored selection is fulfilled by the REAL measured profile in the
+    # contract's count-descending canonical order, and the declaration
+    # itself survives as the authored native selection
+    assert native["observed_value_columns"] == {"status": "VARCHAR"}
+    assert native["ariadne"]["observations"]["value_evidence"]["status"] == {
+        "state": "observed",
+        "top_values": [
+            {"value": "completed", "count": 2},
+            {"value": "cancelled", "count": 1},
+        ],
+    }
 
     # authored evidence flags are honest disclosure, never authority (§5): a
     # plausible forgery claims the executed check and a verification stamp
@@ -2105,11 +2555,34 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
             for audit in traversed["plan"]["audits"]
         )
 
+        # F3 (#83 review fix, spec0032 §10.2): a plain single-fact derived
+        # metric cannot compose with a lookup traversal — the existing
+        # planner contract (the issue #29 post-aggregate design) refuses the
+        # exact request with the STABLE PlannerError code before any result
+        # SQL; only window-declared post-aggregate metrics take that shape.
+        # The derived metric still consumes retail_sales::revenue, so the
+        # binding obligation itself is exercised by the derived-only leg below
+        with pytest.raises(PlannerError) as caught:
+            asyncio.run(
+                runtime.query_metrics(
+                    {"metrics": ["revenue_plus_one"], "dimensions": ["status_label"]}
+                )
+            )
+        assert caught.value.code == "derived_lookup_unsupported"
+
         # a request no relationship participates in reports the audit not-run:
         # the authored generated/verified flags cannot attest it, so the
         # operation refuses instead of labeling the narrative enforced (§10.2)
         with pytest.raises(PlannerError, match="graph.relationship_audit"):
             asyncio.run(runtime.query_metrics({"metrics": ["revenue"]}))
+
+        # F3: the derived-only request carries no executable binding of its
+        # own, but it CONSUMES retail_sales::revenue — the obligation must be
+        # attested for the consumed dependency even though the requested
+        # name alone appears nowhere in the binding inventory, refusing
+        # before any result SQL while the audit is not-run
+        with pytest.raises(PlannerError, match="graph.relationship_audit"):
+            asyncio.run(runtime.query_metrics({"metrics": ["revenue_plus_one"]}))
 
         # get_metric keeps its explanatory contract on this admission: the
         # executable binding (query_metrics-only) never gates it, and the
@@ -2225,3 +2698,84 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         )
         == published_before
     )
+
+
+def test_native_table_endpoint_binding_scopes_measured_observations(tmp_path):
+    """F2 (#83 review fix, spec 0025 §4 through spec0032 §§5–6): a KB Table
+    page's measured observations carry their effective endpoint provenance;
+    the candidate refuses while those observations stay bound to a DIFFERENT
+    effective storage identity, and stays valid under the identical one. The
+    exercised comparison/enumeration is the real validate caller's own gate
+    (``_stale_schema_binding_errors``, invoked by ``validate_proposal`` with
+    the CURRENT effective approval digest); the authored A/B stamps are
+    fixture inputs asserting no measurement or admission authority of their
+    own — a missing optional stamp proves nothing and is not tested here."""
+    from ariadne.authoring import _stale_schema_binding_errors
+    from ariadne.sources import table_resource
+    from lumio_wiki.ariadne_context import (  # pyright: ignore[reportMissingImports]
+        inspect_ariadne_candidate,
+    )
+
+    orders_resource = table_resource(**P1_ORDERS_ASSET)
+    status_resource = table_resource(**P1_STATUS_ASSET)
+    binding_kept = "a" * 64
+    binding_switched = "b" * 64
+    project = _p1_project(tmp_path, _p1_bindings(orders_resource, status_resource))
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    revision = contracted(
+        api,
+        started,
+        contract=ORDERS_CONTRACT.replace("region", "status").replace("mustBe: 60", "mustBe: 175"),
+        bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+            "model: orders", "model: retail_sales"
+        ),
+    )
+    tree = worktree_of(project, started["proposal"])
+    revision = _p1_kb_candidate(project, api, started, revision)
+    # no refresh runs here either: create the tables/ category before the write
+    (tree / "knowledge/tables").mkdir(parents=True, exist_ok=True)
+    (tree / "knowledge/tables/bound-observations.md").write_text(
+        _p1_bound_table_page(orders_resource, binding_kept)
+    )
+    revision = reconcile_knowledge(project, started["proposal"], revision)
+    assert (
+        inspect_ariadne_candidate(
+            str(tree / "knowledge"),
+            revision,
+            namespace=NAMESPACE,
+        ).diagnostics
+        == ()
+    ), "the fixture page is producer-valid; only the Core endpoint gate refuses"
+    # identical binding: the stamped observations stay valid at this seam
+    assert _stale_schema_binding_errors(tree, binding_kept) == []
+    # switched endpoint: the same measured observations are stale provenance
+    stale = _stale_schema_binding_errors(tree, binding_switched)
+    assert stale and any("knowledge/tables/bound-observations.md" in error for error in stale)
+    assert not (project / ".ariadne" / "current.json").exists()  # validation ≠ activation
+
+
+def test_selector_file_version_requires_exact_integer():
+    """F6 (#83 review fix, spec0032 §10.1; spec0029 §2): the closed authored
+    selector's file ``version`` is the EXACT integer 1 — the refactor's
+    equality-only check newly admitted ``version: true`` and ``version: 1.0``
+    (both compare equal to 1), a concrete relaxation of the closed admission
+    carrier including legacy revision-1 inputs. Independently authored
+    closed carrier inputs; the original five-key contract is unchanged."""
+    from ariadne.lumio_context import validated_selector
+
+    def carrier(version):
+        return {
+            "version": version,
+            "mode": "integrated",
+            "subtree": "knowledge",
+            "namespace": NAMESPACE,
+            "profile": "ariadne-context/1",
+        }
+
+    # the exact integer keeps the original five-key contract
+    assert validated_selector(carrier(1)) == carrier(1)
+    for malformed in (True, 1.0):
+        with pytest.raises(ValueError):
+            validated_selector(carrier(malformed))

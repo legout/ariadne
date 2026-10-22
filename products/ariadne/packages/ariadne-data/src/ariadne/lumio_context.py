@@ -150,7 +150,8 @@ def validated_selector(data):
             "policy_bindings block of version 1 (spec0032 §10.1)"
         )
     if (
-        data["version"] != 1
+        type(data["version"]) is not int
+        or data["version"] != 1
         or data["mode"] != "integrated"
         or data["subtree"] != "knowledge"
         or data["profile"] != "ariadne-context/1"
@@ -472,6 +473,79 @@ def _policy_binding_errors(root: Path, selected: dict, captured) -> list[str]:
     return errors
 
 
+def _technical_identity_errors(where: str, profile, sanctioned: set[tuple[str, str]]) -> list[str]:
+    """#83 review fix F1 (spec0032 §§3, 5, §10.1): the consumer-OWNING identity
+    validation of one captured technical profile — hidden or unreferenced
+    pages included, always. Kind-correct resource anchors, agreement of every
+    SUPPLIED table identity (core_ref, native resource, observation citation)
+    — a technical Table profile binds exactly one physical table —
+    collection-consistent Dataset member links, and resolution of computation
+    semantic references against the sanctioned qualified model::metric
+    inventory. Other legitimately approved provenance is NOT required to
+    equal the page anchor (it enters the F2 citation gates instead), and no
+    semantic Dataset is invented for unconsumed physical tables."""
+    from ariadne.sources import parse_resource
+
+    errors: list[str] = []
+    core_ref = profile.core_ref
+    native = profile.native or {}
+    if profile.kind in ("table", "dataset"):
+        if core_ref is None or not isinstance(core_ref.id, str):
+            return []  # the producer page gate owns a missing/malformed core_ref
+        try:
+            kind, parts = parse_resource(core_ref.id)
+        except ValueError as exc:
+            return [f"{where}: core_ref {core_ref.id!r} is not canonical: {exc}"]
+        expected_kind = "table" if profile.kind == "table" else "collection"
+        if kind != expected_kind:
+            return [
+                f"{where}: core_ref names a {kind} resource — a {profile.kind} "
+                f"profile anchors its {expected_kind} identity (spec0032 §5)"
+            ]
+        if profile.kind == "table":
+            observations = (native.get("ariadne") or {}).get("observations") or {}
+            for label, value in (
+                ("native resource", native.get("resource")),
+                ("observation citation", observations.get("citation")),
+            ):
+                if isinstance(value, str) and value and value != core_ref.id:
+                    errors.append(
+                        f"{where}: {label} {value!r} contradicts the page's core_ref "
+                        f"table identity {core_ref.id!r} — a technical Table profile "
+                        "binds exactly one physical table"
+                    )
+        else:
+            for member in (native.get("ariadne") or {}).get("tables") or []:
+                if not isinstance(member, str):
+                    continue
+                try:
+                    member_kind, member_parts = parse_resource(member)
+                except ValueError as exc:
+                    errors.append(f"{where}: linked table {member!r} is not canonical: {exc}")
+                    continue
+                if member_kind != "table":
+                    errors.append(
+                        f"{where}: linked table {member!r} names a {member_kind} "
+                        "resource — a Dataset Overview links table identities"
+                    )
+                    continue
+                if member_parts[:3] != parts[:3]:
+                    errors.append(
+                        f"{where}: linked table {member!r} is not a member of the "
+                        f"page's collection {core_ref.id!r} (spec0032 §5 grouping)"
+                    )
+    elif profile.kind == "computation":
+        if core_ref is None or not isinstance(core_ref.id, str):
+            return []  # the producer page gate owns a missing/malformed core_ref
+        model, _, metric = core_ref.id.partition("::")
+        if (model, metric) not in sanctioned:
+            errors.append(
+                f"{where}: core_ref semantic identity {core_ref.id!r} resolves to "
+                "no sanctioned metric definition of this release (spec0032 §5)"
+            )
+    return errors
+
+
 def candidate(root, kb_root, revision):
     """Reuse the producer's captured schema/catalog gate, then apply the
     consumer support of the SELECTED support revision (spec0032 §10.1/§10.3)."""
@@ -486,6 +560,15 @@ def candidate(root, kb_root, revision):
     captured = capture_revision(kb_root, revision)
     revision_number = selected.get("support_revision", 1)
     table = capability_table(revision_number)
+    # the sanctioned qualified model::metric definition inventory — the same
+    # static derivation the metric-completeness gate below compares against
+    sanctioned: set[tuple[str, str]] = set()
+    for path in sorted((Path(root) / "semantic_layer" / "models").glob("*.y*ml")):
+        doc = yaml.safe_load(path.read_text()) or {}
+        for model in doc.get("semantic_model") or []:
+            sanctioned.update(
+                (model["name"], metric["name"]) for metric in model.get("metrics") or []
+            )
     for page in captured.kb.pages:
         profile = page.ariadne_profile
         if profile is None:
@@ -531,15 +614,13 @@ def candidate(root, kb_root, revision):
         # computation kinds carry their FULL producer-native envelope —
         # core_ref, resource, observed_value_columns, attestation, attester,
         # runtime and dataset_sources are their native families, passed to
-        # the existing native validators without a lossy projection.
+        # the existing native validators without a lossy projection — AND
+        # the consumer-owning identity validation of F1 applies to every
+        # captured technical profile, hidden or unreferenced included.
+        elif profile.kind in ("dataset", "table", "computation"):
+            errors.extend(_technical_identity_errors(where, profile, sanctioned))
     if not errors:
-        expected = set()
-        for path in sorted((Path(root) / "semantic_layer" / "models").glob("*.y*ml")):
-            doc = yaml.safe_load(path.read_text()) or {}
-            for model in doc.get("semantic_model") or []:
-                expected.update(
-                    (model["name"], metric["name"]) for metric in model.get("metrics") or []
-                )
+        expected = sanctioned
         actual = {
             (page.ariadne_profile.metric_ref.model, page.ariadne_profile.metric_ref.metric)
             for page in captured.kb.pages
