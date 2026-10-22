@@ -492,11 +492,21 @@ def _technical_identity_errors(where: str, profile, sanctioned: set[tuple[str, s
     if profile.kind in ("table", "dataset"):
         if core_ref is None or not isinstance(core_ref.id, str):
             return []  # the producer page gate owns a missing/malformed core_ref
+        expected_kind = "table" if profile.kind == "table" else "collection"
+        # D4 (#83 delta review): the typed reference DISCRIMINATOR is checked
+        # BEFORE the id resolves — a physical profile anchors a resource
+        # reference; the authored discriminator is rejected as authored, never
+        # coerced or relabeled
+        if core_ref.kind != "resource":
+            return [
+                f"{where}: core_ref kind {core_ref.kind!r} must be 'resource' — a "
+                f"{profile.kind} profile anchors its {expected_kind} identity "
+                f"{core_ref.id!r} (spec0032 §5)"
+            ]
         try:
             kind, parts = parse_resource(core_ref.id)
         except ValueError as exc:
             return [f"{where}: core_ref {core_ref.id!r} is not canonical: {exc}"]
-        expected_kind = "table" if profile.kind == "table" else "collection"
         if kind != expected_kind:
             return [
                 f"{where}: core_ref names a {kind} resource — a {profile.kind} "
@@ -537,6 +547,14 @@ def _technical_identity_errors(where: str, profile, sanctioned: set[tuple[str, s
     elif profile.kind == "computation":
         if core_ref is None or not isinstance(core_ref.id, str):
             return []  # the producer page gate owns a missing/malformed core_ref
+        # D4: the discriminator check precedes sanctioned-ID resolution here
+        # too — a Computation anchors a semantic reference
+        if core_ref.kind != "semantic":
+            return [
+                f"{where}: core_ref kind {core_ref.kind!r} must be 'semantic' — a "
+                "computation profile anchors its sanctioned definition identity "
+                f"{core_ref.id!r} (spec0032 §5)"
+            ]
         model, _, metric = core_ref.id.partition("::")
         if (model, metric) not in sanctioned:
             errors.append(

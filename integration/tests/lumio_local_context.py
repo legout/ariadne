@@ -1575,6 +1575,106 @@ P1_DERIVED_METRIC_PAGE = (
     "participates in no binding classification.\n"
 )
 
+# D3 (#83 delta review): one UNUSED later-loaded single-dataset model over
+# the EXACT same physical orders source — legitimate semantic reuse of a
+# physical table (semantic_graph checks dataset-NAME uniqueness, never
+# source uniqueness). It is never requested anywhere; every existing
+# admission/derived-only/refusal/serving invariant must hold unchanged,
+# proving unrelated catalog content cannot replace a consumed subject's
+# actual plan lineage. Explicit independent compatibility scaffolding, not
+# a maintained KB mirror.
+P1_UNUSED_MODEL = """\
+version: 0.2.0.dev0
+semantic_model:
+  - name: zz_unused_orders
+    description: Unused later-loaded alias over the same physical orders source
+    datasets:
+      - name: unused_orders
+        source: orders.main.orders
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+            dimension: {}
+    metrics:
+      - name: unused_order_count
+        description: Count of all order rows through the unused alias
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(*)
+"""
+
+# The unused alias metric's classic graph-admission page (cites an EXISTING
+# contained policy — the unchanged issue #30 compatibility rule).
+P1_UNUSED_OKF_METRIC_PAGE = (
+    "---\n"
+    "type: metric\n"
+    "status: draft\n"
+    "title: unused_order_count\n"
+    "description: Unused-alias order count; classic graph-admission page.\n"
+    "tags: [metric]\n"
+    "sources:\n"
+    "  - id: all-orders-count\n"
+    "    resource: policies/all-orders-count.md\n"
+    "    title: All orders count\n"
+    "---\n\n"
+    "# unused_order_count\n"
+)
+
+# The unused alias metric's inert KB Context Binding: empty typed closure,
+# semantic-layer governed_by, valid slug IDs — requested nowhere.
+P1_UNUSED_METRIC_PAGE = (
+    "---\n"
+    'id: "entity:unused-order-count"\n'
+    "entity_types:\n"
+    "  - metric\n"
+    "tags:\n"
+    "  - retail\n"
+    'title: "Unused Order Count (Metric)"\n'
+    'summary: "Count of all order rows through the unused later-loaded alias."\n'
+    'lifecycle: "approved"\n'
+    'visibility: "public"\n'
+    "sources:\n"
+    '  - id: "src-ops-unused"\n'
+    '    title: "Operations unused-alias review, 2026-10-22"\n'
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: metric\n"
+    "  metric_ref:\n"
+    '    model: "zz_unused_orders"\n'
+    '    metric: "unused_order_count"\n'
+    "  required_policies: []\n"
+    "  native:\n"
+    "    type: metric\n"
+    '    status: "stable"\n'
+    '    title: "Unused order count"\n'
+    '    description: "Count of all order rows through the unused alias."\n'
+    "    tags:\n"
+    "      - operations\n"
+    "    stale_after: 2027-06-30\n"
+    "    sources:\n"
+    '      - id: "src-ops-unused"\n'
+    '        title: "Operations unused-alias review, 2026-10-22"\n'
+    '    governed_by: "semantic_layer zz_unused_orders::unused_order_count"\n'
+    "    dimensions:\n"
+    "      - id\n"
+    "    grain:\n"
+    "      primary_key:\n"
+    "        - id\n"
+    '      cardinality_enforcement: "strict_1_to_1"\n'
+    "---\n"
+    "\n"
+    "# Unused Order Count (Metric)\n"
+    "\n"
+    "Fixture scaffolding metric for the unused physical-source alias: it is\n"
+    "never requested and exists only so an unrelated semantic dataset shares\n"
+    "the physical orders resource.\n"
+)
+
 P1_GRAPH = """\
 version: 1
 relationships:
@@ -1788,11 +1888,13 @@ def _p1_control() -> str:
     )
 
 
-def _p1_project(root: Path, bindings: dict):
+def _p1_project(root: Path, bindings: dict, unused_alias: bool = False):
     """The shared P1 baseline: the proven synthetic catalog plus the authored
     order_status lookup collection (real DDL + curated rows), the model's
     lookup dataset, the proven many-to-one graph edge and the revision-2
-    selector carrying the authored policy_bindings block."""
+    selector carrying the authored policy_bindings block. ``unused_alias``
+    additionally commits the D3 unused later-loaded model over the SAME
+    physical orders source (admission case only)."""
     import duckdb  # pyright: ignore[reportMissingImports] — qualified test env is external
 
     project = content_project(root)
@@ -1819,6 +1921,16 @@ def _p1_project(root: Path, bindings: dict):
     (project / "context_layer" / "metrics" / "revenue_plus_one.md").write_text(
         P1_DERIVED_OKF_METRIC_PAGE
     )
+    unused_files: list[str] = []
+    if unused_alias:
+        (project / "semantic_layer" / "models" / "zz_unused_orders.yml").write_text(P1_UNUSED_MODEL)
+        (project / "context_layer" / "metrics" / "unused_order_count.md").write_text(
+            P1_UNUSED_OKF_METRIC_PAGE
+        )
+        unused_files = [
+            "semantic_layer/models/zz_unused_orders.yml",
+            "context_layer/metrics/unused_order_count.md",
+        ]
     (project / "context_integration.yaml").write_text(_p1_selector_text(bindings))
     run_git(
         project,
@@ -1830,16 +1942,20 @@ def _p1_project(root: Path, bindings: dict):
         "context_layer/metrics/label_count.md",
         "context_layer/metrics/revenue_plus_one.md",
         "context_integration.yaml",
+        *unused_files,
     )
     run_git(project, "commit", "-q", "-m", "human: lookup collection, graph, revision-2 selector")
     return project
 
 
-def _p1_kb_candidate(project: Path, api: AuthoringProject, started: dict, revision: str):
+def _p1_kb_candidate(
+    project: Path, api: AuthoringProject, started: dict, revision: str, unused_alias: bool = False
+):
     """The shared supported-shape candidate edits: the metric's complete
     typed closure (Return Policy + Cancelled Orders), the Cancelled Orders
     Policy page, the unreferenced Hygiene Policy (invented-obligation bait),
-    the technical control file and the hand-authored Computation page."""
+    the technical control file, the hand-authored Computation page and —
+    with ``unused_alias`` — the D3 unused-alias KB Context Binding."""
     tree = worktree_of(project, started["proposal"])
     reference = tree / "knowledge/references/order-number.md"
     meta, body = page_parts(reference)
@@ -1849,6 +1965,8 @@ def _p1_kb_candidate(project: Path, api: AuthoringProject, started: dict, revisi
     (tree / "knowledge/policies/order-label-hygiene.md").write_text(P1_HYGIENE_POLICY)
     (tree / "knowledge/metrics/label-count.md").write_text(P1_LOOKUP_METRIC_PAGE)
     (tree / "knowledge/metrics/revenue-plus-one.md").write_text(P1_DERIVED_METRIC_PAGE)
+    if unused_alias:
+        (tree / "knowledge/metrics/unused-order-count.md").write_text(P1_UNUSED_METRIC_PAGE)
     metric = tree / "knowledge/metrics/retail-revenue.md"
     meta, body = page_parts(metric)
     meta["ariadne_profile"]["required_policies"].append(
@@ -1909,16 +2027,19 @@ def _p1_refusal_bindings(case: str, bindings: dict) -> dict:
     return mutated
 
 
-# The #83 review-fix refusal cases (parent-dispositioned F1/F2): unlike the
-# five binding mutations above, these keep the authored §10.1 inventory
-# VALID and add exactly ONE producer-valid KB page whose defect is visible
-# only to the Core consumer contract.
+# The #83 review-fix refusal cases (parent-dispositioned F1/F2 plus the
+# delta-review D2/D4): unlike the five binding mutations above, these keep
+# the authored §10.1 inventory VALID and add exactly ONE producer-valid KB
+# page whose defect is visible only to the Core consumer contract.
 P1_PAGE_REFUSAL_CASES = frozenset(
     {
         "table-identity-contradiction",
         "computation-unknown-semantic",
         "native-source-unapproved",
         "native-source-escape",
+        "native-source-unapproved-scalar",
+        "native-source-escape-scalar",
+        "table-core-ref-wrong-kind",
     }
 )
 
@@ -2116,6 +2237,144 @@ def _p1_refusal_extra_page(
             "resolves to a real file outside the captured knowledge subtree.\n"
         )
         return escape
+    if case == "native-source-unapproved-scalar":
+        # D2 (#83 delta review): the SAME unapproved canonical provenance as
+        # the structured case, authored in the producer's supported SCALAR
+        # native source form — a bare identity string, not a mapping
+        unapproved = table_resource("unapproved-source", None, "main", "orders")
+        (knowledge / "tables/shadow-sourced-scalar.md").write_text(
+            "---\n"
+            'id: "entity:shadow-sourced-scalar"\n'
+            "entity_types:\n"
+            "  - table\n"
+            "tags:\n"
+            "  - retail\n"
+            'title: "Shadow Sourced Scalar"\n'
+            'summary: "Table page whose scalar native source names an unapproved source."\n'
+            'lifecycle: "approved"\n'
+            'visibility: "public"\n'
+            "sources:\n"
+            '  - id: "src-shadow-scalar"\n'
+            '    title: "Synthetic shadow scalar memo, 2026-10-22"\n'
+            "ariadne_profile:\n"
+            "  version: 1\n"
+            "  kind: table\n"
+            "  core_ref:\n"
+            "    kind: resource\n"
+            f'    id: "{orders_resource}"\n'
+            "  native:\n"
+            "    type: table\n"
+            '    title: "Shadow Sourced Scalar"\n'
+            '    description: "Scalar native provenance naming an unapproved source."\n'
+            "    tags:\n"
+            "      - retail\n"
+            "    stale_after: 2027-12-31\n"
+            "    sources:\n"
+            f'      - "{unapproved}"\n'
+            f'    resource: "{orders_resource}"\n'
+            "---\n"
+            "\n"
+            "# Shadow Sourced Scalar\n"
+            "\n"
+            "A producer-valid table page whose scalar native source entry\n"
+            "names a canonical resource of an unapproved source.\n"
+        )
+        return None
+    if case == "native-source-escape-scalar":
+        # D2: the containment case of the same scalar form — the citation
+        # still RESOLVES to a real authored file outside the captured KB
+        outside = tmp_path / "uncaptured-table-evidence.md"
+        outside.write_text("Author-owned table evidence outside the captured release.\n")
+        escape = Path(os.path.relpath(outside.resolve(), knowledge.resolve())).as_posix()
+        assert escape.startswith("../") and "://" not in escape  # producer-relative form
+        resolved = (knowledge / escape).resolve()
+        assert resolved == outside.resolve() and outside.is_file()
+        assert resolved.is_relative_to(tmp_path.resolve())  # really inside tmp_path
+        assert not resolved.is_relative_to(knowledge.resolve())  # really outside the KB
+        (knowledge / "tables/escaped-source-scalar.md").write_text(
+            "---\n"
+            'id: "entity:escaped-source-scalar"\n'
+            "entity_types:\n"
+            "  - table\n"
+            "tags:\n"
+            "  - retail\n"
+            'title: "Escaped Source Scalar"\n'
+            'summary: "Table page whose scalar native citation escapes the captured KB."\n'
+            'lifecycle: "approved"\n'
+            'visibility: "public"\n'
+            "sources:\n"
+            '  - id: "src-escaped-scalar"\n'
+            '    title: "Synthetic escaped scalar memo, 2026-10-22"\n'
+            "ariadne_profile:\n"
+            "  version: 1\n"
+            "  kind: table\n"
+            "  core_ref:\n"
+            "    kind: resource\n"
+            f'    id: "{orders_resource}"\n'
+            "  native:\n"
+            "    type: table\n"
+            '    title: "Escaped Source Scalar"\n'
+            '    description: "Scalar native citation escaping the captured KB subtree."\n'
+            "    tags:\n"
+            "      - retail\n"
+            "    stale_after: 2027-12-31\n"
+            "    sources:\n"
+            f'      - "{escape}"\n'
+            f'    resource: "{orders_resource}"\n'
+            "---\n"
+            "\n"
+            "# Escaped Source Scalar\n"
+            "\n"
+            "A producer-valid table page whose scalar native source citation\n"
+            "resolves to a real file outside the captured knowledge subtree.\n"
+        )
+        return escape
+    if case == "table-core-ref-wrong-kind":
+        # D4 (#83 delta review): an otherwise correct Table profile whose
+        # core_ref carries its canonical table URI but the WRONG typed
+        # discriminator (kind: semantic) with an agreeing native.resource —
+        # the owning validator must reject the authored discriminator before
+        # ID resolution, never relabel it, with no other identity defect to
+        # mask the type error
+        (knowledge / "tables/semantic-typed-table.md").write_text(
+            "---\n"
+            'id: "entity:semantic-typed-table"\n'
+            "entity_types:\n"
+            "  - table\n"
+            "tags:\n"
+            "  - retail\n"
+            'title: "Semantic Typed Table"\n'
+            'summary: "Table page whose core_ref uses the wrong typed discriminator."\n'
+            'lifecycle: "approved"\n'
+            'visibility: "public"\n'
+            "sources:\n"
+            '  - id: "src-typed-table"\n'
+            '    title: "Synthetic typed-table memo, 2026-10-22"\n'
+            "ariadne_profile:\n"
+            "  version: 1\n"
+            "  kind: table\n"
+            "  core_ref:\n"
+            "    kind: semantic\n"
+            f'    id: "{orders_resource}"\n'
+            "  native:\n"
+            "    type: table\n"
+            '    title: "Semantic Typed Table"\n'
+            '    description: "Table identity typed with the wrong core_ref discriminator."\n'
+            "    tags:\n"
+            "      - retail\n"
+            "    stale_after: 2027-12-31\n"
+            "    sources:\n"
+            '      - id: "src-typed-table"\n'
+            '        title: "Synthetic typed-table memo, 2026-10-22"\n'
+            f'    resource: "{orders_resource}"\n'
+            "---\n"
+            "\n"
+            "# Semantic Typed Table\n"
+            "\n"
+            "A producer-valid table page whose physical core reference is\n"
+            "authored with the semantic discriminator.\n"
+        )
+        return None
     raise AssertionError(case)  # pragma: no cover - the case table is closed
 
 
@@ -2194,9 +2453,9 @@ def _p1_bound_table_page(resource: str, source_binding: str) -> str:
 
 
 # The one focused case family: the real positive admission journey plus
-# exactly the five declared §10.1/§10.2 binding refusal cases and the four
-# parent-dispositioned #83 review-fix refusal cases as finite parameters
-# (plan0032 shared verification, P1 assignment).
+# exactly the five declared §10.1/§10.2 binding refusal cases and the seven
+# parent-dispositioned page refusal cases (#83 fix F1/F2 + delta D2/D4) as
+# finite parameters (plan0032 shared verification, P1 assignment).
 P1_CASES = [
     pytest.param("admission", id="admission"),
     pytest.param("unknown-check", id="refusal-unknown-check"),
@@ -2208,6 +2467,9 @@ P1_CASES = [
     pytest.param("computation-unknown-semantic", id="refusal-computation-unknown-semantic"),
     pytest.param("native-source-unapproved", id="refusal-native-source-unapproved"),
     pytest.param("native-source-escape", id="refusal-native-source-escape"),
+    pytest.param("native-source-unapproved-scalar", id="refusal-native-source-unapproved-scalar"),
+    pytest.param("native-source-escape-scalar", id="refusal-native-source-escape-scalar"),
+    pytest.param("table-core-ref-wrong-kind", id="refusal-table-core-ref-wrong-kind"),
 ]
 # Each refusal must name its §10 identifier: the unknown check id, the known
 # check id that never executes for the bound operation (with the operation),
@@ -2318,6 +2580,19 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
                     "knowledge/tables/escaped-source.md",
                     escape_citation,
                 ),
+                "native-source-unapproved-scalar": (
+                    "knowledge/tables/shadow-sourced-scalar.md",
+                    "unapproved-source",
+                ),
+                "native-source-escape-scalar": (
+                    "knowledge/tables/escaped-source-scalar.md",
+                    escape_citation,
+                ),
+                "table-core-ref-wrong-kind": (
+                    "knowledge/tables/semantic-typed-table.md",
+                    "semantic",
+                    orders_resource,
+                ),
             }[case]
         else:
             tokens = P1_REFUSAL_TOKENS[case]
@@ -2327,7 +2602,13 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         return
 
     # ---------------- the one real positive journey (revision 2)
-    project = _p1_project(tmp_path, authored)
+    # D3 (#83 delta review): the admission model set additionally carries the
+    # UNUSED later-loaded zz_unused_orders alias over the SAME physical
+    # orders source — unrelated legitimate catalog reuse must never replace
+    # a consumed subject's actual lineage, so every original oracle below
+    # (traversal 0.0/150.0, direct/derived-only refusals, serving) stays the
+    # unchanged pin while the alias is requested nowhere
+    project = _p1_project(tmp_path, authored, unused_alias=True)
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
@@ -2343,7 +2624,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     context_mirror = tree / "context_layer" / "tables" / "orders.md"
     mirror_before = context_mirror.read_bytes()
 
-    revision = _p1_kb_candidate(project, api, started, revision)
+    revision = _p1_kb_candidate(project, api, started, revision, unused_alias=True)
 
     # explicit operator-authorized physical schema refresh (the existing
     # public signature) over the real approved catalog: the two authored
@@ -2540,7 +2821,9 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     try:
         # the governed request that actually traverses the proven lookup: the
         # executable binding is attested by the REAL plan audit (§10.2), with
-        # the hand-worked join oracle — never a duplicated numeric replay
+        # the hand-worked join oracle — never a duplicated numeric replay;
+        # D3: this exact oracle also pins that the unused same-source alias
+        # cannot replace the consumed revenue lineage
         traversed = asyncio.run(
             runtime.query_metrics({"metrics": ["revenue"], "dimensions": ["status_label"]})
         )
@@ -2700,7 +2983,8 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     )
 
 
-def test_native_table_endpoint_binding_scopes_measured_observations(tmp_path):
+@pytest.mark.parametrize("category", ["tables", "references"], ids=["tables", "references"])
+def test_native_table_endpoint_binding_scopes_measured_observations(tmp_path, category):
     """F2 (#83 review fix, spec 0025 §4 through spec0032 §§5–6): a KB Table
     page's measured observations carry their effective endpoint provenance;
     the candidate refuses while those observations stay bound to a DIFFERENT
@@ -2709,7 +2993,11 @@ def test_native_table_endpoint_binding_scopes_measured_observations(tmp_path):
     (``_stale_schema_binding_errors``, invoked by ``validate_proposal`` with
     the CURRENT effective approval digest); the authored A/B stamps are
     fixture inputs asserting no measurement or admission authority of their
-    own — a missing optional stamp proves nothing and is not tested here."""
+    own — a missing optional stamp proves nothing and is not tested here.
+    D1 (#83 delta review): the same producer-valid Table profile is admitted
+    from EACH declared KB category (tables and references) — the native kind
+    is an envelope field, so the page's directory never waives A/B
+    invalidation."""
     from ariadne.authoring import _stale_schema_binding_errors
     from ariadne.sources import table_resource
     from lumio_wiki.ariadne_context import (  # pyright: ignore[reportMissingImports]
@@ -2734,9 +3022,11 @@ def test_native_table_endpoint_binding_scopes_measured_observations(tmp_path):
     )
     tree = worktree_of(project, started["proposal"])
     revision = _p1_kb_candidate(project, api, started, revision)
-    # no refresh runs here either: create the tables/ category before the write
-    (tree / "knowledge/tables").mkdir(parents=True, exist_ok=True)
-    (tree / "knowledge/tables/bound-observations.md").write_text(
+    # no refresh runs here either: create the declared category directory
+    # before the write (D1: the category placement is an authored input)
+    category_dir = tree / "knowledge" / category
+    category_dir.mkdir(parents=True, exist_ok=True)
+    (category_dir / "bound-observations.md").write_text(
         _p1_bound_table_page(orders_resource, binding_kept)
     )
     revision = reconcile_knowledge(project, started["proposal"], revision)
@@ -2752,7 +3042,7 @@ def test_native_table_endpoint_binding_scopes_measured_observations(tmp_path):
     assert _stale_schema_binding_errors(tree, binding_kept) == []
     # switched endpoint: the same measured observations are stale provenance
     stale = _stale_schema_binding_errors(tree, binding_switched)
-    assert stale and any("knowledge/tables/bound-observations.md" in error for error in stale)
+    assert stale and any(f"knowledge/{category}/bound-observations.md" in error for error in stale)
     assert not (project / ".ariadne" / "current.json").exists()  # validation ≠ activation
 
 

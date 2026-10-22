@@ -702,7 +702,10 @@ class _QueryRuntimeSession(_DiscoverySession):
         definitions that carry owner=None), never requested-only — and a
         binding's declared physical dependencies are
         proven only by the PASSED relationship-audit records of this plan's
-        edges incident to the dependency's participating dataset — a passing
+        edges incident to a dataset of the dependency that actually
+        PARTICIPATES in the consumed lineage (D3: one physical Resource may
+        back several semantic datasets — an unrelated catalog alias never
+        replaces consumed lineage) — a passing
         audit on unrelated branches is not proof. The obligation must be
         established before any result SQL executes; get_metric bindings stay
         explanatory in this revision (their gates are invariants only)."""
@@ -733,12 +736,16 @@ class _QueryRuntimeSession(_DiscoverySession):
         branch_datasets = {branch.dataset for branch in plan.branches}
         from ariadne import lumio_context
 
-        dataset_of_resource: dict[str, str] = {}
+        # D3 (#83 delta review): one physical Resource may back MANY semantic
+        # datasets — proof resolves through the dependency's datasets that
+        # actually PARTICIPATE in this plan's consumed lineage, never a
+        # global last-wins (or arbitrary first) catalog alias
+        datasets_of_resource: dict[str, set[str]] = {}
         for dataset in graph.datasets.values():
             try:
-                dataset_of_resource[lumio_context._dataset_source_resource(dataset.source)] = (
-                    dataset.name
-                )
+                datasets_of_resource.setdefault(
+                    lumio_context._dataset_source_resource(dataset.source), set()
+                ).add(dataset.name)
             except ValueError:
                 continue  # an unresolvable source stays the graph gate's own failure
         for binding in bindings:
@@ -767,19 +774,28 @@ class _QueryRuntimeSession(_DiscoverySession):
             for dependency in enforcement.get("dependencies") or []:
                 # an empty declared inventory has no physical dependency to
                 # prove — the whole-plan passed audit above is already its proof
-                dataset = dataset_of_resource.get(dependency)
-                if dataset is None or dataset not in branch_datasets:
+                participating = {
+                    name
+                    for name in datasets_of_resource.get(dependency, ())
+                    if name in branch_datasets
+                }
+                if not participating:
                     raise PlannerError(
                         "binding_not_attested",
                         "executable policy binding declares check "
                         "'graph.relationship_audit' "
-                        f"for subject {identity!r}, but its declared dependency "
-                        f"{dependency!r} is not a dataset this executed plan consumes "
-                        "— the executed check proves nothing for it; the operation "
-                        "refuses instead of labeling the narrative enforced",
+                        f"for subject {identity!r}, but no semantic dataset of its "
+                        f"declared dependency {dependency!r} participates in this "
+                        "executed plan's consumed lineage — the executed check "
+                        "proves nothing for it; the operation refuses instead of "
+                        "labeling the narrative enforced",
                     )
                 if not any(
-                    edge.name in passed_edges and dataset in (edge.from_dataset, edge.to_dataset)
+                    edge.name in passed_edges
+                    and any(
+                        dataset in (edge.from_dataset, edge.to_dataset)
+                        for dataset in participating
+                    )
                     for edge in graph.relationships
                 ):
                     raise PlannerError(
@@ -788,9 +804,10 @@ class _QueryRuntimeSession(_DiscoverySession):
                         "'graph.relationship_audit' "
                         f"for subject {identity!r}, but no passed relationship audit "
                         f"of this plan is incident to its declared dependency "
-                        f"{dependency!r} (dataset {dataset!r}) — a passing audit on "
-                        "unrelated branches is not proof; the operation refuses "
-                        "instead of labeling the narrative enforced",
+                        f"{dependency!r} (participating datasets "
+                        f"{sorted(participating)!r}) — a passing audit on unrelated "
+                        "branches is not proof; the operation refuses instead of "
+                        "labeling the narrative enforced",
                     )
 
     async def query_metrics(self, request: dict) -> dict:

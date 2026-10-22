@@ -896,23 +896,32 @@ def _stale_schema_binding_errors(tree: Path, approval_digest: str | None) -> lis
                     f"now validates under {approval_digest[:12]}) — refresh_schema under "
                     "the current endpoint before validation (spec 0025 §4)"
                 )
-    knowledge_tables = tree / "knowledge" / "tables"
-    if knowledge_tables.is_dir() and approval_digest is not None:
+    knowledge = tree / "knowledge"
+    if knowledge.is_dir() and approval_digest is not None:
         from lumio_wiki import (  # pyright: ignore[reportMissingImports] — optional SDK
             parse_frontmatter,
         )
 
-        for page in sorted(knowledge_tables.rglob("*.md")):
-            rel = f"knowledge/tables/{page.relative_to(knowledge_tables)}"
+        # D1 (#83 delta review): enumerate EVERY captured knowledge page by its
+        # producer-parsed native profile KIND — a Table profile's endpoint
+        # binding is an envelope fact, never a function of its category
+        # directory (hidden and unreferenced placements included)
+        for page in sorted(knowledge.rglob("*.md")):
+            rel = f"knowledge/{page.relative_to(knowledge)}"
             try:
                 full, _body, _start = parse_frontmatter(page.read_text(encoding="utf-8"), rel)
             except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
                 continue
             profile = full.get("ariadne_profile") if isinstance(full, dict) else None
-            native = profile.get("native") if isinstance(profile, dict) else None
-            extension = native.get("ariadne") if isinstance(native, dict) else None
-            observations = extension.get("observations") if isinstance(extension, dict) else None
-            bound = observations.get("source_binding") if isinstance(observations, dict) else None
+            if not isinstance(profile, dict) or profile.get("kind") != "table":
+                continue  # the endpoint gate owns native TABLE observations only
+            native = profile.get("native")
+            native = native if isinstance(native, dict) else {}
+            extension = native.get("ariadne")
+            extension = extension if isinstance(extension, dict) else {}
+            observations = extension.get("observations")
+            observations = observations if isinstance(observations, dict) else {}
+            bound = observations.get("source_binding")
             if isinstance(bound, str) and bound and bound != approval_digest:
                 errors.append(
                     f"{rel}: its measured schema/value observations are bound to a "
@@ -1446,8 +1455,18 @@ def _kb_technical_resources(text: str, path: str) -> list[str]:
         citation = observations.get("citation") if isinstance(observations, dict) else None
         if isinstance(citation, str):
             resources.append(citation)
+    # D2 (#83 delta review): native source entries exist in BOTH supported
+    # forms — structured mappings and bare scalar identities; both carry the
+    # same canonical-resource provenance through the approval gate (malformed
+    # or unsupported forms stay the producer page gate's own error)
     for entry in native.get("sources") or []:
-        resource = entry.get("resource") if isinstance(entry, dict) else None
+        resource = (
+            entry.get("resource")
+            if isinstance(entry, dict)
+            else entry
+            if isinstance(entry, str)
+            else None
+        )
         if isinstance(resource, str) and resource.startswith("ariadne://"):
             resources.append(resource)
     return [resource for resource in dict.fromkeys(resources) if resource.startswith("ariadne://")]
@@ -1477,8 +1496,17 @@ def _kb_relative_provenance(text: str, path: str) -> list[str]:
     native = profile.get("native")
     native = native if isinstance(native, dict) else {}
     relative: list[str] = []
+    # D2 (#83 delta review): the RELATIVE containment case of the same
+    # normalization — scalar and structured entries carry the same
+    # bundle-path provenance semantics
     for entry in native.get("sources") or []:
-        resource = entry.get("resource") if isinstance(entry, dict) else None
+        resource = (
+            entry.get("resource")
+            if isinstance(entry, dict)
+            else entry
+            if isinstance(entry, str)
+            else None
+        )
         if isinstance(resource, str) and resource and not resource.startswith("ariadne://"):
             relative.append(resource)
     return relative
