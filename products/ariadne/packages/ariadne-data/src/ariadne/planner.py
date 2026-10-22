@@ -2695,6 +2695,20 @@ def normalize_record_request(
             ) from exc
 
     non_temporal, temporal = _parse_record_filters(request.get("filters"), entry, timestamp_field)
+    temporal_instants: dict[tuple[str, str, Any], datetime] = {}
+    if timestamp_field is not None and zone is not None:
+        # Q1-F3 (owner-approved Timestamp unit, spec0032 §7/§10.5 stage 1):
+        # every caller-supplied temporal COMPARISON literal is validated and
+        # normalized HERE — by the existing NATIVE pure validator
+        # ``_record_instant`` (encoding/type, strict parse, both DST
+        # rejections) — inside the shared static normalization, BEFORE
+        # mandatory Context and before any SQL construction, connection use
+        # or live probing. The validated UTC-naive instant is carried forward
+        # as a normalized fact keyed by the original caller predicate: the
+        # SQL builder consumes it directly and never re-interprets the wall
+        # time, and the public filter disclosure keeps the original input.
+        for field, op, value in temporal:
+            temporal_instants[(field, op, value)] = _record_instant(value, zone, field)
 
     raw_order = request.get("order")
     if not isinstance(raw_order, list) or not raw_order:
@@ -2745,6 +2759,7 @@ def normalize_record_request(
         "zone_name": zone_name,
         "non_temporal": non_temporal,
         "temporal": temporal,
+        "temporal_instants": temporal_instants,
         "order": order,
         "limit": raw_limit,
     }
@@ -2785,6 +2800,7 @@ def plan_records(
     zone = normalized["zone"]
     zone_name = normalized["zone_name"]
     non_temporal, temporal = normalized["non_temporal"], normalized["temporal"]
+    temporal_instants = normalized["temporal_instants"]
     order = normalized["order"]
     raw_limit = normalized["limit"]
     if connection is not None:  # the runtime always supplies its connection
@@ -2844,7 +2860,10 @@ def plan_records(
             )
         helper = ts_helper if field == timestamp_field else None
         if helper is not None and zone is not None:
-            instant = _record_instant(value, zone, field)
+            # the shared static normalization already validated this caller
+            # literal and normalized it to its UTC instant — consume that
+            # normalized fact; the builder never re-interprets wall times
+            instant = temporal_instants[(field, op, value)]
             literal = exp.Cast(
                 this=exp.Literal.string(instant.strftime(_RECORD_TIMESTAMP_FORMAT)),
                 to=exp.DataType.build("TIMESTAMP"),

@@ -3768,6 +3768,7 @@ Q1_REVIEW_CASES = [
     pytest.param("detail-dataset-shape", id="detail-dataset-shape"),
     pytest.param("records-fields-shape", id="records-fields-shape"),
     pytest.param("records-order-shape", id="records-order-shape"),
+    pytest.param("records-timestamp-literal", id="records-timestamp-literal"),
 ]
 
 
@@ -3928,6 +3929,42 @@ def test_integrated_query_review_refusals(case, tmp_path, monkeypatch):
                     )
                 )
             assert caught.value.code == "order_invalid"
+        finally:
+            runtime.con.close()
+        return
+
+    if case == "records-timestamp-literal":
+        # F3 temporal-literal follow-up (owner-approved bounded unit): the
+        # native PURE temporal comparison-literal validator — _record_instant's
+        # encoding/type rule (planner.py:2328-2363) — owns the mistyped CALLER
+        # literal BEFORE the integrated Context preflight: comparing the
+        # declared VARCHAR timestamp carrier under Europe/Berlin against 42
+        # is a caller-value error that no source row, connection or live RE2
+        # judgement is needed to establish (spec0032 §7, §10.5 stage 1;
+        # spec0014 §3's typed interpretation — the planner-side mirror of the
+        # guarded SQL interpretation). The deliberately absent status Table
+        # Context must not turn it into a Context-preparation refusal
+        project, _review = _q1_release(tmp_path, status_context=False)
+        runtime = QueryRuntime.open_project(project)
+        try:
+            with pytest.raises(PlannerError) as caught:
+                asyncio.run(
+                    runtime.query_records(
+                        {
+                            "dataset": "orders.main.order_status",
+                            "fields": ["status"],
+                            "timestamp": {
+                                "field": "status",
+                                "format": "%Y-%m-%d %H:%M:%S",
+                                "timezone": "Europe/Berlin",
+                            },
+                            "filters": [{"field": "status", "op": ">=", "value": 42}],
+                            "order": [{"field": "status", "direction": "asc"}],
+                            "limit": 10,
+                        }
+                    )
+                )
+            assert caught.value.code == "timestamp_interpretation"
         finally:
             runtime.con.close()
         return
