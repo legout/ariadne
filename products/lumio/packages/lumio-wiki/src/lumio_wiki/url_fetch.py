@@ -36,6 +36,7 @@ import hashlib
 import http.client
 import socket
 import ssl
+import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -261,16 +262,37 @@ def _request_once(
                 "Accept": "*/*",
             },
         )
-        # ``getresponse`` parses the status line and headers synchronously;
-        # set the shrinking timeout before it, not only before body reads.
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("URL fetch deadline expired while waiting for headers")
-        if conn.sock is not None:
-            conn.sock.settimeout(remaining)
-        return conn, conn.getresponse()
+        sock = conn.sock
+        if sock is not None:
+            sock.settimeout(remaining)
+
+        def interrupt_headers() -> None:
+            # A socket timeout alone restarts on every trickled header byte.
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass  # The connection may already have closed.
+
+        timer = threading.Timer(remaining, interrupt_headers)
+        timer.daemon = True
+        timer.start()
+        try:
+            response = conn.getresponse()
+        finally:
+            timer.cancel()
+            timer.join()
+        if time.monotonic() >= deadline:
+            response.close()
+            raise TimeoutError("URL fetch deadline expired while waiting for headers")
+        return conn, response
     except Exception:
         conn.close()
+        if time.monotonic() >= deadline:
+            raise TimeoutError("URL fetch deadline expired while waiting for headers") from None
         raise
 
 
@@ -369,6 +391,8 @@ def fetch_url(url: str, policy: UrlFetchPolicy | None = None) -> UrlFetchResult:
                     conn.sock.settimeout(remaining)
                 chunk = response.read1(64 * 1024)
                 if not chunk:
+                    if response.length:
+                        raise UrlFetchError("incomplete response body")
                     break
                 size += len(chunk)
                 if size > policy.max_bytes:

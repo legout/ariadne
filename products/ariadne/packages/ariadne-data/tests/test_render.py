@@ -114,6 +114,37 @@ def test_field_alias_resolution_uses_the_field_expression():
     assert "CASE WHEN region_code = 'EMEA' THEN 1 ELSE 0 END" in sql
 
 
+@pytest.mark.parametrize(
+    "dimensions,time_range,expected",
+    [
+        ([], {}, [(6,)]),
+        (["alias2"], {}, [(1, 1), (2, 2), (3, 3)]),
+        ([], {"start": "2025-01-02", "end": "2025-01-03"}, [(5,)]),
+    ],
+)
+def test_chained_fields_resolve_in_all_clauses(dimensions, time_range, expected):
+    model = _model(
+        [_metric("total", "SUM(alias2)")],
+        [
+            _field("alias1", "x"),
+            _field("alias2", "alias1", {}),
+            _field("day1", "CAST(occurred AS DATE)"),
+            _field("day2", "day1", {"is_time": True}),
+        ],
+        source="t",
+    )
+    with duckdb.connect() as con:
+        con.execute(
+            "CREATE TABLE t AS SELECT * FROM (VALUES "
+            "(1, 100, DATE '2025-01-01', DATE '1999-01-01'), "
+            "(2, 100, DATE '2025-01-02', DATE '1999-01-01'), "
+            "(3, 100, DATE '2025-01-03', DATE '1999-01-01')) "
+            "v(x, alias1, occurred, day1)"
+        )
+        rows = con.sql(render(model, dimensions, time_range, metric="total")).fetchall()
+        assert sorted(rows) == expected
+
+
 def test_qualified_column_refs_are_stripped():
     """The wrapped source knows no scan aliases — `orders.amount` must lower to a
     bare column (the datus lowering contract the served models rely on)."""
@@ -159,6 +190,23 @@ def test_derived_metric_resolves_two_levels_recursively():
         assert row[0] == 14  # (SUM(x) + 1) * 2 = (6 + 1) * 2 — resolved recursively
     finally:
         con.close()
+
+
+def test_derived_metric_keeps_dependencies_from_earlier_levels():
+    model = _model(
+        [
+            _metric("base", "SUM(x)"),
+            _metric("double_base", "base * 2"),
+            _metric("triple_base", "double_base + base"),
+        ],
+        [_field("x", "x")],
+        source="t",
+    )
+    with duckdb.connect() as con:
+        con.execute("CREATE TABLE t AS SELECT * FROM (VALUES (1), (2), (3)) v(x)")
+        result = con.sql(render(model, metric="triple_base"))
+        assert result.columns == ["triple_base"]
+        assert result.fetchall() == [(18,)]  # (1 + 2 + 3) * 2 + (1 + 2 + 3)
 
 
 def test_metric_cycle_is_detected_and_named():

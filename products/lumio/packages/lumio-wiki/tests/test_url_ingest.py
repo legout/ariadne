@@ -166,6 +166,12 @@ class _PageHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif self.path == "/truncated":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            self.wfile.write(b"hello")
         elif self.path == "/huge":
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
@@ -201,13 +207,22 @@ def local_server():
 def test_slow_response_headers_respect_remaining_deadline():
     """Trickling header bytes cannot reset the per-hop I/O budget."""
 
+    stop = threading.Event()
+
     class SlowHeadersHandler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 - http.server API
-            self.wfile.write(b"HTTP/1.0 200 OK\\r\\n")
-            self.wfile.flush()
-            time.sleep(0.4)
-            self.wfile.write(b"Content-Type: text/plain\\r\\n\\r\\nbody")
-            self.wfile.flush()
+            try:
+                self.wfile.write(b"HTTP/1.0 200 OK\r\nX-Slow: ")
+                self.wfile.flush()
+                for _ in range(60):
+                    if stop.wait(0.02):
+                        return
+                    self.wfile.write(b"x")
+                    self.wfile.flush()
+                self.wfile.write(b"\r\nContent-Type: text/plain\r\n\r\nbody")
+                self.wfile.flush()
+            except OSError:
+                pass  # The bounded client has already disconnected.
 
         def log_message(self, format, *args):  # noqa: A002 - stdlib API
             return
@@ -221,13 +236,15 @@ def test_slow_response_headers_respect_remaining_deadline():
                 UrlFetchPolicy(
                     allow_http=True,
                     allow_private_destinations=True,
-                    timeout_seconds=0.1,
+                    timeout_seconds=0.15,
                 ),
             )
+        elapsed = time.monotonic() - started
     finally:
+        stop.set()
         server.shutdown()
         server.server_close()
-    assert time.monotonic() - started < 0.8
+    assert elapsed < 0.6
 
 
 def test_fetch_url_follows_redirects_and_records_truthful_provenance(local_server):
@@ -245,6 +262,11 @@ def test_fetch_url_derives_filename_when_url_path_has_none(local_server):
     result = fetch_url(local_server + "/", _LOCAL_POLICY)
     assert result.filename
     assert result.filename.endswith(".txt")
+
+
+def test_fetch_url_refuses_incomplete_body(local_server):
+    with pytest.raises(UrlFetchError, match="incomplete"):
+        fetch_url(f"{local_server}/truncated", _LOCAL_POLICY)
 
 
 def test_fetch_url_fails_closed_on_declared_oversize(local_server):

@@ -568,10 +568,23 @@ def test_open_project_requires_admission_and_has_no_plain_root_constructor(tmp_p
     approvals.write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError, match="operator's approval"):
         QueryRuntime.open_project(project)
-    with pytest.raises(PlannerError) as source_stale:
-        asyncio.run(runtime.get_metric("event_count"))
-    assert source_stale.value.code == "admission_stale"
+    definition = {
+        "name": "event_total",
+        "description": "Count all events",
+        "source": "events.events",
+        "expression": "COUNT(*)",
+    }
+    for operation in (
+        lambda: runtime.get_metric("event_count"),
+        lambda: runtime.define_metric(definition),
+        runtime.list_datasets,
+    ):
+        with pytest.raises(PlannerError) as source_stale:
+            asyncio.run(operation())
+        assert source_stale.value.code == "admission_stale"
     approvals.write_text(original_approvals, encoding="utf-8")
+    assert asyncio.run(runtime.define_metric(definition))["rows"] == [{"event_total": 3}]
+    assert asyncio.run(runtime.list_datasets())
 
     # the multi-fact gate keeps its own admission meaning on the Git route: no
     # graph in the snapshot -> query_metrics refuses while single metrics serve

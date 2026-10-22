@@ -215,6 +215,8 @@ def _resolve_fields(
         replacement = _resolve_fields(
             field_exprs[name].copy(), field_exprs, metric_names, (*stack, name)
         )
+        if column is tree:
+            return replacement
         column.replace(replacement)
     return tree
 
@@ -280,7 +282,7 @@ def _time_predicate(
         raise RenderError(
             "time_range requires a field with dimension.is_time: true on the model's dataset"
         )
-    field = field_exprs[time_fields[0]]
+    field = _resolve_fields(exp.column(time_fields[0]), field_exprs, set())
     conditions: list[Any] = []
     if start is not None:
         conditions.append(exp.GTE(this=field.copy(), expression=exp.Literal.string(str(start))))
@@ -345,7 +347,8 @@ def render(
     # Inner aggregate: dims + every wanted level-0 metric over the wrapped source.
     select = exp.Select()
     for dim in dims:
-        select = select.select(exp.alias_(field_exprs[dim].copy(), dim))
+        resolved = _resolve_fields(exp.column(dim), field_exprs, set())
+        select = select.select(exp.alias_(resolved, dim))
     for name in sorted(wanted):
         if levels[name] == 0:
             select = select.select(exp.alias_(parsed[name].copy(), name))
@@ -360,13 +363,14 @@ def render(
     # Each derived level becomes one outer SELECT over the previous level.
     deepest = max((levels[name] for name in wanted), default=0)
     for level in range(1, deepest + 1):
+        keep = carried | {dep for name in wanted if levels[name] > level for dep in deps[name]}
         outer = exp.Select()
         for dim in dims:
             outer = outer.select(exp.column(dim))
         for name in sorted(wanted):
             if levels[name] == level:
                 outer = outer.select(exp.alias_(parsed[name].copy(), name))
-            elif name in carried and levels[name] < level:
+            elif name in keep and levels[name] < level:
                 outer = outer.select(exp.column(name))  # keep the lower output
         select = outer.from_(exp.Subquery(this=select))
     sql = select.sql(dialect="duckdb")

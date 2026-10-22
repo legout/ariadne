@@ -278,6 +278,8 @@ class _QueryRuntimeSession(_DiscoverySession):
         binding, as-of observation) — computed once from the admission
         descriptor, with NO extra source reads and no second inspection."""
         self._refuse_unsupported("list_datasets")
+        if self._managed is not None:
+            self._recheck_pinned()
         self._discard_request_budget()  # fix pass 2, finding 1b (list_datasets)
         annotations = self._contract_annotations()
         datasets: list[dict] = []
@@ -1075,6 +1077,8 @@ class _QueryRuntimeSession(_DiscoverySession):
         guard, the compile gate, bind or execution.
         """
         self._refuse_unsupported("define_metric")
+        if self._managed is not None:
+            self._recheck_pinned()
         params = _normalize_definition(definition)
         budget = self._claim_operation_budget()
         with self._phase(budget):
