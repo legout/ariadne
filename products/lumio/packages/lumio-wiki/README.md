@@ -1,7 +1,7 @@
 # lumio-wiki
 
 > Portable, model-free Knowledge Base foundation for
-> [Lumio](../../CONTEXT.md) — a compiled Markdown knowledge base your coding agents
+> [Lumio](https://github.com/legout/ariadne/blob/main/products/lumio/CONTEXT.md) — a compiled Markdown knowledge base your coding agents
 > can load, validate, search, traverse, ingest, and publish, with citations
 > and Git-native authoring with explicit Publication Admission. The deployable Lumio web application (chat UI,
 > auth, roles, providers) lives in a separate private repository and consumes
@@ -22,20 +22,20 @@ For the *why* and the vision, read the domain docs — this README documents
 > and expected current version. A commit, passing validation or general coding
 > request is not permission to publish. Hosted clients enforce their own roles.
 
-- [`CONTEXT.md`](../../CONTEXT.md) — ubiquitous language (glossary).
-- [`project/specs/0002-core-sdk.md`](../../project/specs/0002-core-sdk.md) — Core SDK PRD.
-- [`project/adr/`](../../project/adr/) — architectural decisions (ADR-0025 records the
+- [`CONTEXT.md`](https://github.com/legout/ariadne/blob/main/products/lumio/CONTEXT.md) — ubiquitous language (glossary).
+- [`project/specs/0002-core-sdk.md`](https://github.com/legout/ariadne/blob/main/products/lumio/project/specs/0002-core-sdk.md) — Core SDK PRD.
+- [`project/adr/`](https://github.com/legout/ariadne/tree/main/products/lumio/project/adr) — architectural decisions (ADR-0025 records the
   repository split).
-- [`docs/kb-format.md`](../../docs/kb-format.md) — canonical Compiled Page frontmatter reference.
-- [`docs/ariadne-context.md`](../../docs/ariadne-context.md) — optional pinned Ariadne Context Profile
+- [`docs/kb-format.md`](https://github.com/legout/ariadne/blob/main/products/lumio/docs/kb-format.md) — canonical Compiled Page frontmatter reference.
+- [`docs/ariadne-context.md`](https://github.com/legout/ariadne/blob/main/products/lumio/docs/ariadne-context.md) — optional pinned Ariadne Context Profile
   consumption (exact identity, scoped pinned navigation, boundaries).
-- [`docs/quickstart.md`](../../docs/quickstart.md) — canonical local/Git-first
+- [`docs/quickstart.md`](https://github.com/legout/ariadne/blob/main/products/lumio/docs/quickstart.md) — canonical local/Git-first
   onboarding journey (empty project → reviewed publication → grounded search);
   the optional S3/Docker publication path lives in
-  [`docs/howto-s3-publish.md`](../../docs/howto-s3-publish.md). Runnable via
-  [`examples/onboarding-journey/`](../../examples/onboarding-journey/).
+  [`docs/howto-s3-publish.md`](https://github.com/legout/ariadne/blob/main/products/lumio/docs/howto-s3-publish.md). Runnable via
+  [`examples/onboarding-journey/`](https://github.com/legout/ariadne/tree/main/products/lumio/examples/onboarding-journey).
 - Joint local tutorial (Lumio + Ariadne), canonical and cross-repository:
-  [`docs/tutorials/lumio-ariadne-local.md`](../../../../integration/docs/tutorials/lumio-ariadne-local.md)
+  [`docs/tutorials/lumio-ariadne-local.md`](https://github.com/legout/ariadne/blob/main/integration/docs/tutorials/lumio-ariadne-local.md)
   in this repository's Ariadne-side docs. The SDK links to it; the joint
   walkthrough lives only there.
 
@@ -52,7 +52,7 @@ For the *why* and the vision, read the domain docs — this README documents
 pip install lumio-wiki                       # foundation: load, validate, search, traverse, ingest, publish
 pip install 'lumio-wiki[documents]'          # + LiteParse/MarkItDown/AnyDoc for PDF/image/office/HTML ingestion
 pip install 'lumio-wiki[llm]'                # + an unattended OpenAI-compatible Distiller
-pip install 'lumio-wiki[all]'                # documents + llm together (still no LanceDB)
+pip install 'lumio-wiki[all]'                # documents + llm + s3 + mcp (still no LanceDB)
 pip install 'lumio-wiki[s3]'                 # + S3-native KB Locations (immutable Published Versions over object storage)
 pip install 'lumio-wiki[mcp]'                # + read-only MCP stdio server (official SDK; `lumio-wiki mcp <kb>`)
 pip install lumio-lancedb                    # + enhanced BM25/semantic/hybrid retrieval
@@ -68,7 +68,7 @@ capabilities:
 |---|---|---|
 | `lumio-wiki[documents]` | LiteParse, MarkItDown, AnyDoc | PDF / scanned-PDF / image (OCR + page numbers), office formats, HTML. The base wheel handles text and Markdown. |
 | `lumio-wiki[llm]` | `openai` | Unattended Distiller backed by an OpenAI-compatible provider. The base wheel uses the host coding agent as the Distiller. |
-| `lumio-wiki[all]` | both | Document conversion + unattended distillation together. |
+| `lumio-wiki[all]` | all SDK extras | Document conversion, unattended distillation, S3 and MCP (no LanceDB). |
 | `lumio-wiki[mcp]` | `mcp` (official SDK) | Read-only MCP stdio server over one bound Knowledge Base Location. |
 | `lumio-lancedb` | LanceDB, PyArrow | BM25 / vector / semantic / hybrid retrieval. The canonical SDK never imports it. |
 | `lumio-lancedb[embeddings]` | `sentence-transformers` | Local embeddings for the LanceDB adapter. Torch stays out of the base adapter and out of `lumio-wiki`. |
@@ -144,7 +144,7 @@ Git/public KB content; select `--source-registry <private-dir>` explicitly for
 managed ingest/publication. Setup does not initialize Git or infer adoption.
 Legacy export needs explicit `--confirm` using the preview's captured baseline;
 it preserves the original store and creates an unadmitted branch, never a
-publication. See the [quickstart](../../docs/quickstart.md).
+publication. See the [quickstart](https://github.com/legout/ariadne/blob/main/products/lumio/docs/quickstart.md).
 
 `ingest --distiller llm` requires `lumio-wiki[llm]`; PDF/DOCX/image sources
 require `lumio-wiki[documents]`. Both fail with actionable guidance if the
@@ -202,11 +202,11 @@ Python-first: msgspec, LanceDB (optional adapter).
 lumio-wiki validate ./knowledge-base
 ```
 
-For the full field table, see **[`docs/kb-format.md`](../../docs/kb-format.md)**. A
+For the full field table, see **[`docs/kb-format.md`](https://github.com/legout/ariadne/blob/main/products/lumio/docs/kb-format.md)**. A
 categorized Knowledge Base additionally carries a versioned root Control File
 (`lumio.yaml`) and marked reserved artifacts (Navigation Index `index.md`, Hot
 Index `hot.md`, Activity Log `log.md`); see
-[ADR-0008](../../project/adr/0008-knowledge-base-control-file-and-published-artifacts.md).
+[ADR-0008](https://github.com/legout/ariadne/blob/main/products/lumio/project/adr/0008-knowledge-base-control-file-and-published-artifacts.md).
 
 ## Development
 
@@ -234,13 +234,13 @@ packages/lumio-lancedb/src/lumio_lancedb/ # Optional LanceDB enhanced-retrieval 
 
 ## Packaging, ownership, and migration
 
-Quick reference (full contract in [`docs/packaging.md`](../../docs/packaging.md)):
+Quick reference (full contract in [`docs/packaging.md`](https://github.com/legout/ariadne/blob/main/products/lumio/docs/packaging.md)):
 
 - **`lumio-wiki`** owns the canonical Knowledge Base model, loading,
   validation, Navigation/Hot Indexes, deterministic zero-index retrieval, typed
   traversal, Evidence/citations, Git authoring and exact-revision admission,
   the `lumio-wiki` CLI, and the packaged Agent Skill. No downward dependency.
-- **`lumio-lancedb`** depends only on `lumio-wiki`. It owns LanceDB index
+- **`lumio-lancedb`** uses `lumio-wiki`, LanceDB, PyArrow and `msgspec[yaml]`. It owns index
   lifecycle and BM25/semantic/hybrid ranking, returning the same
   `RetrievalResult` contract.
 
@@ -268,10 +268,10 @@ application lives in a separate private repository (ADR-0025).
   or pinned S3 with its explicit producer-side metadata store, from the
   0.5.0 release family; the published 0.4.1 pair carried local navigation
   only)
-  ([docs/ariadne-context.md](../../docs/ariadne-context.md)). Purely optional: the
+  ([docs/ariadne-context.md](https://github.com/legout/ariadne/blob/main/products/lumio/docs/ariadne-context.md)). Purely optional: the
   base SDK has no Ariadne dependency and adds no CLI command or service for
   it.
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+Apache-2.0 — see [LICENSE](https://github.com/legout/ariadne/blob/main/products/lumio/packages/lumio-wiki/LICENSE).

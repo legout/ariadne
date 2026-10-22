@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.5.1 - 2026-10-22
+
+- Fix PyPI presentation metadata for both public packages: package entry
+  READMEs (`readme = "README.md"`), full Markdown long descriptions on PyPI,
+  and the official Project URLs (Homepage, Documentation, Repository,
+  Issues, Changelog) with PyPI-safe absolute links now render from the
+  package READMEs; repository URLs stay on the canonical `legout/ariadne`
+  location.
+- No runtime change other than the version constant: release `lumio-wiki`
+  and `lumio-lancedb` together at 0.5.1; the adapter requires
+  `lumio-wiki>=0.5.1,<0.6.0` under the lockstep family policy. Python
+  remains >=3.14 and optional extras are unchanged. The already-published
+  0.5.0 release stays untouched — PyPI serves the corrected metadata only
+  from this new version. Release channel tag: `lumio-v0.5.1`. See
+  [release notes](docs/release-notes/v0.5.1.md).
+
 ## 0.5.0 - 2026-10-22
 
 - Add optional S3 navigation over admitted pinned published contexts (#79): the

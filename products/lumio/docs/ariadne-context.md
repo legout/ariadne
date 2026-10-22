@@ -139,14 +139,17 @@ admission as a new build.
 
 ## Public pairing
 
-The current public release pair for this family is `lumio-wiki==0.5.0`
-with the optional adapter `lumio-lancedb==0.5.0`, which requires
-`lumio-wiki>=0.5.0,<0.6.0`. See [0.5.0 notes](release-notes/v0.5.0.md).
-The S3 `metadata_store` navigation keyword described above is part of this
-0.5.0 family. Integrated Core consumption of it requires a matching
-S3-capable Core release/build; the current integration pair is
-`ariadne-data` 0.7.0 with this 0.5.0 family (candidate preparation at the
-time of this writing — Core 0.7.0 is not yet published), while the
-historical `ariadne-data` 0.6.1 did not carry the Core-side S3 transport.
-Exact source/build identities remain required, and upgrading requires genuine
-consumer validation and a new matching admission.
+The current public release pair for this family is `lumio-wiki==0.5.1`
+with the optional adapter `lumio-lancedb==0.5.1`, which requires
+`lumio-wiki>=0.5.1,<0.6.0`. See [0.5.1 notes](release-notes/v0.5.1.md).
+The S3 `metadata_store` navigation keyword described above first shipped
+with `lumio-wiki` 0.5.0. Integrated Core consumption of it requires a
+matching S3-capable Core release/build; the released integration pair is
+`ariadne-data` 0.7.0 with the Lumio 0.5 family, historically qualified
+with `lumio-wiki==0.5.0` exactly (the Core release workflow pins the
+published `lumio-wiki` 0.5.0 wheel), while the historical `ariadne-data`
+0.6.1 did not carry the Core-side S3 transport. The 0.5.1 SDK release is
+a metadata-only patch in the same family; it was not tested by the Core
+0.7.0 release workflow and does not by itself requalify that pairing.
+Exact source/build identities remain required, and upgrading requires
+genuine consumer validation and a new matching admission.

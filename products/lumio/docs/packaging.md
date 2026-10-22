@@ -81,7 +81,7 @@ there is no dependency edge from the foundation wheel. The CLI/evaluation
 composition boundary may discover and lazily load it only when an operator
 explicitly selects a LanceDB backend — the dependency graph remains one-way.
 
-**Dependencies:** `lumio-wiki>=0.5.0,<0.6.0`, `lancedb`, `pyarrow`,
+**Dependencies:** `lumio-wiki>=0.5.1,<0.6.0`, `lancedb`, `pyarrow`,
 `msgspec[yaml]`. Optional `embeddings` extra pulls in
 `sentence-transformers` (Torch stays out of the base adapter and out of
 `lumio-wiki`). Verified in every release by the
@@ -196,7 +196,7 @@ isolated wheel jobs below verify base-install and import independence.
 - Members share one workspace lockfile for development reproducibility.
 - The lockfile is **not** a public compatibility contract. Every published
   inter-member dependency declares a bounded range
-  (e.g. `lumio-wiki>=0.5.0,<0.6.0`, declared by `lumio-lancedb`). This is
+  (e.g. `lumio-wiki>=0.5.1,<0.6.0`, declared by `lumio-lancedb`). This is
   certified at the metadata level
   (`test_published_member_dependencies_declare_compatible_version_ranges`)
   and at the built-wheel METADATA level
@@ -354,7 +354,7 @@ shares an Actions cache with PR-triggered workflows.
    side — neither channel can publish the other family.)
 
 Release notes live in `products/lumio/docs/release-notes/` per published version. The current
-public-family notes are [`v0.5.0.md`](release-notes/v0.5.0.md); older notes are
+public-family notes are [`v0.5.1.md`](release-notes/v0.5.1.md); older notes are
 historical and may describe the former private three-package workspace.
 
 ## Issue graph certification (issue #104, AC7)
