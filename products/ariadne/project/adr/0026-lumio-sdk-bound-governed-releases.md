@@ -80,3 +80,32 @@ boundaries and operator-only authority remain.
 The Lumio producer side is owned by its ADR-0030/spec 0009, not a second copied
 profile schema here. Historical numeric replay and simultaneous activation of
 all standalone readers are not promised.
+
+## Integrated query and profile expansion — 2026-10-22
+
+The owner approved the complete follow-up design and its written capture only:
+[specification 0032 revision 1](../specs/2026-10-22-0032-integrated-query-and-profile-expansion.md).
+Its future scope is query_detail/query_records/define_metric and native
+Dataset/Table/Computation consumption. Earlier delivery restrictions above
+describe their historical stage, not an implementation of this extension.
+
+Keep distinct governed detail, ungoverned Record Queries and ephemeral Ad-hoc
+Metrics. Require complete exact physical-source Context coverage in integrated
+mode, including used lookup/nested dependencies, rather than silently accepting
+a partly described query. Preserve standalone independence. This trades
+additional explicit Context preparation for a reviewable interpretation of
+every consumed source; SDK pages never grant source or join authority.
+
+Choose explicit Policy applicability backed by existing Core checks over a new
+general rule interpreter or automatic narrative-to-SQL translation. A required
+unsupported obligation refuses rather than claiming prose was enforced.
+Dataset/Table/Computation annotations retain producer parsing/preservation and
+consumer-owned validation, with no parallel Context mirror or technical truth.
+
+Choose explicit inspection followed by Git review/admission over measurement
+during validation or queries. Keep verifiable time/dependency-bound evidence
+over mandatory numerical attestation for every definition: optional unknowns
+remain honest, required invalid evidence blocks, and review is not numerical
+validation. This preserves controlled source/disclosure side effects and pinned
+session behavior without claiming immutable live data. Spec0032 owns behavior
+and acceptance; this amendment grants no implementation or publication.

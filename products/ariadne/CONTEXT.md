@@ -160,6 +160,14 @@ _Avoid_: latest, software version, historical answer cache
 An agent-drafted, one-shot metric: validated by the deterministic compile gate and executed read-only, but not admitted. Queryable now, canonical never, until human admission.
 _Avoid_: dynamic metric, on-the-fly metric
 
+**Governed Detail Query**:
+A field projection over a human-admitted semantic model and its permitted relationships. It is not an Ad-hoc Record Query or a freestanding metric definition; descriptive Context grants no additional join authority.
+_Avoid_: raw record query, ad-hoc metric
+
+**Input Context**:
+The version-bound descriptions, applicable Policies and evidence caveats for physical inputs consumed by a query. It is distinct from an admitted metric's Context and does not make an Ad-hoc result governed.
+_Avoid_: admitted ad-hoc definition, source approval
+
 **Ad-hoc Record Query**:
 A bounded selection of records from a known project dataset, validated and executed read-only but not admitted as a governed definition. It is not a metric and produces no Proposal.
 _Avoid_: ad-hoc metric, governed detail query, raw SQL

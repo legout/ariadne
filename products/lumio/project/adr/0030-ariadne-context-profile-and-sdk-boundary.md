@@ -63,3 +63,23 @@ semantic equivalence or admission permission. Specification 0009 revision 2
 owns the concrete shape, invariants and acceptance; the shared plan owns the
 finite correction checks. Earlier failed candidates remain unaccepted and the
 private application, A1/Q1, target integration and release remain excluded.
+
+## Consumer profile expansion boundary — 2026-10-22
+
+The owner approved the complete design captured in Ariadne
+[specification 0032 revision 1](../../../ariadne/project/specs/2026-10-22-0032-integrated-query-and-profile-expansion.md),
+with rationale in [ADR-0026](../../../ariadne/project/adr/0026-lumio-sdk-bound-governed-releases.md#integrated-query-and-profile-expansion--2026-10-22).
+Core will consume the existing native Dataset/Table/Computation profiles through
+the same SDK rather than define a parallel KB schema or maintained mirror.
+Lumio stays independent of Core, SQLGlot and DuckDB. Core authenticates technical
+observations and numerical evidence; producer preservation and authored stamps
+do not authenticate them.
+
+Explicit inspection and revision-checked candidate edits precede review and
+admission. Query/validation must not silently measure or publish new source
+facts. Curated text remains curated; exact evidence dependencies and historical
+limits remain disclosed. This preserves the existing single content lifecycle
+and avoids a background measurement service. No new producer API, general
+Policy interpreter, Skill-profile consumption, implementation or release is
+authorized by this amendment. The consumer specification owns the behavior;
+producer-native schema and private-public boundaries remain authoritative here.

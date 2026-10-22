@@ -1,5 +1,7 @@
 # Specification 0009: Ariadne Context Profile and pinned SDK consumption
 
+**Approved consumer follow-up design — 2026-10-22:** Ariadne [specification 0032 revision 1](../../../ariadne/project/specs/2026-10-22-0032-integrated-query-and-profile-expansion.md) owns the planned Dataset/Table/Computation validation and integrated query expansion. Existing native producer profiles and SDK parsing/preservation remain authoritative; this notice adds no schema, authentication authority or producer execution dependency. The corresponding [ADR-0030 amendment](../adr/0030-ariadne-context-profile-and-sdk-boundary.md#consumer-profile-expansion-boundary--2026-10-22) records the boundary. Design capture only; no implementation or release claim.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved behavior, written revision 2.** Revision 2 fixes the candidate-bound catalog representation and records the owner-approved D1–D5 continuation; integration/publication remain gated. |
