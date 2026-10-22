@@ -227,6 +227,64 @@ The search now includes the added Policy sentence under a new Published Version
 and Bound Release. Sessions opened before activation stay pinned to their
 previous release; the CLI commands above open new sessions.
 
+## 8. Query the sources directly (revision 3)
+
+The three integrated query operations arrive with an explicit admission
+opt-in. Add the two selector keys to `context_integration.yaml` and pass them
+through the same proposal/review/confirmation chain as before — the candidate
+qualifier is the reviewed `support_revision: 3` plus the authored
+`policy_bindings` inventory, and the consumed tables need their technical
+pages from an explicit inspection (`refresh_schema`) with every required
+Policy classified:
+
+```yaml
+version: 1
+mode: integrated
+subtree: knowledge
+namespace: urn:example:retail
+profile: ariadne-context/1
+support_revision: 3
+policy_bindings:
+  version: 1
+  bindings: []   # one reviewed entry per required (subject, policy) pair
+```
+
+Each operation then answers with an additive `input_context`: the pinned
+Bound Release digest, the immutable Published Version, every consumed table's
+full published page view, and the applicable Policy entries — proven to fit
+the host budget before any SQL runs. A consumed table without a visible
+unambiguous Table page refuses by name; explanatory Policies never filter.
+
+Detail — one governed row projection over proven lookup paths (the join is
+admitted by the graph, never by wiki text):
+
+```bash
+ariadne query-detail --file "$DEMO/detail.json" --project "$DEMO"
+# {"dataset": "orders", "fields": ["id", "status_label"], "governed": true,
+#  "input_context": {"resources": ["…full published table views…"]}, …}
+```
+
+Records — bounded selection from one named catalog dataset, always ungoverned;
+a calculation-specific exclusion (say, cancelled orders out of recognized
+revenue) never filters the records you explicitly select:
+
+```bash
+ariadne query-records --file "$DEMO/records.json" --project "$DEMO"
+# {"dataset": "orders.main.orders", "governed": false,
+#  "rows": [{"id": 1, "amount": 100.0, "status": "completed"}, …], …}
+```
+
+Ad-hoc — one unsaved definition over the approved relations; it reports
+`governed: false` with `context: null` and its source Context disclosed
+separately as `input_context`; nothing is written:
+
+```bash
+ariadne define-metric --file "$DEMO/adhoc.json" --project "$DEMO"
+# {"metric": "all_orders_value", "governed": false, "context": null,
+#  "persistence": {"status": "not_saved"},
+#  "input_context": {"resources": ["…the consumed table's full view…"]}, …}
+```
+
 ## Continue with your own project
 
 The helper is a tutorial companion, not a new Ariadne API or sync service.

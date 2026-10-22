@@ -3069,3 +3069,631 @@ def test_selector_file_version_requires_exact_integer():
     for malformed in (True, 1.0):
         with pytest.raises(ValueError):
             validated_selector(carrier(malformed))
+
+
+# ------------------ Q1 integrated query operations (spec0032 §§2–4, §10.3–§10.5)
+
+# The planned future nodes of issue #84 (plan0032 Q1 assignment). The
+# product currently implements support revisions 1–2 and refuses the three
+# query operations, so these tests encode the APPROVED spec0032 contracts
+# over the real admission lifecycle — every expected value below is a
+# hand-worked oracle over the authored inputs (orders 100 + 50 completed,
+# 25 cancelled; curated status labels), never implementation output.
+
+# The curated marker appended to the orders Table page for the shared A/B
+# release-B leg: authored input, visible in the published page bytes only
+# through a complete new human admission.
+Q1_RELEASE_B_MARKER = "RELEASE-B curated orders wording."
+
+
+def _q1_selector_text(bindings: dict) -> str:
+    """The revision-3 selector (spec0032 §10.3): the five existing keys plus
+    the two §10.1 opt-in keys, now declaring the query-expanded revision."""
+    import yaml
+
+    return (
+        "version: 1\n"
+        "mode: integrated\n"
+        "subtree: knowledge\n"
+        f"namespace: {NAMESPACE}\n"
+        "profile: ariadne-context/1\n"
+        + yaml.safe_dump({"support_revision": 3, "policy_bindings": bindings}, sort_keys=False)
+    )
+
+
+def _q1_bindings(orders_resource: str, status_resource: str) -> dict:
+    """The authored revision-3 binding inventory: the accepted P1 bindings
+    unchanged (the metric closure's Return Policy explanatory for the
+    governed operations, the sanctioned Cancelled Orders exclusion executable
+    for query_metrics through the one check that executes there, the
+    Computation closure explanatory) PLUS exactly one §4 source-level
+    association: the orders Table page's authored typed closure classified
+    EXPLANATORY for query_records. That binding is the scoped-policy input —
+    the cancellation Policy stays applicable to the record operation only as
+    explicit explanatory prose, never as an executable filter (no §10.2
+    check executes for query_records), while the calculation keeps its own
+    executable query_metrics obligation. Identities come from the authored
+    constants, never implementation output."""
+    import copy
+
+    inventory = copy.deepcopy(_p1_bindings(orders_resource, status_resource))
+    inventory["bindings"].append(
+        {
+            "subject": {"kind": "table", "identity": orders_resource},
+            "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
+            "operations": ["query_records"],
+            "enforcement": None,
+        }
+    )
+    return inventory
+
+
+def _q1_release(root: Path, *, status_context: bool = True):
+    """The shared revision-3 release: the real P1 baseline project and KB
+    candidate, the real refresh inspection of the consumed physical tables,
+    one authored table-closure association (§4's explicit source-level
+    applicability) and the real validation → review → preview → admission
+    lifecycle — no fake evidence, admission or Context mocks. With
+    ``status_context=False`` the order_status Table page is never generated:
+    the admission itself stays valid (Context coverage is per-request, §3)
+    so a leg can prove the missing nested/lookup Context refusal."""
+    from ariadne.sources import table_resource
+
+    orders_resource = table_resource(**P1_ORDERS_ASSET)
+    bindings = _q1_bindings(orders_resource, table_resource(**P1_STATUS_ASSET))
+    project = _p1_project(root, bindings)
+    (project / "context_integration.yaml").write_text(_q1_selector_text(bindings))
+    run_git(project, "add", "--", "context_integration.yaml")
+    run_git(project, "commit", "-q", "-m", "human: revision-3 query-expanded selector")
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    revision = contracted(
+        api,
+        started,
+        contract=ORDERS_CONTRACT.replace("region", "status").replace("mustBe: 60", "mustBe: 175"),
+        bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+            "model: orders", "model: retail_sales"
+        ),
+    )
+    revision = _p1_kb_candidate(project, api, started, revision)
+    assets = [P1_ORDERS_ASSET, P1_STATUS_ASSET] if status_context else [P1_ORDERS_ASSET]
+    revision = api.refresh_schema(started["proposal"], revision, assets)["revision"]
+    # the orders Table page gains the authored typed closure so the table
+    # binding classifies a REAL association (§10.1: a binding naming a policy
+    # outside the subject's closure is an invented obligation)
+    tree = worktree_of(project, started["proposal"])
+    orders_page = _p1_generated_table_page(tree, orders_resource)
+    meta, body = page_parts(orders_page)
+    meta["ariadne_profile"]["required_policies"] = [
+        {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"}
+    ]
+    write_page(orders_page, meta, body)
+    revision = reconcile_knowledge(project, started["proposal"], revision)
+    validated = api.validate_proposal(started["proposal"], revision)
+    assert validated["ok"] is True, validated["errors"]
+    review = api.review_proposal(started["proposal"])
+    activate(project, review, preview(project, review, root / "published"))
+    return project, review
+
+
+def _q1_assert_input_context(context: dict, digest_value: str, version: str) -> None:
+    """The shared §10.4 envelope oracle: the additive exact schema — bound
+    release digest, immutable Published Version, canonical resources, the
+    applicable-Policy inventory, native context signals and evidence caveats —
+    with no private operational data and no parallel page schema."""
+    assert set(context) == {
+        "bound_release",
+        "published_version",
+        "resources",
+        "policies",
+        "context_signals",
+        "evidence_caveats",
+    }
+    assert context["bound_release"] == digest_value
+    assert context["published_version"] == version
+    assert set(context["context_signals"]) == {"pages", "warnings"}
+    assert isinstance(context["context_signals"]["pages"], list)
+    assert isinstance(context["context_signals"]["warnings"], list)
+    assert isinstance(context["evidence_caveats"], list)
+
+
+def _q1_assert_page_view(
+    view: dict,
+    digest_value: str,
+    version: str,
+    *,
+    kind: str,
+    path: str,
+    entity_id: str,
+    content: str,
+) -> None:
+    """The shared §10.4 published page-view oracle: the full SDK
+    PublishedContextPage contract (spec 0009 — identity, advisory metadata,
+    byte-exact canonical content, the parsed body with its exact body-start
+    line, full disclosed native metadata and public Source provenance) plus
+    the Core envelope facts. The extended fields' expected values come from
+    the AUTHORED canonical content parsed through the producer's public
+    parse_frontmatter and disclose_native — an independent producer-contract
+    oracle over authored input, never Core result-derived. A required-subset
+    check keeps the facade additive (§10.4 adds no parallel page schema and
+    freezes no closed field set): future SDK fields never fail this oracle,
+    but a citation-only entry, a dropped mandatory field or private metadata
+    in place of the full native disclosure does."""
+    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — qualified test env is external
+        disclose_native,
+        parse_frontmatter,
+    )
+
+    assert {
+        "path",
+        "draft",
+        "kind",
+        "namespace",
+        "entity_id",
+        "published_version",
+        "citation",
+        "bound_release",
+        "content",
+        "context_signals",
+        "title",
+        "lifecycle",
+        "review_after",
+        "body",
+        "body_start_line",
+        "native",
+        "sources",
+    } <= set(view)
+    assert view["path"] == path
+    assert view["draft"] is False
+    assert view["kind"] == kind
+    assert view["namespace"] == NAMESPACE
+    assert view["entity_id"] == entity_id
+    assert view["published_version"] == version
+    assert view["citation"] == f"{NAMESPACE} {entity_id} v{version} {path}"
+    assert view["bound_release"] == digest_value
+    assert view["content"] == content
+    assert isinstance(view["context_signals"], dict)
+    # the extended full-page fields, from the authored canonical content
+    # through the producer's own public contract parsing: exact body and
+    # body-start line, authored advisory metadata, and the FULL disclosed
+    # native envelope — a bound Table/Policy view can never degrade to a
+    # citation-only entry or private metadata (§10.4)
+    meta, body, body_start_line = parse_frontmatter(content, Path(path))
+    assert view["title"] == meta["title"]
+    assert view["lifecycle"] == meta.get("lifecycle")
+    assert view["review_after"] == meta.get("review_after")
+    assert view["body"] == body
+    assert view["body_start_line"] == body_start_line
+    assert view["native"] == disclose_native(meta["ariadne_profile"]["native"])
+    # the public Source provenance survives as the disclosed list of the
+    # authored sources (Source's own id/title identity fields — no new wire
+    # shape is guessed here)
+    disclosed_sources = disclose_native(view["sources"])
+    assert isinstance(disclosed_sources, list)
+    assert len(disclosed_sources) == len(meta["sources"])
+    for disclosed, authored in zip(disclosed_sources, meta["sources"], strict=True):
+        assert disclosed["id"] == authored["id"]
+        assert disclosed["title"] == authored["title"]
+
+
+def test_integrated_detail_requires_complete_input_context(tmp_path, monkeypatch):
+    """Q1 detail leg (#84, spec0032 §§2–3, §10.3–§10.5; acceptance §8.2–§8.3,
+    §8.8): on one revision-3 admission the legal root/lookup projection
+    returns the exact hand-worked rows with governed truth and the complete
+    pinned input_context covering BOTH physical dependencies (root table and
+    proven lookup table) with full published page views; an unproved
+    child-side path refuses regardless of the KB's textual status wording;
+    the shared complete-Context budget leg refuses BEFORE the planner, live
+    audits, bind or any SELECT; and an otherwise identical release without
+    the lookup Table Context refuses before any planner work."""
+    import re
+
+    import ariadne.query as query_module
+    from ariadne.planner import PlannerError
+    from ariadne.sources import table_resource
+
+    orders_resource = table_resource(**P1_ORDERS_ASSET)
+    status_resource = table_resource(**P1_STATUS_ASSET)
+    project, review = _q1_release(tmp_path)
+    tree = worktree_of(project, review["proposal"])
+    table_pages = {
+        resource: _p1_generated_table_page(tree, resource)
+        for resource in (orders_resource, status_resource)
+    }
+
+    def no_live(*args, **kwargs):
+        raise AssertionError("a pre-execution refusal reached the planner/live path")
+
+    runtime = QueryRuntime.open_project(project)
+    try:
+        manifest = runtime._managed["bound_release"]
+        assert manifest["support_revision"] == 3
+        assert manifest["policy_bindings"] == _q1_bindings(orders_resource, status_resource)
+        assert set(P1_QUERY_OPS) <= set(manifest["support"]["operations"])
+
+        request = {"dataset": "orders", "fields": ["id", "status_label"]}
+        result = asyncio.run(runtime.query_detail(request))
+        # hand-worked join over the authored rows: every order's status
+        # resolves to exactly one curated label (100 + 50 completed,
+        # 25 cancelled), so the projection keeps one row per root order
+        assert sorted(result["rows"], key=lambda row: row["id"]) == [
+            {"id": 1, "status_label": "Completed order"},
+            {"id": 2, "status_label": "Completed order"},
+            {"id": 3, "status_label": "Cancelled order"},
+        ]
+        assert result["governed"] is True
+        assert result["admission"]["revision"] == review["revision"]
+        assert result["plan"]["relationship_audit"] == "passed"
+        assert any(
+            audit["name"] == "relationship:order_status_lookup" and audit["outcome"] == "passed"
+            for audit in result["plan"]["audits"]
+        )
+
+        # §10.4 input_context: both §10.5 physical dependencies (the root
+        # table AND the request-selected lookup) in canonical order, with
+        # full published Table page views — and no applicable Policy for
+        # this operation in this admission's inventory
+        context = result["input_context"]
+        _q1_assert_input_context(context, manifest["digest"], review["revision"])
+        assert [entry["resource"] for entry in context["resources"]] == sorted(
+            [orders_resource, status_resource]
+        )
+        views = {entry["resource"]: entry for entry in context["resources"]}
+        for resource, page in table_pages.items():
+            entry = views[resource]
+            assert set(entry) == {"resource", "table", "dataset"}
+            meta, _body = page_parts(page)
+            _q1_assert_page_view(
+                entry["table"],
+                manifest["digest"],
+                review["revision"],
+                kind="table",
+                path=page.relative_to(tree / "knowledge").as_posix(),
+                entity_id=meta["id"],
+                content=page.read_text(),
+            )
+            # §3/§10.4: a Dataset Overview view appears only when the
+            # collection itself is consumed or referenced — this request
+            # consumes two tables, never the collection
+            assert entry["dataset"] is None
+        assert context["policies"] == []
+
+        # the unproved lookup path (acceptance §8.3): amount lives on orders,
+        # so from the order_status root it is reachable only through the
+        # CHILD side — a fan-out. The pinned KB carries the Cancelled Orders
+        # narrative naming both status sides and the ordinary order-number
+        # mapping page; neither textual mapping nor confirmed Identifier
+        # Mappings ever make a join admissible (§3).
+        with pytest.raises(PlannerError) as caught:
+            asyncio.run(runtime.query_detail({"dataset": "order_status", "fields": ["amount"]}))
+        assert caught.value.code == "detail_child_side"
+
+        # the shared complete-Context budget leg (acceptance §8.8): a host
+        # ceiling the mandatory input_context ALONE cannot fit refuses
+        # before the planner, live audits, bind or any SELECT — never a
+        # partial answer and never dropped required Context
+        context_bytes = query_results.result_json_bytes({"input_context": context})
+        old_limits = runtime._limits
+        runtime._limits = {**old_limits, "response_bytes": context_bytes - 1}
+        with monkeypatch.context() as m:
+            m.setattr(query_module, "plan_detail", no_live)
+            m.setattr(runtime._execution, "bind", no_live)
+            with pytest.raises(query_results.QueryResultError):
+                asyncio.run(runtime.query_detail(request))
+        runtime._limits = old_limits
+    finally:
+        runtime.con.close()
+
+    # the missing-Context leg (acceptance §8.2) on a second, otherwise
+    # identical release whose order_status Table page was never generated:
+    # the proven lookup consumes a physical source without bound Context and
+    # refuses BEFORE the planner and any live audit, bind or SELECT (§10.5
+    # stage 4), naming the unbound physical identity
+    bare_project, _bare_review = _q1_release(tmp_path / "bare", status_context=False)
+    bare = QueryRuntime.open_project(bare_project)
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(query_module, "plan_detail", no_live)
+            m.setattr(bare._execution, "bind", no_live)
+            with pytest.raises(ValueError, match=re.escape(status_resource)):
+                asyncio.run(bare.query_detail({"dataset": "orders", "fields": ["status_label"]}))
+    finally:
+        bare.con.close()
+
+
+def test_integrated_records_keep_calculation_policies_scoped(tmp_path):
+    """Q1 records leg (#84, spec0032 §§2, §4, §7, §10.4; acceptance §8.1,
+    §8.7): the sanctioned revenue definition excludes cancelled orders, yet
+    a Record Query explicitly selecting them still returns the authored
+    cancelled row 25 with governed: false — the cancellation Policy is bound
+    to the calculation (query_metrics, executable) and to the consumed table
+    only as an EXPLICIT explanatory association for query_records, so prose
+    never becomes a universal source filter. The pinned input_context carries
+    the full Table page view and that one applicable Policy page view with
+    its inventory; the shared A/B session leg proves the old session keeps
+    its complete release-A pin while a new session sees release B only after
+    its complete human admission."""
+    import json
+
+    from ariadne.sources import table_resource
+
+    orders_resource = table_resource(**P1_ORDERS_ASSET)
+    project, review = _q1_release(tmp_path)
+    tree = worktree_of(project, review["proposal"])
+    orders_page = _p1_generated_table_page(tree, orders_resource)
+    request = {
+        "dataset": "orders.main.orders",
+        "fields": ["id", "amount", "status"],
+        "order": [{"field": "id", "direction": "asc"}],
+        "limit": 10,
+    }
+    runtime = QueryRuntime.open_project(project)
+    try:
+        manifest = runtime._managed["bound_release"]
+        result = asyncio.run(runtime.query_records(request))
+        # independent oracle over the authored rows: the explicitly selected
+        # cancelled order O3 = 25 stays selectable — the calculation-only
+        # cancellation exclusion never filters records (§4, §8.1)
+        assert result["rows"] == [
+            {"id": 1, "amount": 100.0, "status": "completed"},
+            {"id": 2, "amount": 50.0, "status": "completed"},
+            {"id": 3, "amount": 25.0, "status": "cancelled"},
+        ]
+        assert result["governed"] is False
+        assert result["result"]["complete"] is True
+        assert result["result"]["has_more_matching"] is False
+        # no new source permission: the answer rides the pinned admission
+        assert result["provenance"]["admission"]["revision"] == review["revision"]
+
+        context = result["input_context"]
+        _q1_assert_input_context(context, manifest["digest"], review["revision"])
+        assert [entry["resource"] for entry in context["resources"]] == [orders_resource]
+        entry = context["resources"][0]
+        assert set(entry) == {"resource", "table", "dataset"}
+        meta, _body = page_parts(orders_page)
+        _q1_assert_page_view(
+            entry["table"],
+            manifest["digest"],
+            review["revision"],
+            kind="table",
+            path=orders_page.relative_to(tree / "knowledge").as_posix(),
+            entity_id=meta["id"],
+            content=orders_page.read_text(),
+        )
+        assert entry["dataset"] is None  # §3/§10.4: only the table is consumed
+        # the ONE applicable Policy (§10.4): the table closure's explicit
+        # explanatory association for query_records — subject, association,
+        # operations and enforcement mirror the admitted inventory, and the
+        # page view is the full published Policy page, never citation-only
+        assert len(context["policies"]) == 1
+        policy = context["policies"][0]
+        assert set(policy) == {"subject", "association", "operations", "enforcement", "page"}
+        assert policy["subject"] == {"kind": "table", "identity": orders_resource}
+        assert policy["association"] == {
+            "namespace": NAMESPACE,
+            "entity_id": "entity:cancelled-orders",
+        }
+        assert policy["operations"] == ["query_records"]
+        assert policy["enforcement"] is None  # explanatory prose, never a filter
+        policy_page = tree / "knowledge" / "policies" / "cancelled-orders.md"
+        _q1_assert_page_view(
+            policy["page"],
+            manifest["digest"],
+            review["revision"],
+            kind="policy",
+            path="policies/cancelled-orders.md",
+            entity_id="entity:cancelled-orders",
+            content=policy_page.read_text(),
+        )
+
+        # ---- the shared A/B pinned-session/new-session leg (§6, §8.7):
+        # release B changes only the orders Table page's curated body
+        api = AuthoringProject(project)
+        meta, body = page_parts(orders_page)
+        write_page(orders_page, meta, body + f"\n{Q1_RELEASE_B_MARKER}\n")
+        revised = reconcile_knowledge(project, review["proposal"], review["revision"])
+        checked = api.validate_proposal(review["proposal"], revised)
+        assert checked["ok"] is True, checked["errors"]
+        later = api.review_proposal(review["proposal"])
+        activate(
+            project, later, preview(project, later, tmp_path / "published", review["revision"])
+        )
+        # the EXISTING session keeps its complete release-A pin: same digest,
+        # same pinned page bytes, and the cancelled row stays selectable
+        pinned = asyncio.run(runtime.query_records(request))
+        assert pinned["input_context"]["bound_release"] == manifest["digest"]
+        assert (
+            Q1_RELEASE_B_MARKER not in pinned["input_context"]["resources"][0]["table"]["content"]
+        )
+        assert pinned["rows"] == result["rows"]
+        # only a NEW session sees release B, under its own complete admission
+        fresh = QueryRuntime.open_project(project)
+        try:
+            activated = json.loads((project / ".ariadne" / "current.json").read_text())[
+                "bound_release"
+            ]
+            assert activated["support_revision"] == 3  # no silent capability change
+            assert activated["digest"] != manifest["digest"]
+            assert fresh._managed["bound_release"]["digest"] == activated["digest"]
+            served = asyncio.run(fresh.query_records(request))
+            assert served["input_context"]["bound_release"] == activated["digest"]
+            assert (
+                Q1_RELEASE_B_MARKER in served["input_context"]["resources"][0]["table"]["content"]
+            )
+            # B changed Context only: same authored rows, same scoping truth
+            assert served["rows"] == result["rows"]
+            assert served["governed"] is False
+        finally:
+            fresh.con.close()
+    finally:
+        runtime.con.close()
+
+
+def test_integrated_ad_hoc_metric_is_unsaved_and_context_bound(tmp_path, monkeypatch):
+    """Q1 Ad-hoc leg (#84, spec0032 §§2, §7, §10.4–§10.5; acceptance §8.2,
+    §8.9): an explicit all-orders request no applicable source obligation
+    forbids independently implies SUM(amount) = 175 over the authored rows,
+    while the sanctioned governed exclusion still returns 150 for the
+    completed group on the same release. The answer reports governed: false,
+    context: null and a SEPARATE complete pinned input_context; it creates no
+    proposal, Computation page or saved definition and mutates nothing; the
+    static IO-authority boundary still precedes any data read; and an
+    allowed nested source whose physical table lacks bound Context refuses
+    before the grain guard or any execution, naming the unbound identity."""
+    import hashlib
+    import re
+
+    import ariadne.query as query_module
+    from ariadne.sources import table_resource
+
+    orders_resource = table_resource(**P1_ORDERS_ASSET)
+    status_resource = table_resource(**P1_STATUS_ASSET)
+    project, review = _q1_release(tmp_path)
+    tree = worktree_of(project, review["proposal"])
+    orders_page = _p1_generated_table_page(tree, orders_resource)
+
+    def no_live(*args, **kwargs):
+        raise AssertionError("a static refusal reached live work")
+
+    runtime = QueryRuntime.open_project(project)
+    try:
+        manifest = runtime._managed["bound_release"]
+        knowledge_before = {
+            path.relative_to(tree).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted((tree / "knowledge").rglob("*"))
+            if path.is_file()
+        }
+        descriptor_before = (project / ".ariadne" / "current.json").read_bytes()
+
+        result = asyncio.run(
+            runtime.define_metric(
+                {
+                    "name": "all_orders_value",
+                    "source": "orders.main.orders",
+                    "expression": "SUM(amount)",
+                    "description": "Temporary value over every authored order",
+                }
+            )
+        )
+        # independent oracle: 100 + 50 + 25 = 175 for the explicit all-orders
+        # request — the sanctioned completed-only exclusion stays 150 (below)
+        assert result["rows"] == [{"all_orders_value": 175.0}]
+        assert result["governed"] is False
+        assert result["context"] is None  # §7: no admitted metric Context exists
+        assert result["persistence"] == {"status": "not_saved"}
+        # §7: the bound source Context is disclosed SEPARATELY as the pinned
+        # input_context, never through a metric-context field
+        context = result["input_context"]
+        _q1_assert_input_context(context, manifest["digest"], review["revision"])
+        assert [entry["resource"] for entry in context["resources"]] == [orders_resource]
+        entry = context["resources"][0]
+        assert set(entry) == {"resource", "table", "dataset"}
+        meta, _body = page_parts(orders_page)
+        _q1_assert_page_view(
+            entry["table"],
+            manifest["digest"],
+            review["revision"],
+            kind="table",
+            path=orders_page.relative_to(tree / "knowledge").as_posix(),
+            entity_id=meta["id"],
+            content=orders_page.read_text(),
+        )
+        assert entry["dataset"] is None
+        assert context["policies"] == []  # no binding names define_metric here
+
+        # the sanctioned contrast, exactly once: the governed traversal keeps
+        # the completed-group exclusion — the ad-hoc result never weakens or
+        # rewrites the sanctioned definition (§4)
+        sanctioned = asyncio.run(
+            runtime.query_metrics({"metrics": ["revenue"], "dimensions": ["status_label"]})
+        )
+        assert sorted(sanctioned["rows"], key=lambda row: row["status_label"]) == [
+            {"status_label": "Cancelled order", "revenue": 0.0},
+            {"status_label": "Completed order", "revenue": 150.0},
+        ]
+        assert sanctioned["governed"] is True
+
+        # the static IO-authority boundary still precedes every data read
+        # (§10.5 stage 3, before stage 4's Context preflight and stage 5):
+        # a relation outside the approved catalog refuses statically, before
+        # the grain guard, bind or collection
+        with monkeypatch.context() as m:
+            m.setattr(query_module, "check_grain_preserving", no_live)
+            m.setattr(runtime._execution, "bind", no_live)
+            with pytest.raises(ValueError, match="may read only the registered catalog"):
+                asyncio.run(
+                    runtime.define_metric(
+                        {
+                            "name": "ghost_value",
+                            "source": (
+                                "orders.main.orders o JOIN orders.main.ghost g ON o.id = g.id"
+                            ),
+                            "expression": "SUM(o.amount)",
+                            "description": "Temporary value over an unregistered relation",
+                        }
+                    )
+                )
+
+        # nothing was authored, staged or mutated: no candidate model, no
+        # Computation page, no knowledge bytes, no descriptor change (§2, §6)
+        assert {
+            path.relative_to(tree).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted((tree / "knowledge").rglob("*"))
+            if path.is_file()
+        } == knowledge_before
+        assert (project / ".ariadne" / "current.json").read_bytes() == descriptor_before
+    finally:
+        runtime.con.close()
+
+    # the missing nested-source Context leg (acceptance §8.2): on a second,
+    # otherwise identical release without the order_status Table page, an
+    # allowed nested join source statically parses to BOTH physical tables
+    # — and the unbound one refuses BEFORE the grain guard (a data read) or
+    # any execution, naming the exact unbound physical identity (§10.5)
+    bare_project, _bare_review = _q1_release(tmp_path / "bare", status_context=False)
+    bare = QueryRuntime.open_project(bare_project)
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(query_module, "check_grain_preserving", no_live)
+            m.setattr(bare._execution, "bind", no_live)
+            with pytest.raises(ValueError, match=re.escape(status_resource)):
+                asyncio.run(
+                    bare.define_metric(
+                        {
+                            "name": "joined_value",
+                            "source": (
+                                "orders.main.orders o JOIN orders.main.order_status s"
+                                " ON o.status = s.status"
+                            ),
+                            "expression": "SUM(o.amount)",
+                            "description": "Temporary value over a nested join",
+                        }
+                    )
+                )
+        # the parent-dispositioned expression-coverage leg (spec0032 §3):
+        # EVERY physical dependency — the expression's scalar subquery reads
+        # order_status too — so the same unbound status Resource refuses by
+        # its exact authored identity BEFORE the grain guard or bind even
+        # though the SOURCE alone is fully bound (static-authority-approved
+        # SUM/COUNT only; no numeric oracle — the early refusal is the
+        # expectation)
+        with monkeypatch.context() as m:
+            m.setattr(query_module, "check_grain_preserving", no_live)
+            m.setattr(bare._execution, "bind", no_live)
+            with pytest.raises(ValueError, match=re.escape(status_resource)):
+                asyncio.run(
+                    bare.define_metric(
+                        {
+                            "name": "expression_borrowed_count",
+                            "source": "orders.main.orders",
+                            "expression": (
+                                "SUM(amount) + (SELECT COUNT(*) FROM"
+                                " orders.main.order_status)"
+                            ),
+                            "description": "Temporary value borrowing a nested count",
+                        }
+                    )
+                )
+    finally:
+        bare.con.close()

@@ -691,6 +691,148 @@ class _QueryRuntimeSession(_DiscoverySession):
         query_results.finalize_response(self._limits, envelope, response_measure=self._measure)
         return resolved
 
+    def _input_context_preflight(self, operation: str, resources: list[str]) -> dict:
+        """Q1/#84 (spec0032 §§3–4, §10.4–§10.5 stage 4): assemble the complete
+        ``input_context`` of one revision-3 query operation from the pinned,
+        verified Bound Release — every consumed physical resource's full
+        published Table view bound by exact ``core_ref`` identity, the
+        applicable Policy inventory with full page views, native signals and
+        evidence caveats — then prove the COMPLETE mandatory Context alone
+        fits the host budget through the existing public accounting seam,
+        exactly as ``_sdk_metric_contexts`` does. A missing/hidden/ambiguous
+        Table view, an unavailable applicable Policy page or a Context that
+        cannot fit refuses here, BEFORE any planner, live audit, bind or
+        SELECT work — never a fallback and never a partial answer."""
+        assert self._managed is not None
+        from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+        value = lumio_context.input_context(
+            self._managed["bound_release"],
+            self._context_snapshot,
+            operation,
+            resources,
+        )
+        envelope = {"input_context": value}
+        query_results.account_rows(self._limits, envelope, [])
+        query_results.finalize_response(self._limits, envelope, response_measure=self._measure)
+        return value
+
+    def _detail_static_resources(self, graph: SemanticGraph, request: object) -> list[str] | None:
+        """Q1/#84 (spec0032 §10.5 stage 3): the consumed physical tables of a
+        detail request — the requested root dataset plus every dataset its
+        requested lookup fields reach — resolved by STATIC traversal of the
+        admitted graph's proven edges using the planner's own unique-forward
+        lookup-path resolver. Nothing is granted and no live check runs;
+        ``plan_detail``'s own proofs (stage 5) still refuse unproven paths.
+        Returns ``None`` for any request that does not statically resolve
+        (malformed, unknown/ambiguous field, unproved or child-side path):
+        the planner's structured refusal then owns it unchanged."""
+        from ariadne.planner import _lookup_path  # pyright: ignore[reportPrivateUsage] — drift
+
+        if not isinstance(request, dict) or set(request) - {"dataset", "fields"}:
+            return None
+        dataset = request.get("dataset")
+        fields = request.get("fields")
+        if dataset not in graph.datasets or not isinstance(fields, list) or not fields:
+            return None
+        datasets = [dataset]
+        for field in dict.fromkeys(fields):
+            if not isinstance(field, str):
+                return None
+            if field in graph.datasets[dataset].fields:
+                continue
+            owners = sorted(name for name, node in graph.datasets.items() if field in node.fields)
+            if len(owners) != 1:
+                return None
+            path = _lookup_path(graph, dataset, owners[0])
+            if path is None:  # unproved/child-side: the planner's native refusal
+                return None
+            for edge in path:
+                if edge.to_dataset not in datasets:
+                    datasets.append(edge.to_dataset)
+        resources: list[str] = []
+        for name in datasets:
+            for resource in self._dataset_resources(graph.datasets[name].source):
+                if resource is None:
+                    return None
+                if resource not in resources:
+                    resources.append(resource)
+        return resources
+
+    def _records_static_resource(self, request: object) -> str | None:
+        """Q1/#84 (spec0032 §10.5 stage 3): the ONE named catalog dataset's
+        canonical resource — the planner's own exact identity resolution
+        (``_resolve_record_dataset``), a pure built-catalog lookup with no
+        live work. ``None`` for a malformed request shape (the planner's
+        structured request validation owns that refusal); the resolver's own
+        unknown/ambiguous-dataset refusals are the native stage-3 identity
+        refusals."""
+        from ariadne.planner import (  # pyright: ignore[reportPrivateUsage] — drift
+            _RECORD_REQUEST_KEYS,
+            _resolve_record_dataset,
+        )
+
+        if not isinstance(request, dict) or set(request) - _RECORD_REQUEST_KEYS:
+            return None
+        return _resolve_record_dataset(self.catalog, request.get("dataset"))["resource"]
+
+    def _adhoc_static_resources(self, params: dict) -> list[str]:
+        """Q1/#84 (spec0032 §§3, §10.5 stage 3): EVERY physical dependency of
+        the ad-hoc definition — the whole normalized nested SOURCE tree AND
+        the whole normalized EXPRESSION tree (scalar/predicate subqueries are
+        physical reads) — extracted AFTER the static IO-authority check by
+        the existing scope-aware semantics (``_qualified_source_refs``, no
+        parallel parser) and matched against the built catalog by exact
+        qualified identity. Each fragment is interpreted EXACTLY as the
+        compiler and the IO-authority boundary interpret it, normalized to a
+        SELECT-rooted statement (a root parenthesized Subquery exposes an
+        empty selected_sources set to the scope collector, so a real source
+        must never be wrapped as one): a SELECT/WITH fragment passes through,
+        a bare source becomes ``SELECT * FROM <source>`` and an expression
+        becomes ``SELECT <expression>``. An integrated operation NEVER
+        bypasses mandatory Context through extraction failure: an
+        unparseable fragment or an unresolved physical identity refuses here,
+        before the grain guard (a data read), compile, bind or any execution;
+        only a provably tableless EXPRESSION (no physical read of its own)
+        contributes no resource."""
+        from ariadne.sql_authority import (  # pyright: ignore[reportPrivateUsage] — drift
+            _SOURCE_PREFIX_RE,
+        )
+
+        catalog = self._catalog_resource_map()
+        resources: list[str] = []
+        for kind, fragment in (("source", params["source"]), ("expression", params["expression"])):
+            text = fragment.strip()
+            if _SOURCE_PREFIX_RE.match(text):
+                normalized = text
+            elif kind == "source":
+                normalized = f"SELECT * FROM {text}"
+            else:
+                normalized = f"SELECT {text}"
+            try:
+                sqlglot.parse_one(normalized)
+            except Exception as exc:
+                raise ValueError(
+                    f"the ad-hoc {kind} has an unresolvable physical dependency "
+                    f"({type(exc).__name__}) — the integrated Context preflight "
+                    "refuses before the grain guard, compile, bind or any "
+                    "execution (spec0032 §3)"
+                ) from exc
+            for ref in _qualified_source_refs(normalized):
+                resource = None if ref is None else catalog.get(ref)
+                if resource is None and ref is None and kind == "expression":
+                    continue  # provably tableless expression: no physical read
+                if resource is None:
+                    raise ValueError(
+                        f"the ad-hoc {kind} reads physical relation {ref!r} which "
+                        "resolves to no exact built-catalog identity — the "
+                        "integrated Context preflight refuses before the grain "
+                        "guard, compile, bind or any execution (spec0032 §3)"
+                    )
+                if resource not in resources:
+                    resources.append(resource)
+        return resources
+
     def _attest_bound_checks(self, plan, graph) -> None:
         """#83 (spec0032 §10.2): an executable policy binding of this admission
         is satisfied only by the ACTUAL executed check for the consumed
@@ -793,8 +935,7 @@ class _QueryRuntimeSession(_DiscoverySession):
                 if not any(
                     edge.name in passed_edges
                     and any(
-                        dataset in (edge.from_dataset, edge.to_dataset)
-                        for dataset in participating
+                        dataset in (edge.from_dataset, edge.to_dataset) for dataset in participating
                     )
                     for edge in graph.relationships
                 ):
@@ -934,6 +1075,17 @@ class _QueryRuntimeSession(_DiscoverySession):
         single-statement, and EXPLAIN bind gauntlet."""
         self._refuse_unsupported("query_detail")
         graph, admission = self._admitted()
+        # Q1/#84 (spec0032 §10.5): stage 3 static dependency resolution over
+        # the admitted graph's proven edges, then the stage-4 complete
+        # Context/enforcement/budget preflight — an integrated Bound Release
+        # consumes its exact physical lookup tables with full published
+        # views before ANY planner, live audit, bind or SELECT work; the
+        # standalone route keeps the unchanged path below
+        detail_context = None
+        if self._context_snapshot is not None:
+            resources = self._detail_static_resources(graph, request)
+            if resources is not None:
+                detail_context = self._input_context_preflight("query_detail", resources)
         budget = self._claim_operation_budget()
         with self._phase(budget):
             plan = plan_detail(graph, request, self.con)
@@ -963,6 +1115,8 @@ class _QueryRuntimeSession(_DiscoverySession):
             "governed": True,
             "admission": self._admission_view(admission),
         }
+        if detail_context is not None:  # additive, integrated mode only (§10.4)
+            result["input_context"] = detail_context
         # Issue #56/S1 (spec 0014 §5): completeness metadata + full-envelope
         # accounting + the selected transport's actual-representation preflight.
         result["result"] = query_results.completeness(len(bounded.rows))
@@ -993,6 +1147,17 @@ class _QueryRuntimeSession(_DiscoverySession):
             # approved-source rechecks; a stale pin or withdrawn approval
             # refuses here, never a legacy fallback.
             self._recheck_pinned()
+        # Q1/#84 (spec0032 §10.5): stage 3 static resolution of the ONE named
+        # catalog dataset's canonical resource, then the stage-4 complete
+        # Context/enforcement/budget preflight — an integrated Bound Release
+        # consumes its exact physical table with a full published view before
+        # ANY planner work, bind or SELECT; the standalone route keeps the
+        # unchanged path below
+        records_context = None
+        if self._context_snapshot is not None:
+            resource = self._records_static_resource(request)
+            if resource is not None:
+                records_context = self._input_context_preflight("query_records", [resource])
         budget = self._claim_operation_budget()
         with self._phase(budget):
             plan = plan_records(
@@ -1076,6 +1241,8 @@ class _QueryRuntimeSession(_DiscoverySession):
                 "has_more_matching": has_more,
             },
         }
+        if records_context is not None:  # additive, integrated mode only (§10.4)
+            result["input_context"] = records_context
         query_results.account_rows(self._limits, result, rows)
         query_results.finalize_response(self._limits, result, response_measure=self._measure)
         if budget.expired():  # the last check before return
@@ -1192,6 +1359,22 @@ class _QueryRuntimeSession(_DiscoverySession):
             assert_ad_hoc_authority(
                 params["expression"], kind="expression", authority=self._ad_hoc_authority
             )
+            # Q1/#84 (spec0032 §10.5): stage 3 continues with the static
+            # physical-reference extraction over the whole normalized nested
+            # source tree (scope-aware, never shallow name extraction), then
+            # the stage-4 complete Context/enforcement/budget preflight — an
+            # integrated Bound Release consumes every allowed nested source
+            # with a full published Table view BEFORE the grain guard (a data
+            # read), compile, bind or SELECT; the standalone route keeps the
+            # unchanged path below
+            adhoc_context = None
+            if self._context_snapshot is not None:
+                # the extraction above never returns "skip": an unresolved
+                # physical dependency refuses inside it — on an integrated
+                # Bound Release the complete Context preflight is mandatory
+                adhoc_context = self._input_context_preflight(
+                    "define_metric", self._adhoc_static_resources(params)
+                )
             # Grain guard BEFORE envelope expansion/compile (spec rev 5 §13): a
             # source that fans out the fact grain is rejected outright — the
             # compiler would aggregate at joined-row grain
@@ -1227,6 +1410,11 @@ class _QueryRuntimeSession(_DiscoverySession):
             "persistence": {"status": "not_saved"},
             "result": query_results.completeness(len(bounded.rows)),
         }
+        # spec0032 §7/§10.4: the bound source Context is disclosed SEPARATELY
+        # as the pinned input_context — additive, integrated mode only; the
+        # ephemeral definition never gains a metric-context field or governance
+        if adhoc_context is not None:
+            result["input_context"] = adhoc_context
         query_results.account_rows(self._limits, result, bounded.rows)
         query_results.finalize_response(self._limits, result, response_measure=self._measure)
         if budget.expired():

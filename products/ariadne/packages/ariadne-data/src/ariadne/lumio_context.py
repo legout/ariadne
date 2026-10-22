@@ -56,8 +56,11 @@ def digest(value):
 # newest set. Revision 1 is the legacy contract (a selector and manifest with
 # neither opt-in key); revision 2 (#83) adds the native Dataset/Table/
 # Computation profile kinds and requires the authored policy_bindings block.
-# The three revision-3 query operations stay unsupported until #84.
-IMPLEMENTED_PROFILE_REVISIONS = (1, 2)
+# Revision 3 (#84) is query-expanded: the three Analyst query operations
+# join revision 3's frozen table only; the SUPPORT default and the frozen
+# revision-1/2 tables never change, so older matching admissions keep their
+# own contracts and never silently gain operations.
+IMPLEMENTED_PROFILE_REVISIONS = (1, 2, 3)
 _INTEGRATED_OPERATIONS = (
     "get_metric",
     "query_metrics",
@@ -65,6 +68,8 @@ _INTEGRATED_OPERATIONS = (
     "query_records",
     "define_metric",
 )
+#: The revision-3 (#84) query-expanded operations (spec0032 §10.3).
+_REVISION3_OPERATIONS = ("query_detail", "query_records", "define_metric")
 #: The §10.2 existing-check catalog: each id names the check that actually
 #: executes, with exactly the operations it executes for (the current-source
 #: symbol is binding; implementations add no entries). Response/transport
@@ -91,11 +96,20 @@ def capability_table(revision: int) -> dict:
     profiles = list(SUPPORT["profiles"])
     if revision >= 2:
         profiles = [*profiles, "dataset", "table", "computation"]
+    operations = list(SUPPORT["operations"])
+    unsupported = list(SUPPORT["unsupported"])
+    if revision >= 3:
+        # spec0032 §10.3 (revision 3 — #84, query-expanded): the three query
+        # operations join THIS revision's frozen table only; the SUPPORT
+        # default and the immutable revision-1/2 tables stay untouched, so
+        # older matching admissions never silently gain operations.
+        operations = [*operations, *_REVISION3_OPERATIONS]
+        unsupported = [op for op in unsupported if op not in _REVISION3_OPERATIONS]
     return {
         "storage": SUPPORT["storage"],
         "profiles": profiles,
-        "operations": list(SUPPORT["operations"]),
-        "unsupported": list(SUPPORT["unsupported"]),
+        "operations": operations,
+        "unsupported": unsupported,
     }
 
 
@@ -456,20 +470,29 @@ def _policy_binding_errors(root: Path, selected: dict, captured) -> list[str]:
     # §10.1 agreement: every subject consumed by an operation of this
     # revision must have its complete typed closure exactly classified. The
     # governed operations consume every bound metric page and the computation
-    # pages their context assembles (§10.3).
+    # pages their context assembles (§10.3); at revision 3 the query
+    # operations additionally consume every captured Table/Dataset profile
+    # (§10.5 physical dependencies), so their closures join the same exact
+    # classification requirement.
     for key, page in subject_index.items():
         kind = key[0]
-        if kind == "metric" or (kind == "computation" and ("metric", key[1]) in subject_index):
-            if key not in closures:
-                closures[key] = closure_of(page)
-            for namespace_id, entity_id in sorted(closures[key]):
-                if (namespace_id, entity_id) not in classified.get(key, set()):
-                    errors.append(
-                        f"knowledge/{page.path}: required Policy Closure member "
-                        f"{entity_id!r} of {kind} subject {key[1]!r} has no authored "
-                        "policy_bindings classification — an unclassifiable mandatory "
-                        "obligation"
-                    )
+        consumed = kind == "metric" or (
+            kind == "computation" and ("metric", key[1]) in subject_index
+        )
+        if revision >= 3 and kind in ("table", "dataset"):
+            consumed = True
+        if not consumed:
+            continue
+        if key not in closures:
+            closures[key] = closure_of(page)
+        for namespace_id, entity_id in sorted(closures[key]):
+            if (namespace_id, entity_id) not in classified.get(key, set()):
+                errors.append(
+                    f"knowledge/{page.path}: required Policy Closure member "
+                    f"{entity_id!r} of {kind} subject {key[1]!r} has no authored "
+                    "policy_bindings classification — an unclassifiable mandatory "
+                    "obligation"
+                )
     return errors
 
 
@@ -1393,6 +1416,181 @@ def metric_context(snapshot, manifest, context_dir, model, metric, *, _now=None)
             governed_note="governed: true means admitted, not independently value-attested",
         )
     return result
+
+
+def _input_context_page_view(page, manifest, now):
+    """One §10.4 input_context page view (spec0032 §10.4; producer spec 0009
+    §5 page/citation contract): the SDK PublishedContextPage facts — identity,
+    advisory metadata, byte-exact canonical content, the parsed body with its
+    exact body-start line, the FULL disclosed native envelope and the public
+    Source provenance — plus the Core envelope facts (pinned release digest,
+    draft state, advisory context signals). The established navigation view
+    (:func:`_full_page_fields`) is reused unchanged and extended for the
+    input_context contract only — no parallel page schema, and no private
+    operational data (storage keys, registries, receipt bodies, admission
+    records) ever enters the view."""
+    from lumio_wiki.ariadne_context import disclose_native
+
+    disclosed = disclose_native(page.native)
+    return {
+        **_full_page_fields(page, manifest, now, disclosed),
+        "title": page.title,
+        "lifecycle": page.lifecycle,
+        "review_after": page.review_after,
+        "body": page.body,
+        "body_start_line": page.body_start_line,
+        "native": disclosed,
+        "sources": [
+            {"id": source.id, "title": source.title, "url": source.url} for source in page.sources
+        ],
+    }
+
+
+def input_context(manifest, snapshot, operation, resources, *, _now=None):
+    """Assemble the complete §10.4 ``input_context`` of one revision-3 query
+    operation from the pinned, verified Bound Release (spec0032 §§3–4,
+    §10.4–§10.5 stage 4): every consumed physical table resource in canonical
+    order with its FULL published Table page view bound by exact ``core_ref``
+    identity (a Dataset Overview view appears only when the collection itself
+    is consumed or referenced — these operations consume tables, so the field
+    stays ``None``), the applicable Policy inventory for this operation over
+    the consumed subjects with the full published Policy page views, native
+    context signals and contract-native evidence caveats. Missing, hidden,
+    ambiguous or out-of-scope mandatory views refuse with named diagnostics
+    naming the canonical identity — never a fallback and never hidden-content
+    disclosure; the caller runs this at stage 4, before any planner, live
+    audit, bind or SELECT work."""
+    from lumio_wiki import parse_frontmatter
+
+    from ariadne import context
+
+    # the exact-core_ref Table binding index over the pinned snapshot: each
+    # candidate page's canonical content is parsed through the producer's
+    # public frontmatter parser (never a second YAML parser) and the
+    # envelope's resource anchor read as authored — admission's F1 gate
+    # already guarantees the anchors agree, so no revalidation runs here
+    table_pages: dict[str, object] = {}
+    for page in snapshot.pages:
+        if page.kind != "table":
+            continue
+        meta, _body, _start = parse_frontmatter(page.content, Path(page.path))
+        profile = meta.get("ariadne_profile")
+        core_ref = profile.get("core_ref") if isinstance(profile, dict) else None
+        identity = (
+            core_ref.get("id")
+            if isinstance(core_ref, dict) and core_ref.get("kind") == "resource"
+            else None
+        )
+        if identity is None:
+            continue
+        if identity in table_pages:
+            raise ValueError(
+                f"ambiguous Table Context: multiple pinned pages bind {identity!r} — "
+                "the operation refuses instead of guessing a binding (spec0032 §3)"
+            )
+        table_pages[identity] = page
+
+    _listing, read, _search = _navigation_gate()
+    location, expected, metadata_store = _navigation_identity(manifest)
+    now = _now if _now is not None else context._assessment_now()
+
+    def published(path):
+        if metadata_store is None:  # local: exact pre-r4 call shape
+            return read(location, expected, path)
+        return read(location, expected, path, metadata_store=metadata_store)
+
+    signals: list[dict] = []
+    caveats: list[str] = []
+
+    def view_of(pinned):
+        view = _input_context_page_view(published(pinned.path), manifest, now)
+        signals.append(context._page_view(pinned.path, view["native"], now))
+        # the contract-native evidence disclosure, verbatim: one caveat per
+        # concrete advisory warning of the same assessed pages — no new
+        # numerical measurement interpreter (spec0032 §10.4)
+        caveats.extend(
+            f"{warning['path']}: {warning['code']}"
+            for warning in view["context_signals"]["warnings"]
+        )
+        return view
+
+    entries = []
+    consumed = sorted(set(resources))
+    for resource in consumed:
+        pinned = table_pages.get(resource)
+        if pinned is None:
+            raise ValueError(
+                f"required Table Context for consumed physical resource {resource!r} "
+                "is not bound by any visible pinned page — the operation refuses "
+                "before execution (spec0032 §3)"
+            )
+        entries.append({"resource": resource, "table": view_of(pinned), "dataset": None})
+
+    # the applicable Policy inventory for THIS operation over the consumed
+    # subjects: the admitted, verified inventory IS the classification — a
+    # source-level obligation applies only where explicitly bound to this
+    # operation (§4: never a calculation rule turned into a universal
+    # filter), and admission (§10.1) proved every classified policy lies in
+    # its subject's complete typed closure
+    policy_pages = {page.entity_id: page for page in snapshot.pages if page.kind == "policy"}
+    policies: list[dict] = []
+    for binding in (manifest.get("policy_bindings") or {}).get("bindings") or []:
+        subject = binding.get("subject") or {}
+        if subject.get("kind") != "table" or subject.get("identity") not in consumed:
+            continue
+        if operation not in (binding.get("operations") or []):
+            continue
+        enforcement = binding.get("enforcement")
+        if enforcement is not None:
+            # runtime defense in depth over §10.2 attestation identity: only
+            # a catalog check that actually executes for THIS operation can
+            # back an executable obligation, and the enforcement definition
+            # must stay the consumed subject's own identity (the check itself
+            # executes on this operation's existing path — the static
+            # IO-authority boundary at stage 3, the grain guard and plan
+            # proofs at stage 5 — never a new audit)
+            executed_for = EXISTING_CHECK_CATALOG.get(enforcement.get("check"))
+            if executed_for is None or operation not in executed_for:
+                raise ValueError(
+                    f"executable Policy binding of {operation!r} names check "
+                    f"{enforcement.get('check')!r} which does not execute for this "
+                    "operation — the obligation cannot be attested (spec0032 §10.2)"
+                )
+            if enforcement.get("definition") != subject.get("identity"):
+                raise ValueError(
+                    "executable Policy binding definition does not equal the consumed "
+                    "subject's reviewed identity (spec0032 §10.2)"
+                )
+        entity_id = (binding.get("policy") or {}).get("entity_id")
+        pinned_policy = policy_pages.get(entity_id)
+        if pinned_policy is None:
+            raise ValueError(
+                f"required Policy Context {entity_id!r} applicable to {operation!r} is "
+                "unavailable in the pinned visible snapshot (spec0032 §3)"
+            )
+        policies.append(
+            {
+                "subject": subject,
+                "association": binding.get("policy"),
+                "operations": binding.get("operations"),
+                "enforcement": enforcement,
+                "page": view_of(pinned_policy),
+            }
+        )
+    policies.sort(
+        key=lambda record: (
+            record["subject"]["identity"],
+            record["association"]["entity_id"],
+        )
+    )
+    return {
+        "bound_release": manifest["digest"],
+        "published_version": manifest["knowledge"]["published_version"],
+        "resources": entries,
+        "policies": policies,
+        "context_signals": context._context_signals(signals),
+        "evidence_caveats": caveats,
+    }
 
 
 # --------------------------------------------- A2 scoped SDK navigation (§1.3)
