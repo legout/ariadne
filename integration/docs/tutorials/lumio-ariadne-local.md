@@ -227,19 +227,20 @@ The search now includes the added Policy sentence under a new Published Version
 and Bound Release. Sessions opened before activation stay pinned to their
 previous release; the CLI commands above open new sessions.
 
-## 8. Query the sources directly (UNRELEASED source-candidate extension)
+## 8. Query the sources directly (Core 0.7.0 / Lumio 0.5.0 extension)
 
-> **This section needs unreleased software.** The published
+> **This section needs the newer published pair.** The
 > `ariadne-data 0.6.0` / `lumio-wiki 0.4.0` pair this tutorial installed
-> cannot execute it, and opting a selector into a higher support revision is
-> an *admission* choice, not a software upgrade. The revision-3 query
-> operations ship in this repository's **unreleased source candidate**: to
-> follow along you must (1) install a matching source-candidate build of
-> both packages, (2) give every consumed table a technical page through an
-> explicit schema inspection (`refresh_schema`) with each required Policy
-> classified in the authored `policy_bindings` inventory, and (3) pass the
-> whole thing through a NEW human review and admission — the earlier
-> admission of this walkthrough keeps refusing the three operations.
+> in sections 1–7 cannot execute it: install the matching
+> `ariadne-data==0.7.0` / `lumio-wiki==0.5.0` pair (for example into a
+> fresh virtual environment) to follow along. Opting a selector into a
+> higher support revision is an *admission* choice, not a software upgrade:
+> you must still (1) run the new pair's explicit schema inspection
+> (`refresh_schema`) so every consumed table gets a technical page, with
+> each required Policy classified in the authored `policy_bindings`
+> inventory, and (2) pass the whole thing through a NEW human review and
+> admission — the earlier admission of this walkthrough keeps refusing the
+> three operations.
 
 With those prerequisites met, extend `context_integration.yaml` — the five
 > baseline keys above plus exactly the two revision-3 opt-in keys:
@@ -321,5 +322,7 @@ owned by the tools. You can inspect every helper action in
 
 A different Core/SDK build requires genuine revalidation and fresh matching
 admission. S3 and LanceDB are optional later topics; the integrated knowledge
-binding in this release is local-only. The separately versioned Agent/Tau stack
+binding in this tutorial's tested baseline pair is local-only (the Core 0.7.0 /
+Lumio 0.5.0 pair additionally offers the optional S3 Knowledge transport). The
+separately versioned Agent/Tau stack
 and private Lumio web application are not required or qualified by this tutorial.

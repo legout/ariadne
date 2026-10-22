@@ -74,8 +74,8 @@ manifest):
 
 | Area | Delivered behavior |
 | --- | --- |
-| Storage | Local immutable Published Versions (released). Optional S3 object storage is an **unreleased source candidate**: an `s3://` destination is admitted only with an explicitly selected declared storage profile, its verified private local admission records and the frozen transport binding; mutable/current/latest reads and plain directories always refuse. |
-| Profiles | Revision-scoped, always checked across the entire captured KB. **Revision 1 (the released pairing):** `metric`, `policy` and `reference` only. A `reference` profile is supported ONLY as a fully validated structured Reference (native Reference contract; authentic Core receipts for measured authority, native source-backed manual assertion eligibility, exact human mapping confirmation). Any other Ariadne profile kind anywhere in the KB refuses admission — even when no metric references it. Ordinary unprofiled pages stay KB content and are never exposed as Core-validated technical references. **Revisions ≥2 (unreleased source candidate only):** the native `dataset`, `table` and `computation` technical profiles additionally join the supported set behind the revision opt-in below — this is candidate-build capability, not released profile availability, and `skill` profiles remain refused on every revision. |
+| Storage | Local immutable Published Versions, plus optional S3 object storage released with Core 0.7.0: an `s3://` destination is admitted only with an explicitly selected declared storage profile, its verified private local admission records and the frozen transport binding; mutable/current/latest reads and plain directories always refuse. |
+| Profiles | Revision-scoped, always checked across the entire captured KB. **Revision 1 (the legacy released pairing):** `metric`, `policy` and `reference` only. A `reference` profile is supported ONLY as a fully validated structured Reference (native Reference contract; authentic Core receipts for measured authority, native source-backed manual assertion eligibility, exact human mapping confirmation). Any other Ariadne profile kind anywhere in the KB refuses admission — even when no metric references it. Ordinary unprofiled pages stay KB content and are never exposed as Core-validated technical references. **Revisions ≥2 (released with Core 0.7.0):** the native `dataset`, `table` and `computation` technical profiles additionally join the supported set behind the explicit revision opt-in below — revision-scoped capability that existing admissions never gain silently, and `skill` profiles remain refused on every revision. |
 | `get_metric` | Governed calculation with one exact Context Binding and the complete required Policy Closure, resolved in the same pinned snapshot before SQL. |
 | `query_metrics` | Multiple predefined metrics over the admitted multi-fact graph, complete per-metric Policy context, exact citations. |
 | `discover`, `list_metrics` | Source-free disclosure of the admitted catalog, binding identity and available/unavailable operations. No source is opened. |
@@ -149,10 +149,10 @@ residue was a disclosed part of the confirmed operation, but it is not an
 active integrated release. Rollback is another explicit reviewed activation,
 not a permission grant or history rewrite.
 
-### Optional S3 Knowledge transport (unreleased source candidate)
+### Optional S3 Knowledge transport (Core 0.7.0)
 
-Git with a local checkout stays the standard operator path. The unreleased
-source candidate additionally accepts `--context-destination
+Git with a local checkout stays the standard operator path. Core 0.7.0
+additionally accepts `--context-destination
 s3://bucket/prefix` together with `--context-storage-profile NAME`, where
 `NAME` is a `storages:` profile declared in the project `ariadne.yaml`:
 environment-variable NAMES plus literal scopes that must contain the complete
@@ -170,9 +170,9 @@ first). The exact private native admission records
 stay in the local metadata store of the admitting host — there is no public
 receipt object, no cross-host synchronization and no implicit second-host
 trust. A failed Core activation preserves the previous descriptor bytes and
-discloses the actual native publication residue. The published
+discloses the actual native publication residue. The historical
 `lumio-wiki` 0.4.1 / `ariadne-data` 0.6.1 pair does not carry this
-behavior; it exists only in the unreleased source candidate.
+behavior; it requires the Core 0.7.0 / `lumio-wiki` 0.5.0 pairing below.
 
 ## The Bound Release manifest
 
@@ -236,17 +236,23 @@ these capabilities: the exact candidate wheel pairing (Core and producer
 source refs and wheel digests) is recorded with the qualification run
 evidence, not assumed from published versions.
 
-### Release 0.6.1 / 0.4.1
+### Release 0.7.0 / 0.5.0
 
-The public pairing is `ariadne-data==0.6.1` with
-`lumio-wiki==0.4.1` (Python >=3.14). Install the exact pair:
+The public pairing is `ariadne-data==0.7.0` with
+`lumio-wiki==0.5.0` (Python >=3.14). Install the exact pair:
 
 ```sh
-pip install 'ariadne-data[mcp]==0.6.1' 'lumio-wiki==0.4.1'
+pip install 'ariadne-data[mcp]==0.7.0' 'lumio-wiki==0.5.0'
 ```
 
-Omit `[mcp]` for CLI-only use; `lumio-lancedb==0.4.1` is an optional retrieval
+Omit `[mcp]` for CLI-only use; `lumio-lancedb==0.5.0` is an optional retrieval
 adapter, not a Core requirement. Base Core still imports without either SDK
 or MCP. Qualification records the exact producer source commit and each built
-wheel hash. A different installed build needs genuine validation and a fresh
-overall admission; it never upgrades an old Bound Release in place.
+wheel hash; the release workflow pins the exact published `lumio-wiki` 0.5.0
+producer wheel by immutable PyPI URL and SHA-256. A different installed build
+needs genuine validation and a fresh overall admission; it never upgrades an
+old Bound Release in place. The historical 0.6.1/0.4.1 pairing (and the
+tested numerical 0.6.0/0.4.0 tutorial baseline) remains exactly what those
+releases carry — local transport only, revision-1 profiles; the revision ≥2
+capabilities and the S3 transport arrive only with the matching newer pair
+and a new admission, never by relabeling an existing one.

@@ -5,7 +5,7 @@ name: publish
 # ariadne-data only, from one Core output directory (dist/core). ariadne-agent
 # and tau-mcp are excluded until separately authorized; their versions and
 # sources stay unchanged. Release qualification pairs the exact PUBLISHED
-# lumio-wiki 0.4.1 producer wheel, fetched by immutable PyPI URL and verified
+# lumio-wiki 0.5.0 producer wheel, fetched by immutable PyPI URL and verified
 # against its recorded SHA-256 — never a workspace or source-built unreleased
 # substitute (producer-first public pairing, spec 0030 §5). The tag must equal
 # the ariadne-data member version. PyPI auth remains the PYPI_API_TOKEN
@@ -47,11 +47,11 @@ jobs:
         # test-pairing input only and is never published by this job.
         run: |
           mkdir -p .ci-sdk-dist
-          sdk_wheel=.ci-sdk-dist/lumio_wiki-0.4.1-py3-none-any.whl
-          sha=47ec2f3e1f303f4bef156be4fac1d8ca5880ee2fc1356171a7bd2384a41bdaa3
+          sdk_wheel=.ci-sdk-dist/lumio_wiki-0.5.0-py3-none-any.whl
+          sha=df0890b75aa273352ee8d1d02170ac63ef9f3d24ff0236e2251edc439bc8533e
           curl -fsSL -o "$sdk_wheel" \
-            "https://files.pythonhosted.org/packages/7a/c9/1a5044ab0db1883f78049ead07616273569f1e0d8a044396d435f3cc6802/lumio_wiki-0.4.1-py3-none-any.whl"
-          echo "lumio-wiki producer: published PyPI wheel lumio-wiki==0.4.1"
+            "https://files.pythonhosted.org/packages/1a/60/01f0a81772abcf69fa07103bb523323eb8ddacf247b6c794e0dab00761fc/lumio_wiki-0.5.0-py3-none-any.whl"
+          echo "lumio-wiki producer: published PyPI wheel lumio-wiki==0.5.0"
           echo "$sha  $sdk_wheel" | sha256sum -c -
           sha256sum "$sdk_wheel"
 
