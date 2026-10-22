@@ -2,6 +2,7 @@
 name = "lumio-wiki"
 version = "0.5.0"
 description = "Portable, model-free Knowledge Base foundation for Lumio."
+readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "Volker L.", email = "ligno.blades@gmail.com" }]
 requires-python = ">=3.14"
@@ -40,6 +41,13 @@ all = [
   "obstore>=0.11.0",
   "mcp>=2.2.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/legout/ariadne/tree/main/products/lumio"
+Documentation = "https://github.com/legout/ariadne/blob/main/products/lumio/docs/quickstart.md"
+Repository = "https://github.com/legout/ariadne"
+Issues = "https://github.com/legout/ariadne/issues"
+Changelog = "https://github.com/legout/ariadne/blob/main/products/lumio/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
