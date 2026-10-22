@@ -230,7 +230,7 @@ previous release; the CLI commands above open new sessions.
 ## 8. Query the sources directly (UNRELEASED source-candidate extension)
 
 > **This section needs unreleased software.** The published
-> `ariadne-core 0.6.0` / `lumio-wiki 0.4.0` pair this tutorial installed
+> `ariadne-data 0.6.0` / `lumio-wiki 0.4.0` pair this tutorial installed
 > cannot execute it, and opting a selector into a higher support revision is
 > an *admission* choice, not a software upgrade. The revision-3 query
 > operations ship in this repository's **unreleased source candidate**: to
