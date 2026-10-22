@@ -2736,6 +2736,29 @@ def normalize_record_request(
             f"'limit' must be a positive integer of at most "
             f"{min(MAX_RECORD_LIMIT, row_ceiling)} (booleans are not integers)",
         )
+    for field, op, value in non_temporal:
+        # Q1-F3 (owner-approved IN-list unit, spec0032 §7/§10.5 stage 1,
+        # native static precedence preserved): an IN predicate takes a
+        # literal list of SCALAR values (spec0014 §3). None/dict elements
+        # already refuse at filter-parse time; the nested-list element
+        # formerly surfaced only in SQL predicate construction (after
+        # order/limit, after Context) — this PURE scalar check owns it AFTER
+        # the complete order/limit validation (never preempting
+        # order_invalid/limit_invalid on combined-invalid input) and BEFORE
+        # the temporal conversion (the native SQL builder builds its
+        # non-temporal predicates, including IN, ahead of temporal
+        # comparisons), with the existing native filter_invalid code and
+        # message. No SQL AST is constructed here; ``_direct_literal`` stays
+        # in the builder, and non-JSON scalar-shaped objects remain outside
+        # this unit's scope
+        if op == "in":
+            for element in value:
+                if isinstance(element, list):
+                    raise PlannerError(
+                        "filter_invalid",
+                        f"filter on {field!r}: IN list elements are scalars "
+                        "(use is_null for nulls)",
+                    )
     temporal_instants: dict[tuple[str, str, Any], datetime] = {}
     if timestamp_field is not None and zone is not None:
         # Q1-F3 (owner-approved Timestamp unit, spec0032 §7/§10.5 stage 1,

@@ -3769,6 +3769,7 @@ Q1_REVIEW_CASES = [
     pytest.param("records-fields-shape", id="records-fields-shape"),
     pytest.param("records-order-shape", id="records-order-shape"),
     pytest.param("records-timestamp-literal", id="records-timestamp-literal"),
+    pytest.param("records-in-list-literal", id="records-in-list-literal"),
 ]
 
 
@@ -3965,6 +3966,37 @@ def test_integrated_query_review_refusals(case, tmp_path, monkeypatch):
                     )
                 )
             assert caught.value.code == "timestamp_interpretation"
+        finally:
+            runtime.con.close()
+        return
+
+    if case == "records-in-list-literal":
+        # IN-list follow-up (owner-approved bounded unit): the native
+        # scalar-only IN contract (spec0014 §3 — an IN predicate takes a
+        # literal list of SCALAR values) owns the nested-list element BEFORE
+        # the missing status Table Context: _direct_literal's filter_invalid
+        # rejection of a list element currently fires only during SQL
+        # predicate construction, after Context (spec0032 §7, §10.5 stage 1:
+        # pure caller-literal validation precedes the Context preflight). No
+        # SQL, connection or live RE2 judgement is needed to establish it
+        project, _review = _q1_release(tmp_path, status_context=False)
+        runtime = QueryRuntime.open_project(project)
+        try:
+            with pytest.raises(PlannerError) as caught:
+                asyncio.run(
+                    runtime.query_records(
+                        {
+                            "dataset": "orders.main.order_status",
+                            "fields": ["status"],
+                            "filters": [
+                                {"field": "status", "op": "in", "value": [["completed"]]}
+                            ],
+                            "order": [{"field": "status", "direction": "asc"}],
+                            "limit": 10,
+                        }
+                    )
+                )
+            assert caught.value.code == "filter_invalid"
         finally:
             runtime.con.close()
         return
