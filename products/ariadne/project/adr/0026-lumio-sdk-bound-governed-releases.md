@@ -120,5 +120,8 @@ carrying only the typed subject association; only checks that actually execute
 for the bound operation are valid enforcement targets; explanatory records
 never prove narrative-to-SQL equivalence; and staged per-admission capability
 revisions (profile-expanded before query-expanded) keep prior qualified
-releases usable while unimplemented capabilities refuse. No implementation
+revisions usable under their admitted build identity while unimplemented
+capabilities refuse — capability-table evolution alone never waives the
+existing build/content/approval checks, and changed execution content
+retains its existing revalidation/re-admission requirement. No implementation
 or publication is granted by this decision.

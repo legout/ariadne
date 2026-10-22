@@ -159,7 +159,7 @@ An immutable, human-admitted association of exact knowledge, analytics, evidence
 _Avoid_: latest, software version, historical answer cache
 
 **Support Revision**:
-The per-admission revision of the integrated consumer capability table (profile kinds, operations) recorded in a Bound Release. Older revisions stay valid for their previously qualified operations; capabilities beyond a recorded revision refuse on that release, and expansions require a new admission.
+The per-admission revision of the integrated consumer capability table (profile kinds, operations), declared by the authored integration selector and recorded in a Bound Release. Older revisions stay valid for their previously qualified operations under their admitted build identity — capability-table evolution never waives existing build, content or approval checks; capabilities beyond a recorded revision refuse on that release, and expansions require a new admission.
 _Avoid_: SDK version, global feature flag, automatic upgrade
 
 ### Querying

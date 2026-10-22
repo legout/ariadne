@@ -2,12 +2,16 @@
 
 **Status:** revision 2 — exact contracts frozen, 2026-10-22; execution
 proposal for the #83/#84 validation assignment. Revision 1 (same day) was the
-ticketized execution-order overview. Owner approved the complete design and
-capture, then instructed “Implementiere die offenen issues autonom” and
-selected the Core-owned Policy-binding representation (spec0032 r2 §10);
-this authorizes the documentation completion, not implementation, test
-execution, integration, push, tag or release. Contract: planning-contract v1;
-installed skill provenance unknown.
+ticketized execution-order overview. The owner approved the complete design
+and capture, then — through the orchestration parent — explicitly approved
+the Core-owned Policy-binding carrier and the accompanying namespace repair
+before instructing “Implementiere die offenen issues autonom” (spec0032 r2
+§10). #82 is a documentation-only unit; #83/#84 isolated execution is
+authorized once their contract prerequisites are accepted. No target
+integration, push, tag or release. This plan is an execution proposal, not
+runtime qualification; parent acceptance of the C1 unit is pending until
+its delta inspection. Contract: planning-contract v1; installed skill
+provenance unknown.
 
 ## Source and capture
 
@@ -50,7 +54,11 @@ handoffs and bounded reviews.
 
 - Spec0032 §§1–4, §10.1–§10.3 and acceptance 1–3, 5: #82 froze the exact
   applicability/check/coverage contracts; #83 implements their admitted
-  representation (revision 2); #84 enforces actual operation dependencies and
+  representation (revision 2), applying the binding contract to the existing
+  governed operations its revision advertises — explanatory disclosure for
+  `get_metric`, executed-check attestation for `query_metrics`, including a
+  narrow enforcement touch in the query path — without enabling the
+  revision-3 operations; #84 enforces actual operation dependencies and
   preserves native authority (revision 3).
 - §§5–6 and acceptance 4, 6: #83 owns full native metadata, authentic
   evidence, explicit inspection, curated content and human admission.
@@ -104,7 +112,8 @@ P1 receives immediate independent review before consumer work (its public
 runtime contract — capability tables, binding validation, inventory — gets a
 fresh independent review before Q1 consumes it); Q1 receives one final
 candidate review of new code and integration effects. C1's low-risk
-documentation was accepted by parent source inspection. At most one
+documentation is subject to parent source inspection of its delta; acceptance
+is pending until that inspection. At most one
 parent-authorized correction and delta recheck per reviewed unit; remaining
 blockers go to the owner. No extra evidence ledgers or sign-off files.
 

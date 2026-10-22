@@ -16,15 +16,18 @@ owner accepted the profile boundaries and then confirmed the complete design:
 keine Implementierung.” This authorizes the written capture and scoped
 contract reconciliation only, not execution, integration, push or publication.
 
-**Revision 2 approval:** on 2026-10-22 the owner instructed “Implementiere die
-offenen issues autonom” and, through the orchestration parent, explicitly
-selected the Core-owned representation for Policy applicability and
-existing-check references: a versioned authored `policy_bindings` block in the
-integration selector plus an admission-captured binding inventory, with the
-native producer schema unchanged (the considered alternative, a producer-side
-applicability extension, was rejected as materially heavier). This authorizes
-autonomous completion of this documentation unit and its scoped amendments
-only — still no implementation, integration, push or publication.
+**Revision 2 approval:** on 2026-10-22 the owner, through the orchestration
+parent, explicitly approved the Core-owned carrier for Policy applicability
+and existing-check references (a versioned authored `policy_bindings` block
+in the integration selector plus an admission-captured binding inventory,
+together with the accompanying namespace repair) and rejected the materially
+heavier producer-side applicability extension; the native producer schema
+stays unchanged. The owner then instructed “Implementiere die offenen
+issues autonom”: this authorizes #82 as a documentation-only unit and the
+isolated execution of #83/#84 once their contract prerequisites are
+accepted — with no target integration, push or publication. This document
+is written capture and exact interface contract, not runtime qualification;
+parent acceptance of this revision is pending until its delta inspection.
 
 **Sources:** [vocabulary](../../CONTEXT.md),
 [ADR-0026 amendment](../adr/0026-lumio-sdk-bound-governed-releases.md#integrated-query-and-profile-expansion--2026-10-22),
@@ -265,14 +268,27 @@ and Dataset/Table/Computation envelopes (producer spec 0009 §2) require no
 extension. Applicability and enforcement live in the Core-owned consumer
 contract below.
 
-### 10.1 Authored `policy_bindings` block
+### 10.1 Authored `policy_bindings` block and revision opt-in
 
 `context_integration.yaml` keeps its five existing keys, semantics and file
-`version: 1` unchanged and gains one optional top-level key, `policy_bindings`,
-with its own exact version. Its absence keeps current behavior; an admission
-opting into support revision ≥2 (§10.3) requires it.
+`version: 1` unchanged and gains exactly two optional top-level keys:
+`support_revision` (an exact integer) and `policy_bindings` (with its own
+exact version). The authored selector is the opt-in carrier:
+
+- Absence of **both** keys is the legacy configuration — support revision 1,
+  unchanged behavior. An explicit `support_revision: 1` is the same legacy
+  revision; `policy_bindings` is forbidden at revision 1.
+- Revision ≥2 requires **both** an explicit exact-integer `support_revision`
+  and a `policy_bindings` block of version 1. A `policy_bindings` block
+  without a declared `support_revision` refuses (no implicit higher revision
+  from mere block presence), as do unknown, newer-than-implemented or
+  unimplemented revisions, boolean values in place of integers, and any
+  mismatch between the declared revision and the block's requirements. The
+  implemented revision set is itself staged: #83 implements revisions 1–2,
+  #84 adds 3.
 
 ```yaml
+support_revision: 2
 policy_bindings:
   version: 1
   bindings:
@@ -312,8 +328,7 @@ Closed validation, refusing with named diagnostics (never ignoring):
   catalog id whose executed-for set contains **every** operation in
   `operations` — only a check that actually executes for that operation may be
   a binding target; a name in an allowlist is not proof it was applied.
-  `definition` names the exact reviewed definition identity; `dependencies`
-  lists exact dependency identities (possibly empty).
+  `definition` and `dependencies` follow §10.2's exact identity rules.
 - Agreement with the captured KB: for every subject **consumed by an
   operation of the admission's support revision**, the subject page's complete
   typed `required_policies` closure must be exactly classified by authored
@@ -343,6 +358,31 @@ gates in this revision, so its calculation-subject bindings are explanatory
 only. Catalog growth requires a spec revision naming the actually-executing
 check; implementations add no entries.
 
+**Enforcement identity.** `definition` and `dependencies` are identity
+strings in the existing grammars only — no arbitrary labels, code or
+function paths. `definition` must equal the subject's own existing reviewed
+identity in the captured snapshot: the `metric_ref`'s `model::metric` for a
+metric subject, the `core_ref` semantic identity for a computation, the exact
+canonical `ariadne://table|collection/…` for a table or dataset.
+`dependencies` entries must be exact canonical table resource identities from
+the pinned static dependency inventory of that subject (the same static
+extraction §10.5 uses); unknown, unrelated, ambiguous or duplicate entries
+refuse, and an empty list is valid only when the static inventory is empty.
+
+**Attestation.** A required binding is not satisfied by an allowlisted check
+that did not run for the consumed subject/dependencies — a plan audit
+reporting not-run establishes nothing. The obligation must be established
+before result execution either by the existing static authority proof (where
+the catalog check is static) or by the actual existing live proof/audit of the
+executed operation. If an operation cannot actually attest its declared
+target, it refuses instead of labeling the narrative enforced; no new checks
+or row filtering are invented. Preflight never obtains dependencies by
+prematurely executing live audits (§10.5). #83 applies this contract to the
+existing governed operations its revision advertises — explanatory disclosure
+for `get_metric`, executed-check attestation for `query_metrics` — which may
+include a narrow enforcement touch in the query path, without enabling the
+three revision-3 operations.
+
 ### 10.3 Staged capability revisions and the admission-captured inventory
 
 Compatibility uses explicit per-admission capability revisions, not global
@@ -352,7 +392,7 @@ kinds, supported operations, storage — validated exactly:
 
 - **Revision 1 (existing):** profiles `metric, policy, reference`; the nine
   existing operations; `query_detail`, `query_records`, `define_metric`
-  unsupported. No `policy_bindings` requirement.
+  unsupported. `policy_bindings` is not permitted (§10.1).
 - **Revision 2 — profile-expanded (#83):** adds `dataset, table, computation`
   profile kinds with their producer-native envelopes; requires the
   `policy_bindings` block; consumed-subject classification covers the
@@ -364,22 +404,37 @@ kinds, supported operations, storage — validated exactly:
   `define_metric` with §10.4/§10.5; consumed-subject classification extends to
   the operations' physical dependencies (§10.5).
 
-Rules: an admission declares exactly one revision; its stored support set
-must exactly equal that revision's frozen table (tampering detection);
-manifest support is checked against the table **for its recorded revision**,
-never against the currently newest set, so previously qualified operations on
-older releases stay valid; a revision newer than the installed consumer's
-known tables refuses; new capabilities apply only through a new admission
-opting into the higher revision — no automatic backfill, upgrade or rewrite
-of existing manifests or sessions (§6/§7). Sequencing: #83 lands a coherent
-revision 2 before #84 builds revision 3 on it.
+Rules: an admission declares exactly one revision through the authored
+selector key (§10.1); the selector source and the stored manifest must agree
+exactly. A legacy manifest missing both `support_revision` and
+`policy_bindings` is interpreted as revision 1 without rewriting its bytes
+or digest. A manifest's stored support set must exactly equal its recorded
+revision's frozen table (tampering detection); support is checked against the
+table **for its recorded revision**, never against the currently newest set,
+and a revision newer than the installed consumer's implemented set refuses.
+Capability-table evolution alone never invalidates a matching qualified
+revision — but it also never waives anything else: every existing
+build/content/approval/scope check keeps binding, including the exact
+execution-identity equality between manifest, validation evidence and the
+running build. A software or execution-content change retains its existing
+requirement for revalidation and re-admission, and such a re-admission may
+deliberately stay at the previous support revision rather than force profile
+backfill. Compatibility is demonstrated with separately admitted legacy and
+expanded contracts under the same qualified candidate build — never by
+faking old execution digests or bypassing build pinning — and historical
+sessions keep their valid pinned identities. This adds no software
+compatibility promise beyond the existing admission contracts. New
+capabilities apply only through a new admission opting into the higher
+revision — no automatic backfill, upgrade or rewrite of existing manifests
+or sessions (§6/§7). Sequencing: #83 lands a coherent revision 2 before #84
+builds revision 3 on it.
 
 The Bound Release manifest gains two digest-bound, admission-captured
-fields: `support_revision` (the exact integer) and `policy_bindings` (the
-validated binding inventory from the reviewed Content Commit). Admission
-validation extends the existing consumer candidate gates with §10.1;
-`verify_release` re-derives and equality-checks both fields from the pinned
-snapshot.
+fields: `support_revision` (the exact integer declared by the reviewed
+selector) and `policy_bindings` (the validated binding inventory from the
+reviewed Content Commit). Admission validation extends the existing
+consumer candidate gates with §10.1; `verify_release` re-derives and
+equality-checks both fields from the pinned snapshot.
 
 ### 10.4 `input_context` response schema (revision 3)
 
