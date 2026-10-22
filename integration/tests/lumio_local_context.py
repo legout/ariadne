@@ -3128,7 +3128,32 @@ def _q1_bindings(orders_resource: str, status_resource: str) -> dict:
     return inventory
 
 
-def _q1_release(root: Path, *, status_context: bool = True):
+def _q1_status_closure_bindings(bindings: dict, status_resource: str) -> dict:
+    """The final-review F2 fixture input: the status Table subject's typed
+    closure classified for define_metric by an EXECUTABLE binding naming the
+    one catalog check that executes there (§10.2 — check adhoc.grain_preserving,
+    definition == the subject's own canonical identity, dependencies == the
+    table subject's own static inventory). Every identity comes from the
+    authored constants; producer-valid and fully admitted before any query."""
+    import copy
+
+    extended = copy.deepcopy(bindings)
+    extended["bindings"].append(
+        {
+            "subject": {"kind": "table", "identity": status_resource},
+            "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
+            "operations": ["define_metric"],
+            "enforcement": {
+                "check": "adhoc.grain_preserving",
+                "definition": status_resource,
+                "dependencies": [status_resource],
+            },
+        }
+    )
+    return extended
+
+
+def _q1_release(root: Path, *, status_context: bool = True, status_closure: bool = False):
     """The shared revision-3 release: the real P1 baseline project and KB
     candidate, the real refresh inspection of the consumed physical tables,
     one authored table-closure association (§4's explicit source-level
@@ -3136,11 +3161,20 @@ def _q1_release(root: Path, *, status_context: bool = True):
     lifecycle — no fake evidence, admission or Context mocks. With
     ``status_context=False`` the order_status Table page is never generated:
     the admission itself stays valid (Context coverage is per-request, §3)
-    so a leg can prove the missing nested/lookup Context refusal."""
+    so a leg can prove the missing nested/lookup Context refusal. With
+    ``status_closure=True`` (requires the default full ``status_context``)
+    the status Table page additionally gains its authored typed closure and
+    the selector carries the F2 executable define_metric binding over the
+    status resource — both authored BEFORE the native validate/review/admit,
+    producer-valid, and admitted for real; the default configuration is
+    byte-for-byte the original three tests' and the S3 adapter's input."""
     from ariadne.sources import table_resource
 
     orders_resource = table_resource(**P1_ORDERS_ASSET)
-    bindings = _q1_bindings(orders_resource, table_resource(**P1_STATUS_ASSET))
+    status_resource = table_resource(**P1_STATUS_ASSET)
+    bindings = _q1_bindings(orders_resource, status_resource)
+    if status_closure:
+        bindings = _q1_status_closure_bindings(bindings, status_resource)
     project = _p1_project(root, bindings)
     (project / "context_integration.yaml").write_text(_q1_selector_text(bindings))
     run_git(project, "add", "--", "context_integration.yaml")
@@ -3169,6 +3203,15 @@ def _q1_release(root: Path, *, status_context: bool = True):
         {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"}
     ]
     write_page(orders_page, meta, body)
+    if status_closure:
+        # the F2 fixture's typed status closure: the executable define_metric
+        # binding above classifies a REAL authored association
+        status_page = _p1_generated_table_page(tree, status_resource)
+        meta, body = page_parts(status_page)
+        meta["ariadne_profile"]["required_policies"] = [
+            {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"}
+        ]
+        write_page(status_page, meta, body)
     revision = reconcile_knowledge(project, started["proposal"], revision)
     validated = api.validate_proposal(started["proposal"], revision)
     assert validated["ok"] is True, validated["errors"]
@@ -3697,3 +3740,187 @@ def test_integrated_ad_hoc_metric_is_unsaved_and_context_bound(tmp_path, monkeyp
                 )
     finally:
         bare.con.close()
+
+
+# --------------------- Q1 final review refusals (spec0032 §§3–4, §10.2, §10.5 stage 1)
+
+# The parent-dispositioned fix-first findings F1–F3, each an independently
+# authored expectation from the written contracts (never product output):
+# F1 — SQLGlot's Scope keeps SEMI/ANTI right-hand tables OUT of
+# selected_sources (optimizer/scope.py: the separate _semi_anti_join_tables
+# set), so the revision-3 static inventory must still enumerate those
+# physical reads; a membership-filtered source whose RHS table lacks bound
+# Context refuses by its exact canonical identity BEFORE the grain guard or
+# bind. F2 — an executable Policy binding is established only by the check
+# that actually executes for its declared target: when the whole expression
+# reads a table the source-only grain check never receives, the obligation
+# cannot be attested and the operation refuses before live work, naming the
+# check id AND the unattested target identity (§10.2 attestation — never a
+# label on an unrelated passing call, never a new check). F3 — the native
+# structured malformed-request errors keep ownership ahead of dependency /
+# Context preflight: type checks precede hashing and the planner's own
+# request_invalid/unknown_dataset codes survive (§7, §10.5 stage 1).
+Q1_REVIEW_CASES = [
+    pytest.param("semi-context", id="semi-context"),
+    pytest.param("anti-context", id="anti-context"),
+    pytest.param("grain-expression-target", id="grain-expression-target"),
+    pytest.param("detail-fields-shape", id="detail-fields-shape"),
+    pytest.param("detail-dataset-shape", id="detail-dataset-shape"),
+    pytest.param("records-fields-shape", id="records-fields-shape"),
+]
+
+
+@pytest.mark.parametrize("case", Q1_REVIEW_CASES)
+def test_integrated_query_review_refusals(case, tmp_path, monkeypatch):
+    """Six finite refusal nodes of the final independent review (fix-first
+    F1–F3), each over a real native rev-3 admission built per case with one
+    validation: SEMI/ANTI membership-filtered sources must not lose their
+    right-hand physical dependency's mandatory Context; an executable
+    adhoc.grain_preserving binding whose target the actual source-only check
+    cannot establish refuses before grain/bind instead of executing with an
+    unattested obligation; and the public malformed-request shapes keep the
+    native PlannerError codes (request_invalid / unknown_dataset) instead of
+    TypeError or a misleading Context error."""
+    import re
+
+    import ariadne.query as query_module
+    from ariadne.planner import PlannerError
+    from ariadne.sources import table_resource
+
+    status_resource = table_resource(**P1_STATUS_ASSET)
+
+    def no_live(*args, **kwargs):
+        raise AssertionError("a pre-execution refusal reached the live path")
+
+    if case in ("semi-context", "anti-context"):
+        # F1: both relations approved and the release validly admitted — the
+        # refusal must be the MISSING status Table Context, never an IO
+        # permission failure masking it
+        join = "SEMI" if case == "semi-context" else "ANTI"
+        project, _review = _q1_release(tmp_path, status_context=False)
+        runtime = QueryRuntime.open_project(project)
+        try:
+            with monkeypatch.context() as m:
+                m.setattr(query_module, "check_grain_preserving", no_live)
+                m.setattr(runtime._execution, "bind", no_live)
+                with pytest.raises(ValueError, match=re.escape(status_resource)):
+                    asyncio.run(
+                        runtime.define_metric(
+                            {
+                                "name": "membership_value",
+                                "source": (
+                                    "SELECT o.* FROM orders.main.orders AS o"
+                                    f" {join} JOIN orders.main.order_status AS s"
+                                    " ON o.status = s.status"
+                                ),
+                                "expression": "SUM(amount)",
+                                "description": "Temporary membership-filtered value",
+                            }
+                        )
+                    )
+        finally:
+            runtime.con.close()
+        return
+
+    if case == "grain-expression-target":
+        # F2: the status Table's typed closure and executable define_metric
+        # binding are authored inputs admitted for real; the plain-orders
+        # request's expression reads the status table (CROSS JOIN self-join)
+        # that the actual source-only grain check never receives — the
+        # obligation cannot be attested, so the operation refuses before
+        # grain/bind naming the check id AND the unattested target
+        project, review = _q1_release(tmp_path, status_closure=True)
+        from lumio_wiki.ariadne_context import (  # pyright: ignore[reportMissingImports] — qualified test env is external
+            inspect_ariadne_candidate,
+        )
+
+        tree = worktree_of(project, review["proposal"])
+        assert (
+            inspect_ariadne_candidate(
+                str(tree / "knowledge"), review["revision"], namespace=NAMESPACE
+            ).diagnostics
+            == ()
+        ), "the fixture must be producer-valid; only the consumer attestation contract refuses"
+        runtime = QueryRuntime.open_project(project)
+        try:
+            manifest = runtime._managed["bound_release"]
+            admitted = [
+                binding
+                for binding in manifest["policy_bindings"]["bindings"]
+                if binding["subject"]["identity"] == status_resource
+                and (binding.get("enforcement") or {}).get("check") == "adhoc.grain_preserving"
+            ]
+            assert admitted, "the executable status binding must be part of the real admission"
+            with monkeypatch.context() as m:
+                m.setattr(query_module, "check_grain_preserving", no_live)
+                m.setattr(runtime._execution, "bind", no_live)
+                with pytest.raises(ValueError) as refused:
+                    asyncio.run(
+                        runtime.define_metric(
+                            {
+                                "name": "borrowed_status_count",
+                                "source": "orders.main.orders",
+                                "expression": (
+                                    "SUM(amount) + (SELECT COUNT(*) FROM"
+                                    " orders.main.order_status AS s CROSS JOIN"
+                                    " orders.main.order_status AS t)"
+                                ),
+                                "description": "Temporary value over an unattested status read",
+                            }
+                        )
+                    )
+            message = str(refused.value)
+            assert "adhoc.grain_preserving" in message
+            assert status_resource in message
+        finally:
+            runtime.con.close()
+        return
+
+    if case == "detail-fields-shape":
+        # F3: the native planner's structured request validation owns the
+        # malformed shape — request_invalid, never a TypeError from the
+        # static dependency seam's hashing
+        project, _review = _q1_release(tmp_path)
+        runtime = QueryRuntime.open_project(project)
+        try:
+            with pytest.raises(PlannerError) as caught:
+                asyncio.run(runtime.query_detail({"dataset": "orders", "fields": [{}]}))
+            assert caught.value.code == "request_invalid"
+        finally:
+            runtime.con.close()
+        return
+
+    if case == "detail-dataset-shape":
+        # F3: an unhashable dataset name keeps the native unknown_dataset
+        # refusal — the type check precedes any dictionary membership
+        project, _review = _q1_release(tmp_path)
+        runtime = QueryRuntime.open_project(project)
+        try:
+            with pytest.raises(PlannerError) as caught:
+                asyncio.run(runtime.query_detail({"dataset": {}, "fields": ["id"]}))
+            assert caught.value.code == "unknown_dataset"
+        finally:
+            runtime.con.close()
+        return
+
+    # case == "records-fields-shape": F3 — the native plan_records shape
+    # validation (non-empty fields) owns the refusal BEFORE the Context
+    # lookup: the status dataset's Table Context is deliberately absent and
+    # must NOT turn a malformed request into a Context error
+    project, _review = _q1_release(tmp_path, status_context=False)
+    runtime = QueryRuntime.open_project(project)
+    try:
+        with pytest.raises(PlannerError) as caught:
+            asyncio.run(
+                runtime.query_records(
+                    {
+                        "dataset": "orders.main.order_status",
+                        "fields": [],
+                        "order": [{"field": "status", "direction": "asc"}],
+                        "limit": 10,
+                    }
+                )
+            )
+        assert caught.value.code == "request_invalid"
+    finally:
+        runtime.con.close()

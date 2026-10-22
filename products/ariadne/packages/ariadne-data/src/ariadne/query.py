@@ -691,18 +691,29 @@ class _QueryRuntimeSession(_DiscoverySession):
         query_results.finalize_response(self._limits, envelope, response_measure=self._measure)
         return resolved
 
-    def _input_context_preflight(self, operation: str, resources: list[str]) -> dict:
-        """Q1/#84 (spec0032 §§3–4, §10.4–§10.5 stage 4): assemble the complete
-        ``input_context`` of one revision-3 query operation from the pinned,
-        verified Bound Release — every consumed physical resource's full
-        published Table view bound by exact ``core_ref`` identity, the
+    def _input_context_preflight(
+        self,
+        operation: str,
+        resources: list[str],
+        *,
+        check_targets: dict[str, set[str]] | None = None,
+    ) -> dict:
+        """Q1/#84 (spec0032 §§3–4, §10.2, §10.4–§10.5 stage 4): assemble the
+        complete ``input_context`` of one revision-3 query operation from the
+        pinned, verified Bound Release — every consumed physical resource's
+        full published Table view bound by exact ``core_ref`` identity, the
         applicable Policy inventory with full page views, native signals and
         evidence caveats — then prove the COMPLETE mandatory Context alone
         fits the host budget through the existing public accounting seam,
         exactly as ``_sdk_metric_contexts`` does. A missing/hidden/ambiguous
         Table view, an unavailable applicable Policy page or a Context that
         cannot fit refuses here, BEFORE any planner, live audit, bind or
-        SELECT work — never a fallback and never a partial answer."""
+        SELECT work — never a fallback and never a partial answer.
+        ``check_targets`` (review F2) names, per §10.2 catalog check id, the
+        exact consumed-resource identities that the check ACTUALLY attests
+        on this operation's unchanged live path — an executable binding whose
+        declared target lies outside its check's attested inventory refuses
+        here instead of executing with an unattested obligation."""
         assert self._managed is not None
         from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
 
@@ -711,6 +722,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             self._context_snapshot,
             operation,
             resources,
+            check_targets=check_targets,
         )
         envelope = {"input_context": value}
         query_results.account_rows(self._limits, envelope, [])
@@ -733,12 +745,17 @@ class _QueryRuntimeSession(_DiscoverySession):
             return None
         dataset = request.get("dataset")
         fields = request.get("fields")
-        if dataset not in graph.datasets or not isinstance(fields, list) or not fields:
+        # F3: type checks precede any hashing or graph membership — the
+        # native planner's structured request_invalid/unknown_dataset
+        # refusals own every malformed shape (this seam only defers)
+        if not isinstance(dataset, str) or dataset not in graph.datasets:
+            return None
+        if not isinstance(fields, list) or not fields:
+            return None
+        if not all(isinstance(field, str) for field in fields):
             return None
         datasets = [dataset]
         for field in dict.fromkeys(fields):
-            if not isinstance(field, str):
-                return None
             if field in graph.datasets[dataset].fields:
                 continue
             owners = sorted(name for name, node in graph.datasets.items() if field in node.fields)
@@ -774,33 +791,46 @@ class _QueryRuntimeSession(_DiscoverySession):
 
         if not isinstance(request, dict) or set(request) - _RECORD_REQUEST_KEYS:
             return None
+        # F3: the native plan_records shape validation owns malformed fields —
+        # a non-empty list of names — BEFORE this seam resolves identity or
+        # preflights Context, so a malformed request never surfaces as a
+        # Context error (the planner's own request_invalid fires at stage 5)
+        fields = request.get("fields")
+        if not isinstance(fields, list) or not fields:
+            return None
+        if not all(isinstance(name, str) for name in fields):
+            return None
         return _resolve_record_dataset(self.catalog, request.get("dataset"))["resource"]
 
-    def _adhoc_static_resources(self, params: dict) -> list[str]:
-        """Q1/#84 (spec0032 §§3, §10.5 stage 3): EVERY physical dependency of
-        the ad-hoc definition — the whole normalized nested SOURCE tree AND
-        the whole normalized EXPRESSION tree (scalar/predicate subqueries are
-        physical reads) — extracted AFTER the static IO-authority check by
-        the existing scope-aware semantics (``_qualified_source_refs``, no
-        parallel parser) and matched against the built catalog by exact
-        qualified identity. Each fragment is interpreted EXACTLY as the
-        compiler and the IO-authority boundary interpret it, normalized to a
-        SELECT-rooted statement (a root parenthesized Subquery exposes an
-        empty selected_sources set to the scope collector, so a real source
-        must never be wrapped as one): a SELECT/WITH fragment passes through,
-        a bare source becomes ``SELECT * FROM <source>`` and an expression
-        becomes ``SELECT <expression>``. An integrated operation NEVER
-        bypasses mandatory Context through extraction failure: an
-        unparseable fragment or an unresolved physical identity refuses here,
-        before the grain guard (a data read), compile, bind or any execution;
-        only a provably tableless EXPRESSION (no physical read of its own)
+    def _adhoc_static_resources(self, params: dict) -> tuple[list[str], list[str]]:
+        """Q1/#84 (spec0032 §§3, §10.5 stage 3; review F1/F2): EVERY physical
+        dependency of the ad-hoc definition — the whole normalized nested
+        SOURCE tree AND the whole normalized EXPRESSION tree, including
+        SEMI/ANTI right-hand tables, nested CTE/derived physical origins and
+        scalar/predicate subquery reads — extracted AFTER the static
+        IO-authority check through the installed SQLGlot Scope's own
+        physical origins (``_scope_physical_read_refs``, no parallel parser)
+        and matched against the built catalog by exact qualified identity.
+        Each fragment is interpreted EXACTLY as the compiler and the
+        IO-authority boundary interpret it, normalized to a SELECT-rooted
+        statement: a SELECT/WITH fragment passes through, a bare source
+        becomes ``SELECT * FROM <source>`` and an expression becomes
+        ``SELECT <expression>``. Returns ``(every physical read, the source's
+        own physical reads)`` — the complete inventory for Context coverage
+        and the source-only inventory that names the ACTUAL target of the
+        unchanged grain check on the live path. An integrated operation NEVER
+        bypasses mandatory Context through extraction failure: an unparseable
+        fragment or an unresolved physical identity refuses here, before the
+        grain guard (a data read), compile, bind or any execution; only a
+        provably tableless EXPRESSION (no physical read of its own)
         contributes no resource."""
         from ariadne.sql_authority import (  # pyright: ignore[reportPrivateUsage] — drift
             _SOURCE_PREFIX_RE,
         )
 
         catalog = self._catalog_resource_map()
-        resources: list[str] = []
+        everything: list[str] = []
+        source_only: list[str] = []
         for kind, fragment in (("source", params["source"]), ("expression", params["expression"])):
             text = fragment.strip()
             if _SOURCE_PREFIX_RE.match(text):
@@ -818,7 +848,7 @@ class _QueryRuntimeSession(_DiscoverySession):
                     "refuses before the grain guard, compile, bind or any "
                     "execution (spec0032 §3)"
                 ) from exc
-            for ref in _qualified_source_refs(normalized):
+            for ref in _scope_physical_read_refs(normalized):
                 resource = None if ref is None else catalog.get(ref)
                 if resource is None and ref is None and kind == "expression":
                     continue  # provably tableless expression: no physical read
@@ -829,9 +859,11 @@ class _QueryRuntimeSession(_DiscoverySession):
                         "integrated Context preflight refuses before the grain "
                         "guard, compile, bind or any execution (spec0032 §3)"
                     )
-                if resource not in resources:
-                    resources.append(resource)
-        return resources
+                if resource not in everything:
+                    everything.append(resource)
+                if kind == "source" and resource not in source_only:
+                    source_only.append(resource)
+        return everything, source_only
 
     def _attest_bound_checks(self, plan, graph) -> None:
         """#83 (spec0032 §10.2): an executable policy binding of this admission
@@ -1085,7 +1117,11 @@ class _QueryRuntimeSession(_DiscoverySession):
         if self._context_snapshot is not None:
             resources = self._detail_static_resources(graph, request)
             if resources is not None:
-                detail_context = self._input_context_preflight("query_detail", resources)
+                # F2: detail.path_proof's actual target is the request's own
+                # statically resolved root + proven lookup path
+                detail_context = self._input_context_preflight(
+                    "query_detail", resources, check_targets={"detail.path_proof": set(resources)}
+                )
         budget = self._claim_operation_budget()
         with self._phase(budget):
             plan = plan_detail(graph, request, self.con)
@@ -1371,9 +1407,19 @@ class _QueryRuntimeSession(_DiscoverySession):
             if self._context_snapshot is not None:
                 # the extraction above never returns "skip": an unresolved
                 # physical dependency refuses inside it — on an integrated
-                # Bound Release the complete Context preflight is mandatory
+                # Bound Release the complete Context preflight is mandatory.
+                # F2 check-target truth: adhoc.static_io_authority runs over
+                # BOTH source and expression (its target is the complete
+                # inventory); adhoc.grain_preserving receives ONLY the source
+                # (its target is the source's own tables — nothing else)
+                everything, source_only = self._adhoc_static_resources(params)
                 adhoc_context = self._input_context_preflight(
-                    "define_metric", self._adhoc_static_resources(params)
+                    "define_metric",
+                    everything,
+                    check_targets={
+                        "adhoc.static_io_authority": set(everything),
+                        "adhoc.grain_preserving": set(source_only),
+                    },
                 )
             # Grain guard BEFORE envelope expansion/compile (spec rev 5 §13): a
             # source that fans out the fact grain is rejected outright — the
@@ -1551,6 +1597,41 @@ def _timestamp_refusal(exc: BaseException) -> QueryResultError | None:
     if index < 0:
         return None
     return QueryResultError(TIMESTAMP_REFUSAL_CODE, text[index:])
+
+
+def _scope_physical_read_refs(fragment: str) -> list[str | None]:
+    """The COMPLETE physical table reads of one normalized SQL fragment
+    (Q1/#84 review F1, spec0032 §3/§10.5 stage 3) through the installed
+    SQLGlot Scope's own physical origins — no second parser, no shallow name
+    collection: ``scope.sources`` resolves every referenced name to its
+    physical ``exp.Table`` or its nested CTE/derived ``Scope`` (a nested
+    scope's own reads are recursed, never conflated with a table name);
+    ``scope.references`` includes the SEMI/ANTI right-hand tables that
+    ``selected_sources`` deliberately drops; and scalar/predicate subqueries
+    are reached through their own scopes. Returns qualified dotted names —
+    identity resolution against the built catalog stays with the caller.
+    ``[None]`` for an unparseable fragment (the caller owns that refusal)."""
+    try:
+        root = build_scope(sqlglot.parse_one(fragment.strip()))
+    except Exception:
+        return [None]
+    refs: list[str | None] = []
+
+    def visit(scope: Scope) -> None:
+        for name, _node in scope.references:
+            source = scope.sources.get(name)
+            if isinstance(source, exp.Table):
+                refs.append(".".join(part.name for part in source.parts))
+            elif isinstance(source, Scope):  # a CTE/derived body: recurse
+                visit(source)
+        for subquery in scope.subqueries:  # scalar/predicate subquery reads
+            nested = build_scope(subquery)
+            if nested is not None:
+                visit(nested)
+
+    if root is not None:
+        visit(root)
+    return refs or [None]
 
 
 def _qualified_source_refs(source: object) -> list[str | None]:

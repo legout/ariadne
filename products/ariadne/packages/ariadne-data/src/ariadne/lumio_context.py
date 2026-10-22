@@ -1446,7 +1446,9 @@ def _input_context_page_view(page, manifest, now):
     }
 
 
-def input_context(manifest, snapshot, operation, resources, *, _now=None):
+def input_context(
+    manifest, snapshot, operation, resources, *, check_targets=None, _now=None
+):
     """Assemble the complete §10.4 ``input_context`` of one revision-3 query
     operation from the pinned, verified Bound Release (spec0032 §§3–4,
     §10.4–§10.5 stage 4): every consumed physical table resource in canonical
@@ -1561,6 +1563,24 @@ def input_context(manifest, snapshot, operation, resources, *, _now=None):
                     "executable Policy binding definition does not equal the consumed "
                     "subject's reviewed identity (spec0032 §10.2)"
                 )
+            # review F2 — ACTUAL check-target proof (§10.2 attestation): the
+            # check that executes on this operation's unchanged live path
+            # attests exactly the consumed identities its caller names in
+            # ``check_targets`` (e.g. adhoc.grain_preserving receives ONLY the
+            # ad-hoc source). A declared dependency outside that attested
+            # inventory is an obligation the real path cannot establish —
+            # refuse before any live work, never execute with an unattested
+            # binding and never invent a second check
+            covered = (check_targets or {}).get(enforcement.get("check")) or set()
+            for dependency in enforcement.get("dependencies") or []:
+                if dependency not in covered:
+                    raise ValueError(
+                        f"executable Policy binding names check "
+                        f"{enforcement.get('check')!r} which does not attest its "
+                        f"declared target {dependency!r} on the {operation!r} path — "
+                        "the obligation cannot be established before execution "
+                        "and the operation refuses (spec0032 §10.2)"
+                    )
         entity_id = (binding.get("policy") or {}).get("entity_id")
         pinned_policy = policy_pages.get(entity_id)
         if pinned_policy is None:
