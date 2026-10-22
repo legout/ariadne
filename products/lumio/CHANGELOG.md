@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-10-22
+
+- Add optional S3 navigation over admitted pinned published contexts (#79): the
+  three scoped navigation operations (`list_published_context_pages`,
+  `read_published_context_page`, `search_published_context_pages`) accept a
+  keyword-only `metadata_store`, so a pinned `S3Location` opens only with its
+  explicitly supplied producer-side private metadata store — the same shared
+  exact-admission verifier as `open_published_context`. Local behavior,
+  records, ranking and refusals are unchanged; plain directories, unpinned
+  locations and S3 without the required store still refuse explicitly.
+- Fix URL fetch deadline enforcement: header reads can no longer be kept
+  alive by trickled bytes past the overall deadline, and a truncated response
+  body (short of its Content-Length) is now an error instead of silently
+  returning partial content.
+- Simplify shared library internals (knowledge base, source processing,
+  Git authoring, S3 publish, CLI, MCP server) and retire obsolete internal
+  paths with no public contract change.
+- Fix development test collection: the shared S3-compat fixtures import fully
+  qualified (`products.lumio.tests._s3_fixtures`) so the repository-root and
+  product test selections resolve the same package.
+- Relocate the Lumio product area to `products/lumio/` (spec 0031): members,
+  docs, tests, examples and scripts keep their distribution names, import
+  roots, CLI names and extras; only repository-level paths changed.
+- Release `lumio-wiki` and `lumio-lancedb` together at 0.5.0; the adapter
+  requires `lumio-wiki>=0.5.0,<0.6.0` under the lockstep family policy.
+  Python remains >=3.14 and optional extras are unchanged. Release channel
+  tag: `lumio-v0.5.0`. See [release notes](docs/release-notes/v0.5.0.md).
+
 ## 0.4.1 - 2026-10-21
 
 - Relocate the public foundation into the shared Ariadne–Lumio development

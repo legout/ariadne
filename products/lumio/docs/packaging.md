@@ -81,7 +81,7 @@ there is no dependency edge from the foundation wheel. The CLI/evaluation
 composition boundary may discover and lazily load it only when an operator
 explicitly selects a LanceDB backend — the dependency graph remains one-way.
 
-**Dependencies:** `lumio-wiki>=0.4.0,<0.5.0`, `lancedb`, `pyarrow`,
+**Dependencies:** `lumio-wiki>=0.5.0,<0.6.0`, `lancedb`, `pyarrow`,
 `msgspec[yaml]`. Optional `embeddings` extra pulls in
 `sentence-transformers` (Torch stays out of the base adapter and out of
 `lumio-wiki`). Verified in every release by the
@@ -104,7 +104,7 @@ browser ingest/review workflows.
 Its exact dependency ranges are owned and certified by that private
 repository. The last ranges certified inside the former three-package
 workspace (`lumio-wiki>=0.1.1,<0.2.0`, `lumio-lancedb>=0.1.1,<0.2.0`) predate
-the current 0.4.x public family; the private application's compatibility
+the current 0.5.x public family; the private application's compatibility
 with the current family remains a separate integration and release decision,
 not a claim of this repository.
 
@@ -196,7 +196,7 @@ isolated wheel jobs below verify base-install and import independence.
 - Members share one workspace lockfile for development reproducibility.
 - The lockfile is **not** a public compatibility contract. Every published
   inter-member dependency declares a bounded range
-  (e.g. `lumio-wiki>=0.4.0,<0.5.0`, declared by `lumio-lancedb`). This is
+  (e.g. `lumio-wiki>=0.5.0,<0.6.0`, declared by `lumio-lancedb`). This is
   certified at the metadata level
   (`test_published_member_dependencies_declare_compatible_version_ranges`)
   and at the built-wheel METADATA level
@@ -210,7 +210,7 @@ isolated wheel jobs below verify base-install and import independence.
 Following ADR-0025, the two **public** distributions (`lumio-wiki` and
 `lumio-lancedb`) release as one **lockstep family**. The private application
 moves independently and is not published or qualified by this repository.
-The current public family is 0.4.x.
+The current public family is 0.5.x.
 
 - Both public members carry the **same version** (certified by
   `test_members_share_one_lockstep_version`). A release tag `lumio-vX.Y.Z` builds
@@ -354,7 +354,7 @@ shares an Actions cache with PR-triggered workflows.
    side — neither channel can publish the other family.)
 
 Release notes live in `products/lumio/docs/release-notes/` per published version. The current
-public-family notes are [`v0.4.1.md`](release-notes/v0.4.1.md); older notes are
+public-family notes are [`v0.5.0.md`](release-notes/v0.5.0.md); older notes are
 historical and may describe the former private three-package workspace.
 
 ## Issue graph certification (issue #104, AC7)

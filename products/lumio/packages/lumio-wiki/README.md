@@ -264,10 +264,10 @@ application lives in a separate private repository (ADR-0025).
   (link, duplicate, synthesis, transitive impact), S3 published-version diff.
 - **Optional Ariadne Context Profile** — versioned native Metric/Policy
   annotations preserved through authoring and publication, read back through
-  immutable pinned published-context readers and scoped navigation (local in
-  the published release; pinned S3 with its explicit producer-side metadata
-  store is an unreleased source candidate, not in the published
-  lumio-wiki/ariadne-data pair)
+  immutable pinned published-context readers and scoped navigation (local,
+  or pinned S3 with its explicit producer-side metadata store, from the
+  0.5.0 release family; the published 0.4.1 pair carried local navigation
+  only)
   ([docs/ariadne-context.md](../../docs/ariadne-context.md)). Purely optional: the
   base SDK has no Ariadne dependency and adds no CLI command or service for
   it.

@@ -110,17 +110,17 @@ lumio-wiki related "Aurora Helpdesk" --scope canonical
 lumio-wiki source inspect --source-id support-runbook-2026
 ```
 
-The pinned Ariadne Context readers also work over S3, with one release
-caveat. Published `lumio-wiki` 0.4.1 already supports opening a context
-over S3: `open_published_context` accepts a pinned `S3Location` plus the
-producer-side `metadata_store` used at publication, and the same shared
-exact-admission verifier refuses an unpinned location, a missing store or
-foreign private admission records — public objects alone never satisfy
-admission. The `metadata_store` keyword on the three scoped navigation
-operations (`list_published_context_pages`, `read_published_context_page`,
-`search_published_context_pages`) exists only in the unreleased source
-candidate: the public `pip install 'lumio-wiki[s3]'` wheel this guide
-installs does not carry it, and S3 navigation still refuses there.
+The pinned Ariadne Context readers also work over S3. From the 0.5.0
+release family, `open_published_context` accepts a pinned `S3Location` plus
+the producer-side `metadata_store` used at publication, and the same
+shared exact-admission verifier refuses an unpinned location, a missing
+store or foreign private admission records — public objects alone never
+satisfy admission. The `metadata_store` keyword on the three scoped
+navigation operations (`list_published_context_pages`,
+`read_published_context_page`, `search_published_context_pages`) ships in
+the same 0.5.0 family, so the public `pip install 'lumio-wiki[s3]'` wheel
+installed by this guide carries it (the published 0.4.1 wheel carried
+local navigation only — that baseline is historical).
 
 Private source metadata is not public Reader content. In this controlled
 same-principal walkthrough, the operator is also authorized to read the private
