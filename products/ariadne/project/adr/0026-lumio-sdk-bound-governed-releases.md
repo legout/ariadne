@@ -109,3 +109,16 @@ remain honest, required invalid evidence blocks, and review is not numerical
 validation. This preserves controlled source/disclosure side effects and pinned
 session behavior without claiming immutable live data. Spec0032 owns behavior
 and acceptance; this amendment grants no implementation or publication.
+
+Follow-up representation decision, 2026-10-22: for Policy applicability and
+existing-check references the owner selected the Core-owned representation —
+a versioned authored `policy_bindings` block in the integration selector plus
+an admission-captured binding inventory (spec0032 r2 §10) — over a
+producer-native applicability extension, which would have materially changed
+the producer schema for consumer classification. The native envelope keeps
+carrying only the typed subject association; only checks that actually execute
+for the bound operation are valid enforcement targets; explanatory records
+never prove narrative-to-SQL equivalence; and staged per-admission capability
+revisions (profile-expanded before query-expanded) keep prior qualified
+releases usable while unimplemented capabilities refuse. No implementation
+or publication is granted by this decision.

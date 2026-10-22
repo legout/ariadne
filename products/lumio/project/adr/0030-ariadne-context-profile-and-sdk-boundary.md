@@ -83,3 +83,11 @@ and avoids a background measurement service. No new producer API, general
 Policy interpreter, Skill-profile consumption, implementation or release is
 authorized by this amendment. The consumer specification owns the behavior;
 producer-native schema and private-public boundaries remain authoritative here.
+
+Boundary precision, 2026-10-22: the owner-approved Policy applicability and
+existing-check bindings are consumer-owned — a versioned authored block in
+Ariadne's integration selector plus its admission-captured inventory
+(Ariadne spec0032 r2 §10). No producer envelope or native schema change is
+required or authorized for the integrated expansion; Lumio's whole producer
+role remains the typed `required_policies` association, native envelopes and
+lossless preservation.
