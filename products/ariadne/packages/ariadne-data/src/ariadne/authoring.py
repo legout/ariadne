@@ -65,6 +65,8 @@ from ariadne.context import (  # noqa: F401 — the K1 generated-page seam (issu
     _EVIDENCE_SUMMARY_KEYS,
     _canonical_digest,
     build_dataset_page,
+    build_native_dataset_page,
+    build_native_table_page,
     build_table_page,
     candidate_digest,
     confirmation_binding_digest,  # K4 fix pass: the effective identity a confirmation binds
@@ -596,8 +598,36 @@ def _verified_citations(
             if page.name in ("index.md", "log.md"):
                 continue
             rel_kb = page.relative_to(knowledge).as_posix()
-            parsed = _kb_reference_from_text(page.read_text(encoding="utf-8"), rel_kb)
+            page_text = page.read_text(encoding="utf-8")
+            parsed = _kb_reference_from_text(page_text, rel_kb)
             if parsed is None:
+                # #83 (spec0032 §3/§5): EVERY captured technical profile —
+                # hidden or unreferenced — enters the same citation gate for
+                # its identity-bearing catalog resources: the whole captured
+                # KB is validated at admission, and a technical page binding
+                # an unapproved source is refused naming page and source.
+                for resource in _kb_technical_resources(page_text, rel_kb):
+                    rel = f"knowledge/{rel_kb}"
+                    try:
+                        _kind, parts = parse_resource(resource)
+                    except ValueError as exc:
+                        errors.append(
+                            f"{rel}: technical profile resource {resource!r} is not "
+                            f"canonical: {exc}"
+                        )
+                        continue
+                    if parts[0] not in source_names:
+                        errors.append(
+                            f"{rel}: technical profile resource {resource!r} names "
+                            f"source {parts[0]!r} which is not an approved registry "
+                            f"identity (approved: {', '.join(sorted(source_names)) or 'none'})"
+                        )
+                        continue
+                    citations[("asset", resource)] = {
+                        "resource": resource,
+                        "kind": "catalog_asset",
+                        "source": parts[0],
+                    }
                 continue  # ordinary/legacy KB pages carry no structured citations
             view, _full = parsed
             rel = f"knowledge/{rel_kb}"
@@ -622,12 +652,9 @@ def _verified_citations(
                         "kind": "catalog_asset",
                         "source": parts[0],
                     }
-                elif (
-                    (resolved := (knowledge / resource).resolve()).is_relative_to(
-                        knowledge.resolve()
-                    )
-                    and resolved.is_file()
-                ):
+                elif (resolved := (knowledge / resource).resolve()).is_relative_to(
+                    knowledge.resolve()
+                ) and resolved.is_file():
                     # a KB citation resolves INSIDE the knowledge subtree only
                     citations[("bundle", resource)] = {
                         "resource": resource,
@@ -1328,6 +1355,39 @@ def _kb_reference_view(full_meta: object) -> dict | None:
     return {"type": "reference", **native}
 
 
+def _kb_technical_resources(text: str, path: str) -> list[str]:
+    """The canonical resource identities one technical (dataset/table)
+    profile page binds, parsed through the producer's PUBLIC frontmatter
+    parse (#83, spec0032 §§3/§5 — Core never re-parses KB bytes with its own
+    YAML loader): the core_ref resource, the native resource field and the
+    dataset tables links — exactly the identity-bearing fields the citation
+    gate checks against the approved registry. Malformed pages stay the
+    producer page gate's own error."""
+    from lumio_wiki import parse_frontmatter  # pyright: ignore[reportMissingImports] — optional SDK
+
+    try:
+        full, _body, _start = parse_frontmatter(text, path)
+    except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
+        return []
+    profile = full.get("ariadne_profile") if isinstance(full, dict) else None
+    if not isinstance(profile, dict) or profile.get("kind") not in ("table", "dataset"):
+        return []
+    resources: list[str] = []
+    core_ref = profile.get("core_ref")
+    if isinstance(core_ref, dict) and isinstance(core_ref.get("id"), str):
+        resources.append(core_ref["id"])
+    native = profile.get("native")
+    native = native if isinstance(native, dict) else {}
+    if isinstance(native.get("resource"), str):
+        resources.append(native["resource"])
+    extension = native.get("ariadne")
+    if isinstance(extension, dict):
+        for table in extension.get("tables") or []:
+            if isinstance(table, str):
+                resources.append(table)
+    return [resource for resource in dict.fromkeys(resources) if resource.startswith("ariadne://")]
+
+
 def _kb_reference_from_text(text: str, path: str) -> tuple[dict, dict] | None:
     """One KB page's (lossless structured-Reference view, full frontmatter)
     parsed through the producer's PUBLIC frontmatter parse (F1 fix pass,
@@ -1713,6 +1773,51 @@ def _declared_columns(con, catalog: list[dict]) -> dict[tuple[str, str, str], di
     return declared
 
 
+def _native_resource_pages(project: Path, revision: str) -> tuple[dict[str, dict], set[str]]:
+    """The candidate's producer-native technical profile pages at
+    ``revision`` (read from the commit, never a worktree; parsed through the
+    producer's PUBLIC frontmatter parse — Core never re-parses KB bytes with
+    its own YAML loader): ``(core_ref resource -> {path, meta, body, text},
+    tracked technical-page paths)`` over knowledge/tables and
+    knowledge/datasets. Two pages binding the same resource is a collision
+    needing human resolution; non-technical or unprofiled pages are not
+    touched by refresh."""
+    from lumio_wiki import parse_frontmatter  # pyright: ignore[reportMissingImports] — optional SDK
+
+    tracked = proposals._git(["ls-tree", "-r", "--name-only", revision], project).stdout
+    pages: dict[str, dict] = {}
+    paths: set[str] = set()
+    for rel in tracked.split("\n"):
+        if not (rel.startswith("knowledge/tables/") or rel.startswith("knowledge/datasets/")):
+            continue
+        blob = proposals._read_blob(project, revision, rel)
+        if blob is None:  # pragma: no cover - ls-tree paths always resolve
+            continue
+        paths.add(rel)
+        text = blob.decode("utf-8", "replace")
+        try:
+            meta, body, _start = parse_frontmatter(text, rel)
+        except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
+            continue
+        profile = meta.get("ariadne_profile") if isinstance(meta, dict) else None
+        core_ref = profile.get("core_ref") if isinstance(profile, dict) else None
+        resource = core_ref.get("id") if isinstance(core_ref, dict) else None
+        if (
+            isinstance(profile, dict)
+            and profile.get("kind") in ("table", "dataset")
+            and isinstance(resource, str)
+            and resource.startswith("ariadne://")
+        ):
+            if resource in pages:
+                raise ValueError(
+                    f"the candidate carries two technical profile pages for {resource!r} "
+                    f"({pages[resource]['path']} and {rel}) — a resource collision "
+                    "needs human resolution; refresh refuses rather than overwriting"
+                )
+            pages[resource] = {"path": rel, "meta": meta, "body": body, "text": text}
+    return pages, paths
+
+
 def _resource_pages(project: Path, revision: str) -> tuple[dict[str, dict], set[str]]:
     """The candidate's resource-bound schema pages at ``revision`` (read from
     the commit, never a worktree): ``(resource -> {path, meta, text}, tracked
@@ -1771,6 +1876,183 @@ def _schema_columns(catalog_table: dict, declared: dict) -> list[dict]:
             }
         )
     return columns
+
+
+def _refresh_native_profiles(
+    project: Path,
+    proposal: str,
+    current: str,
+    requested: list[dict],
+    matched: dict[tuple, dict],
+    profiles: dict[str, dict],
+    declared: dict[tuple, dict],
+    binding_digest: str | None,
+    source_digest: str,
+) -> dict:
+    """The revision-2 refresh route (spec0032 SS5-6): regenerate the
+    core-owned schema facts as PRODUCER-NATIVE Table/Dataset profile pages of
+    the candidate's knowledge/ subtree through revision-checked complete
+    page edits - no maintained context_layer mirror, no second producer
+    schema. Existing pages are read through the producer's public frontmatter
+    parse; authored base metadata, native extras and the curated body are
+    preserved verbatim; identical inputs are a no-op. Returns the same shape
+    as :func:`refresh_schema`."""
+    existing, tracked_paths = _native_resource_pages(project, current)
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    specs: list[dict] = []
+    claimed: dict[str, str] = {}
+    collections: dict[tuple, dict] = {}
+    for asset in requested:
+        key = (asset["source"], asset["catalog"], asset["schema"], asset["table"])
+        table = matched[key]
+        resource = table_resource(
+            asset["source"], asset["catalog"], asset["schema"], asset["table"]
+        )
+        columns = _schema_columns(table, declared)
+        page = existing.get(resource)
+        path = (
+            page["path"]
+            if page
+            else (f"knowledge/tables/{generated_page_filename(resource, asset['source'])}")
+        )
+        text, flags = build_native_table_page(
+            asset={**asset, "resource": resource},
+            columns=columns,
+            profile=profiles[resource],
+            existing_meta=page["meta"] if page else None,
+            existing_body=page["body"] if page else "",
+            now=now,
+            source_binding=binding_digest,
+        )
+        specs.append(
+            {"resource": resource, "path": path, "text": text, "kind": "table", "flags": flags}
+        )
+        collections.setdefault(
+            (asset["source"], asset["catalog"], asset["schema"]),
+            {"source": asset["source"], "catalog": asset["catalog"], "schema": asset["schema"]},
+        )
+    for collection_key, collection in collections.items():
+        resource = collection_resource(
+            collection["source"], collection["catalog"], collection["schema"]
+        )
+        page = existing.get(resource)
+        path = (
+            page["path"]
+            if page
+            else (f"knowledge/datasets/{generated_page_filename(resource, collection['source'])}")
+        )
+        # Overview membership: the collection's EXISTING native table pages
+        # PLUS the requested updates (the issue #41 rule carried to the
+        # native route) - a narrower refresh never drops a still-present
+        # table's link, and an undocumented asset is never silently asserted.
+        members: list[dict] = []
+        requested_here: set[str] = set()
+        for spec in specs:
+            if spec["kind"] != "table":
+                continue
+            parts = parse_resource(spec["resource"])[1]
+            if parts[:3] != list(collection_key):
+                continue
+            members.append(
+                {
+                    "resource": spec["resource"],
+                    "table": parts[3],
+                    "column_count": len(profiles[spec["resource"]]["columns"]),
+                }
+            )
+            requested_here.add(spec["resource"])
+        carried: list[tuple[str, dict]] = []
+        for res, carried_page in existing.items():
+            if res in requested_here:
+                continue
+            try:
+                kind, parts = parse_resource(res)
+            except ValueError:
+                continue
+            if kind != "table" or parts[:3] != list(collection_key):
+                continue
+            carried_profile = (
+                carried_page["meta"].get("ariadne_profile")
+                if isinstance(carried_page["meta"], dict)
+                else None
+            )
+            carried_native = (
+                carried_profile.get("native") if isinstance(carried_profile, dict) else None
+            )
+            carried_ariadne = (
+                carried_native.get("ariadne") if isinstance(carried_native, dict) else None
+            )
+            carried_schema = (
+                carried_ariadne.get("schema") if isinstance(carried_ariadne, dict) else None
+            )
+            carried.append(
+                (
+                    parts[3],
+                    {
+                        "resource": res,
+                        "table": parts[3],
+                        "column_count": (
+                            len(carried_schema) if isinstance(carried_schema, list) else 0
+                        ),
+                    },
+                )
+            )
+        members.extend(member for _table, member in sorted(carried, key=lambda item: item[0]))
+        text, flags = build_native_dataset_page(
+            collection={**collection, "resource": resource},
+            tables=members,
+            existing_meta=page["meta"] if page else None,
+            existing_body=page["body"] if page else "",
+        )
+        specs.append(
+            {"resource": resource, "path": path, "text": text, "kind": "dataset", "flags": flags}
+        )
+    # collision checks BEFORE any write (the plan section 2
+    # refuse-never-overwrite rule carried to the native route)
+    for spec in specs:
+        other = claimed.get(spec["path"])
+        if other is not None and other != spec["resource"]:
+            raise ValueError(
+                f"generated filename collision: {spec['path']} would serve both "
+                f"{other!r} and {spec['resource']!r} - refresh refuses rather "
+                "than overwriting another asset"
+            )
+        claimed[spec["path"]] = spec["resource"]
+        page = existing.get(spec["resource"])
+        if page is None and spec["path"] in tracked_paths:
+            raise ValueError(
+                f"{spec['path']}: the generated page for {spec['resource']!r} collides "
+                "with a different existing candidate page - a filename/resource "
+                "collision refuses rather than overwriting; resolve it by hand"
+            )
+    for spec in specs:
+        proposals.check_artifact_content(f"generated page {spec['resource']!r}", spec["text"])
+    revision = current
+    pages: list[dict] = []
+    changed_any = False
+    for spec in specs:  # revision-checked complete page edits, core-generated
+        out = proposals.edit_proposal(
+            project, proposal, revision, spec["path"], spec["text"], core_generated=True
+        )
+        revision = out["revision"]
+        changed_any = changed_any or out["changed"]
+        pages.append(
+            {
+                "resource": spec["resource"],
+                "path": spec["path"],
+                "kind": spec["kind"],
+                "changed": out["changed"],
+                "changes": spec["flags"],
+            }
+        )
+    return {
+        "proposal": proposal,
+        "revision": revision,
+        "changed": changed_any,
+        "pages": pages,
+        "assets": requested,
+        "source_digest": source_digest,
+    }
 
 
 def refresh_schema(
@@ -1868,6 +2150,32 @@ def refresh_schema(
             "nothing was written"
         )
     existing, tracked_paths = _resource_pages(project, current)
+    # #83 (spec0032 §§5–6): a candidate whose selector opted into support
+    # revision 2 refreshes into the PRODUCER-NATIVE technical profile pages
+    # of its knowledge/ subtree (revision-checked complete page edits through
+    # the public producer parse for existing pages — no Core YAML parse of
+    # KB bytes, no maintained context_layer mirror); every other candidate,
+    # including standalone and legacy integrated ones, keeps the unchanged
+    # context_layer route below.
+    selector_blob = proposals._read_blob(project, current, "context_integration.yaml")
+    if selector_blob is not None:
+        from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+        selected_route = lumio_context.validated_selector(
+            yaml.safe_load(selector_blob.decode("utf-8"))
+        )
+        if selected_route is not None and selected_route.get("support_revision", 1) >= 2:
+            return _refresh_native_profiles(
+                project,
+                proposal,
+                current,
+                requested,
+                matched,
+                profiles,
+                declared,
+                binding_digest,
+                digest,
+            )
     now = datetime.now(UTC).isoformat(timespec="seconds")
     specs: list[dict] = []
     claimed: dict[str, str] = {}

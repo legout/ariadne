@@ -3,7 +3,6 @@
 # pyright: reportMissingImports=false
 # Optional SDK is qualified in the external M1 environment, not the editor's environment.
 
-import copy
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -51,16 +50,107 @@ def digest(value):
     ).hexdigest()
 
 
-def selector(root):
-    path = Path(root) / "context_integration.yaml"
-    if not path.exists():
+# Frozen per-revision capability tables (spec0032 §10.3): each support
+# revision integer names ONE immutable capability table, validated against
+# the RECORDED revision of each admission — never against the currently
+# newest set. Revision 1 is the legacy contract (a selector and manifest with
+# neither opt-in key); revision 2 (#83) adds the native Dataset/Table/
+# Computation profile kinds and requires the authored policy_bindings block.
+# The three revision-3 query operations stay unsupported until #84.
+IMPLEMENTED_PROFILE_REVISIONS = (1, 2)
+_INTEGRATED_OPERATIONS = (
+    "get_metric",
+    "query_metrics",
+    "query_detail",
+    "query_records",
+    "define_metric",
+)
+#: The §10.2 existing-check catalog: each id names the check that actually
+#: executes, with exactly the operations it executes for (the current-source
+#: symbol is binding; implementations add no entries). Response/transport
+#: budget guards, mapping confirmation, admission rechecks, the bind and
+#: evidence freshness are invariants, never attachable targets.
+EXISTING_CHECK_CATALOG = {
+    "adhoc.static_io_authority": ("define_metric",),
+    "adhoc.grain_preserving": ("define_metric",),
+    "graph.relationship_audit": ("query_metrics",),
+    "detail.path_proof": ("query_detail",),
+}
+
+
+def capability_table(revision: int) -> dict:
+    """The frozen immutable capability table of ONE support revision
+    (spec0032 §10.3). The stored support set of an admission must exactly
+    equal its recorded revision's table; a revision newer than this
+    consumer's implemented set refuses."""
+    if revision not in IMPLEMENTED_PROFILE_REVISIONS:
+        raise ValueError(
+            f"support revision {revision!r} is not implemented by this consumer; "
+            "an admission never silently upgrades or downgrades its declared revision"
+        )
+    profiles = list(SUPPORT["profiles"])
+    if revision >= 2:
+        profiles = [*profiles, "dataset", "table", "computation"]
+    return {
+        "storage": SUPPORT["storage"],
+        "profiles": profiles,
+        "operations": list(SUPPORT["operations"]),
+        "unsupported": list(SUPPORT["unsupported"]),
+    }
+
+
+_SELECTOR_KEYS = {"version", "mode", "subtree", "namespace", "profile"}
+
+
+def validated_selector(data):
+    """Validate one DECODED context_integration.yaml mapping (the shared
+    §10.1 opt-in-carrier validation used by both the file selector and the
+    candidate-commit readers): returns the validated selector dict, or None
+    for the absent/empty form. Raises ValueError with the named refusal for
+    every malformed or non-implemented opt-in."""
+    if data is None:
         return None
-    data = yaml.safe_load(path.read_text())
+    if not isinstance(data, dict) or not _SELECTOR_KEYS <= set(data):
+        raise ValueError(
+            "unsupported or malformed context_integration.yaml; no standalone fallback"
+        )
+    # spec0032 §10.1: the authored selector gains exactly two optional keys —
+    # an exact-integer support_revision opt-in and the versioned
+    # policy_bindings block. Absence of both is the legacy revision 1; an
+    # explicit revision 1 forbids the block; revision ≥2 requires it.
+    optional = set(data) - _SELECTOR_KEYS
+    if not optional <= {"support_revision", "policy_bindings"}:
+        raise ValueError(
+            "unsupported or malformed context_integration.yaml; no standalone fallback"
+        )
+    revision = data.get("support_revision")
+    if revision is not None and type(revision) is not int:
+        raise ValueError(
+            "context_integration.yaml: support_revision must be an exact integer "
+            f"(spec0032 §10.1), got {revision!r}"
+        )
+    if "policy_bindings" in data and revision is None:
+        raise ValueError(
+            "context_integration.yaml: a policy_bindings block requires an explicit "
+            "support_revision; block presence never implies a higher revision"
+        )
+    if revision is not None and revision not in IMPLEMENTED_PROFILE_REVISIONS:
+        raise ValueError(
+            f"context_integration.yaml: support_revision {revision!r} is not an "
+            "implemented revision of this consumer"
+        )
+    if revision == 1 and "policy_bindings" in data:
+        raise ValueError(
+            "context_integration.yaml: policy_bindings is forbidden at support "
+            "revision 1 (spec0032 §10.1)"
+        )
+    if revision is not None and revision >= 2 and "policy_bindings" not in data:
+        raise ValueError(
+            f"context_integration.yaml: support revision {revision} requires the "
+            "policy_bindings block of version 1 (spec0032 §10.1)"
+        )
     if (
-        not isinstance(data, dict)
-        or set(data) != {"version", "mode", "subtree", "namespace", "profile"}
-        or type(data["version"]) is not int
-        or data["version"] != 1
+        data["version"] != 1
         or data["mode"] != "integrated"
         or data["subtree"] != "knowledge"
         or data["profile"] != "ariadne-context/1"
@@ -71,6 +161,13 @@ def selector(root):
             "unsupported or malformed context_integration.yaml; no standalone fallback"
         )
     return data
+
+
+def selector(root):
+    path = Path(root) / "context_integration.yaml"
+    if not path.exists():
+        return None
+    return validated_selector(yaml.safe_load(path.read_text()))
 
 
 def knowledge_path(rel):
@@ -86,8 +183,298 @@ def knowledge_path(rel):
     )
 
 
+def _dataset_source_resource(source: str) -> str:
+    """The canonical table resource of one authored dataset source string,
+    using the platform's own naming rules (``sources.build_connection``:
+    attached sources carry the source name as their catalog, file views live
+    in a schema named after the source with no catalog): a three-part
+    ``source.schema.table`` attach reference, or a two-part ``source.table``
+    file-view reference."""
+    from ariadne.sources import table_resource
+
+    parts = source.split(".")
+    if len(parts) == 3:
+        return table_resource(parts[0], parts[0], parts[1], parts[2])
+    if len(parts) == 2:
+        return table_resource(parts[0], None, parts[0], parts[1])
+    raise ValueError(
+        f"dataset source {source!r} is neither an attached source.schema.table nor a "
+        "file-view source.table reference"
+    )
+
+
+def _metric_static_inventory(root: Path, model: str, metric: str) -> list[str]:
+    """The pinned static dependency inventory of one metric subject (§10.2:
+    the same static extraction spirit as §10.5 — authored declarations only,
+    no live checks): the canonical table resources of the datasets the
+    metric's expression is statically owned by, derived from the SAME graph
+    loader validation serves. Request-selected lookup dimensions of other
+    datasets are not part of the subject's own inventory."""
+    from ariadne.semantic_graph import GraphError, load_graph
+
+    try:
+        graph = load_graph(Path(root) / "semantic_layer")
+    except GraphError, OSError, ValueError:
+        return []  # the structural/graph check owns that failure with its own diagnostic
+
+    def owners_of(name: str) -> set[str]:
+        node = graph.metrics.get(name)
+        if node is None:
+            return set()
+        if node.owner is not None:
+            return {node.owner}
+        owners: set[str] = set()
+        for dep in node.deps:
+            owners |= owners_of(dep)
+        return owners
+
+    datasets = graph.datasets
+    resources: list[str] = []
+    for owner in sorted(owners_of(metric)):
+        dataset = datasets.get(owner)
+        if dataset is None or dataset.model != model:
+            continue
+        resources.append(_dataset_source_resource(dataset.source))
+    return resources
+
+
+def _binding_subject_index(captured):
+    """Subject identity → page index over the captured KB (§10.1 identity
+    grammar: titles, aliases and paths never identify a subject)."""
+    index = {}
+    for page in captured.kb.pages:
+        profile = page.ariadne_profile
+        if profile is None:
+            continue
+        if profile.kind == "metric" and profile.metric_ref is not None:
+            index[("metric", f"{profile.metric_ref.model}::{profile.metric_ref.metric}")] = page
+        elif profile.kind == "computation" and profile.core_ref is not None:
+            index[("computation", str(profile.core_ref.id))] = page
+        elif profile.kind == "table" and profile.core_ref is not None:
+            index[("table", str(profile.core_ref.id))] = page
+        elif profile.kind == "dataset" and profile.core_ref is not None:
+            index[("dataset", str(profile.core_ref.id))] = page
+    return index
+
+
+def _subject_static_inventory(root: Path, kind: str, identity: str, page, captured) -> list[str]:
+    """The §10.2 static dependency inventory of one bound subject."""
+    if kind == "table":
+        return [identity]
+    if kind == "dataset":
+        extension = (page.ariadne_profile.native or {}).get("ariadne") or {}
+        return [table for table in extension.get("tables") or [] if isinstance(table, str)]
+    if kind == "metric":
+        model, _, metric = identity.partition("::")
+        return _metric_static_inventory(root, model, metric)
+    # computation: the sanctioned semantic identity of a bound metric
+    model, _, metric = identity.partition("::")
+    if ("metric", identity) in _binding_subject_index(captured):
+        return _metric_static_inventory(root, model, metric)
+    return []  # no metric carries this semantic identity: nothing static to pin
+
+
+def _policy_binding_errors(root: Path, selected: dict, captured) -> list[str]:
+    """The §10.1 closed validation of the authored policy_bindings block
+    against the captured snapshot — refusing with named diagnostics, never
+    ignoring: exact key sets, identity grammar, capability closure, §10.2
+    catalog/definition/dependency rules, uniqueness, complete closure
+    classification of consumed subjects and no invented obligations. The
+    block carries only identifiers — no credentials, pointers or code."""
+    from lumio_wiki.ariadne_context import policy_closure
+
+    namespace = selected["namespace"]
+    revision = selected.get("support_revision", 1)
+    table = capability_table(revision)
+    # the integrated Analyst operations this admission's frozen revision set
+    capability_operations = set(_INTEGRATED_OPERATIONS) & set(table["operations"])
+    spot = "context_integration.yaml: policy_bindings"
+    block = selected.get("policy_bindings")
+    errors: list[str] = []
+    if not isinstance(block, dict) or set(block) != {"version", "bindings"}:
+        return [f"{spot} must be exactly {{version, bindings}}"]
+    if type(block.get("version")) is not int or block["version"] != 1:
+        errors.append(f"{spot} version must be the exact integer 1")
+    bindings = block.get("bindings")
+    if not isinstance(bindings, list):
+        return [*errors, f"{spot} bindings must be a list"]
+    pages_by_entity = {page.id: page for page in captured.kb.pages}
+    subject_index = _binding_subject_index(captured)
+    from ariadne.sources import parse_resource
+
+    def closure_of(page):
+        closure, diagnostics = policy_closure(
+            captured.kb.pages, page.ariadne_profile, namespace=namespace
+        )
+        for diagnostic in diagnostics:
+            errors.append(f"knowledge/{page.path}: {diagnostic.message}")
+        return {(reference.namespace, reference.entity_id) for reference in closure}
+
+    closures: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    seen_pairs: set[tuple[str, str, str]] = set()
+    classified: dict[tuple[str, str], set] = {}
+    for index, binding in enumerate(bindings):
+        where = f"{spot}.bindings[{index}]"
+        if not isinstance(binding, dict) or set(binding) != {
+            "subject",
+            "policy",
+            "operations",
+            "enforcement",
+        }:
+            errors.append(f"{where} must be exactly {{subject, policy, operations, enforcement}}")
+            continue
+        subject = binding["subject"]
+        policy = binding["policy"]
+        operations = binding["operations"]
+        enforcement = binding["enforcement"]
+        if not isinstance(subject, dict) or set(subject) != {"kind", "identity"}:
+            errors.append(f"{where} subject must be exactly {{kind, identity}}")
+            continue
+        kind, identity = subject["kind"], subject["identity"]
+        if kind not in ("metric", "computation", "table", "dataset"):
+            errors.append(f"{where} subject kind must be metric, computation, table or dataset")
+            continue
+        key = (kind, identity)
+        page = subject_index.get(key)
+        if page is None:
+            errors.append(
+                f"{where} subject {kind} {identity!r} does not match any captured page's "
+                "native identity (metric_ref model::metric or core_ref)"
+            )
+            continue
+        if key not in closures:
+            closures[key] = closure_of(page)
+        if not isinstance(policy, dict) or set(policy) != {"namespace", "entity_id"}:
+            errors.append(f"{where} policy must be exactly {{namespace, entity_id}}")
+            continue
+        if policy["namespace"] != namespace:
+            errors.append(
+                f"{where} policy namespace {policy['namespace']!r} is not the selected "
+                f"KB namespace {namespace!r} (v1 never traverses another namespace)"
+            )
+            continue
+        target = pages_by_entity.get(policy["entity_id"])
+        target_profile = target.ariadne_profile if target is not None else None
+        if target is None or target_profile is None or target_profile.kind != "policy":
+            errors.append(
+                f"{where} policy {policy['entity_id']!r} is not a Policy page of the "
+                "selected Knowledge Base"
+            )
+            continue
+        pair = (kind, str(identity), str(policy["entity_id"]))
+        if pair in seen_pairs:
+            errors.append(
+                f"{where} duplicates the (subject, policy) binding of "
+                f"{kind} {identity!r} and {policy['entity_id']!r}"
+            )
+            continue
+        seen_pairs.add(pair)
+        if (
+            not isinstance(operations, list)
+            or not operations
+            or not all(isinstance(item, str) for item in operations)
+        ):
+            errors.append(f"{where} operations must be a nonempty list of operation ids")
+            continue
+        for operation in operations:
+            if operation not in _INTEGRATED_OPERATIONS:
+                errors.append(f"{where} names unknown integrated operation {operation!r}")
+            elif operation not in capability_operations:
+                errors.append(
+                    f"{where} names operation {operation!r} which is outside the "
+                    f"admission's support revision {revision} capability set"
+                )
+        policy_key = (policy["namespace"], policy["entity_id"])
+        if policy_key not in closures[key]:
+            errors.append(
+                f"{where} names policy {policy['entity_id']!r} which is not in subject "
+                f"{kind} {identity!r}'s required Policy Closure — an invented obligation"
+            )
+        classified.setdefault(key, set()).add(policy_key)
+        if enforcement is not None:
+            if not isinstance(enforcement, dict) or set(enforcement) != {
+                "check",
+                "definition",
+                "dependencies",
+            }:
+                errors.append(
+                    f"{where} enforcement must be null or exactly "
+                    "{{check, definition, dependencies}}"
+                )
+                continue
+            check = enforcement["check"]
+            if check not in EXISTING_CHECK_CATALOG:
+                errors.append(
+                    f"{where} enforcement check {check!r} is not a spec0032 §10.2 catalog "
+                    f"id (catalog: {', '.join(sorted(EXISTING_CHECK_CATALOG))})"
+                )
+                continue
+            executed_for = EXISTING_CHECK_CATALOG[check]
+            for operation in operations:
+                if operation in _INTEGRATED_OPERATIONS and operation not in executed_for:
+                    errors.append(
+                        f"{where} enforcement check {check!r} never executes for operation "
+                        f"{operation!r} (it executes for: {', '.join(executed_for)}) — only "
+                        "a check that actually executes for that operation may be a "
+                        "binding target"
+                    )
+            if enforcement["definition"] != identity:
+                errors.append(
+                    f"{where} enforcement definition {enforcement['definition']!r} must "
+                    f"equal the subject's own reviewed identity {identity!r}"
+                )
+            dependencies = enforcement["dependencies"]
+            if not isinstance(dependencies, list) or not all(
+                isinstance(item, str) for item in dependencies
+            ):
+                errors.append(f"{where} enforcement dependencies must be a list of identities")
+                continue
+            if len(set(dependencies)) != len(dependencies):
+                errors.append(f"{where} enforcement dependencies carry a duplicate entry")
+                continue
+            inventory = _subject_static_inventory(root, kind, str(identity), page, captured)
+            for dependency in dependencies:
+                try:
+                    parse_resource(dependency)
+                except ValueError:
+                    errors.append(
+                        f"{where} enforcement dependency {dependency!r} is not a canonical "
+                        "table resource identity"
+                    )
+                    continue
+                if dependency not in inventory:
+                    errors.append(
+                        f"{where} enforcement dependency {dependency!r} is not part of "
+                        f"subject {kind} {identity!r}'s pinned static dependency inventory"
+                    )
+            if not dependencies and inventory:
+                errors.append(
+                    f"{where} enforcement dependencies are empty but subject {kind} "
+                    f"{identity!r}'s static inventory is not"
+                )
+    # §10.1 agreement: every subject consumed by an operation of this
+    # revision must have its complete typed closure exactly classified. The
+    # governed operations consume every bound metric page and the computation
+    # pages their context assembles (§10.3).
+    for key, page in subject_index.items():
+        kind = key[0]
+        if kind == "metric" or (kind == "computation" and ("metric", key[1]) in subject_index):
+            if key not in closures:
+                closures[key] = closure_of(page)
+            for namespace_id, entity_id in sorted(closures[key]):
+                if (namespace_id, entity_id) not in classified.get(key, set()):
+                    errors.append(
+                        f"knowledge/{page.path}: required Policy Closure member "
+                        f"{entity_id!r} of {kind} subject {key[1]!r} has no authored "
+                        "policy_bindings classification — an unclassifiable mandatory "
+                        "obligation"
+                    )
+    return errors
+
+
 def candidate(root, kb_root, revision):
-    """Reuse the producer's captured schema/catalog gate, then apply consumer support."""
+    """Reuse the producer's captured schema/catalog gate, then apply the
+    consumer support of the SELECTED support revision (spec0032 §10.1/§10.3)."""
     selected = selector(root)
     if selected is None:
         return None, []
@@ -97,12 +484,14 @@ def candidate(root, kb_root, revision):
     inspection = inspect_ariadne_candidate(str(kb_root), revision, namespace=selected["namespace"])
     errors = [item.message for item in inspection.diagnostics]
     captured = capture_revision(kb_root, revision)
+    revision_number = selected.get("support_revision", 1)
+    table = capability_table(revision_number)
     for page in captured.kb.pages:
         profile = page.ariadne_profile
         if profile is None:
             continue
         where = f"knowledge/{page.path}"
-        if profile.kind not in SUPPORT["profiles"]:
+        if profile.kind not in table["profiles"]:
             errors.append(f"{where}: unsupported Ariadne profile kind '{profile.kind}'")
         elif profile.kind == "reference":
             # T2 (spec0029 §1.5): the structured declaration (native.ariadne)
@@ -122,21 +511,27 @@ def candidate(root, kb_root, revision):
                 or profile.core_ref is not None
             ):
                 errors.append(f"{where}: unsupported technical Ariadne profile extension")
-        elif (
-            set(profile.native)
-            & {
-                "ariadne",
-                "ariadne_evidence",
-                "resource",
-                "observed_value_columns",
-                "attestation",
-                "attester",
-                "runtime",
-                "dataset_sources",
-            }
-            or profile.core_ref is not None
-        ):
-            errors.append(f"{where}: unsupported technical Ariadne profile extension")
+        elif profile.kind in ("metric", "policy"):
+            if (
+                set(profile.native)
+                & {
+                    "ariadne",
+                    "ariadne_evidence",
+                    "resource",
+                    "observed_value_columns",
+                    "attestation",
+                    "attester",
+                    "runtime",
+                    "dataset_sources",
+                }
+                or profile.core_ref is not None
+            ):
+                errors.append(f"{where}: unsupported technical Ariadne profile extension")
+        # spec0032 §5/§10.1 (revision 2): the technical dataset/table/
+        # computation kinds carry their FULL producer-native envelope —
+        # core_ref, resource, observed_value_columns, attestation, attester,
+        # runtime and dataset_sources are their native families, passed to
+        # the existing native validators without a lossy projection.
     if not errors:
         expected = set()
         for path in sorted((Path(root) / "semantic_layer" / "models").glob("*.y*ml")):
@@ -154,6 +549,9 @@ def candidate(root, kb_root, revision):
             errors.append(
                 "knowledge: every native metric requires exactly one matching Context Binding"
             )
+    if revision_number >= 2:
+        # the §10.1 closed validation of the authored opt-in carrier
+        errors.extend(_policy_binding_errors(Path(root), selected, captured))
     return captured, errors
 
 
@@ -274,8 +672,7 @@ def _s3_destination_parts(destination: str) -> tuple[str, str]:
     parts = urlsplit(str(destination))
     if parts.scheme != "s3" or not parts.netloc or parts.username or parts.password:
         raise ValueError(
-            "the integrated S3 destination must be a credential-free "
-            "s3://bucket/prefix URI"
+            "the integrated S3 destination must be a credential-free s3://bucket/prefix URI"
         )
     bucket = parts.netloc
     prefix = parts.path.strip("/")
@@ -490,7 +887,10 @@ def prepare_release(
     # advertised with capabilities it lacks. An S3 destination additionally
     # needs the r4 private-admission navigation keyword (plan0029 r29).
     _navigation_gate()
-    support = copy.deepcopy(SUPPORT)
+    # spec0032 §10.3: the manifest's stored support set is the frozen table
+    # of the SELECTED support revision — never the currently newest set.
+    support_revision = selected.get("support_revision", 1)
+    support = capability_table(support_revision)
     storage_fields: dict = {}
     s3_location = None
     if s3_destination:
@@ -524,9 +924,7 @@ def prepare_release(
         from lumio_wiki.s3_publish import _GRAPH_REL, _serialize_graph_bytes
 
         # Native S3 publication carries the graph only; local adds navigation indexes.
-        derived_content = {
-            _GRAPH_REL: _serialize_graph_bytes(captured.kb, captured.fingerprint)
-        }
+        derived_content = {_GRAPH_REL: _serialize_graph_bytes(captured.kb, captured.fingerprint)}
     else:
         derived_content = native._derived_content(captured)
     manifest = build_published_manifest(
@@ -578,6 +976,14 @@ def prepare_release(
         "bindings": _binding_inventory(captured, scope),
         "publication_review_digest": publication.review_digest,
     }
+    if support_revision >= 2:
+        # spec0032 §10.3: the revision-2 Bound Release gains the two
+        # digest-bound, admission-captured fields — the exact integer the
+        # reviewed selector declared and the validated binding inventory
+        # captured verbatim from the reviewed Content Commit (the §10.1
+        # candidate gate validated it above; no normalization happens here).
+        binding["support_revision"] = support_revision
+        binding["policy_bindings"] = selected["policy_bindings"]
     binding["digest"] = digest(binding)
     preview = {
         "manifest": binding,
@@ -728,7 +1134,42 @@ def verify_release(record, snapshot):
         raise ValueError("Bound Release lacks native Core validation")
     validation = record.get("validation") or {}
     s3_destination = str(manifest.get("destination") or "").startswith("s3://")
-    expected_support = copy.deepcopy(SUPPORT)
+    # spec0032 §10.3: support is verified against the frozen table of the
+    # manifest's RECORDED revision — never the currently newest set. A
+    # legacy manifest missing both opt-in fields is revision 1 without
+    # rewriting its bytes; a revision newer than this consumer's implemented
+    # set refuses. The two admission-captured fields are re-derived from the
+    # pinned snapshot's own selector and equality-checked (tampering
+    # detection; selector and stored manifest must agree exactly).
+    recorded_revision = manifest.get("support_revision")
+    if "policy_bindings" in manifest and recorded_revision is None:
+        raise ValueError("Bound Release carries policy_bindings without its support_revision")
+    if recorded_revision is not None and (
+        type(recorded_revision) is not int or recorded_revision not in IMPLEMENTED_PROFILE_REVISIONS
+    ):
+        raise ValueError(
+            f"Bound Release support revision {recorded_revision!r} is not implemented "
+            "by this consumer"
+        )
+    recorded_revision = recorded_revision if recorded_revision is not None else 1
+    if recorded_revision >= 2:
+        if "policy_bindings" not in manifest:
+            raise ValueError(
+                f"revision-{recorded_revision} Bound Release lacks its policy_bindings inventory"
+            )
+        if manifest["policy_bindings"] != selected.get("policy_bindings"):
+            raise ValueError(
+                "Bound Release policy_bindings inventory does not match the pinned "
+                "snapshot's authored selector"
+            )
+        if selected.get("support_revision") != recorded_revision:
+            raise ValueError(
+                "Bound Release support_revision does not match the pinned snapshot's "
+                "authored selector"
+            )
+    elif "policy_bindings" in manifest:
+        raise ValueError("revision-1 Bound Release must not carry policy_bindings")
+    expected_support = capability_table(recorded_revision)
     if s3_destination:
         # The frozen S3 transport binding is part of the digest-protected
         # identity; every piece must be present before any comparison.

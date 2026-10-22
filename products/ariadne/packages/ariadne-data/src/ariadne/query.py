@@ -691,6 +691,50 @@ class _QueryRuntimeSession(_DiscoverySession):
         query_results.finalize_response(self._limits, envelope, response_measure=self._measure)
         return resolved
 
+    def _attest_bound_checks(self, plan) -> None:
+        """#83 (spec0032 §10.2): an executable policy binding of this admission
+        is satisfied only by the ACTUAL executed check for the consumed
+        subject — a plan audit reporting not-run establishes nothing, and
+        authored generated/verified stamps on pages are never proof. The
+        obligation must be established before any result SQL executes;
+        get_metric bindings stay explanatory in this revision (their gates
+        are invariants only)."""
+        if self._context_snapshot is None or self._managed is None:
+            return
+        manifest = self._managed.get("bound_release") or {}
+        bindings = (manifest.get("policy_bindings") or {}).get("bindings") or []
+        if not bindings:
+            return
+        consumed = set()
+        for name in plan.metrics:
+            meta = self._metrics.get(name)
+            if meta is None:
+                continue
+            consumed.add(f"{meta['model']['semantic_model'][0]['name']}::{name}")
+        for binding in bindings:
+            if not isinstance(binding, dict):
+                continue
+            enforcement = binding.get("enforcement")
+            if not isinstance(enforcement, dict):
+                continue  # explanatory disclosure claims no executed check
+            if enforcement.get("check") != "graph.relationship_audit":
+                continue  # the one catalog check that executes for query_metrics
+            if "query_metrics" not in (binding.get("operations") or []):
+                continue
+            subject = binding.get("subject") or {}
+            identity = subject.get("identity")
+            if subject.get("kind") not in ("metric", "computation") or identity not in consumed:
+                continue
+            if plan.relationship_audit != "passed":
+                raise PlannerError(
+                    "binding_not_attested",
+                    "executable policy binding declares check 'graph.relationship_audit' "
+                    f"for subject {identity!r}, but the executed plan reports relationship "
+                    f"audit '{plan.relationship_audit}' — authored evidence stamps are "
+                    "not proof; the operation refuses instead of labeling the narrative "
+                    "enforced",
+                )
+
     async def query_metrics(self, request: dict) -> dict:
         """Governed multi-fact query (issue #30, spec rev 1 "Query and result
         contract"): a nonempty list of PREDEFINED metric names over the ADMITTED
@@ -720,6 +764,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         budget = self._claim_operation_budget()
         with self._phase(budget):
             plan = plan_query(graph, request, self.con)
+            self._attest_bound_checks(plan)  # §10.2: real executed-check proof, before result SQL
             assert_single_statement(plan.sql)
             self._execution.bind(plan.sql)
             bounded = self._collect(plan.sql, budget)

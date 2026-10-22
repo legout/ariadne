@@ -171,10 +171,15 @@ class _DiscoverySession:
             self._admission_reason = "a valid Git admission is required for public discovery"
 
     def _refuse_unsupported(self, operation):
+        # spec0032 §10.3: the capability gate consults THIS admission's
+        # recorded frozen support table (the digest-verified Bound Release
+        # manifest), never the currently newest global set — legacy and
+        # expanded admissions under the same build keep their respective
+        # contracts, and a stored table is tamper-checked at verification.
         if self._context_snapshot is not None:
-            from ariadne.lumio_context import SUPPORT  # pyright: ignore[reportMissingImports]
-
-            if operation in SUPPORT["unsupported"]:
+            manifest = (self._managed or {}).get("bound_release") or {}
+            unsupported = manifest.get("support", {}).get("unsupported")
+            if isinstance(unsupported, list) and operation in unsupported:
                 raise ValueError(f"unsupported integrated MVP operation: {operation}")
 
     def _load_managed_graph(self, semantic_dir: Path) -> None:

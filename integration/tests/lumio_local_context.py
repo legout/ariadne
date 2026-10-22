@@ -1335,3 +1335,893 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
 
     assert "retail-return-policy" in diagnostics
     assert "whose content changed since the measurement" in diagnostics
+
+
+# ------------------------- P1 technical profiles (spec0032 §§5–6, §10.1–§10.3)
+
+# Hand-authored oracle data, independent of the implementation (#83 prep;
+# spec0032 §8: expected values come from authored inputs and these contracts,
+# never from implementation output). The same approved synthetic DuckDB
+# catalog gains one lookup collection so the governed query path has a REAL
+# proven relationship: every order's status resolves to exactly one curated
+# label (hand-worked join over the authored rows), completed 100 + 50 imply
+# revenue 150 for "Completed order" and the sanctioned exclusion leaves the
+# "Cancelled order" group at 0.0 — never a fabricated numeric check.
+P1_STATUS_ROWS = [("completed", "Completed order"), ("cancelled", "Cancelled order")]
+P1_ORDERS_ASSET = {"source": "orders", "catalog": "orders", "schema": "main", "table": "orders"}
+P1_STATUS_ASSET = {
+    "source": "orders",
+    "catalog": "orders",
+    "schema": "main",
+    "table": "order_status",
+}
+# Authored DDL facts (the independent schema oracle): exact column identity
+# and type in ordinal order, hand-copied from the fixture DDL below.
+P1_ORDERS_COLUMNS = [("id", "INTEGER"), ("amount", "DOUBLE"), ("status", "VARCHAR")]
+P1_STATUS_COLUMNS = [("status", "VARCHAR"), ("label", "VARCHAR")]
+# Hand-counted observations over the authored rows (never profiler output):
+# 3 order rows, each column NULL-free; id/amount distinct 3, status distinct
+# 2; 2 lookup rows, both columns distinct 2, NULL-free.
+P1_ORDERS_COUNTS = {"row_count": 3, "id": (0, 3), "amount": (0, 3), "status": (0, 2)}
+P1_STATUS_COUNTS = {"row_count": 2, "status": (0, 2), "label": (0, 2)}
+P1_QUERY_OPS = ("query_detail", "query_records", "define_metric")
+P1_NINE_OPERATIONS = [
+    "get_metric",
+    "discover",
+    "list_metrics",
+    "query_metrics",
+    "list_datasets",
+    "list_context_pages",
+    "read_context_page",
+    "search_context",
+    "resolve_term",
+]
+P1_REV1_PROFILES = ["metric", "policy", "reference"]
+P1_REV2_PROFILES = ["metric", "policy", "reference", "dataset", "table", "computation"]
+P1_CURATED_MARKER = "CURATED-MARKER status wording is owned by the retail desk"
+
+# Parent-dispositioned fixture layout: one dataset per model — the written
+# source-approval boundary refuses multi-dataset models, and a metrics-less
+# model cannot render — so the lookup lives in its own single-dataset model
+# with one trivial COUNT(*) metric (unambiguous in a single-dataset model).
+P1_LOOKUP_MODEL = """\
+version: 0.2.0.dev0
+semantic_model:
+  - name: status_lookup
+    description: Order status lookup model
+    datasets:
+      - name: order_status
+        source: orders.main.order_status
+        primary_key: [status]
+        fields:
+          - name: status
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: status
+          - name: status_label
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: label
+            dimension: {}
+    metrics:
+      - name: label_count
+        description: Count of curated status labels
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(*)
+"""
+
+# The lookup model's inert KB Metric page: exact metric_ref, producer-valid
+# native base metadata and an EMPTY typed required_policies closure — no
+# binding classification is consumed for it and no journey value depends on
+# it (scaffolding only, per the parent's bounded correction grant).
+P1_LOOKUP_METRIC_PAGE = (
+    "---\n"
+    'id: "entity:label-count"\n'
+    "entity_types:\n"
+    "  - metric\n"
+    "tags:\n"
+    "  - retail\n"
+    "  - operations\n"
+    'title: "Curated Status Labels (Metric)"\n'
+    'summary: "Count of curated order status labels; scaffolding for the lookup model."\n'
+    'lifecycle: "approved"\n'
+    'visibility: "public"\n'
+    "sources:\n"
+    '  - id: "src-ops-lookup"\n'
+    '    title: "Operations lookup review, 2026-10-22"\n'
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: metric\n"
+    "  metric_ref:\n"
+    '    model: "status_lookup"\n'
+    '    metric: "label_count"\n'
+    "  required_policies: []\n"
+    "  native:\n"
+    "    type: metric\n"
+    '    status: "stable"\n'
+    '    title: "Curated status labels"\n'
+    '    description: "Count of curated order status labels."\n'
+    "    tags:\n"
+    "      - operations\n"
+    "    stale_after: 2027-06-30\n"
+    "    sources:\n"
+    '      - id: "src-ops-lookup"\n'
+    '        title: "Operations lookup review, 2026-10-22"\n'
+    # parent-dispositioned: the established native metadata vocabulary for a
+    # semantic-definition provenance string (context._attach_metric_metadata);
+    # non-policy, so the EMPTY typed closure stays consistent
+    '    governed_by: "semantic_layer status_lookup::label_count"\n'
+    "    dimensions:\n"
+    "      - status_label\n"
+    "    grain:\n"
+    "      primary_key:\n"
+    "        - status\n"
+    '      cardinality_enforcement: "strict_1_to_1"\n'
+    "---\n"
+    "\n"
+    "# Curated Status Labels (Metric)\n"
+    "\n"
+    "Fixture scaffolding metric for the lookup model: it counts the curated\n"
+    "status labels, carries an empty Policy closure and participates in no\n"
+    "governed journey expectation.\n"
+)
+
+# The classic OKF graph-admission page for the lookup metric (issue #30:
+# every graph metric requires a cited context_layer metric page citing a
+# CONTAINED policy). Explicit human-authored compatibility scaffolding for
+# the unchanged graph admission — NOT a KB-content mirror, not an SDK Policy
+# edge, and it value-attests nothing.
+P1_LOOKUP_OKF_METRIC_PAGE = (
+    "---\n"
+    "type: metric\n"
+    "status: draft\n"
+    "title: label_count\n"
+    "description: Count of curated status labels; classic graph-admission page.\n"
+    "tags: [metric]\n"
+    "sources:\n"
+    "  - id: all-orders-count\n"
+    "    resource: policies/all-orders-count.md\n"
+    "    title: All orders count\n"
+    "---\n\n"
+    "# label_count\n"
+)
+
+P1_GRAPH = """\
+version: 1
+relationships:
+  - name: order_status_lookup
+    cardinality: many_to_one
+    from_dataset: orders
+    from_fields: [status]
+    to_dataset: order_status
+    to_fields: [status]
+conformed_dimensions: []
+"""
+
+# An existing, producer-valid Policy page that NO consumed subject requires:
+# only an invented-obligation binding may ever name it (§10.1).
+P1_HYGIENE_POLICY = """\
+---
+id: entity:order-label-hygiene
+entity_types: [policy]
+tags: [policy]
+title: Order Label Hygiene
+summary: Advisory wording rules for order status labels, never required by a subject.
+visibility: public
+lifecycle: approved
+sources:
+  - id: human-label-hygiene
+    title: Synthetic operator rule
+ariadne_profile:
+  version: 1
+  kind: policy
+  required_policies: []
+  native:
+    type: policy
+    title: Order Label Hygiene
+    description: Advisory wording rules for order status labels.
+    status: stable
+    tags: [policy]
+    stale_after: 2027-06-30
+    sources:
+      - id: human-label-hygiene
+        title: Synthetic operator rule
+---
+
+# Order Label Hygiene
+
+Advisory wording rules for order status labels. No consumed calculation or
+source requires this policy; it exists so an invented obligation can name a
+genuinely existing Policy page.
+"""
+
+
+def _p1_selector_text(bindings: dict) -> str:
+    """The revision-2 integrated selector: the five existing keys unchanged
+    plus exactly the two optional §10.1 keys (support_revision, the authored
+    policy_bindings block of version 1)."""
+    import yaml
+
+    return (
+        "version: 1\n"
+        "mode: integrated\n"
+        "subtree: knowledge\n"
+        f"namespace: {NAMESPACE}\n"
+        "profile: ariadne-context/1\n"
+        + yaml.safe_dump({"support_revision": 2, "policy_bindings": bindings}, sort_keys=False)
+    )
+
+
+def _p1_bindings(orders_resource: str, status_resource: str) -> dict:
+    """The authored §10.1 binding inventory (spec0032 §10.2 identities): the
+    metric subject's complete closure is exactly classified — the Return
+    Policy explanatory for the governed operations, the sanctioned Cancelled
+    Orders exclusion executable for query_metrics through the one catalog
+    check that actually executes there — and the Computation page's own
+    closure is classified explanatory. Every identity string comes from the
+    authored constants, never from implementation output. The executable
+    binding's dependencies are the metric subject's OWN static inventory:
+    the revenue expression reads only the orders table; order_status is a
+    request-selected lookup (§10.2 binds the subject inventory, never every
+    graph-reachable source — lookup coverage stays a #84 request-inventory
+    concern)."""
+    return {
+        "version": 1,
+        "bindings": [
+            {
+                "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+                "policy": {"namespace": NAMESPACE, "entity_id": "entity:retail-return-policy"},
+                "operations": ["get_metric", "query_metrics"],
+                "enforcement": None,
+            },
+            {
+                "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+                "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
+                "operations": ["query_metrics"],
+                "enforcement": {
+                    "check": "graph.relationship_audit",
+                    "definition": "retail_sales::revenue",
+                    "dependencies": [orders_resource],
+                },
+            },
+            {
+                "subject": {"kind": "computation", "identity": "retail_sales::revenue"},
+                "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
+                "operations": ["get_metric", "query_metrics"],
+                "enforcement": None,
+            },
+        ],
+    }
+
+
+def _p1_computation_page() -> str:
+    """A producer-valid Computation page with the honest attestation: pending
+    state and no attester (spec0032 §5): authored verified/attester values
+    grant no authority, so the page claims none."""
+    return (
+        "---\n"
+        'id: "entity:revenue-computation"\n'
+        "entity_types:\n"
+        "  - computation\n"
+        "tags:\n"
+        "  - finance\n"
+        'title: "Recognized Revenue Computation"\n'
+        'summary: "The sanctioned revenue exclusion, curated for review."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "sources:\n"
+        '  - id: "src-computation-review"\n'
+        '    title: "Computation review, 2026-10-22"\n'
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: computation\n"
+        "  core_ref:\n"
+        "    kind: semantic\n"
+        '    id: "retail_sales::revenue"\n'
+        "  required_policies:\n"
+        f'    - namespace: "{NAMESPACE}"\n'
+        '      entity_id: "entity:cancelled-orders"\n'
+        "  native:\n"
+        "    type: computation\n"
+        '    status: "stable"\n'
+        '    title: "Recognized revenue computation"\n'
+        '    description: "The sanctioned revenue exclusion, curated for review."\n'
+        "    tags:\n"
+        "      - finance\n"
+        "    stale_after: 2020-01-01\n"
+        "    attestation: pending\n"
+        "    sources:\n"
+        '      - id: "src-computation-review"\n'
+        '        title: "Computation review, 2026-10-22"\n'
+        "---\n"
+        "\n"
+        "# Recognized Revenue Computation\n"
+        "\n"
+        "CURATED-MARKER the sanctioned expression excludes cancelled orders; this\n"
+        "page curates the business meaning only and claims no independent\n"
+        "numerical validation.\n"
+    )
+
+
+def _p1_hidden_table_page(resource: str) -> str:
+    """A hidden (restricted), otherwise producer-valid Table page whose
+    core_ref names a canonical table of a synthetic UNAPPROVED source: the
+    whole-KB technical-profile validation must refuse naming it (§3)."""
+    return (
+        "---\n"
+        'id: "entity:internal-orders-table"\n'
+        "entity_types:\n"
+        "  - table\n"
+        "tags:\n"
+        "  - internal\n"
+        'title: "Internal Orders Table"\n'
+        'summary: "Hidden internal binding for an unapproved source."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "restricted"\n'
+        "sources:\n"
+        '  - id: "src-internal-catalog"\n'
+        '    title: "Internal catalog memo, 2026-10-22"\n'
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: table\n"
+        "  core_ref:\n"
+        "    kind: resource\n"
+        f'    id: "{resource}"\n'
+        "  native:\n"
+        "    type: table\n"
+        '    title: "Internal Orders Table"\n'
+        '    description: "Hidden internal binding for an unapproved source."\n'
+        "    tags:\n"
+        "      - internal\n"
+        "    stale_after: 2027-12-31\n"
+        "    sources:\n"
+        '      - id: "src-internal-catalog"\n'
+        '        title: "Internal catalog memo, 2026-10-22"\n'
+        "---\n"
+        "\n"
+        "# Internal Orders Table\n"
+        "\n"
+        "Hidden internal binding for an unapproved source.\n"
+    )
+
+
+def _p1_control() -> str:
+    """The KB control extended for the technical categories and ontology
+    entity types (the established category/ontology extension idiom)."""
+    from integration.tests.lumio_metric_mvp import CONTROL
+
+    return CONTROL.replace(
+        "  - name: metrics\n",
+        "  - name: metrics\n  - name: datasets\n  - name: tables\n  - name: computations\n",
+    ).replace(
+        "    metric: {}\n",
+        "    metric: {}\n    dataset: {}\n    table: {}\n    computation: {}\n",
+    )
+
+
+def _p1_project(root: Path, bindings: dict):
+    """The shared P1 baseline: the proven synthetic catalog plus the authored
+    order_status lookup collection (real DDL + curated rows), the model's
+    lookup dataset, the proven many-to-one graph edge and the revision-2
+    selector carrying the authored policy_bindings block."""
+    import duckdb  # pyright: ignore[reportMissingImports] — qualified test env is external
+
+    project = content_project(root)
+    con = duckdb.connect(str(project / "data" / "orders.duckdb"))
+    # test-fixture DDL over test-local column constants
+    # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
+    con.execute('CREATE TABLE main."order_status"(status VARCHAR, label VARCHAR)')
+    # parameterized test-fixture insert (bound parameters only)
+    # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
+    con.executemany('INSERT INTO main."order_status" VALUES (?, ?)', P1_STATUS_ROWS)
+    con.close()
+    # parent-dispositioned fixture layout: retail_sales keeps its existing
+    # single orders dataset and the revenue metric — the qualified predicate
+    # stays the authored fact that the expression reads only orders — and the
+    # lookup collection lives in its own single-dataset status_lookup model.
+    model = project / "semantic_layer" / "models" / "retail_sales.yml"
+    model.write_text(
+        model.read_text().replace(
+            "WHEN status <> 'cancelled'", "WHEN orders.status <> 'cancelled'"
+        )
+    )
+    (project / "semantic_layer" / "models" / "status_lookup.yml").write_text(P1_LOOKUP_MODEL)
+    (project / "semantic_layer" / "graph.yml").write_text(P1_GRAPH)
+    (project / "context_layer" / "metrics" / "label_count.md").write_text(
+        P1_LOOKUP_OKF_METRIC_PAGE
+    )
+    (project / "context_integration.yaml").write_text(_p1_selector_text(bindings))
+    run_git(
+        project,
+        "add",
+        "--",
+        "semantic_layer/graph.yml",
+        "semantic_layer/models/retail_sales.yml",
+        "semantic_layer/models/status_lookup.yml",
+        "context_layer/metrics/label_count.md",
+        "context_integration.yaml",
+    )
+    run_git(project, "commit", "-q", "-m", "human: lookup collection, graph, revision-2 selector")
+    return project
+
+
+def _p1_kb_candidate(project: Path, api: AuthoringProject, started: dict, revision: str):
+    """The shared supported-shape candidate edits: the metric's complete
+    typed closure (Return Policy + Cancelled Orders), the Cancelled Orders
+    Policy page, the unreferenced Hygiene Policy (invented-obligation bait),
+    the technical control file and the hand-authored Computation page."""
+    tree = worktree_of(project, started["proposal"])
+    reference = tree / "knowledge/references/order-number.md"
+    meta, body = page_parts(reference)
+    del meta["ariadne_profile"]  # visible Git candidate edit, never an input conversion
+    write_page(reference, meta, body)
+    (tree / "knowledge/policies/cancelled-orders.md").write_text(CANCELLATION)
+    (tree / "knowledge/policies/order-label-hygiene.md").write_text(P1_HYGIENE_POLICY)
+    (tree / "knowledge/metrics/label-count.md").write_text(P1_LOOKUP_METRIC_PAGE)
+    metric = tree / "knowledge/metrics/retail-revenue.md"
+    meta, body = page_parts(metric)
+    meta["ariadne_profile"]["required_policies"].append(
+        {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"}
+    )
+    write_page(metric, meta, body)
+    (tree / "knowledge/computations").mkdir(parents=True, exist_ok=True)
+    (tree / "knowledge/computations/revenue.md").write_text(_p1_computation_page())
+    (tree / "knowledge/lumio.yaml").write_text(_p1_control())
+    return reconcile_knowledge(project, started["proposal"], revision)
+
+
+def _p1_generated_table_page(tree: Path, resource: str) -> Path:
+    """Locate the candidate's generated native Table page BY core_ref Resource
+    identity (never by generated filename)."""
+    for path in sorted((tree / "knowledge" / "tables").glob("*.md")):
+        meta, _body = page_parts(path)
+        profile = meta.get("ariadne_profile") or {}
+        core_ref = profile.get("core_ref") or {}
+        if core_ref.get("id") == resource:
+            return path
+    raise AssertionError(f"no generated Table page binds {resource}")
+
+
+def _p1_refusal_bindings(case: str, bindings: dict) -> dict:
+    """The five declared §10.1/§10.2 refusal mutations, each authored from
+    the exact contract text (never from product message guesses)."""
+    import copy
+
+    mutated = copy.deepcopy(bindings)
+    if case == "unknown-check":
+        mutated["bindings"][1]["enforcement"]["check"] = "planner.sql_predicate"
+    elif case == "check-not-executed":
+        # §10.2: adhoc.static_io_authority executes only for define_metric —
+        # a revision-2 admission can never serve it for query_metrics.
+        mutated["bindings"][1]["enforcement"]["check"] = "adhoc.static_io_authority"
+    elif case == "missing-classification":
+        # the metric subject's closure policy entity:cancelled-orders keeps
+        # no matching record (the computation-subject record does not
+        # classify the metric subject's closure)
+        del mutated["bindings"][1]
+    elif case == "invented-obligation":
+        mutated["bindings"].append(
+            {
+                "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+                "policy": {
+                    "namespace": NAMESPACE,
+                    "entity_id": "entity:order-label-hygiene",
+                },
+                "operations": ["get_metric"],
+                "enforcement": None,
+            }
+        )
+    elif case == "wrong-revision-operation":
+        mutated["bindings"][0]["operations"] = ["get_metric", "query_detail"]
+    else:  # pragma: no cover - the case table is closed
+        raise AssertionError(case)
+    return mutated
+
+
+# The one focused case family: the real positive admission journey plus
+# exactly the five declared refusal cases as finite parameters (plan0032
+# shared verification, P1 assignment).
+P1_CASES = [
+    pytest.param("admission", id="admission"),
+    pytest.param("unknown-check", id="refusal-unknown-check"),
+    pytest.param("check-not-executed", id="refusal-check-not-executed"),
+    pytest.param("missing-classification", id="refusal-missing-classification"),
+    pytest.param("invented-obligation", id="refusal-invented-obligation"),
+    pytest.param("wrong-revision-operation", id="refusal-wrong-revision-operation"),
+]
+# Each refusal must name its §10 identifier: the unknown check id, the known
+# check id that never executes for the bound operation (with the operation),
+# the unclassified closure policy, the invented policy, the revision-2
+# operation id.
+P1_REFUSAL_TOKENS = {
+    "unknown-check": ("planner.sql_predicate",),
+    "check-not-executed": ("adhoc.static_io_authority", "query_metrics"),
+    "missing-classification": ("entity:cancelled-orders",),
+    "invented-obligation": ("entity:order-label-hygiene",),
+    "wrong-revision-operation": ("query_detail",),
+}
+
+
+@pytest.mark.parametrize("case", P1_CASES)
+def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
+    tmp_path, monkeypatch, case
+):
+    """P1 (#83, spec0032 §§5–6, §10.1–§10.3): one revision-2 admission over a
+    real approved synthetic source and producer-valid native KB profiles.
+    An explicit refresh_schema regenerates the core-owned schema facts of the
+    authored assets as revision-checked candidate edits into knowledge/ (no
+    maintained context_layer mirror, no Core KB YAML parse); curated text and
+    authored evidence flags never become authority; the admission captures
+    support_revision 2 with the authored binding inventory; the three
+    revision-3 query operations keep refusing through the existing documented
+    gate while a legacy revision-1 admission under the SAME candidate build
+    keeps its own frozen capability table; and each declared closed-validation
+    refusal names its §10 identifier through the established public
+    validation seam."""
+    import hashlib
+    import json
+
+    from ariadne.planner import PlannerError
+    from ariadne.sources import collection_resource, parse_resource, table_resource
+    from lumio_wiki.ariadne_context import (  # pyright: ignore[reportMissingImports]
+        inspect_ariadne_candidate,
+    )
+
+    orders_resource = table_resource(**P1_ORDERS_ASSET)
+    status_resource = table_resource(**P1_STATUS_ASSET)
+    collection = collection_resource("orders", "orders", "main")
+    authored = _p1_bindings(orders_resource, status_resource)
+
+    if case != "admission":
+        # independent disposable candidates: one project/proposal and ONE
+        # validation per refusal case (the native round guard stays intact)
+        project = _p1_project(tmp_path, _p1_refusal_bindings(case, authored))
+        api = AuthoringProject(project)
+        started = api.start_proposal()
+        approved(api, project, started)
+        revision = contracted(
+            api,
+            started,
+            contract=ORDERS_CONTRACT.replace("region", "status").replace(
+                "mustBe: 60", "mustBe: 175"
+            ),
+            bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+                "model: orders", "model: retail_sales"
+            ),
+        )
+        revision = _p1_kb_candidate(project, api, started, revision)
+        assert (
+            inspect_ariadne_candidate(
+                str(worktree_of(project, started["proposal"]) / "knowledge"),
+                revision,
+                namespace=NAMESPACE,
+            ).diagnostics
+            == ()
+        ), "the refusal must come from the consumer binding contract, not producer malformation"
+        refused = api.validate_proposal(started["proposal"], revision)
+        assert refused["ok"] is False, case
+        diagnostics = "; ".join(refused["errors"])
+        for token in P1_REFUSAL_TOKENS[case]:
+            assert token in diagnostics, (case, token, diagnostics)
+        assert not (project / ".ariadne" / "current.json").exists()
+        return
+
+    # ---------------- the one real positive journey (revision 2)
+    project = _p1_project(tmp_path, authored)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    revision = contracted(
+        api,
+        started,
+        contract=ORDERS_CONTRACT.replace("region", "status").replace("mustBe: 60", "mustBe: 175"),
+        bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+            "model: orders", "model: retail_sales"
+        ),
+    )
+    tree = worktree_of(project, started["proposal"])
+    context_mirror = tree / "context_layer" / "tables" / "orders.md"
+    mirror_before = context_mirror.read_bytes()
+
+    revision = _p1_kb_candidate(project, api, started, revision)
+
+    # explicit operator-authorized physical schema refresh (the existing
+    # public signature) over the real approved catalog: the two authored
+    # assets regenerate as revision-checked candidate edits
+    refreshed = api.refresh_schema(
+        started["proposal"], revision, [P1_ORDERS_ASSET, P1_STATUS_ASSET]
+    )
+    assert refreshed["revision"] != revision
+    revision = refreshed["revision"]
+    generated = {(page["resource"], page["kind"]) for page in refreshed["pages"]}
+    assert generated == {
+        (orders_resource, "table"),
+        (status_resource, "table"),
+        (collection, "dataset"),
+    }
+    for resource, kind in generated:
+        assert parse_resource(resource)[0] == (
+            "collection" if kind == "dataset" else kind
+        )
+    # the native pages live in knowledge/, bound by exact core_ref identity,
+    # and carry the authored DDL facts and hand-counted observations
+    schema_oracle = {
+        orders_resource: (P1_ORDERS_COLUMNS, P1_ORDERS_COUNTS),
+        status_resource: (P1_STATUS_COLUMNS, P1_STATUS_COUNTS),
+    }
+    table_pages = {}
+    for resource in (orders_resource, status_resource):
+        page = _p1_generated_table_page(tree, resource)
+        table_pages[resource] = page
+        meta, body = page_parts(page)
+        profile = meta["ariadne_profile"]
+        assert profile["kind"] == "table"
+        assert profile["core_ref"] == {"kind": "resource", "id": resource}
+        native = profile["native"]
+        columns, counts = schema_oracle[resource]
+        assert [(row["column"], row["type"]) for row in native["ariadne"]["schema"]] == columns
+        observations = native["ariadne"]["observations"]
+        assert observations["row_count"] == counts["row_count"]
+        assert {
+            name: (stats["null_count"], stats["distinct_count"])
+            for name, stats in observations["columns"].items()
+        } == {name: counts[name] for name, _type in columns}
+        assert "CURATED-MARKER" not in body  # generated, not yet curated
+    dataset_pages = [
+        path
+        for path in sorted((tree / "knowledge" / "datasets").glob("*.md"))
+        if (page_parts(path)[0].get("ariadne_profile") or {}).get("core_ref", {}).get("id")
+        == collection
+    ]
+    assert len(dataset_pages) == 1
+    dataset_native = page_parts(dataset_pages[0])[0]["ariadne_profile"]["native"]
+    assert sorted(dataset_native["ariadne"]["tables"]) == sorted([orders_resource, status_resource])
+    # no maintained context_layer mirror: the pre-existing OKF page bytes are
+    # untouched and refresh added no context_layer page
+    assert context_mirror.read_bytes() == mirror_before
+    assert not (tree / "context_layer" / "datasets").exists()
+
+    # the handwritten curated marker survives a real second inspection of the
+    # identical assets (authored summary/meaning preservation, §6)
+    orders_page = table_pages[orders_resource]
+    meta, body = page_parts(orders_page)
+    meta["ariadne_profile"]["native"]["description"] = (
+        "One row per retail order; " + P1_CURATED_MARKER + "."
+    )
+    write_page(orders_page, meta, body + f"\n{P1_CURATED_MARKER}\n")
+    revision = reconcile_knowledge(project, started["proposal"], revision)
+    retained = api.refresh_schema(started["proposal"], revision, [P1_ORDERS_ASSET, P1_STATUS_ASSET])
+    revision = retained["revision"]
+    meta, body = page_parts(_p1_generated_table_page(tree, orders_resource))
+    native = meta["ariadne_profile"]["native"]
+    assert P1_CURATED_MARKER in native["description"]
+    assert P1_CURATED_MARKER in body
+    assert [
+        (row["column"], row["type"]) for row in native["ariadne"]["schema"]
+    ] == P1_ORDERS_COLUMNS
+
+    # authored evidence flags are honest disclosure, never authority (§5): a
+    # plausible forgery claims the executed check and a verification stamp
+    meta, body = page_parts(orders_page)
+    meta["ariadne_profile"]["native"]["generated"] = {
+        "check": "graph.relationship_audit",
+        "executed": True,
+    }
+    meta["ariadne_profile"]["native"]["verified"] = [{"by": "ariadne:relationship_audit"}]
+    meta["ariadne_profile"]["native"]["stale_after"] = "2027-12-31"
+    write_page(orders_page, meta, body)
+    revision = reconcile_knowledge(project, started["proposal"], revision)
+
+    # a hidden, unreferenced invalid technical profile participates in
+    # whole-KB validation (§3): restricted visibility changes nothing
+    unapproved = table_resource("unapproved-source", None, "main", "orders")
+    (tree / "knowledge/tables").mkdir(parents=True, exist_ok=True)
+    (tree / "knowledge/tables/internal-orders.md").write_text(_p1_hidden_table_page(unapproved))
+    revision = reconcile_knowledge(project, started["proposal"], revision)
+    hidden_refused = api.validate_proposal(started["proposal"], revision)
+    assert hidden_refused["ok"] is False
+    hidden_diagnostic = "; ".join(hidden_refused["errors"])
+    assert "knowledge/tables/internal-orders.md" in hidden_diagnostic
+    assert "unapproved-source" in hidden_diagnostic
+    assert not (project / ".ariadne" / "current.json").exists()  # validation ≠ activation
+    # the finalizing validation advanced the candidate even on refusal —
+    # every later step continues from the ACTUAL final Content Commit
+    revision = hidden_refused["revision"]
+
+    # the ordinary repair: remove the invalid page, then the final validation
+    (tree / "knowledge/tables/internal-orders.md").unlink()
+    revision = reconcile_knowledge(project, started["proposal"], revision)
+    validated = api.validate_proposal(started["proposal"], revision)
+    assert validated["ok"] is True, validated["errors"]
+    revision = validated["revision"]  # the successful finalization's actual commit
+    review = api.review_proposal(started["proposal"])
+    assert review["revision"] == revision
+    knowledge_paths = {item["resource"] for item in review["files"]}
+    assert {"context_integration.yaml", "knowledge/computations/revenue.md"} <= knowledge_paths
+    assert any(path.startswith("knowledge/tables/") for path in knowledge_paths)
+    assert any(path.startswith("knowledge/datasets/") for path in knowledge_paths)
+
+    # final Content Commit -> overall confirmation -> descriptor-last native
+    # local publication
+    destination = tmp_path / "published"
+    activate(project, review, preview(project, review, destination))
+    manifest = json.loads((project / ".ariadne" / "current.json").read_text())["bound_release"]
+    assert manifest["support_revision"] == 2
+    assert manifest["policy_bindings"] == authored
+    assert manifest["selector"] == {
+        "version": 1,
+        "mode": "integrated",
+        "subtree": "knowledge",
+        "namespace": NAMESPACE,
+        "profile": "ariadne-context/1",
+        "support_revision": 2,
+        "policy_bindings": authored,
+    }
+    assert sorted(manifest["support"]["profiles"]) == sorted(P1_REV2_PROFILES)
+    assert sorted(manifest["support"]["operations"]) == sorted(P1_NINE_OPERATIONS)
+    assert not set(P1_QUERY_OPS) & set(manifest["support"]["operations"])
+    assert set(P1_QUERY_OPS) <= set(manifest["support"]["unsupported"])
+
+    # legacy and expanded admissions under the SAME candidate build keep
+    # their respective frozen capability tables (§10.3: a legacy manifest is
+    # revision 1 without rewriting its bytes; no automatic upgrade)
+    from integration.tests.lumio_metric_mvp import ready
+
+    legacy_project, _legacy_api, legacy_review = ready(tmp_path / "legacy")
+    activate(
+        legacy_project, legacy_review, preview(legacy_project, legacy_review, tmp_path / "legacy-p")
+    )
+    legacy_manifest = json.loads((legacy_project / ".ariadne" / "current.json").read_text())[
+        "bound_release"
+    ]
+    assert "support_revision" not in legacy_manifest
+    assert "policy_bindings" not in legacy_manifest
+    assert sorted(legacy_manifest["support"]["profiles"]) == sorted(P1_REV1_PROFILES)
+    assert legacy_manifest["execution"] == manifest["execution"]
+    assert sorted(legacy_manifest["support"]["operations"]) == sorted(
+        manifest["support"]["operations"]
+    )
+
+    runtime = QueryRuntime.open_project(project)
+    try:
+        # the governed request that actually traverses the proven lookup: the
+        # executable binding is attested by the REAL plan audit (§10.2), with
+        # the hand-worked join oracle — never a duplicated numeric replay
+        traversed = asyncio.run(
+            runtime.query_metrics({"metrics": ["revenue"], "dimensions": ["status_label"]})
+        )
+        assert sorted(traversed["rows"], key=lambda row: row["status_label"]) == [
+            {"status_label": "Cancelled order", "revenue": 0.0},
+            {"status_label": "Completed order", "revenue": 150.0},
+        ]
+        assert traversed["governed"] is True
+        assert traversed["plan"]["relationship_audit"] == "passed"
+        assert any(
+            audit["name"] == "relationship:order_status_lookup" and audit["outcome"] == "passed"
+            for audit in traversed["plan"]["audits"]
+        )
+
+        # a request no relationship participates in reports the audit not-run:
+        # the authored generated/verified flags cannot attest it, so the
+        # operation refuses instead of labeling the narrative enforced (§10.2)
+        with pytest.raises(PlannerError, match="graph.relationship_audit"):
+            asyncio.run(runtime.query_metrics({"metrics": ["revenue"]}))
+
+        # get_metric keeps its explanatory contract on this admission: the
+        # executable binding (query_metrics-only) never gates it, and the
+        # Computation page stays honestly attestation: pending
+        explained = asyncio.run(runtime.get_metric("revenue"))
+        assert explained["rows"] == [{"revenue": 150.0}]
+        assert explained["governed"] is True
+        assert explained["context"]["attestation"] == "pending"
+        assert "not independently value-attested" in explained["context"]["governed_note"]
+        assert CANCELLATION in explained["context"]["policies"]
+        assert all(
+            citation["published_version"] == revision
+            for citation in explained["context"]["citations"]
+        )
+
+        # the three revision-3 operations still refuse through the existing
+        # documented gate, before any execution
+        for name, request in (
+            ("query_detail", {"dataset": "orders", "fields": ["id"]}),
+            (
+                "query_records",
+                {
+                    "dataset": "orders.main.orders",
+                    "fields": ["id"],
+                    "order": [{"field": "id", "direction": "asc"}],
+                },
+            ),
+            (
+                "define_metric",
+                {
+                    "name": "test_value",
+                    "source": "orders.main.orders",
+                    "expression": "SUM(amount)",
+                    "description": "Temporary value",
+                },
+            ),
+        ):
+            with pytest.raises(ValueError, match=f"unsupported integrated MVP operation: {name}"):
+                asyncio.run(getattr(runtime, name)(request))
+    finally:
+        runtime.con.close()
+
+    # pinned public SDK/discovery reads are source-free (guards only AFTER
+    # the legitimate inspection/validation/publication above) and cause no
+    # new measurements or writes (§6)
+    from ariadne.discovery import DiscoveryRuntime
+    from tests.test_discovery import _source_free_guards
+
+    from integration.tests.lumio_metric_mvp import current_bytes
+
+    descriptor_before = current_bytes(project)
+    knowledge_before = {
+        path.relative_to(tree).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted((tree / "knowledge").rglob("*"))
+        if path.is_file()
+    }
+    published_before = sorted(
+        path.relative_to(destination).as_posix()
+        for path in destination.rglob("*")
+        if path.is_file()
+    )
+    with monkeypatch.context() as guarded:
+        _source_free_guards(guarded)
+        session = DiscoveryRuntime.open_project(project)
+        listed = asyncio.run(session.list_context_pages())
+        by_kind = {}
+        for entry in listed:
+            by_kind.setdefault(entry["kind"], []).append(entry)
+        assert set(by_kind) >= {"dataset", "table", "computation", "metric", "policy"}
+        technical = {
+            entry["path"]: entry
+            for entry in listed
+            if entry["kind"] in {"dataset", "table", "computation"}
+        }
+        assert len(technical) >= 4  # two tables, one dataset, one computation
+        for entry in technical.values():
+            assert entry["bound_release"] == manifest["digest"]
+            assert entry["published_version"] == revision
+            assert entry["draft"] is False
+            assert entry["namespace"] == NAMESPACE
+            assert "content" not in entry
+
+        # exact KB content, citations and native advisories survive serving
+        # (served paths are KB-relative — no knowledge/ prefix, per the SDK)
+        orders_rel = orders_page.relative_to(tree / "knowledge").as_posix()
+        served = asyncio.run(session.read_context_page(orders_rel))
+        assert served["content"] == orders_page.read_text()
+        assert served["citation"] == (f"{NAMESPACE} {served['entity_id']} v{revision} {orders_rel}")
+        assert served["context_signals"]["warnings"] == []  # authored fresh stale_after
+        curated = asyncio.run(session.read_context_page("computations/revenue.md"))
+        assert curated["content"] == _p1_computation_page()  # exact curated body preserved
+        assert curated["context_signals"]["warnings"] != []  # authored advisory staleness
+
+        report = asyncio.run(session.discover("revenue"))
+        assert report["bound_release"] == manifest["digest"]
+        assert set(P1_QUERY_OPS) <= set(report["support"]["unsupported"])
+        assert not set(P1_QUERY_OPS) & set(report["support"]["operations"])
+        assert set(P1_NINE_OPERATIONS) == set(report["support"]["operations"])
+
+    # serving wrote nothing: descriptor, candidate knowledge and the native
+    # publication are byte-identical after the guarded reads
+    assert current_bytes(project) == descriptor_before
+    assert {
+        path.relative_to(tree).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted((tree / "knowledge").rglob("*"))
+        if path.is_file()
+    } == knowledge_before
+    assert (
+        sorted(
+            path.relative_to(destination).as_posix()
+            for path in destination.rglob("*")
+            if path.is_file()
+        )
+        == published_before
+    )

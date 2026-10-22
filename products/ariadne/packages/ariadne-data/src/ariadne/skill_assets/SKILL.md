@@ -419,8 +419,22 @@ the operator's explicit overall admission — is the sole context authority:
   eligibility; a mapping is confirmed only by recorded human admission
   evidence — an authored page never confirms itself, and a language alias
   never authorizes a join or a transform.
-- Only `metric`, `policy` and `reference` profiles are supported, enforced
-  across the whole captured KB. `query-detail`, `query-records`,
+- Only `metric`, `policy` and `reference` profiles are supported in the
+  legacy revision, enforced across the whole captured KB. A project may opt
+  its selector into **support revision 2** (an explicit `support_revision: 2`
+  plus its versioned `policy_bindings` block): the captured KB may then also
+  carry producer-native `dataset`, `table` and `computation` profile pages,
+  each bound by exact `core_ref` identity, and a schema refresh generates
+  those technical pages inside `knowledge/` — curated text and authored
+  meanings survive regeneration, and no second `context_layer` copy is
+  maintained. Every binding's enforcement must name an existing check that
+  actually executes for its operation: an executable `query-metrics`
+  obligation is satisfied only by the plan's executed relationship audit; a
+  request the audit does not run for refuses rather than labeling the
+  narrative enforced, and authored `generated`/`verified` stamps never
+  authenticate evidence. These revision-2 contracts are implemented in this
+  repository's source candidate; published package pairs have not acquired
+  them. `query-detail`, `query-records`,
   `define-metric`, `save-example` and `search-examples` refuse in an
   integrated project — never route around the refusal via legacy context,
   weaker roots or raw SQL, and never present the refusal as something to fix

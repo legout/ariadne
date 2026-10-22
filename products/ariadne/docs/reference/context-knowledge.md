@@ -29,6 +29,32 @@ Schema refresh owns the table's `# Schema` block and `ariadne.schema` / `ariadne
 
 Observed uniqueness is a candidate key, not a declared business key. Zero observed nulls do not establish `NOT NULL`; measured table facts do not establish business grain. Generated sections are not hand-authored.
 
+## Integrated support revisions (source candidate)
+
+An integrated project's `context_integration.yaml` may opt into a numbered
+support revision (spec 0032 §10): the five existing keys unchanged, plus the
+optional `support_revision` integer and, from revision 2 on, the required
+`policy_bindings` block of version 1. Absence of both optional keys — or an
+explicit `support_revision: 1` — is the legacy revision; revision 2
+additionally consumes producer-native Dataset/Table/Computation profile
+pages (envelope `core_ref` identity, full native metadata) from `knowledge/`,
+validates the complete captured KB including hidden and unreferenced
+technical profiles, and captures the validated binding inventory into the
+Bound Release manifest (`support_revision` plus `policy_bindings`, digest
+bound). The three query operations `query_detail`, `query_records` and
+`define_metric` stay unsupported until their own revision. A revision-2
+schema refresh writes the generated technical pages as producer-native
+profile pages of `knowledge/tables/` and `knowledge/datasets/` (the legacy
+`context_layer` route is unchanged for revision-1 and standalone projects).
+Every binding's `enforcement.check` must name an existing check that actually
+executes for the bound operation; an executable `query_metrics` binding is
+satisfied only by the executed plan audit — a not-run audit refuses, and
+authored `generated`/`verified` stamps never authenticate evidence.
+
+Status qualifier: these revision-2 contracts are implemented in the source
+candidate of this repository; published package pairs have not yet acquired
+them. A release number alone does not prove SDK/Core compatibility.
+
 ### Selected observed filter values
 
 A table page may declare an optional authored mapping from exact physical column names to selected catalog types:
