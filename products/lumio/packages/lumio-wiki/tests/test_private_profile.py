@@ -664,7 +664,6 @@ def test_profile_ingest_provenance_uses_selected_registry(tmp_path, monkeypatch,
         argv = [
             "ingest-research",
             str(kb),
-            "--report",
             str(report),
             "--manifest",
             str(manifest),
@@ -698,53 +697,97 @@ def test_profile_ingest_provenance_uses_selected_registry(tmp_path, monkeypatch,
 
 def test_profile_s3_connection_ignores_ambient_selection(tmp_path, monkeypatch):
     """R2: the explicit S3 profile stays authoritative over conflicting
-    synthetic ambient AWS settings; asserted on the real installed obstore
-    adapter's documented ``config`` surface (fake keys/values only)."""
+    ambient AWS settings — observed on the wire, not by declaration.
+
+    A native ``obstore.head`` through the public resolved adapter must
+    reach ONLY the profile's endpoint, addressed path-style as
+    ``/<bucket>/<key>``, signed by the declared fake profile key, and —
+    with no profile session-token reference — carry no ambient security
+    token header. Bounded loopback-only HTTP fixtures; synthetic
+    credentials; no external network or real service.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import obstore
+
     repo = _init_repo(tmp_path)
     kb = _write_kb(repo)
     monkeypatch.chdir(tmp_path)
     _clear_private_env(monkeypatch)
     profile = _profile_dict(tmp_path)
     assert profile["exchange"] is not None
-    profile["exchange"]["endpoint"] = "https://s3-profiled.example.test"
-    profile["exchange"]["url_style"] = "path"
-    profile["exchange"]["credentials"]["session_token_env"] = "JP_TEST_SESSION_TOKEN"
-    profile_path = _write_profile(_subdir(tmp_path, "profiles"), profile)
-    loaded = load_private_profile(profile_path, kb_root=kb)
 
-    # Conflicting synthetic ambient selections (fake values only).
-    monkeypatch.setenv("AWS_ENDPOINT_URL_S3", "https://s3-ambient.example.test")
-    monkeypatch.setenv("AWS_SESSION_TOKEN", "ambient-session-token")
-    monkeypatch.setenv("AWS_SKIP_SIGNATURE", "true")
-    monkeypatch.setenv("AWS_VIRTUAL_HOSTED_STYLE_REQUEST", "true")
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "ambient-key-id")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "ambient-secret")
+    observed_profile: list[dict] = []
+    observed_ambient: list[dict] = []
 
-    resolved = resolve_private_profile(
-        loaded,
-        kb_root=kb,
-        needs=frozenset({"exchange"}),
-        environ={
-            ACCESS_KEY_ENV: "jp-profile-key-id",
-            SECRET_KEY_ENV: "jp-profile-secret",
-            "JP_TEST_SESSION_TOKEN": "jp-profile-session-token",
-        },
-    )
-    assert isinstance(resolved.exchange, ResolvedS3Exchange)
-    import obstore
+    def _probe_handler(hits: list[dict]) -> type[BaseHTTPRequestHandler]:
+        class ProbeHandler(BaseHTTPRequestHandler):
+            def do_HEAD(self):  # noqa: N802 - http.server API
+                hits.append(
+                    {
+                        "path": self.path,
+                        "authorization": self.headers.get("Authorization"),
+                        "security_token": self.headers.get("x-amz-security-token"),
+                    }
+                )
+                self.send_response(200)
+                self.send_header("Content-Length", "5")
+                self.send_header("Last-Modified", "Fri, 23 Oct 2026 10:00:00 GMT")
+                self.send_header('ETag', '"profile-probe-etag"')
+                self.end_headers()
 
-    # The runtime object must BE the real installed adapter, and assertions
-    # target its documented public config surface, not our declaration.
-    store = resolved.exchange.store
-    assert isinstance(store, obstore.store.S3Store)
-    config = store.config  # documented S3Config surface
-    # The documented precedence: aws_endpoint_url_s3 outranks endpoint.
-    effective_endpoint = config.get("aws_endpoint_url_s3") or config.get("endpoint")
-    assert effective_endpoint == "https://s3-profiled.example.test"
-    assert not config.get("virtual_hosted_style_request")
-    assert not config.get("skip_signature")
-    assert config.get("access_key_id") == "jp-profile-key-id"
-    assert config.get("session_token") == "jp-profile-session-token"
+            def log_message(self, format, *args):  # noqa: A002 - stdlib API
+                return
+
+        return ProbeHandler
+
+    servers = [
+        ThreadingHTTPServer(("127.0.0.1", 0), _probe_handler(observed_profile)),
+        ThreadingHTTPServer(("127.0.0.1", 0), _probe_handler(observed_ambient)),
+    ]
+    threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in servers]
+    for thread in threads:
+        thread.start()
+    try:
+        profile_port = servers[0].server_port
+        ambient_port = servers[1].server_port
+        profile["exchange"]["endpoint"] = f"http://127.0.0.1:{profile_port}"
+        profile_path = _write_profile(_subdir(tmp_path, "profiles"), profile)
+        loaded = load_private_profile(profile_path, kb_root=kb)
+
+        # Conflicting synthetic ambient selections (fake values only). The
+        # ambient URL style stays unset so addressing remains path-style
+        # loopback: no virtual-host DNS resolution is involved either way.
+        monkeypatch.setenv("AWS_ENDPOINT_URL_S3", f"http://127.0.0.1:{ambient_port}")
+        monkeypatch.setenv("AWS_SESSION_TOKEN", "ambient-session-token")
+        monkeypatch.setenv("AWS_SKIP_SIGNATURE", "true")
+
+        resolved = resolve_private_profile(
+            loaded,
+            kb_root=kb,
+            needs=frozenset({"exchange"}),
+            environ={
+                ACCESS_KEY_ENV: "jp-profile-key",
+                SECRET_KEY_ENV: "jp-profile-secret",
+            },
+        )
+        assert isinstance(resolved.exchange, ResolvedS3Exchange)
+        obstore.head(resolved.exchange.store, "probe-object")
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=2)
+
+    assert len(observed_ambient) == 0
+    assert len(observed_profile) == 1
+    request = observed_profile[0]
+    assert request["path"] == "/jp-test-exchange/probe-object"
+    assert request["authorization"] is not None
+    assert "jp-profile-key" in request["authorization"]
+    assert request["security_token"] is None
 
 
 def test_profile_inspect_handles_malformed_endpoint(tmp_path, monkeypatch, capsys):
@@ -761,9 +804,7 @@ def test_profile_inspect_handles_malformed_endpoint(tmp_path, monkeypatch, capsy
     profile_path = _write_profile(_subdir(tmp_path, "profiles"), profile)
 
     capsys.readouterr()
-    code = main(
-        ["private-profile", "inspect", str(profile_path), "--kb", str(kb), "--json"]
-    )
+    code = main(["private-profile", "inspect", str(profile_path), "--kb", str(kb), "--json"])
     captured = capsys.readouterr()
     assert code == 2
     payload = json.loads(captured.out)
