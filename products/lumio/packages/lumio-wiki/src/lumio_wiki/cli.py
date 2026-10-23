@@ -201,6 +201,14 @@ _MACHINE_ERROR_MESSAGES.update(
         "artifact_access_failed": ("the selected artifact store denied or failed a coverage read"),
         "registration_mismatch": "the registry recorded inconsistent provenance",
         "apply_failed": ("the candidate was not applied; authored files were restored"),
+        "authoring_review_error": "the authoring review operation failed",
+        "changes_outside_kb": (
+            "the submission contains changes outside the selected Knowledge Base"
+        ),
+        "invalid_review_report": "the review report is not a valid v1 report",
+        "invalid_candidate_tree": "the named candidate tree does not exist in this repository",
+        "staged_tree_unavailable": "no staged candidate is available to review",
+        "invalid_revision": "the selected revision is not an exact usable commit",
     }
 )
 
@@ -227,10 +235,10 @@ def _emit_machine_error(exc: CliError, *, schema_version: int | None = None) -> 
 def _bootstrap_error_schema_version(args: argparse.Namespace) -> int | None:
     """New plan-0010 JSON failures carry ``schema_version: 1``.
 
-    Minimal command-specific selection: only the source-bootstrap, extract
-    and ingest-candidate commands opt in, so every legacy error envelope is
-    unchanged. This also covers the early Knowledge-Base path-selection
-    refusal raised in ``main``.
+    Minimal command-specific selection: only the source-bootstrap, extract,
+    ingest-candidate and authoring review/check commands opt in, so every
+    legacy error envelope is unchanged. This also covers the early
+    Knowledge-Base path-selection refusal raised in ``main``.
     """
     if getattr(args, "source_bootstrap_command", None) is not None:
         return 1
@@ -2863,6 +2871,101 @@ def _cmd_ingest_candidate(args: argparse.Namespace) -> int:
     print(f"  manifest:  {result.manifest_path}")
     print("Review the changes and commit them with Git; publication admits an exact commit.")
     return 0
+
+
+def _review_source_registry(args: argparse.Namespace, kb_root: Path):
+    """Resolve the review Source Registry: registry-only profile, flag, or None.
+
+    Spec 0010 §4: review optionally resolves exact Source Versions. Profile
+    mode resolves ONLY the ``registry`` resource (an artifact store or
+    exchange is never touched for review); without a selection the review
+    stays honest with exact-version verification disclosed as unavailable —
+    it never guesses private state.
+    """
+    selection = _private_profile_selection(args, kb_root, frozenset({"registry"}))
+    if selection is not None:
+        if selection.source_registry is None:  # pragma: no cover - resolver contract
+            raise CliError(
+                "the selected private profile resolved no Source Registry for a "
+                "registry-only review",
+                code="invalid_private_profile",
+            )
+        return selection.source_registry
+    return _git_source_registry(args)
+
+
+def _cmd_authoring_review(args: argparse.Namespace) -> int:
+    """``authoring-review``: readable review of the staged candidate (spec 0010 §4)."""
+    from lumio_wiki.authoring_review import AuthoringReviewError, review_authoring_candidate
+    from lumio_wiki.git_authoring import GitAuthoringError
+
+    kb = Path(args.path)
+    try:
+        review = review_authoring_candidate(
+            kb, args.base, source_registry=_review_source_registry(args, kb)
+        )
+    except AuthoringReviewError as exc:
+        raise CliError(str(exc), exit_code=1, code=exc.code) from exc
+    except GitAuthoringError as exc:
+        raise CliError(str(exc), exit_code=1, code="authoring_review_error") from exc
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **msgspec.to_builtins(review)}))
+        return 0
+    knowledge = review.knowledge
+    print("Authoring review (stateless evidence; it approves nothing):")
+    print(f"  base:      {review.base_revision}")
+    print(f"  head:      {review.head_revision}")
+    print(f"  submitted: full Git tree {review.submitted_tree}")
+    print(f"  namespace: {review.namespace} (subtree {review.kb_subtree or '/'})")
+    for page in knowledge.pages:
+        detail = "frontmatter-only" if page.frontmatter_only else page.change
+        print(f"  page:      {page.path} ({detail})")
+    for change in knowledge.ontology_changes:
+        print(f"  ontology:  {change.change} {change.name}")
+    for change in knowledge.manifest_changes:
+        print(f"  manifest:  {change}")
+    excluded = review.excluded_unstaged + review.excluded_untracked
+    if excluded:
+        print(f"  excluded:  {', '.join(excluded)} (not part of this submission)")
+    verification = (
+        "resolved against the selected registry"
+        if knowledge.exact_source_verification == "registry"
+        else "unavailable (no Source Registry selected)"
+    )
+    print(f"  sources:   exact-version verification {verification}")
+    print(f"  valid:     {knowledge.kb_valid} (digest {review.review_digest})")
+    return 0
+
+
+def _cmd_authoring_check(args: argparse.Namespace) -> int:
+    """``authoring-check``: verify one whole commit against its review (§4)."""
+    from lumio_wiki.authoring_review import (
+        AuthoringReviewError,
+        check_authoring_commit,
+        load_authoring_review_report,
+    )
+    from lumio_wiki.git_authoring import GitAuthoringError
+
+    kb = Path(args.path)
+    try:
+        review = load_authoring_review_report(args.review)
+        check = check_authoring_commit(kb, review, args.revision)
+    except AuthoringReviewError as exc:
+        raise CliError(str(exc), exit_code=1, code=exc.code) from exc
+    except GitAuthoringError as exc:
+        raise CliError(str(exc), exit_code=1, code="authoring_review_error") from exc
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **msgspec.to_builtins(check)}))
+    else:
+        print(f"Commit check against the reviewed candidate (base {check.base_revision}):")
+        print(f"  commit: {check.commit} (tree {check.commit_tree})")
+        for mismatch in check.mismatches:
+            print(f"  mismatch: {mismatch}")
+        if check.matches_reviewed_candidate:
+            print("  the commit contains exactly the reviewed candidate")
+        else:
+            print("  the commit does NOT match the reviewed candidate; do not submit it")
+    return 0 if check.matches_reviewed_candidate else 1
 
 
 def _artifact_retention_required() -> bool:
@@ -8171,6 +8274,79 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Emit a stable machine-readable result."
     )
     ingest_candidate_parser.set_defaults(func=_cmd_ingest_candidate, journey_command=True)
+
+    # authoring-review — readable review of the staged candidate (§4).
+    authoring_review_parser = subparsers.add_parser(
+        "authoring-review",
+        help="Review the staged candidate against one exact base commit (spec 0010 §4).",
+        description=(
+            "Capture the complete staged tree and HEAD in private temporary "
+            "Git storage (never touching the user's index, worktree or object "
+            "database, never committing), then review the selected Knowledge "
+            "Base subtree against one explicit full base commit: bodies and "
+            "body diffs, structured semantic changes (Claims, Entity types, "
+            "ontology, lifecycle, visibility, source support), validation and "
+            "exact path/blob identities, bound by one review digest. Unstaged "
+            "and untracked work is disclosed as excluded paths. Any submitted "
+            "change outside the Knowledge Base is refused. The report is "
+            "stateless evidence: it approves nothing and authenticates no one."
+        ),
+    )
+    _add_kb_argument(authoring_review_parser)
+    authoring_review_parser.add_argument(
+        "--base",
+        required=True,
+        help=(
+            "FULL commit id (40 hex characters) of the reviewed base; branch "
+            "names and abbreviations are refused."
+        ),
+    )
+    authoring_review_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Optional private Source Registry for exact Source Version "
+            f"resolution (fallback: {SOURCE_REGISTRY_ENV_VAR}); or select "
+            "--private-profile <file>. Without either, exact-source "
+            "verification is disclosed as unavailable."
+        ),
+    )
+    _add_private_profile_argument(authoring_review_parser)
+    authoring_review_parser.add_argument(
+        "--json", action="store_true", help="Emit a stable machine-readable result."
+    )
+    authoring_review_parser.set_defaults(func=_cmd_authoring_review, journey_command=True)
+
+    # authoring-check — verify the whole resulting commit (§4).
+    authoring_check_parser = subparsers.add_parser(
+        "authoring-check",
+        help="Verify one whole commit against its review report (spec 0010 §4).",
+        description=(
+            "Compare the COMPLETE commit tree identity with the reviewed "
+            "submitted tree — not just a body or Knowledge-Base fingerprint — "
+            "and verify the reviewed base is an ancestor. A changed file, "
+            "source binding or hook/concurrent edit produces a named mismatch "
+            "and a nonzero exit; only the exact reviewed candidate passes. No "
+            "recovery or reset is attempted and no human approval is claimed."
+        ),
+    )
+    _add_kb_argument(authoring_check_parser)
+    authoring_check_parser.add_argument(
+        "--review",
+        required=True,
+        type=Path,
+        help="Path to the review report JSON emitted by authoring-review --json.",
+    )
+    authoring_check_parser.add_argument(
+        "--revision",
+        required=True,
+        help="FULL commit id (40 hex characters) of the resulting commit.",
+    )
+    authoring_check_parser.add_argument(
+        "--json", action="store_true", help="Emit a stable machine-readable result."
+    )
+    authoring_check_parser.set_defaults(func=_cmd_authoring_check, journey_command=True)
 
     # mcp — read-only MCP server over stdio (PRD-0007, ADR-0028); needs [mcp].
     mcp_parser = subparsers.add_parser(

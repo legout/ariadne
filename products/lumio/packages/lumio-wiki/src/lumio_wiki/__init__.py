@@ -486,6 +486,21 @@ from lumio_wiki.authoring_journey import (
     ingest_candidate,
     load_candidate_request,
 )
+from lumio_wiki.authoring_review import (
+    AUTHORING_REVIEW_SCHEMA_VERSION,
+    AUTHORING_REVIEW_VALIDATOR_CONTRACT,
+    AuthoringReview,
+    AuthoringReviewError,
+    CommitCheck,
+    KnowledgeChangeReview,
+    OntologyReviewChange,
+    PageReviewChange,
+    PathIdentity,
+    check_authoring_commit,
+    load_authoring_review_report,
+    review_authoring_candidate,
+    review_knowledge_changes,
+)
 
 __all__ = [
     "ACTIVITY_LOG_ARTIFACT",
@@ -914,6 +929,19 @@ __all__ = [
     "extract_source",
     "ingest_candidate",
     "load_candidate_request",
+    "AUTHORING_REVIEW_SCHEMA_VERSION",
+    "AUTHORING_REVIEW_VALIDATOR_CONTRACT",
+    "AuthoringReview",
+    "AuthoringReviewError",
+    "CommitCheck",
+    "KnowledgeChangeReview",
+    "OntologyReviewChange",
+    "PageReviewChange",
+    "PathIdentity",
+    "check_authoring_commit",
+    "load_authoring_review_report",
+    "review_authoring_candidate",
+    "review_knowledge_changes",
 ]
 
 __version__ = "0.5.1"
