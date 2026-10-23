@@ -164,7 +164,12 @@ def _parse_s3_connection(value: object, *, what: str) -> PrivateS3Connection:
     if prefix.startswith("/") or ".." in prefix.split("/"):
         raise PrivateProfileError(f"{what} prefix must be a plain object prefix")
     endpoint = _require_text(value.get("endpoint"), what=f"{what} endpoint")
-    parsed = urlsplit(endpoint)
+    try:
+        parsed = urlsplit(endpoint)
+    except ValueError as exc:
+        # A malformed endpoint (e.g. a truncated IPv6 literal) is one fixed
+        # value-free refusal on the safe inspection/error route (§2.1).
+        raise PrivateProfileError(f"{what} endpoint must be a well-formed http(s) URL") from exc
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise PrivateProfileError(f"{what} endpoint must be an http(s) URL with a host")
     if (
@@ -274,8 +279,17 @@ def _s3_connection_client(
     """Construct the existing obstore adapter from declared values only.
 
     Missing declared credentials refuse without global/provider-chain
-    fallback; the constructed client carries the resolved values while
-    diagnostics and bindings keep the declared references.
+    fallback. The profile stays authoritative over ambient environment
+    selection: the top-precedence S3-specific endpoint key
+    (``aws_endpoint_url_s3``), the generic endpoint, URL style and signing
+    are set explicitly, and credentials come from a static
+    declared-reference provider whose token is ``None`` unless the profile
+    declares one. Construction uses ``S3Store(bucket, ...)`` directly
+    because ``from_url`` re-parses config keys in their Python-facing
+    ``aws_``-stripped form, in which the S3-specific endpoint key is not
+    parseable (obstore 0.11.1 / object_store 0.14.0 round-trip asymmetry;
+    see test_profile_s3_connection_ignores_ambient_selection). Diagnostics
+    and bindings keep the declared references, never secret values.
     """
     declared = [
         name
@@ -295,22 +309,42 @@ def _s3_connection_client(
     from lumio_wiki.s3_location import _require_obstore
 
     obstore = _require_obstore()
-    config: dict[str, str] = {
-        "aws_access_key_id": environ[connection.access_key_id_env],
-        "aws_secret_access_key": environ[connection.secret_access_key_env],
-        "aws_region": connection.region,
+
+    def _declared_credentials():
+        # Static credentials from the declared references only (documented
+        # S3Credential shape): an undeclared session token is None, never an
+        # ambient one.
+        return {
+            "access_key_id": environ[connection.access_key_id_env],
+            "secret_access_key": environ[connection.secret_access_key_env],
+            "token": (
+                environ.get(connection.session_token_env)
+                if connection.session_token_env is not None
+                else None
+            ),
+            "expires_at": None,
+        }
+
+    config: dict[str, object] = {
+        # The S3-specific endpoint key outranks the generic endpoint and the
+        # ambient AWS_ENDPOINT_URL_S3 it is derived from (object_store build
+        # resolves s3_endpoint before endpoint); setting it explicitly keeps
+        # the profile's endpoint effective at the documented top precedence.
+        "aws_endpoint_url_s3": connection.endpoint,
         "aws_endpoint": connection.endpoint,
+        "aws_region": connection.region,
+        "aws_virtual_hosted_style_request": connection.url_style == "vhost",
+        "aws_skip_signature": False,
     }
-    if connection.session_token_env is not None:
-        config["aws_session_token"] = environ[connection.session_token_env]
-    if connection.url_style == "vhost":
-        config["aws_virtual_hosted_style_request"] = "true"
     client_options: dict[str, object] | None = (
         {"allow_http": True} if connection.endpoint.startswith("http://") else None
     )
     try:
-        store = obstore.store.from_url(
-            f"s3://{connection.bucket}", config=config, client_options=client_options
+        store = obstore.store.S3Store(
+            connection.bucket,
+            config=config,
+            client_options=client_options,
+            credential_provider=_declared_credentials,
         )
     except Exception as exc:
         raise PrivateProfileError(
@@ -490,7 +524,7 @@ def resolve_private_profile(
         binding["source_registry"] = {"kind": "local", "root": str(profile.source_registry)}
     if artifact_store is not None:
         binding["artifact_store"] = _binding_resource(profile.artifact_store)
-    if exchange is not None:
+    if "exchange" in requested and profile.exchange is not None:
         binding["exchange"] = _s3_binding(profile.exchange)
     return ResolvedPrivateSources(
         source_registry=source_registry,

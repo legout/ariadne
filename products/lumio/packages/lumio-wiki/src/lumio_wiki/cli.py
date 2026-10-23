@@ -2269,6 +2269,30 @@ def _cmd_hot(args: argparse.Namespace) -> int:
     return 0
 
 
+def _managed_ingest_selection(args: argparse.Namespace, kb_root):
+    """The ONE shared managed-ingest private selection (spec 0010 §2.1).
+
+    Profile mode is exclusive and resolves registry+artifacts together;
+    without it, the legacy explicit ``--source-registry``/environment
+    selection applies unchanged. URL/research provenance callbacks consume
+    this same selection so no managed route re-resolves private state
+    differently from the worktree ingest itself.
+    """
+    resolved = _private_profile_selection(args, kb_root, frozenset({"registry", "artifacts"}))
+    if resolved is None:
+        return _git_source_registry(args), _artifact_store_from_env()
+    registry = resolved.source_registry
+    if registry is None:
+        # Unreachable with the needs set above; keeps the native contract
+        # explicit instead of passing an unresolved selection onward.
+        raise CliError(
+            "the selected private profile did not resolve a Source Registry",
+            exit_code=2,
+            code="invalid_private_profile",
+        )
+    return registry, resolved.artifact_store
+
+
 def _ingest_into_worktree_cli(
     args: argparse.Namespace,
     kb,
@@ -2281,6 +2305,7 @@ def _ingest_into_worktree_cli(
     raw_source_path: Path | None = None,
     rows: Sequence[tuple[str, object]] = (),
     persist_observation=None,
+    selection=None,
 ) -> int:
     """Shared managed worktree ingest for ingest/ingest-url/ingest-research (G3).
 
@@ -2293,28 +2318,16 @@ def _ingest_into_worktree_cli(
     from lumio_wiki.git_authoring import GitAuthoringError, ingest_into_worktree
     from lumio_wiki.mutation import MutationRollbackError
 
-    resolved = _private_profile_selection(args, kb.root, frozenset({"registry", "artifacts"}))
-    if resolved is not None:
-        registry = resolved.source_registry
-        artifact_store = resolved.artifact_store
-        if registry is None:
-            # Unreachable with the needs set above; keeps the native contract
-            # explicit instead of passing an unresolved selection onward.
-            raise CliError(
-                "the selected private profile did not resolve a Source Registry",
-                exit_code=2,
-                code="invalid_private_profile",
-            )
-    else:
-        registry = _git_source_registry(args)
-        if registry is None:
-            raise CliError(
-                "Git-native managed ingest requires the explicitly selected private "
-                "Source Registry: pass --source-registry <dir> or set "
-                f"{SOURCE_REGISTRY_ENV_VAR}",
-                exit_code=2,
-            )
-        artifact_store = _artifact_store_from_env()
+    if selection is None:
+        selection = _managed_ingest_selection(args, kb.root)
+    registry, artifact_store = selection
+    if registry is None:
+        raise CliError(
+            "Git-native managed ingest requires the explicitly selected private "
+            "Source Registry: pass --source-registry <dir> or set "
+            f"{SOURCE_REGISTRY_ENV_VAR}",
+            exit_code=2,
+        )
     try:
         result = ingest_into_worktree(
             kb.root,
@@ -2899,14 +2912,15 @@ def _cmd_ingest_url(args: argparse.Namespace) -> int:
     # selected registry root, exact-version-bound — console output
     # alone is not preservation.
 
+    registry, artifact_store = _managed_ingest_selection(args, kb.root)
+
     def _persist_url_observation(source_id, content_hash):
         from lumio_wiki.private_provenance import write_observation_record
 
-        selected_registry = _git_source_registry(args)
-        if selected_registry is None:  # unreachable after the CLI guard
+        if registry is None:  # unreachable after the CLI guard
             raise OSError("no Source Registry selected")
         write_observation_record(
-            selected_registry.root,
+            registry.root,
             "provenance",
             source_id,
             content_hash,
@@ -2932,6 +2946,7 @@ def _cmd_ingest_url(args: argparse.Namespace) -> int:
             ("retrieved_at:", result.retrieved_at),
         ],
         persist_observation=_persist_url_observation,
+        selection=(registry, artifact_store),
     )
 
 
@@ -3032,14 +3047,15 @@ def _cmd_ingest_research(args: argparse.Namespace) -> int:
     for consulted_source in consulted:
         print(f"  {consulted_source.url} ({consulted_source.accessed_at})")
 
+    registry, artifact_store = _managed_ingest_selection(args, kb.root)
+
     def _persist_research_observation(source_id, content_hash):
         from lumio_wiki.private_provenance import write_observation_record
 
-        selected_registry = _git_source_registry(args)
-        if selected_registry is None:  # unreachable after the CLI guard
+        if registry is None:  # unreachable after the CLI guard
             raise OSError("no Source Registry selected")
         write_observation_record(
-            selected_registry.root,
+            registry.root,
             "provenance",
             source_id,
             content_hash,
@@ -3067,6 +3083,7 @@ def _cmd_ingest_research(args: argparse.Namespace) -> int:
         raw_source_path=report,
         rows=[("consulted:", f"{len(consulted)} sources")],
         persist_observation=_persist_research_observation,
+        selection=(registry, artifact_store),
     )
 
 

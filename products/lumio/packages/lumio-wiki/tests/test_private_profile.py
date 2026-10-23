@@ -734,7 +734,7 @@ def test_profile_s3_connection_ignores_ambient_selection(tmp_path, monkeypatch):
                 self.send_response(200)
                 self.send_header("Content-Length", "5")
                 self.send_header("Last-Modified", "Fri, 23 Oct 2026 10:00:00 GMT")
-                self.send_header('ETag', '"profile-probe-etag"')
+                self.send_header("ETag", '"profile-probe-etag"')
                 self.end_headers()
 
             def log_message(self, format, *args):  # noqa: A002 - stdlib API
