@@ -722,6 +722,43 @@ def ingest_candidate(
         raise AuthoringJourneyError(str(exc), code="invalid_candidate") from exc
     applied_paths = sorted({destination.relative_path for destination in destinations})
 
+    # Coverage is prepared BEFORE the authoring mutation: the store reads it
+    # needs for truthful reporting can fail (e.g. an object-store permission
+    # denial on a baseline original while new-source retention succeeded),
+    # and that must refuse the candidate while the authored tree is still
+    # untouched — registration/retention residue stays immutable and
+    # retry-safe. A read failure is never converted into an absence flag.
+    bindings = []
+    metadata_coverage = 0
+    retained_coverage = 0
+    for entity_id, entity_bindings in sorted(updated.bindings.items()):
+        for source_id, digest in sorted(entity_bindings.items()):
+            has_version = source_registry.find_version(source_id, digest) is not None
+            try:
+                retained = artifact_store is not None and artifact_store.artifact_exists(
+                    source_id=source_id, content_hash=digest
+                )
+            except (ArtifactStoreError, OSError) as exc:
+                raise AuthoringJourneyError(
+                    "the selected Source Artifact Store failed a read needed to "
+                    "report coverage truthfully; authored files were not written "
+                    "— retry the candidate to recover",
+                    code="artifact_access_failed",
+                ) from exc
+            if has_version:
+                metadata_coverage += 1
+            if retained:
+                retained_coverage += 1
+            bindings.append(
+                CandidateBinding(
+                    entity_id=entity_id,
+                    source_id=source_id,
+                    content_hash=digest,
+                    registered=source_id in registered,
+                    retained=retained,
+                )
+            )
+
     try:
         _apply_worktree_candidate(
             kb_path, candidate_pages, control_file=control, manifest_rewrite=updated
@@ -737,28 +774,6 @@ def ingest_candidate(
             code="apply_failed",
         ) from exc
 
-    bindings = []
-    metadata_coverage = 0
-    retained_coverage = 0
-    for entity_id, entity_bindings in sorted(updated.bindings.items()):
-        for source_id, digest in sorted(entity_bindings.items()):
-            has_version = source_registry.find_version(source_id, digest) is not None
-            retained = artifact_store is not None and artifact_store.artifact_exists(
-                source_id=source_id, content_hash=digest
-            )
-            if has_version:
-                metadata_coverage += 1
-            if retained:
-                retained_coverage += 1
-            bindings.append(
-                CandidateBinding(
-                    entity_id=entity_id,
-                    source_id=source_id,
-                    content_hash=digest,
-                    registered=source_id in registered,
-                    retained=retained,
-                )
-            )
     return CandidateResult(
         schema_version=SCHEMA_VERSION,
         base_revision=request.base_revision,

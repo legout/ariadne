@@ -25,7 +25,10 @@ from pathlib import Path
 
 import pytest
 import yaml
-from lumio_wiki.artifact_store import LocalDirectoryArtifactStore
+from lumio_wiki.artifact_store import (
+    ArtifactAccessDenied,
+    LocalDirectoryArtifactStore,
+)
 from lumio_wiki.cli import SOURCE_STORE_ENV_VAR, main
 from lumio_wiki.knowledge_base import load_knowledge_base
 from lumio_wiki.source_references import (
@@ -645,6 +648,104 @@ def test_candidate_failure_preserves_authored_tree(case, tmp_path, capsys, monke
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Regression (j1-boundary): fallible coverage reads and the request-file
+# location boundary must never leave authored content mutated on failure.
+# ---------------------------------------------------------------------------
+
+
+def test_candidate_coverage_failure_preserves_authored_tree(tmp_path, capsys, monkeypatch):
+    """A coverage-read failure after successful retention must refuse BEFORE
+    any authored edit: plan0010 J1 rollback guarantee. The thin delegating
+    adapter denies reads for ONE fixed baseline source id only; new-source
+    retention (put_artifact) works normally through the real local store.
+    """
+    mrepo, mkb, mreg, base = _maintainer_fixture(tmp_path)
+    ckb, creg_dir = _bootstrap_with_confirm(tmp_path, mrepo, mkb, mreg, base, capsys)
+    cstore_dir = tmp_path / "contributor" / "store"
+    monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(cstore_dir))
+    request_path = _write_contribution(tmp_path, ckb, base)
+
+    original_exists = LocalDirectoryArtifactStore.artifact_exists
+
+    def _denied_for_baseline(self, *, source_id, content_hash):
+        if source_id == MEMO_ID:
+            raise ArtifactAccessDenied(
+                f"synthetic denial: baseline original {source_id} is unreadable"
+            )
+        return original_exists(self, source_id=source_id, content_hash=content_hash)
+
+    monkeypatch.setattr(LocalDirectoryArtifactStore, "artifact_exists", _denied_for_baseline)
+
+    clone = ckb.parent
+    tree_before = _tree_files(ckb)
+    contents_before = {
+        rel: (ckb / rel).read_bytes() for rel in tree_before if (ckb / rel).is_file()
+    }
+
+    code = main(_ingest_candidate_argv(ckb, request_path, creg_dir))
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2, payload
+    assert payload["schema_version"] == 1
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "artifact_access_failed"
+
+    # Rollback guarantee: authored tree byte-identical, no Git change at all.
+    assert _tree_files(ckb) == tree_before
+    for rel in tree_before:
+        assert (ckb / rel).read_bytes() == contents_before[rel], rel
+    assert not _git(clone, "status", "--porcelain").strip()
+
+    # Baseline private history is preserved, and the permitted immutable
+    # residue from this run is exactly the registered+retained NEW source
+    # (registration and verified retention precede the reporting read).
+    registry = SourceRegistry(creg_dir)
+    assert registry.find_version(MEMO_ID, MEMO_DIGEST) is not None
+    assert registry.find_version(MANUAL_ID, MANUAL_DIGEST) is not None
+    assert registry.find_version(BANDSAW_ID, BANDSAW_DIGEST) is not None
+    store = LocalDirectoryArtifactStore(cstore_dir)
+    assert original_exists(store, source_id=BANDSAW_ID, content_hash=BANDSAW_DIGEST) is True
+
+
+@pytest.mark.parametrize("location", ["direct", "symlink"])
+def test_candidate_request_must_be_outside_repository(location, tmp_path, capsys, monkeypatch):
+    """The working request file lives outside the content repository (plan
+    Candidate request v1); a request inside the repo — direct or through a
+    symlink resolving inside — is refused before any authored or private
+    mutation. Referenced page/control/original files stay outside.
+    """
+    mrepo, mkb, mreg, base = _maintainer_fixture(tmp_path)
+    ckb, creg_dir = _bootstrap_with_confirm(tmp_path, mrepo, mkb, mreg, base, capsys)
+    cstore_dir = tmp_path / "contributor" / "store"
+    monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(cstore_dir))
+    request_path = _write_contribution(tmp_path, ckb, base)
+
+    clone = ckb.parent
+    inside_request = clone / "candidate-request.json"
+    inside_request.write_text(request_path.read_text(encoding="utf-8"), encoding="utf-8")
+    selected = inside_request
+    if location == "symlink":
+        link = tmp_path / "contributor" / "work" / "inside-link.json"
+        link.symlink_to(inside_request)
+        selected = link
+
+    registry_before = _registry_state_bytes(creg_dir)
+    code = main(_ingest_candidate_argv(ckb, selected, creg_dir))
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2, payload
+    assert payload["schema_version"] == 1
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "request_inside_repository"
+
+    # Refusal preceded every authored and private mutation: the only new file
+    # in the whole clone is the intentionally placed request file itself, and
+    # the private registry/store were never touched.
+    status = _git(clone, "status", "--porcelain")
+    assert status.strip() == "?? candidate-request.json"
+    assert _registry_state_bytes(creg_dir) == registry_before
+    assert not cstore_dir.exists() or not any(cstore_dir.rglob("*"))
+
+
 # Focused extraction route: truthful public contract (spec 0010 §3).
 # ---------------------------------------------------------------------------
 

@@ -198,6 +198,7 @@ _MACHINE_ERROR_MESSAGES.update(
         "unsafe_worktree": ("uncommitted author changes exist at a candidate target path"),
         "retention_required": ("new/changed originals require a selected Source Artifact Store"),
         "retention_failed": "retained original bytes failed verification",
+        "artifact_access_failed": ("the selected artifact store denied or failed a coverage read"),
         "registration_mismatch": "the registry recorded inconsistent provenance",
         "apply_failed": ("the candidate was not applied; authored files were restored"),
     }
@@ -2821,6 +2822,14 @@ def _cmd_ingest_candidate(args: argparse.Namespace) -> int:
             "(spec 0010 §2.1)",
         )
     try:
+        # The working request file itself lives outside the content
+        # repository (plan0010 Candidate request v1), including through a
+        # symlink that resolves inside; checked before loading/processing it.
+        from lumio_wiki.authoring_journey import _refuse_request_files_inside_repository
+        from lumio_wiki.git_authoring import resolve_repository as _resolve_repository
+
+        request_repo_root, _request_subtree = _resolve_repository(kb)
+        _refuse_request_files_inside_repository(request_repo_root, args.candidate)
         request = load_candidate_request(args.candidate)
         result = ingest_candidate(
             kb,
