@@ -32,7 +32,12 @@ from lumio_wiki.artifact_store import (
     capture_binding_entries,
     retain_artifact,
 )
-from lumio_wiki.cli import main
+from lumio_wiki.cli import (
+    ARTIFACT_RETENTION_ENV_VAR,
+    SOURCE_REGISTRY_ENV_VAR,
+    SOURCE_STORE_ENV_VAR,
+    main,
+)
 from lumio_wiki.git_authoring import capture_revision
 from lumio_wiki.source_references import (
     SOURCE_REFERENCE_MANIFEST_BASENAME,
@@ -804,16 +809,40 @@ def test_metadata_bootstrap_rejects_mismatch(case, tmp_path, capsys):
         return
 
     if case == "manifest_bytes_limit":
+        # Complete, valid binding coverage with ONE oversized field: the
+        # serialized manifest measures above the 4 MiB ceiling but below the
+        # container cap, so the manifest-limit refusal is what must fire.
         oversized = _fixture_manifest(mkb, base)
-        oversized["bindings"] = [
-            {
-                "entity_id": "entity:" + "a" * (4 * 1024 * 1024 // 2),
-                "source_id": MANUAL_ID,
-                "content_hash": MANUAL_DIGEST,
-            }
-        ]
+        bindings = list(oversized["bindings"])
+        bindings[0] = {
+            "entity_id": PRESS_ENTITY + "-" + "a" * (4 * 1024 * 1024 + 262_144),
+            "source_id": MANUAL_ID,
+            "content_hash": MANUAL_DIGEST,
+        }
+        oversized["bindings"] = bindings
+        payload = json.dumps(oversized, sort_keys=True, separators=(",", ":")).encode()
+        assert 4 * 1024 * 1024 < len(payload) < 4 * 1024 * 1024 + 512 * 1024
         digest = _craft_archive(crafted, oversized)
-        _assert_refused(capsys, ckb, crafted, digest, base, creg_dir)
+        before = _registry_state_bytes(creg_dir)
+        code = main(
+            [
+                "source-bootstrap",
+                "import",
+                str(ckb),
+                "--snapshot",
+                str(crafted),
+                "--digest",
+                digest,
+                "--revision",
+                base,
+                "--source-registry",
+                str(creg_dir),
+            ]
+        )
+        refusal = capsys.readouterr()
+        assert code == 2, refusal
+        assert "4 MiB" in refusal.err  # specifically the manifest ceiling
+        assert _registry_state_bytes(creg_dir) == before
         return
 
     if case == "archive_size_limit":
@@ -832,3 +861,265 @@ def test_metadata_bootstrap_rejects_mismatch(case, tmp_path, capsys):
     assert case == "digest_mismatch"
     digest = _craft_archive(crafted, _fixture_manifest(mkb, base))
     _assert_refused(capsys, ckb, crafted, "d" * 64, base, creg_dir)
+
+
+# ---------------------------------------------------------------------------
+# Review regressions (j0-review.md; expected RED until the accepted product
+# repairs land — these nodes encode the contract, not current behavior).
+# ---------------------------------------------------------------------------
+
+
+def _oversized_sparse_archive(path: Path, size: int) -> str:
+    """A sparse oversized archive plus its independently streamed digest."""
+    with open(path, "wb") as handle:
+        handle.truncate(size)
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def test_baseline_archive_limit_precedes_payload_read(tmp_path, capsys, monkeypatch):
+    """F1: refusal of an oversized archive must not read it in one giant chunk."""
+    maintainer_repo, mkb, _mreg, base = _maintainer_fixture(tmp_path)
+    ckb = _contributor_clone(tmp_path, maintainer_repo)
+    creg_dir = tmp_path / "contributor" / "registry"
+    oversized = tmp_path / "transfer" / "oversized.tar"
+    oversized.parent.mkdir(parents=True, exist_ok=True)
+    expected = _oversized_sparse_archive(oversized, 6 * 1024 * 1024)
+
+    whole_file_reads: list[int] = []
+    original_read_bytes = Path.read_bytes
+
+    def _bounded_read_bytes(self):
+        data = original_read_bytes(self)
+        if self == oversized:
+            whole_file_reads.append(len(data))
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", _bounded_read_bytes)
+    code = main(
+        [
+            "source-bootstrap",
+            "import",
+            str(ckb),
+            "--snapshot",
+            str(oversized),
+            "--digest",
+            expected,
+            "--revision",
+            base,
+            "--source-registry",
+            str(creg_dir),
+            "--json",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2, captured
+    assert json.loads(captured.out)["ok"] is False
+    # The observable read bound: the oversized archive is never loaded in one
+    # whole-file read; refusal must not depend on allocating its bytes.
+    assert not whole_file_reads or max(whole_file_reads) <= 1024 * 1024, whole_file_reads
+    assert not (creg_dir / "sources.json").exists()
+
+
+@pytest.mark.parametrize("mutation", ["bindings_null", "versions_integer", "schema_float"])
+def test_baseline_malformed_types_are_structured(mutation, tmp_path, capsys):
+    """F2: malformed collection types and non-integer schema versions refuse."""
+    maintainer_repo, mkb, _mreg, base = _maintainer_fixture(tmp_path)
+    ckb = _contributor_clone(tmp_path, maintainer_repo)
+    creg_dir = tmp_path / "contributor" / "registry"
+    manifest = _fixture_manifest(mkb, base)
+    if mutation == "bindings_null":
+        manifest["bindings"] = None
+    elif mutation == "versions_integer":
+        manifest["versions"] = 7
+    else:
+        manifest["schema_version"] = 1.0
+    digest = _craft_archive(tmp_path / "transfer" / "crafted.tar", manifest)
+    code = main(
+        [
+            "source-bootstrap",
+            "import",
+            str(ckb),
+            "--snapshot",
+            str(tmp_path / "transfer" / "crafted.tar"),
+            "--digest",
+            digest,
+            "--revision",
+            base,
+            "--source-registry",
+            str(creg_dir),
+            "--json",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2, captured
+    error = json.loads(captured.out)
+    assert error["ok"] is False
+    assert error["error"]["code"] == "invalid_source_baseline"
+    assert not (creg_dir / "sources.json").exists()
+
+
+def test_baseline_import_rechecks_batch_before_mutation(tmp_path, capsys, monkeypatch):
+    """F3: a validation conflict mid-import must not leave a partial baseline."""
+    maintainer_repo, mkb, _mreg, base = _maintainer_fixture(tmp_path)
+    ckb = _contributor_clone(tmp_path, maintainer_repo)
+    creg_dir = tmp_path / "contributor" / "registry"
+    creg = SourceRegistry(creg_dir)
+    creg.register_version(MEMO_LOCAL_ID, MEMO_LOCAL_BYTES)  # unrelated history
+    crafted = tmp_path / "transfer" / "crafted.tar"
+    digest = _craft_archive(crafted, _fixture_manifest(mkb, base))
+
+    code = main(
+        [
+            "source-bootstrap",
+            "import",
+            str(ckb),
+            "--snapshot",
+            str(crafted),
+            "--digest",
+            digest,
+            "--revision",
+            base,
+            "--source-registry",
+            str(creg_dir),
+            "--json",
+        ]
+    )
+    assert code == 0
+    confirmation = json.loads(capsys.readouterr().out)["confirmation_digest"]
+
+    # A normal second writer registers the later-sorted source (same exact
+    # digest, conflicting populated filename) right after its last optimistic
+    # lookup and before the canonical import mutation.
+    original_find = SourceRegistry.find_version
+    fired: list[bool] = []
+
+    def _interleaved_find(self, source_id, content_hash):
+        found = original_find(self, source_id, content_hash)
+        if source_id == MANUAL_ID and not fired:
+            fired.append(True)
+            SourceRegistry(self.root).register_version(
+                MANUAL_ID, MANUAL_BYTES, filename="conflicting.pdf"
+            )
+        return found
+
+    monkeypatch.setattr(SourceRegistry, "find_version", _interleaved_find)
+    code = main(
+        [
+            "source-bootstrap",
+            "import",
+            str(ckb),
+            "--snapshot",
+            str(crafted),
+            "--digest",
+            digest,
+            "--revision",
+            base,
+            "--source-registry",
+            str(creg_dir),
+            "--confirm",
+            confirmation,
+            "--json",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert json.loads(out)["ok"] is False
+    assert fired  # the cooperating writer actually ran inside the window
+
+    registry = SourceRegistry(creg_dir)
+    ids = {source.source_id for source in registry.list()}
+    assert ids == {MEMO_LOCAL_ID, MANUAL_ID}  # no earlier-sorted baseline source added
+    conflicting = registry.find_version(MANUAL_ID, MANUAL_DIGEST)
+    assert conflicting is not None and conflicting.filename == "conflicting.pdf"
+    assert registry.find_version(MEMO_ID, MEMO_DIGEST) is None
+    assert not (creg_dir / "baseline-imports").exists()  # no purported origin records
+    local = registry.get(MEMO_LOCAL_ID)
+    assert [version.content_hash for version in local.versions] == [MEMO_LOCAL_DIGEST]
+
+
+def test_baseline_export_refuses_other_registry_namespace(tmp_path, capsys):
+    """F4: export refuses a registry explicitly assigned to another namespace."""
+    maintainer_repo, mkb, _mreg, base = _maintainer_fixture(tmp_path)
+    del maintainer_repo
+    other_dir = tmp_path / "other" / "registry"
+    other = SourceRegistry(other_dir)
+    # Same exact IDs/digests the base binds — the namespace scope is the only
+    # difference, so missing versions can never be the refusal reason.
+    other.register_version(
+        MANUAL_ID, MANUAL_BYTES, filename="manual.pdf", content_type="application/pdf"
+    )
+    other.register_version(MEMO_ID, MEMO_BYTES)
+    other.register_version_metadata("seed", MANUAL_DIGEST, size=1, namespace=OTHER_NAMESPACE)
+    before = _registry_state_bytes(other_dir)
+
+    snapshot = tmp_path / "transfer" / "must-not-exist.tar"
+    code = main(
+        [
+            "source-bootstrap",
+            "export",
+            str(mkb),
+            "--revision",
+            base,
+            "--output",
+            str(snapshot),
+            "--source-registry",
+            str(other_dir),
+            "--json",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2, captured
+    assert json.loads(captured.out)["ok"] is False
+    assert not snapshot.exists()
+    assert _registry_state_bytes(other_dir) == before
+
+
+@pytest.mark.parametrize("case", ["digest_mismatch", "missing_registry"])
+def test_baseline_error_envelope_is_versioned(case, tmp_path, capsys, monkeypatch):
+    """F5: new bootstrap JSON failures carry schema_version 1."""
+    for variable in (SOURCE_REGISTRY_ENV_VAR, SOURCE_STORE_ENV_VAR, ARTIFACT_RETENTION_ENV_VAR):
+        monkeypatch.delenv(variable, raising=False)
+    maintainer_repo, mkb, _mreg, base = _maintainer_fixture(tmp_path)
+    ckb = _contributor_clone(tmp_path, maintainer_repo)
+    creg_dir = tmp_path / "contributor" / "registry"
+    crafted = tmp_path / "transfer" / "crafted.tar"
+    digest = _craft_archive(crafted, _fixture_manifest(mkb, base))
+    if case == "digest_mismatch":
+        argv = [
+            "source-bootstrap",
+            "import",
+            str(ckb),
+            "--snapshot",
+            str(crafted),
+            "--digest",
+            "e" * 64,
+            "--revision",
+            base,
+            "--source-registry",
+            str(creg_dir),
+            "--json",
+        ]
+    else:  # missing_registry: no registry selection at all
+        argv = [
+            "source-bootstrap",
+            "import",
+            str(ckb),
+            "--snapshot",
+            str(crafted),
+            "--digest",
+            digest,
+            "--revision",
+            base,
+            "--json",
+        ]
+    code = main(argv)
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload.get("schema_version") == 1
+    assert payload["ok"] is False
+    assert payload["error"]["code"]
+    assert payload["error"]["message"]
