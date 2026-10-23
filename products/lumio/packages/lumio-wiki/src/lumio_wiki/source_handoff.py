@@ -426,30 +426,43 @@ def _write_snapshot_archive(payload: bytes, output_path: Path) -> str:
 
 
 def _read_verified_archive(snapshot_path: Path, expected_digest: str) -> tuple[bytes, str]:
-    """Enforce the container bound, then stream-read and hash-verify the archive.
+    """Bounded-read and hash-verify the archive; return the exact verified bytes.
 
-    The size bound is enforced BEFORE any read; hashing streams through one
-    bounded chunk at a time; and the returned bytes are exactly what later
-    parsing consumes — the digest is never computed over one path read while
-    the parser re-reads another (spec 0010 transfer formats v1; j0-review F1).
+    A hard cumulative budget over the opened stream enforces the container
+    ceiling even when the transfer file grows or is replaced after the early
+    stat optimization: at most ``budget + 1`` bytes are ever requested, and
+    the first byte beyond the ceiling refuses BEFORE that chunk is hashed or
+    appended (spec 0010 transfer formats v1; j0-review F1 and its delta).
+    The parser consumes these same verified bytes — never a second path read.
     """
     if not isinstance(expected_digest, str) or not _HEX64.match(expected_digest):
         raise SourceBaselineError(
             "the expected snapshot digest must be exactly 64 lowercase hex characters"
         )
+    budget = MANIFEST_MAX_BYTES + _ARCHIVE_OVERHEAD_MAX_BYTES
     size = snapshot_path.stat().st_size
-    if size > MANIFEST_MAX_BYTES + _ARCHIVE_OVERHEAD_MAX_BYTES:
+    if size > budget:
         raise SourceBaselineError(
             f"the baseline snapshot archive exceeds the container bound ({size} bytes); "
             "an explicit refusal, never partial bootstrap"
         )
     digest = hashlib.sha256()
     chunks: list[bytes] = []
+    consumed = 0
     with open(snapshot_path, "rb") as handle:
         while True:
-            chunk = handle.read(_ARCHIVE_READ_CHUNK_BYTES)
+            # Never request more than the remaining budget plus one probing
+            # byte, so a grown or replaced file cannot be consumed unbounded.
+            chunk = handle.read(min(_ARCHIVE_READ_CHUNK_BYTES, budget - consumed + 1))
             if not chunk:
                 break
+            consumed += len(chunk)
+            if consumed > budget:
+                raise SourceBaselineError(
+                    f"the baseline snapshot archive exceeds the container bound "
+                    f"({consumed} bytes consumed from a changed transfer file); "
+                    "an explicit refusal, never partial bootstrap"
+                )
             digest.update(chunk)
             chunks.append(chunk)
     data = b"".join(chunks)

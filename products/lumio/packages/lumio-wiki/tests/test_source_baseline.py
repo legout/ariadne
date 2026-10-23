@@ -15,9 +15,11 @@ Oracles are the fixture itself: known source bytes digested with
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import io
 import json
+import os
 import re
 import subprocess
 import tarfile
@@ -922,6 +924,91 @@ def test_baseline_archive_limit_precedes_payload_read(tmp_path, capsys, monkeypa
     # whole-file read; refusal must not depend on allocating its bytes.
     assert not whole_file_reads or max(whole_file_reads) <= 1024 * 1024, whole_file_reads
     assert not (creg_dir / "sources.json").exists()
+
+
+def test_baseline_archive_growth_respects_total_limit(tmp_path, capsys, monkeypatch):
+    """F1 (delta review): a transfer file that grows after the size check is
+    still consumed under a hard total budget — the refusal names the container
+    bound after at most ceiling+1 bytes, never an unbounded read followed by
+    an unrelated digest or tar failure."""
+    import lumio_wiki.source_handoff as source_handoff
+
+    ceiling = source_handoff.MANIFEST_MAX_BYTES + source_handoff._ARCHIVE_OVERHEAD_MAX_BYTES
+    grown_size = 6 * 1024 * 1024  # above the ceiling, within the fixture cap
+    assert grown_size > ceiling + 1
+    maintainer_repo, mkb, _mreg, base = _maintainer_fixture(tmp_path)
+    ckb = _contributor_clone(tmp_path, maintainer_repo)
+    creg_dir = tmp_path / "contributor" / "registry"
+    transfer = tmp_path / "transfer" / "growing.tar"
+    transfer.parent.mkdir(parents=True, exist_ok=True)
+    with open(transfer, "wb") as handle:
+        handle.truncate(512 * 1024)  # initially below the container bound
+    # Independent oracle: the digest of the GROWN bytes (a sparse file of
+    # zeros), so a digest mismatch can never be this refusal's reason.
+    grown_digest = hashlib.sha256()
+    zero_chunk = b"\x00" * (1024 * 1024)
+    for _ in range(grown_size // len(zero_chunk)):
+        grown_digest.update(zero_chunk)
+
+    reads: list[int] = []
+    grown_once: list[bool] = []
+
+    class _RecordingReader:
+        """Thin delegating reader: the real file object underneath, logged."""
+
+        def __init__(self, handle):
+            self._handle = handle
+
+        def read(self, size=-1, /):
+            data = self._handle.read(size)
+            reads.append(len(data))
+            return data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._handle.__exit__(*exc_info)
+
+        def close(self):
+            self._handle.close()
+
+    real_open = builtins.open
+
+    def _growing_open(file, mode="r", *args, **kwargs):
+        # Grow the REAL sparse file just before returning the real reader:
+        # deterministic growth after the importer's size check, before reads.
+        if str(file) == str(transfer) and "r" in mode and "b" in mode and not grown_once:
+            grown_once.append(True)
+            os.truncate(transfer, grown_size)
+            return _RecordingReader(real_open(file, mode, *args, **kwargs))
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(source_handoff, "open", _growing_open, raising=False)
+    code = main(
+        [
+            "source-bootstrap",
+            "import",
+            str(ckb),
+            "--snapshot",
+            str(transfer),
+            "--digest",
+            grown_digest.hexdigest(),
+            "--revision",
+            base,
+            "--source-registry",
+            str(creg_dir),
+        ]
+    )
+    refusal = capsys.readouterr()
+    assert code == 2, refusal
+    assert grown_once  # the wrapper really armed the grown transfer file
+    assert reads  # the importer really consumed bytes through it
+    total_consumed = sum(reads)
+    assert total_consumed <= ceiling + 1, reads
+    assert "container bound" in refusal.err
+    assert not (creg_dir / "sources.json").exists()
+    assert not (creg_dir / "baseline-imports").exists()
 
 
 @pytest.mark.parametrize("mutation", ["bindings_null", "versions_integer", "schema_float"])
