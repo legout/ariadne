@@ -71,6 +71,13 @@ class NormalizedSource(msgspec.Struct, frozen=True):
     source_hash: str
     filename: str | None
     content_type: str | None
+    incomplete: bool = False
+
+    # ``incomplete`` (above) is set by the normalizing path that actually
+    # applied a bound (character or section ceiling): truthful loss
+    # information from the converter seam, never inferred from a
+    # post-truncation length. The default keeps every legacy producer and
+    # direct record caller unchanged.
 
 
 class SourceProcessorError(ValueError):
@@ -597,11 +604,18 @@ def _process_document(
         raise
     except Exception as exc:
         raise SourceProcessorError(f"the document could not be converted: {exc}") from exc
-    text = _bound_text((raw_text or "").strip(), limit=max_chars)
+    stripped = (raw_text or "").strip()
+    text = _bound_text(stripped, limit=max_chars)
     if not text:
         raise SourceProcessorError("the document contained no extractable text; it may be empty")
     digest = hashlib.sha256(content).hexdigest()
-    sections = _sections(filename, text, digest)[:MAX_SECTIONS]
+    all_sections = _sections(filename, text, digest)
+    sections = all_sections[:MAX_SECTIONS]
+    # Truthful loss detection where the bounds are applied: characters lost
+    # to the ceiling (the newline cut can leave the result far below the
+    # cap) and sections sliced off by the section ceiling.
+    lost_characters = len(text) < len(stripped)
+    lost_sections = len(all_sections) > len(sections)
     return NormalizedSource(
         text=text,
         sections=sections,
@@ -609,6 +623,7 @@ def _process_document(
         source_hash=digest,
         filename=filename,
         content_type=content_type,
+        incomplete=bool(lost_characters or lost_sections),
     )
 
 

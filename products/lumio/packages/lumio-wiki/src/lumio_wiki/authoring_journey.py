@@ -200,8 +200,12 @@ def extract_source(source_path: str | Path, *, output_dir: str | Path) -> Extrac
         )
     # Detected bounds only: a ceiling hit means the conversion may have been
     # truncated; completeness is never claimed merely because text came back.
+    # The processor's own truthful loss flag (F8) is authoritative — a
+    # newline-boundary cut can leave the surviving text far below the cap.
     incomplete = (
-        len(normalized.text) >= MAX_EXTRACTED_CHARS or len(normalized.sections) >= MAX_SECTIONS
+        normalized.incomplete
+        or len(normalized.text) >= MAX_EXTRACTED_CHARS
+        or len(normalized.sections) >= MAX_SECTIONS
     )
     sections = [msgspec.to_builtins(section) for section in normalized.sections]
     record = {
@@ -439,6 +443,40 @@ def _refuse_request_files_inside_repository(repo_root: Path, *paths: Path) -> No
             )
 
 
+def _refuse_private_selection_inside_repository(
+    repo_root: Path, source_registry, artifact_store, original_paths: list[Path]
+) -> None:
+    """Refuse private selections inside the CONTENT REPOSITORY (F7, spec §1/§2.1).
+
+    The managed candidate journey keeps originals, the private registry and
+    the local artifact store outside the whole repository — root-level
+    containment on RESOLVED paths, so ignored directories and symlinks that
+    resolve inside cannot smuggle private bytes into Git. Checked before any
+    registration, retention or authoring write; legacy low-level APIs keep
+    their existing separate guards.
+    """
+
+    def inside(path: Path | None) -> bool:
+        if path is None:
+            return False
+        resolved = path.expanduser().resolve()
+        return resolved == repo_root or repo_root in resolved.parents
+
+    selections: list[tuple[str, Path | None]] = [
+        ("private Source Registry", _registry_root(source_registry)),
+        ("local Source Artifact Store", _local_store_root(artifact_store)),
+        *[("candidate original", original) for original in original_paths],
+    ]
+    for label, path in selections:
+        if inside(path):
+            raise AuthoringJourneyError(
+                f"the {label} selection resolves inside the content repository "
+                f"({path}); private originals, registries and artifact stores must "
+                "stay outside the repository (spec 0010 §1/§2.1)",
+                code="private_selection_inside_repository",
+            )
+
+
 def ingest_candidate(
     kb_root: str | Path,
     request: CandidateRequest,
@@ -476,6 +514,12 @@ def ingest_candidate(
             code="invalid_worktree_kb",
         )
     repo_root, _subtree = resolve_repository(kb_path)
+    _refuse_private_selection_inside_repository(
+        repo_root,
+        source_registry,
+        artifact_store,
+        [Path(record.original_path) for record in request.sources],
+    )
     _refuse_private_selection_inside_tree(
         kb_path, _registry_root(source_registry), _local_store_root(artifact_store)
     )
@@ -520,6 +564,7 @@ def ingest_candidate(
 
     candidate_pages: list[ProposedPage] = []
     page_entities: list[tuple[ProposedPage, str]] = []
+    existing_pages_by_title = {page.title: page for page in kb.pages}
     for page_path in page_paths:
         if not page_path.is_file():
             raise AuthoringJourneyError(
@@ -549,6 +594,24 @@ def ingest_candidate(
                     f"the authored page at {page.relative_path!r} carries no Entity ID; "
                     "managed authoring binds sources to stable Entities",
                     code="missing_entity_id",
+                )
+            # F9 (spec 0010 §3): an existing page keeps its Entity identity.
+            # A same-title update is the effective destination of the existing
+            # page, so replacing its Entity ID is refused BEFORE any private
+            # registration or authoring write; explicit native merge/removal
+            # operations remain the separate reviewed paths for identity change.
+            existing_destination = existing_pages_by_title.get(page.title)
+            if (
+                existing_destination is not None
+                and existing_destination.id
+                and existing_destination.id != entity_id
+            ):
+                raise AuthoringJourneyError(
+                    f"the update for page {page.title!r} would replace the existing "
+                    f"Entity {existing_destination.id!r} with {entity_id!r}; existing "
+                    "pages keep their Entity identity — reuse the same Entity ID or "
+                    "use the explicit native merge/removal operations",
+                    code="entity_identity_conflict",
                 )
             page_entities.append((page, entity_id))
         candidate_pages.extend(pages)

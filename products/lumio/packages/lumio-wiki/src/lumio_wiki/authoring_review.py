@@ -30,6 +30,7 @@ import difflib
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -50,7 +51,10 @@ from lumio_wiki.git_authoring import (
     resolve_repository,
 )
 from lumio_wiki.ingest import ClaimChange, compute_claim_changes
-from lumio_wiki.source_references import SOURCE_REFERENCE_MANIFEST_BASENAME
+from lumio_wiki.source_references import (
+    SOURCE_REFERENCE_MANIFEST_BASENAME,
+    parse_source_reference_manifest,
+)
 
 __all__ = [
     "AUTHORING_REVIEW_SCHEMA_VERSION",
@@ -62,6 +66,7 @@ __all__ = [
     "OntologyReviewChange",
     "PageReviewChange",
     "PathIdentity",
+    "SemanticFieldChange",
     "check_authoring_commit",
     "load_authoring_review_report",
     "review_authoring_candidate",
@@ -74,6 +79,10 @@ AUTHORING_REVIEW_VALIDATOR_CONTRACT = "lumio-wiki/authoring-review/1"
 AUTHORING_REVIEW_SCHEMA_VERSION = 1
 
 _MISSING_OID = "0" * 40
+
+#: One exact immutable tree identity: 40 lowercase hex characters, never a
+#: movable rev expression (F6).
+_FULL_TREE_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 class AuthoringReviewError(Exception):
@@ -329,6 +338,19 @@ class PathIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     candidate_blob: str | None
 
 
+class SemanticFieldChange(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """One readable before/after semantic value a human must inspect (F3).
+
+    ``field`` names the changed semantic fact (for example ``summary``,
+    ``source.url:<id>``, ``claim.confidence:<claim id>``); ``before``/``after``
+    are readable renderings (``none`` for absent), never raw YAML.
+    """
+
+    field: str
+    before: str
+    after: str
+
+
 class PageReviewChange(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """One page's readable body change plus its structured semantics.
 
@@ -349,14 +371,22 @@ class PageReviewChange(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     entity_types: list[str] = msgspec.field(default_factory=list)
     sources: list[str] = msgspec.field(default_factory=list)
     claims: list[ClaimChange] = msgspec.field(default_factory=list)
+    semantic_changes: list[SemanticFieldChange] = msgspec.field(default_factory=list)
 
 
 class OntologyReviewChange(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """One parsed-semantic ontology edit in the Control File."""
+    """One parsed-semantic ontology edit in the Control File.
+
+    ``before``/``after`` carry readable old/new definitions (domain, range,
+    literal kind, description) so a changed predicate never collapses into a
+    generic "differs" marker.
+    """
 
     change: str
     name: str
     detail: str = ""
+    before: str = ""
+    after: str = ""
 
 
 class KnowledgeChangeReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -376,11 +406,13 @@ class KnowledgeChangeReview(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     candidate_tree: str
     path_identities: list[PathIdentity]
     changes_outside_kb: list[str]
+    unreviewed_paths: list[str]
     kb_valid: bool
     validation_issues: list[str]
     exact_source_verification: str
     manifest_changes: list[str]
     control_updated: bool
+    control_changes: list[SemanticFieldChange]
     ontology_changes: list[OntologyReviewChange]
     pages: list[PageReviewChange]
     review_digest: str
@@ -427,6 +459,11 @@ class CommitCheck(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 # ---------------------------------------------------------------------------
 
 
+def _render(value: Any) -> str:
+    """One readable semantic rendering; ``none`` for absent values."""
+    return "none" if value is None else str(value)
+
+
 def _transition(before: str | None, after: str | None) -> str:
     if before == after:
         return ""
@@ -441,6 +478,93 @@ def _body_diff(path: str, before: str | None, after: str | None) -> str:
     )
 
 
+_CLAIM_ATTRIBUTES = (
+    "value",
+    "value_type",
+    "object",
+    "status",
+    "confidence",
+    "valid_from",
+    "valid_to",
+    "origin",
+)
+
+
+def _semantic_field_changes(
+    base_page: Any | None, candidate_page: Any | None
+) -> list[SemanticFieldChange]:
+    """Readable before/after facts for changed authored semantic fields (F3).
+
+    Covers summary, title, same-ID Source metadata (title/URL) and same-ID
+    Claim attributes including confidence and validity bounds — the values a
+    human must inspect, supplementing the narrower shared ClaimChange
+    summaries with the exact old/new facts.
+    """
+    if base_page is None or candidate_page is None:
+        return []
+    changes: list[SemanticFieldChange] = []
+    if base_page.summary != candidate_page.summary:
+        changes.append(
+            SemanticFieldChange(
+                field="summary",
+                before=_render(base_page.summary),
+                after=_render(candidate_page.summary),
+            )
+        )
+    if base_page.title != candidate_page.title:
+        changes.append(
+            SemanticFieldChange(
+                field="title",
+                before=_render(base_page.title),
+                after=_render(candidate_page.title),
+            )
+        )
+    base_sources = {source.id: source for source in base_page.sources}
+    candidate_sources = {source.id: source for source in candidate_page.sources}
+    for source_id in sorted(set(base_sources) & set(candidate_sources)):
+        before, after = base_sources[source_id], candidate_sources[source_id]
+        if before.title != after.title:
+            changes.append(
+                SemanticFieldChange(
+                    field=f"source.title:{source_id}",
+                    before=_render(before.title),
+                    after=_render(after.title),
+                )
+            )
+        if before.url != after.url:
+            changes.append(
+                SemanticFieldChange(
+                    field=f"source.url:{source_id}",
+                    before=_render(before.url),
+                    after=_render(after.url),
+                )
+            )
+    base_claims = {claim.id: claim for claim in base_page.claims}
+    candidate_claims = {claim.id: claim for claim in candidate_page.claims}
+    for claim_id in sorted(set(base_claims) & set(candidate_claims)):
+        before, after = base_claims[claim_id], candidate_claims[claim_id]
+        for attribute in _CLAIM_ATTRIBUTES:
+            before_value = getattr(before, attribute)
+            after_value = getattr(after, attribute)
+            if before_value != after_value:
+                changes.append(
+                    SemanticFieldChange(
+                        field=f"claim.{attribute}:{claim_id}",
+                        before=_render(before_value),
+                        after=_render(after_value),
+                    )
+                )
+        if len(before.evidence) != len(after.evidence):
+            changes.append(
+                SemanticFieldChange(
+                    field=f"claim.evidence:{claim_id}",
+                    before=_render(len(before.evidence)),
+                    after=_render(len(after.evidence)),
+                )
+            )
+    return changes
+
+
 def _page_review_change(
     path: str,
     change: str,
@@ -450,10 +574,12 @@ def _page_review_change(
     base_body = base_page.body if base_page is not None else None
     candidate_body = candidate_page.body if candidate_page is not None else None
     body_changed = base_body != candidate_body
+    representative = candidate_page or base_page
+    page_title = representative.title if representative is not None else ""
     claims = compute_claim_changes(
         list(candidate_page.claims) if candidate_page is not None else [],
         list(base_page.claims) if base_page is not None else [],
-        (candidate_page or base_page).title,
+        page_title,
     )
     base_types = set(base_page.entity_types) if base_page is not None else set()
     candidate_types = set(candidate_page.entity_types) if candidate_page is not None else set()
@@ -463,7 +589,7 @@ def _page_review_change(
     )
     return PageReviewChange(
         path=path,
-        title=(candidate_page or base_page).title or None,
+        title=page_title or None,
         change=change,
         body_changed=body_changed,
         frontmatter_only=change == "updated" and not body_changed,
@@ -485,41 +611,136 @@ def _page_review_change(
             | {f"+ {source_id}" for source_id in candidate_sources - base_sources}
         ),
         claims=claims,
+        semantic_changes=_semantic_field_changes(base_page, candidate_page),
     )
+
+
+def _parse_ontology(raw: bytes | None) -> dict[str, dict[str, Any]] | None:
+    """The parsed ontology section, or ``None`` when it cannot be safely reviewed.
+
+    A present-but-malformed Control File (decode failure, non-mapping root,
+    non-mapping ontology/entity-types/predicates) never reaches unchecked
+    attribute calls: the caller refuses boundedly instead (F10).
+    """
+    if raw is None:
+        return {"entity_types": {}, "predicates": {}}
+    try:
+        data = msgspec.yaml.decode(raw)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    section = data.get("ontology")
+    if section is None:
+        return {"entity_types": {}, "predicates": {}}
+    if not isinstance(section, dict):
+        return None
+    entity_types = section.get("entity_types")
+    predicates = section.get("predicates")
+    if entity_types is None:
+        entity_types = {}
+    if predicates is None:
+        predicates = {}
+    if not isinstance(entity_types, dict) or not isinstance(predicates, dict):
+        return None
+    return {"entity_types": entity_types, "predicates": predicates}
+
+
+def _render_definition(definition: Any) -> str:
+    """One readable ontology definition rendering (domain, range, literal)."""
+    if not isinstance(definition, dict) or not definition:
+        return "defined"
+    parts: list[str] = []
+    if "subject_types" in definition:
+        parts.append("subjects: " + ", ".join(str(item) for item in definition["subject_types"]))
+    if "object_types" in definition:
+        parts.append("objects: " + ", ".join(str(item) for item in definition["object_types"]))
+    if "literal_kind" in definition:
+        parts.append("literal: " + str(definition["literal_kind"]))
+    if "description" in definition:
+        parts.append("description: " + str(definition["description"]))
+    return "; ".join(parts) or "defined"
 
 
 def _ontology_review_changes(
     base_control: bytes | None, candidate_control: bytes | None
 ) -> list[OntologyReviewChange]:
-    """Parsed-semantic ontology diff — never quote-style or key order."""
-
-    def ontology(raw: bytes | None) -> dict[str, dict[str, Any]]:
-        if raw is None:
-            return {"entity_types": {}, "predicates": {}}
-        data = msgspec.yaml.decode(raw)
-        ontology_section = data.get("ontology") or {} if isinstance(data, dict) else {}
-        return {
-            "entity_types": ontology_section.get("entity_types") or {},
-            "predicates": ontology_section.get("predicates") or {},
-        }
-
-    base = ontology(base_control)
-    candidate = ontology(candidate_control)
+    """Parsed-semantic ontology diff with readable old/new definitions."""
+    base = _parse_ontology(base_control)
+    candidate = _parse_ontology(candidate_control)
+    if base is None or candidate is None:
+        raise AuthoringReviewError(
+            "the "
+            + ("candidate" if candidate is None else "base")
+            + " Control File cannot be parsed into a reviewable ontology; the "
+            "captured validation diagnostics remain authoritative and the "
+            "semantic comparison is refused rather than guessed",
+            code="invalid_staged_control",
+        )
     changes: list[OntologyReviewChange] = []
     for kind, label in (("entity_types", "entity_type"), ("predicates", "predicate")):
         before = base[kind]
         after = candidate[kind]
         for name in sorted(set(before) - set(after)):
-            changes.append(OntologyReviewChange(change=f"{label}_removed", name=name))
+            changes.append(
+                OntologyReviewChange(
+                    change=f"{label}_removed",
+                    name=name,
+                    before=_render_definition(before[name]),
+                )
+            )
         for name in sorted(set(after) - set(before)):
-            changes.append(OntologyReviewChange(change=f"{label}_added", name=name))
+            changes.append(
+                OntologyReviewChange(
+                    change=f"{label}_added",
+                    name=name,
+                    after=_render_definition(after[name]),
+                )
+            )
         for name in sorted(set(before) & set(after)):
             if before[name] != after[name]:
                 changes.append(
                     OntologyReviewChange(
-                        change=f"{label}_changed", name=name, detail="parsed definition differs"
+                        change=f"{label}_changed",
+                        name=name,
+                        detail="parsed definition differs",
+                        before=_render_definition(before[name]),
+                        after=_render_definition(after[name]),
                     )
                 )
+    return changes
+
+
+def _control_review_changes(
+    base_control: bytes | None, candidate_control: bytes | None
+) -> list[SemanticFieldChange]:
+    """Meaningful Control File changes outside the ontology never disappear."""
+
+    def document(raw: bytes | None) -> dict[str, Any]:
+        parsed = _parse_ontology(raw)
+        if parsed is None or raw is None:
+            return {}
+        try:
+            data = msgspec.yaml.decode(raw)
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    base = document(base_control)
+    candidate = document(candidate_control)
+    base.pop("ontology", None)
+    candidate.pop("ontology", None)
+    changes: list[SemanticFieldChange] = []
+    for key in sorted(set(base) | set(candidate)):
+        before, after = base.get(key), candidate.get(key)
+        if before != after:
+            changes.append(
+                SemanticFieldChange(
+                    field=f"control.{key}",
+                    before=json.dumps(before, sort_keys=True, default=str),
+                    after=json.dumps(after, sort_keys=True, default=str),
+                )
+            )
     return changes
 
 
@@ -560,59 +781,17 @@ def _manifest_review_changes(base_manifest: Any, candidate_manifest: Any) -> lis
     return changes
 
 
-def _page_claim_facts(page: PageReviewChange) -> list[str]:
-    return sorted(f"{c.change}|{c.claim_id}|{c.before}|{c.after}" for c in page.claims)
+def _record_digest(record: Any, digest_field: str) -> str:
+    """Canonical digest over EVERY field of one review record but its digest.
 
-
-def _knowledge_digest_payload(review: KnowledgeChangeReview) -> bytes:
-    """Canonical, order-stable serialization of every scoped review fact."""
-    payload = {
-        "validator_contract": review.validator_contract,
-        "namespace": review.namespace,
-        "kb_subtree": review.kb_subtree,
-        "base_revision": review.base_revision,
-        "head_revision": review.head_revision,
-        "candidate_tree": review.candidate_tree,
-        "path_identities": sorted(
-            f"{i.path}|{i.change}|{i.base_blob}|{i.candidate_blob}" for i in review.path_identities
-        ),
-        "changes_outside_kb": sorted(review.changes_outside_kb),
-        "kb_valid": review.kb_valid,
-        "validation_issues": sorted(review.validation_issues),
-        "exact_source_verification": review.exact_source_verification,
-        "manifest_changes": sorted(review.manifest_changes),
-        "control_updated": review.control_updated,
-        "ontology_changes": sorted(
-            f"{c.change}|{c.name}|{c.detail}" for c in review.ontology_changes
-        ),
-        "pages": sorted(
-            f"{p.path}|{p.change}|{p.body_changed}|{p.frontmatter_only}|{p.body_diff}"
-            f"|{p.lifecycle}|{p.visibility}|{sorted(p.entity_types)}|{sorted(p.sources)}"
-            f"|{_page_claim_facts(p)}"
-            for p in review.pages
-        ),
-    }
-    return msgspec.json.encode(payload)
-
-
-def _authoring_digest_payload(review: AuthoringReview) -> bytes:
-    payload = {
-        "validator_contract": review.validator_contract,
-        "namespace": review.namespace,
-        "kb_subtree": review.kb_subtree,
-        "base_revision": review.base_revision,
-        "head_revision": review.head_revision,
-        "base_tree": review.base_tree,
-        "submitted_tree": review.submitted_tree,
-        "excluded_unstaged": sorted(review.excluded_unstaged),
-        "excluded_untracked": sorted(review.excluded_untracked),
-        "knowledge_review_digest": review.knowledge.review_digest,
-    }
-    return msgspec.json.encode(payload)
-
-
-def _digest(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
+    Unambiguous structured serialization (``msgspec.json.encode`` of the
+    record's builtins) instead of hand-picked delimiter-joined strings, so
+    every reported fact — page titles, complete Claim facts, semantic
+    before/after values, path identities, disclosures — is bound (F1).
+    """
+    data = msgspec.to_builtins(record)
+    data.pop(digest_field, None)
+    return hashlib.sha256(msgspec.json.encode(data)).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -647,10 +826,14 @@ def review_knowledge_changes(
     prefix = f"{subtree}/" if subtree else ""
 
     if candidate_tree is not None:
-        if _git(repo_root, "cat-file", "-t", candidate_tree).decode().strip() != "tree":
+        if not _FULL_TREE_PATTERN.match(candidate_tree) or (
+            _git(repo_root, "cat-file", "-t", candidate_tree).decode().strip() != "tree"
+        ):
             raise AuthoringReviewError(
-                f"candidate_tree {candidate_tree!r} does not name an existing tree "
-                "in this repository",
+                f"candidate_tree {candidate_tree!r} must be one exact full tree object id "
+                "(40 lowercase hex characters) naming a tree in this repository; "
+                "movable expressions such as rev^{tree} are refused — supply the "
+                "immutable tree identity itself",
                 code="invalid_candidate_tree",
             )
         candidate = _captured_tree_revision(kb_path, repo_root, subtree, candidate_tree)
@@ -682,17 +865,17 @@ def review_knowledge_changes(
             "in a successor"
         )
         kb_valid = False
-    exact_source_verification = "unavailable"
-    if source_registry is not None:
-        from lumio_wiki.source_references import validate_source_references
+    exact_source_verification = "registry" if source_registry is not None else "unavailable"
+    # F5: structural Source Reference Manifest consistency is always validated;
+    # only exact private version resolution depends on a selected registry.
+    from lumio_wiki.source_references import validate_source_references
 
-        exact_source_verification = "registry"
-        resolution_issues = validate_source_references(
-            candidate.manifest, candidate.kb, registry=source_registry
-        )
-        if resolution_issues:
-            validation_issues.extend(resolution_issues)
-            kb_valid = False
+    reference_issues = validate_source_references(
+        candidate.manifest, candidate.kb, registry=source_registry
+    )
+    if reference_issues:
+        validation_issues.extend(reference_issues)
+        kb_valid = False
 
     path_identities = [
         PathIdentity(
@@ -722,9 +905,25 @@ def review_knowledge_changes(
             _page_review_change(path, change, base_pages.get(path), candidate_pages.get(path))
         )
 
+    # F2: every changed path under the selected subtree must have supported
+    # readable review facts (a displayed page, the Control File or the Source
+    # Reference Manifest); anything else — unsupported file kinds and valid
+    # marked derived artifacts excluded from pages — is disclosed and never
+    # silently claimed as reviewed knowledge.
+    displayed_paths = set(base_pages) | set(candidate_pages)
+    supported_fixed_paths = {_CONTROL_BASENAME, SOURCE_REFERENCE_MANIFEST_BASENAME}
+    unreviewed_paths = sorted(
+        {
+            path
+            for _status, path, _base_blob, _new_blob in inside
+            if path not in displayed_paths and path not in supported_fixed_paths
+        }
+    )
+
     base_control = base.content.get(_CONTROL_BASENAME)
     candidate_control = candidate.content.get(_CONTROL_BASENAME)
     ontology_changes = _ontology_review_changes(base_control, candidate_control)
+    control_changes = _control_review_changes(base_control, candidate_control)
 
     review = KnowledgeChangeReview(
         schema_version=AUTHORING_REVIEW_SCHEMA_VERSION,
@@ -736,16 +935,18 @@ def review_knowledge_changes(
         candidate_tree=candidate.revision,
         path_identities=path_identities,
         changes_outside_kb=sorted(set(outside)),
+        unreviewed_paths=unreviewed_paths,
         kb_valid=kb_valid,
         validation_issues=sorted(set(validation_issues)),
         exact_source_verification=exact_source_verification,
         manifest_changes=_manifest_review_changes(base.manifest, candidate.manifest),
         control_updated=base_control != candidate_control,
+        control_changes=control_changes,
         ontology_changes=ontology_changes,
         pages=page_changes,
         review_digest="",
     )
-    object.__setattr__(review, "review_digest", _digest(_knowledge_digest_payload(review)))
+    object.__setattr__(review, "review_digest", _record_digest(review, "review_digest"))
     return review
 
 
@@ -778,6 +979,14 @@ def review_authoring_candidate(
             "separately",
             code="changes_outside_kb",
         )
+    if knowledge.unreviewed_paths:
+        raise AuthoringReviewError(
+            "the staged submission contains changed paths with no supported review "
+            f"display inside the Knowledge Base: {', '.join(knowledge.unreviewed_paths)}; "
+            "a standalone review never submits unreviewed content — remove them or "
+            "review them through their own supported operation",
+            code="incomplete_review_scope",
+        )
     unstaged, untracked = _excluded_work(repo_root)
     review = AuthoringReview(
         schema_version=AUTHORING_REVIEW_SCHEMA_VERSION,
@@ -795,7 +1004,7 @@ def review_authoring_candidate(
         knowledge=knowledge,
         review_digest="",
     )
-    object.__setattr__(review, "review_digest", _digest(_authoring_digest_payload(review)))
+    object.__setattr__(review, "review_digest", _record_digest(review, "review_digest"))
     return review
 
 
@@ -845,6 +1054,21 @@ def load_authoring_review_report(path: str | Path) -> AuthoringReview:
             f"the review report does not match the v1 review schema: {exc}",
             code="invalid_review_report",
         ) from exc
+    _validate_review_record(review)
+    return review
+
+
+def _validate_review_record(review: AuthoringReview) -> None:
+    """One coherent integrity seam for imported review records (F1).
+
+    Verifies schema and validator facts, recomputes the EMBEDDED knowledge
+    digest from every reported scoped fact (page titles and complete Claim
+    facts included) and the outer digest from every wrapper fact, and
+    requires the duplicated scope/revision/tree identities to agree. The
+    same seam guards the public loader and :func:`check_authoring_commit`,
+    so a changed record cannot clear one boundary through the other. This
+    validates integrity of evidence — it authenticates no human.
+    """
     if review.schema_version != AUTHORING_REVIEW_SCHEMA_VERSION:
         raise AuthoringReviewError(
             f"unsupported review report schema_version {review.schema_version}",
@@ -855,20 +1079,46 @@ def load_authoring_review_report(path: str | Path) -> AuthoringReview:
             f"unsupported review report validator contract {review.validator_contract!r}",
             code="invalid_review_report",
         )
-    if review.knowledge.schema_version != AUTHORING_REVIEW_SCHEMA_VERSION or (
-        review.knowledge.validator_contract != AUTHORING_REVIEW_VALIDATOR_CONTRACT
+    knowledge = review.knowledge
+    if knowledge.schema_version != AUTHORING_REVIEW_SCHEMA_VERSION or (
+        knowledge.validator_contract != AUTHORING_REVIEW_VALIDATOR_CONTRACT
     ):
         raise AuthoringReviewError(
             "the embedded knowledge review does not match the v1 review schema",
             code="invalid_review_report",
         )
-    if _digest(_authoring_digest_payload(review)) != review.review_digest:
+    if _record_digest(knowledge, "review_digest") != knowledge.review_digest:
+        raise AuthoringReviewError(
+            "the embedded knowledge review digest does not match its reported "
+            "facts; the report was modified after the review",
+            code="invalid_review_report",
+        )
+    if _record_digest(review, "review_digest") != review.review_digest:
         raise AuthoringReviewError(
             "the review report's digest does not match its own facts; the report "
             "was modified after the review",
             code="invalid_review_report",
         )
-    return review
+    if (
+        review.namespace,
+        review.kb_subtree,
+        review.base_revision,
+        review.head_revision,
+    ) != (
+        knowledge.namespace,
+        knowledge.kb_subtree,
+        knowledge.base_revision,
+        knowledge.head_revision,
+    ):
+        raise AuthoringReviewError(
+            "the outer and embedded scope/revision identities disagree",
+            code="invalid_review_report",
+        )
+    if review.submitted_tree != knowledge.candidate_tree:
+        raise AuthoringReviewError(
+            "the submitted tree identity disagrees with the embedded candidate tree",
+            code="invalid_review_report",
+        )
 
 
 def check_authoring_commit(
@@ -885,13 +1135,43 @@ def check_authoring_commit(
     only the exact reviewed candidate matches. No recovery, no reset, no
     human-approval claim.
     """
-    repo_root, _subtree = resolve_repository(Path(kb_root).resolve())
+    repo_root, subtree = resolve_repository(Path(kb_root).resolve())
+    _validate_review_record(review)
     mismatches: list[str] = []
+    # F4: the check binds the SELECTED Knowledge Base, not just the
+    # repository — the selected subtree must be the reviewed subtree, and the
+    # commit must carry that subtree's reviewed namespace (read from the
+    # commit's own manifest bytes, never the mutable worktree).
+    if subtree != review.kb_subtree:
+        mismatches.append(
+            f"the selected Knowledge Base subtree {subtree or '/'!r} was not the "
+            f"reviewed subtree {review.kb_subtree or '/'!r}"
+        )
     try:
         commit = resolve_full_commit(repo_root, revision)
         base_revision = resolve_full_commit(repo_root, review.base_revision)
     except GitAuthoringError as exc:
         raise AuthoringReviewError(str(exc), code="invalid_revision") from exc
+    manifest_spec = (
+        f"{commit}:{subtree + '/' if subtree else ''}{SOURCE_REFERENCE_MANIFEST_BASENAME}"
+    )
+    if _git_exit_status(repo_root, "cat-file", "-e", f"{manifest_spec}") != 0:
+        mismatches.append(
+            f"the commit carries no {SOURCE_REFERENCE_MANIFEST_BASENAME} for the "
+            f"selected Knowledge Base subtree {subtree or '/'!r}"
+        )
+    else:
+        try:
+            commit_namespace = parse_source_reference_manifest(
+                _git(repo_root, "cat-file", "blob", manifest_spec)
+            ).namespace
+        except Exception:
+            commit_namespace = None
+        if commit_namespace != review.namespace:
+            mismatches.append(
+                f"the commit's Knowledge Base namespace {commit_namespace!r} for the "
+                f"selected subtree is not the reviewed namespace {review.namespace!r}"
+            )
     base_tree = _git(repo_root, "rev-parse", f"{base_revision}^{{tree}}").decode().strip()
     if base_tree != review.base_tree:
         mismatches.append(

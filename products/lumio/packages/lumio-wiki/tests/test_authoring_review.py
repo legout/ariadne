@@ -780,7 +780,10 @@ def test_review_rejects_inconsistent_report_facts(tamper, tmp_path, capsys):
     assert code == 1
     assert refused["ok"] is False
     # A changed report record must not clear the public SDK check either.
-    record = msgspec.json.decode(json.dumps(tampered), type=AuthoringReview)
+    # Only this direct SDK payload drops the CLI envelope's "ok" marker; the
+    # emitted envelope itself stays intact for the loader/CLI paths above.
+    sdk_payload = {key: value for key, value in tampered.items() if key != "ok"}
+    record = msgspec.json.decode(json.dumps(sdk_payload), type=AuthoringReview)
     try:
         sdk_check = check_authoring_commit(kb, record, commit)
     except AuthoringReviewError:
@@ -850,8 +853,7 @@ def _press_page(mark: str, *, summary: str, confidence: str | None, body_extra: 
         "---\n\n"
         "# Hydraulic Press\n\n"
         "## Overview\n\n"
-        f"Supported by the {MANUAL_ID} original.\n"
-        + body_extra
+        f"Supported by the {MANUAL_ID} original.\n" + body_extra
     )
 
 
@@ -1042,9 +1044,13 @@ def test_review_validates_bindings_without_registry(structural_defect, tmp_path,
     parsed_manifest = parse_source_reference_manifest(tampered_manifest)
     assert parsed_manifest.namespace == NAMESPACE
     assert set(parsed_manifest.sources) == set(tampered_sources)
-    assert parsed_manifest.bindings["entity:ghost"] == {MANUAL_ID: MANUAL_DIGEST}
-    assert parsed_manifest.bindings[PRESS_ENTITY] == {MANUAL_ID: MANUAL_DIGEST}
     assert parsed_manifest.bindings[SAW_ENTITY] == {BANDSAW_ID: BANDSAW_DIGEST}
+    if structural_defect == "nonexistent_entity":
+        assert parsed_manifest.bindings["entity:ghost"] == {MANUAL_ID: MANUAL_DIGEST}
+        assert parsed_manifest.bindings[PRESS_ENTITY] == {MANUAL_ID: MANUAL_DIGEST}
+    else:
+        assert "entity:ghost" not in parsed_manifest.bindings
+        assert PRESS_ENTITY not in parsed_manifest.bindings
     (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(tampered_manifest)
     _git(repo, "add", "--", "kb")
     code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)

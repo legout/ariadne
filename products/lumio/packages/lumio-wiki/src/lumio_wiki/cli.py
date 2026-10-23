@@ -209,6 +209,16 @@ _MACHINE_ERROR_MESSAGES.update(
         "invalid_candidate_tree": "the named candidate tree does not exist in this repository",
         "staged_tree_unavailable": "no staged candidate is available to review",
         "invalid_revision": "the selected revision is not an exact usable commit",
+        "incomplete_review_scope": (
+            "the submission contains paths with no supported review display"
+        ),
+        "invalid_staged_control": (
+            "the staged Control File is invalid and cannot be semantically reviewed"
+        ),
+        "entity_identity_conflict": ("an update would replace an existing page's Entity identity"),
+        "private_selection_inside_repository": (
+            "private originals, registries and stores must stay outside the repository"
+        ),
     }
 )
 
@@ -2920,8 +2930,18 @@ def _cmd_authoring_review(args: argparse.Namespace) -> int:
     for page in knowledge.pages:
         detail = "frontmatter-only" if page.frontmatter_only else page.change
         print(f"  page:      {page.path} ({detail})")
+        if page.body_diff:
+            for line in page.body_diff.splitlines():
+                print(f"      {line}")
+        for semantic in page.semantic_changes:
+            print(f"  semantic:  {semantic.field}: {semantic.before} -> {semantic.after}")
     for change in knowledge.ontology_changes:
-        print(f"  ontology:  {change.change} {change.name}")
+        definition = (
+            f" ({change.before} -> {change.after})" if (change.before or change.after) else ""
+        )
+        print(f"  ontology:  {change.change} {change.name}{definition}")
+    for change in knowledge.control_changes:
+        print(f"  control:   {change.field}: {change.before} -> {change.after}")
     for change in knowledge.manifest_changes:
         print(f"  manifest:  {change}")
     excluded = review.excluded_unstaged + review.excluded_untracked
