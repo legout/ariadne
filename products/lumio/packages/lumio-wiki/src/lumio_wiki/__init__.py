@@ -452,6 +452,18 @@ from lumio_wiki.source_processor import (
     select_document_processor,
     source_converter_name,
 )
+from lumio_wiki.private_profile import (
+    PRIVATE_PROFILE_SCHEMA_VERSION,
+    PROFILE_RESOURCE_NEEDS,
+    PrivateLocalStore,
+    PrivateProfileError,
+    PrivateS3Connection,
+    PrivateSourceProfile,
+    ResolvedPrivateSources,
+    ResolvedS3Exchange,
+    load_private_profile,
+    resolve_private_profile,
+)
 
 __all__ = [
     "ACTIVITY_LOG_ARTIFACT",
@@ -852,6 +864,16 @@ __all__ = [
     "write_control_file",
     "ZeroIndexRetrieval",
     "default_retrieval_adapter",
+    "PRIVATE_PROFILE_SCHEMA_VERSION",
+    "PROFILE_RESOURCE_NEEDS",
+    "PrivateLocalStore",
+    "PrivateProfileError",
+    "PrivateS3Connection",
+    "PrivateSourceProfile",
+    "ResolvedPrivateSources",
+    "ResolvedS3Exchange",
+    "load_private_profile",
+    "resolve_private_profile",
 ]
 
 __version__ = "0.5.1"

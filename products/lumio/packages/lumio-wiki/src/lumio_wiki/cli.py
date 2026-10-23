@@ -221,6 +221,20 @@ def _resolve_index_dir(args: argparse.Namespace, kb_root: Path) -> Path:
     return Path(raw) if raw else default_index_dir(kb_root)
 
 
+def _add_private_profile_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--private-profile",
+        type=Path,
+        default=None,
+        help=(
+            "Select ONE explicit machine-local private source profile file "
+            "(spec 0010 §2.1): it supplies the private Source Registry, "
+            "artifact store and retention policy for this operation; "
+            "competing --source-registry/environment selections are refused."
+        ),
+    )
+
+
 def _load_kb(path: str | Path) -> tuple[KnowledgeBase, ValidationReport]:
     """Load a Knowledge Base and return ``(kb, report)`` or raise :class:`CliError`."""
     try:
@@ -2279,15 +2293,28 @@ def _ingest_into_worktree_cli(
     from lumio_wiki.git_authoring import GitAuthoringError, ingest_into_worktree
     from lumio_wiki.mutation import MutationRollbackError
 
-    registry = _git_source_registry(args)
-    if registry is None:
-        raise CliError(
-            "Git-native managed ingest requires the explicitly selected private "
-            "Source Registry: pass --source-registry <dir> or set "
-            f"{SOURCE_REGISTRY_ENV_VAR}",
-            exit_code=2,
-        )
-    artifact_store = _artifact_store_from_env()
+    resolved = _private_profile_selection(args, kb.root, frozenset({"registry", "artifacts"}))
+    if resolved is not None:
+        registry = resolved.source_registry
+        artifact_store = resolved.artifact_store
+        if registry is None:
+            # Unreachable with the needs set above; keeps the native contract
+            # explicit instead of passing an unresolved selection onward.
+            raise CliError(
+                "the selected private profile did not resolve a Source Registry",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+    else:
+        registry = _git_source_registry(args)
+        if registry is None:
+            raise CliError(
+                "Git-native managed ingest requires the explicitly selected private "
+                "Source Registry: pass --source-registry <dir> or set "
+                f"{SOURCE_REGISTRY_ENV_VAR}",
+                exit_code=2,
+            )
+        artifact_store = _artifact_store_from_env()
     try:
         result = ingest_into_worktree(
             kb.root,
@@ -2488,6 +2515,92 @@ def _git_source_registry(args: argparse.Namespace):
         raise CliError(f"cannot open Source Registry at {text!r}: {exc}") from exc
 
 
+def _private_profile_selection(args: argparse.Namespace, kb_root, needs: frozenset[str]):
+    """Resolve an explicit ``--private-profile`` selection, or ``None``.
+
+    Profile mode is exclusive (spec 0010 §2.1): one selected file supplies
+    the registry, artifact store and retention policy, so any competing
+    flag or environment/project selection is refused instead of merged.
+    Without ``--private-profile`` every existing resolution behavior is
+    unchanged. Declared credential variables remain valid inputs and are
+    consumed by the public resolver, never here.
+    """
+    profile_path = getattr(args, "private_profile", None)
+    if profile_path is None:
+        return None
+    competitors: list[str] = []
+    if getattr(args, "source_registry", None):
+        competitors.append("--source-registry")
+    project = load_project_config()
+    for variable in (SOURCE_REGISTRY_ENV_VAR, SOURCE_STORE_ENV_VAR, ARTIFACT_RETENTION_ENV_VAR):
+        if os.environ.get(variable) or project.get(variable):
+            competitors.append(variable)
+    if competitors:
+        raise CliError(
+            "private profile selection is exclusive: remove the competing "
+            f"selection(s) {', '.join(competitors)} or drop --private-profile",
+            exit_code=2,
+            code="conflicting_private_selection",
+        )
+    from lumio_wiki.private_profile import (
+        PrivateProfileError,
+        load_private_profile,
+        resolve_private_profile,
+    )
+
+    try:
+        profile = load_private_profile(profile_path, kb_root=kb_root)
+        return resolve_private_profile(profile, kb_root=kb_root, needs=needs)
+    except PrivateProfileError as exc:
+        raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+
+
+def _cmd_private_profile_inspect(args: argparse.Namespace) -> int:
+    """``private-profile inspect``: safe read-only validation (spec 0010 §2.1)."""
+    from lumio_wiki.private_profile import (
+        PrivateProfileError,
+        PrivateS3Connection,
+        load_private_profile,
+    )
+
+    kb = getattr(args, "kb", None) or _resolve_default_kb_path()
+    if not kb:
+        raise CliError(
+            "no Knowledge Base path provided. Pass --kb <kb-path>, export "
+            "LUMIO_KB_PATH, or run 'lumio-wiki setup <kb>' to write .env."
+        )
+    try:
+        profile = load_private_profile(args.profile, kb_root=kb)
+    except PrivateProfileError as exc:
+        raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+    # Safe capabilities only: never private paths, bucket/prefix details or
+    # credential environment variable names (spec 0010 §2.1).
+    artifact_store = "s3" if isinstance(profile.artifact_store, PrivateS3Connection) else "local"
+    exchange = "s3" if profile.exchange is not None else "manual"
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "ok": True,
+                    "valid": True,
+                    "namespace": profile.namespace,
+                    "retention": profile.retention,
+                    "artifact_store": artifact_store,
+                    "exchange": exchange,
+                }
+            )
+        )
+    else:
+        print("Private Source Profile: valid")
+        print(f"  namespace:       {profile.namespace}")
+        print(f"  retention:       {profile.retention}")
+        print(f"  artifact store:  {artifact_store}")
+        print(f"  exchange:        {exchange}")
+        print("Inspection is read-only; it creates no registry, store or publication state.")
+    return 0
+
+
 def _artifact_retention_required() -> bool:
     """Whether artifact retention is configured as required (issue #164).
 
@@ -2518,6 +2631,12 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     if (compiled_page is None) != (source_id is None):
         raise CliError(
             "--compiled-page and --source-id must be supplied together (issue #149 managed ingest)."
+        )
+    if compiled_page is None and getattr(args, "private_profile", None):
+        raise CliError(
+            "--private-profile selects the private configuration for managed "
+            "ingest (--compiled-page/--source-id) and publication routes only",
+            exit_code=2,
         )
     source_path = Path(args.file)
     if not source_path.is_file():
@@ -3295,9 +3414,17 @@ def _cmd_publish_revision(args: argparse.Namespace) -> int:
             "has been admitted at the destination yet",
             exit_code=2,
         )
-    registry = _git_source_registry(args)
-    retention_required = _artifact_retention_required()
-    artifact_store = _artifact_store_from_env()
+    resolved = _private_profile_selection(
+        args, Path(args.path), frozenset({"registry", "artifacts"})
+    )
+    if resolved is not None:
+        registry = resolved.source_registry
+        retention_required = resolved.retention_required
+        artifact_store = resolved.artifact_store
+    else:
+        registry = _git_source_registry(args)
+        retention_required = _artifact_retention_required()
+        artifact_store = _artifact_store_from_env()
     if retention_required and artifact_store is None:
         raise CliError(
             "artifact retention is required but no Source Artifact Store is configured",
@@ -6489,6 +6616,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Manifest."
         ),
     )
+    _add_private_profile_argument(ingest_parser)
     _add_ingest_dir_argument(ingest_parser)
     ingest_parser.set_defaults(func=_cmd_ingest)
 
@@ -6745,6 +6873,7 @@ def build_parser() -> argparse.ArgumentParser:
             f"directory (fallback: {SOURCE_REGISTRY_ENV_VAR})."
         ),
     )
+    _add_private_profile_argument(ingest_url_parser)
     _add_ingest_dir_argument(ingest_url_parser)
     ingest_url_parser.set_defaults(func=_cmd_ingest_url)
 
@@ -6787,6 +6916,7 @@ def build_parser() -> argparse.ArgumentParser:
             f"directory (fallback: {SOURCE_REGISTRY_ENV_VAR})."
         ),
     )
+    _add_private_profile_argument(ingest_research_parser)
     _add_ingest_dir_argument(ingest_research_parser)
     ingest_research_parser.set_defaults(func=_cmd_ingest_research)
 
@@ -6911,6 +7041,7 @@ def build_parser() -> argparse.ArgumentParser:
             f"directory (fallback: {SOURCE_REGISTRY_ENV_VAR})."
         ),
     )
+    _add_private_profile_argument(publish_parser)
     publish_parser.add_argument(
         "--retrieval",
         choices=["zero-index", "lancedb"],
@@ -6969,6 +7100,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Explicit private Source Registry directory.",
     )
+    _add_private_profile_argument(publish_s3_parser)
     publish_s3_parser.add_argument("--json", action="store_true")
     publish_s3_parser.add_argument(
         "--retrieval",
@@ -7545,6 +7677,47 @@ def build_parser() -> argparse.ArgumentParser:
         description="Print version, detected optional capabilities, and skill path.",
     )
     doctor_parser.set_defaults(func=_cmd_doctor)
+
+    # private-profile — explicit private source configuration (spec 0010 §2.1).
+    private_profile_parser = subparsers.add_parser(
+        "private-profile",
+        help="Inspect one explicit private source profile file (spec 0010 §2.1).",
+        description=(
+            "Read-only inspection of ONE explicitly selected machine-local "
+            "private source profile: reports validity and declared capabilities "
+            "only — never private paths, bucket/prefix details or credential "
+            "environment variable names. Creates no registry, store or "
+            "publication state."
+        ),
+    )
+    private_profile_sub = private_profile_parser.add_subparsers(
+        dest="private_profile_command", required=True, metavar="<private-profile-command>"
+    )
+    private_profile_inspect_parser = private_profile_sub.add_parser(
+        "inspect",
+        help="Validate one profile file against the selected Knowledge Base.",
+    )
+    private_profile_inspect_parser.add_argument(
+        "profile",
+        type=Path,
+        help="Path to the explicitly selected private profile JSON file.",
+    )
+    private_profile_inspect_parser.add_argument(
+        "--kb",
+        type=str,
+        default=None,
+        help=(
+            "Knowledge Base root the profile must match (namespace and "
+            "containment). When omitted, resolved like other commands: "
+            "LUMIO_KB_PATH, then the nearest project .env."
+        ),
+    )
+    private_profile_inspect_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a stable machine-readable inspection result.",
+    )
+    private_profile_inspect_parser.set_defaults(func=_cmd_private_profile_inspect)
 
     # mcp — read-only MCP server over stdio (PRD-0007, ADR-0028); needs [mcp].
     mcp_parser = subparsers.add_parser(
