@@ -33,6 +33,7 @@ from lumio_wiki.private_provenance import write_baseline_origin_record
 from lumio_wiki.source_registry import (
     SAFE_FILENAME_MAX_LENGTH,
     SourceRegistry,
+    SourceRegistryError,
     SourceVersion,
     _validate_source_id,
 )
@@ -66,6 +67,9 @@ MAX_BINDING_RECORDS = 50_000
 #: Uncompressed-tar container slack (blocking factor plus headers) tolerated
 #: around one bounded manifest member.
 _ARCHIVE_OVERHEAD_MAX_BYTES = 1024 * 1024
+#: One bounded streaming read unit for archive verification (j0-review F1):
+#: the container is hashed and read in bounded chunks, never one allocation.
+_ARCHIVE_READ_CHUNK_BYTES = 1024 * 1024
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -256,11 +260,14 @@ def _parse_baseline_manifest(payload: bytes) -> _ParsedBaseline:
     if not isinstance(manifest, dict):
         raise SourceBaselineError("the baseline manifest must be a JSON object")
     _check_keys(manifest, _MANIFEST_KEYS, "manifest")
-    if manifest["schema_version"] != BASELINE_SCHEMA_VERSION or isinstance(
-        manifest["schema_version"], bool
+    schema_version = manifest["schema_version"]
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version != BASELINE_SCHEMA_VERSION
     ):
         raise SourceBaselineError(
-            f"unsupported baseline manifest schema_version: {manifest['schema_version']!r}"
+            f"unsupported baseline manifest schema_version: {schema_version!r}"
         )
     if manifest["kind"] != BASELINE_KIND:
         raise SourceBaselineError(
@@ -277,15 +284,16 @@ def _parse_baseline_manifest(payload: bytes) -> _ParsedBaseline:
         manifest["source_manifest_digest"], "source_manifest_digest", _HEX64
     )
 
-    if len(manifest["bindings"]) > MAX_BINDING_RECORDS:
+    raw_bindings = _require_object_list(manifest["bindings"], "bindings")
+    if len(raw_bindings) > MAX_BINDING_RECORDS:
         raise SourceBaselineError(
             f"the baseline manifest exceeds the binding-record limit "
-            f"({len(manifest['bindings'])} > {MAX_BINDING_RECORDS}); an explicit refusal, "
+            f"({len(raw_bindings)} > {MAX_BINDING_RECORDS}); an explicit refusal, "
             "never partial bootstrap"
         )
     bindings: list[_BaselineBinding] = []
     seen_bindings: set[tuple[str, str]] = set()
-    for item in _require_object_list(manifest["bindings"], "bindings"):
+    for item in raw_bindings:
         _check_keys(item, _BINDING_KEYS, "binding record")
         binding = _BaselineBinding(
             entity_id=_require_text(item["entity_id"], "bindings[].entity_id"),
@@ -301,15 +309,16 @@ def _parse_baseline_manifest(payload: bytes) -> _ParsedBaseline:
         seen_bindings.add(key)
         bindings.append(binding)
 
-    if len(manifest["versions"]) > MAX_VERSION_RECORDS:
+    raw_versions = _require_object_list(manifest["versions"], "versions")
+    if len(raw_versions) > MAX_VERSION_RECORDS:
         raise SourceBaselineError(
             f"the baseline manifest exceeds the version-record limit "
-            f"({len(manifest['versions'])} > {MAX_VERSION_RECORDS}); an explicit refusal, "
+            f"({len(raw_versions)} > {MAX_VERSION_RECORDS}); an explicit refusal, "
             "never partial bootstrap"
         )
     versions: list[_BaselineVersion] = []
     seen_versions: set[tuple[str, str]] = set()
-    for item in _require_object_list(manifest["versions"], "versions"):
+    for item in raw_versions:
         _check_keys(item, _VERSION_KEYS, "version record")
         size = item["size"]
         if isinstance(size, bool) or not isinstance(size, int) or size < 0:
@@ -416,16 +425,47 @@ def _write_snapshot_archive(payload: bytes, output_path: Path) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _read_snapshot_manifest(snapshot_path: Path) -> bytes:
-    """Return the single regular ``manifest.json`` member, strictly validated."""
+def _read_verified_archive(snapshot_path: Path, expected_digest: str) -> tuple[bytes, str]:
+    """Enforce the container bound, then stream-read and hash-verify the archive.
+
+    The size bound is enforced BEFORE any read; hashing streams through one
+    bounded chunk at a time; and the returned bytes are exactly what later
+    parsing consumes — the digest is never computed over one path read while
+    the parser re-reads another (spec 0010 transfer formats v1; j0-review F1).
+    """
+    if not isinstance(expected_digest, str) or not _HEX64.match(expected_digest):
+        raise SourceBaselineError(
+            "the expected snapshot digest must be exactly 64 lowercase hex characters"
+        )
     size = snapshot_path.stat().st_size
     if size > MANIFEST_MAX_BYTES + _ARCHIVE_OVERHEAD_MAX_BYTES:
         raise SourceBaselineError(
             f"the baseline snapshot archive exceeds the container bound ({size} bytes); "
             "an explicit refusal, never partial bootstrap"
         )
+    digest = hashlib.sha256()
+    chunks: list[bytes] = []
+    with open(snapshot_path, "rb") as handle:
+        while True:
+            chunk = handle.read(_ARCHIVE_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+            chunks.append(chunk)
+    data = b"".join(chunks)
+    actual = digest.hexdigest()
+    if actual != expected_digest:
+        raise SourceBaselineError(
+            f"snapshot digest mismatch: expected {expected_digest}, the archive hashes to "
+            f"{actual}; obtain the correct artifact or expected digest from the maintainer"
+        )
+    return data, actual
+
+
+def _read_snapshot_manifest(data: bytes) -> bytes:
+    """Return the single regular ``manifest.json`` member of the verified bytes."""
     try:
-        with tarfile.open(snapshot_path, mode="r:") as tar:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tar:
             members = tar.getmembers()
             if len(members) != 1:
                 raise SourceBaselineError(
@@ -453,21 +493,6 @@ def _read_snapshot_manifest(snapshot_path: Path) -> bytes:
         raise SourceBaselineError(
             f"the snapshot is not a valid uncompressed tar archive: {exc}"
         ) from exc
-
-
-def _verify_snapshot_digest(snapshot_path: Path, expected_digest: str) -> str:
-    """Verify the out-of-band expected digest against the actual archive bytes."""
-    if not isinstance(expected_digest, str) or not _HEX64.match(expected_digest):
-        raise SourceBaselineError(
-            "the expected snapshot digest must be exactly 64 lowercase hex characters"
-        )
-    actual = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
-    if actual != expected_digest:
-        raise SourceBaselineError(
-            f"snapshot digest mismatch: expected {expected_digest}, the archive hashes to "
-            f"{actual}; obtain the correct artifact or expected digest from the maintainer"
-        )
-    return actual
 
 
 # ---------------------------------------------------------------------------
@@ -509,20 +534,33 @@ def export_source_baseline(
             f"the selected base exceeds the binding-record limit ({len(bindings)} > "
             f"{MAX_BINDING_RECORDS}); an explicit refusal, never partial bootstrap"
         )
-    versions_by_key: dict[tuple[str, str], SourceVersion] = {}
+    lookup_keys: list[tuple[str, str]] = []
+    seen_keys: set[tuple[str, str]] = set()
     for binding in bindings:
         key = (binding.source_id, binding.content_hash)
-        if key in versions_by_key:
-            continue
-        version = source_registry.find_version(binding.source_id, binding.content_hash)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            lookup_keys.append(key)
+    # One locked, read-only registry view (j0-review F4): the namespace scope
+    # and the exact version metadata are captured consistently, and export
+    # never assigns or migrates a registry namespace.
+    assigned_namespace, found_versions = source_registry.metadata_view(lookup_keys)
+    if assigned_namespace is not None and assigned_namespace != captured.manifest.namespace:
+        raise SourceBaselineError(
+            "the selected registry is explicitly assigned to namespace "
+            f"{assigned_namespace!r} and cannot export metadata for "
+            f"{captured.manifest.namespace!r}; select the registry for this namespace"
+        )
+    versions_by_key: dict[tuple[str, str], SourceVersion] = {}
+    for key, version in zip(lookup_keys, found_versions, strict=True):
         if version is None:
             raise SourceBaselineError(
-                f"the selected base binds {binding.source_id!r}@{binding.content_hash} to no "
+                f"the selected base binds {key[0]!r}@{key[1]} to no "
                 "exact version in the selected registry; a complete snapshot cannot be exported"
             )
         if version.size is None:
             raise SourceBaselineError(
-                f"version {binding.source_id!r}@{binding.content_hash} lacks the required size "
+                f"version {key[0]!r}@{key[1]} lacks the required size "
                 "metadata; a complete snapshot cannot be exported"
             )
         versions_by_key[key] = version
@@ -637,8 +675,8 @@ def _validate_baseline(
     snapshot = Path(snapshot_path)
     if not snapshot.is_file():
         raise SourceBaselineError(f"snapshot file not found: {snapshot}")
-    archive_digest = _verify_snapshot_digest(snapshot, expected_digest)
-    parsed = _parse_baseline_manifest(_read_snapshot_manifest(snapshot))
+    data, archive_digest = _read_verified_archive(snapshot, expected_digest)
+    parsed = _parse_baseline_manifest(_read_snapshot_manifest(data))
     captured = capture_revision(kb_root, revision)
     if parsed.namespace != captured.manifest.namespace:
         raise SourceBaselineError(
@@ -816,7 +854,37 @@ def import_source_baseline(
     versions_added = 0
     versions_reused = 0
     provenance_records = 0
+    entries = [
+        (
+            version.source_id,
+            version.content_hash,
+            version.size,
+            version.filename,
+            version.content_type,
+        )
+        for version in parsed.versions
+    ]
     try:
+        # One locked batch validates the complete input and commits once: a
+        # conflict or namespace scope refusal mutates nothing (j0-review F3).
+        results = source_registry.register_version_metadata_batch(
+            entries, namespace=parsed.namespace
+        )
+    except SourceRegistryError:
+        raise
+    except OSError as exc:
+        raise SourceBaselineError(
+            f"the baseline import stopped incomplete before committing (retry is safe; "
+            f"immutable residue converges): {exc}"
+        ) from exc
+    for _, action in results:
+        if action == "registered":
+            versions_added += 1
+        else:
+            versions_reused += 1
+    try:
+        # Origin records follow the committed batch, so a validation conflict
+        # never creates purported-import provenance (j0-review F3).
         for version in parsed.versions:
             write_baseline_origin_record(
                 source_registry.root,
@@ -828,23 +896,11 @@ def import_source_baseline(
                 origin_created_at=version.origin_created_at,
             )
             provenance_records += 1
-        for version in parsed.versions:
-            _, action = source_registry.register_version_metadata(
-                version.source_id,
-                version.content_hash,
-                size=version.size,
-                filename=version.filename,
-                content_type=version.content_type,
-                namespace=parsed.namespace,
-            )
-            if action == "registered":
-                versions_added += 1
-            else:
-                versions_reused += 1
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         raise SourceBaselineError(
-            f"the baseline import stopped incomplete after partial progress (retry is safe; "
-            f"immutable residue converges): {exc}"
+            f"the baseline import committed its registry metadata but stopped before "
+            f"completing its private origin records (retry converges; a conflicting "
+            f"provenance record must be resolved explicitly): {exc}"
         ) from exc
     return BaselineImport(
         schema_version=BASELINE_SCHEMA_VERSION,

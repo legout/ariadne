@@ -166,19 +166,33 @@ class CliError(Exception):
 _MACHINE_ERROR_MESSAGES: dict[str, str] = {}
 
 
-def _emit_machine_error(exc: CliError) -> None:
-    """Emit one stable error object without a traceback or exception chain."""
-    print(
-        json.dumps(
-            {
-                "ok": False,
-                "error": {
-                    "code": exc.code,
-                    "message": _MACHINE_ERROR_MESSAGES.get(exc.code, "command failed"),
-                },
-            }
-        )
-    )
+def _emit_machine_error(exc: CliError, *, schema_version: int | None = None) -> None:
+    """Emit one stable error object without a traceback or exception chain.
+
+    ``schema_version`` is supplied only by commands whose frozen result
+    contract versions failures too (source-bootstrap, plan 0010 interface
+    inventory); legacy command error envelopes stay unchanged.
+    """
+    envelope: dict = {
+        "ok": False,
+        "error": {
+            "code": exc.code,
+            "message": _MACHINE_ERROR_MESSAGES.get(exc.code, "command failed"),
+        },
+    }
+    if schema_version is not None:
+        envelope["schema_version"] = schema_version
+    print(json.dumps(envelope))
+
+
+def _bootstrap_error_schema_version(args: argparse.Namespace) -> int | None:
+    """New bootstrap JSON failures carry ``schema_version: 1`` (plan0010).
+
+    Minimal command-specific selection: only source-bootstrap subcommands
+    opt in, so every legacy error envelope is unchanged. This also covers
+    the early Knowledge-Base path-selection refusal raised in ``main``.
+    """
+    return 1 if getattr(args, "source_bootstrap_command", None) is not None else None
 
 
 def default_ingest_dir(kb_root: str | Path) -> Path:
@@ -8370,7 +8384,7 @@ def main(argv: list[str] | None = None) -> int:
             "export LUMIO_KB_PATH, or run 'lumio-wiki setup <kb>' to write .env."
         )
         if getattr(args, "json", False):
-            _emit_machine_error(missing)
+            _emit_machine_error(missing, schema_version=_bootstrap_error_schema_version(args))
         else:
             print(f"error: {missing}", file=sys.stderr)
         return missing.exit_code
@@ -8378,7 +8392,7 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except CliError as exc:
         if getattr(args, "json", False):
-            _emit_machine_error(exc)
+            _emit_machine_error(exc, schema_version=_bootstrap_error_schema_version(args))
         else:
             print(f"error: {exc}", file=sys.stderr)
         return exc.exit_code

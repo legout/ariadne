@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -594,13 +595,60 @@ class SourceRegistry:
         ``namespace`` (when given) scopes the registry explicitly: an
         unassigned registry is assigned once; a registry already assigned to
         a different namespace is refused — never silently migrated.
+
+        Delegates to :meth:`register_version_metadata_batch`, which validates
+        the record and commits under one locked read of canonical state.
         """
-        _validate_source_id(source_id)
-        if not isinstance(content_hash, str) or not _CONTENT_HASH_PATTERN.match(content_hash):
-            raise SourceRegistryError("content_hash must be exactly 64 lowercase hex characters")
-        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
-            raise SourceRegistryError("size must be a non-negative integer")
-        safe_filename = safe_artifact_filename(filename)
+        return self.register_version_metadata_batch(
+            [(source_id, content_hash, size, filename, content_type)],
+            namespace=namespace,
+        )[0]
+
+    def register_version_metadata_batch(
+        self,
+        entries: Sequence[tuple[str, str, int, str | None, str | None]],
+        *,
+        namespace: str | None = None,
+    ) -> list[tuple[SourceVersion, str]]:
+        """Additively register a BATCH of version metadata under ONE locked commit.
+
+        Each entry is ``(source_id, content_hash, size, filename,
+        content_type)``. The complete input — every record's shape, in-batch
+        duplicates, immutable conflicts against one fresh locked read, and
+        the namespace scope — is validated BEFORE the single additive commit
+        (spec 0010 §5.1, plan J0; j0-review F3): a validation or namespace
+        conflict leaves the registry exactly as it was. New records are
+        created ``artifact_available=False`` with an honest local timestamp;
+        existing exact versions are never modified and locally verified
+        availability is preserved. An unassigned registry is scoped once by
+        the first namespace-carrying commit; a different explicit assignment
+        is refused — never migrated.
+        """
+        prepared: list[SourceVersion] = []
+        seen: set[tuple[str, str]] = set()
+        for source_id, content_hash, size, filename, content_type in entries:
+            _validate_source_id(source_id)
+            if not isinstance(content_hash, str) or not _CONTENT_HASH_PATTERN.match(content_hash):
+                raise SourceRegistryError(
+                    "content_hash must be exactly 64 lowercase hex characters"
+                )
+            if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+                raise SourceRegistryError("size must be a non-negative integer")
+            if (source_id, content_hash) in seen:
+                raise SourceRegistryError(
+                    f"duplicate metadata record for {source_id!r}@{content_hash} in one batch"
+                )
+            seen.add((source_id, content_hash))
+            prepared.append(
+                SourceVersion(
+                    source_id=source_id,
+                    content_hash=content_hash,
+                    created_at=_now(),
+                    filename=safe_artifact_filename(filename),
+                    content_type=content_type,
+                    size=size,
+                )
+            )
         with mutation_lock(self.root):
             state = self._reload()
             _refuse_legacy_pending(state)
@@ -614,60 +662,85 @@ class SourceRegistry:
                     f"{state.namespace!r} and cannot be scoped to {namespace!r}; "
                     "select the registry for this namespace instead"
                 )
-            source_index = next(
-                (i for i, item in enumerate(state.sources) if item.source_id == source_id),
-                None,
-            )
-            existing: SourceVersion | None = None
-            if source_index is not None:
-                existing = next(
-                    (
-                        version
-                        for version in state.sources[source_index].versions
-                        if version.content_hash == content_hash
-                    ),
+            sources = list(state.sources)
+            results: list[tuple[SourceVersion, str]] = []
+            for version in prepared:
+                source_index = next(
+                    (i for i, item in enumerate(sources) if item.source_id == version.source_id),
                     None,
                 )
-            if existing is not None:
-                for field, incoming in (
-                    ("size", size),
-                    ("filename", safe_filename),
-                    ("content_type", content_type),
-                ):
-                    current = getattr(existing, field)
-                    if incoming is not None and current is not None and incoming != current:
-                        raise SourceRegistryError(
-                            f"immutable metadata conflict for {source_id!r}@{content_hash}: "
-                            f"{field} is recorded as {current!r}, the transferred "
-                            f"metadata carries {incoming!r}; resolve the conflict explicitly"
+                existing: SourceVersion | None = None
+                if source_index is not None:
+                    existing = next(
+                        (
+                            recorded
+                            for recorded in sources[source_index].versions
+                            if recorded.content_hash == version.content_hash
+                        ),
+                        None,
+                    )
+                if existing is not None:
+                    for field, incoming in (
+                        ("size", version.size),
+                        ("filename", version.filename),
+                        ("content_type", version.content_type),
+                    ):
+                        current = getattr(existing, field)
+                        if incoming is not None and current is not None and incoming != current:
+                            raise SourceRegistryError(
+                                f"immutable metadata conflict for {version.source_id!r}@"
+                                f"{version.content_hash}: {field} is recorded as "
+                                f"{current!r}, the transferred metadata carries "
+                                f"{incoming!r}; resolve the conflict explicitly"
+                            )
+                    results.append((existing, "reused"))
+                    continue
+                if source_index is None:
+                    sources.append(
+                        KnowledgeSource(
+                            source_id=version.source_id,
+                            status="active",
+                            versions=[version],
                         )
-                if namespace is not None and state.namespace is None:
-                    self._commit(msgspec.structs.replace(state, namespace=namespace))
-                return existing, "reused"
-            version = SourceVersion(
-                source_id=source_id,
-                content_hash=content_hash,
-                created_at=_now(),
-                filename=safe_filename,
-                content_type=content_type,
-                size=size,
-            )
-            if source_index is None:
-                sources = [
-                    *state.sources,
-                    KnowledgeSource(source_id=source_id, status="active", versions=[version]),
-                ]
-            else:
-                sources = list(state.sources)
-                sources[source_index] = msgspec.structs.replace(
-                    state.sources[source_index],
-                    versions=[*state.sources[source_index].versions, version],
+                    )
+                else:
+                    sources[source_index] = msgspec.structs.replace(
+                        sources[source_index],
+                        versions=[*sources[source_index].versions, version],
+                    )
+                results.append((version, "registered"))
+            assigned = state.namespace if state.namespace is not None else namespace
+            self._commit(msgspec.structs.replace(state, sources=sources, namespace=assigned))
+            return results
+
+    def metadata_view(
+        self, keys: Sequence[tuple[str, str]]
+    ) -> tuple[str | None, list[SourceVersion | None]]:
+        """One locked consistent view: namespace scope plus exact version lookups.
+
+        Read-only (spec 0010 §5.1; j0-review F4): it never assigns a
+        namespace or mutates state. Callers deciding an export against the
+        registry see one coherent snapshot instead of racing separate
+        per-key reads; ``None`` entries mean the exact version is unknown.
+        """
+        with mutation_lock(self.root):
+            state = self._reload()
+            found: list[SourceVersion | None] = []
+            for source_id, content_hash in keys:
+                _validate_source_id(source_id)
+                found.append(
+                    next(
+                        (
+                            version
+                            for source in state.sources
+                            if source.source_id == source_id
+                            for version in source.versions
+                            if version.content_hash == content_hash
+                        ),
+                        None,
+                    )
                 )
-            state = msgspec.structs.replace(state, sources=sources)
-            if namespace is not None and state.namespace is None:
-                state = msgspec.structs.replace(state, namespace=namespace)
-            self._commit(state)
-            return version, "registered"
+            return state.namespace, found
 
     def find_version(self, source_id: str, content_hash: str) -> SourceVersion | None:
         """Resolve one EXACT registered Source Version, never registry-latest.

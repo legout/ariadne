@@ -864,8 +864,8 @@ def test_metadata_bootstrap_rejects_mismatch(case, tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
-# Review regressions (j0-review.md; expected RED until the accepted product
-# repairs land — these nodes encode the contract, not current behavior).
+# Review regressions (j0-review.md): contract guards pinning the accepted
+# F1–F5 product repairs.
 # ---------------------------------------------------------------------------
 
 
