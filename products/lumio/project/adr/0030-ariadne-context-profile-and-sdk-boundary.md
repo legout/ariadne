@@ -5,6 +5,15 @@ amends: ADR-0026, ADR-0029
 
 # ADR-0030: Native Ariadne Context Profile through an additive SDK
 
+Approved consumer follow-up, 2026-10-23:
+[Ariadne spec0033](../../../ariadne/project/specs/2026-10-23-0033-managed-knowledge-authoring.md)
+consumes a Lumio-owned private source configuration/resolver, approved in
+[spec0010 §2.1](../specs/2026-10-23-0010-external-agent-authoring-journey.md#21-shared-private-source-configuration).
+This preserves the direct optional SDK and producer ownership; no second parser,
+Core dependency in Lumio or native page-profile change is proposed. The owner
+approved the scoped source design on 2026-10-23; this notice authorizes no
+execution under this accepted ADR.
+
 Owner-approved direction, Pi conversation 2026-10-18 for Lumio #2/Ariadne #76:
 one Content Repository, direct optional Python SDK, integrated-only strict
 mandatory Policies, one overall human confirmation and project-wide Visibility

@@ -5,6 +5,34 @@ amends: ADR-0011, ADR-0024
 
 # ADR-0026: Lumio SDK and atomically bound governed releases
 
+## Accepted managed-source configuration amendment — 2026-10-23
+
+The owner selected a **private local profile** while shaping the Ariadne
+follow-up. The owner then explicitly approved
+[specification 0033 revision 1](../specs/2026-10-23-0033-managed-knowledge-authoring.md),
+this amendment and Lumio spec0010 §2.1, requesting implementation plans while
+repeating “do not start implementation.” This amendment is accepted; existing
+accepted decisions below retain their authority.
+
+Use an explicitly selected, Lumio-owned private source configuration and public
+SDK resolver for both Lumio tooling and Core admission. Prefer this over repeated
+flags that can diverge between preview and confirmation, and over implicit
+global defaults that can select unrelated private history. Accept one additional
+configuration compatibility surface to keep target selection consistent across
+tools. Keep it outside Git and distinct from Core's data-source Storage Profiles
+and existing publication destination selection.
+
+Bind effective registry/store identities, namespace, credential references and
+retention into private overall review; recheck them at confirmation. Secret
+values are neither identity nor review content. Readers consume the admitted
+compiled knowledge without original-store/profile access. The selected profile
+grants neither database Source Approval nor human admission. Preserve the direct
+optional SDK, independent standalone Core, exact Content Commit, native Lumio
+publication and atomic-last Core activation. No new architecture ADR, source
+service or pending-authoring store is needed. This is design capture only.
+
+## Accepted baseline
+
 Owner-approved direction, Pi conversation 2026-10-18 for Ariadne #76/Lumio #2:
 one Content Repository, a direct optional Python SDK, integrated-only strict
 mandatory Policies, one overall human confirmation and project-wide Visibility

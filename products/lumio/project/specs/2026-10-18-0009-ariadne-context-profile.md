@@ -1,5 +1,12 @@
 # Specification 0009: Ariadne Context Profile and pinned SDK consumption
 
+**Approved managed-source consumer follow-up — 2026-10-23:**
+[Ariadne spec0033](../../../ariadne/project/specs/2026-10-23-0033-managed-knowledge-authoring.md)
+owns integrated admission using a private profile. The additive shared source
+configuration/resolver belongs to [Lumio spec0010 §2.1](2026-10-23-0010-external-agent-authoring-journey.md#21-shared-private-source-configuration).
+These owner-approved amendments change no `ariadne-context/1` envelope, Policy
+semantics or reader contract, and grant no implementation authority.
+
 **Approved consumer follow-up design — 2026-10-22:** Ariadne [specification 0032 revision 1](../../../ariadne/project/specs/2026-10-22-0032-integrated-query-and-profile-expansion.md) owns the planned Dataset/Table/Computation validation and integrated query expansion. Existing native producer profiles and SDK parsing/preservation remain authoritative; this notice adds no schema, authentication authority or producer execution dependency. The corresponding [ADR-0030 amendment](../adr/0030-ariadne-context-profile-and-sdk-boundary.md#consumer-profile-expansion-boundary--2026-10-22) records the boundary. Design capture only; no implementation or release claim.
 
 | | |

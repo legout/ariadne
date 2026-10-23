@@ -1,5 +1,13 @@
 # Specification 0029: Lumio-bound governed releases
 
+**Approved managed-source follow-up — 2026-10-23:**
+[specification 0033 revision 1](2026-10-23-0033-managed-knowledge-authoring.md)
+adds explicit private profile selection, configuration-bound composite review
+and whole-contribution external-agent review. The owner approved its complete
+revision 1 and scoped ADR/Lumio amendments, authorizing planning only. It retains
+Source Approval, native publication and Core-last activation. It does not change
+existing admitted readers or claim implemented managed-source admission.
+
 **Approved follow-up design — 2026-10-22:** [specification 0032 revision 2](2026-10-22-0032-integrated-query-and-profile-expansion.md) defines future integrated detail/record/Ad-hoc operations and Dataset/Table/Computation consumption, complete source Context coverage, explicit existing-rule enforcement and evidence lifecycle, with the exact §10 contracts grounded in the inspected current source. It scopes the corresponding deferred target below; it does not enable these capabilities in existing code/admissions or qualify a release. Earlier delivery amendments and their evidence remain unchanged. Owner authorized written Spec/ADR capture, then the exact-contract completion; no implementation.
 
 | | |

@@ -144,6 +144,25 @@ Published Version. It supports provenance review but does not make the raw file
 Evidence or imply claim-level source-span lineage.
 _Avoid_: citation, source retrieval, document preview.
 
+**Source Handoff Bundle**:
+A private, versioned transfer artifact containing selected exact Source Versions
+and their original bytes for a Git contribution. It carries source material,
+not content approval or Publication Admission.
+_Avoid_: registry backup, proposal, published knowledge bundle.
+
+**Source Exchange**:
+A configured private location used to transfer Source Handoff Bundles and Source
+Baseline Snapshots between contributors and maintainers. It is distinct from the
+canonical Source Artifact Store and Knowledge Base Location.
+_Avoid_: source registry, publication destination, public download link.
+
+**Source Baseline Snapshot**:
+A private, versioned collection of the exact Source Version metadata referenced
+by a selected Authoring Revision, used to initialize a contributor's source
+history without transferring original bytes. It grants neither source access nor
+Publication Admission.
+_Avoid_: registry replica, source archive, Source Handoff Bundle.
+
 **Source Retirement**:
 An explicit reviewed Maintainer decision that makes a Knowledge Source
 ineligible to support future admitted knowledge without changing historical
