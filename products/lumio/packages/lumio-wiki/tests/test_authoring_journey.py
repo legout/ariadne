@@ -799,3 +799,262 @@ def test_extract_public_route_reports_truthful_material(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert code == 2
     assert payload["error"]["code"] == "output_inside_repository"
+
+
+# ---------------------------------------------------------------------------
+# Independent J1-J2 review regression preparation (j1-j2-review.md F7-F9).
+# Expected values are fixed fixture facts; these nodes are RED against the
+# reviewed implementation and must turn green only through the
+# parent-authorized product repair.
+# ---------------------------------------------------------------------------
+
+
+def _private_selection_request(work: Path, original_path: Path, base: str) -> Path:
+    """A valid two-page candidate request whose original lives at original_path."""
+    (work / "bandsaw.md").write_text(
+        _bandsaw_page(
+            title="Bandsaw",
+            entity_id=SAW_ENTITY,
+            object_entity=SAW_CARE_ENTITY,
+            claim_id="claim:saw-inspected",
+            cross_claim_id="claim:saw-maintained-with",
+        )
+    )
+    (work / "bandsaw_maintenance.md").write_text(
+        _bandsaw_page(
+            title="Bandsaw Maintenance",
+            entity_id=SAW_CARE_ENTITY,
+            object_entity=SAW_ENTITY,
+            claim_id="claim:care-inspected",
+            cross_claim_id="claim:care-maintained-with",
+        )
+    )
+    control_dir = work / "candidate-control"
+    control_dir.mkdir(exist_ok=True)
+    (control_dir / "lumio.yaml").write_text(CANDIDATE_CONTROL)
+    request = {
+        "schema_version": 1,
+        "base_revision": base,
+        "sources": [
+            {
+                "source_id": BANDSAW_ID,
+                "original_path": str(original_path),
+                "expected_digest": BANDSAW_DIGEST,
+                "intent": "new",
+            }
+        ],
+        "pages": [str(work / "bandsaw.md"), str(work / "bandsaw_maintenance.md")],
+        "control": str(control_dir / "lumio.yaml"),
+    }
+    request_path = work / "candidate-request.json"
+    request_path.write_text(json.dumps(request, indent=2))
+    return request_path
+
+
+@pytest.mark.parametrize(
+    "inside", ["original", "registry", "artifact_store", "original_symlink"]
+)
+def test_candidate_refuses_private_paths_inside_repository(inside, tmp_path):
+    """F7: originals, registries and local stores never live inside the repository."""
+    from lumio_wiki.authoring_journey import (
+        AuthoringJourneyError,
+        ingest_candidate,
+        load_candidate_request,
+    )
+
+    repo = _init_repo(tmp_path / "repo")
+    kb = _write_base_kb(repo)
+    _commit(repo, "baseline revision")
+    base = _git(repo, "rev-parse", "HEAD")
+    private = repo / "private"
+    private.mkdir()
+    git_dir = Path(_git(repo, "rev-parse", "--absolute-git-dir"))
+    with (git_dir / "info" / "exclude").open("a") as exclude:
+        exclude.write("private/\n")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    work = outside / "work"
+    work.mkdir()
+    registry_dir = outside / "registry"
+    registry = SourceRegistry(registry_dir)
+    registry.register_version(MANUAL_ID, MANUAL_BYTES)
+    registry.register_version(MEMO_ID, MEMO_BYTES)
+    store_dir = outside / "store"
+
+    original_path = work / "bandsaw-spec.md"
+    original_path.write_bytes(BANDSAW_BYTES)
+    if inside == "original":
+        original_path = private / "bandsaw-spec.md"
+        original_path.write_bytes(BANDSAW_BYTES)
+    elif inside == "original_symlink":
+        target = private / "bandsaw-spec.md"
+        target.write_bytes(BANDSAW_BYTES)
+        original_path = work / "original-link.md"
+        original_path.symlink_to(target)
+    elif inside == "registry":
+        registry_dir = private / "registry"
+        registry = SourceRegistry(registry_dir)
+        registry.register_version(MANUAL_ID, MANUAL_BYTES)
+        registry.register_version(MEMO_ID, MEMO_BYTES)
+        registry.register_version(BANDSAW_ID, BANDSAW_BYTES)
+    else:
+        store_dir = private / "store"
+        store_dir.mkdir()
+
+    request_path = _private_selection_request(work, original_path, base)
+    private_files_before = _tree_files(private)
+    kb_files_before = {
+        p: p.read_bytes() for p in sorted(kb.rglob("*")) if p.is_file()
+    }
+    registry_state_before = (registry_dir / "sources.json").read_bytes() if (
+        registry_dir / "sources.json"
+    ).exists() else None
+
+    with pytest.raises(AuthoringJourneyError):
+        ingest_candidate(
+            kb,
+            load_candidate_request(request_path),
+            source_registry=registry,
+            artifact_store=LocalDirectoryArtifactStore(store_dir),
+        )
+    # Refusal happens before any private or authoring mutation.
+    assert _tree_files(private) == private_files_before
+    assert {p: p.read_bytes() for p in sorted(kb.rglob("*")) if p.is_file()} == kb_files_before
+    registry_state_after = (registry_dir / "sources.json").read_bytes() if (
+        registry_dir / "sources.json"
+    ).exists() else None
+    assert registry_state_after == registry_state_before
+
+
+def test_extract_discloses_converter_truncation(tmp_path, monkeypatch):
+    """F8: known converter truncation is disclosed, not inferred from length."""
+    import hashlib
+
+    from lumio_wiki import authoring_journey
+    from lumio_wiki.source_processor import MAX_EXTRACTED_CHARS, MarkItDownSourceProcessor
+
+    line = "x" * 99
+    big_text = "# Conversion result\n" + "\n".join([line] * 2100)
+    # Documented line-boundary truncation rule, computed from the fixture.
+    cut = big_text[:MAX_EXTRACTED_CHARS].rfind("\n")
+    expected_text = big_text[:cut]
+    assert cut > MAX_EXTRACTED_CHARS // 2 and cut < MAX_EXTRACTED_CHARS
+    assert "\n" not in big_text[cut + 1 : MAX_EXTRACTED_CHARS]
+
+    def _fixed_converter(content: bytes, filename: str | None) -> str:
+        return big_text
+
+    def _inline_runner(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    processor = MarkItDownSourceProcessor(converter=_fixed_converter, runner=_inline_runner)
+    monkeypatch.setattr(
+        authoring_journey, "select_document_processor", lambda filename, content_type: processor
+    )
+    source_bytes = b"<html>fixture bytes</html>"
+    source = tmp_path / "big-report.html"
+    source.write_bytes(source_bytes)
+
+    result = authoring_journey.extract_source(source, output_dir=tmp_path / "extract-out")
+    assert result.incomplete is True
+    assert result.text == expected_text
+    assert result.processor == "markitdown"
+    assert result.source_sha256 == hashlib.sha256(source_bytes).hexdigest()
+
+
+def test_candidate_preserves_existing_entity_identity(tmp_path):
+    """F9: a same-title update cannot silently change an existing Entity ID."""
+    from lumio_wiki.authoring_journey import (
+        AuthoringJourneyError,
+        ingest_candidate,
+        load_candidate_request,
+    )
+    from lumio_wiki.source_references import (
+        SourceReferenceManifest,
+        serialize_source_reference_manifest,
+    )
+
+    GUIDE_ENTITY = "entity:field-guide"
+    GUIDE_V2_ENTITY = "entity:field-guide-v2"
+    GUIDE_SOURCE = "field-notes"
+    NEW_SOURCE = "guide-spec"
+    new_bytes = b"# Field Guide R2\n\nThe revised field guide rounds the ridge counts.\n"
+    new_digest = hashlib.sha256(new_bytes).hexdigest()
+
+    repo = _init_repo(tmp_path / "repo")
+    kb = repo / "kb"
+    (kb / "concepts").mkdir(parents=True)
+    (kb / "lumio.yaml").write_text(CONTROL)
+    (kb / "concepts" / "hydraulic-press.md").write_text(
+        _managed_page(
+            "Hydraulic Press", PRESS_ENTITY, "machine", MANUAL_ID,
+            claim_id="claim:manual-documented",
+        )
+    )
+    # A supported native state: public-only provenance, no managed binding.
+    (kb / "concepts" / "field-guide.md").write_text(
+        _managed_page(
+            "Field Guide", GUIDE_ENTITY, "note", GUIDE_SOURCE,
+            claim_id="claim:guide-documented",
+        )
+    )
+    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(
+                version=1,
+                namespace=NAMESPACE,
+                sources={MANUAL_ID: "active"},
+                bindings={PRESS_ENTITY: {MANUAL_ID: MANUAL_DIGEST}},
+            )
+        )
+    )
+    _commit(repo, "baseline revision")
+    base = _git(repo, "rev-parse", "HEAD")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    registry = SourceRegistry(outside / "registry")
+    registry.register_version(MANUAL_ID, MANUAL_BYTES)
+    original = outside / "guide-spec.md"
+    original.write_bytes(new_bytes)
+    work = outside / "work"
+    work.mkdir()
+    (work / "field-guide.md").write_text(
+        _managed_page(
+            "Field Guide", GUIDE_V2_ENTITY, "note", NEW_SOURCE,
+            claim_id="claim:guide-documented",
+        )
+    )
+    request = {
+        "schema_version": 1,
+        "base_revision": base,
+        "sources": [
+            {
+                "source_id": NEW_SOURCE,
+                "original_path": str(original),
+                "expected_digest": new_digest,
+                "intent": "new",
+            }
+        ],
+        "pages": [str(work / "field-guide.md")],
+    }
+    request_path = work / "candidate-request.json"
+    request_path.write_text(json.dumps(request, indent=2))
+
+    kb_files_before = {
+        p: p.read_bytes() for p in sorted(kb.rglob("*")) if p.is_file()
+    }
+    registry_state = outside / "registry" / "sources.json"
+    registry_before = registry_state.read_bytes() if registry_state.exists() else None
+
+    with pytest.raises(AuthoringJourneyError):
+        ingest_candidate(
+            kb,
+            load_candidate_request(request_path),
+            source_registry=registry,
+            artifact_store=LocalDirectoryArtifactStore(outside / "store"),
+        )
+    assert {p: p.read_bytes() for p in sorted(kb.rglob("*")) if p.is_file()} == kb_files_before
+    registry_after = registry_state.read_bytes() if registry_state.exists() else None
+    assert registry_after == registry_before

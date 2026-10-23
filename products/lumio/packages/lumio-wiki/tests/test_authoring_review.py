@@ -701,3 +701,375 @@ def test_review_detects_changed_commit(case, tmp_path, capsys):
             for mismatch in check["mismatches"]
         )
         assert "changed after review: kb/concepts/bandsaw.md" in check["mismatches"]
+
+
+# ---------------------------------------------------------------------------
+# Independent J1-J2 review regression preparation (j1-j2-review.md F1-F6, F10).
+# Expected values are fixed fixture facts and documented contracts; these
+# nodes are RED against the reviewed implementation and must turn green only
+# through the parent-authorized product repair.
+# ---------------------------------------------------------------------------
+
+
+def _committed_review(tmp_path, capsys):
+    """The standard staged candidate, reviewed and committed exactly."""
+    repo, kb, base = _staged_candidate(tmp_path)
+    code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+    assert code == 0, payload
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps(payload))
+    _git(repo, "commit", "-q", "-m", "reviewed candidate")
+    commit = _git(repo, "rev-parse", "HEAD")
+    return repo, kb, base, payload, report_path, commit
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["body_diff", "kb_valid", "page_title", "claim_predicate", "pages_cleared"],
+)
+def test_review_rejects_inconsistent_report_facts(tamper, tmp_path, capsys):
+    """F1: every displayed embedded fact is bound to the review digest."""
+    import msgspec
+
+    from lumio_wiki.authoring_review import (
+        AuthoringReview,
+        AuthoringReviewError,
+        check_authoring_commit,
+        load_authoring_review_report,
+    )
+
+    repo, kb, base, payload, report_path, commit = _committed_review(tmp_path, capsys)
+    # Control: the intact report stays valid and verifies its exact commit.
+    intact = load_authoring_review_report(report_path)
+    assert check_authoring_commit(kb, intact, commit).matches_reviewed_candidate is True
+
+    tampered = json.loads(json.dumps(payload))
+    knowledge = tampered["knowledge"]
+    if tamper == "body_diff":
+        _page_entry(tampered, "concepts/hydraulic-press.md")["body_diff"] = (
+            "tampered: unrelated body text"
+        )
+    elif tamper == "kb_valid":
+        knowledge["kb_valid"] = False
+    elif tamper == "page_title":
+        _page_entry(tampered, "concepts/bandsaw.md")["title"] = "Bandsaw (misleading)"
+    elif tamper == "claim_predicate":
+        for claim in _page_entry(tampered, "concepts/bandsaw.md")["claims"]:
+            if claim["claim_id"] == "claim:saw-inspected":
+                claim["predicate"] = "inspected-never"
+    else:
+        knowledge["pages"] = []
+
+    tampered_path = tmp_path / "tampered.json"
+    tampered_path.write_text(json.dumps(tampered))
+    # The public loader must refuse the inconsistent report.
+    with pytest.raises(AuthoringReviewError):
+        load_authoring_review_report(tampered_path)
+    # The public CLI check boundary must refuse it too.
+    code, refused = _run_cli(
+        [
+            "authoring-check",
+            str(kb),
+            "--review",
+            str(tampered_path),
+            "--revision",
+            commit,
+            "--json",
+        ],
+        capsys,
+    )
+    assert code == 1
+    assert refused["ok"] is False
+    # A changed report record must not clear the public SDK check either.
+    record = msgspec.json.decode(json.dumps(tampered), type=AuthoringReview)
+    try:
+        sdk_check = check_authoring_commit(kb, record, commit)
+    except AuthoringReviewError:
+        sdk_check = None
+    assert sdk_check is None or sdk_check.matches_reviewed_candidate is False
+
+
+@pytest.mark.parametrize("undisplayed", ["plain_notes_file", "reserved_navigation_index"])
+def test_review_refuses_undisplayed_submitted_paths(undisplayed, tmp_path, capsys):
+    """F2: submitted paths the review never displays must refuse, not ride along."""
+    repo, kb, base = _staged_candidate(tmp_path)
+    if undisplayed == "plain_notes_file":
+        (kb / "notes.txt").write_text("Scratch notes that were never reviewed as knowledge.\n")
+    else:
+        # A valid marked Navigation Index (reserved derived artifact, issue #64):
+        # excluded from loaded pages by contract, so the review displays no
+        # readable content for it.
+        (kb / "index.md").write_text(
+            "---\n"
+            "lumio:\n"
+            "  artifact: navigation-index\n"
+            "  version: 1\n"
+            "---\n"
+            "\n"
+            "# Navigation Index\n"
+            "\n"
+            "- Hydraulic Press\n"
+        )
+    _git(repo, "add", "--", "kb")
+    code, refused = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+    assert code == 1, refused
+    assert refused["ok"] is False
+    assert refused["schema_version"] == 1
+    assert refused["error"]["code"]
+
+
+def _press_page(mark: str, *, summary: str, confidence: str | None, body_extra: str = "") -> str:
+    """One press page whose source identity/URL, summary and Claim confidence vary."""
+    confidence_line = f"    confidence: {confidence}\n" if confidence is not None else ""
+    return (
+        "---\n"
+        f'id: "{PRESS_ENTITY}"\n'
+        'title: "Hydraulic Press"\n'
+        "entity_types:\n"
+        "  - machine\n"
+        "category: concepts\n"
+        'type: "machine page"\n'
+        'durability_rationale: "The original document permanently supports this page."\n'
+        'tags:\n  - "workshop"\n'
+        f'summary: "{summary}"\n'
+        'lifecycle: "draft"\n'
+        'visibility: "internal"\n'
+        "sources:\n"
+        f'  - id: "{MANUAL_ID}"\n'
+        f'    title: "Operator Manual {mark}"\n'
+        f'    url: "https://fixt.example/manual-{mark}"\n'
+        "claims:\n"
+        "  - id: claim:manual-documented\n"
+        "    predicate: documented-at\n"
+        '    value: "2026-10-01"\n'
+        "    value_type: string\n"
+        "    status: accepted\n"
+        f"{confidence_line}"
+        "    evidence:\n"
+        '      - section: "Overview"\n'
+        "synthetic: false\n"
+        "---\n\n"
+        "# Hydraulic Press\n\n"
+        "## Overview\n\n"
+        f"Supported by the {MANUAL_ID} original.\n"
+        + body_extra
+    )
+
+
+def test_review_displays_semantic_before_and_after(tmp_path, capsys):
+    """F3: changed semantic values are recoverable before AND after, in the
+    structured report and the ordinary CLI review."""
+    repo = _init_repo(tmp_path / "repo")
+    kb = repo / "kb"
+    (kb / "concepts").mkdir(parents=True)
+    base_control = """\
+version: 2
+mode: "categorized"
+categories:
+  - name: concepts
+ontology:
+  entity_types:
+    machine:
+      description: "A machine documented by an original source."
+    note: {}
+    journal: {}
+  predicates:
+    documented-at:
+      subject_types:
+        - machine
+        - note
+      literal_kind: string
+"""
+    candidate_control = base_control.replace(
+        "        - machine\n        - note\n      literal_kind: string",
+        "        - machine\n        - note\n        - journal\n      literal_kind: string",
+    )
+    (kb / "lumio.yaml").write_text(base_control)
+    (kb / "concepts" / "hydraulic-press.md").write_text(
+        _press_page("v1", summary="Hydraulic Press summary.", confidence=None)
+    )
+    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        _manifest(
+            {MANUAL_ID: "active"},
+            {PRESS_ENTITY: {MANUAL_ID: MANUAL_DIGEST}},
+        )
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "baseline revision")
+    base = _git(repo, "rev-parse", "HEAD")
+    (kb / "concepts" / "hydraulic-press.md").write_text(
+        _press_page(
+            "v2",
+            summary="Revised press summary.",
+            confidence="0.9",
+            body_extra="## Pressure\n\nThe guard interlock is verified weekly.\n",
+        )
+    )
+    (kb / "lumio.yaml").write_text(candidate_control)
+    _git(repo, "add", "--", "kb")
+
+    code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+    assert code == 0, payload
+    report = json.dumps(payload)
+    # Source URL and title before/after (same Source ID).
+    assert "https://fixt.example/manual-v1" in report
+    assert "https://fixt.example/manual-v2" in report
+    assert "Operator Manual v1" in report
+    assert "Operator Manual v2" in report
+    # Summary before/after.
+    assert "Hydraulic Press summary." in report
+    assert "Revised press summary." in report
+    # Claim confidence after (fixed fixture fact, absent from the base).
+    assert "0.9" in report
+    # Predicate domain change: only the candidate definition contains journal.
+    assert "journal" in report
+    # The ordinary (non-JSON) review renders body and semantic changes too.
+    code = main(["authoring-review", str(kb), "--base", base])
+    plain = capsys.readouterr().out
+    assert code == 0
+    assert "The guard interlock is verified weekly." in plain
+    assert "https://fixt.example/manual-v2" in plain
+    assert "Revised press summary." in plain
+
+
+def test_authoring_check_rejects_wrong_selected_kb(tmp_path, capsys):
+    """F4: the check binds the selected Knowledge Base, not just the repository."""
+    namespace_a = "urn:uuid:1f0e3d99-0001-4001-8001-00000000000a"
+    namespace_b = "urn:uuid:1f0e3d99-0001-4001-8001-00000000000b"
+    repo = _init_repo(tmp_path / "repo")
+    kb_a = repo / "kb-a"
+    kb_b = repo / "kb-b"
+    for kb, namespace in ((kb_a, namespace_a), (kb_b, namespace_b)):
+        (kb / "concepts").mkdir(parents=True)
+        (kb / "lumio.yaml").write_text(CONTROL)
+    (kb_a / "concepts" / "hydraulic-press.md").write_text(
+        _page("Hydraulic Press", PRESS_ENTITY, "machine", MANUAL_ID, "claim:manual-documented")
+    )
+    (kb_a / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        _manifest({MANUAL_ID: "active"}, {PRESS_ENTITY: {MANUAL_ID: MANUAL_DIGEST}})
+    )
+    (kb_b / "concepts" / "registry-note.md").write_text(
+        _page("Registry Note", MEMO_ENTITY, "note", MEMO_ID, "claim:memo-documented")
+    )
+    (kb_b / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        _manifest({MEMO_ID: "active"}, {MEMO_ENTITY: {MEMO_ID: MEMO_DIGEST}})
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "baseline revision")
+    base = _git(repo, "rev-parse", "HEAD")
+    (kb_a / "concepts" / "hydraulic-press.md").write_text(
+        _page(
+            "Hydraulic Press",
+            PRESS_ENTITY,
+            "machine",
+            MANUAL_ID,
+            "claim:manual-documented",
+            body_extra="## Pressure\n\nThe guard interlock is verified weekly.\n",
+        )
+    )
+    _git(repo, "add", "--", "kb-a")
+    code, payload = _run_cli(["authoring-review", str(kb_a), "--base", base, "--json"], capsys)
+    assert code == 0, payload
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps(payload))
+    _git(repo, "commit", "-q", "-m", "reviewed kb-a candidate")
+    commit = _git(repo, "rev-parse", "HEAD")
+
+    # Checking with kb-b selected must refuse: that Knowledge Base was never
+    # the reviewed scope, even though the commit tree is exact.
+    code, check = _run_cli(
+        [
+            "authoring-check",
+            str(kb_b),
+            "--review",
+            str(report_path),
+            "--revision",
+            commit,
+            "--json",
+        ],
+        capsys,
+    )
+    assert code == 1
+    if check.get("ok") is True:
+        assert check["matches_reviewed_candidate"] is False
+    else:
+        assert check["ok"] is False
+
+
+@pytest.mark.parametrize("structural_defect", ["missing_binding", "nonexistent_entity"])
+def test_review_validates_bindings_without_registry(structural_defect, tmp_path, capsys):
+    """F5: structural Source Reference Manifest validation never depends on a registry."""
+    repo, kb, base = _staged_candidate(tmp_path)
+    if structural_defect == "missing_binding":
+        # The active managed operator-manual source is declared by the press
+        # page but carries no binding for its Entity.
+        tampered_bindings = {
+            MEMO_ENTITY: {MEMO_ID: MEMO_DIGEST},
+            SAW_ENTITY: {BANDSAW_ID: BANDSAW_DIGEST},
+            SAW_CARE_ENTITY: {BANDSAW_ID: BANDSAW_DIGEST},
+        }
+    else:
+        tampered_bindings = {
+            PRESS_ENTITY: {MANUAL_ID: MANUAL_DIGEST},
+            MEMO_ENTITY: {MEMO_ID: MEMO_DIGEST},
+            TOOLLOG_ENTITY: {TOOLLOG_ID: TOOLLOG_DIGEST},
+            SAW_ENTITY: {BANDSAW_ID: BANDSAW_DIGEST},
+            SAW_CARE_ENTITY: {BANDSAW_ID: BANDSAW_DIGEST},
+            "entity:ghost": {MANUAL_ID: MANUAL_DIGEST},
+        }
+    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        _manifest(
+            {MANUAL_ID: "active", MEMO_ID: "active", BANDSAW_ID: "active"},
+            tampered_bindings,
+        )
+    )
+    _git(repo, "add", "--", "kb")
+    code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+    if code == 0:
+        issues = json.dumps(payload["knowledge"]["validation_issues"])
+        assert payload["knowledge"]["kb_valid"] is False
+        assert "entity:ghost" in issues or "entity:hydraulic-press" in issues or (
+            MANUAL_ID in issues
+        )
+    else:
+        assert payload["ok"] is False
+        assert payload["schema_version"] == 1
+
+
+@pytest.mark.parametrize("expression", ["HEAD^{tree}", "movable-branch^{tree}"])
+def test_review_requires_immutable_candidate_tree(expression, tmp_path):
+    """F6: candidate_tree must be one exact full tree OID, not a movable expression."""
+    from lumio_wiki.authoring_review import AuthoringReviewError, review_knowledge_changes
+
+    repo, kb, base = _staged_candidate(tmp_path)
+    _git(repo, "branch", "movable-branch")
+    with pytest.raises(AuthoringReviewError):
+        review_knowledge_changes(kb, base, candidate_tree=expression)
+    # Control: an independently obtained full native Git tree OID is accepted
+    # and reported as the immutable identity.
+    tree_oid = _git(repo, "write-tree")
+    scoped = review_knowledge_changes(kb, base, candidate_tree=tree_oid)
+    assert scoped.candidate_tree == tree_oid
+
+
+@pytest.mark.parametrize("malformed", ["invalid_yaml_syntax", "ontology_wrong_shape"])
+def test_review_handles_invalid_staged_ontology(malformed, tmp_path, capsys):
+    """F10: invalid staged Control Files produce bounded versioned failures."""
+    repo, kb, base = _staged_candidate(tmp_path)
+    if malformed == "invalid_yaml_syntax":
+        (kb / "lumio.yaml").write_text(
+            'version: 2\nmode: "categorized"\ncategories:\n  - name: concepts\nontology: [unclosed\n'
+        )
+    else:
+        (kb / "lumio.yaml").write_text(
+            'version: 2\nmode: "categorized"\ncategories:\n  - name: concepts\n'
+            "ontology:\n  - documented-at\n"
+        )
+    _git(repo, "add", "--", "kb")
+    status_before = _git(repo, "--no-optional-locks", "status", "--porcelain")
+    code, refused = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+    assert code == 1
+    assert refused["ok"] is False
+    assert refused["schema_version"] == 1
+    assert refused["error"]["code"]
+    assert _git(repo, "--no-optional-locks", "status", "--porcelain") == status_before
