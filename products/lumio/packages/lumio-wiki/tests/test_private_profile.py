@@ -584,3 +584,191 @@ def test_cli_profile_mode_rejects_competing_selections(tmp_path, monkeypatch, ca
     version = selected_registry.find_version("operator-manual", RAW_MANUAL_DIGEST)
     assert version is not None
     assert (kb / "concepts" / "workbench_press.md").is_file()
+
+
+# ---------------------------------------------------------------------------
+# Review regressions R1–R3 (spec 0010 §2.1; outcomes from the accepted
+# contract and the documented public callers/adapter surface, never from
+# implementation output).
+# ---------------------------------------------------------------------------
+
+FETCHED_BODY = b"Operator bulletin: torque the anvil bolts to 40 Nm."
+FETCHED_DIGEST = hashlib.sha256(FETCHED_BODY).hexdigest()
+FETCHED_FINAL_URL = "https://docs.example.test/final/bulletin"
+FETCHED_RETRIEVED_AT = "2026-10-23T12:00:00+00:00"
+
+RESEARCH_CONSULTED = [
+    "https://standards.example.test/bulletins",
+    "https://vendor.example.test/anvil-guide",
+]
+RESEARCH_MANIFEST = """\
+- url: https://standards.example.test/bulletins
+  title: Standards bulletins index
+  accessed_at: "2026-10-23T10:00:00+00:00"
+- url: https://vendor.example.test/anvil-guide
+  title: Anvil maintenance guide
+  accessed_at: "2026-10-23T10:05:00+00:00"
+"""
+
+
+@pytest.mark.parametrize("route", ["url", "research"])
+def test_profile_ingest_provenance_uses_selected_registry(tmp_path, monkeypatch, capsys, route):
+    """R1: profile-only ingest-url/ingest-research persist their provenance
+    under the profile-selected registry at the independently computed raw
+    digest (§2.1 coherent configuration; fixed fetch bytes, no network)."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    monkeypatch.chdir(tmp_path)
+    _clear_private_env(monkeypatch)
+    # Profile ONLY: no --source-registry and no legacy registry environment.
+    profile_path = _write_profile(_subdir(tmp_path, "profiles"), _profile_dict(tmp_path))
+    registry_root = (tmp_path / "private" / "registry").resolve()
+    page = tmp_path / "workbench-press.md"
+    page.write_text(COMPILED_PAGE)
+    source_id = "operator-manual"
+
+    if route == "url":
+        from lumio_wiki.url_fetch import UrlFetchResult
+
+        def _fixed_fetch(url, policy):
+            return UrlFetchResult(
+                original_url=url,
+                final_url=FETCHED_FINAL_URL,
+                body=FETCHED_BODY,
+                media_type="text/html",
+                filename="bulletin.html",
+                content_hash=FETCHED_DIGEST,
+                retrieved_at=FETCHED_RETRIEVED_AT,
+                redirects=1,
+            )
+
+        monkeypatch.setattr("lumio_wiki.url_fetch.fetch_url", _fixed_fetch)
+        raw_digest = FETCHED_DIGEST
+        argv = [
+            "ingest-url",
+            str(kb),
+            "https://docs.example.test/bulletin",
+            "--compiled-page",
+            str(page),
+            "--source-id",
+            source_id,
+            "--private-profile",
+            str(profile_path),
+        ]
+    else:
+        report = tmp_path / "research-report.md"
+        report.write_text(COMPILED_PAGE)
+        manifest = tmp_path / "consulted.yaml"
+        manifest.write_text(RESEARCH_MANIFEST)
+        raw_digest = hashlib.sha256(report.read_bytes()).hexdigest()
+        argv = [
+            "ingest-research",
+            str(kb),
+            "--report",
+            str(report),
+            "--manifest",
+            str(manifest),
+            "--source-id",
+            source_id,
+            "--private-profile",
+            str(profile_path),
+        ]
+
+    capsys.readouterr()
+    code = main(argv)
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    # The exact raw version is registered in the PROFILE-selected registry.
+    registry = SourceRegistry(registry_root)
+    assert registry.find_version(source_id, raw_digest) is not None
+    # Provenance is persisted under that same registry root, digest-bound.
+    records = sorted((registry_root / "provenance" / source_id / raw_digest).glob("*.json"))
+    assert len(records) == 1
+    payload = json.loads(records[0].read_text())
+    if route == "url":
+        assert payload["kind"] == "url"
+        assert payload["source_url"] == "https://docs.example.test/bulletin"
+        assert payload["final_url"] == FETCHED_FINAL_URL
+        assert payload["retrieved_at"] == FETCHED_RETRIEVED_AT
+        assert payload["media_type"] == "text/html"
+    else:
+        assert payload["kind"] == "research"
+        assert [item["url"] for item in payload["consulted"]] == RESEARCH_CONSULTED
+
+
+def test_profile_s3_connection_ignores_ambient_selection(tmp_path, monkeypatch):
+    """R2: the explicit S3 profile stays authoritative over conflicting
+    synthetic ambient AWS settings; asserted on the real installed obstore
+    adapter's documented ``config`` surface (fake keys/values only)."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    monkeypatch.chdir(tmp_path)
+    _clear_private_env(monkeypatch)
+    profile = _profile_dict(tmp_path)
+    assert profile["exchange"] is not None
+    profile["exchange"]["endpoint"] = "https://s3-profiled.example.test"
+    profile["exchange"]["url_style"] = "path"
+    profile["exchange"]["credentials"]["session_token_env"] = "JP_TEST_SESSION_TOKEN"
+    profile_path = _write_profile(_subdir(tmp_path, "profiles"), profile)
+    loaded = load_private_profile(profile_path, kb_root=kb)
+
+    # Conflicting synthetic ambient selections (fake values only).
+    monkeypatch.setenv("AWS_ENDPOINT_URL_S3", "https://s3-ambient.example.test")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "ambient-session-token")
+    monkeypatch.setenv("AWS_SKIP_SIGNATURE", "true")
+    monkeypatch.setenv("AWS_VIRTUAL_HOSTED_STYLE_REQUEST", "true")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "ambient-key-id")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "ambient-secret")
+
+    resolved = resolve_private_profile(
+        loaded,
+        kb_root=kb,
+        needs=frozenset({"exchange"}),
+        environ={
+            ACCESS_KEY_ENV: "jp-profile-key-id",
+            SECRET_KEY_ENV: "jp-profile-secret",
+            "JP_TEST_SESSION_TOKEN": "jp-profile-session-token",
+        },
+    )
+    assert isinstance(resolved.exchange, ResolvedS3Exchange)
+    import obstore
+
+    # The runtime object must BE the real installed adapter, and assertions
+    # target its documented public config surface, not our declaration.
+    store = resolved.exchange.store
+    assert isinstance(store, obstore.store.S3Store)
+    config = store.config  # documented S3Config surface
+    # The documented precedence: aws_endpoint_url_s3 outranks endpoint.
+    effective_endpoint = config.get("aws_endpoint_url_s3") or config.get("endpoint")
+    assert effective_endpoint == "https://s3-profiled.example.test"
+    assert not config.get("virtual_hosted_style_request")
+    assert not config.get("skip_signature")
+    assert config.get("access_key_id") == "jp-profile-key-id"
+    assert config.get("session_token") == "jp-profile-session-token"
+
+
+def test_profile_inspect_handles_malformed_endpoint(tmp_path, monkeypatch, capsys):
+    """R3: a malformed endpoint (operator typo) in even an unused exchange
+    yields the structured exit-2 invalid_private_profile refusal without the
+    raw value or a traceback."""
+    repo = _init_repo(tmp_path)
+    kb = _write_kb(repo)
+    monkeypatch.chdir(tmp_path)
+    _clear_private_env(monkeypatch)
+    profile = _profile_dict(tmp_path)
+    assert profile["exchange"] is not None
+    profile["exchange"]["endpoint"] = "https://[::1"
+    profile_path = _write_profile(_subdir(tmp_path, "profiles"), profile)
+
+    capsys.readouterr()
+    code = main(
+        ["private-profile", "inspect", str(profile_path), "--kb", str(kb), "--json"]
+    )
+    captured = capsys.readouterr()
+    assert code == 2
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "invalid_private_profile"
+    combined = captured.out + captured.err
+    assert "https://[::1" not in combined
+    assert "Traceback" not in combined
