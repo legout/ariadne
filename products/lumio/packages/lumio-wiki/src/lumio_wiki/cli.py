@@ -2614,6 +2614,115 @@ def _cmd_private_profile_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _bootstrap_source_registry(args: argparse.Namespace, kb_root: Path):
+    """Resolve the bootstrap Source Registry: registry-only profile or explicit flag.
+
+    Spec 0010 §2.1/§5.1: profile mode resolves only the ``registry`` resource
+    (metadata bootstrap needs no artifact store or exchange access, so no
+    unused S3 credentials are ever touched); without a profile the explicit
+    ``--source-registry`` selection is required — bootstrap never guesses
+    private state.
+    """
+    selection = _private_profile_selection(args, kb_root, frozenset({"registry"}))
+    if selection is not None:
+        if selection.source_registry is None:  # pragma: no cover - resolver contract
+            raise CliError(
+                "the selected private profile resolved no Source Registry for a "
+                "registry-only bootstrap",
+                code="invalid_private_profile",
+            )
+        return selection.source_registry
+    registry = _git_source_registry(args)
+    if registry is None:
+        raise CliError(
+            "source-bootstrap requires an explicitly selected private Source Registry: "
+            "pass --source-registry <dir> or --private-profile <file> (spec 0010 §2.1)",
+            code="missing_source_registry",
+        )
+    return registry
+
+
+def _cmd_source_bootstrap(args: argparse.Namespace) -> int:
+    """``source-bootstrap export|inspect|import``: metadata-only bootstrap (§5.1)."""
+    from lumio_wiki.git_authoring import GitAuthoringError
+    from lumio_wiki.source_handoff import (
+        BaselineExport,
+        BaselineImport,
+        BaselinePreview,
+        SourceBaselineError,
+        export_source_baseline,
+        import_source_baseline,
+        inspect_source_baseline,
+    )
+    from lumio_wiki.source_registry import SourceRegistryError
+
+    kb = Path(args.path)
+    command = args.source_bootstrap_command
+    try:
+        registry = _bootstrap_source_registry(args, kb)
+        if command == "export":
+            result: BaselineExport | BaselinePreview | BaselineImport
+            result = export_source_baseline(
+                kb, args.revision, source_registry=registry, output_path=args.output
+            )
+        elif command == "inspect":
+            result = inspect_source_baseline(
+                kb,
+                args.snapshot,
+                args.revision,
+                expected_digest=args.digest,
+                source_registry=registry,
+            )
+        else:
+            result = import_source_baseline(
+                kb,
+                args.snapshot,
+                args.revision,
+                expected_digest=args.digest,
+                source_registry=registry,
+                confirmation=args.confirm,
+            )
+    except SourceBaselineError as exc:
+        raise CliError(str(exc), code="invalid_source_baseline") from exc
+    except SourceRegistryError as exc:
+        raise CliError(str(exc), code="source_registry_error") from exc
+    except GitAuthoringError as exc:
+        raise CliError(str(exc), code="git_authoring_error") from exc
+    known: tuple[type, ...] = (BaselineExport, BaselinePreview, BaselineImport)
+    if not isinstance(result, known):  # pragma: no cover
+        raise CliError("unexpected bootstrap result", code="invalid_source_baseline")
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **msgspec.to_builtins(result)}))
+        return 0
+    if command == "export":
+        print(f"Exported Source Baseline Snapshot: {result.output_path}")
+        print(f"  namespace:          {result.namespace}")
+        print(f"  revision:           {result.revision}")
+        print(f"  bindings/versions:  {result.binding_count}/{result.version_count}")
+        print(f"  snapshot sha256:    {result.snapshot_sha256}")
+        print("Share the digest out-of-band; the snapshot carries no original bytes.")
+    elif command == "inspect":
+        print("Baseline preview: ready" if result.ready else "Baseline preview: BLOCKED")
+        for blocker in result.blockers:
+            print(f"  blocker: {blocker}")
+        print(f"  namespace:          {result.namespace}")
+        print(f"  versions to add/reuse: {result.versions_to_add}/{result.versions_to_reuse}")
+        print(f"  Confirmation digest: {result.confirmation_digest}")
+        print("Preview is read-only and grants no approval; confirmation binds this exact preview.")
+    elif result.status == "preview":
+        print("Baseline import preview (no changes were made).")
+        for blocker in result.blockers:
+            print(f"  blocker: {blocker}")
+        print(f"  Confirmation digest: {result.confirmation_digest}")
+        print("Re-run with --confirm <preview-digest> to import.")
+    else:
+        print(f"Imported baseline metadata for revision {result.revision}.")
+        print(f"  versions added/reused: {result.versions_added}/{result.versions_reused}")
+        print(f"  provenance records: {result.provenance_records}")
+        print("No original bytes were transferred or marked available.")
+    return 0
+
+
 def _artifact_retention_required() -> bool:
     """Whether artifact retention is configured as required (issue #164).
 
@@ -7735,6 +7844,116 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit a stable machine-readable inspection result.",
     )
     private_profile_inspect_parser.set_defaults(func=_cmd_private_profile_inspect)
+
+    # source-bootstrap — metadata-only baseline bootstrap (spec 0010 §5.1).
+    source_bootstrap_parser = subparsers.add_parser(
+        "source-bootstrap",
+        help=("Export/inspect/import a metadata-only Source Baseline Snapshot (spec 0010 §5.1)."),
+        description=(
+            "Bootstrap one fresh contributor from exact baseline metadata: the "
+            "maintainer exports the exact Source Version metadata referenced by a "
+            "selected Git base revision; the contributor verifies the out-of-band "
+            "digest and additively imports it against that same base. The snapshot "
+            "carries no original or extracted bytes and confers no source access, "
+            "availability or publication permission; import without --confirm is a "
+            "read-only preview."
+        ),
+    )
+    source_bootstrap_sub = source_bootstrap_parser.add_subparsers(
+        dest="source_bootstrap_command", required=True, metavar="<source-bootstrap-command>"
+    )
+    bootstrap_export_parser = source_bootstrap_sub.add_parser(
+        "export",
+        help="Export a snapshot for one exact base revision (maintainer side).",
+    )
+    _add_kb_argument(bootstrap_export_parser)
+    bootstrap_export_parser.add_argument(
+        "--revision",
+        required=True,
+        type=str,
+        help="The exact FULL commit id (40 hex characters) of the selected base.",
+    )
+    bootstrap_export_parser.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="Snapshot archive path to write (manifest-only uncompressed tar).",
+    )
+    bootstrap_export_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Explicitly selected private Source Registry directory holding the "
+            "baseline Source Versions."
+        ),
+    )
+    _add_private_profile_argument(bootstrap_export_parser)
+    bootstrap_export_parser.add_argument(
+        "--json", action="store_true", help="Emit a stable machine-readable result."
+    )
+    bootstrap_export_parser.set_defaults(func=_cmd_source_bootstrap)
+
+    def _add_bootstrap_verify_arguments(parser: argparse.ArgumentParser) -> None:
+        _add_kb_argument(parser)
+        parser.add_argument(
+            "--snapshot",
+            required=True,
+            type=Path,
+            help="Path to the Source Baseline Snapshot archive.",
+        )
+        parser.add_argument(
+            "--digest",
+            required=True,
+            type=str,
+            help=(
+                "Expected SHA-256 of the complete archive, supplied out-of-band "
+                "from maintainer-approved setup or direct operator selection."
+            ),
+        )
+        parser.add_argument(
+            "--revision",
+            required=True,
+            type=str,
+            help="The exact FULL commit id (40 hex characters) of the selected base.",
+        )
+        parser.add_argument(
+            "--source-registry",
+            type=Path,
+            default=None,
+            help="Explicitly selected private destination Source Registry directory.",
+        )
+        _add_private_profile_argument(parser)
+        parser.add_argument(
+            "--json", action="store_true", help="Emit a stable machine-readable result."
+        )
+
+    bootstrap_inspect_parser = source_bootstrap_sub.add_parser(
+        "inspect",
+        help="Preview one snapshot against the selected base (read-only).",
+    )
+    _add_bootstrap_verify_arguments(bootstrap_inspect_parser)
+    bootstrap_inspect_parser.set_defaults(func=_cmd_source_bootstrap)
+
+    bootstrap_import_parser = source_bootstrap_sub.add_parser(
+        "import",
+        help=(
+            "Import one snapshot additively; without --confirm this previews "
+            "the exact import instead."
+        ),
+    )
+    _add_bootstrap_verify_arguments(bootstrap_import_parser)
+    bootstrap_import_parser.add_argument(
+        "--confirm",
+        type=str,
+        default=None,
+        metavar="<preview-digest>",
+        help=(
+            "The exact confirmation digest reported by the preview; binds this "
+            "snapshot, revision and coverage — a stale or wrong digest refuses."
+        ),
+    )
+    bootstrap_import_parser.set_defaults(func=_cmd_source_bootstrap)
 
     # mcp — read-only MCP server over stdio (PRD-0007, ADR-0028); needs [mcp].
     mcp_parser = subparsers.add_parser(

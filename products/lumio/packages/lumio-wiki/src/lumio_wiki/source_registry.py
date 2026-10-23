@@ -57,6 +57,13 @@ def safe_artifact_filename(filename: str | None) -> str | None:
     return base[:SAFE_FILENAME_MAX_LENGTH]
 
 
+#: A Source Version content hash: exactly 64 lowercase hex characters
+#: (SHA-256). Used at the metadata-registration boundary (spec 0010 §5.1)
+#: where no raw bytes are hashed locally, so the transferred value itself
+#: must already be exact.
+_CONTENT_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
 class SourceRegistryError(ValueError):
     """A requested private Knowledge Source state transition is invalid."""
 
@@ -241,6 +248,10 @@ class _RegistryState(msgspec.Struct, frozen=True):
     sources: list[KnowledgeSource] = msgspec.field(default_factory=list)
     candidates: list[RetirementCandidate] = msgspec.field(default_factory=list)
     pending_transitions: list[_LegacyPendingSourceTransition] = msgspec.field(default_factory=list)
+    # Explicit KB namespace scope (spec 0010 §5.1, plan J0): ``None`` until an
+    # additive metadata import first scopes this registry. Existing registry
+    # files decode without it and ordinary native writes never assign it.
+    namespace: str | None = None
 
 
 def _now() -> str:
@@ -561,6 +572,103 @@ class SourceRegistry:
             self._commit(msgspec.structs.replace(state, sources=sources))
             return version, "registered"
 
+    def register_version_metadata(
+        self,
+        source_id: str,
+        content_hash: str,
+        *,
+        size: int,
+        filename: str | None = None,
+        content_type: str | None = None,
+        namespace: str | None = None,
+    ) -> tuple[SourceVersion, str]:
+        """Additively register one version's METADATA without raw bytes (spec 0010 §5.1).
+
+        The Source Baseline Snapshot import seam: a fresh contributor receives
+        exact referenced version metadata, never original bytes. A new record
+        is created ``artifact_available=False`` — metadata alone can never
+        assert a verified artifact — and an existing exact version is never
+        modified: identical metadata converges ("reused"), conflicting
+        populated immutable values (``size``/``filename``/``content_type``)
+        refuse explicitly, and locally verified availability is preserved.
+        ``namespace`` (when given) scopes the registry explicitly: an
+        unassigned registry is assigned once; a registry already assigned to
+        a different namespace is refused — never silently migrated.
+        """
+        _validate_source_id(source_id)
+        if not isinstance(content_hash, str) or not _CONTENT_HASH_PATTERN.match(content_hash):
+            raise SourceRegistryError("content_hash must be exactly 64 lowercase hex characters")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise SourceRegistryError("size must be a non-negative integer")
+        safe_filename = safe_artifact_filename(filename)
+        with mutation_lock(self.root):
+            state = self._reload()
+            _refuse_legacy_pending(state)
+            if (
+                namespace is not None
+                and state.namespace is not None
+                and state.namespace != namespace
+            ):
+                raise SourceRegistryError(
+                    "the selected source registry is already assigned to namespace "
+                    f"{state.namespace!r} and cannot be scoped to {namespace!r}; "
+                    "select the registry for this namespace instead"
+                )
+            source_index = next(
+                (i for i, item in enumerate(state.sources) if item.source_id == source_id),
+                None,
+            )
+            existing: SourceVersion | None = None
+            if source_index is not None:
+                existing = next(
+                    (
+                        version
+                        for version in state.sources[source_index].versions
+                        if version.content_hash == content_hash
+                    ),
+                    None,
+                )
+            if existing is not None:
+                for field, incoming in (
+                    ("size", size),
+                    ("filename", safe_filename),
+                    ("content_type", content_type),
+                ):
+                    current = getattr(existing, field)
+                    if incoming is not None and current is not None and incoming != current:
+                        raise SourceRegistryError(
+                            f"immutable metadata conflict for {source_id!r}@{content_hash}: "
+                            f"{field} is recorded as {current!r}, the transferred "
+                            f"metadata carries {incoming!r}; resolve the conflict explicitly"
+                        )
+                if namespace is not None and state.namespace is None:
+                    self._commit(msgspec.structs.replace(state, namespace=namespace))
+                return existing, "reused"
+            version = SourceVersion(
+                source_id=source_id,
+                content_hash=content_hash,
+                created_at=_now(),
+                filename=safe_filename,
+                content_type=content_type,
+                size=size,
+            )
+            if source_index is None:
+                sources = [
+                    *state.sources,
+                    KnowledgeSource(source_id=source_id, status="active", versions=[version]),
+                ]
+            else:
+                sources = list(state.sources)
+                sources[source_index] = msgspec.structs.replace(
+                    state.sources[source_index],
+                    versions=[*state.sources[source_index].versions, version],
+                )
+            state = msgspec.structs.replace(state, sources=sources)
+            if namespace is not None and state.namespace is None:
+                state = msgspec.structs.replace(state, namespace=namespace)
+            self._commit(state)
+            return version, "registered"
+
     def find_version(self, source_id: str, content_hash: str) -> SourceVersion | None:
         """Resolve one EXACT registered Source Version, never registry-latest.
 
@@ -576,6 +684,11 @@ class SourceRegistry:
                     continue
                 return next((v for v in source.versions if v.content_hash == content_hash), None)
         return None
+
+    def assigned_namespace(self) -> str | None:
+        """The registry's explicit KB namespace scope, or ``None`` (spec 0010 §5.1)."""
+        with mutation_lock(self.root):
+            return self._reload().namespace
 
     def record_artifact_binding(self, source_id: str, content_hash: str) -> None:
         """Mark one exact Source Version as having a verified artifact (#164).

@@ -464,6 +464,17 @@ from lumio_wiki.private_profile import (
     load_private_profile,
     resolve_private_profile,
 )
+from lumio_wiki.source_handoff import (
+    BASELINE_KIND,
+    BASELINE_SCHEMA_VERSION,
+    BaselineExport,
+    BaselineImport,
+    BaselinePreview,
+    SourceBaselineError,
+    export_source_baseline,
+    import_source_baseline,
+    inspect_source_baseline,
+)
 
 __all__ = [
     "ACTIVITY_LOG_ARTIFACT",
@@ -874,6 +885,15 @@ __all__ = [
     "ResolvedS3Exchange",
     "load_private_profile",
     "resolve_private_profile",
+    "BASELINE_KIND",
+    "BASELINE_SCHEMA_VERSION",
+    "BaselineExport",
+    "BaselineImport",
+    "BaselinePreview",
+    "SourceBaselineError",
+    "export_source_baseline",
+    "import_source_baseline",
+    "inspect_source_baseline",
 ]
 
 __version__ = "0.5.1"
