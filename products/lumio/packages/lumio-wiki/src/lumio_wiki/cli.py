@@ -165,6 +165,44 @@ class CliError(Exception):
 
 _MACHINE_ERROR_MESSAGES: dict[str, str] = {}
 
+# Spec 0010 §3 / plan 0010 J1: the extraction and candidate commands report
+# stable, safe failure categories with actionable static messages; private
+# paths and credential values never enter the envelope.
+_MACHINE_ERROR_MESSAGES.update(
+    {
+        "authoring_journey_error": "the authoring journey operation failed",
+        "missing_source": "the original source file does not exist",
+        "unreadable_source": "the original source could not be read",
+        "source_too_large": "the original exceeds the supported size ceiling",
+        "output_inside_repository": ("extraction output must stay outside the content repository"),
+        "empty_extraction": "the extraction produced no normalized text",
+        "conversion_failed": "the document conversion failed",
+        "missing_documents_extra": ("the routed document processor needs the documents extra"),
+        "invalid_candidate_request": "the candidate request is not a valid v1 request",
+        "invalid_base_revision": "the selected base revision is not usable",
+        "base_namespace_mismatch": ("the base revision namespace differs from the worktree"),
+        "request_inside_repository": (
+            "candidate working files must live outside the content repository"
+        ),
+        "invalid_control_candidate": "the candidate Control File is invalid",
+        "invalid_candidate": "the complete candidate failed validation",
+        "invalid_worktree_kb": ("the authoring worktree Knowledge Base does not validate"),
+        "page_routing_error": "an authored page fails ingest routing validation",
+        "missing_entity_id": "an authored page carries no Entity ID",
+        "missing_page": "an authored page file is missing or unreadable",
+        "missing_original": "a candidate original is missing or unreadable",
+        "digest_mismatch": "a declared digest does not match the actual bytes",
+        "identity_conflict": (
+            "the declared source intent conflicts with the base or private history"
+        ),
+        "unsafe_worktree": ("uncommitted author changes exist at a candidate target path"),
+        "retention_required": ("new/changed originals require a selected Source Artifact Store"),
+        "retention_failed": "retained original bytes failed verification",
+        "registration_mismatch": "the registry recorded inconsistent provenance",
+        "apply_failed": ("the candidate was not applied; authored files were restored"),
+    }
+)
+
 
 def _emit_machine_error(exc: CliError, *, schema_version: int | None = None) -> None:
     """Emit one stable error object without a traceback or exception chain.
@@ -186,13 +224,16 @@ def _emit_machine_error(exc: CliError, *, schema_version: int | None = None) -> 
 
 
 def _bootstrap_error_schema_version(args: argparse.Namespace) -> int | None:
-    """New bootstrap JSON failures carry ``schema_version: 1`` (plan0010).
+    """New plan-0010 JSON failures carry ``schema_version: 1``.
 
-    Minimal command-specific selection: only source-bootstrap subcommands
-    opt in, so every legacy error envelope is unchanged. This also covers
-    the early Knowledge-Base path-selection refusal raised in ``main``.
+    Minimal command-specific selection: only the source-bootstrap, extract
+    and ingest-candidate commands opt in, so every legacy error envelope is
+    unchanged. This also covers the early Knowledge-Base path-selection
+    refusal raised in ``main``.
     """
-    return 1 if getattr(args, "source_bootstrap_command", None) is not None else None
+    if getattr(args, "source_bootstrap_command", None) is not None:
+        return 1
+    return 1 if getattr(args, "journey_command", None) is not None else None
 
 
 def default_ingest_dir(kb_root: str | Path) -> Path:
@@ -2734,6 +2775,84 @@ def _cmd_source_bootstrap(args: argparse.Namespace) -> int:
         print(f"  versions added/reused: {result.versions_added}/{result.versions_reused}")
         print(f"  provenance records: {result.provenance_records}")
         print("No original bytes were transferred or marked available.")
+    return 0
+
+
+def _cmd_extract(args: argparse.Namespace) -> int:
+    """``extract``: one real original through the actual processor (spec 0010 §3)."""
+    from lumio_wiki.authoring_journey import AuthoringJourneyError, extract_source
+
+    try:
+        result = extract_source(args.file, output_dir=args.output)
+    except AuthoringJourneyError as exc:
+        raise CliError(str(exc), code=exc.code) from exc
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **msgspec.to_builtins(result)}))
+        return 0
+    print("Extracted source (no distillation, nothing committed):")
+    print(f"  original:  {result.filename} ({result.size} bytes)")
+    print(f"  sha256:    {result.source_sha256}")
+    print(f"  processor: {result.processor}")
+    print(f"  sections:  {len(result.sections)} (coordinates as reported by the processor)")
+    if result.incomplete:
+        print("  note:      an extraction bound was hit; completeness is not claimed")
+    print(f"  output:    {result.output_path} (outside the content repository)")
+    return 0
+
+
+def _cmd_ingest_candidate(args: argparse.Namespace) -> int:
+    """``ingest-candidate``: one complete multi-page/ontology candidate (§3)."""
+    from lumio_wiki.authoring_journey import (
+        AuthoringJourneyError,
+        ingest_candidate,
+        load_candidate_request,
+    )
+    from lumio_wiki.git_authoring import GitAuthoringError
+    from lumio_wiki.mutation import MutationRollbackError
+    from lumio_wiki.source_registry import SourceRegistryError
+
+    kb = Path(args.path)
+    registry, artifact_store = _managed_ingest_selection(args, kb)
+    if registry is None:
+        raise CliError(
+            "ingest-candidate requires the explicitly selected private Source "
+            "Registry: pass --source-registry <dir>, set "
+            f"{SOURCE_REGISTRY_ENV_VAR}, or select --private-profile <file> "
+            "(spec 0010 §2.1)",
+        )
+    try:
+        request = load_candidate_request(args.candidate)
+        result = ingest_candidate(
+            kb,
+            request,
+            source_registry=registry,
+            artifact_store=artifact_store,
+        )
+    except AuthoringJourneyError as exc:
+        raise CliError(str(exc), code=exc.code) from exc
+    except (
+        GitAuthoringError,
+        ManagedIngestError,
+        MutationRollbackError,
+        SourceRegistryError,
+    ) as exc:
+        raise CliError(str(exc), exit_code=1, code="authoring_journey_error") from exc
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **msgspec.to_builtins(result)}))
+        return 0
+    print("Applied one complete candidate into the Git authoring worktree (nothing committed):")
+    print(f"  pages:     {', '.join(result.page_paths)}")
+    print(f"  entities:  {', '.join(result.entity_ids)}")
+    registered = ", ".join(result.registered_sources) if result.registered_sources else "none"
+    print(f"  sources:   {registered} (registered and retained before this success)")
+    print(
+        f"  coverage:  {result.metadata_coverage} metadata / "
+        f"{result.retained_coverage} retained originals"
+    )
+    if result.control_updated:
+        print("  ontology:  candidate Control File applied")
+    print(f"  manifest:  {result.manifest_path}")
+    print("Review the changes and commit them with Git; publication admits an exact commit.")
     return 0
 
 
@@ -7968,6 +8087,81 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     bootstrap_import_parser.set_defaults(func=_cmd_source_bootstrap)
+
+    # extract — one real original through the actual processor (spec 0010 §3).
+    extract_parser = subparsers.add_parser(
+        "extract",
+        help="Extract one original into normalized material outside Git (spec 0010 §3).",
+        description=(
+            "Read one real original file, route it through the existing "
+            "SourceProcessor seam, and persist normalized text, real "
+            "section/page coordinates, the original digest and the actual "
+            "processor identity as one digest-addressed JSON record under the "
+            "selected private output directory — outside any content "
+            "repository. No model provider distills here; missing files, "
+            "missing document extras, conversion failures, empty results and "
+            "detected bounds are disclosed truthfully."
+        ),
+    )
+    extract_parser.add_argument(
+        "file",
+        type=Path,
+        help="Path to the readable original source file.",
+    )
+    extract_parser.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help=(
+            "Private output directory for the digest-addressed extraction "
+            "record; must live outside every Git worktree."
+        ),
+    )
+    extract_parser.add_argument(
+        "--json", action="store_true", help="Emit a stable machine-readable result."
+    )
+    extract_parser.set_defaults(func=_cmd_extract, journey_command=True)
+
+    # ingest-candidate — one complete multi-page/ontology candidate (§3).
+    ingest_candidate_parser = subparsers.add_parser(
+        "ingest-candidate",
+        help="Apply one complete managed candidate into the authoring worktree.",
+        description=(
+            "Read one candidate request (explicit base revision, original "
+            "source records with expected digests and new/update intent, "
+            "authored page paths, optional complete lumio.yaml) from outside "
+            "the content repository. The COMPLETE candidate — pages, ontology, "
+            "cross-page references, exact manifest bindings — is validated "
+            "before any private registration or authoring-file write; new or "
+            "changed originals are registered, retained and verified before "
+            "success; failures roll the authored tree back while immutable "
+            "private residue stays retry-safe. Nothing is committed."
+        ),
+    )
+    _add_kb_argument(ingest_candidate_parser)
+    ingest_candidate_parser.add_argument(
+        "--candidate",
+        required=True,
+        type=Path,
+        help=(
+            "Path to the v1 candidate request JSON file (schema_version 1; "
+            "working files it references live outside the content repository)."
+        ),
+    )
+    ingest_candidate_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Explicitly selected private Source Registry directory (fallback: "
+            f"{SOURCE_REGISTRY_ENV_VAR}); or select --private-profile <file>."
+        ),
+    )
+    _add_private_profile_argument(ingest_candidate_parser)
+    ingest_candidate_parser.add_argument(
+        "--json", action="store_true", help="Emit a stable machine-readable result."
+    )
+    ingest_candidate_parser.set_defaults(func=_cmd_ingest_candidate, journey_command=True)
 
     # mcp — read-only MCP server over stdio (PRD-0007, ADR-0028); needs [mcp].
     mcp_parser = subparsers.add_parser(

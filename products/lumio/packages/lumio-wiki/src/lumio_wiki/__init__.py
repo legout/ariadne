@@ -475,6 +475,17 @@ from lumio_wiki.source_handoff import (
     import_source_baseline,
     inspect_source_baseline,
 )
+from lumio_wiki.authoring_journey import (
+    AuthoringJourneyError,
+    CandidateBinding,
+    CandidateRequest,
+    CandidateResult,
+    CandidateSourceRecord,
+    ExtractionResult,
+    extract_source,
+    ingest_candidate,
+    load_candidate_request,
+)
 
 __all__ = [
     "ACTIVITY_LOG_ARTIFACT",
@@ -894,6 +905,15 @@ __all__ = [
     "export_source_baseline",
     "import_source_baseline",
     "inspect_source_baseline",
+    "AuthoringJourneyError",
+    "CandidateBinding",
+    "CandidateRequest",
+    "CandidateResult",
+    "CandidateSourceRecord",
+    "ExtractionResult",
+    "extract_source",
+    "ingest_candidate",
+    "load_candidate_request",
 ]
 
 __version__ = "0.5.1"
