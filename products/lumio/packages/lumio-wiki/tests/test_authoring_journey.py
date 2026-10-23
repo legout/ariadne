@@ -851,9 +851,7 @@ def _private_selection_request(work: Path, original_path: Path, base: str) -> Pa
     return request_path
 
 
-@pytest.mark.parametrize(
-    "inside", ["original", "registry", "artifact_store", "original_symlink"]
-)
+@pytest.mark.parametrize("inside", ["original", "registry", "artifact_store", "original_symlink"])
 def test_candidate_refuses_private_paths_inside_repository(inside, tmp_path):
     """F7: originals, registries and local stores never live inside the repository."""
     from lumio_wiki.authoring_journey import (
@@ -904,12 +902,12 @@ def test_candidate_refuses_private_paths_inside_repository(inside, tmp_path):
 
     request_path = _private_selection_request(work, original_path, base)
     private_files_before = _tree_files(private)
-    kb_files_before = {
-        p: p.read_bytes() for p in sorted(kb.rglob("*")) if p.is_file()
-    }
-    registry_state_before = (registry_dir / "sources.json").read_bytes() if (
-        registry_dir / "sources.json"
-    ).exists() else None
+    kb_files_before = {p: p.read_bytes() for p in sorted(kb.rglob("*")) if p.is_file()}
+    registry_state_before = (
+        (registry_dir / "sources.json").read_bytes()
+        if (registry_dir / "sources.json").exists()
+        else None
+    )
 
     with pytest.raises(AuthoringJourneyError):
         ingest_candidate(
@@ -921,9 +919,11 @@ def test_candidate_refuses_private_paths_inside_repository(inside, tmp_path):
     # Refusal happens before any private or authoring mutation.
     assert _tree_files(private) == private_files_before
     assert {p: p.read_bytes() for p in sorted(kb.rglob("*")) if p.is_file()} == kb_files_before
-    registry_state_after = (registry_dir / "sources.json").read_bytes() if (
-        registry_dir / "sources.json"
-    ).exists() else None
+    registry_state_after = (
+        (registry_dir / "sources.json").read_bytes()
+        if (registry_dir / "sources.json").exists()
+        else None
+    )
     assert registry_state_after == registry_state_before
 
 
@@ -945,7 +945,10 @@ def test_extract_discloses_converter_truncation(tmp_path, monkeypatch):
     def _fixed_converter(content: bytes, filename: str | None) -> str:
         return big_text
 
-    def _inline_runner(fn, *args, **kwargs):
+    def _inline_runner(fn, *args, timeout=None, **kwargs):
+        # The seam passes the conversion timeout to the runner; an inline
+        # runner applies it trivially and never forwards it into the
+        # two-argument converter.
         return fn(*args, **kwargs)
 
     processor = MarkItDownSourceProcessor(converter=_fixed_converter, runner=_inline_runner)
@@ -988,14 +991,20 @@ def test_candidate_preserves_existing_entity_identity(tmp_path):
     (kb / "lumio.yaml").write_text(CONTROL)
     (kb / "concepts" / "hydraulic-press.md").write_text(
         _managed_page(
-            "Hydraulic Press", PRESS_ENTITY, "machine", MANUAL_ID,
+            "Hydraulic Press",
+            PRESS_ENTITY,
+            "machine",
+            MANUAL_ID,
             claim_id="claim:manual-documented",
         )
     )
     # A supported native state: public-only provenance, no managed binding.
     (kb / "concepts" / "field-guide.md").write_text(
         _managed_page(
-            "Field Guide", GUIDE_ENTITY, "note", GUIDE_SOURCE,
+            "Field Guide",
+            GUIDE_ENTITY,
+            "note",
+            GUIDE_SOURCE,
             claim_id="claim:guide-documented",
         )
     )
@@ -1022,7 +1031,10 @@ def test_candidate_preserves_existing_entity_identity(tmp_path):
     work.mkdir()
     (work / "field-guide.md").write_text(
         _managed_page(
-            "Field Guide", GUIDE_V2_ENTITY, "note", NEW_SOURCE,
+            "Field Guide",
+            GUIDE_V2_ENTITY,
+            "note",
+            NEW_SOURCE,
             claim_id="claim:guide-documented",
         )
     )
@@ -1042,9 +1054,7 @@ def test_candidate_preserves_existing_entity_identity(tmp_path):
     request_path = work / "candidate-request.json"
     request_path.write_text(json.dumps(request, indent=2))
 
-    kb_files_before = {
-        p: p.read_bytes() for p in sorted(kb.rglob("*")) if p.is_file()
-    }
+    kb_files_before = {p: p.read_bytes() for p in sorted(kb.rglob("*")) if p.is_file()}
     registry_state = outside / "registry" / "sources.json"
     registry_before = registry_state.read_bytes() if registry_state.exists() else None
 

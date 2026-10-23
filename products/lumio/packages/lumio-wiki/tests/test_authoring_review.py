@@ -730,7 +730,6 @@ def _committed_review(tmp_path, capsys):
 def test_review_rejects_inconsistent_report_facts(tamper, tmp_path, capsys):
     """F1: every displayed embedded fact is bound to the review digest."""
     import msgspec
-
     from lumio_wiki.authoring_review import (
         AuthoringReview,
         AuthoringReviewError,
@@ -939,20 +938,34 @@ def test_authoring_check_rejects_wrong_selected_kb(tmp_path, capsys):
     repo = _init_repo(tmp_path / "repo")
     kb_a = repo / "kb-a"
     kb_b = repo / "kb-b"
-    for kb, namespace in ((kb_a, namespace_a), (kb_b, namespace_b)):
+    for kb in (kb_a, kb_b):
         (kb / "concepts").mkdir(parents=True)
         (kb / "lumio.yaml").write_text(CONTROL)
     (kb_a / "concepts" / "hydraulic-press.md").write_text(
         _page("Hydraulic Press", PRESS_ENTITY, "machine", MANUAL_ID, "claim:manual-documented")
     )
     (kb_a / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
-        _manifest({MANUAL_ID: "active"}, {PRESS_ENTITY: {MANUAL_ID: MANUAL_DIGEST}})
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(
+                version=1,
+                namespace=namespace_a,
+                sources={MANUAL_ID: "active"},
+                bindings={PRESS_ENTITY: {MANUAL_ID: MANUAL_DIGEST}},
+            )
+        )
     )
     (kb_b / "concepts" / "registry-note.md").write_text(
         _page("Registry Note", MEMO_ENTITY, "note", MEMO_ID, "claim:memo-documented")
     )
     (kb_b / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
-        _manifest({MEMO_ID: "active"}, {MEMO_ENTITY: {MEMO_ID: MEMO_DIGEST}})
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(
+                version=1,
+                namespace=namespace_b,
+                sources={MEMO_ID: "active"},
+                bindings={MEMO_ENTITY: {MEMO_ID: MEMO_DIGEST}},
+            )
+        )
     )
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "baseline revision")
@@ -1009,28 +1022,41 @@ def test_review_validates_bindings_without_registry(structural_defect, tmp_path,
             SAW_CARE_ENTITY: {BANDSAW_ID: BANDSAW_DIGEST},
         }
     else:
+        # Exactly the standard candidate bindings plus the ghost Entity:
+        # the manifest is parseable and structurally as-intended, so the only
+        # inconsistency is the binding no page can resolve.
         tampered_bindings = {
             PRESS_ENTITY: {MANUAL_ID: MANUAL_DIGEST},
             MEMO_ENTITY: {MEMO_ID: MEMO_DIGEST},
-            TOOLLOG_ENTITY: {TOOLLOG_ID: TOOLLOG_DIGEST},
             SAW_ENTITY: {BANDSAW_ID: BANDSAW_DIGEST},
             SAW_CARE_ENTITY: {BANDSAW_ID: BANDSAW_DIGEST},
             "entity:ghost": {MANUAL_ID: MANUAL_DIGEST},
         }
-    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
-        _manifest(
-            {MANUAL_ID: "active", MEMO_ID: "active", BANDSAW_ID: "active"},
-            tampered_bindings,
-        )
-    )
+    tampered_sources = {MANUAL_ID: "active", MEMO_ID: "active", BANDSAW_ID: "active"}
+    tampered_manifest = _manifest(tampered_sources, tampered_bindings)
+    # Fixture guard: the authored manifest must parse and carry exactly the
+    # intended fixed candidate IDs and the ghost binding, so no unrelated
+    # parse refusal can satisfy the failure oracle below.
+    from lumio_wiki.source_references import parse_source_reference_manifest
+
+    parsed_manifest = parse_source_reference_manifest(tampered_manifest)
+    assert parsed_manifest.namespace == NAMESPACE
+    assert set(parsed_manifest.sources) == set(tampered_sources)
+    assert parsed_manifest.bindings["entity:ghost"] == {MANUAL_ID: MANUAL_DIGEST}
+    assert parsed_manifest.bindings[PRESS_ENTITY] == {MANUAL_ID: MANUAL_DIGEST}
+    assert parsed_manifest.bindings[SAW_ENTITY] == {BANDSAW_ID: BANDSAW_DIGEST}
+    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(tampered_manifest)
     _git(repo, "add", "--", "kb")
     code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
     if code == 0:
         issues = json.dumps(payload["knowledge"]["validation_issues"])
         assert payload["knowledge"]["kb_valid"] is False
-        assert "entity:ghost" in issues or "entity:hydraulic-press" in issues or (
-            MANUAL_ID in issues
-        )
+        if structural_defect == "nonexistent_entity":
+            # The named structural diagnostic: the ghost binding resolves to
+            # no Entity in the reviewed Knowledge Base.
+            assert "entity:ghost" in issues
+        else:
+            assert "entity:hydraulic-press" in issues or MANUAL_ID in issues
     else:
         assert payload["ok"] is False
         assert payload["schema_version"] == 1
@@ -1058,7 +1084,8 @@ def test_review_handles_invalid_staged_ontology(malformed, tmp_path, capsys):
     repo, kb, base = _staged_candidate(tmp_path)
     if malformed == "invalid_yaml_syntax":
         (kb / "lumio.yaml").write_text(
-            'version: 2\nmode: "categorized"\ncategories:\n  - name: concepts\nontology: [unclosed\n'
+            'version: 2\nmode: "categorized"\ncategories:\n  - name: concepts\n'
+            "ontology: [unclosed\n"
         )
     else:
         (kb / "lumio.yaml").write_text(
