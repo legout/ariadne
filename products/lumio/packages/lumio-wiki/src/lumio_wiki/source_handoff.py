@@ -1,18 +1,22 @@
-"""Private source transfer kinds (spec 0010 §5/§5.1) — baseline operations.
+"""Private source transfer kinds (spec 0010 §5/§5.1): baseline and full handoff.
 
 J0 delivers the metadata-only **Source Baseline Snapshot**: a distinct,
 versioned artifact kind carrying the exact Source Version metadata referenced
 by one selected Git base revision — never original or extracted bytes, store
-keys, credentials, local paths, availability flags or lifecycle intent. The
-full Source Handoff Bundle (J3) later extends this module; both kinds share
-strict archive and metadata parsing with explicit bounds.
+keys, credentials, local paths, availability flags or lifecycle intent. J3
+delivers the full **Source Handoff Bundle**: the exact Source Versions and
+original bytes selected by new/changed source bindings between two explicit
+commits, plus optional supplementary exact references. Both kinds share
+strict archive and metadata parsing with explicit bounds; the full bundle is
+streamed end to end and never loaded whole into memory.
 
-Integrity model (spec 0010 §5.1): the archive's SHA-256 digest is supplied
+Integrity model (spec 0010 §5/§5.1): the archive's SHA-256 digest is supplied
 out-of-band (maintainer-approved project setup or direct operator selection)
 and proves transfer integrity; matching Git bindings prove identity
 alignment. Neither establishes that the receiver verified source bytes or
-their factual content, and import can never mark an artifact available —
-only retained, verified bytes do that.
+their factual content, and metadata import can never mark an artifact
+available — only retained, verified bytes do that. A handoff confers no
+content approval, lifecycle activation or Publication Admission.
 """
 
 from __future__ import annotations
@@ -20,16 +24,29 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
+import secrets
+import shutil
 import tarfile
+import tempfile
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import msgspec
 
-from lumio_wiki.git_authoring import capture_revision
+from lumio_wiki.artifact_store import (
+    ArtifactAccessDenied,
+    ArtifactStoreError,
+    SourceArtifactStore,
+)
+from lumio_wiki.git_authoring import capture_revision, resolve_repository
 from lumio_wiki.mutation import atomic_write_bytes
-from lumio_wiki.private_provenance import write_baseline_origin_record
+from lumio_wiki.private_provenance import (
+    write_baseline_origin_record,
+    write_handoff_origin_record,
+)
 from lumio_wiki.source_registry import (
     SAFE_FILENAME_MAX_LENGTH,
     SourceRegistry,
@@ -41,16 +58,30 @@ from lumio_wiki.source_registry import (
 __all__ = [
     "BASELINE_KIND",
     "BASELINE_SCHEMA_VERSION",
+    "CONTAINER_OVERHEAD_MAX_BYTES",
+    "HANDOFF_KIND",
+    "HANDOFF_SCHEMA_VERSION",
     "MANIFEST_MAX_BYTES",
     "MAX_BINDING_RECORDS",
+    "MAX_UNIQUE_PAYLOADS",
     "MAX_VERSION_RECORDS",
+    "ORIGINAL_MAX_BYTES",
+    "TOTAL_PAYLOAD_MAX_BYTES",
     "BaselineExport",
     "BaselineImport",
     "BaselinePreview",
+    "HandoffExport",
+    "HandoffImport",
+    "HandoffPreview",
     "SourceBaselineError",
+    "SourceHandoffError",
     "export_source_baseline",
+    "export_source_handoff",
     "import_source_baseline",
+    "import_source_handoff",
     "inspect_source_baseline",
+    "inspect_source_handoff",
+    "parse_reference_selection",
 ]
 
 #: The single supported baseline schema version and its distinct artifact kind.
@@ -929,3 +960,1495 @@ def import_source_baseline(
         provenance_records=provenance_records,
         blockers=[],
     )
+
+
+# ---------------------------------------------------------------------------
+# Full Source Handoff Bundle (spec 0010 §5, plan 0010 J3).
+# ---------------------------------------------------------------------------
+
+#: The single supported full-handoff schema version and its distinct kind.
+HANDOFF_SCHEMA_VERSION = 1
+HANDOFF_KIND = "source-handoff"
+
+#: Default transport ceilings (plan 0010, transfer formats v1). Deployments
+#: may lower these module constants; exceeding a bound is always an explicit
+#: refusal, never a truncated or silently partial handoff.
+ORIGINAL_MAX_BYTES = 512 * 1024 * 1024
+TOTAL_PAYLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024
+MAX_UNIQUE_PAYLOADS = 1000
+CONTAINER_OVERHEAD_MAX_BYTES = 8 * 1024 * 1024
+
+#: One bounded streaming unit for bundle reads, writes and payload staging.
+_HANDOFF_STREAM_CHUNK_BYTES = 1024 * 1024
+
+_HANDOFF_INTENTS = ("new", "update", "reuse")
+_ARTIFACT_NAME = re.compile(r"^artifacts/([0-9a-f]{64})$")
+
+
+class SourceHandoffError(ValueError):
+    """A full Source Handoff Bundle operation violated the §5 contract."""
+
+
+class HandoffExport(msgspec.Struct, frozen=True):
+    """The result of one full handoff export (safe, no private paths)."""
+
+    schema_version: int
+    kind: str
+    transfer_id: str
+    namespace: str
+    kb_subtree: str
+    base_revision: str
+    revision: str
+    source_manifest_digest: str
+    binding_count: int
+    version_count: int
+    payload_count: int
+    bundle_sha256: str
+    output_path: str
+
+
+class HandoffPreview(msgspec.Struct, frozen=True):
+    """A read-only full-handoff import preview: readiness, not approval."""
+
+    schema_version: int
+    kind: str
+    ready: bool
+    namespace: str
+    kb_subtree: str
+    base_revision: str
+    revision: str
+    source_manifest_digest: str
+    transfer_id: str
+    bundle_sha256: str
+    binding_count: int
+    version_count: int
+    payload_count: int
+    versions_to_add: int
+    versions_to_reuse: int
+    artifacts_to_retain: int
+    blockers: list[str]
+    confirmation_digest: str
+
+
+class HandoffImport(msgspec.Struct, frozen=True):
+    """The result of a full-handoff import request (``status``: preview|imported)."""
+
+    schema_version: int
+    kind: str
+    status: str
+    namespace: str
+    base_revision: str
+    revision: str
+    transfer_id: str
+    bundle_sha256: str
+    confirmation_digest: str | None
+    versions_added: int
+    versions_reused: int
+    artifacts_retained: int
+    provenance_records: int
+    blockers: list[str]
+
+
+class _HandoffBinding(msgspec.Struct, frozen=True):
+    entity_id: str
+    source_id: str
+    old_digest: str | None
+    new_digest: str | None
+
+
+class _HandoffVersion(msgspec.Struct, frozen=True):
+    source_id: str
+    content_hash: str
+    size: int
+    content_type: str | None
+    filename: str | None
+    origin_created_at: str
+    intent: str
+
+
+class _ParsedHandoff(msgspec.Struct, frozen=True):
+    transfer_id: str
+    namespace: str
+    kb_subtree: str
+    base_revision: str
+    revision: str
+    source_manifest_digest: str
+    bindings: list[_HandoffBinding]
+    versions: list[_HandoffVersion]
+
+
+_HANDOFF_MANIFEST_KEYS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "transfer_id",
+        "namespace",
+        "kb_subtree",
+        "base_revision",
+        "revision",
+        "source_manifest_digest",
+        "bindings",
+        "versions",
+    }
+)
+_HANDOFF_BINDING_KEYS = frozenset({"entity_id", "source_id", "old_digest", "new_digest"})
+_HANDOFF_VERSION_KEYS = frozenset(
+    {
+        "source_id",
+        "content_hash",
+        "size",
+        "content_type",
+        "filename",
+        "origin_created_at",
+        "intent",
+    }
+)
+
+
+def _handoff_source_id(value: Any) -> str:
+    """Validate one manifest source id, converting to the handoff error type."""
+    try:
+        return _validate_source_id(value)
+    except SourceRegistryError as exc:
+        raise SourceHandoffError(str(exc)) from exc
+
+
+def _require_hex64_or_null(value: Any, what: str) -> str | None:
+    if value is None:
+        return None
+    return _require_hex(value, what, _HEX64)
+
+
+def _parse_handoff_manifest(payload: bytes) -> _ParsedHandoff:
+    """Parse and fully validate one source-handoff manifest v1 against the contract."""
+    if len(payload) > MANIFEST_MAX_BYTES:
+        raise SourceHandoffError(
+            f"the handoff manifest exceeds the 4 MiB ceiling ({len(payload)} bytes); "
+            "an explicit refusal, never a partial handoff"
+        )
+    try:
+        manifest = json.loads(payload, object_pairs_hook=_reject_duplicate_keys)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise SourceHandoffError(f"the handoff manifest is not valid JSON: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise SourceHandoffError("the handoff manifest must be a JSON object")
+    _check_keys(manifest, _HANDOFF_MANIFEST_KEYS, "manifest")
+    schema_version = manifest["schema_version"]
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version != HANDOFF_SCHEMA_VERSION
+    ):
+        raise SourceHandoffError(f"unsupported handoff manifest schema_version: {schema_version!r}")
+    if manifest["kind"] != HANDOFF_KIND:
+        raise SourceHandoffError(
+            f"wrong artifact kind {manifest['kind']!r}: the full-source importer accepts "
+            f"only {HANDOFF_KIND!r} bundles; a metadata snapshot cannot transfer originals"
+        )
+    transfer_id = _require_hex(manifest["transfer_id"], "transfer_id", _HEX64)
+    namespace = _require_text(manifest["namespace"], "namespace")
+    kb_subtree = manifest["kb_subtree"]
+    if not isinstance(kb_subtree, str) or kb_subtree.startswith("/") or ".." in kb_subtree:
+        raise SourceHandoffError("handoff manifest field kb_subtree must be a KB-relative path")
+    base_revision = _require_hex(manifest["base_revision"], "base_revision", _HEX40)
+    revision = _require_hex(manifest["revision"], "revision", _HEX40)
+    if base_revision == revision:
+        raise SourceHandoffError(
+            "the handoff manifest binds an empty Git range: base and contribution "
+            "revisions are identical"
+        )
+    source_manifest_digest = _require_hex(
+        manifest["source_manifest_digest"], "source_manifest_digest", _HEX64
+    )
+
+    raw_bindings = _require_object_list(manifest["bindings"], "bindings")
+    if len(raw_bindings) > MAX_BINDING_RECORDS:
+        raise SourceHandoffError(
+            f"the handoff manifest exceeds the binding-record limit "
+            f"({len(raw_bindings)} > {MAX_BINDING_RECORDS}); an explicit refusal, "
+            "never a partial handoff"
+        )
+    bindings: list[_HandoffBinding] = []
+    seen_bindings: set[tuple[str, str]] = set()
+    for item in raw_bindings:
+        _check_keys(item, _HANDOFF_BINDING_KEYS, "binding record")
+        binding = _HandoffBinding(
+            entity_id=_require_text(item["entity_id"], "bindings[].entity_id"),
+            source_id=_handoff_source_id(item["source_id"]),
+            old_digest=_require_hex64_or_null(item["old_digest"], "bindings[].old_digest"),
+            new_digest=_require_hex64_or_null(item["new_digest"], "bindings[].new_digest"),
+        )
+        if binding.old_digest is None and binding.new_digest is None:
+            raise SourceHandoffError(
+                f"binding record for entity {binding.entity_id!r} and source "
+                f"{binding.source_id!r} carries neither an old nor a new digest; "
+                "unchanged bindings never enter a handoff"
+            )
+        if (
+            binding.old_digest is not None
+            and binding.new_digest is not None
+            and binding.old_digest == binding.new_digest
+        ):
+            raise SourceHandoffError(
+                f"binding record for entity {binding.entity_id!r} and source "
+                f"{binding.source_id!r} carries one unchanged digest; only binding "
+                "changes belong in a handoff"
+            )
+        key = (binding.entity_id, binding.source_id)
+        if key in seen_bindings:
+            raise SourceHandoffError(
+                f"duplicate binding record for entity {binding.entity_id!r} and "
+                f"source {binding.source_id!r}"
+            )
+        seen_bindings.add(key)
+        bindings.append(binding)
+
+    raw_versions = _require_object_list(manifest["versions"], "versions")
+    if len(raw_versions) > MAX_VERSION_RECORDS:
+        raise SourceHandoffError(
+            f"the handoff manifest exceeds the version-record limit "
+            f"({len(raw_versions)} > {MAX_VERSION_RECORDS}); an explicit refusal, "
+            "never a partial handoff"
+        )
+    versions: list[_HandoffVersion] = []
+    seen_versions: set[tuple[str, str]] = set()
+    for item in raw_versions:
+        _check_keys(item, _HANDOFF_VERSION_KEYS, "version record")
+        size = item["size"]
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise SourceHandoffError("versions[].size must be a non-negative integer")
+        if size > ORIGINAL_MAX_BYTES:
+            raise SourceHandoffError(
+                f"version record exceeds the per-original size ceiling ({size} bytes); "
+                "an explicit refusal, never a partial handoff"
+            )
+        content_type = item["content_type"]
+        if content_type is not None and (not isinstance(content_type, str) or not content_type):
+            raise SourceHandoffError("versions[].content_type must be a non-empty string or null")
+        intent = item["intent"]
+        if intent not in _HANDOFF_INTENTS:
+            raise SourceHandoffError("versions[].intent must be one of 'new', 'update' or 'reuse'")
+        version = _HandoffVersion(
+            source_id=_handoff_source_id(item["source_id"]),
+            content_hash=_require_hex(item["content_hash"], "versions[].content_hash", _HEX64),
+            size=size,
+            content_type=content_type,
+            filename=_require_safe_filename(item["filename"], "versions[].filename"),
+            origin_created_at=_require_text(
+                item["origin_created_at"], "versions[].origin_created_at"
+            ),
+            intent=intent,
+        )
+        key = (version.source_id, version.content_hash)
+        if key in seen_versions:
+            raise SourceHandoffError(
+                f"duplicate version record for {version.source_id!r}@{version.content_hash}"
+            )
+        seen_versions.add(key)
+        versions.append(version)
+
+    # Cross-consistency: every binding's new digest must carry a version
+    # record, and every version must be justified — a new/update intent by a
+    # selected binding change, a reuse intent by the supplementary-reference
+    # rule (the exact version is already referenced somewhere).
+    selected_new_digests = {
+        (binding.source_id, binding.new_digest)
+        for binding in bindings
+        if binding.new_digest is not None
+    }
+    version_keys = {(version.source_id, version.content_hash) for version in versions}
+    missing = sorted(selected_new_digests - version_keys)
+    if missing:
+        raise SourceHandoffError(
+            f"the handoff manifest binds {missing[0][0]!r}@{missing[0][1]} to no version "
+            "record; a changed binding requires its exact version and original bytes"
+        )
+    unjustified = sorted(
+        (version.source_id, version.content_hash, version.intent)
+        for version in versions
+        if version.intent in ("new", "update")
+        and (version.source_id, version.content_hash) not in selected_new_digests
+    )
+    if unjustified:
+        source_id, content_hash, _ = unjustified[0]
+        raise SourceHandoffError(
+            f"the handoff manifest carries version record {source_id!r}@{content_hash} "
+            "not selected by any binding change; a new or updated version must be part "
+            "of the reviewed contribution change"
+        )
+
+    # One payload per unique digest: versions sharing a digest must agree on
+    # its size, and the unique payloads obey their own count and total bounds.
+    sizes_by_digest: dict[str, int] = {}
+    for version in versions:
+        recorded = sizes_by_digest.setdefault(version.content_hash, version.size)
+        if recorded != version.size:
+            raise SourceHandoffError(
+                f"version records for digest {version.content_hash} disagree about size"
+            )
+    if len(sizes_by_digest) > MAX_UNIQUE_PAYLOADS:
+        raise SourceHandoffError(
+            f"the handoff manifest exceeds the unique-payload ceiling "
+            f"({len(sizes_by_digest)} > {MAX_UNIQUE_PAYLOADS}); an explicit refusal, "
+            "never a partial handoff"
+        )
+    if sum(sizes_by_digest.values()) > TOTAL_PAYLOAD_MAX_BYTES:
+        raise SourceHandoffError(
+            "the handoff manifest exceeds the total payload ceiling "
+            f"({sum(sizes_by_digest.values())} bytes); an explicit refusal, "
+            "never a partial handoff"
+        )
+    return _ParsedHandoff(
+        transfer_id=transfer_id,
+        namespace=namespace,
+        kb_subtree=kb_subtree,
+        base_revision=base_revision,
+        revision=revision,
+        source_manifest_digest=source_manifest_digest,
+        bindings=sorted(bindings, key=lambda b: (b.entity_id, b.source_id)),
+        versions=sorted(versions, key=lambda v: (v.source_id, v.content_hash)),
+    )
+
+
+def _handoff_binding_dicts(bindings: list[_HandoffBinding]) -> list[dict[str, Any]]:
+    return [
+        {
+            "entity_id": binding.entity_id,
+            "source_id": binding.source_id,
+            "old_digest": binding.old_digest,
+            "new_digest": binding.new_digest,
+        }
+        for binding in sorted(bindings, key=lambda b: (b.entity_id, b.source_id))
+    ]
+
+
+def _handoff_version_dicts(versions: list[_HandoffVersion]) -> list[dict[str, Any]]:
+    return [
+        {
+            "source_id": version.source_id,
+            "content_hash": version.content_hash,
+            "size": version.size,
+            "content_type": version.content_type,
+            "filename": version.filename,
+            "origin_created_at": version.origin_created_at,
+            "intent": version.intent,
+        }
+        for version in sorted(versions, key=lambda v: (v.source_id, v.content_hash))
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Supplementary exact references (plan 0010 §5/J3): a strict, explicit list.
+# ---------------------------------------------------------------------------
+
+
+def _normalize_reference_records(records: Any) -> list[tuple[str, str]]:
+    """Validate explicit ``{"source_id", "content_hash"}`` reference records.
+
+    Both the SDK ``references`` argument and the CLI ``--references`` file use
+    the same record shape. Unknown fields, wrong types, invalid labels or
+    digests and duplicate logical pairs refuse; there is never an implicit
+    latest-version resolution.
+    """
+    if records is None:
+        return []
+    if not isinstance(records, Sequence) or isinstance(records, (str, bytes)):
+        raise SourceHandoffError("references must be a list of reference records")
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in records:
+        if not isinstance(item, Mapping):
+            raise SourceHandoffError("each reference record must be an object")
+        keys = set(item)
+        if keys != {"source_id", "content_hash"}:
+            raise SourceHandoffError(
+                "each reference record carries exactly 'source_id' and 'content_hash'"
+            )
+        pair = (
+            _handoff_source_id(item["source_id"]),
+            _require_hex(item["content_hash"], "references[].content_hash", _HEX64),
+        )
+        if pair in seen:
+            raise SourceHandoffError(f"duplicate supplementary reference for {pair[0]!r}@{pair[1]}")
+        seen.add(pair)
+        pairs.append(pair)
+    return pairs
+
+
+def parse_reference_selection(raw: bytes) -> list[dict[str, str]]:
+    """Parse one supplementary-reference selection file (strict JSON v1).
+
+    The document is exactly ``{"schema_version": 1, "references":
+    [{"source_id": ..., "content_hash": ...}, ...]}``. Duplicate JSON keys,
+    unknown fields, wrong types and duplicate logical pairs refuse; every pair
+    must resolve in the selected contribution revision's captured bindings.
+    Returns the validated records in the SDK ``references`` record shape.
+    """
+    if not isinstance(raw, bytes):
+        raise SourceHandoffError("the references selection must be read as bytes")
+    try:
+        document = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise SourceHandoffError(f"the references selection is not valid JSON: {exc}") from exc
+    if not isinstance(document, dict):
+        raise SourceHandoffError("the references selection must be a JSON object")
+    _check_keys(document, frozenset({"schema_version", "references"}), "references selection")
+    schema_version = document["schema_version"]
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version != HANDOFF_SCHEMA_VERSION
+    ):
+        raise SourceHandoffError(
+            f"unsupported references selection schema_version: {schema_version!r}"
+        )
+    pairs = _normalize_reference_records(document["references"])
+    return [
+        {"source_id": source_id, "content_hash": content_hash} for source_id, content_hash in pairs
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Git-derived selection: binding changes and version intent (plan 0010 J3).
+# ---------------------------------------------------------------------------
+
+
+def _captured_binding_pairs(manifest: Any) -> dict[tuple[str, str], str]:
+    """``(entity_id, source_id) -> bound digest`` for one captured manifest."""
+    return {
+        (entity_id, source_id): digest
+        for entity_id, per_source in manifest.bindings.items()
+        for source_id, digest in per_source.items()
+    }
+
+
+def _binding_diff(base_manifest: Any, rev_manifest: Any) -> list[_HandoffBinding]:
+    """The changed binding records between two captured manifests."""
+    base_pairs = _captured_binding_pairs(base_manifest)
+    rev_pairs = _captured_binding_pairs(rev_manifest)
+    records: list[_HandoffBinding] = []
+    for key in sorted(set(base_pairs) | set(rev_pairs)):
+        old_digest = base_pairs.get(key)
+        new_digest = rev_pairs.get(key)
+        if old_digest != new_digest:
+            records.append(
+                _HandoffBinding(
+                    entity_id=key[0], source_id=key[1], old_digest=old_digest, new_digest=new_digest
+                )
+            )
+    return records
+
+
+def _base_digests_by_source(base_manifest: Any) -> dict[str, set[str]]:
+    digests: dict[str, set[str]] = {}
+    for (_entity_id, source_id), digest in _captured_binding_pairs(base_manifest).items():
+        digests.setdefault(source_id, set()).add(digest)
+    return digests
+
+
+def _derive_intent(
+    source_id: str,
+    content_hash: str,
+    base_digests: Mapping[str, set[str]],
+    selected_from_bindings: set[tuple[str, str]],
+) -> str:
+    """Derive one version's intent from the captured Git range, never the bundle.
+
+    A source id absent from the base is ``new``; an exact version already
+    referenced at the base is ``reuse`` (supplementary originals and new
+    references to existing versions); a genuinely new digest under a base
+    source id is ``update`` — and only when a selected binding change actually
+    carries it: supplementary references never confer update intent.
+    """
+    if source_id not in base_digests:
+        return "new"
+    if content_hash in base_digests[source_id]:
+        return "reuse"
+    if (source_id, content_hash) not in selected_from_bindings:
+        raise SourceHandoffError(
+            f"references cannot confer update intent for {source_id!r}@{content_hash}: "
+            "the digest is not a selected binding change of this Git range"
+        )
+    return "update"
+
+
+# ---------------------------------------------------------------------------
+# Streamed archive I/O with hard cumulative budgets (never whole-file reads).
+# ---------------------------------------------------------------------------
+
+
+class _BudgetedReader(io.RawIOBase):
+    """Read-through SHA-256 accounting that refuses beyond the container budget.
+
+    Every byte tarfile consumes — member data, padding and anything drained
+    after the end-of-archive marker — passes through exactly once and is
+    hashed exactly once. At most ``budget + 1`` bytes are ever requested, and
+    the first byte beyond the ceiling refuses BEFORE that chunk is hashed.
+    """
+
+    def __init__(self, handle: Any, budget: int) -> None:
+        super().__init__()
+        self._handle = handle
+        self._budget = budget
+        self._digest = hashlib.sha256()
+        self.consumed = 0
+
+    def readable(self) -> bool:  # pragma: no cover - io protocol surface
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        remaining = self._budget - self.consumed + 1
+        if remaining <= 0:
+            raise SourceHandoffError(
+                f"the source handoff bundle exceeds the container bound "
+                f"({self.consumed} bytes consumed); an explicit refusal, never a "
+                "partial handoff"
+            )
+        view = memoryview(buffer).cast("B")
+        data = self._handle.read(min(len(view), remaining, _HANDOFF_STREAM_CHUNK_BYTES))
+        if not data:
+            return 0
+        self.consumed += len(data)
+        if self.consumed > self._budget:
+            raise SourceHandoffError(
+                f"the source handoff bundle exceeds the container bound "
+                f"({self.consumed} bytes consumed from a changed transfer file); "
+                "an explicit refusal, never a partial handoff"
+            )
+        self._digest.update(data)
+        view[: len(data)] = data
+        return len(data)
+
+    def drain(self) -> None:
+        while self.read(_HANDOFF_STREAM_CHUNK_BYTES):
+            pass
+
+    def close(self) -> None:
+        try:
+            self._handle.close()
+        finally:
+            super().close()
+
+    @property
+    def digest_hex(self) -> str:
+        return self._digest.hexdigest()
+
+
+class _HashingWriter(io.RawIOBase):
+    """Write-through SHA-256 accounting with a hard cumulative byte budget.
+
+    NON-OWNING: the surrounding ``with`` block owns the underlying handle.
+    This wrapper never closes that handle, and its flush is a no-op once the
+    owner has closed it — so an explicit close, and finalization after the
+    owning block exits, are both deterministic and can never raise on a
+    closed handle. Closing is idempotent.
+    """
+
+    def __init__(self, handle: Any, budget: int) -> None:
+        super().__init__()
+        self._handle = handle
+        self._budget = budget
+        self._digest = hashlib.sha256()
+        self.written = 0
+
+    def writable(self) -> bool:  # pragma: no cover - io protocol surface
+        return True
+
+    def write(self, data: Any) -> int:
+        if self.closed:
+            raise ValueError("write to a closed handoff writer")
+        view = memoryview(data).cast("B")
+        written = self._handle.write(view)
+        self._digest.update(view[:written])
+        self.written += written
+        if self.written > self._budget:
+            raise SourceHandoffError(
+                f"the exported handoff archive exceeds the container bound "
+                f"({self.written} bytes); an explicit refusal, never a partial handoff"
+            )
+        return written
+
+    def tell(self) -> int:
+        return self._handle.tell()
+
+    def flush(self) -> None:
+        # Only flush the owner's handle while it is still open; once the
+        # owning block has closed it, flushing is neither needed nor possible.
+        if not self._handle.closed:
+            self._handle.flush()
+
+    def close(self) -> None:
+        # Idempotent and non-owning: flush while the handle is open, then flip
+        # the io closed flag WITHOUT closing the owner's handle.
+        if self.closed:
+            return
+        self.flush()
+        super().close()
+
+    @property
+    def digest_hex(self) -> str:
+        return self._digest.hexdigest()
+
+
+def _normalized_tar_info(name: str, size: int) -> tarfile.TarInfo:
+    """One normalized regular-file header: deterministic byte-identical archives."""
+    info = tarfile.TarInfo(name)
+    info.size = size
+    info.mode = 0o644
+    info.uid = 0
+    info.gid = 0
+    info.uname = ""
+    info.gname = ""
+    info.mtime = 0
+    info.type = tarfile.REGTYPE
+    return info
+
+
+def _container_budget() -> int:
+    return MANIFEST_MAX_BYTES + TOTAL_PAYLOAD_MAX_BYTES + CONTAINER_OVERHEAD_MAX_BYTES
+
+
+# ---------------------------------------------------------------------------
+# Export (contributor side).
+# ---------------------------------------------------------------------------
+
+
+def export_source_handoff(
+    kb_root: str | Path,
+    base_revision: str,
+    revision: str,
+    *,
+    source_registry: SourceRegistry,
+    artifact_store: SourceArtifactStore,
+    output_path: str | Path,
+    references: Sequence[Mapping[str, str]] | None = None,
+) -> HandoffExport:
+    """Export one full Source Handoff Bundle for an explicit Git range.
+
+    Selects the exact Source Versions required by new/changed source bindings
+    between ``base_revision`` and ``revision`` — two commits of the SAME
+    Knowledge Base namespace — plus explicit supplementary ``references``:
+    a sequence of ``{"source_id": ..., "content_hash": ...}`` records, each of
+    which must resolve in the selected contribution revision's captured
+    bindings (there is never an implicit latest-version resolution). Version
+    intent is derived from the captured Git range: ``new`` for a source id
+    absent from the base, ``reuse`` for an exact version already referenced
+    at the base, ``update`` only when a selected binding change carries the
+    new digest. Deleted bindings travel as records with a null ``new_digest``
+    and never invent payload.
+
+    Original bytes are read from the selected artifact store one bounded
+    original at a time, verified against their registered metadata, and
+    streamed into a private temp archive that atomically becomes
+    ``output_path`` only on complete success; a missing or corrupt original
+    leaves no bundle behind. The output path must stay outside the content
+    repository. The manifest carries safe identities, digests, sizes, media
+    types and safe filenames only — never local paths, store keys,
+    credentials, availability flags or lifecycle state. The bundle's complete
+    SHA-256 is returned for out-of-band sharing; the random opaque
+    ``transfer_id`` is created once for this artifact, and only a retry of
+    this same file preserves it — an independently reconstructed bundle may
+    legitimately carry a different identity and digest.
+    """
+    destination = Path(output_path)
+    repo_root, _subtree = resolve_repository(kb_root)
+    if destination.resolve().is_relative_to(repo_root):
+        raise SourceHandoffError(
+            "the handoff bundle output must stay outside the content repository; "
+            "private transfer artifacts never enter Git"
+        )
+    base_captured = capture_revision(kb_root, base_revision)
+    rev_captured = capture_revision(kb_root, revision)
+    if base_captured.revision == rev_captured.revision:
+        raise SourceHandoffError(
+            "the handoff selects an empty Git range: base and contribution revisions are identical"
+        )
+    if base_captured.manifest.namespace != rev_captured.manifest.namespace:
+        raise SourceHandoffError(
+            "the selected base and contribution revisions declare namespaces "
+            f"{base_captured.manifest.namespace!r} and "
+            f"{rev_captured.manifest.namespace!r}; a handoff never crosses namespaces"
+        )
+    if base_captured.subtree != rev_captured.subtree:
+        raise SourceHandoffError(
+            "the selected base and contribution revisions select different Knowledge "
+            "Base subtrees; a handoff covers one Knowledge Base"
+        )
+
+    reference_pairs = _normalize_reference_records(references)
+    rev_pairs = {
+        (source_id, digest)
+        for (_entity_id, source_id), digest in _captured_binding_pairs(
+            rev_captured.manifest
+        ).items()
+    }
+    for pair in reference_pairs:
+        if pair not in rev_pairs:
+            raise SourceHandoffError(
+                f"supplementary reference {pair[0]!r}@{pair[1]} does not resolve in the "
+                "selected contribution revision's bindings"
+            )
+
+    diff = _binding_diff(base_captured.manifest, rev_captured.manifest)
+    if len(diff) > MAX_BINDING_RECORDS:
+        raise SourceHandoffError(
+            f"the selected Git range exceeds the binding-record limit ({len(diff)} > "
+            f"{MAX_BINDING_RECORDS}); an explicit refusal, never a partial handoff"
+        )
+    selected_from_bindings = {
+        (binding.source_id, binding.new_digest)
+        for binding in diff
+        if binding.new_digest is not None
+    }
+    selected: list[tuple[str, str]] = []
+    seen_selected: set[tuple[str, str]] = set()
+    for pair in [*sorted(selected_from_bindings), *sorted(reference_pairs)]:
+        if pair not in seen_selected:
+            seen_selected.add(pair)
+            selected.append(pair)
+
+    # One locked, read-only registry view: namespace scope and the exact
+    # version metadata are captured consistently; export never assigns or
+    # migrates a registry namespace (j0-review F4 pattern).
+    assigned_namespace, found_versions = source_registry.metadata_view(selected)
+    if assigned_namespace is not None and assigned_namespace != rev_captured.manifest.namespace:
+        raise SourceHandoffError(
+            "the selected registry is explicitly assigned to namespace "
+            f"{assigned_namespace!r} and cannot export a handoff for "
+            f"{rev_captured.manifest.namespace!r}; select the registry for this namespace"
+        )
+    versions_by_key: dict[tuple[str, str], SourceVersion] = {}
+    size_by_digest: dict[str, int] = {}
+    for key, version in zip(selected, found_versions, strict=True):
+        if version is None:
+            raise SourceHandoffError(
+                f"the selected contribution binds {key[0]!r}@{key[1]} to no exact "
+                "version in the selected registry; a complete handoff cannot be exported"
+            )
+        if version.size is None:
+            raise SourceHandoffError(
+                f"version {key[0]!r}@{key[1]} lacks the required size metadata; "
+                "a complete handoff cannot be exported"
+            )
+        versions_by_key[key] = version
+        size_by_digest.setdefault(key[1], version.size)
+    base_digests = _base_digests_by_source(base_captured.manifest)
+    versions = [
+        _HandoffVersion(
+            source_id=source_id,
+            content_hash=content_hash,
+            size=versions_by_key[(source_id, content_hash)].size,
+            content_type=versions_by_key[(source_id, content_hash)].content_type,
+            filename=versions_by_key[(source_id, content_hash)].filename,
+            origin_created_at=versions_by_key[(source_id, content_hash)].created_at,
+            intent=_derive_intent(source_id, content_hash, base_digests, selected_from_bindings),
+        )
+        for source_id, content_hash in selected
+    ]
+    payload_digests = sorted({version.content_hash for version in versions})
+    payload_total = sum(size_by_digest.values())
+    if len(payload_digests) > MAX_UNIQUE_PAYLOADS:
+        raise SourceHandoffError(
+            f"the selected Git range exceeds the unique-payload ceiling "
+            f"({len(payload_digests)} > {MAX_UNIQUE_PAYLOADS}); an explicit refusal, "
+            "never a partial handoff"
+        )
+    if payload_total > TOTAL_PAYLOAD_MAX_BYTES:
+        raise SourceHandoffError(
+            f"the selected Git range exceeds the total payload ceiling "
+            f"({payload_total} bytes); an explicit refusal, never a partial handoff"
+        )
+
+    transfer_id = secrets.token_hex(32)
+    core: dict[str, Any] = {
+        "schema_version": HANDOFF_SCHEMA_VERSION,
+        "kind": HANDOFF_KIND,
+        "transfer_id": transfer_id,
+        "namespace": rev_captured.manifest.namespace,
+        "kb_subtree": rev_captured.subtree,
+        "base_revision": base_captured.revision,
+        "revision": rev_captured.revision,
+        "source_manifest_digest": rev_captured.manifest_digest,
+        "bindings": _handoff_binding_dicts(diff),
+        "versions": _handoff_version_dicts(versions),
+    }
+    payload = _canonical_json(core)
+    if len(payload) > MANIFEST_MAX_BYTES:
+        raise SourceHandoffError(
+            f"the handoff manifest exceeds the 4 MiB ceiling ({len(payload)} bytes); "
+            "an explicit refusal, never a partial handoff"
+        )
+    # The exported artifact must satisfy the same strict import parser.
+    parsed = _parse_handoff_manifest(payload)
+
+    representative: dict[str, tuple[str, int]] = {}
+    for version in versions:
+        representative.setdefault(version.content_hash, (version.source_id, version.size))
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(
+        dir=destination.parent, prefix=f".{destination.name}.", suffix=".tmp"
+    )
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            writer = _HashingWriter(
+                handle, len(payload) + payload_total + CONTAINER_OVERHEAD_MAX_BYTES
+            )
+            try:
+                with tarfile.open(fileobj=writer, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+                    manifest_info = _normalized_tar_info(MANIFEST_MEMBER, len(payload))
+                    tar.addfile(manifest_info, io.BytesIO(payload))
+                    for digest in payload_digests:
+                        source_id, expected_size = representative[digest]
+                        try:
+                            raw = artifact_store.get_artifact(
+                                source_id=source_id, content_hash=digest
+                            )
+                        except ArtifactStoreError as exc:
+                            raise SourceHandoffError(
+                                f"original bytes for {source_id!r}@{digest} are unavailable in "
+                                f"the selected artifact store; a complete handoff cannot be "
+                                f"exported: {exc}"
+                            ) from exc
+                        if len(raw) != expected_size:
+                            raise SourceHandoffError(
+                                f"original bytes for {source_id!r}@{digest} do not match the "
+                                "recorded size metadata; a complete handoff cannot be exported"
+                            )
+                        tar.addfile(
+                            _normalized_tar_info(f"artifacts/{digest}", len(raw)), io.BytesIO(raw)
+                        )
+                        del raw  # one bounded original in memory at a time
+            finally:
+                # Tar finalization (end blocks and record padding) runs through
+                # the writer before the digest is ever read; the wrapper closes
+                # deterministically here on success AND failure, and never owns
+                # the underlying handle.
+                writer.close()
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, destination)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+
+    return HandoffExport(
+        schema_version=HANDOFF_SCHEMA_VERSION,
+        kind=HANDOFF_KIND,
+        transfer_id=transfer_id,
+        namespace=parsed.namespace,
+        kb_subtree=parsed.kb_subtree,
+        base_revision=parsed.base_revision,
+        revision=parsed.revision,
+        source_manifest_digest=parsed.source_manifest_digest,
+        binding_count=len(parsed.bindings),
+        version_count=len(parsed.versions),
+        payload_count=len(payload_digests),
+        bundle_sha256=writer.digest_hex,
+        output_path=str(destination),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Inspect/import (maintainer side): complete streamed validation first.
+# ---------------------------------------------------------------------------
+
+
+class _ValidatedHandoff:
+    """One fully validated handoff bundle aligned to the selected Git range."""
+
+    def __init__(
+        self,
+        *,
+        parsed: _ParsedHandoff,
+        archive_digest: str,
+        blockers: list[str],
+        versions_to_add: int,
+        versions_to_reuse: int,
+        artifacts_to_retain: int,
+        confirmation_digest: str,
+        staging_dir: Path | None,
+    ) -> None:
+        self.parsed = parsed
+        self.archive_digest = archive_digest
+        self.blockers = blockers
+        self.versions_to_add = versions_to_add
+        self.versions_to_reuse = versions_to_reuse
+        self.artifacts_to_retain = artifacts_to_retain
+        self.confirmation_digest = confirmation_digest
+        self.staging_dir = staging_dir
+
+
+def _handoff_confirmation_digest(parsed: _ParsedHandoff, archive_digest: str) -> str:
+    """Bind the exact preview: bundle bytes, Git range and complete selection."""
+    return hashlib.sha256(
+        _canonical_json(
+            {
+                "schema_version": HANDOFF_SCHEMA_VERSION,
+                "kind": HANDOFF_KIND,
+                "bundle_sha256": archive_digest,
+                "namespace": parsed.namespace,
+                "kb_subtree": parsed.kb_subtree,
+                "base_revision": parsed.base_revision,
+                "revision": parsed.revision,
+                "source_manifest_digest": parsed.source_manifest_digest,
+                "bindings": _handoff_binding_dicts(parsed.bindings),
+                "versions": _handoff_version_dicts(parsed.versions),
+                "payloads": sorted({version.content_hash for version in parsed.versions}),
+            }
+        )
+    ).hexdigest()
+
+
+def _stream_validate_handoff(
+    bundle_path: Path,
+    expected_digest: str,
+    *,
+    staging_dir: Path | None,
+) -> tuple[_ParsedHandoff, str]:
+    """Stream one bundle end to end: digest, inventory and every payload.
+
+    The whole file — member data, tar padding and any trailing content — is
+    consumed through one bounded reader and hashed exactly once; nothing is
+    read a second time and no multi-source archive is ever loaded whole.
+    Payloads are verified per member (declared size plus SHA-256 against the
+    entry name) and, when ``staging_dir`` is given, staged to generated paths
+    for a later import; without staging the bytes are simply discarded
+    (preview creates no canonical state).
+    """
+    if not isinstance(expected_digest, str) or not _HEX64.match(expected_digest):
+        raise SourceHandoffError(
+            "the expected bundle digest must be exactly 64 lowercase hex characters"
+        )
+    if not bundle_path.is_file():
+        raise SourceHandoffError(f"bundle file not found: {bundle_path}")
+    budget = _container_budget()
+    size = bundle_path.stat().st_size
+    if size > budget:
+        raise SourceHandoffError(
+            f"the source handoff bundle exceeds the container bound ({size} bytes); "
+            "an explicit refusal, never a partial handoff"
+        )
+    if staging_dir is not None:
+        staging_dir.mkdir(parents=True, exist_ok=True)
+    parsed: _ParsedHandoff | None = None
+    expected_sizes: dict[str, int] = {}
+    seen_payloads: set[str] = set()
+    seen_names: set[str] = set()
+    payload_total = 0
+    try:
+        handle = open(bundle_path, "rb")
+    except OSError as exc:
+        raise SourceHandoffError(f"the bundle could not be opened: {exc}") from exc
+    with _BudgetedReader(handle, budget) as reader:
+        try:
+            with tarfile.open(fileobj=reader, mode="r|") as tar:
+                for member in tar:
+                    if member.name == MANIFEST_MEMBER:
+                        if parsed is not None:
+                            raise SourceHandoffError(
+                                "a source-handoff archive carries exactly one "
+                                f"{MANIFEST_MEMBER!r} entry; a duplicate entry is refused"
+                            )
+                        if not member.isreg():
+                            raise SourceHandoffError(
+                                f"a source-handoff archive must carry one regular "
+                                f"{MANIFEST_MEMBER!r} entry: links, directories and "
+                                "devices are refused"
+                            )
+                        if member.size > MANIFEST_MAX_BYTES:
+                            raise SourceHandoffError(
+                                f"the handoff manifest exceeds the 4 MiB ceiling "
+                                f"({member.size} bytes); an explicit refusal, never a "
+                                "partial handoff"
+                            )
+                        stream = tar.extractfile(member)
+                        if stream is None:  # pragma: no cover - isreg checked above
+                            raise SourceHandoffError(
+                                f"a source-handoff archive must carry one regular "
+                                f"{MANIFEST_MEMBER!r} entry"
+                            )
+                        parsed = _parse_handoff_manifest(stream.read(MANIFEST_MAX_BYTES + 1))
+                        expected_sizes = {
+                            version.content_hash: version.size for version in parsed.versions
+                        }
+                        seen_names.add(member.name)
+                        continue
+                    if parsed is None:
+                        raise SourceHandoffError(
+                            f"a source-handoff archive must carry its {MANIFEST_MEMBER!r} "
+                            "entry first; payload entries never precede the manifest"
+                        )
+                    match = _ARTIFACT_NAME.match(member.name)
+                    if match is None:
+                        raise SourceHandoffError(
+                            f"unexpected archive entry {member.name!r}: only "
+                            f"{MANIFEST_MEMBER!r} and 'artifacts/<sha256>' regular "
+                            "entries are allowed"
+                        )
+                    digest = match.group(1)
+                    if member.name in seen_names:
+                        raise SourceHandoffError(f"duplicate archive entry {member.name!r}")
+                    if not member.isreg():
+                        raise SourceHandoffError(
+                            f"the archive member {member.name!r} is not a regular file: "
+                            "links, directories and devices are refused"
+                        )
+                    if digest not in expected_sizes:
+                        raise SourceHandoffError(
+                            f"the bundle carries artifact entry {member.name!r} that no "
+                            "version record declares"
+                        )
+                    if member.size != expected_sizes[digest]:
+                        raise SourceHandoffError(
+                            f"artifact payload {digest} does not carry its declared size "
+                            f"({member.size} bytes, the manifest declares "
+                            f"{expected_sizes[digest]})"
+                        )
+                    seen_names.add(member.name)
+                    seen_payloads.add(digest)
+                    payload_total += member.size
+                    if len(seen_payloads) > MAX_UNIQUE_PAYLOADS:
+                        raise SourceHandoffError(
+                            f"the bundle exceeds the unique-payload ceiling "
+                            f"({len(seen_payloads)} > {MAX_UNIQUE_PAYLOADS}); an explicit "
+                            "refusal, never a partial handoff"
+                        )
+                    if payload_total > TOTAL_PAYLOAD_MAX_BYTES:
+                        raise SourceHandoffError(
+                            f"the bundle exceeds the total payload ceiling "
+                            f"({payload_total} bytes); an explicit refusal, never a "
+                            "partial handoff"
+                        )
+                    stream = tar.extractfile(member)
+                    if stream is None:  # pragma: no cover - isreg checked above
+                        raise SourceHandoffError(
+                            f"the archive member {member.name!r} is not readable as a regular file"
+                        )
+                    payload_digest = hashlib.sha256()
+                    staged_path = (
+                        staging_dir / f"{digest}.payload" if staging_dir is not None else None
+                    )
+                    staged_handle = open(staged_path, "wb") if staged_path is not None else None
+                    actual = 0
+                    try:
+                        while True:
+                            chunk = stream.read(_HANDOFF_STREAM_CHUNK_BYTES)
+                            if not chunk:
+                                break
+                            actual += len(chunk)
+                            payload_digest.update(chunk)
+                            if staged_handle is not None:
+                                staged_handle.write(chunk)
+                    except OSError as exc:
+                        raise SourceHandoffError(
+                            f"private staging of payload {digest} failed: {exc}"
+                        ) from exc
+                    finally:
+                        if staged_handle is not None:
+                            staged_handle.close()
+                    if actual != member.size:
+                        raise SourceHandoffError(
+                            f"artifact payload {digest} carries {actual} bytes, not the "
+                            f"declared {member.size}"
+                        )
+                    if payload_digest.hexdigest() != digest:
+                        raise SourceHandoffError(
+                            f"artifact payload {digest} does not hash to its declared "
+                            "digest: corrupt transfer bytes are refused"
+                        )
+        except tarfile.TarError as exc:
+            raise SourceHandoffError(
+                f"the bundle is not a valid uncompressed tar archive: {exc}"
+            ) from exc
+        if parsed is None:
+            raise SourceHandoffError(
+                f"a source-handoff archive must carry one regular {MANIFEST_MEMBER!r} entry first"
+            )
+        missing = sorted(set(expected_sizes) - seen_payloads)
+        if missing:
+            raise SourceHandoffError(
+                f"the handoff manifest declares version payload {missing[0]} but the "
+                "archive carries no such artifact entry: a missing entry is refused"
+            )
+        reader.drain()
+        actual_digest = reader.digest_hex
+    if actual_digest != expected_digest:
+        raise SourceHandoffError(
+            f"bundle digest mismatch: expected {expected_digest}, the archive hashes to "
+            f"{actual_digest}; obtain the correct artifact or expected digest from the "
+            "maintainer"
+        )
+    return parsed, actual_digest
+
+
+def _validate_handoff(
+    kb_root: str | Path,
+    bundle_path: str | Path,
+    revision: str,
+    *,
+    expected_digest: str,
+    source_registry: SourceRegistry,
+    artifact_store: SourceArtifactStore,
+    staging_dir: Path | None = None,
+) -> _ValidatedHandoff:
+    """Validate one bundle completely against the selected Git range.
+
+    Hard mismatches (digest, format, kind, namespace, subtree, revisions,
+    source-manifest digest, binding changes, selected versions, derived
+    intent) always raise: the bundle does not describe this contribution.
+    Registry- and store-dependent conflicts are returned as import blockers
+    so a preview can report them without mutating anything. The archive,
+    every payload and every record is verified before any caller performs a
+    canonical write.
+    """
+    parsed, archive_digest = _stream_validate_handoff(
+        Path(bundle_path), expected_digest, staging_dir=staging_dir
+    )
+    rev_captured = capture_revision(kb_root, revision)
+    if parsed.revision != rev_captured.revision:
+        raise SourceHandoffError(
+            f"the bundle is bound to revision {parsed.revision}; it cannot be imported "
+            f"against {rev_captured.revision} — obtain a bundle exported for the "
+            "selected contribution"
+        )
+    if parsed.namespace != rev_captured.manifest.namespace:
+        raise SourceHandoffError(
+            f"the bundle is bound to namespace {parsed.namespace!r}; the selected "
+            f"Knowledge Base uses {rev_captured.manifest.namespace!r} — a bundle "
+            "cannot cross namespaces"
+        )
+    if parsed.kb_subtree != rev_captured.subtree:
+        raise SourceHandoffError(
+            f"the bundle is bound to KB subtree {parsed.kb_subtree!r}; the selected "
+            "Knowledge Base lives at "
+            f"{rev_captured.subtree or '<repository root>'!r}"
+        )
+    if parsed.source_manifest_digest != rev_captured.manifest_digest:
+        raise SourceHandoffError(
+            "the bundle's source-reference manifest digest does not match the selected "
+            "contribution's manifest; the contributions differ"
+        )
+    base_captured = capture_revision(kb_root, parsed.base_revision)
+    if (
+        base_captured.manifest.namespace != rev_captured.manifest.namespace
+        or base_captured.subtree != rev_captured.subtree
+    ):
+        raise SourceHandoffError(
+            "the bundle's base and contribution revisions do not describe one "
+            "Knowledge Base namespace and subtree"
+        )
+    recomputed = _binding_diff(base_captured.manifest, rev_captured.manifest)
+    if [(b.entity_id, b.source_id, b.old_digest, b.new_digest) for b in recomputed] != [
+        (b.entity_id, b.source_id, b.old_digest, b.new_digest) for b in parsed.bindings
+    ]:
+        raise SourceHandoffError(
+            "the bundle's binding changes disagree with the selected Git range"
+        )
+    base_digests = _base_digests_by_source(base_captured.manifest)
+    selected_from_bindings = {
+        (binding.source_id, binding.new_digest)
+        for binding in recomputed
+        if binding.new_digest is not None
+    }
+    rev_pairs = {
+        (source_id, digest)
+        for (_entity_id, source_id), digest in _captured_binding_pairs(
+            rev_captured.manifest
+        ).items()
+    }
+    for version in parsed.versions:
+        if (version.source_id, version.content_hash) not in rev_pairs:
+            raise SourceHandoffError(
+                f"version {version.source_id!r}@{version.content_hash} is not "
+                "referenced by the selected contribution revision"
+            )
+        expected_intent = _derive_intent(
+            version.source_id, version.content_hash, base_digests, selected_from_bindings
+        )
+        if version.intent != expected_intent:
+            raise SourceHandoffError(
+                f"version {version.source_id!r}@{version.content_hash} declares intent "
+                f"{version.intent!r}; the reviewed Git change derives "
+                f"{expected_intent!r}"
+            )
+
+    blockers: list[str] = []
+    assigned = source_registry.assigned_namespace()
+    if assigned is not None and assigned != parsed.namespace:
+        blockers.append(
+            f"the selected registry is already assigned to namespace {assigned!r}; a "
+            "registry cannot be silently re-scoped — select the registry for this "
+            "namespace"
+        )
+    sources = {source.source_id: source for source in source_registry.list()}
+    versions_to_add = 0
+    versions_to_reuse = 0
+    artifacts_to_retain = 0
+    for version in parsed.versions:
+        source = sources.get(version.source_id)
+        existing = None
+        if source is not None:
+            existing = next(
+                (
+                    recorded
+                    for recorded in source.versions
+                    if recorded.content_hash == version.content_hash
+                ),
+                None,
+            )
+        if existing is None:
+            versions_to_add += 1
+            if version.intent == "new" and source is not None:
+                blockers.append(
+                    f"ambiguous new source identity for {version.source_id!r}: the local "
+                    "registry already knows this source; an update requires explicit "
+                    "reviewed intent, not a new identity"
+                )
+        else:
+            versions_to_reuse += 1
+            for field, incoming in (
+                ("size", version.size),
+                ("filename", version.filename),
+                ("content_type", version.content_type),
+            ):
+                current = getattr(existing, field)
+                if incoming is not None and current is not None and incoming != current:
+                    blockers.append(
+                        f"immutable metadata conflict for {version.source_id!r}@"
+                        f"{version.content_hash}: {field} is recorded locally as "
+                        f"{current!r}, the bundle carries {incoming!r}; resolve the "
+                        "conflict explicitly"
+                    )
+        try:
+            retained = artifact_store.artifact_exists(
+                source_id=version.source_id, content_hash=version.content_hash
+            )
+        except ArtifactAccessDenied:
+            blockers.append(
+                "the selected artifact store denied a coverage read; resolve access "
+                "before importing"
+            )
+            continue
+        if not retained:
+            artifacts_to_retain += 1
+    return _ValidatedHandoff(
+        parsed=parsed,
+        archive_digest=archive_digest,
+        blockers=blockers,
+        versions_to_add=versions_to_add,
+        versions_to_reuse=versions_to_reuse,
+        artifacts_to_retain=artifacts_to_retain,
+        confirmation_digest=_handoff_confirmation_digest(parsed, archive_digest),
+        staging_dir=staging_dir,
+    )
+
+
+def inspect_source_handoff(
+    kb_root: str | Path,
+    bundle_path: str | Path,
+    revision: str,
+    *,
+    expected_digest: str,
+    source_registry: SourceRegistry,
+    artifact_store: SourceArtifactStore,
+) -> HandoffPreview:
+    """Preview one full-handoff import read-only: readiness and blockers.
+
+    The complete bundle is streamed, hashed and verified against the selected
+    contribution revision and the destination registry/store, but no
+    canonical state is created: preview grants no approval and changes
+    nothing.
+    """
+    validated = _validate_handoff(
+        kb_root,
+        bundle_path,
+        revision,
+        expected_digest=expected_digest,
+        source_registry=source_registry,
+        artifact_store=artifact_store,
+    )
+    parsed = validated.parsed
+    return HandoffPreview(
+        schema_version=HANDOFF_SCHEMA_VERSION,
+        kind=HANDOFF_KIND,
+        ready=not validated.blockers,
+        namespace=parsed.namespace,
+        kb_subtree=parsed.kb_subtree,
+        base_revision=parsed.base_revision,
+        revision=parsed.revision,
+        source_manifest_digest=parsed.source_manifest_digest,
+        transfer_id=parsed.transfer_id,
+        bundle_sha256=validated.archive_digest,
+        binding_count=len(parsed.bindings),
+        version_count=len(parsed.versions),
+        payload_count=len({version.content_hash for version in parsed.versions}),
+        versions_to_add=validated.versions_to_add,
+        versions_to_reuse=validated.versions_to_reuse,
+        artifacts_to_retain=validated.artifacts_to_retain,
+        blockers=validated.blockers,
+        confirmation_digest=validated.confirmation_digest,
+    )
+
+
+def import_source_handoff(
+    kb_root: str | Path,
+    bundle_path: str | Path,
+    revision: str,
+    *,
+    expected_digest: str,
+    source_registry: SourceRegistry,
+    artifact_store: SourceArtifactStore,
+    confirmation: str | None = None,
+) -> HandoffImport:
+    """Import one full Source Handoff Bundle; without ``confirmation`` preview.
+
+    The complete input — archive digest, every payload, inventory, Git
+    alignment, derived intent and current canonical metadata — is revalidated
+    before any canonical write, and ``confirmation`` must bind the exact
+    reviewed preview. The import then commits the additive metadata batch
+    (with the atomic new-source identity constraint), retains the verified
+    staged bytes through create-only store operations, marks availability
+    only after retained bytes verify, and records private origin provenance
+    binding the bundle digest and the ORIGINAL handoff revisions with the
+    sender's timestamp. A real post-validation I/O failure reports the import
+    as incomplete and leaves only reusable immutable residue; retry converges
+    without overwriting existing history. Import never changes authored
+    pages, lifecycle state or publication.
+    """
+    staging_dir = Path(tempfile.mkdtemp(prefix="lumio-source-handoff-"))
+    try:
+        validated = _validate_handoff(
+            kb_root,
+            bundle_path,
+            revision,
+            expected_digest=expected_digest,
+            source_registry=source_registry,
+            artifact_store=artifact_store,
+            staging_dir=staging_dir,
+        )
+        parsed = validated.parsed
+        if confirmation is None:
+            return HandoffImport(
+                schema_version=HANDOFF_SCHEMA_VERSION,
+                kind=HANDOFF_KIND,
+                status="preview",
+                namespace=parsed.namespace,
+                base_revision=parsed.base_revision,
+                revision=parsed.revision,
+                transfer_id=parsed.transfer_id,
+                bundle_sha256=validated.archive_digest,
+                confirmation_digest=validated.confirmation_digest,
+                versions_added=0,
+                versions_reused=0,
+                artifacts_retained=0,
+                provenance_records=0,
+                blockers=validated.blockers,
+            )
+        if not isinstance(confirmation, str) or not _HEX64.match(confirmation):
+            raise SourceHandoffError(
+                "the confirmation must be exactly 64 lowercase hex characters (the preview digest)"
+            )
+        if confirmation != validated.confirmation_digest:
+            raise SourceHandoffError(
+                "the confirmation does not bind this exact preview (bundle digest, Git "
+                "range and selection); re-inspect the bundle and confirm its current "
+                "preview digest"
+            )
+        if validated.blockers:
+            raise SourceHandoffError(
+                "the source handoff import is blocked: " + "; ".join(validated.blockers)
+            )
+        new_source_ids = sorted(
+            {version.source_id for version in parsed.versions if version.intent == "new"}
+        )
+        entries = [
+            (
+                version.source_id,
+                version.content_hash,
+                version.size,
+                version.filename,
+                version.content_type,
+            )
+            for version in parsed.versions
+        ]
+        try:
+            # One locked additive batch with the atomic identity-intent
+            # constraint: a new-intent source id a cooperating writer already
+            # registered refuses under the same fresh state, before commit.
+            results = source_registry.register_version_metadata_batch(
+                entries,
+                namespace=parsed.namespace,
+                new_source_ids=new_source_ids or None,
+            )
+        except SourceRegistryError:
+            raise
+        except OSError as exc:
+            raise SourceHandoffError(
+                f"the handoff import stopped incomplete before committing (retry is "
+                f"safe; immutable residue converges): {exc}"
+            ) from exc
+        versions_added = sum(1 for _, action in results if action == "registered")
+        versions_reused = len(results) - versions_added
+        try:
+            # Retain the VERIFIED staged bytes — never a second unverified
+            # mutable-path read — one bounded original at a time, create-only.
+            for version in parsed.versions:
+                raw = (staging_dir / f"{version.content_hash}.payload").read_bytes()
+                artifact_store.put_artifact(
+                    source_id=version.source_id,
+                    content_hash=version.content_hash,
+                    raw_bytes=raw,
+                    content_type=version.content_type,
+                    filename=version.filename,
+                )
+                del raw
+            # Availability is marked only after the retained bytes verified.
+            for version in parsed.versions:
+                source_registry.record_artifact_binding(version.source_id, version.content_hash)
+        except (ArtifactStoreError, SourceRegistryError, OSError) as exc:
+            raise SourceHandoffError(
+                f"the handoff import committed its registry metadata but stopped "
+                f"before completing retained originals (retry converges; reusable "
+                f"immutable residue is kept and never rolled back): {exc}"
+            ) from exc
+        provenance_records = 0
+        try:
+            for version in parsed.versions:
+                write_handoff_origin_record(
+                    source_registry.root,
+                    namespace=parsed.namespace,
+                    bundle_digest=validated.archive_digest,
+                    base_revision=parsed.base_revision,
+                    revision=parsed.revision,
+                    source_id=version.source_id,
+                    content_hash=version.content_hash,
+                    origin_created_at=version.origin_created_at,
+                )
+                provenance_records += 1
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise SourceHandoffError(
+                f"the handoff import committed its registry metadata and retained "
+                f"originals but stopped before completing its private origin records "
+                f"(retry converges; a conflicting provenance record must be resolved "
+                f"explicitly): {exc}"
+            ) from exc
+        return HandoffImport(
+            schema_version=HANDOFF_SCHEMA_VERSION,
+            kind=HANDOFF_KIND,
+            status="imported",
+            namespace=parsed.namespace,
+            base_revision=parsed.base_revision,
+            revision=parsed.revision,
+            transfer_id=parsed.transfer_id,
+            bundle_sha256=validated.archive_digest,
+            confirmation_digest=validated.confirmation_digest,
+            versions_added=versions_added,
+            versions_reused=versions_reused,
+            artifacts_retained=len(parsed.versions),
+            provenance_records=provenance_records,
+            blockers=[],
+        )
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)

@@ -219,6 +219,11 @@ _MACHINE_ERROR_MESSAGES.update(
         "private_selection_inside_repository": (
             "private originals, registries and stores must stay outside the repository"
         ),
+        "invalid_source_handoff": "the source handoff operation failed",
+        "artifact_store_error": "the private Source Artifact Store operation failed",
+        "missing_artifact_store": (
+            "source-handoff requires a selected private Source Artifact Store"
+        ),
     }
 )
 
@@ -245,12 +250,14 @@ def _emit_machine_error(exc: CliError, *, schema_version: int | None = None) -> 
 def _bootstrap_error_schema_version(args: argparse.Namespace) -> int | None:
     """New plan-0010 JSON failures carry ``schema_version: 1``.
 
-    Minimal command-specific selection: only the source-bootstrap, extract,
-    ingest-candidate and authoring review/check commands opt in, so every
-    legacy error envelope is unchanged. This also covers the early
-    Knowledge-Base path-selection refusal raised in ``main``.
+    Minimal command-specific selection: only the source-bootstrap,
+    source-handoff, extract, ingest-candidate and authoring review/check
+    commands opt in, so every legacy error envelope is unchanged. This also
+    covers the early Knowledge-Base path-selection refusal raised in ``main``.
     """
     if getattr(args, "source_bootstrap_command", None) is not None:
+        return 1
+    if getattr(args, "source_handoff_command", None) is not None:
         return 1
     return 1 if getattr(args, "journey_command", None) is not None else None
 
@@ -2794,6 +2801,133 @@ def _cmd_source_bootstrap(args: argparse.Namespace) -> int:
         print(f"  versions added/reused: {result.versions_added}/{result.versions_reused}")
         print(f"  provenance records: {result.provenance_records}")
         print("No original bytes were transferred or marked available.")
+    return 0
+
+
+def _handoff_selection(args: argparse.Namespace, kb_root: Path):
+    """Resolve the full-handoff registry and artifact store (spec 0010 §2.1/§5).
+
+    Profile mode resolves registry+artifacts together and refuses competing
+    selections; without a profile the legacy explicit ``--source-registry`` /
+    environment registry plus ``LUMIO_SOURCE_STORE`` artifact-store selection
+    applies unchanged. A handoff moves original bytes, so BOTH resources are
+    required — it never guesses private state.
+    """
+    registry, artifact_store = _managed_ingest_selection(args, kb_root)
+    if registry is None:
+        raise CliError(
+            "source-handoff requires an explicitly selected private Source Registry: "
+            "pass --source-registry <dir>, set "
+            f"{SOURCE_REGISTRY_ENV_VAR}, or select --private-profile <file> "
+            "(spec 0010 §2.1)",
+            code="missing_source_registry",
+        )
+    if artifact_store is None:
+        raise CliError(
+            "source-handoff requires a private Source Artifact Store for original "
+            f"bytes: set {SOURCE_STORE_ENV_VAR} or select --private-profile <file> "
+            "(spec 0010 §2.1)",
+            code="missing_artifact_store",
+        )
+    return registry, artifact_store
+
+
+def _cmd_source_handoff(args: argparse.Namespace) -> int:
+    """``source-handoff export|inspect|import``: full bundle transfer (§5)."""
+    from lumio_wiki.artifact_store import ArtifactStoreError
+    from lumio_wiki.git_authoring import GitAuthoringError
+    from lumio_wiki.source_handoff import (
+        HandoffExport,
+        HandoffImport,
+        HandoffPreview,
+        SourceHandoffError,
+        export_source_handoff,
+        import_source_handoff,
+        inspect_source_handoff,
+        parse_reference_selection,
+    )
+    from lumio_wiki.source_registry import SourceRegistryError
+
+    kb = Path(args.path)
+    command = args.source_handoff_command
+    try:
+        registry, artifact_store = _handoff_selection(args, kb)
+        if command == "export":
+            references = None
+            if getattr(args, "references", None) is not None:
+                references = parse_reference_selection(Path(args.references).read_bytes())
+            result: HandoffExport | HandoffPreview | HandoffImport
+            result = export_source_handoff(
+                kb,
+                args.base,
+                args.revision,
+                source_registry=registry,
+                artifact_store=artifact_store,
+                output_path=args.output,
+                references=references,
+            )
+        elif command == "inspect":
+            result = inspect_source_handoff(
+                kb,
+                args.bundle,
+                args.revision,
+                expected_digest=args.digest,
+                source_registry=registry,
+                artifact_store=artifact_store,
+            )
+        else:
+            result = import_source_handoff(
+                kb,
+                args.bundle,
+                args.revision,
+                expected_digest=args.digest,
+                source_registry=registry,
+                artifact_store=artifact_store,
+                confirmation=args.confirm,
+            )
+    except SourceHandoffError as exc:
+        raise CliError(str(exc), code="invalid_source_handoff") from exc
+    except SourceRegistryError as exc:
+        raise CliError(str(exc), code="source_registry_error") from exc
+    except GitAuthoringError as exc:
+        raise CliError(str(exc), code="git_authoring_error") from exc
+    except ArtifactStoreError as exc:
+        raise CliError(str(exc), code="artifact_store_error") from exc
+    known: tuple[type, ...] = (HandoffExport, HandoffPreview, HandoffImport)
+    if not isinstance(result, known):  # pragma: no cover
+        raise CliError("unexpected handoff result", code="invalid_source_handoff")
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **msgspec.to_builtins(result)}))
+        return 0
+    if command == "export":
+        print(f"Exported Source Handoff Bundle: {result.output_path}")
+        print(f"  namespace:          {result.namespace}")
+        print(f"  base/contribution:  {result.base_revision}/{result.revision}")
+        print(f"  bindings/versions:  {result.binding_count}/{result.version_count}")
+        print(f"  unique payloads:    {result.payload_count}")
+        print(f"  bundle sha256:      {result.bundle_sha256}")
+        print("Share the digest out-of-band; the bundle stays private.")
+    elif command == "inspect":
+        print("Handoff preview: ready" if result.ready else "Handoff preview: BLOCKED")
+        for blocker in result.blockers:
+            print(f"  blocker: {blocker}")
+        print(f"  namespace:          {result.namespace}")
+        print(f"  versions to add/reuse: {result.versions_to_add}/{result.versions_to_reuse}")
+        print(f"  artifacts to retain: {result.artifacts_to_retain}")
+        print(f"  Confirmation digest: {result.confirmation_digest}")
+        print("Preview is read-only and grants no approval; confirmation binds this exact preview.")
+    elif result.status == "preview":
+        print("Handoff import preview (no changes were made).")
+        for blocker in result.blockers:
+            print(f"  blocker: {blocker}")
+        print(f"  Confirmation digest: {result.confirmation_digest}")
+        print("Re-run with --confirm <preview-digest> to import.")
+    else:
+        print(f"Imported handoff for revision {result.revision}.")
+        print(f"  versions added/reused: {result.versions_added}/{result.versions_reused}")
+        print(f"  artifacts retained: {result.artifacts_retained}")
+        print(f"  provenance records: {result.provenance_records}")
+        print("Import retains verified originals additively; it grants no publication approval.")
     return 0
 
 
@@ -8232,6 +8366,134 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     bootstrap_import_parser.set_defaults(func=_cmd_source_bootstrap)
+
+    # source-handoff — full private bundle transfer (spec 0010 §5).
+    source_handoff_parser = subparsers.add_parser(
+        "source-handoff",
+        help=("Export/inspect/import a full Source Handoff Bundle (spec 0010 §5)."),
+        description=(
+            "Transfer the exact Source Versions and original bytes selected by "
+            "new/changed source bindings between two explicit commits of one "
+            "Knowledge Base, plus optional supplementary exact references. The "
+            "importer streams and verifies the complete bounded archive against "
+            "the selected contribution before any canonical registry or store "
+            "write; import without --confirm is a read-only preview. A handoff "
+            "confers no content approval, lifecycle activation or publication "
+            "permission."
+        ),
+    )
+    source_handoff_sub = source_handoff_parser.add_subparsers(
+        dest="source_handoff_command", required=True, metavar="<source-handoff-command>"
+    )
+    handoff_export_parser = source_handoff_sub.add_parser(
+        "export",
+        help="Export one bundle for an explicit base/contribution range (contributor side).",
+    )
+    _add_kb_argument(handoff_export_parser)
+    handoff_export_parser.add_argument(
+        "--base",
+        required=True,
+        type=str,
+        help="The exact FULL commit id (40 hex characters) of the selected base.",
+    )
+    handoff_export_parser.add_argument(
+        "--revision",
+        required=True,
+        type=str,
+        help="The exact FULL commit id (40 hex characters) of the contribution.",
+    )
+    handoff_export_parser.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="Bundle archive path to write (uncompressed tar; outside the content repo).",
+    )
+    handoff_export_parser.add_argument(
+        "--references",
+        type=Path,
+        default=None,
+        help=(
+            "Optional supplementary-reference selection file: strict JSON "
+            '{"schema_version": 1, "references": [{"source_id": ..., '
+            '"content_hash": ...}, ...]}. Every pair must resolve in the '
+            "selected contribution revision's bindings; no latest-version fallback."
+        ),
+    )
+    handoff_export_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Explicitly selected private Source Registry directory holding the "
+            "exact selected versions."
+        ),
+    )
+    _add_private_profile_argument(handoff_export_parser)
+    handoff_export_parser.add_argument(
+        "--json", action="store_true", help="Emit a stable machine-readable result."
+    )
+    handoff_export_parser.set_defaults(func=_cmd_source_handoff)
+
+    def _add_handoff_verify_arguments(parser: argparse.ArgumentParser) -> None:
+        _add_kb_argument(parser)
+        parser.add_argument(
+            "--bundle",
+            required=True,
+            type=Path,
+            help="Path to the Source Handoff Bundle archive.",
+        )
+        parser.add_argument(
+            "--digest",
+            required=True,
+            type=str,
+            help=(
+                "Expected SHA-256 of the complete archive, supplied out-of-band "
+                "from maintainer-approved setup or direct operator selection."
+            ),
+        )
+        parser.add_argument(
+            "--revision",
+            required=True,
+            type=str,
+            help="The exact FULL commit id (40 hex characters) of the contribution.",
+        )
+        parser.add_argument(
+            "--source-registry",
+            type=Path,
+            default=None,
+            help="Explicitly selected private destination Source Registry directory.",
+        )
+        _add_private_profile_argument(parser)
+        parser.add_argument(
+            "--json", action="store_true", help="Emit a stable machine-readable result."
+        )
+
+    handoff_inspect_parser = source_handoff_sub.add_parser(
+        "inspect",
+        help="Preview one bundle against the selected contribution (read-only).",
+    )
+    _add_handoff_verify_arguments(handoff_inspect_parser)
+    handoff_inspect_parser.set_defaults(func=_cmd_source_handoff)
+
+    handoff_import_parser = source_handoff_sub.add_parser(
+        "import",
+        help=(
+            "Import one bundle additively; without --confirm this previews "
+            "the exact import instead."
+        ),
+    )
+    _add_handoff_verify_arguments(handoff_import_parser)
+    handoff_import_parser.add_argument(
+        "--confirm",
+        type=str,
+        default=None,
+        metavar="<preview-digest>",
+        help=(
+            "The exact confirmation digest reported by the preview; binds this "
+            "bundle, Git range and selection — a stale or wrong digest refuses."
+        ),
+    )
+    handoff_import_parser.set_defaults(func=_cmd_source_handoff)
 
     # extract — one real original through the actual processor (spec 0010 §3).
     extract_parser = subparsers.add_parser(

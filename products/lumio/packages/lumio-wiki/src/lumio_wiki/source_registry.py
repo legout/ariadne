@@ -609,6 +609,7 @@ class SourceRegistry:
         entries: Sequence[tuple[str, str, int, str | None, str | None]],
         *,
         namespace: str | None = None,
+        new_source_ids: Sequence[str] | None = None,
     ) -> list[tuple[SourceVersion, str]]:
         """Additively register a BATCH of version metadata under ONE locked commit.
 
@@ -623,6 +624,17 @@ class SourceRegistry:
         availability is preserved. An unassigned registry is scoped once by
         the first namespace-carrying commit; a different explicit assignment
         is refused — never migrated.
+
+        ``new_source_ids`` (spec 0010 §5, plan J3) optionally names source
+        ids whose versions the caller validated as NEW identities. Under the
+        SAME locked fresh state as the whole-batch validation, a named id
+        whose source already exists — while this batch's exact version is
+        absent — refuses before any commit: an incoming new-intent version
+        can never silently append to an identity a cooperating writer
+        registered concurrently; that is an ambiguous identity requiring
+        explicit resolution. An exact version already recorded (converged
+        retry residue) still converges. ``None`` (the default) preserves the
+        J0 behavior unchanged.
         """
         prepared: list[SourceVersion] = []
         seen: set[tuple[str, str]] = set()
@@ -662,6 +674,30 @@ class SourceRegistry:
                     f"{state.namespace!r} and cannot be scoped to {namespace!r}; "
                     "select the registry for this namespace instead"
                 )
+            if new_source_ids:
+                # Atomic identity-intent constraint (spec 0010 §5, plan J3):
+                # judged against this same locked fresh state, so a
+                # cooperating writer's registration cannot slip between the
+                # caller's pre-validation and this commit. Exact versions
+                # already recorded are converged retry residue, not clashes.
+                known_sources = {source.source_id: source for source in state.sources}
+                for prepared_version in prepared:
+                    if prepared_version.source_id not in new_source_ids:
+                        continue
+                    known_source = known_sources.get(prepared_version.source_id)
+                    if known_source is None:
+                        continue
+                    if any(
+                        version.content_hash == prepared_version.content_hash
+                        for version in known_source.versions
+                    ):
+                        continue
+                    raise SourceRegistryError(
+                        "the transferred metadata declares new source identity "
+                        f"{prepared_version.source_id!r} but the registry already "
+                        "knows that source; an update requires explicit reviewed "
+                        "intent, not a new identity"
+                    )
             sources = list(state.sources)
             results: list[tuple[SourceVersion, str]] = []
             for version in prepared:
