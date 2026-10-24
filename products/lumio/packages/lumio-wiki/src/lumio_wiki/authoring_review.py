@@ -479,6 +479,7 @@ def _body_diff(path: str, before: str | None, after: str | None) -> str:
 
 
 _CLAIM_ATTRIBUTES = (
+    "predicate",
     "value",
     "value_type",
     "object",
@@ -490,78 +491,150 @@ _CLAIM_ATTRIBUTES = (
 )
 
 
+def _render_list(values: list[str]) -> str:
+    return ", ".join(values) if values else "none"
+
+
+def _render_anchor(anchor: Any) -> str:
+    """One readable Evidence anchor: section, line range, or both."""
+    lines = None
+    if anchor.line_start is not None:
+        lines = f"L{anchor.line_start}-L{anchor.line_end or anchor.line_start}"
+    if anchor.section is not None:
+        return f"{anchor.section} ({lines})" if lines is not None else anchor.section
+    return lines or "none"
+
+
+def _render_claim(claim: Any) -> str:
+    """One claim's COMPLETE known meaning, readable without raw YAML."""
+    if claim.object is not None:
+        target = f"object: {claim.object}"
+    elif claim.value is not None:
+        target = f"value: {claim.value} ({claim.value_type})"
+    else:
+        target = "target: none"
+    anchors = ", ".join(_render_anchor(anchor) for anchor in claim.evidence) or "none"
+    return (
+        f"predicate: {claim.predicate}; {target}; status: {claim.status or 'none'}; "
+        f"confidence: {_render(claim.confidence)}; origin: {claim.origin}; "
+        f"valid: {claim.valid_from or 'none'}..{claim.valid_to or 'none'}; "
+        f"evidence: [{anchors}]"
+    )
+
+
+def _render_source(source: Any) -> str:
+    return f"title: {source.title or 'none'}; url: {source.url or 'none'}"
+
+
 def _semantic_field_changes(
     base_page: Any | None, candidate_page: Any | None
 ) -> list[SemanticFieldChange]:
-    """Readable before/after facts for changed authored semantic fields (F3).
+    """Readable before/after facts for every known authored page field (F3).
 
-    Covers summary, title, same-ID Source metadata (title/URL) and same-ID
-    Claim attributes including confidence and validity bounds — the values a
-    human must inspect, supplementing the narrower shared ClaimChange
-    summaries with the exact old/new facts.
+    Handles ADDED, REMOVED and UPDATED records symmetrically: an absent side
+    means absent facts rendered as ``none`` — adds and deletes never lose
+    their meaning. Covers title, summary, Entity ID/types, aliases, tags,
+    ``review_after``, ``synthetic``, Source identity/metadata and complete
+    Claim meaning (predicate before AND after, object/literal, status,
+    confidence, origin, validity bounds, evidence anchors). Lifecycle and
+    visibility transitions keep their first-class record fields.
     """
-    if base_page is None or candidate_page is None:
-        return []
     changes: list[SemanticFieldChange] = []
-    if base_page.summary != candidate_page.summary:
-        changes.append(
-            SemanticFieldChange(
-                field="summary",
-                before=_render(base_page.summary),
-                after=_render(candidate_page.summary),
-            )
-        )
-    if base_page.title != candidate_page.title:
-        changes.append(
-            SemanticFieldChange(
-                field="title",
-                before=_render(base_page.title),
-                after=_render(candidate_page.title),
-            )
-        )
-    base_sources = {source.id: source for source in base_page.sources}
-    candidate_sources = {source.id: source for source in candidate_page.sources}
+
+    def entry(field: str, before: str, after: str) -> None:
+        if before != after:
+            changes.append(SemanticFieldChange(field=field, before=before, after=after))
+
+    def field_of(page: Any | None, name: str, default: Any) -> Any:
+        return getattr(page, name, default) if page is not None else default
+
+    entry(
+        "title",
+        _render(field_of(base_page, "title", None)),
+        _render(field_of(candidate_page, "title", None)),
+    )
+    entry(
+        "summary",
+        _render(field_of(base_page, "summary", None)),
+        _render(field_of(candidate_page, "summary", None)),
+    )
+    entry(
+        "entity.id",
+        _render(field_of(base_page, "id", None)),
+        _render(field_of(candidate_page, "id", None)),
+    )
+    entry(
+        "entity_types",
+        _render_list(list(field_of(base_page, "entity_types", []))),
+        _render_list(list(field_of(candidate_page, "entity_types", []))),
+    )
+    entry(
+        "aliases",
+        _render_list(list(field_of(base_page, "aliases", []))),
+        _render_list(list(field_of(candidate_page, "aliases", []))),
+    )
+    entry(
+        "tags",
+        _render_list(list(field_of(base_page, "tags", []))),
+        _render_list(list(field_of(candidate_page, "tags", []))),
+    )
+    entry(
+        "review_after",
+        _render(field_of(base_page, "review_after", None)),
+        _render(field_of(candidate_page, "review_after", None)),
+    )
+    entry(
+        "synthetic",
+        str(field_of(base_page, "synthetic", False)),
+        str(field_of(candidate_page, "synthetic", False)),
+    )
+
+    base_sources = (
+        {source.id: source for source in base_page.sources} if base_page is not None else {}
+    )
+    candidate_sources = (
+        {source.id: source for source in candidate_page.sources}
+        if candidate_page is not None
+        else {}
+    )
+    for source_id in sorted(set(base_sources) - set(candidate_sources)):
+        entry(f"source:{source_id}", _render_source(base_sources[source_id]), "none")
+    for source_id in sorted(set(candidate_sources) - set(base_sources)):
+        entry(f"source:{source_id}", "none", _render_source(candidate_sources[source_id]))
     for source_id in sorted(set(base_sources) & set(candidate_sources)):
         before, after = base_sources[source_id], candidate_sources[source_id]
         if before.title != after.title:
-            changes.append(
-                SemanticFieldChange(
-                    field=f"source.title:{source_id}",
-                    before=_render(before.title),
-                    after=_render(after.title),
-                )
+            entry(
+                f"source.title:{source_id}",
+                _render(before.title),
+                _render(after.title),
             )
         if before.url != after.url:
-            changes.append(
-                SemanticFieldChange(
-                    field=f"source.url:{source_id}",
-                    before=_render(before.url),
-                    after=_render(after.url),
-                )
-            )
-    base_claims = {claim.id: claim for claim in base_page.claims}
-    candidate_claims = {claim.id: claim for claim in candidate_page.claims}
+            entry(f"source.url:{source_id}", _render(before.url), _render(after.url))
+
+    base_claims = {claim.id: claim for claim in base_page.claims} if base_page is not None else {}
+    candidate_claims = (
+        {claim.id: claim for claim in candidate_page.claims} if candidate_page is not None else {}
+    )
+    for claim_id in sorted(set(base_claims) - set(candidate_claims)):
+        entry(f"claim:{claim_id}", _render_claim(base_claims[claim_id]), "none")
+    for claim_id in sorted(set(candidate_claims) - set(base_claims)):
+        entry(f"claim:{claim_id}", "none", _render_claim(candidate_claims[claim_id]))
     for claim_id in sorted(set(base_claims) & set(candidate_claims)):
         before, after = base_claims[claim_id], candidate_claims[claim_id]
         for attribute in _CLAIM_ATTRIBUTES:
             before_value = getattr(before, attribute)
             after_value = getattr(after, attribute)
             if before_value != after_value:
-                changes.append(
-                    SemanticFieldChange(
-                        field=f"claim.{attribute}:{claim_id}",
-                        before=_render(before_value),
-                        after=_render(after_value),
-                    )
+                entry(
+                    f"claim.{attribute}:{claim_id}",
+                    _render(before_value),
+                    _render(after_value),
                 )
-        if len(before.evidence) != len(after.evidence):
-            changes.append(
-                SemanticFieldChange(
-                    field=f"claim.evidence:{claim_id}",
-                    before=_render(len(before.evidence)),
-                    after=_render(len(after.evidence)),
-                )
-            )
+        before_anchors = ", ".join(_render_anchor(a) for a in before.evidence)
+        after_anchors = ", ".join(_render_anchor(a) for a in after.evidence)
+        if before_anchors != after_anchors:
+            entry(f"claim.evidence:{claim_id}", before_anchors or "none", after_anchors or "none")
     return changes
 
 
@@ -615,86 +688,92 @@ def _page_review_change(
     )
 
 
-def _parse_ontology(raw: bytes | None) -> dict[str, dict[str, Any]] | None:
-    """The parsed ontology section, or ``None`` when it cannot be safely reviewed.
+def _typed_ontology_or_refuse(captured: Any, raw_control: bytes | None, side: str) -> Any:
+    """The captured typed ontology, refusing bounded on invalid Control Files (F10).
 
-    A present-but-malformed Control File (decode failure, non-mapping root,
-    non-mapping ontology/entity-types/predicates) never reaches unchecked
-    attribute calls: the caller refuses boundedly instead (F10).
+    The native loader already normalized the typed ontology (``None``
+    constraints become empty unconstrained lists), so the review never
+    re-decodes raw YAML and never iterates unchecked definition values. A
+    present Control File the loader could not parse refuses boundedly; the
+    captured validation diagnostics remain authoritative.
     """
-    if raw is None:
-        return {"entity_types": {}, "predicates": {}}
-    try:
-        data = msgspec.yaml.decode(raw)
-    except Exception:
-        return None
-    if not isinstance(data, dict):
-        return None
-    section = data.get("ontology")
-    if section is None:
-        return {"entity_types": {}, "predicates": {}}
-    if not isinstance(section, dict):
-        return None
-    entity_types = section.get("entity_types")
-    predicates = section.get("predicates")
-    if entity_types is None:
-        entity_types = {}
-    if predicates is None:
-        predicates = {}
-    if not isinstance(entity_types, dict) or not isinstance(predicates, dict):
-        return None
-    return {"entity_types": entity_types, "predicates": predicates}
+    ontology_error = captured.kb.control is None or any(
+        issue.severity == "error"
+        and issue.file == _CONTROL_BASENAME
+        and (issue.field == "ontology" or issue.field.startswith("ontology."))
+        for issue in captured.report.issues
+    )
+    if raw_control is not None and ontology_error:
+        raise AuthoringReviewError(
+            f"the {side} Control File is invalid and cannot be parsed into a "
+            "reviewable ontology; the captured validation diagnostics remain "
+            "authoritative and the semantic comparison is refused rather than "
+            "guessed",
+            code="invalid_staged_control",
+        )
+    control = captured.kb.control
+    return control.ontology if control is not None else None
 
 
-def _render_definition(definition: Any) -> str:
-    """One readable ontology definition rendering (domain, range, literal)."""
-    if not isinstance(definition, dict) or not definition:
-        return "defined"
-    parts: list[str] = []
-    if "subject_types" in definition:
-        parts.append("subjects: " + ", ".join(str(item) for item in definition["subject_types"]))
-    if "object_types" in definition:
-        parts.append("objects: " + ", ".join(str(item) for item in definition["object_types"]))
-    if "literal_kind" in definition:
-        parts.append("literal: " + str(definition["literal_kind"]))
-    if "description" in definition:
-        parts.append("description: " + str(definition["description"]))
-    return "; ".join(parts) or "defined"
+def _render_constraint(values: list[str]) -> str:
+    """One readable constraint list; empty means unconstrained (any)."""
+    return ", ".join(values) if values else "any"
+
+
+def _render_predicate_definition(definition: Any) -> str:
+    """One complete readable PredicateDefinition (domain, range, literal,
+    inverse, synonyms, description) from the typed record."""
+    parts = [f"subjects: {_render_constraint(list(definition.subject_types))}"]
+    if definition.literal_kind is not None:
+        parts.append(f"literal: {definition.literal_kind}")
+    else:
+        parts.append(f"objects: {_render_constraint(list(definition.object_types))}")
+    if definition.inverse is not None:
+        parts.append(f"inverse: {definition.inverse}")
+    if definition.synonyms:
+        parts.append("synonyms: " + ", ".join(definition.synonyms))
+    if definition.description is not None:
+        parts.append("description: " + definition.description)
+    return "; ".join(parts)
+
+
+def _render_entity_type_definition(definition: Any) -> str:
+    if definition.description is not None:
+        return f"description: {definition.description}"
+    return "defined"
 
 
 def _ontology_review_changes(
-    base_control: bytes | None, candidate_control: bytes | None
+    base_captured: Any, candidate_captured: Any
 ) -> list[OntologyReviewChange]:
-    """Parsed-semantic ontology diff with readable old/new definitions."""
-    base = _parse_ontology(base_control)
-    candidate = _parse_ontology(candidate_control)
-    if base is None or candidate is None:
-        raise AuthoringReviewError(
-            "the "
-            + ("candidate" if candidate is None else "base")
-            + " Control File cannot be parsed into a reviewable ontology; the "
-            "captured validation diagnostics remain authoritative and the "
-            "semantic comparison is refused rather than guessed",
-            code="invalid_staged_control",
-        )
+    """Typed ontology diff: entity types, complete predicates and redirects."""
+    base = _typed_ontology_or_refuse(
+        base_captured, base_captured.content.get(_CONTROL_BASENAME), "base"
+    )
+    candidate = _typed_ontology_or_refuse(
+        candidate_captured, candidate_captured.content.get(_CONTROL_BASENAME), "candidate"
+    )
     changes: list[OntologyReviewChange] = []
-    for kind, label in (("entity_types", "entity_type"), ("predicates", "predicate")):
-        before = base[kind]
-        after = candidate[kind]
+
+    def mapping(source: Any, key: str) -> dict:
+        return dict(getattr(source, key) or {}) if source is not None else {}
+
+    for key, label, renderer in (
+        ("entity_types", "entity_type", _render_entity_type_definition),
+        ("predicates", "predicate", _render_predicate_definition),
+    ):
+        before = mapping(base, key)
+        after = mapping(candidate, key)
         for name in sorted(set(before) - set(after)):
             changes.append(
                 OntologyReviewChange(
-                    change=f"{label}_removed",
-                    name=name,
-                    before=_render_definition(before[name]),
+                    change=f"{label}_removed", name=name, before=renderer(before[name])
                 )
             )
         for name in sorted(set(after) - set(before)):
             changes.append(
                 OntologyReviewChange(
-                    change=f"{label}_added",
-                    name=name,
-                    after=_render_definition(after[name]),
+                    change=f"{label}_added", name=name, after=renderer(after[name])
                 )
             )
         for name in sorted(set(before) & set(after)):
@@ -704,10 +783,43 @@ def _ontology_review_changes(
                         change=f"{label}_changed",
                         name=name,
                         detail="parsed definition differs",
-                        before=_render_definition(before[name]),
-                        after=_render_definition(after[name]),
+                        before=renderer(before[name]),
+                        after=renderer(after[name]),
                     )
                 )
+
+    base_redirects = {r.from_id: r.to_id for r in (base.redirects or [])} if base else {}
+    candidate_redirects = (
+        {r.from_id: r.to_id for r in (candidate.redirects or [])} if candidate else {}
+    )
+    for from_id in sorted(set(base_redirects) - set(candidate_redirects)):
+        changes.append(
+            OntologyReviewChange(
+                change="redirect_removed",
+                name=from_id,
+                before=base_redirects[from_id],
+                after="none",
+            )
+        )
+    for from_id in sorted(set(candidate_redirects) - set(base_redirects)):
+        changes.append(
+            OntologyReviewChange(
+                change="redirect_added",
+                name=from_id,
+                before="none",
+                after=candidate_redirects[from_id],
+            )
+        )
+    for from_id in sorted(set(base_redirects) & set(candidate_redirects)):
+        if base_redirects[from_id] != candidate_redirects[from_id]:
+            changes.append(
+                OntologyReviewChange(
+                    change="redirect_changed",
+                    name=from_id,
+                    before=base_redirects[from_id],
+                    after=candidate_redirects[from_id],
+                )
+            )
     return changes
 
 
@@ -717,8 +829,7 @@ def _control_review_changes(
     """Meaningful Control File changes outside the ontology never disappear."""
 
     def document(raw: bytes | None) -> dict[str, Any]:
-        parsed = _parse_ontology(raw)
-        if parsed is None or raw is None:
+        if raw is None:
             return {}
         try:
             data = msgspec.yaml.decode(raw)
@@ -922,7 +1033,7 @@ def review_knowledge_changes(
 
     base_control = base.content.get(_CONTROL_BASENAME)
     candidate_control = candidate.content.get(_CONTROL_BASENAME)
-    ontology_changes = _ontology_review_changes(base_control, candidate_control)
+    ontology_changes = _ontology_review_changes(base, candidate)
     control_changes = _control_review_changes(base_control, candidate_control)
 
     review = KnowledgeChangeReview(

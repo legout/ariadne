@@ -1106,3 +1106,249 @@ def test_review_handles_invalid_staged_ontology(malformed, tmp_path, capsys):
     assert refused["schema_version"] == 1
     assert refused["error"]["code"]
     assert _git(repo, "--no-optional-locks", "status", "--porcelain") == status_before
+
+
+# ---------------------------------------------------------------------------
+# Owner-authorized bounded exception: surviving F3 semantic completeness and
+# the F10 null-constraint renderer regression (j1-j2-delta-review.md).
+# Expected values are fixed authored facts and native record contracts; the
+# rendering field names below are this repair's public contract.
+# ---------------------------------------------------------------------------
+
+
+def _staged_scenario(tmp_path, base_mutate, candidate_mutate):
+    """A committed base (optionally mutated) with one staged candidate edit."""
+    repo = _init_repo(tmp_path / "repo")
+    kb = _write_base_kb(repo)
+    if base_mutate is not None:
+        base_mutate(repo, kb)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "baseline revision")
+    base = _git(repo, "rev-parse", "HEAD")
+    if candidate_mutate is not None:
+        candidate_mutate(repo, kb)
+    _git(repo, "add", "--", "kb")
+    return repo, kb, base
+
+
+def _semantic_entries(payload: dict, path: str) -> dict:
+    return {
+        entry["field"]: entry for entry in _page_entry(payload, path).get("semantic_changes", [])
+    }
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "ordinary_cli_transitions",
+        "added_page_facts",
+        "removed_page_facts",
+        "existing_page_metadata",
+        "claim_predicate_and_evidence_change",
+        "ontology_redirect_inverse_synonym",
+    ],
+)
+def test_review_complete_semantics(scenario, tmp_path, capsys):
+    """F3: supported authored semantics never disappear from review."""
+    if scenario == "ordinary_cli_transitions":
+
+        def candidate(repo, kb):
+            memo = kb / "concepts" / "service-memo.md"
+            memo.write_text(
+                memo.read_text().replace('visibility: "internal"', 'visibility: "public"')
+            )
+
+        repo, kb, base = _staged_scenario(tmp_path, None, candidate)
+        code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+        assert code == 0, payload
+        # Structured transition (verified meaning, kept green).
+        assert (
+            _page_entry(payload, "concepts/service-memo.md")["visibility"] == "internal -> public"
+        )
+        # The ordinary CLI must say WHAT changed, not just mark the page.
+        code = main(["authoring-review", str(kb), "--base", base])
+        plain = capsys.readouterr().out
+        assert code == 0
+        assert "internal -> public" in plain
+
+    elif scenario == "added_page_facts":
+        repo, kb, base = _staged_candidate(tmp_path)
+        code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+        assert code == 0, payload
+        semantics = _semantic_entries(payload, "concepts/bandsaw.md")
+        assert semantics["summary"]["before"] == "none"
+        assert semantics["summary"]["after"] == "Bandsaw summary."
+        source = semantics[f"source:{BANDSAW_ID}"]
+        assert source["before"] == "none"
+        assert "Bandsaw specification" in source["after"]
+        claim = semantics["claim:claim:saw-inspected"]
+        assert claim["before"] == "none"
+        assert "inspected-at" in claim["after"]
+        assert "Overview" in claim["after"]
+
+    elif scenario == "removed_page_facts":
+        repo, kb, base = _staged_candidate(tmp_path)
+        code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+        assert code == 0, payload
+        semantics = _semantic_entries(payload, "concepts/tool-log.md")
+        assert "Tool Log summary." in semantics["summary"]["before"]
+        assert semantics["summary"]["after"] == "none"
+        claim = semantics["claim:claim:tool-log-documented"]
+        assert "documented-at" in claim["before"]
+        assert claim["after"] == "none"
+
+    elif scenario == "existing_page_metadata":
+
+        def candidate(repo, kb):
+            press = kb / "concepts" / "hydraulic-press.md"
+            text = press.read_text()
+            text = text.replace('tags:\n  - "workshop"', 'tags:\n  - "workshop"\n  - "priority"')
+            text = text.replace(
+                'summary: "Hydraulic Press summary."',
+                'summary: "Hydraulic Press summary."\n'
+                'aliases:\n  - "the-press"\n'
+                'review_after: "2027-01-01"',
+            )
+            press.write_text(text)
+
+        repo, kb, base = _staged_scenario(tmp_path, None, candidate)
+        code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+        assert code == 0, payload
+        semantics = _semantic_entries(payload, "concepts/hydraulic-press.md")
+        assert "workshop" in semantics["tags"]["before"]
+        assert "priority" in semantics["tags"]["after"]
+        assert "the-press" in semantics["aliases"]["after"]
+        assert "2027-01-01" in semantics["review_after"]["after"]
+
+    elif scenario == "claim_predicate_and_evidence_change":
+
+        def candidate(repo, kb):
+            press = kb / "concepts" / "hydraulic-press.md"
+            page = _page(
+                "Hydraulic Press",
+                PRESS_ENTITY,
+                "machine",
+                MANUAL_ID,
+                "claim:manual-documented",
+                body_extra="## Pressure\n\nThe guard interlock is verified weekly.\n",
+            )
+            page = page.replace("    predicate: documented-at\n", "    predicate: rated-at\n")
+            page = page.replace('      - section: "Overview"', '      - section: "Pressure"')
+            press.write_text(page)
+            control = kb / "lumio.yaml"
+            control.write_text(
+                control.read_text().replace(
+                    "      literal_kind: string\n",
+                    "      literal_kind: string\n"
+                    "    rated-at:\n"
+                    "      subject_types:\n"
+                    "        - machine\n"
+                    "      literal_kind: string\n",
+                )
+            )
+
+        repo, kb, base = _staged_scenario(tmp_path, None, candidate)
+        code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+        assert code == 0, payload
+        semantics = _semantic_entries(payload, "concepts/hydraulic-press.md")
+        predicate = semantics["claim.predicate:claim:manual-documented"]
+        assert predicate["before"] == "documented-at"
+        assert predicate["after"] == "rated-at"
+        evidence = semantics["claim.evidence:claim:manual-documented"]
+        assert "Overview" in evidence["before"]
+        assert "Pressure" in evidence["after"]
+
+    else:  # ontology_redirect_inverse_synonym
+
+        def base_mutate(repo, kb):
+            control = kb / "lumio.yaml"
+            text = control.read_text()
+            text = text.replace(
+                "      literal_kind: string\n",
+                "      literal_kind: string\n"
+                "    describes:\n"
+                "      subject_types:\n"
+                "        - machine\n"
+                "      literal_kind: string\n",
+            )
+            text = text.replace(
+                "ontology:\n",
+                'ontology:\n  redirects:\n    "entity:retired-press": "entity:hydraulic-press"\n',
+            )
+            control.write_text(text)
+
+        def candidate(repo, kb):
+            control = kb / "lumio.yaml"
+            text = control.read_text()
+            text = text.replace(
+                '  redirects:\n    "entity:retired-press": "entity:hydraulic-press"\n',
+                "",
+            )
+            text = text.replace(
+                "      literal_kind: string\n    describes:",
+                "      literal_kind: string\n"
+                '      inverse: "describes"\n'
+                "      synonyms:\n"
+                "        - noted-at\n"
+                "    describes:",
+            )
+            control.write_text(text)
+
+        repo, kb, base = _staged_scenario(tmp_path, base_mutate, candidate)
+        code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+        assert code == 0, payload
+        ontology = {
+            (change["change"], change["name"]): change
+            for change in payload["knowledge"]["ontology_changes"]
+        }
+        redirect = ontology[("redirect_removed", "entity:retired-press")]
+        assert "entity:hydraulic-press" in redirect["before"]
+        assert redirect["after"] == "none"
+        predicate = ontology[("predicate_changed", "documented-at")]
+        assert "describes" in predicate["after"]
+        assert "noted-at" in predicate["after"]
+        assert "describes" not in (predicate["before"] or "")
+
+
+@pytest.mark.parametrize("null_case", ["subject_types_null", "object_types_null"])
+def test_review_accepts_null_ontology_constraints(null_case, tmp_path, capsys):
+    """F10 regression: valid null constraints render truthfully, never crash."""
+    from lumio_wiki.knowledge_base import load_knowledge_base
+
+    def candidate(repo, kb):
+        control = kb / "lumio.yaml"
+        if null_case == "subject_types_null":
+            addition = "    observed-at:\n      subject_types:\n      literal_kind: string\n"
+            expected_marker = "subjects: any"
+        else:
+            addition = (
+                "    linked-to:\n      subject_types:\n        - machine\n      object_types:\n"
+            )
+            expected_marker = "objects: any"
+        control.write_text(
+            control.read_text().replace(
+                "      literal_kind: string\n", f"      literal_kind: string\n{addition}"
+            )
+        )
+        return expected_marker
+
+    repo, kb, base = _staged_scenario(tmp_path, None, None)
+    marker = candidate(repo, kb)
+    _git(repo, "add", "--", "kb")
+    # Fixture guard: the native loader accepts this Control File as valid.
+    _loaded, fixture_report = load_knowledge_base(kb)
+    assert fixture_report.is_valid, fixture_report
+
+    code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+    assert code == 0, payload
+    assert payload["knowledge"]["kb_valid"] is True
+    ontology = {
+        (change["change"], change["name"]): change
+        for change in payload["knowledge"]["ontology_changes"]
+    }
+    added_name = "observed-at" if null_case == "subject_types_null" else "linked-to"
+    assert ontology[("predicate_added", added_name)]["after"].index(marker) >= 0
+    code = main(["authoring-review", str(kb), "--base", base])
+    plain = capsys.readouterr().out
+    assert code == 0
+    assert marker in plain

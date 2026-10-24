@@ -2933,6 +2933,19 @@ def _cmd_authoring_review(args: argparse.Namespace) -> int:
         if page.body_diff:
             for line in page.body_diff.splitlines():
                 print(f"      {line}")
+        if page.lifecycle:
+            print(f"  lifecycle: {page.lifecycle}")
+        if page.visibility:
+            print(f"  visibility: {page.visibility}")
+        if page.entity_types:
+            print(f"  entity types: {' '.join(page.entity_types)}")
+        if page.sources:
+            print(f"  source support: {' '.join(page.sources)}")
+        for claim in page.claims:
+            transition = (
+                f" ({claim.before} -> {claim.after})" if (claim.before or claim.after) else ""
+            )
+            print(f"  claim:     {claim.change} {claim.claim_id} ({claim.predicate}){transition}")
         for semantic in page.semantic_changes:
             print(f"  semantic:  {semantic.field}: {semantic.before} -> {semantic.after}")
     for change in knowledge.ontology_changes:
