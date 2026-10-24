@@ -2026,3 +2026,75 @@ def test_handoff_checks_overhead_already_consumed_at_eof(tmp_path, capsys, monke
     assert code == 2, captured
     assert "overhead" in captured.err
     assert _canonical_snapshot(mreg_dir, mstore_dir) == snapshot
+
+
+def test_handoff_rejects_interior_space_tail_size(tmp_path, capsys, monkeypatch):
+    """E1: an interior-space size field is a malformed physical header — a
+    trailing member carrying one must refuse, never quietly pass as a body
+    span while tarfile treats the header as end-of-archive."""
+    world = _contributor_world(tmp_path)
+    base, contribution = world["base"], world["contribution"]
+    _clone, mkb, _mreg, mreg_dir, _mstore, mstore_dir = _maintainer_world(tmp_path)
+    for variable in (SOURCE_REGISTRY_ENV_VAR, ARTIFACT_RETENTION_ENV_VAR):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(mstore_dir))
+
+    facts = _handoff_manifest_facts(world["repo"], base, contribution)
+    manifest_json = json.dumps(facts, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    gloss_block = _normalized_header(f"artifacts/{GLOSS_DIGEST}", len(GLOSS_BYTES), tarfile.REGTYPE)
+    memo2_block = _normalized_header(f"artifacts/{MEMO2_DIGEST}", len(MEMO2_BYTES), tarfile.REGTYPE)
+
+    # The malformed trailing member: regular typeflag, correct checksum per
+    # the documented algorithm, but its EXACT 12-byte size field carries an
+    # interior ASCII space (tarfile's numeric parser rejects it; an
+    # interior-space skip would read octal 10 = 8).
+    tail_block = _normalized_header("unrelated.bin", 8, tarfile.REGTYPE)
+    tail_block[124:136] = b"0000000 0010"
+    tail_block = bytearray(_rechecksum(tail_block))
+    assert tail_block[124:136] == b"0000000 0010"
+    checksum_probe = bytearray(tail_block)
+    checksum_probe[148:156] = b" " * 8
+    assert int(tail_block[148:154].decode(), 8) == sum(checksum_probe)
+    assert tail_block[156:157] == b"0"
+    tail_payload = b"TAILDATA"  # exactly eight authored bytes
+    assert len(tail_payload) == 8
+
+    # Physical sequence: every declared manifest/payload record, then the
+    # malformed tail member (8 data bytes + 504 padding), THEN the normal
+    # zero end markers — the tail is inside the archive, not appended EOF.
+    crafted = tmp_path / "transfer" / "interior-space.tar"
+    crafted.parent.mkdir(parents=True, exist_ok=True)
+    crafted.write_bytes(
+        bytes(_normalized_header("manifest.json", len(manifest_json), tarfile.REGTYPE))
+        + _pad_block(manifest_json)
+        + bytes(gloss_block)
+        + _pad_block(GLOSS_BYTES)
+        + bytes(memo2_block)
+        + _pad_block(MEMO2_BYTES)
+        + bytes(tail_block)
+        + tail_payload
+        + b"\x00" * 504
+        + b"\x00" * 1024
+    )
+    digest = hashlib.sha256(crafted.read_bytes()).hexdigest()
+
+    snapshot = _canonical_snapshot(mreg_dir, mstore_dir)
+    code = main(
+        [
+            "source-handoff",
+            "import",
+            str(mkb),
+            "--bundle",
+            str(crafted),
+            "--digest",
+            digest,
+            "--revision",
+            contribution,
+            "--source-registry",
+            str(mreg_dir),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2, captured
+    assert "plain octal" in captured.err
+    assert _canonical_snapshot(mreg_dir, mstore_dir) == snapshot

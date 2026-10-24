@@ -1652,24 +1652,25 @@ class _RegularOnlyTarBlocks(io.RawIOBase):
                 "regular file; only plain regular records are allowed, and "
                 "forbidden records are refused before their bodies are processed"
             )
-        # D1 (delta review): tarfile terminates numeric fields at the FIRST
-        # NUL byte and skips spaces; parse the size field with exactly those
-        # semantics so this guard and tarfile always agree where the next
-        # physical header starts. GNU base-256 lead bytes and any other
-        # non-octal content refuse as noncanonical before a body span is
-        # ever chosen.
-        size = 0
-        for byte in block[124:136]:
-            if byte == 0:
-                break  # tarfile's numeric parser stops at the first NUL
-            if byte == 0o40:
-                continue  # spaces are skipped, never field separators
-            if not 0x30 <= byte <= 0x37:
-                raise SourceHandoffError(
-                    f"physical tar header {self._records} does not carry a plain "
-                    "octal size field; only plain USTAR regular records are supported"
-                )
-            size = size * 8 + (byte - 0x30)
+        # D1/E1 (delta reviews): take the numeric bytes only up to the FIRST
+        # NUL — where tarfile's own numeric parsing also stops — then trim
+        # OUTER ASCII spaces only and require the remaining bytes to be plain
+        # octal digits (empty means zero). Interior spaces, GNU base-256 lead
+        # bytes, signs and every other non-octal byte refuse as noncanonical
+        # BEFORE a body span is chosen. This is intentionally STRICTER than
+        # tarfile's lenient handling of odd encodings: every field the guard
+        # admits yields the same extent tarfile computes, while ambiguous
+        # encodings refuse here instead of being silently admitted.
+        field = block[124:136]
+        cut = field.find(b"\x00")
+        text = field if cut == -1 else field[:cut]
+        text = text.strip(b" ")
+        if any(not 0x30 <= byte <= 0x37 for byte in text):
+            raise SourceHandoffError(
+                f"physical tar header {self._records} does not carry a plain "
+                "octal size field; only plain USTAR regular records are supported"
+            )
+        size = int(text or b"0", 8)
         # The member's padded body region (data rounded up to the next block)
         # passes through as one region so the next header stays aligned.
         self._pending_body = -(-size // self._BLOCK) * self._BLOCK
