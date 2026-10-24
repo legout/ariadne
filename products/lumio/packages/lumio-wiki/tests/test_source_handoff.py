@@ -351,12 +351,20 @@ def _canonical_snapshot(mreg_dir: Path, mstore_dir: Path):
 
 def _craft_handoff_archive(
     path: Path,
-    manifest: dict,
+    manifest: dict | None,
     entries: list[tuple[str, bytes]] | None = None,
     symlink_entry: str | None = None,
+    manifest_bytes: bytes | None = None,
 ) -> str:
-    """Hand-build one v1 bundle archive from the documented container contract."""
-    payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    """Hand-build one v1 bundle archive from the documented container contract.
+
+    ``manifest_bytes`` (review F2) bypasses the dict serializer so a fixture
+    can hand-author raw JSON carrying duplicate keys — a documented contract
+    fact dict dumps cannot express.
+    """
+    payload = manifest_bytes
+    if payload is None:
+        payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     def _info(name: str, size: int) -> tarfile.TarInfo:
         info = tarfile.TarInfo(name)
@@ -1252,6 +1260,10 @@ def test_handoff_rejects_invalid_bundle(case, tmp_path, capsys, monkeypatch):
                 return _RecordingReader(real_open(file, mode, *args, **kwargs))
             return real_open(file, mode, *args, **kwargs)
 
+        # Exact canonical preservation (review F5): snapshot BEFORE the call,
+        # compare exactly after the refusal — the registry carries unrelated
+        # history here, so an absence oracle would be wrong.
+        snapshot = _canonical_snapshot(mreg_dir, mstore_dir)
         monkeypatch.setattr(source_handoff, "open", _growing_open, raising=False)
         code = main(
             [
@@ -1274,9 +1286,7 @@ def test_handoff_rejects_invalid_bundle(case, tmp_path, capsys, monkeypatch):
         assert reads  # the importer really consumed bytes through it
         assert sum(reads) <= ceiling + 1, reads
         assert "container bound" in captured.err
-        snapshot = _canonical_snapshot(mreg_dir, mstore_dir)
-        assert not (mreg_dir / "sources.json").exists() or True
-        assert snapshot[2] == []
+        assert _canonical_snapshot(mreg_dir, mstore_dir) == snapshot
         return
 
     # Default refusal path: the named message on stderr, a nonzero exit, and
@@ -1300,4 +1310,481 @@ def test_handoff_rejects_invalid_bundle(case, tmp_path, capsys, monkeypatch):
     captured = capsys.readouterr()
     assert code == 2, captured
     assert message in captured.err
+    assert _canonical_snapshot(mreg_dir, mstore_dir) == snapshot
+
+
+# ---------------------------------------------------------------------------
+# Review F1-F4 regressions: containment, structured errors, tar extension
+# records, and the independent container-overhead ceiling.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "sdk_registry_root",
+        "sdk_local_store_root",
+        "sdk_bundle_symlink",
+        "cli_fallback_registry",
+        "cli_references_file",
+    ],
+)
+def test_handoff_private_paths_stay_outside_repository(case, tmp_path, capsys, monkeypatch):
+    """F1: private selections and transfer paths stay outside the entire
+    Content Repository — resolved symlinks included (spec 0010 §1/§2.1)."""
+    world = _contributor_world(tmp_path)
+    base, contribution = world["base"], world["contribution"]
+    _clone, mkb, mreg, mreg_dir, mstore, mstore_dir = _maintainer_world(tmp_path)
+    for variable in (SOURCE_REGISTRY_ENV_VAR, ARTIFACT_RETENTION_ENV_VAR):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(mstore_dir))
+
+    # A native-valid handcrafted transfer plus a real confirmation obtained
+    # with CLEAN selections; only the path selection is violated afterwards.
+    crafted = tmp_path / "transfer" / "crafted.tar"
+    digest = _craft_handoff_archive(
+        crafted, _handoff_manifest_facts(world["repo"], base, contribution), _valid_entries()
+    )
+    code = main(
+        [
+            "source-handoff",
+            "inspect",
+            str(mkb),
+            "--bundle",
+            str(crafted),
+            "--digest",
+            digest,
+            "--revision",
+            contribution,
+            "--source-registry",
+            str(mreg_dir),
+            "--json",
+        ]
+    )
+    assert code == 0
+    confirmation = json.loads(capsys.readouterr().out)["confirmation_digest"]
+    snapshot = _canonical_snapshot(mreg_dir, mstore_dir)
+    private_root = _clone / "private"
+    private_root.mkdir()
+
+    if case == "sdk_registry_root":
+        private_registry_dir = private_root / "registry"
+        private_registry_dir.mkdir()
+        with pytest.raises(SourceHandoffError, match="content repository"):
+            import_source_handoff(
+                str(mkb),
+                crafted,
+                contribution,
+                expected_digest=digest,
+                source_registry=SourceRegistry(private_registry_dir),
+                artifact_store=mstore,
+                confirmation=confirmation,
+            )
+        assert not (private_registry_dir / "sources.json").exists()
+        assert not (private_registry_dir / "handoff-imports").exists()
+        assert _canonical_snapshot(mreg_dir, mstore_dir) == snapshot
+        return
+
+    if case == "sdk_local_store_root":
+        private_store_dir = private_root / "originals"
+        private_store_dir.mkdir()
+        with pytest.raises(SourceHandoffError, match="content repository"):
+            import_source_handoff(
+                str(mkb),
+                crafted,
+                contribution,
+                expected_digest=digest,
+                source_registry=mreg,
+                artifact_store=LocalDirectoryArtifactStore(private_store_dir),
+                confirmation=confirmation,
+            )
+        assert not any(private_store_dir.rglob("*"))
+        assert _canonical_snapshot(mreg_dir, mstore_dir) == snapshot
+        return
+
+    if case == "sdk_bundle_symlink":
+        # The bundle path itself lives outside the repository but RESOLVES
+        # into it: a plain string check on the link path would miss it.
+        inside = private_root / "bundle.tar"
+        inside.write_bytes(crafted.read_bytes())
+        link = tmp_path / "transfer" / "link.tar"
+        link.symlink_to(inside)
+        with pytest.raises(SourceHandoffError, match="content repository"):
+            import_source_handoff(
+                str(mkb),
+                link,
+                contribution,
+                expected_digest=digest,
+                source_registry=mreg,
+                artifact_store=mstore,
+                confirmation=confirmation,
+            )
+        assert _canonical_snapshot(mreg_dir, mstore_dir) == snapshot
+        return
+
+    if case == "cli_fallback_registry":
+        private_registry_dir = private_root / "registry"
+        private_registry_dir.mkdir()
+        code = main(
+            [
+                "source-handoff",
+                "import",
+                str(mkb),
+                "--bundle",
+                str(crafted),
+                "--digest",
+                digest,
+                "--revision",
+                contribution,
+                "--source-registry",
+                str(private_registry_dir),
+                "--confirm",
+                confirmation,
+            ]
+        )
+        captured = capsys.readouterr()
+        assert code == 2, captured
+        assert "content repository" in captured.err
+        assert not (private_registry_dir / "sources.json").exists()
+        assert not (private_registry_dir / "handoff-imports").exists()
+        assert _canonical_snapshot(mreg_dir, mstore_dir) == snapshot
+        return
+
+    # cli_references_file: the export-side reference selection lives inside
+    # the contributor Content Repository; refusal precedes the private read
+    # and no bundle is written.
+    monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(world["store_dir"]))
+    references = world["repo"] / "private-references.json"
+    references.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "references": [{"source_id": MANUAL_ID, "content_hash": MANUAL_DIGEST}],
+            }
+        )
+    )
+    output = tmp_path / "transfer" / "refs-bundle.tar"
+    code = main(
+        [
+            "source-handoff",
+            "export",
+            str(world["kb"]),
+            "--base",
+            base,
+            "--revision",
+            contribution,
+            "--output",
+            str(output),
+            "--references",
+            str(references),
+            "--source-registry",
+            str(world["registry"].root),
+            "--json",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2, captured
+    assert "content repository" in captured.err
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "manifest_unknown_field",
+        "manifest_duplicate_key",
+        "references_duplicate_key",
+        "references_missing_file",
+        "export_output_non_directory_parent",
+    ],
+)
+def test_handoff_errors_are_structured(case, tmp_path, capsys, monkeypatch):
+    """F2: malformed manifests/references selections and ordinary transfer I/O
+    failures surface as the versioned bounded error envelope — never an
+    escaping exception (spec 0010 §8; baseline semantics unchanged)."""
+    world = _contributor_world(tmp_path)
+    base, contribution = world["base"], world["contribution"]
+    _clone, mkb, mreg, mreg_dir, _mstore, mstore_dir = _maintainer_world(tmp_path)
+    for variable in (SOURCE_REGISTRY_ENV_VAR, ARTIFACT_RETENTION_ENV_VAR):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(mstore_dir))
+    crafted = tmp_path / "transfer" / "crafted.tar"
+    facts = _handoff_manifest_facts(world["repo"], base, contribution)
+    import_argv_tail = [
+        "--bundle",
+        str(crafted),
+        "--digest",
+        "",
+        "--revision",
+        contribution,
+        "--source-registry",
+        str(mreg_dir),
+        "--json",
+    ]
+
+    if case == "manifest_unknown_field":
+        mutated = facts | {"unexpected": True}
+        digest = _craft_handoff_archive(crafted, mutated, _valid_entries())
+        # SDK boundary first: the handoff parser owns its contract error type.
+        with pytest.raises(SourceHandoffError):
+            import_source_handoff(
+                str(mkb),
+                crafted,
+                contribution,
+                expected_digest=digest,
+                source_registry=mreg,
+                artifact_store=LocalDirectoryArtifactStore(mstore_dir),
+            )
+        argv = ["source-handoff", "import", str(mkb), *import_argv_tail]
+        argv[argv.index("--digest") + 1] = digest
+    elif case == "manifest_duplicate_key":
+        raw = json.dumps(facts, sort_keys=True, separators=(",", ":"))
+        raw = raw[:-1] + ',"namespace":"' + NAMESPACE + '"}'
+        digest = _craft_handoff_archive(
+            crafted, None, _valid_entries(), manifest_bytes=raw.encode("utf-8")
+        )
+        argv = ["source-handoff", "import", str(mkb), *import_argv_tail]
+        argv[argv.index("--digest") + 1] = digest
+    elif case == "references_duplicate_key":
+        monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(world["store_dir"]))
+        references = tmp_path / "transfer" / "references.json"
+        references.write_text('{"schema_version":1,"schema_version":1,"references":[]}')
+        argv = [
+            "source-handoff",
+            "export",
+            str(world["kb"]),
+            "--base",
+            base,
+            "--revision",
+            contribution,
+            "--output",
+            str(tmp_path / "transfer" / "out.tar"),
+            "--references",
+            str(references),
+            "--source-registry",
+            str(world["registry"].root),
+            "--json",
+        ]
+    elif case == "references_missing_file":
+        monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(world["store_dir"]))
+        argv = [
+            "source-handoff",
+            "export",
+            str(world["kb"]),
+            "--base",
+            base,
+            "--revision",
+            contribution,
+            "--output",
+            str(tmp_path / "transfer" / "out.tar"),
+            "--references",
+            str(tmp_path / "transfer" / "missing.json"),
+            "--source-registry",
+            str(world["registry"].root),
+            "--json",
+        ]
+    else:  # export_output_non_directory_parent: a regular file as parent.
+        monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(world["store_dir"]))
+        blocker = tmp_path / "transfer" / "plain-file"
+        blocker.write_text("a regular file, not a directory")
+        argv = [
+            "source-handoff",
+            "export",
+            str(world["kb"]),
+            "--base",
+            base,
+            "--revision",
+            contribution,
+            "--output",
+            str(blocker / "handoff.tar"),
+            "--source-registry",
+            str(world["registry"].root),
+            "--json",
+        ]
+
+    code = main(argv)
+    captured = capsys.readouterr()
+    assert code == 2, captured
+    envelope = json.loads(captured.out)
+    assert envelope["ok"] is False
+    assert envelope["schema_version"] == 1
+    assert envelope["error"]["code"] == "invalid_source_handoff"
+    assert envelope["error"]["message"] == "the source handoff operation failed"
+
+
+@pytest.mark.parametrize("variant", ["gnu_longname", "pax_extended"])
+def test_handoff_rejects_tar_extensions_before_body(variant, tmp_path, capsys, monkeypatch):
+    """F3: only regular physical records are grammar-legal; GNU/PAX extension
+    headers are refused as unsupported records before their bodies are
+    consumed (plan 0010 transfer formats v1)."""
+    import lumio_wiki.source_handoff as source_handoff
+
+    world = _contributor_world(tmp_path)
+    base, contribution = world["base"], world["contribution"]
+    _clone, mkb, _mreg, mreg_dir, _mstore, mstore_dir = _maintainer_world(tmp_path)
+    for variable in (SOURCE_REGISTRY_ENV_VAR, ARTIFACT_RETENTION_ENV_VAR):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(mstore_dir))
+    facts = _handoff_manifest_facts(world["repo"], base, contribution)
+    manifest_payload = json.dumps(facts, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    def _raw_info(name: str, size: int, type_flag: bytes) -> tarfile.TarInfo:
+        info = tarfile.TarInfo(name)
+        info.size = size
+        info.mode = 0o644
+        info.uid = 0
+        info.gid = 0
+        info.uname = ""
+        info.gname = ""
+        info.mtime = 0
+        info.type = type_flag
+        return info
+
+    crafted = tmp_path / "transfer" / f"crafted-{variant}.tar"
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        if variant == "gnu_longname":
+            # Documented tar fact: a GNU long-name record is a physical
+            # '././@LongLink' member with typeflag 'L' whose body REPLACES the
+            # following header's name — so the yielded member looks like a
+            # perfectly valid manifest.json while a forbidden physical record
+            # preceded it.
+            body = b"manifest.json\x00"
+            tar.addfile(
+                _raw_info("././@LongLink", len(body), tarfile.GNUTYPE_LONGNAME),
+                io.BytesIO(body),
+            )
+        else:
+            # Documented tar fact: a PAX extended header is a physical 'x'
+            # record whose "<len> path=<value>\n" body overrides the following
+            # header's name the same way.
+            line = b"23 path=manifest.json\n"
+            assert len(line) == 23
+            tar.addfile(_raw_info("PaxHeader", len(line), tarfile.XHDTYPE), io.BytesIO(line))
+        tar.addfile(
+            _raw_info("mn", len(manifest_payload), tarfile.REGTYPE),
+            io.BytesIO(manifest_payload),
+        )
+        for name, data in _valid_entries():
+            tar.addfile(_raw_info(name, len(data), tarfile.REGTYPE), io.BytesIO(data))
+    crafted.write_bytes(buffer.getvalue())
+    digest = hashlib.sha256(buffer.getvalue()).hexdigest()
+
+    # Independent physical-header facts: the FIRST 512-byte block carries the
+    # extension record's typeflag at offset 156, and the fixture stays tiny.
+    raw = crafted.read_bytes()
+    expected_flag = b"L" if variant == "gnu_longname" else b"x"
+    assert raw[156:157] == expected_flag, raw[148:157]
+    assert crafted.stat().st_size < 64 * 1024
+
+    reads: list[int] = []
+    real_open = builtins.open
+
+    class _RecordingReader:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def read(self, size=-1, /):
+            data = self._handle.read(size)
+            reads.append(len(data))
+            return data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._handle.__exit__(*exc_info)
+
+        def close(self):
+            self._handle.close()
+
+    def _recording_open(file, mode="r", *args, **kwargs):
+        if str(file) == str(crafted) and "r" in mode and "b" in mode:
+            return _RecordingReader(real_open(file, mode, *args, **kwargs))
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(source_handoff, "open", _recording_open, raising=False)
+    snapshot = _canonical_snapshot(mreg_dir, mstore_dir)
+    code = main(
+        [
+            "source-handoff",
+            "import",
+            str(mkb),
+            "--bundle",
+            str(crafted),
+            "--digest",
+            digest,
+            "--revision",
+            contribution,
+            "--source-registry",
+            str(mreg_dir),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2, captured
+    assert "unsupported tar extension record" in captured.err
+    assert reads  # the importer really consumed bytes through the wrapper
+    assert max(reads) <= 1024 * 1024, reads  # no size-proportional single read
+    assert sum(reads) <= crafted.stat().st_size, reads  # single pass, nothing re-read
+    assert _canonical_snapshot(mreg_dir, mstore_dir) == snapshot
+
+
+def test_handoff_rejects_excess_overhead(tmp_path, capsys, monkeypatch):
+    """F4: container overhead is bounded independently of the unused payload
+    allowance (plan 0010 transfer bounds)."""
+    import lumio_wiki.source_handoff as source_handoff
+
+    world = _contributor_world(tmp_path)
+    base, contribution = world["base"], world["contribution"]
+    _clone, mkb, _mreg, mreg_dir, _mstore, mstore_dir = _maintainer_world(tmp_path)
+    for variable in (SOURCE_REGISTRY_ENV_VAR, ARTIFACT_RETENTION_ENV_VAR):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(mstore_dir))
+    facts = _handoff_manifest_facts(world["repo"], base, contribution)
+    crafted = tmp_path / "transfer" / "tiny.tar"
+    _craft_handoff_archive(crafted, facts, _valid_entries())  # writes the base tar
+
+    # Authored-fact guard: actual overhead = archive bytes minus the manifest
+    # bytes minus the unique payload bytes; the lowered ceiling admits the
+    # base tar itself with a small margin.
+    manifest_len = len(json.dumps(facts, sort_keys=True, separators=(",", ":")).encode())
+    payload_total = len(GLOSS_BYTES) + len(MEMO2_BYTES)
+    actual_overhead = crafted.stat().st_size - manifest_len - payload_total
+    assert actual_overhead > 0
+    overhead_ceiling = actual_overhead + 2048
+    monkeypatch.setattr(source_handoff, "CONTAINER_OVERHEAD_MAX_BYTES", overhead_ceiling)
+
+    # Padding beyond the independent overhead ceiling while remaining far
+    # below the total container budget (the manifest and payload allowances
+    # stay at their defaults, so this distinguishes the two bounds).
+    padding = 64 * 1024
+    padded = tmp_path / "transfer" / "padded.tar"
+    padded.write_bytes(crafted.read_bytes() + b"\x00" * padding)
+    assert padded.stat().st_size - manifest_len - payload_total > overhead_ceiling
+    max_container = (
+        source_handoff.MANIFEST_MAX_BYTES
+        + source_handoff.TOTAL_PAYLOAD_MAX_BYTES
+        + overhead_ceiling
+    )
+    assert padded.stat().st_size < max_container
+
+    snapshot = _canonical_snapshot(mreg_dir, mstore_dir)
+    code = main(
+        [
+            "source-handoff",
+            "import",
+            str(mkb),
+            "--bundle",
+            str(padded),
+            "--digest",
+            hashlib.sha256(padded.read_bytes()).hexdigest(),
+            "--revision",
+            contribution,
+            "--source-registry",
+            str(mreg_dir),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2, captured
+    assert "overhead" in captured.err
     assert _canonical_snapshot(mreg_dir, mstore_dir) == snapshot
