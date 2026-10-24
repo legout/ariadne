@@ -1889,3 +1889,140 @@ def test_review_discloses_authored_evidence_extra_names(evidence_case, tmp_path,
     plain = capsys.readouterr().out
     assert code == 0
     assert ("20" if evidence_case == "line_start_extra" else "22") in plain
+
+
+# ---------------------------------------------------------------------------
+# Owner-authorized bounded repair: NATIVE owner-identity normalization in
+# nested pairing (j1-j2-f3-final-delta-review.md). Chosen public outcome,
+# fixed before implementation: records pair by their EXISTING native
+# per-container identity (Sources str(id); Claims additionally strip
+# whitespace), so an unchanged native owner never yields invented residual
+# add/remove facts; empty native identities stay unidentified (positional
+# fallback); duplicate non-empty normalized identities still refuse boundedly;
+# a real residual change on a re-spelled owner yields exactly ONE owned
+# old/new entry.
+# ---------------------------------------------------------------------------
+
+
+def _loaded_press(kb):
+    from lumio_wiki.knowledge_base import load_knowledge_base
+
+    loaded, report = load_knowledge_base(kb)
+    assert report.is_valid, report
+    page = next(p for p in loaded.pages if p.path == "concepts/hydraulic-press.md")
+    return page
+
+
+@pytest.mark.parametrize(
+    "normalization_case",
+    [
+        "source_numeric_to_string_id",
+        "claim_whitespace_to_normalized_id",
+        "spelling_plus_note_change",
+    ],
+)
+def test_review_normalizes_nested_metadata_owners(normalization_case, tmp_path, capsys):
+    """Native identity spelling changes never invent owner facts."""
+    if normalization_case == "claim_whitespace_to_normalized_id":
+        base_id = '"  claim:audit-note"'
+        candidate_id = '"claim:audit-note"'
+    else:
+        base_id = "2024"
+        candidate_id = '"2024"'
+
+    def extra_block(identifier, note_state: str) -> str:
+        if normalization_case == "claim_whitespace_to_normalized_id":
+            return (
+                "  - id: " + identifier + "\n"
+                "    predicate: documented-at\n"
+                '    value: "2026-10-24"\n'
+                "    value_type: string\n"
+                "    status: accepted\n"
+                f'    review_note: "{note_state}"\n'
+                "    evidence:\n"
+                '      - section: "Overview"\n'
+            )
+        return (
+            "  - id: " + identifier + "\n"
+            '    title: "Annual Manual"\n'
+            f'    note_state: "{note_state}"\n'
+        )
+
+    def inject(text: str, identifier, note_state: str) -> str:
+        if normalization_case == "claim_whitespace_to_normalized_id":
+            return text.replace(
+                '      - section: "Overview"\nsynthetic: false',
+                '      - section: "Overview"\n'
+                + extra_block(identifier, note_state)
+                + "synthetic: false",
+            )
+        return text.replace(
+            'sources:\n  - id: "operator-manual"\n    title: "operator-manual source"\n',
+            'sources:\n  - id: "operator-manual"\n    title: "operator-manual source"\n'
+            + extra_block(identifier, note_state),
+        )
+
+    def base_note() -> str:
+        return "kept" if normalization_case != "spelling_plus_note_change" else "draft"
+
+    def candidate_note() -> str:
+        return "kept" if normalization_case != "spelling_plus_note_change" else "final"
+
+    def base_mutate(repo, kb):
+        press = kb / "concepts" / "hydraulic-press.md"
+        press.write_text(inject(press.read_text(), base_id, base_note()))
+        page = _loaded_press(kb)
+        if normalization_case == "claim_whitespace_to_normalized_id":
+            assert sorted(claim.id for claim in page.claims) == [
+                "claim:audit-note",
+                "claim:manual-documented",
+            ]
+        else:
+            assert sorted(source.id for source in page.sources) == [
+                "2024",
+                "operator-manual",
+            ]
+
+    def candidate(repo, kb):
+        press = kb / "concepts" / "hydraulic-press.md"
+        # Rewrite from the deterministic ORIGINAL template: never reinject
+        # over the baseline-mutated file (records must re-spell, not
+        # accumulate).
+        original = _page(
+            "Hydraulic Press", PRESS_ENTITY, "machine", MANUAL_ID, "claim:manual-documented"
+        )
+        press.write_text(inject(original, candidate_id, candidate_note()))
+
+    repo, kb, base = _staged_scenario(tmp_path, base_mutate, candidate)
+    page = _loaded_press(kb)
+    if normalization_case == "claim_whitespace_to_normalized_id":
+        assert sorted(claim.id for claim in page.claims) == [
+            "claim:audit-note",
+            "claim:manual-documented",
+        ]
+    else:
+        assert sorted(source.id for source in page.sources) == ["2024", "operator-manual"]
+
+    code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+    assert code == 0, payload
+    code = main(["authoring-review", str(kb), "--base", base])
+    plain = capsys.readouterr().out
+    assert code == 0
+
+    if normalization_case == "spelling_plus_note_change":
+        # Exactly ONE owned old/new entry — inspect the entries LIST so two
+        # same-labelled remove/add entries cannot collapse into one.
+        entries = [
+            entry
+            for entry in _page_entry(payload, "concepts/hydraulic-press.md")["semantic_changes"]
+            if entry["field"] == "frontmatter.unrepresented (sources.2024)"
+        ]
+        assert len(entries) == 1, entries
+        assert "draft" in entries[0]["before"]
+        assert "final" in entries[0]["after"]
+        assert "final" in plain
+    else:
+        # The unchanged native owner invents nothing; a semantically
+        # unchanged page may legitimately be omitted entirely.
+        assert "frontmatter.unrepresented" not in json.dumps(payload)
+        assert "frontmatter.unrepresented" not in plain

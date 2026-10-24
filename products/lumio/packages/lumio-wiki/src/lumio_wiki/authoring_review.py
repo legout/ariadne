@@ -808,43 +808,50 @@ def _compact_residual(residual: dict[str, Any]) -> str:
     return json.dumps(residual, sort_keys=True, default=str) if residual else "none"
 
 
-def _index_by_identity(
-    records: list[dict[str, Any]], container: str, key_field: str
-) -> tuple[dict[Any, dict[str, Any]], list[dict[str, Any]]]:
-    """Index identified records ONE-TO-ONE by their raw native identity.
+def _native_identity(container: str, record: dict[str, Any]) -> str:
+    """The record's EXISTING native identity for its container.
 
-    Records carrying the identity key map by that raw value; duplicates or
-    unhashable identities make honest one-to-one accounting impossible and
-    refuse boundedly rather than silently collapsing records. Records
-    without the identity stay unidentified for positional fallback only.
+    Mirrors the native parsers exactly: Sources identify by
+    ``str(item.get("id", ""))`` (knowledge_base ``_as_sources``) and Claims
+    additionally strip whitespace (``str(item.get("id", "")).strip()`` in
+    ``_as_claims``). An authored ``id: 2024`` and ``id: "2024"`` therefore
+    name ONE native Source owner, and whitespace-padded Claim spellings one
+    native Claim owner. An empty normalized identity carries no identity.
     """
-    identified: dict[Any, dict[str, Any]] = {}
+    identity = str(record.get("id", ""))
+    if container == "claims":
+        identity = identity.strip()
+    return identity
+
+
+def _index_by_identity(
+    records: list[dict[str, Any]], container: str
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Index identified records ONE-TO-ONE by their NATIVE identity.
+
+    Normalization happens before any pairing decision, so native-identical
+    spellings never split one owner into invented remove/add facts. Records
+    whose normalized identity is empty stay unidentified (positional
+    fallback only); duplicate non-empty normalized identities make honest
+    one-to-one accounting impossible and refuse boundedly rather than
+    silently collapsing records.
+    """
+    identified: dict[str, dict[str, Any]] = {}
     unidentified: list[dict[str, Any]] = []
     for record in records:
-        key = record.get(key_field)
-        if key is None:
+        identity = _native_identity(container, record)
+        if not identity:
             unidentified.append(record)
             continue
-        try:
-            if key in identified:
-                raise AuthoringReviewError(
-                    f"the {container} records carry the ambiguous identity {key!r} more "
-                    "than once; honest one-to-one metadata accounting is impossible — "
-                    "refusing rather than guessing a pairing",
-                    code="authoring_review_error",
-                )
-            identified[key] = record
-        except TypeError as exc:
+        if identity in identified:
             raise AuthoringReviewError(
-                f"a {container} record identity {key!r} is not a usable native "
-                f"identity ({exc}); refusing one-to-one metadata accounting",
+                f"the {container} records carry the ambiguous native identity "
+                f"{identity!r} more than once; honest one-to-one metadata "
+                "accounting is impossible — refusing rather than guessing a pairing",
                 code="authoring_review_error",
-            ) from exc
+            )
+        identified[identity] = record
     return identified, unidentified
-
-
-def _identity_order(key: Any) -> tuple[str, str]:
-    return (type(key).__name__, str(key))
 
 
 def _nested_unrepresented_changes(
@@ -866,12 +873,12 @@ def _nested_unrepresented_changes(
     mappings compare, never ``.get`` lookups.
     """
     changes: list[SemanticFieldChange] = []
-    for container, (leaves, key_field) in _COMPOSITE_REPRESENTED_LEAVES.items():
+    for container, (leaves, _identity_field) in _COMPOSITE_REPRESENTED_LEAVES.items():
         base_records = _record_list(base_meta.get(container))
         candidate_records = _record_list(candidate_meta.get(container))
-        base_identified, base_unidentified = _index_by_identity(base_records, container, key_field)
+        base_identified, base_unidentified = _index_by_identity(base_records, container)
         candidate_identified, candidate_unidentified = _index_by_identity(
-            candidate_records, container, key_field
+            candidate_records, container
         )
 
         def emit(  # bind loop state at definition time (no loop-variable capture)
@@ -936,7 +943,7 @@ def _nested_unrepresented_changes(
                         )
                     )
 
-        for key in sorted(set(base_identified) | set(candidate_identified), key=_identity_order):
+        for key in sorted(set(base_identified) | set(candidate_identified)):
             emit(str(key), base_identified.get(key), candidate_identified.get(key))
         for index in range(max(len(base_unidentified), len(candidate_unidentified))):
             emit(
