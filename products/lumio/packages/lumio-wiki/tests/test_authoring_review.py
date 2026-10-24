@@ -1539,3 +1539,131 @@ def test_review_distinguishes_alias_tag_lists(list_case, tmp_path, capsys):
     plain = capsys.readouterr().out
     assert code == 0
     assert '"Alpha", "Beta"' in plain or '"workshop", "primary"' in plain
+
+
+# ---------------------------------------------------------------------------
+# Owner-authorized bounded F3 repair: nested metadata under represented
+# composite containers (j1-j2-f3-delta-review.md). Chosen public outcome,
+# fixed before implementation: changed unrepresented nested members are
+# disclosed as ownership-contextual semantic facts — field
+# "frontmatter.unrepresented (<container>.<record>[.evidence[i]])" with
+# compact JSON renderings of the residual member mappings (nested structured
+# values compare completely); unchanged nested metadata never blocks a
+# body-only edit; formatting-equivalent values never become invented changes.
+# ---------------------------------------------------------------------------
+
+
+def _nested_base_source_block() -> str:
+    return (
+        "sources:\n"
+        '  - id: "operator-manual"\n'
+        '    title: "operator-manual source"\n'
+        '    review_note: "draft"\n'
+        "    annotations:\n"
+        '      checked_by: "alice"\n'
+        '      stage: "initial"\n'
+    )
+
+
+@pytest.mark.parametrize(
+    "nested_case",
+    [
+        "source_extra_member",
+        "claim_extra_member",
+        "evidence_extra_member",
+        "body_only_control",
+    ],
+)
+def test_review_accounts_for_nested_metadata(nested_case, tmp_path, capsys):
+    """F3 nested: changed residual composite members are disclosed, owned."""
+    from lumio_wiki.knowledge_base import load_knowledge_base
+
+    def base_mutate(repo, kb):
+        press = kb / "concepts" / "hydraulic-press.md"
+        text = press.read_text()
+        if nested_case == "source_extra_member":
+            text = text.replace(
+                'sources:\n  - id: "operator-manual"\n    title: "operator-manual source"\n',
+                _nested_base_source_block(),
+            )
+        elif nested_case == "claim_extra_member":
+            text = text.replace(
+                "    status: accepted\n    evidence:\n",
+                '    status: accepted\n    review_note: "draft"\n    evidence:\n',
+            )
+        elif nested_case == "evidence_extra_member":
+            text = text.replace(
+                '      - section: "Overview"',
+                '      - section: "Overview"\n        review_note: "draft"',
+            )
+        else:  # body_only_control: nested extras present, never changed
+            text = text.replace(
+                'sources:\n  - id: "operator-manual"\n    title: "operator-manual source"\n',
+                'sources:\n  - id: "operator-manual"\n'
+                '    title: "operator-manual source"\n'
+                '    review_note: "draft"\n',
+            )
+        press.write_text(text)
+        # Base-state guard: the native loader accepts the authored extras.
+        _loaded, base_report = load_knowledge_base(kb)
+        assert base_report.is_valid, base_report
+
+    def candidate(repo, kb):
+        press = kb / "concepts" / "hydraulic-press.md"
+        text = press.read_text()
+        if nested_case == "source_extra_member":
+            text = text.replace('review_note: "draft"', 'review_note: "final"').replace(
+                'checked_by: "alice"', 'checked_by: "bob"'
+            )
+        elif nested_case == "claim_extra_member":
+            text = text.replace('review_note: "draft"', 'review_note: "final"')
+        elif nested_case == "evidence_extra_member":
+            text = text.replace('review_note: "draft"', 'review_note: "final"')
+        else:
+            text = text + "## Pressure\n\nThe guard interlock is verified weekly.\n"
+        press.write_text(text)
+
+    repo, kb, base = _staged_scenario(tmp_path, base_mutate, candidate)
+    # Candidate-state guard: the staged worktree stays native-valid.
+    _staged, staged_report = load_knowledge_base(kb)
+    assert staged_report.is_valid, staged_report
+    code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+    assert code == 0, payload
+    semantics = _semantic_entries(payload, "concepts/hydraulic-press.md")
+    code = main(["authoring-review", str(kb), "--base", base])
+    plain = capsys.readouterr().out
+    assert code == 0
+
+    if nested_case == "body_only_control":
+        unrepresented = [
+            field for field in semantics if field.startswith("frontmatter.unrepresented")
+        ]
+        assert unrepresented == []
+        press = _page_entry(payload, "concepts/hydraulic-press.md")
+        assert press["body_changed"] is True
+        assert "The guard interlock is verified weekly." in plain
+        return
+
+    if nested_case == "source_extra_member":
+        owner = "operator-manual"
+    else:
+        owner = "claim:manual-documented"
+    nested_entries = {
+        field: entry
+        for field, entry in semantics.items()
+        if field.startswith("frontmatter.unrepresented")
+    }
+    owned = {
+        field: entry
+        for field, entry in nested_entries.items()
+        if owner in field and ("sources" in field or "claims" in field)
+    }
+    assert owned, nested_entries
+    change = next(iter(owned.values()))
+    assert "draft" in change["before"]
+    assert "final" in change["after"]
+    assert "final" in plain
+    if nested_case == "source_extra_member":
+        # Nested structured extras compare completely, not one scalar key.
+        assert "alice" in change["before"]
+        assert "bob" in change["after"]

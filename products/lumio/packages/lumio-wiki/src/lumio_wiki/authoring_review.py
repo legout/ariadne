@@ -675,6 +675,33 @@ def _render_profile(profile: Any | None) -> str:
     return json.dumps(msgspec.to_builtins(profile), sort_keys=True, default=str)
 
 
+#: Composite containers whose RECORDS have represented leaves: the container
+#: key itself never hides changed unrepresented nested members — each record's
+#: residual members (and each Claim Evidence anchor's residuals) are accounted
+#: separately below.
+_COMPOSITE_REPRESENTED_LEAVES = {
+    "sources": (frozenset({"id", "title", "url"}), "id"),
+    "claims": (
+        frozenset(
+            {
+                "id",
+                "predicate",
+                "status",
+                "object",
+                "value",
+                "value_type",
+                "confidence",
+                "origin",
+                "valid_from",
+                "valid_to",
+                "evidence",
+            }
+        ),
+        "id",
+    ),
+}
+_EVIDENCE_REPRESENTED_LEAVES = frozenset({"section", "lines", "line_start", "line_end"})
+
 #: Frontmatter keys whose changes the semantic review represents (typed
 #: CompiledPage fields plus the profile entry above). Everything else that
 #: changes is explicitly disclosed as the unrepresented remainder.
@@ -741,23 +768,127 @@ def _unrepresented_frontmatter_changes(
         for key in set(base_meta) | set(candidate_meta)
         if key not in represented and base_meta.get(key) != candidate_meta.get(key)
     }
-    if not changed_keys:
-        return []
-    ordered = sorted(changed_keys)
-    before = "; ".join(
-        f"{key}={json.dumps(base_meta.get(key), sort_keys=True, default=str)}" for key in ordered
-    )
-    after = "; ".join(
-        f"{key}={json.dumps(candidate_meta.get(key), sort_keys=True, default=str)}"
-        for key in ordered
-    )
-    return [
-        SemanticFieldChange(
-            field="frontmatter.unrepresented",
-            before=before,
-            after=after,
+    changes: list[SemanticFieldChange] = []
+    if changed_keys:
+        ordered = sorted(changed_keys)
+        changes.append(
+            SemanticFieldChange(
+                field="frontmatter.unrepresented",
+                before="; ".join(
+                    f"{key}={json.dumps(base_meta.get(key), sort_keys=True, default=str)}"
+                    for key in ordered
+                ),
+                after="; ".join(
+                    f"{key}={json.dumps(candidate_meta.get(key), sort_keys=True, default=str)}"
+                    for key in ordered
+                ),
+            )
         )
-    ]
+    changes.extend(_nested_unrepresented_changes(base_meta, candidate_meta))
+    return changes
+
+
+def _record_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [record for record in value if isinstance(record, dict)]
+
+
+def _residual_members(record: dict[str, Any], leaves: frozenset[str]) -> dict[str, Any]:
+    """The record members outside the represented leaf projection."""
+    return {key: value for key, value in record.items() if key not in leaves}
+
+
+def _compact_residual(residual: dict[str, Any]) -> str:
+    """Compact readable rendering; ``none`` when no residual members exist."""
+    return json.dumps(residual, sort_keys=True, default=str) if residual else "none"
+
+
+def _nested_unrepresented_changes(
+    base_meta: dict[str, Any], candidate_meta: dict[str, Any]
+) -> list[SemanticFieldChange]:
+    """Disclose changed unrepresented members INSIDE represented containers.
+
+    A represented container (``sources``, ``claims``) is never treated as
+    complete representation of its records: residual members outside the
+    native leaf projection — including nested structured values — are
+    compared as parsed values and disclosed with their owning record (and
+    per-index Claim Evidence anchors). Unchanged residuals produce nothing;
+    absent members stay distinct from present null values because whole
+    mappings compare, never ``.get`` lookups.
+    """
+    changes: list[SemanticFieldChange] = []
+    for container, (leaves, key_field) in _COMPOSITE_REPRESENTED_LEAVES.items():
+        base_records = _record_list(base_meta.get(container))
+        candidate_records = _record_list(candidate_meta.get(container))
+        candidate_by_key = {
+            record[key_field]: record for record in candidate_records if key_field in record
+        }
+        base_by_key = {record[key_field]: record for record in base_records if key_field in record}
+        max_len = max(len(base_records), len(candidate_records))
+        for index in range(max_len):
+            base_record = base_records[index] if index < len(base_records) else None
+            candidate_record = candidate_records[index] if index < len(candidate_records) else None
+            if base_record is not None and candidate_record is not None:
+                base_key = base_record.get(key_field)
+                candidate_key = candidate_record.get(key_field)
+                if candidate_key is not None and candidate_key in base_by_key:
+                    base_record = base_by_key[candidate_key]
+                elif base_key is not None and base_key in candidate_by_key:
+                    candidate_record = candidate_by_key[base_key]
+            label = None
+            if base_record is not None and base_record.get(key_field) is not None:
+                label = base_record.get(key_field)
+            elif candidate_record is not None and candidate_record.get(key_field) is not None:
+                label = candidate_record.get(key_field)
+            owner = str(label) if label is not None else f"record[{index}]"
+            if base_record is None or candidate_record is None:
+                record = candidate_record if base_record is None else base_record
+                residual = _residual_members(record, leaves)
+                if residual:
+                    changes.append(
+                        SemanticFieldChange(
+                            field=f"frontmatter.unrepresented ({container}.{owner})",
+                            before=("none" if base_record is None else _compact_residual(residual)),
+                            after=(
+                                "none" if candidate_record is None else _compact_residual(residual)
+                            ),
+                        )
+                    )
+                continue
+            before_residual = _residual_members(base_record, leaves)
+            after_residual = _residual_members(candidate_record, leaves)
+            if before_residual != after_residual:
+                changes.append(
+                    SemanticFieldChange(
+                        field=f"frontmatter.unrepresented ({container}.{owner})",
+                        before=_compact_residual(before_residual),
+                        after=_compact_residual(after_residual),
+                    )
+                )
+            if container != "claims":
+                continue
+            base_anchors = _record_list(base_record.get("evidence"))
+            candidate_anchors = _record_list(candidate_record.get("evidence"))
+            for anchor_index in range(max(len(base_anchors), len(candidate_anchors))):
+                base_anchor = base_anchors[anchor_index] if anchor_index < len(base_anchors) else {}
+                candidate_anchor = (
+                    candidate_anchors[anchor_index] if anchor_index < len(candidate_anchors) else {}
+                )
+                before_anchor = _residual_members(base_anchor, _EVIDENCE_REPRESENTED_LEAVES)
+                after_anchor = _residual_members(candidate_anchor, _EVIDENCE_REPRESENTED_LEAVES)
+                if before_anchor != after_anchor:
+                    changes.append(
+                        SemanticFieldChange(
+                            field=(
+                                f"frontmatter.unrepresented ({container}.{owner}"
+                                f".evidence[{anchor_index}])"
+                            ),
+                            before=_compact_residual(before_anchor),
+                            after=_compact_residual(after_anchor),
+                        )
+                    )
+    return changes
 
 
 def _page_review_change(
