@@ -991,3 +991,684 @@ def test_exchange_cli_selection_and_errors(tmp_path, capsys, monkeypatch):
     assert envelope["error"]["code"] == "invalid_source_exchange"
     _assert_no_disclosure(json.dumps(envelope))
     assert not bad_output.exists()
+
+
+# ---------------------------------------------------------------------------
+# Review regressions F1-F7 (j4-review.md). These pin the CONTRACT the review
+# found violated; against the unrepaired implementation they are expected to
+# FAIL (genuine RED evidence), each at its named defect — never at unrelated
+# fixture setup. Independent oracles: written plan ceilings, authored bytes,
+# native filesystem/device facts, real Git worktrees and real remote objects.
+# ---------------------------------------------------------------------------
+
+# Written transfer ceilings (plan 0010 transfer bounds): a baseline container
+# is bounded by the 4 MiB manifest + 1 MiB tar overhead; a full handoff by
+# 4 MiB manifest + 2 GiB payload + 8 MiB overhead.
+_BASELINE_CEILING = 5 * 1024 * 1024
+_FULL_CEILING = (4 + 2048 + 8) * 1024 * 1024
+
+
+def _craft_remote_state(raw, transfer_id: str, final_bytes: bytes, ready: dict) -> None:
+    """Hand-craft real remote objects (test-owned; no deletes)."""
+    obstore.put(raw, _raw_key(transfer_id, "transfer.tar"), final_bytes)
+    obstore.put(raw, _raw_key(transfer_id, "ready.json"), json.dumps(ready).encode())
+
+
+def _counting_archive_gets():
+    """Wrap obstore.get: delegate everything, count archive-member GETs."""
+    real_get = obstore.get
+    counter = {"archive_gets": 0}
+
+    def wrapped(store, path, *args, **kwargs):
+        if str(path).endswith("/transfer.tar"):
+            counter["archive_gets"] += 1
+        return real_get(store, path, *args, **kwargs)
+
+    return real_get, wrapped, counter
+
+
+@pytest.mark.parametrize(
+    ("kind", "declared_count"),
+    [
+        ("source-baseline", _BASELINE_CEILING + 1),
+        ("source-handoff", _FULL_CEILING + 1),
+    ],
+)
+def test_exchange_download_enforces_kind_limit(kind, declared_count, tmp_path):
+    """F1: a remote-advertised count above the kind's written ceiling must be
+    refused BEFORE any archive fetch or output exposure — the remote count is
+    not resource authority."""
+    world = _baseline_world(tmp_path)
+    artifact = world["snapshot"]
+    facts = _expected_transfer("source-baseline", "upload", artifact)
+    # Tiny real final object; the ready record lies only about the count.
+    ready = {
+        "schema_version": 1,
+        "kind": kind,
+        "transfer_id": facts["transfer_id"],
+        "byte_count": declared_count,
+        "sha256": facts["sha256"],
+    }
+    _craft_remote_state(
+        _role_store("contributor"), facts["transfer_id"], artifact.read_bytes(), ready
+    )
+
+    output = tmp_path / "download" / "over-ceiling.tar"
+    output.parent.mkdir(parents=True)
+    real_get, wrapped_get, counter = _counting_archive_gets()
+    obstore.get = wrapped_get
+    try:
+        with pytest.raises(SourceExchangeError) as refused:
+            download_source_transfer(
+                facts["transfer_id"],
+                facts["sha256"],
+                exchange=_exchange("maintainer"),
+                output_path=output,
+            )
+    finally:
+        obstore.get = real_get
+    assert refused.value.code == "exchange_integrity_mismatch"
+    assert counter["archive_gets"] == 0, "archive fetched before ceiling refusal"
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["unhashable_kind", "malformed_remote_transfer_id", "malformed_remote_sha256"],
+)
+def test_exchange_ready_field_types_are_bounded(mutation, tmp_path, capsys, monkeypatch):
+    """F2: wrong-type/malformed REMOTE ready fields must surface as a bounded
+    exchange_integrity_mismatch on SDK and JSON CLI paths — never an uncaught
+    TypeError, wrong category or traceback."""
+    from lumio_wiki.env_loader import KB_PATH_ENV_VAR, SOURCE_EXCHANGE_ENV_VAR
+
+    for variable in (SOURCE_EXCHANGE_ENV_VAR, KB_PATH_ENV_VAR):
+        monkeypatch.delenv(variable, raising=False)
+
+    world = _baseline_world(tmp_path)
+    artifact = world["snapshot"]
+    facts = _expected_transfer("source-baseline", "upload", artifact)
+    ready = {
+        "schema_version": 1,
+        "kind": "source-baseline",
+        "transfer_id": facts["transfer_id"],
+        "byte_count": facts["byte_count"],
+        "sha256": facts["sha256"],
+    }
+    if mutation == "unhashable_kind":
+        ready["kind"] = []
+    elif mutation == "malformed_remote_transfer_id":
+        ready["transfer_id"] = "not-a-valid-remote-id"
+    else:
+        ready["sha256"] = 12345
+    _craft_remote_state(
+        _role_store("contributor"), facts["transfer_id"], artifact.read_bytes(), ready
+    )
+
+    output = tmp_path / "download" / f"{mutation}.tar"
+    output.parent.mkdir(parents=True)
+    with pytest.raises(SourceExchangeError) as refused:
+        download_source_transfer(
+            facts["transfer_id"],
+            facts["sha256"],
+            exchange=_exchange("maintainer"),
+            output_path=output,
+        )
+    assert refused.value.code == "exchange_integrity_mismatch"
+    assert not output.exists()
+
+    cli_output = tmp_path / "download" / f"{mutation}-cli.tar"
+    code = main(
+        [
+            "source-exchange",
+            "download",
+            "--id",
+            facts["transfer_id"],
+            "--digest",
+            facts["sha256"],
+            "--exchange",
+            f"s3://{_BUCKET}/{_PREFIX}",
+            "--output",
+            str(cli_output),
+            "--json",
+        ]
+    )
+    assert code == 2
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["schema_version"] == 1
+    assert envelope["error"]["code"] == "exchange_integrity_mismatch"
+    _assert_no_disclosure(json.dumps(envelope))
+    assert not cli_output.exists()
+
+
+def _upload_baseline(tmp_path: Path):
+    world = _baseline_world(tmp_path)
+    artifact = world["snapshot"]
+    facts = _expected_transfer("source-baseline", "upload", artifact)
+    upload_source_transfer(artifact, exchange=_exchange("contributor"))
+    return world, artifact, facts
+
+
+def test_exchange_publication_cross_filesystem(tmp_path):
+    """F3a: a verified transfer must publish onto a DIFFERENT filesystem
+    (staging temp vs destination device) instead of failing EXDEV."""
+    import tempfile as _tempfile
+
+    _world, artifact, facts = _upload_baseline(tmp_path)
+    with _tempfile.TemporaryDirectory(dir="/dev/shm") as shm:
+        # Native device oracle: the destination filesystem genuinely differs
+        # from the operation's staging temp root.
+        assert _os.stat(shm).st_dev != _os.stat(_tempfile.gettempdir()).st_dev
+        output = Path(shm) / "transfer.tar"
+        downloaded = download_source_transfer(
+            facts["transfer_id"],
+            facts["sha256"],
+            exchange=_exchange("maintainer"),
+            output_path=output,
+        )
+        assert downloaded.operation == "download"
+        assert output.read_bytes() == artifact.read_bytes()
+        assert [p.name for p in Path(shm).iterdir()] == ["transfer.tar"]
+
+
+def test_exchange_publication_no_clobber(tmp_path):
+    """F3b: an unrelated destination file appearing immediately before the
+    atomic publication primitive must never be silently destroyed."""
+    _world, artifact, facts = _upload_baseline(tmp_path)
+    output = tmp_path / "download" / "transfer.tar"
+    output.parent.mkdir(parents=True)
+    sentinel_bytes = b"unrelated local sentinel content never to be clobbered"
+    fired: list[str] = []
+    real_replace = _os.replace
+    real_link = _os.link
+
+    def _arm(destination: Path) -> None:
+        if Path(destination) == output and not fired:
+            output.write_bytes(sentinel_bytes)
+            fired.append("armed")
+
+    def wrapped_replace(src, dst, **kwargs):
+        _arm(dst)
+        return real_replace(src, dst, **kwargs)
+
+    def wrapped_link(src, dst, **kwargs):
+        _arm(dst)
+        return real_link(src, dst, **kwargs)
+
+    _os.replace = wrapped_replace
+    _os.link = wrapped_link
+    try:
+        with pytest.raises(SourceExchangeError) as refused:
+            download_source_transfer(
+                facts["transfer_id"],
+                facts["sha256"],
+                exchange=_exchange("maintainer"),
+                output_path=output,
+            )
+    finally:
+        _os.replace = real_replace
+        _os.link = real_link
+    assert fired == ["armed"], "publication primitive ran without the injection firing"
+    assert refused.value.code == "exchange_conflict"
+    assert output.read_bytes() == sentinel_bytes  # unrelated file preserved
+
+
+def _git_fixture_with_ignored_dir(tmp_path: Path) -> Path:
+    repo = _init_repo(tmp_path / "content-repo")
+    (repo / ".gitignore").write_text("private-ignored/\n")
+    (repo / "README.md").write_text("content repository\n")
+    (repo / "private-ignored").mkdir()
+    _commit(repo, "content base with ignored private directory")
+    return repo
+
+
+def test_exchange_download_refuses_git_output_sdk(tmp_path):
+    """F4a: the public SDK download must refuse to publish a private
+    full-source transfer inside a Git worktree (ignored directory included)."""
+    world = _handoff_world(tmp_path)
+    bundle = world["bundle"]
+    facts = _expected_transfer("source-handoff", "upload", bundle)
+    upload_source_transfer(bundle, exchange=_exchange("contributor"))
+
+    repo = _git_fixture_with_ignored_dir(tmp_path)
+    assert (repo / ".git").exists()  # native worktree oracle
+    output = repo / "private-ignored" / "transfer.tar"
+    with pytest.raises(SourceExchangeError) as refused:
+        download_source_transfer(
+            facts["transfer_id"],
+            facts["sha256"],
+            exchange=_exchange("maintainer"),
+            output_path=output,
+        )
+    _assert_no_disclosure(str(refused.value))
+    assert not output.exists()
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_exchange_download_refuses_git_output_explicit_cli(tmp_path, capsys, monkeypatch):
+    """F4b: the explicit --exchange CLI route (no KB) must refuse an output
+    path whose parent is a SYMLINK resolving into an ignored Git directory."""
+    from lumio_wiki.env_loader import KB_PATH_ENV_VAR, SOURCE_EXCHANGE_ENV_VAR
+
+    for variable in (SOURCE_EXCHANGE_ENV_VAR, KB_PATH_ENV_VAR):
+        monkeypatch.delenv(variable, raising=False)
+    world = _handoff_world(tmp_path)
+    bundle = world["bundle"]
+    facts = _expected_transfer("source-handoff", "upload", bundle)
+    upload_source_transfer(bundle, exchange=_exchange("contributor"))
+
+    repo = _git_fixture_with_ignored_dir(tmp_path)
+    link = tmp_path / "link-to-ignored"
+    link.symlink_to(repo / "private-ignored")
+    output = link / "transfer.tar"
+    code = main(
+        [
+            "source-exchange",
+            "download",
+            "--id",
+            facts["transfer_id"],
+            "--digest",
+            facts["sha256"],
+            "--exchange",
+            f"s3://{_BUCKET}/{_PREFIX}",
+            "--output",
+            str(output),
+            "--json",
+        ]
+    )
+    assert code == 2
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["schema_version"] == 1
+    _assert_no_disclosure(json.dumps(envelope))
+    assert not output.exists()
+    assert not (repo / "private-ignored" / "transfer.tar").exists()
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_exchange_expected_failures_safe_missing_private_input(tmp_path, capsys, monkeypatch):
+    """F5a: a missing private input path must not be echoed into SDK messages
+    or ordinary CLI diagnostics."""
+    from lumio_wiki.env_loader import KB_PATH_ENV_VAR, SOURCE_EXCHANGE_ENV_VAR
+
+    for variable in (SOURCE_EXCHANGE_ENV_VAR, KB_PATH_ENV_VAR):
+        monkeypatch.delenv(variable, raising=False)
+    sentinel = tmp_path / "private" / "definitely-missing-sentinel-transfer.tar"
+    with pytest.raises(SourceExchangeError) as refused:
+        upload_source_transfer(sentinel, exchange=_exchange("contributor"))
+    assert str(sentinel) not in str(refused.value)
+    _assert_no_disclosure(str(refused.value))
+
+    code = main(
+        [
+            "source-exchange",
+            "upload",
+            "--file",
+            str(sentinel),
+            "--exchange",
+            f"s3://{_BUCKET}/{_PREFIX}",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2
+    assert str(sentinel) not in captured.err + captured.out
+    assert "traceback" not in (captured.err + captured.out).lower()
+
+
+def test_exchange_expected_failures_safe_temp_allocation(tmp_path, capsys, monkeypatch):
+    """F5b: a private temporary-allocation failure must surface as a bounded
+    SourceExchangeError/CLI envelope, never a raw filesystem exception."""
+    import tempfile as _tempfile
+
+    for variable in (SOURCE_EXCHANGE_ENV_VAR,):
+        monkeypatch.delenv(variable, raising=False)
+    _world, artifact, _facts = _upload_baseline(tmp_path)
+    second = tmp_path / "transfer" / "second.tar"
+    export_source_baseline(
+        _world["kb"],
+        _world["base"],
+        source_registry=SourceRegistry(tmp_path / "maintainer" / "registry"),
+        output_path=second,
+    )
+    allocation_sentinel = "/private-sentinel-allocation-path"
+    real_mkdtemp = _tempfile.mkdtemp
+
+    def wrapped_mkdtemp(*args, **kwargs):
+        if "lumio-source-exchange" in str(kwargs.get("prefix", "")):
+            raise OSError(28, "no space left on device", allocation_sentinel)
+        return real_mkdtemp(*args, **kwargs)
+
+    monkeypatch.setattr(_tempfile, "mkdtemp", wrapped_mkdtemp)
+    with pytest.raises(SourceExchangeError) as refused:
+        upload_source_transfer(second, exchange=_exchange("contributor"))
+    assert allocation_sentinel not in str(refused.value)
+    _assert_no_disclosure(str(refused.value))
+
+    code = main(
+        [
+            "source-exchange",
+            "upload",
+            "--file",
+            str(second),
+            "--exchange",
+            f"s3://{_BUCKET}/{_PREFIX}",
+            "--json",
+        ]
+    )
+    monkeypatch.undo()
+    envelope = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert envelope["schema_version"] == 1
+    _assert_no_disclosure(json.dumps(envelope))
+    assert allocation_sentinel not in json.dumps(envelope)
+
+
+def test_exchange_expected_failures_safe_missing_s3_extra(tmp_path, capsys, monkeypatch):
+    """F5c: with the optional S3 extra unavailable at operation time, the
+    exchange boundary must raise a bounded SourceExchangeError with actionable
+    '[s3]' guidance and a versioned CLI envelope — never a foreign exception
+    or traceback."""
+    import sys as _sys
+
+    from lumio_wiki.env_loader import KB_PATH_ENV_VAR
+
+    for variable in (SOURCE_EXCHANGE_ENV_VAR, KB_PATH_ENV_VAR):
+        monkeypatch.delenv(variable, raising=False)
+    world = _baseline_world(tmp_path)
+    artifact = world["snapshot"]
+    exchange = _exchange("contributor")  # resolved client created beforehand
+    monkeypatch.setitem(_sys.modules, "obstore", None)  # import boundary only
+
+    with pytest.raises(SourceExchangeError) as refused:
+        upload_source_transfer(artifact, exchange=exchange)
+    assert "[s3]" in str(refused.value)
+    _assert_no_disclosure(str(refused.value))
+
+    code = main(
+        [
+            "source-exchange",
+            "upload",
+            "--file",
+            str(artifact),
+            "--exchange",
+            f"s3://{_BUCKET}/{_PREFIX}",
+            "--json",
+        ]
+    )
+    assert code == 2
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["schema_version"] == 1
+    _assert_no_disclosure(json.dumps(envelope))
+
+
+def test_exchange_profile_requires_explicit_kb(tmp_path, capsys, monkeypatch):
+    """F6: profile-mode exchange selection must require the ACTUAL --kb even
+    when an ambient LUMIO_KB_PATH default exists; nothing may be uploaded."""
+    from lumio_wiki.env_loader import (
+        ARTIFACT_RETENTION_ENV_VAR,
+        KB_PATH_ENV_VAR,
+        SOURCE_REGISTRY_ENV_VAR,
+        SOURCE_STORE_ENV_VAR,
+    )
+
+    for variable in (
+        SOURCE_EXCHANGE_ENV_VAR,
+        SOURCE_REGISTRY_ENV_VAR,
+        SOURCE_STORE_ENV_VAR,
+        ARTIFACT_RETENTION_ENV_VAR,
+    ):
+        monkeypatch.delenv(variable, raising=False)
+    world, artifact, facts = _upload_baseline(tmp_path)
+    second = tmp_path / "transfer" / "second.tar"
+    export_source_baseline(
+        world["kb"],
+        world["base"],
+        source_registry=SourceRegistry(tmp_path / "maintainer" / "registry"),
+        output_path=second,
+    )
+    profile = tmp_path / "contributor" / "profile.json"
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "namespace": NAMESPACE,
+                "source_registry": str((tmp_path / "contributor" / "registry").resolve()),
+                "retention": "required",
+                "artifact_store": {
+                    "kind": "local",
+                    "root": str((tmp_path / "contributor" / "store").resolve()),
+                },
+                "exchange": {
+                    "kind": "s3",
+                    "bucket": _BUCKET,
+                    "prefix": _PREFIX,
+                    "endpoint": _ENDPOINT,
+                    "region": _os.environ.get("LUMIO_S3_REGION", "us-east-1"),
+                    "url_style": "path",
+                    "credentials": {
+                        "access_key_id_env": "LUMIO_S3_TEST_CONTRIBUTOR_ACCESS_KEY_ID",
+                        "secret_access_key_env": "LUMIO_S3_TEST_CONTRIBUTOR_SECRET_ACCESS_KEY",
+                    },
+                },
+            }
+        )
+    )
+    # Ambient default populated (the exact escape the review found).
+    monkeypatch.setenv(KB_PATH_ENV_VAR, str(world["kb"]))
+
+    remote_calls = {"count": 0}
+    saved = {}
+    for name in ("put", "copy", "head", "get", "list"):
+        saved[name] = getattr(obstore, name)
+
+        def _wrapper(*args, __name=name, **kwargs):
+            remote_calls["count"] += 1
+            return saved[__name](*args, **kwargs)
+
+        setattr(obstore, name, _wrapper)
+    try:
+        code = main(
+            [
+                "source-exchange",
+                "upload",
+                "--file",
+                str(second),
+                "--private-profile",
+                str(profile),
+                "--json",
+            ]
+        )
+    finally:
+        for name, real in saved.items():
+            setattr(obstore, name, real)
+    envelope = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert envelope["schema_version"] == 1
+    assert envelope["error"]["code"] == "invalid_private_profile"
+    assert remote_calls["count"] == 0, "network mutation before the explicit --kb refusal"
+
+
+def _denied_read_wrapper_for_key(key: str):
+    """Wrap obstore.head/get so reads of ONE key use the real denied-role
+    store (actual PermissionDeniedError), everything else delegating."""
+    denied_store = _role_store("denied")
+    real_head = obstore.head
+    real_get = obstore.get
+    fired = {"denied_reads": 0, "raw": None}
+
+    def wrapped_head(store, path, *args, **kwargs):
+        if path == key and store is not denied_store:
+            fired["denied_reads"] += 1
+            try:
+                return real_head(denied_store, path, *args, **kwargs)
+            except Exception as exc:  # record the real denial for the oracle
+                fired["raw"] = type(exc).__name__
+                raise
+        return real_head(store, path, *args, **kwargs)
+
+    def wrapped_get(store, path, *args, **kwargs):
+        if path == key and store is not denied_store:
+            fired["denied_reads"] += 1
+            try:
+                return real_get(denied_store, path, *args, **kwargs)
+            except Exception as exc:
+                fired["raw"] = type(exc).__name__
+                raise
+        return real_get(store, path, *args, **kwargs)
+
+    return (real_head, real_get), (wrapped_head, wrapped_get), fired
+
+
+def _lost_copy_wrapper():
+    """Wrap obstore.copy: perform the real copy (AlreadyExists is the remote
+    outcome for an existing immutable final), then lose the response."""
+    from obstore.exceptions import AlreadyExistsError
+
+    real_copy = obstore.copy
+
+    def wrapped(store, from_, to, *args, **kwargs):
+        try:
+            real_copy(store, from_, to, *args, **kwargs)
+        except AlreadyExistsError:
+            pass
+        raise RuntimeError("injected lost copy response")
+
+    return real_copy, wrapped
+
+
+def _lost_ready_put_wrapper():
+    """Wrap obstore.put: the ready.json create-only put hits the real
+    AlreadyExists outcome, then the response is lost."""
+    from obstore.exceptions import AlreadyExistsError
+
+    real_put = obstore.put
+
+    def wrapped(store, path, *args, **kwargs):
+        try:
+            return real_put(store, path, *args, **kwargs)
+        except AlreadyExistsError:
+            raise RuntimeError("injected lost ready response") from None
+
+    return real_put, wrapped
+
+
+def _conflicting_baseline_for(tmp_path: Path, artifact: Path) -> Path:
+    conflicting = tmp_path / "transfer" / "review-conflicting.tar"
+    _conflicting_archive("source-baseline", _manifest_of(artifact), conflicting)
+    return conflicting
+
+
+@pytest.mark.parametrize("scenario", ["copy_existing_denied", "ready_existing_denied"])
+def test_exchange_recovery_denied_verification_is_not_conflict(scenario, tmp_path):
+    """F7a/b: on an identical retry, a DENIED verification/comparison read
+    must stay exchange_access_denied — never an identity conflict."""
+    world, artifact, facts = _upload_baseline(tmp_path)
+    key = (
+        _raw_key(facts["transfer_id"], "transfer.tar")
+        if scenario == "copy_existing_denied"
+        else _raw_key(facts["transfer_id"], "ready.json")
+    )
+    (real_head, real_get), (wrapped_head, wrapped_get), fired = _denied_read_wrapper_for_key(key)
+    obstore.head = wrapped_head
+    obstore.get = wrapped_get
+    try:
+        with pytest.raises(SourceExchangeError) as refused:
+            upload_source_transfer(artifact, exchange=_exchange("contributor"))
+    finally:
+        obstore.head = real_head
+        obstore.get = real_get
+    assert fired["denied_reads"] >= 1 and fired["raw"] == "PermissionDeniedError"
+    assert refused.value.code == "exchange_access_denied"
+
+
+@pytest.mark.parametrize("scenario", ["copy_lost_denied", "ready_lost_denied"])
+def test_exchange_recovery_lost_response_denied_is_not_invalid(scenario, tmp_path):
+    """F7c/d: after a LOST copy/ready response, a denied verification read
+    must stay exchange_access_denied — never a generic invalid failure."""
+    world, artifact, facts = _upload_baseline(tmp_path)
+    key = (
+        _raw_key(facts["transfer_id"], "transfer.tar")
+        if scenario == "copy_lost_denied"
+        else _raw_key(facts["transfer_id"], "ready.json")
+    )
+    (real_head, real_get), (wrapped_head, wrapped_get), fired = _denied_read_wrapper_for_key(key)
+    real_copy, wrapped_copy = _lost_copy_wrapper()
+    real_put, wrapped_put = _lost_ready_put_wrapper()
+    obstore.head = wrapped_head
+    obstore.get = wrapped_get
+    if scenario == "copy_lost_denied":
+        obstore.copy = wrapped_copy
+    else:
+        obstore.put = wrapped_put
+    try:
+        with pytest.raises(SourceExchangeError) as refused:
+            upload_source_transfer(artifact, exchange=_exchange("contributor"))
+    finally:
+        obstore.head = real_head
+        obstore.get = real_get
+        obstore.copy = real_copy
+        obstore.put = real_put
+    assert fired["denied_reads"] >= 1 and fired["raw"] == "PermissionDeniedError"
+    assert refused.value.code == "exchange_access_denied"
+
+
+def test_exchange_recovery_lost_copy_with_different_final_is_conflict(tmp_path):
+    """F7e: a LOST copy response over an established DIFFERENT final object
+    must be reported as exchange_conflict, with the immutable bytes kept."""
+    world, artifact, facts = _upload_baseline(tmp_path)
+    conflicting = _conflicting_baseline_for(tmp_path, artifact)
+    real_copy, wrapped_copy = _lost_copy_wrapper()
+    obstore.copy = wrapped_copy
+    try:
+        with pytest.raises(SourceExchangeError) as refused:
+            upload_source_transfer(conflicting, exchange=_exchange("contributor"))
+    finally:
+        obstore.copy = real_copy
+    assert refused.value.code == "exchange_conflict"
+    maintainer_raw = _role_store("maintainer")
+    remote_digest, _total = _remote_digest(
+        maintainer_raw, _raw_key(facts["transfer_id"], "transfer.tar")
+    )
+    assert remote_digest == facts["sha256"]  # original final bytes unchanged
+
+
+def test_exchange_recovery_lost_ready_with_different_record_is_conflict(tmp_path):
+    """F7f: a LOST ready response against an established DIFFERENT completion
+    record must be reported as exchange_conflict, with the record unchanged."""
+    world, artifact, facts = _upload_baseline(tmp_path)
+    conflicting = _conflicting_baseline_for(tmp_path, artifact)
+    conflicting_digest = hashlib.sha256(conflicting.read_bytes()).hexdigest()
+    # Remote state: final already carries the conflicting bytes; the existing
+    # completion record names the ORIGINAL artifact (independently known
+    # different bytes), so the converging copy path reaches the ready seam.
+    raw = _role_store("contributor")
+    obstore.put(raw, _raw_key(facts["transfer_id"], "transfer.tar"), conflicting.read_bytes())
+    original_ready = {
+        "schema_version": 1,
+        "kind": "source-baseline",
+        "transfer_id": facts["transfer_id"],
+        "byte_count": facts["byte_count"],
+        "sha256": facts["sha256"],
+    }
+    obstore.put(
+        raw,
+        _raw_key(facts["transfer_id"], "ready.json"),
+        json.dumps(original_ready).encode(),
+    )
+    real_put, wrapped_put = _lost_ready_put_wrapper()
+    obstore.put = wrapped_put
+    try:
+        with pytest.raises(SourceExchangeError) as refused:
+            upload_source_transfer(conflicting, exchange=_exchange("contributor"))
+    finally:
+        obstore.put = real_put
+    assert refused.value.code == "exchange_conflict"
+    ready_now = json.loads(
+        bytes(
+            obstore.get(
+                _role_store("maintainer"), _raw_key(facts["transfer_id"], "ready.json")
+            ).bytes()
+        )
+    )
+    assert ready_now == original_ready  # record unchanged
+    assert conflicting_digest != facts["sha256"]  # the payloads genuinely differ
