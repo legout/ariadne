@@ -700,7 +700,11 @@ _COMPOSITE_REPRESENTED_LEAVES = {
         "id",
     ),
 }
-_EVIDENCE_REPRESENTED_LEAVES = frozenset({"section", "lines", "line_start", "line_end"})
+#: Authored Evidence anchor inputs ONLY: the native parser reads ``section``
+#: and ``lines``. ``line_start``/``line_end`` are attributes of the TYPED
+#: ClaimEvidence output — raw members with those names are unrepresented
+#: authored extras and must disclose as residuals.
+_EVIDENCE_REPRESENTED_LEAVES = frozenset({"section", "lines"})
 
 #: Frontmatter keys whose changes the semantic review represents (typed
 #: CompiledPage fields plus the profile entry above). Everything else that
@@ -804,16 +808,60 @@ def _compact_residual(residual: dict[str, Any]) -> str:
     return json.dumps(residual, sort_keys=True, default=str) if residual else "none"
 
 
+def _index_by_identity(
+    records: list[dict[str, Any]], container: str, key_field: str
+) -> tuple[dict[Any, dict[str, Any]], list[dict[str, Any]]]:
+    """Index identified records ONE-TO-ONE by their raw native identity.
+
+    Records carrying the identity key map by that raw value; duplicates or
+    unhashable identities make honest one-to-one accounting impossible and
+    refuse boundedly rather than silently collapsing records. Records
+    without the identity stay unidentified for positional fallback only.
+    """
+    identified: dict[Any, dict[str, Any]] = {}
+    unidentified: list[dict[str, Any]] = []
+    for record in records:
+        key = record.get(key_field)
+        if key is None:
+            unidentified.append(record)
+            continue
+        try:
+            if key in identified:
+                raise AuthoringReviewError(
+                    f"the {container} records carry the ambiguous identity {key!r} more "
+                    "than once; honest one-to-one metadata accounting is impossible — "
+                    "refusing rather than guessing a pairing",
+                    code="authoring_review_error",
+                )
+            identified[key] = record
+        except TypeError as exc:
+            raise AuthoringReviewError(
+                f"a {container} record identity {key!r} is not a usable native "
+                f"identity ({exc}); refusing one-to-one metadata accounting",
+                code="authoring_review_error",
+            ) from exc
+    return identified, unidentified
+
+
+def _identity_order(key: Any) -> tuple[str, str]:
+    return (type(key).__name__, str(key))
+
+
 def _nested_unrepresented_changes(
     base_meta: dict[str, Any], candidate_meta: dict[str, Any]
 ) -> list[SemanticFieldChange]:
     """Disclose changed unrepresented members INSIDE represented containers.
 
-    A represented container (``sources``, ``claims``) is never treated as
-    complete representation of its records: residual members outside the
-    native leaf projection — including nested structured values — are
-    compared as parsed values and disclosed with their owning record (and
-    per-index Claim Evidence anchors). Unchanged residuals produce nothing;
+    Identified records pair ONE-TO-ONE by their raw native identity over the
+    UNION of base and candidate identities — a matched record is never
+    reused positionally, so insertions, removals and reordering disclose
+    exactly their own owners and never invent unchanged owners' facts.
+    Unidentified records fall back to positional pairing among themselves.
+    Residual members outside the native leaf projection (including nested
+    structured values) are compared as parsed values and disclosed with
+    their owning record; Claim Evidence anchors get per-index residual
+    accounting for MATCHED and UNMATCHED claims alike, treating an absent
+    side as an empty anchor list. Unchanged residuals produce nothing;
     absent members stay distinct from present null values because whole
     mappings compare, never ``.get`` lookups.
     """
@@ -821,27 +869,19 @@ def _nested_unrepresented_changes(
     for container, (leaves, key_field) in _COMPOSITE_REPRESENTED_LEAVES.items():
         base_records = _record_list(base_meta.get(container))
         candidate_records = _record_list(candidate_meta.get(container))
-        candidate_by_key = {
-            record[key_field]: record for record in candidate_records if key_field in record
-        }
-        base_by_key = {record[key_field]: record for record in base_records if key_field in record}
-        max_len = max(len(base_records), len(candidate_records))
-        for index in range(max_len):
-            base_record = base_records[index] if index < len(base_records) else None
-            candidate_record = candidate_records[index] if index < len(candidate_records) else None
-            if base_record is not None and candidate_record is not None:
-                base_key = base_record.get(key_field)
-                candidate_key = candidate_record.get(key_field)
-                if candidate_key is not None and candidate_key in base_by_key:
-                    base_record = base_by_key[candidate_key]
-                elif base_key is not None and base_key in candidate_by_key:
-                    candidate_record = candidate_by_key[base_key]
-            label = None
-            if base_record is not None and base_record.get(key_field) is not None:
-                label = base_record.get(key_field)
-            elif candidate_record is not None and candidate_record.get(key_field) is not None:
-                label = candidate_record.get(key_field)
-            owner = str(label) if label is not None else f"record[{index}]"
+        base_identified, base_unidentified = _index_by_identity(base_records, container, key_field)
+        candidate_identified, candidate_unidentified = _index_by_identity(
+            candidate_records, container, key_field
+        )
+
+        def emit(  # bind loop state at definition time (no loop-variable capture)
+            owner: str,
+            base_record: Any | None,
+            candidate_record: Any | None,
+            *,
+            container: str = container,
+            leaves: frozenset[str] = leaves,
+        ) -> None:
             if base_record is None or candidate_record is None:
                 record = candidate_record if base_record is None else base_record
                 residual = _residual_members(record, leaves)
@@ -855,21 +895,28 @@ def _nested_unrepresented_changes(
                             ),
                         )
                     )
-                continue
-            before_residual = _residual_members(base_record, leaves)
-            after_residual = _residual_members(candidate_record, leaves)
-            if before_residual != after_residual:
-                changes.append(
-                    SemanticFieldChange(
-                        field=f"frontmatter.unrepresented ({container}.{owner})",
-                        before=_compact_residual(before_residual),
-                        after=_compact_residual(after_residual),
+            else:
+                before_residual = _residual_members(base_record, leaves)
+                after_residual = _residual_members(candidate_record, leaves)
+                if before_residual != after_residual:
+                    changes.append(
+                        SemanticFieldChange(
+                            field=f"frontmatter.unrepresented ({container}.{owner})",
+                            before=_compact_residual(before_residual),
+                            after=_compact_residual(after_residual),
+                        )
                     )
-                )
             if container != "claims":
-                continue
-            base_anchors = _record_list(base_record.get("evidence"))
-            candidate_anchors = _record_list(candidate_record.get("evidence"))
+                return
+            # Evidence anchor residuals run for EVERY claim pair — including
+            # unmatched additions/removals — with an empty anchor list on the
+            # absent side (an added/removed anchor's own extras must disclose).
+            base_anchors = _record_list(
+                base_record.get("evidence") if base_record is not None else None
+            )
+            candidate_anchors = _record_list(
+                candidate_record.get("evidence") if candidate_record is not None else None
+            )
             for anchor_index in range(max(len(base_anchors), len(candidate_anchors))):
                 base_anchor = base_anchors[anchor_index] if anchor_index < len(base_anchors) else {}
                 candidate_anchor = (
@@ -888,6 +935,15 @@ def _nested_unrepresented_changes(
                             after=_compact_residual(after_anchor),
                         )
                     )
+
+        for key in sorted(set(base_identified) | set(candidate_identified), key=_identity_order):
+            emit(str(key), base_identified.get(key), candidate_identified.get(key))
+        for index in range(max(len(base_unidentified), len(candidate_unidentified))):
+            emit(
+                f"record[{index}]",
+                base_unidentified[index] if index < len(base_unidentified) else None,
+                candidate_unidentified[index] if index < len(candidate_unidentified) else None,
+            )
     return changes
 
 

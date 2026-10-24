@@ -1667,3 +1667,225 @@ def test_review_accounts_for_nested_metadata(nested_case, tmp_path, capsys):
         # Nested structured extras compare completely, not one scalar key.
         assert "alice" in change["before"]
         assert "bob" in change["after"]
+
+
+# ---------------------------------------------------------------------------
+# Owner-authorized bounded repair: one-to-one owner pairing, missing-side
+# Evidence accounting, and authored-vs-typed Evidence leaf names
+# (j1-j2-f3-nested-delta-review.md). Chosen public outcomes, fixed before
+# implementation: identified records pair ONE-TO-ONE by native identity over
+# the union (unmatched additions/removals disclosed with their own owner,
+# never inventing unchanged owners' facts; ambiguous or unhashable raw
+# identities refuse boundedly); Evidence residuals under added/removed Claims
+# are accounted with empty anchors on the absent side; the Evidence leaf set
+# is exactly the authored inputs (section, lines), so raw line_start/line_end
+# members disclose as residuals.
+# ---------------------------------------------------------------------------
+
+
+def _two_source_block(a_note: str, b_note: str) -> str:
+    return (
+        "sources:\n"
+        '  - id: "operator-manual"\n'
+        '    title: "operator-manual source"\n'
+        f'    note_state: "{a_note}"\n'
+        '  - id: "archived-notes"\n'
+        '    title: "Archived notes"\n'
+        f'    note_state: "{b_note}"\n'
+    )
+
+
+@pytest.mark.parametrize(
+    "pairing_case", ["source_prepend", "source_removal", "reorder_only_control"]
+)
+def test_review_pairs_nested_metadata_owners(pairing_case, tmp_path, capsys):
+    """Nested pairing: exact intended owners change; none invented."""
+    from lumio_wiki.knowledge_base import load_knowledge_base
+
+    def base_mutate(repo, kb):
+        press = kb / "concepts" / "hydraulic-press.md"
+        press.write_text(
+            _page(
+                "Hydraulic Press", PRESS_ENTITY, "machine", MANUAL_ID, "claim:manual-documented"
+            ).replace(
+                'sources:\n  - id: "operator-manual"\n    title: "operator-manual source"\n',
+                _two_source_block("kept-a", "kept-b"),
+            )
+        )
+        _loaded, base_report = load_knowledge_base(kb)
+        assert base_report.is_valid, base_report
+
+    def candidate(repo, kb):
+        press = kb / "concepts" / "hydraulic-press.md"
+        if pairing_case == "source_prepend":
+            # Prepend a new valid public-only source C; A and B unchanged.
+            press.write_text(
+                press.read_text().replace(
+                    "sources:\n",
+                    "sources:\n"
+                    '  - id: "cycle-audit"\n'
+                    '    title: "Cycle audit note"\n'
+                    '    note_state: "new-c"\n',
+                )
+            )
+        elif pairing_case == "source_removal":
+            press.write_text(
+                press.read_text().replace(
+                    '  - id: "operator-manual"\n'
+                    '    title: "operator-manual source"\n'
+                    '    note_state: "kept-a"\n',
+                    "",
+                )
+            )
+        else:  # reorder_only_control: B before A, values unchanged.
+            block = _two_source_block("kept-a", "kept-b")
+            reordered = (
+                "sources:\n"
+                '  - id: "archived-notes"\n'
+                '    title: "Archived notes"\n'
+                '    note_state: "kept-b"\n'
+                '  - id: "operator-manual"\n'
+                '    title: "operator-manual source"\n'
+                '    note_state: "kept-a"\n'
+            )
+            press.write_text(press.read_text().replace(block, reordered))
+
+    repo, kb, base = _staged_scenario(tmp_path, base_mutate, candidate)
+    _staged, staged_report = load_knowledge_base(kb)
+    assert staged_report.is_valid, staged_report
+    code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+    assert code == 0, payload
+    semantics = _semantic_entries(payload, "concepts/hydraulic-press.md")
+    fields = {field for field in semantics if field.startswith("frontmatter.unrepresented")}
+    if pairing_case == "source_prepend":
+        # Exactly C's residual is new; A and B invent nothing.
+        assert fields == {"frontmatter.unrepresented (sources.cycle-audit)"}
+        entry = semantics["frontmatter.unrepresented (sources.cycle-audit)"]
+        assert entry["before"] == "none"
+        assert "new-c" in entry["after"]
+    elif pairing_case == "source_removal":
+        # Exactly A's removal; B invents nothing.
+        assert fields == {"frontmatter.unrepresented (sources.operator-manual)"}
+        entry = semantics["frontmatter.unrepresented (sources.operator-manual)"]
+        assert "kept-a" in entry["before"]
+        assert entry["after"] == "none"
+    else:
+        assert fields == set()
+
+
+def _appendix_claim_block() -> str:
+    """One complete extra Claim whose ONLY unrepresented metadata lives in
+    its Evidence anchor (no top-level Claim extra)."""
+    return (
+        "  - id: claim:appendix-check\n"
+        "    predicate: documented-at\n"
+        '    value: "2026-10-24"\n'
+        "    value_type: string\n"
+        "    status: accepted\n"
+        "    evidence:\n"
+        '      - section: "Overview"\n'
+        '        review_note: "checked against appendix"\n'
+    )
+
+
+@pytest.mark.parametrize("claim_case", ["claim_added", "claim_removed"])
+def test_review_added_removed_claim_evidence(claim_case, tmp_path, capsys):
+    """Missing-side Claims still disclose their Evidence anchor residuals."""
+    from lumio_wiki.knowledge_base import load_knowledge_base
+
+    def _with_appendix_claim(text: str) -> str:
+        return text.replace(
+            '      - section: "Overview"\nsynthetic: false',
+            '      - section: "Overview"\n' + _appendix_claim_block() + "synthetic: false",
+        )
+
+    def base_mutate(repo, kb):
+        press = kb / "concepts" / "hydraulic-press.md"
+        text = press.read_text()
+        if claim_case == "claim_removed":
+            text = _with_appendix_claim(text)
+        press.write_text(text)
+        _loaded, base_report = load_knowledge_base(kb)
+        assert base_report.is_valid, base_report
+
+    def candidate(repo, kb):
+        press = kb / "concepts" / "hydraulic-press.md"
+        text = press.read_text()
+        if claim_case == "claim_added":
+            text = _with_appendix_claim(text)
+        else:
+            text = text.replace(_appendix_claim_block(), "")
+        press.write_text(text)
+
+    repo, kb, base = _staged_scenario(tmp_path, base_mutate, candidate)
+    _staged, staged_report = load_knowledge_base(kb)
+    assert staged_report.is_valid, staged_report
+    code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+    assert code == 0, payload
+    semantics = _semantic_entries(payload, "concepts/hydraulic-press.md")
+    expected_field = "frontmatter.unrepresented (claims.claim:appendix-check.evidence[0])"
+    assert expected_field in semantics
+    entry = semantics[expected_field]
+    if claim_case == "claim_added":
+        assert entry["before"] == "none"
+        assert "checked against appendix" in entry["after"]
+    else:
+        assert "checked against appendix" in entry["before"]
+        assert entry["after"] == "none"
+    code = main(["authoring-review", str(kb), "--base", base])
+    plain = capsys.readouterr().out
+    assert code == 0
+    assert "checked against appendix" in plain
+    # The untouched existing claim invents nothing.
+    assert not any(
+        "claim:manual-documented" in field
+        for field in semantics
+        if field.startswith("frontmatter.unrepresented")
+    )
+
+
+@pytest.mark.parametrize("evidence_case", ["line_start_extra", "line_end_extra"])
+def test_review_discloses_authored_evidence_extra_names(evidence_case, tmp_path, capsys):
+    """Raw line_start/line_end members are authored extras, not typed leaves."""
+    from lumio_wiki.knowledge_base import load_knowledge_base
+
+    if evidence_case == "line_start_extra":
+        base_line = "        line_start: 10\n"
+        candidate_line = "        line_start: 20\n"
+    else:
+        base_line = "        line_end: 12\n"
+        candidate_line = "        line_end: 22\n"
+
+    def base_mutate(repo, kb):
+        press = kb / "concepts" / "hydraulic-press.md"
+        press.write_text(
+            press.read_text().replace(
+                '      - section: "Overview"\n', '      - section: "Overview"\n' + base_line
+            )
+        )
+        _loaded, base_report = load_knowledge_base(kb)
+        assert base_report.is_valid, base_report
+
+    def candidate(repo, kb):
+        press = kb / "concepts" / "hydraulic-press.md"
+        press.write_text(press.read_text().replace(base_line, candidate_line))
+
+    repo, kb, base = _staged_scenario(tmp_path, base_mutate, candidate)
+    _staged, staged_report = load_knowledge_base(kb)
+    assert staged_report.is_valid, staged_report
+    code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+    assert code == 0, payload
+    semantics = _semantic_entries(payload, "concepts/hydraulic-press.md")
+    expected_field = "frontmatter.unrepresented (claims.claim:manual-documented.evidence[0])"
+    assert expected_field in semantics
+    entry = semantics[expected_field]
+    if evidence_case == "line_start_extra":
+        assert "10" in entry["before"]
+        assert "20" in entry["after"]
+    else:
+        assert "12" in entry["before"]
+        assert "22" in entry["after"]
+    code = main(["authoring-review", str(kb), "--base", base])
+    plain = capsys.readouterr().out
+    assert code == 0
+    assert ("20" if evidence_case == "line_start_extra" else "22") in plain
