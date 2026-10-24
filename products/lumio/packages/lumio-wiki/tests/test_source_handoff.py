@@ -1793,3 +1793,236 @@ def test_handoff_rejects_excess_overhead(tmp_path, capsys, monkeypatch):
     assert code == 2, captured
     assert "overhead" in captured.err
     assert _canonical_snapshot(mreg_dir, mstore_dir) == snapshot
+
+
+# ---------------------------------------------------------------------------
+# Delta-review D1/D2 regressions: physical-header size agreement and the
+# terminal-EOF overhead invariant.
+# ---------------------------------------------------------------------------
+
+EMPTY_ID = "empty-note"
+EMPTY_ENTITY = "entity:empty-note"
+EMPTY_DIGEST = hashlib.sha256(b"").hexdigest()
+
+
+def _empty_source_world(tmp_path: Path):
+    """A contribution whose Source Reference Manifest binds a genuine
+    zero-length source: the handoff contract admits size-zero versions."""
+    repo = _init_repo(tmp_path / "contributor" / "repo")
+    kb = _write_base_kb(repo)
+    base = _commit(repo, "baseline revision")
+    (kb / "concepts" / "empty-note.md").write_text(
+        _managed_page("Empty Note", EMPTY_ENTITY, "note", EMPTY_ID)
+    )
+    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(
+                version=1,
+                namespace=NAMESPACE,
+                sources={MANUAL_ID: "active", MEMO_ID: "active", EMPTY_ID: "active"},
+                bindings={
+                    PRESS_ENTITY: {MANUAL_ID: MANUAL_DIGEST},
+                    NOTE_ENTITY: {MEMO_ID: MEMO_DIGEST},
+                    EMPTY_ENTITY: {EMPTY_ID: EMPTY_DIGEST},
+                },
+            )
+        )
+    )
+    contribution = _commit(repo, "contribution binding the empty source")
+    return repo, kb, base, contribution
+
+
+def _normalized_header(name: str, size: int, type_flag: bytes) -> bytearray:
+    info = tarfile.TarInfo(name)
+    info.size = size
+    info.mode = 0o644
+    info.uid = 0
+    info.gid = 0
+    info.uname = ""
+    info.gname = ""
+    info.mtime = 0
+    info.type = type_flag
+    return bytearray(info.tobuf(tarfile.USTAR_FORMAT))
+
+
+def _rechecksum(block: bytearray) -> bytes:
+    """Recompute the documented tar checksum after patching a header field."""
+    block[148:156] = b" " * 8
+    block[148:156] = f"{sum(block):06o}\0 ".encode()
+    return bytes(block)
+
+
+def _pad_block(data: bytes) -> bytes:
+    remainder = len(data) % 512
+    return data + (b"\x00" * (512 - remainder) if remainder else b"")
+
+
+def test_handoff_rejects_desynchronized_size_header(tmp_path, capsys, monkeypatch):
+    """D1/F3: the physical guard and tarfile must agree where the next header
+    starts — a NUL-led size field must never hide a forbidden record."""
+    _repo, _kb, base, contribution = _empty_source_world(tmp_path)
+    _clone, mkb, _mreg, mreg_dir, _mstore, mstore_dir = _maintainer_world(tmp_path)
+    for variable in (SOURCE_REGISTRY_ENV_VAR, ARTIFACT_RETENTION_ENV_VAR):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(mstore_dir))
+
+    facts: dict[str, object] = {
+        "schema_version": 1,
+        "kind": "source-handoff",
+        "transfer_id": "a" * 64,
+        "namespace": NAMESPACE,
+        "kb_subtree": "kb",
+        "base_revision": base,
+        "revision": contribution,
+        "source_manifest_digest": hashlib.sha256(
+            _git_bytes(_repo, "show", f"{contribution}:kb/{SOURCE_REFERENCE_MANIFEST_BASENAME}")
+        ).hexdigest(),
+        "bindings": [
+            {
+                "entity_id": EMPTY_ENTITY,
+                "source_id": EMPTY_ID,
+                "old_digest": None,
+                "new_digest": EMPTY_DIGEST,
+            }
+        ],
+        "versions": [
+            {
+                "source_id": EMPTY_ID,
+                "content_hash": EMPTY_DIGEST,
+                "size": 0,
+                "content_type": None,
+                "filename": None,
+                "origin_created_at": ORIGIN_CREATED_AT,
+                "intent": "new",
+            },
+            {
+                "source_id": MANUAL_ID,
+                "content_hash": MANUAL_DIGEST,
+                "size": len(MANUAL_BYTES),
+                "content_type": "application/pdf",
+                "filename": "manual.pdf",
+                "origin_created_at": ORIGIN_CREATED_AT,
+                "intent": "reuse",
+            },
+        ],
+    }
+    manifest_json = json.dumps(facts, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    manifest_block = _normalized_header("manifest.json", len(manifest_json), tarfile.REGTYPE)
+    # The desynchronized artifact header: tarfile's numeric parser stops at
+    # the FIRST NUL byte (size 0); the field still carries octal digits after
+    # it. Its checksum is correct per the documented algorithm.
+    desync_block = _normalized_header(f"artifacts/{EMPTY_DIGEST}", 0, tarfile.REGTYPE)
+    desync_block[124:136] = b"\x00" + b"00000001000"
+    desync_block = bytearray(_rechecksum(desync_block))
+    assert desync_block[124:136] == b"\x00" + b"00000001000"
+    checksum_probe = bytearray(desync_block)
+    checksum_probe[148:156] = b" " * 8
+    assert int(desync_block[148:154].decode(), 8) == sum(checksum_probe)
+    assert desync_block[156:157] == b"0"
+    # The hidden PAX extension record (typeflag 'x', 512-byte zero body)
+    # occupies exactly the region a size-512 misreading treats as body.
+    x_block = _normalized_header("PaxHeader", 512, tarfile.XHDTYPE)
+    assert x_block[156:157] == b"x"
+    # The supplementary exact reference: MANUAL_ID/MANUAL_DIGEST is bound at
+    # BOTH base and contribution (Git-derived intent "reuse"), so its
+    # correctly declared regular payload after the hidden extension region
+    # keeps the whole inventory honest while the hidden record stays hidden.
+    manual_block = _normalized_header(
+        f"artifacts/{MANUAL_DIGEST}", len(MANUAL_BYTES), tarfile.REGTYPE
+    )
+
+    crafted = tmp_path / "transfer" / "desync.tar"
+    crafted.parent.mkdir(parents=True, exist_ok=True)
+    crafted.write_bytes(
+        bytes(manifest_block)
+        + _pad_block(manifest_json)
+        + bytes(desync_block)
+        + bytes(x_block)
+        + b"\x00" * 512  # the extension body a misreading mistakes for EOF
+        + bytes(manual_block)
+        + _pad_block(MANUAL_BYTES)
+        + b"\x00" * 1024  # normal end-of-archive padding
+    )
+    digest = hashlib.sha256(crafted.read_bytes()).hexdigest()
+
+    snapshot = _canonical_snapshot(mreg_dir, mstore_dir)
+    code = main(
+        [
+            "source-handoff",
+            "import",
+            str(mkb),
+            "--bundle",
+            str(crafted),
+            "--digest",
+            digest,
+            "--revision",
+            contribution,
+            "--source-registry",
+            str(mreg_dir),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2, captured
+    assert ("unsupported tar extension record" in captured.err) or ("plain octal" in captured.err)
+    assert _canonical_snapshot(mreg_dir, mstore_dir) == snapshot
+
+
+def test_handoff_checks_overhead_already_consumed_at_eof(tmp_path, capsys, monkeypatch):
+    """D2/F4: bytes already consumed are checked when the dynamic overhead
+    limit activates, and EOF must not skip the invariant."""
+    import lumio_wiki.source_handoff as source_handoff
+
+    world = _contributor_world(tmp_path)
+    contribution, rebase = world["contribution"], world["rebase"]  # body-only range
+    _clone, mkb, _mreg, mreg_dir, _mstore, mstore_dir = _maintainer_world(tmp_path)
+    for variable in (SOURCE_REGISTRY_ENV_VAR, ARTIFACT_RETENTION_ENV_VAR):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(mstore_dir))
+
+    # Native Git blob guard: this actual range carries byte-identical Source
+    # Reference Manifests (a body-only contribution), so empty binding and
+    # version lists are the truthful selection for it.
+    assert _git_bytes(
+        world["repo"], "show", f"{contribution}:kb/{SOURCE_REFERENCE_MANIFEST_BASENAME}"
+    ) == _git_bytes(world["repo"], "show", f"{rebase}:kb/{SOURCE_REFERENCE_MANIFEST_BASENAME}")
+
+    facts = _handoff_manifest_facts(world["repo"], contribution, rebase)
+    facts["bindings"] = []
+    facts["versions"] = []
+    manifest_json = json.dumps(facts, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    manifest_len = len(manifest_json)
+
+    # Authored-fact guard: a manifest header plus its block-padded JSON body,
+    # then immediate EOF — actual overhead is at least the 512-byte header.
+    padded = manifest_len + (-manifest_len % 512)
+    overhead = 512 + padded - manifest_len
+    assert overhead >= 512
+    monkeypatch.setattr(source_handoff, "CONTAINER_OVERHEAD_MAX_BYTES", 128)
+
+    crafted = tmp_path / "transfer" / "terminal.tar"
+    crafted.parent.mkdir(parents=True, exist_ok=True)
+    manifest_block = _normalized_header("manifest.json", manifest_len, tarfile.REGTYPE)
+    crafted.write_bytes(bytes(manifest_block) + manifest_json + b"\x00" * (padded - manifest_len))
+    digest = hashlib.sha256(crafted.read_bytes()).hexdigest()
+
+    snapshot = _canonical_snapshot(mreg_dir, mstore_dir)
+    code = main(
+        [
+            "source-handoff",
+            "import",
+            str(mkb),
+            "--bundle",
+            str(crafted),
+            "--digest",
+            digest,
+            "--revision",
+            rebase,
+            "--source-registry",
+            str(mreg_dir),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2, captured
+    assert "overhead" in captured.err
+    assert _canonical_snapshot(mreg_dir, mstore_dir) == snapshot

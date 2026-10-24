@@ -1559,6 +1559,9 @@ class _BudgetedReader(io.RawIOBase):
         view = memoryview(buffer).cast("B")
         data = self._handle.read(min(len(view), remaining, _HANDOFF_STREAM_CHUNK_BYTES))
         if not data:
+            # D2 (delta review): a terminal end of stream must not skip the
+            # independent overhead invariant on bytes already consumed.
+            self.enforce_overhead()
             return 0
         self.consumed += len(data)
         if self.consumed > self._budget:
@@ -1567,10 +1570,19 @@ class _BudgetedReader(io.RawIOBase):
                 f"({self.consumed} bytes consumed from a changed transfer file); "
                 "an explicit refusal, never a partial handoff"
             )
+        # F4/D2: the ACTUAL container is bounded independently of the unused
+        # maximum manifest/payload allowances — the excess refuses as it is
+        # consumed, before it is hashed and long before EOF.
+        self.enforce_overhead()
+        self._digest.update(data)
+        view[: len(data)] = data
+        return len(data)
+
+    def enforce_overhead(self) -> None:
+        """D2/F4: the dynamic independent overhead invariant, enforced on
+        already-consumed bytes at activation, on every consumed chunk and at
+        EOF — a terminal end of stream can never skip it."""
         if self.overhead_limit is not None and self.consumed > self.overhead_limit:
-            # F4: the ACTUAL container is bounded independently of the unused
-            # maximum manifest/payload allowances — the excess refuses as it
-            # is consumed, before it is hashed and long before EOF.
             raise SourceHandoffError(
                 f"the source handoff bundle exceeds the container bound: its "
                 f"actual overhead ({self.consumed} bytes consumed against the "
@@ -1578,9 +1590,6 @@ class _BudgetedReader(io.RawIOBase):
                 "container-overhead ceiling) exceeds the independent overhead "
                 "limit; an explicit refusal, never a partial handoff"
             )
-        self._digest.update(data)
-        view[: len(data)] = data
-        return len(data)
 
     def drain(self) -> None:
         while self.read(_HANDOFF_STREAM_CHUNK_BYTES):
@@ -1643,13 +1652,24 @@ class _RegularOnlyTarBlocks(io.RawIOBase):
                 "regular file; only plain regular records are allowed, and "
                 "forbidden records are refused before their bodies are processed"
             )
-        digits = block[124:136].strip(b"\x00 ")
-        if any(byte < 0x30 or byte > 0x37 for byte in digits):
-            raise SourceHandoffError(
-                f"physical tar header {self._records} does not carry a plain "
-                "octal size field; only plain USTAR regular records are supported"
-            )
-        size = int(digits or b"0", 8)
+        # D1 (delta review): tarfile terminates numeric fields at the FIRST
+        # NUL byte and skips spaces; parse the size field with exactly those
+        # semantics so this guard and tarfile always agree where the next
+        # physical header starts. GNU base-256 lead bytes and any other
+        # non-octal content refuse as noncanonical before a body span is
+        # ever chosen.
+        size = 0
+        for byte in block[124:136]:
+            if byte == 0:
+                break  # tarfile's numeric parser stops at the first NUL
+            if byte == 0o40:
+                continue  # spaces are skipped, never field separators
+            if not 0x30 <= byte <= 0x37:
+                raise SourceHandoffError(
+                    f"physical tar header {self._records} does not carry a plain "
+                    "octal size field; only plain USTAR regular records are supported"
+                )
+            size = size * 8 + (byte - 0x30)
         # The member's padded body region (data rounded up to the next block)
         # passes through as one region so the next header stays aligned.
         self._pending_body = -(-size // self._BLOCK) * self._BLOCK
@@ -2179,12 +2199,14 @@ def _stream_validate_handoff(
                         # F4: bound the ACTUAL container independently of the
                         # maximum manifest/payload allowances — everything
                         # beyond the manifest, the declared payloads and the
-                        # configured overhead ceiling refuses as consumed.
+                        # configured overhead ceiling refuses as consumed,
+                        # INCLUDING bytes already consumed at activation (D2).
                         reader.overhead_limit = (
                             member.size
                             + sum(expected_sizes.values())
                             + CONTAINER_OVERHEAD_MAX_BYTES
                         )
+                        reader.enforce_overhead()
                         seen_names.add(member.name)
                         continue
                     if parsed is None:
