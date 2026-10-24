@@ -2835,7 +2835,7 @@ def _handoff_selection(args: argparse.Namespace, kb_root: Path):
 def _cmd_source_handoff(args: argparse.Namespace) -> int:
     """``source-handoff export|inspect|import``: full bundle transfer (§5)."""
     from lumio_wiki.artifact_store import ArtifactStoreError
-    from lumio_wiki.git_authoring import GitAuthoringError
+    from lumio_wiki.git_authoring import GitAuthoringError, resolve_repository
     from lumio_wiki.source_handoff import (
         HandoffExport,
         HandoffImport,
@@ -2855,7 +2855,17 @@ def _cmd_source_handoff(args: argparse.Namespace) -> int:
         if command == "export":
             references = None
             if getattr(args, "references", None) is not None:
-                references = parse_reference_selection(Path(args.references).read_bytes())
+                references_path = Path(args.references)
+                repo_root, _subtree = resolve_repository(kb)
+                if references_path.resolve().is_relative_to(repo_root):
+                    # F1: the reference selection is private input; refuse a
+                    # repository-contained file BEFORE reading it.
+                    raise CliError(
+                        "the references selection must stay outside the content "
+                        "repository; private selection files never enter Git",
+                        code="invalid_source_handoff",
+                    )
+                references = parse_reference_selection(references_path.read_bytes())
             result: HandoffExport | HandoffPreview | HandoffImport
             result = export_source_handoff(
                 kb,
@@ -2893,6 +2903,14 @@ def _cmd_source_handoff(args: argparse.Namespace) -> int:
         raise CliError(str(exc), code="git_authoring_error") from exc
     except ArtifactStoreError as exc:
         raise CliError(str(exc), code="artifact_store_error") from exc
+    except OSError as exc:
+        # F2: ordinary transfer/filesystem failures (a missing or unreadable
+        # references file, an impossible output parent) surface as the
+        # bounded versioned envelope, never as a raw escaping exception.
+        raise CliError(
+            f"the source handoff operation failed on a filesystem error: {exc}",
+            code="invalid_source_handoff",
+        ) from exc
     known: tuple[type, ...] = (HandoffExport, HandoffPreview, HandoffImport)
     if not isinstance(result, known):  # pragma: no cover
         raise CliError("unexpected handoff result", code="invalid_source_handoff")

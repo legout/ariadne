@@ -1119,8 +1119,34 @@ def _require_hex64_or_null(value: Any, what: str) -> str | None:
     return _require_hex(value, what, _HEX64)
 
 
+def _as_handoff_error(exc: SourceBaselineError) -> SourceHandoffError:
+    """Own shared strict-parser failures at the handoff boundary (review F2).
+
+    The shared helpers keep raising their baseline error type with baseline
+    semantics unchanged; the handoff contract translates them here.
+    """
+    return SourceHandoffError(str(exc).replace("baseline manifest", "handoff manifest"))
+
+
 def _parse_handoff_manifest(payload: bytes) -> _ParsedHandoff:
-    """Parse and fully validate one source-handoff manifest v1 against the contract."""
+    """Parse and fully validate one source-handoff manifest v1 against the contract.
+
+    Shared baseline strictness helpers raise their own error type; the
+    handoff boundary owns every validation failure here (review F2).
+    """
+    try:
+        return _parse_handoff_manifest_impl(payload)
+    except SourceBaselineError as exc:
+        raise _as_handoff_error(exc) from exc
+
+
+def _parse_handoff_manifest_impl(payload: bytes) -> _ParsedHandoff:
+    """The strict v1 handoff-manifest parser implementation.
+
+    Raises :class:`SourceHandoffError` for its own findings; shared helper
+    failures surface as :class:`SourceBaselineError` and are translated by
+    the public wrapper above.
+    """
     if len(payload) > MANIFEST_MAX_BYTES:
         raise SourceHandoffError(
             f"the handoff manifest exceeds the 4 MiB ceiling ({len(payload)} bytes); "
@@ -1364,10 +1390,12 @@ def _normalize_reference_records(records: Any) -> list[tuple[str, str]]:
             raise SourceHandoffError(
                 "each reference record carries exactly 'source_id' and 'content_hash'"
             )
-        pair = (
-            _handoff_source_id(item["source_id"]),
-            _require_hex(item["content_hash"], "references[].content_hash", _HEX64),
-        )
+        content_hash = item["content_hash"]
+        if not isinstance(content_hash, str) or not _HEX64.match(content_hash):
+            raise SourceHandoffError(
+                "references[].content_hash must be exactly 64 lowercase hex characters"
+            )
+        pair = (_handoff_source_id(item["source_id"]), content_hash)
         if pair in seen:
             raise SourceHandoffError(f"duplicate supplementary reference for {pair[0]!r}@{pair[1]}")
         seen.add(pair)
@@ -1386,13 +1414,34 @@ def parse_reference_selection(raw: bytes) -> list[dict[str, str]]:
     """
     if not isinstance(raw, bytes):
         raise SourceHandoffError("the references selection must be read as bytes")
+
+    def _reject_duplicate_selection_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        selected: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in selected:
+                raise SourceHandoffError(f"duplicate JSON key {key!r} in the references selection")
+            selected[key] = value
+        return selected
+
     try:
-        document = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        document = json.loads(raw, object_pairs_hook=_reject_duplicate_selection_keys)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise SourceHandoffError(f"the references selection is not valid JSON: {exc}") from exc
     if not isinstance(document, dict):
         raise SourceHandoffError("the references selection must be a JSON object")
-    _check_keys(document, frozenset({"schema_version", "references"}), "references selection")
+    # Handoff-owned key check (review F2): the shared helper raises the
+    # baseline error type, and this document is not a manifest.
+    selection_keys = {"schema_version", "references"}
+    unknown = sorted(set(document) - selection_keys)
+    if unknown:
+        raise SourceHandoffError(
+            f"the references selection carries unknown field(s): {', '.join(unknown)}"
+        )
+    missing = sorted(selection_keys - set(document))
+    if missing:
+        raise SourceHandoffError(
+            f"the references selection is missing required field(s): {', '.join(missing)}"
+        )
     schema_version = document["schema_version"]
     if (
         not isinstance(schema_version, int)
@@ -1492,6 +1541,9 @@ class _BudgetedReader(io.RawIOBase):
         self._budget = budget
         self._digest = hashlib.sha256()
         self.consumed = 0
+        #: Dynamic F4 ceiling set once the manifest is parsed: manifest bytes
+        #: plus declared payload bytes plus the configured overhead limit.
+        self.overhead_limit: int | None = None
 
     def readable(self) -> bool:  # pragma: no cover - io protocol surface
         return True
@@ -1515,6 +1567,17 @@ class _BudgetedReader(io.RawIOBase):
                 f"({self.consumed} bytes consumed from a changed transfer file); "
                 "an explicit refusal, never a partial handoff"
             )
+        if self.overhead_limit is not None and self.consumed > self.overhead_limit:
+            # F4: the ACTUAL container is bounded independently of the unused
+            # maximum manifest/payload allowances — the excess refuses as it
+            # is consumed, before it is hashed and long before EOF.
+            raise SourceHandoffError(
+                f"the source handoff bundle exceeds the container bound: its "
+                f"actual overhead ({self.consumed} bytes consumed against the "
+                "manifest, the declared payloads and the configured "
+                "container-overhead ceiling) exceeds the independent overhead "
+                "limit; an explicit refusal, never a partial handoff"
+            )
         self._digest.update(data)
         view[: len(data)] = data
         return len(data)
@@ -1532,6 +1595,109 @@ class _BudgetedReader(io.RawIOBase):
     @property
     def digest_hex(self) -> str:
         return self._digest.hexdigest()
+
+
+class _RegularOnlyTarBlocks(io.RawIOBase):
+    """Block-aware passthrough refusing non-regular physical tar records (F3).
+
+    The transfer contract admits ONLY plain regular physical records
+    (``manifest.json`` and ``artifacts/<sha256>``). GNU/PAX/sparse extension
+    records and special members are refused at their own 512-byte header —
+    BEFORE Python's tarfile can process or allocate their bodies — at EVERY
+    physical header, not just the first. Serving is strictly single-pass:
+    every physical byte read from the handle is handed upstream exactly once,
+    so the accounting reader's digest and byte totals stay exact, and header
+    reads never cross the 512-byte record boundary.
+    """
+
+    _BLOCK = 512
+
+    def __init__(self, handle: Any) -> None:
+        super().__init__()
+        self._handle = handle
+        self._serve = bytearray()
+        self._pending_body = 0
+        self._header = bytearray()
+        self._records = 0
+        self._finished = False
+
+    def readable(self) -> bool:  # pragma: no cover - io protocol surface
+        return True
+
+    def _consume_header(self) -> None:
+        block = bytes(self._header)
+        self._header.clear()
+        self._records += 1
+        if block == b"\x00" * self._BLOCK:
+            # End-of-archive marker: the second marker block, record padding
+            # and any trailing bytes remain accounting-only and pass through
+            # unvalidated, exactly as before.
+            self._finished = True
+            self._serve.extend(block)
+            return
+        typeflag = block[156:157]
+        if typeflag not in (tarfile.REGTYPE, tarfile.AREGTYPE):
+            raise SourceHandoffError(
+                f"the bundle carries an unsupported tar extension record at "
+                f"physical header {self._records}: type {typeflag!r} is not a "
+                "regular file; only plain regular records are allowed, and "
+                "forbidden records are refused before their bodies are processed"
+            )
+        digits = block[124:136].strip(b"\x00 ")
+        if any(byte < 0x30 or byte > 0x37 for byte in digits):
+            raise SourceHandoffError(
+                f"physical tar header {self._records} does not carry a plain "
+                "octal size field; only plain USTAR regular records are supported"
+            )
+        size = int(digits or b"0", 8)
+        # The member's padded body region (data rounded up to the next block)
+        # passes through as one region so the next header stays aligned.
+        self._pending_body = -(-size // self._BLOCK) * self._BLOCK
+        self._serve.extend(block)
+
+    def readinto(self, buffer: Any) -> int:
+        view = memoryview(buffer).cast("B")
+        if not view:
+            return 0
+        if self._serve:
+            take = min(len(view), len(self._serve))
+            view[:take] = self._serve[:take]
+            del self._serve[:take]
+            return take
+        if self._finished:
+            data = self._handle.read(min(len(view), _HANDOFF_STREAM_CHUNK_BYTES))
+            if not data:
+                return 0
+            view[: len(data)] = data
+            return len(data)
+        if self._pending_body:
+            take = min(len(view), self._pending_body, _HANDOFF_STREAM_CHUNK_BYTES)
+            data = self._handle.read(take)
+            if not data:
+                return 0
+            self._pending_body -= len(data)
+            view[: len(data)] = data
+            return len(data)
+        # Header region: never read past the 512-byte header boundary, so an
+        # unsupported record refuses after at most its own header block.
+        need = self._BLOCK - len(self._header)
+        data = self._handle.read(min(len(view), need))
+        if not data:
+            return 0
+        self._header.extend(data)
+        if len(self._header) < self._BLOCK:
+            return len(data)
+        self._consume_header()
+        take = min(len(view), len(self._serve))
+        view[:take] = self._serve[:take]
+        del self._serve[:take]
+        return take
+
+    def close(self) -> None:
+        try:
+            self._handle.close()
+        finally:
+            super().close()
 
 
 class _HashingWriter(io.RawIOBase):
@@ -1608,6 +1774,43 @@ def _container_budget() -> int:
     return MANIFEST_MAX_BYTES + TOTAL_PAYLOAD_MAX_BYTES + CONTAINER_OVERHEAD_MAX_BYTES
 
 
+def _refuse_inside_repository(repo_root: Path, path: Path | str, what: str) -> None:
+    """Refuse one private selection or transfer path inside the repo (F1)."""
+    if Path(path).resolve().is_relative_to(repo_root):
+        raise SourceHandoffError(
+            f"the {what} must stay outside the content repository; private "
+            "selections and transfer artifacts never enter Git (spec 0010 §1/§2.1)"
+        )
+
+
+def _guard_handoff_selections(
+    kb_root: str | Path,
+    *,
+    source_registry: SourceRegistry,
+    artifact_store: SourceArtifactStore,
+    transfer_paths: Sequence[tuple[Path, str]],
+) -> None:
+    """F1 containment for every full-handoff operation, BEFORE private I/O.
+
+    Selected registry and local-store roots and every transfer input/output
+    path must resolve outside the entire Content Repository, symlinks
+    included. Registry and store objects may already exist and their
+    constructors do not enforce this boundary, so the roots are re-checked
+    here; an S3-backed store exposes no local root and is never rejected by a
+    fabricated path check. Profile validation stays as accepted, and legacy
+    routes outside the new handoff operations are unchanged.
+    """
+    repo_root, _subtree = resolve_repository(kb_root)
+    registry_root = getattr(source_registry, "root", None)
+    if isinstance(registry_root, Path):
+        _refuse_inside_repository(repo_root, registry_root, "selected Source Registry")
+    store_root = getattr(artifact_store, "root", None)
+    if isinstance(store_root, Path):
+        _refuse_inside_repository(repo_root, store_root, "selected artifact store")
+    for path, what in transfer_paths:
+        _refuse_inside_repository(repo_root, path, what)
+
+
 # ---------------------------------------------------------------------------
 # Export (contributor side).
 # ---------------------------------------------------------------------------
@@ -1651,12 +1854,12 @@ def export_source_handoff(
     legitimately carry a different identity and digest.
     """
     destination = Path(output_path)
-    repo_root, _subtree = resolve_repository(kb_root)
-    if destination.resolve().is_relative_to(repo_root):
-        raise SourceHandoffError(
-            "the handoff bundle output must stay outside the content repository; "
-            "private transfer artifacts never enter Git"
-        )
+    _guard_handoff_selections(
+        kb_root,
+        source_registry=source_registry,
+        artifact_store=artifact_store,
+        transfer_paths=[(destination, "handoff bundle output")],
+    )
     base_captured = capture_revision(kb_root, base_revision)
     rev_captured = capture_revision(kb_root, revision)
     if base_captured.revision == rev_captured.revision:
@@ -1941,7 +2144,7 @@ def _stream_validate_handoff(
         handle = open(bundle_path, "rb")
     except OSError as exc:
         raise SourceHandoffError(f"the bundle could not be opened: {exc}") from exc
-    with _BudgetedReader(handle, budget) as reader:
+    with _BudgetedReader(_RegularOnlyTarBlocks(handle), budget) as reader:
         try:
             with tarfile.open(fileobj=reader, mode="r|") as tar:
                 for member in tar:
@@ -1973,6 +2176,15 @@ def _stream_validate_handoff(
                         expected_sizes = {
                             version.content_hash: version.size for version in parsed.versions
                         }
+                        # F4: bound the ACTUAL container independently of the
+                        # maximum manifest/payload allowances — everything
+                        # beyond the manifest, the declared payloads and the
+                        # configured overhead ceiling refuses as consumed.
+                        reader.overhead_limit = (
+                            member.size
+                            + sum(expected_sizes.values())
+                            + CONTAINER_OVERHEAD_MAX_BYTES
+                        )
                         seen_names.add(member.name)
                         continue
                     if parsed is None:
@@ -2101,8 +2313,16 @@ def _validate_handoff(
     Registry- and store-dependent conflicts are returned as import blockers
     so a preview can report them without mutating anything. The archive,
     every payload and every record is verified before any caller performs a
-    canonical write.
+    canonical write. Containment (review F1) is enforced before any private
+    read or write: the selected registry/store roots and the bundle path
+    itself must resolve outside the entire Content Repository.
     """
+    _guard_handoff_selections(
+        kb_root,
+        source_registry=source_registry,
+        artifact_store=artifact_store,
+        transfer_paths=[(Path(bundle_path), "handoff bundle")],
+    )
     parsed, archive_digest = _stream_validate_handoff(
         Path(bundle_path), expected_digest, staging_dir=staging_dir
     )

@@ -1479,7 +1479,6 @@ def test_handoff_private_paths_stay_outside_repository(case, tmp_path, capsys, m
             str(references),
             "--source-registry",
             str(world["registry"].root),
-            "--json",
         ]
     )
     captured = capsys.readouterr()
