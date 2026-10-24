@@ -1352,3 +1352,190 @@ def test_review_accepts_null_ontology_constraints(null_case, tmp_path, capsys):
     plain = capsys.readouterr().out
     assert code == 0
     assert marker in plain
+
+
+# ---------------------------------------------------------------------------
+# Owner-authorized bounded F3 repair: metadata remainder disclosure and
+# native alias/tag list comparison (j1-j2-extra-delta-review.md).
+# Intended outcomes chosen before implementation: supported ariadne_profile
+# meaning becomes a structured readable semantic fact; changed unrepresented
+# frontmatter keys are explicitly DISCLOSED as "frontmatter.unrepresented"
+# (parsed values, never raw YAML); unchanged unrepresented metadata never
+# blocks a body-only edit; list items render with JSON-quoted boundaries so
+# one comma-containing label can never look like two labels.
+# ---------------------------------------------------------------------------
+
+_PROFILE_BASE = """\
+ariadne_profile:
+  version: 1
+  kind: reference
+  native:
+    type: reference
+    title: "Hydraulic Press"
+    description: "Machine reference page for the hydraulic press."
+    tags:
+      - workshop
+    sources:
+      - id: "operator-manual"
+        title: "Operator Manual"
+    verified:
+      - by: "alice"
+"""
+
+
+def _with_press_extra(extra: str) -> str:
+    """The base press page with one extra frontmatter block after summary."""
+    return _page(
+        "Hydraulic Press", PRESS_ENTITY, "machine", MANUAL_ID, "claim:manual-documented"
+    ).replace(
+        'summary: "Hydraulic Press summary."\n', f'summary: "Hydraulic Press summary."\n{extra}'
+    )
+
+
+def _assert_loaded_values(kb, path, attribute, expected):
+    """Fixture guard: the native loader carries exactly the authored values."""
+    from lumio_wiki.knowledge_base import load_knowledge_base
+
+    loaded, report = load_knowledge_base(kb)
+    assert report.is_valid, report
+    observed = [getattr(page, attribute) for page in loaded.pages if page.path == path]
+    assert observed == [expected], (observed, expected)
+
+
+@pytest.mark.parametrize(
+    "metadata_case",
+    ["supported_profile_change", "unknown_field_change", "body_only_control"],
+)
+def test_review_accounts_for_metadata_remainder(metadata_case, tmp_path, capsys):
+    """F3 remainder: supported profile meaning shown; unknown changes disclosed."""
+    from lumio_wiki.knowledge_base import load_knowledge_base
+
+    if metadata_case == "supported_profile_change":
+
+        def base_mutate(repo, kb):
+            (kb / "concepts" / "hydraulic-press.md").write_text(_with_press_extra(_PROFILE_BASE))
+            # Base-state guard: the authored profile envelope is native-valid
+            # (reference kind with the required title/description/tags/sources
+            # base families and the alice attribution).
+            _loaded, base_report = load_knowledge_base(kb)
+            assert base_report.is_valid, base_report
+            assert _loaded.pages[0].ariadne_profile is not None
+
+        def candidate(repo, kb):
+            press = kb / "concepts" / "hydraulic-press.md"
+            press.write_text(press.read_text().replace('by: "alice"', 'by: "bob"'))
+
+    elif metadata_case == "unknown_field_change":
+
+        def base_mutate(repo, kb):
+            (kb / "concepts" / "hydraulic-press.md").write_text(
+                _with_press_extra('review_note: "draft"\n')
+            )
+
+        def candidate(repo, kb):
+            press = kb / "concepts" / "hydraulic-press.md"
+            press.write_text(
+                press.read_text().replace('review_note: "draft"', 'review_note: "final"')
+            )
+
+    else:  # body_only_control
+
+        def base_mutate(repo, kb):
+            (kb / "concepts" / "hydraulic-press.md").write_text(
+                _with_press_extra('review_note: "draft"\n')
+            )
+
+        def candidate(repo, kb):
+            press = kb / "concepts" / "hydraulic-press.md"
+            press.write_text(
+                press.read_text() + "## Pressure\n\nThe guard interlock is verified weekly.\n"
+            )
+
+    repo, kb, base = _staged_scenario(tmp_path, base_mutate, candidate)
+    # Candidate-state guard: the native loader accepts the staged worktree
+    # (valid profile envelope; native-accepted unknown field). The base state
+    # itself is guarded inside base_mutate where relevant.
+    _staged_kb, staged_report = load_knowledge_base(kb)
+    assert staged_report.is_valid, staged_report
+    code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+    assert code == 0, payload
+    semantics = _semantic_entries(payload, "concepts/hydraulic-press.md")
+    code = main(["authoring-review", str(kb), "--base", base])
+    plain = capsys.readouterr().out
+    assert code == 0
+
+    if metadata_case == "supported_profile_change":
+        profile = semantics["ariadne_profile"]
+        assert "alice" in profile["before"]
+        assert "bob" in profile["after"]
+        assert "bob" in plain
+    elif metadata_case == "unknown_field_change":
+        remainder = semantics["frontmatter.unrepresented"]
+        assert "review_note" in remainder["field"] or "review_note" in remainder["before"]
+        assert "draft" in remainder["before"]
+        assert "final" in remainder["after"]
+        assert "review_note" in plain
+    else:
+        # Unchanged unrepresented metadata never blocks a body-only edit.
+        assert "frontmatter.unrepresented" not in semantics
+        press = _page_entry(payload, "concepts/hydraulic-press.md")
+        assert press["body_changed"] is True
+        assert "The guard interlock is verified weekly." in plain
+
+
+@pytest.mark.parametrize("list_case", ["aliases_comma_item", "tags_comma_item"])
+def test_review_distinguishes_alias_tag_lists(list_case, tmp_path, capsys):
+    """F3 lists: native values compared before rendering; unambiguous items."""
+    if list_case == "aliases_comma_item":
+        field = "aliases"
+        base_block = 'aliases:\n  - "Alpha, Beta"\n'
+        candidate_block = 'aliases:\n  - "Alpha"\n  - "Beta"\n'
+        base_expected = ["Alpha, Beta"]
+        candidate_expected = ["Alpha", "Beta"]
+    else:
+        field = "tags"
+        base_expected = ["workshop, primary"]
+        candidate_expected = ["workshop", "primary"]
+
+    def base_mutate(repo, kb):
+        press = kb / "concepts" / "hydraulic-press.md"
+        if list_case == "aliases_comma_item":
+            press.write_text(_with_press_extra(base_block))
+        else:
+            # Replace the single existing tags block once — no duplicate key.
+            press.write_text(
+                press.read_text().replace(
+                    'tags:\n  - "workshop"\n', 'tags:\n  - "workshop, primary"\n'
+                )
+            )
+        # Base-state guard: the loader carries the authored ONE-item list.
+        _assert_loaded_values(kb, "concepts/hydraulic-press.md", field, base_expected)
+
+    def candidate(repo, kb):
+        press = kb / "concepts" / "hydraulic-press.md"
+        if list_case == "aliases_comma_item":
+            text = press.read_text().replace(base_block, candidate_block)
+        else:
+            text = press.read_text().replace(
+                'tags:\n  - "workshop, primary"\n', 'tags:\n  - "workshop"\n  - "primary"\n'
+            )
+        press.write_text(text)
+
+    repo, kb, base = _staged_scenario(tmp_path, base_mutate, candidate)
+    # Candidate-state guard: the loader carries the authored TWO-item list.
+    _assert_loaded_values(kb, "concepts/hydraulic-press.md", field, candidate_expected)
+
+    code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+    assert code == 0, payload
+    semantics = _semantic_entries(payload, "concepts/hydraulic-press.md")
+    change = semantics[field]
+    if list_case == "aliases_comma_item":
+        assert change["before"] == '"Alpha, Beta"'
+        assert change["after"] == '"Alpha", "Beta"'
+    else:
+        assert change["before"] == '"workshop, primary"'
+        assert change["after"] == '"workshop", "primary"'
+    code = main(["authoring-review", str(kb), "--base", base])
+    plain = capsys.readouterr().out
+    assert code == 0
+    assert '"Alpha", "Beta"' in plain or '"workshop", "primary"' in plain

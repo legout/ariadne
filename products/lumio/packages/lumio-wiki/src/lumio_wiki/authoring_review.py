@@ -492,7 +492,8 @@ _CLAIM_ATTRIBUTES = (
 
 
 def _render_list(values: list[str]) -> str:
-    return ", ".join(values) if values else "none"
+    """Unambiguous item boundaries: every item JSON-quoted (F3 lists)."""
+    return ", ".join(json.dumps(value) for value in values) if values else "none"
 
 
 def _render_anchor(anchor: Any) -> str:
@@ -527,7 +528,11 @@ def _render_source(source: Any) -> str:
 
 
 def _semantic_field_changes(
-    base_page: Any | None, candidate_page: Any | None
+    base_page: Any | None,
+    candidate_page: Any | None,
+    base_raw: bytes | None = None,
+    candidate_raw: bytes | None = None,
+    path: str = "",
 ) -> list[SemanticFieldChange]:
     """Readable before/after facts for every known authored page field (F3).
 
@@ -544,6 +549,19 @@ def _semantic_field_changes(
     def entry(field: str, before: str, after: str) -> None:
         if before != after:
             changes.append(SemanticFieldChange(field=field, before=before, after=after))
+
+    def entry_list(field: str, before_values: list, after_values: list) -> None:
+        # Compare NATIVE values before rendering: joined display strings can
+        # otherwise collapse distinct lists such as ["Alpha, Beta"] and
+        # ["Alpha", "Beta"] (F3 lists).
+        if list(before_values) != list(after_values):
+            changes.append(
+                SemanticFieldChange(
+                    field=field,
+                    before=_render_list([str(value) for value in before_values]),
+                    after=_render_list([str(value) for value in after_values]),
+                )
+            )
 
     def field_of(page: Any | None, name: str, default: Any) -> Any:
         return getattr(page, name, default) if page is not None else default
@@ -563,20 +581,20 @@ def _semantic_field_changes(
         _render(field_of(base_page, "id", None)),
         _render(field_of(candidate_page, "id", None)),
     )
-    entry(
+    entry_list(
         "entity_types",
-        _render_list(list(field_of(base_page, "entity_types", []))),
-        _render_list(list(field_of(candidate_page, "entity_types", []))),
+        list(field_of(base_page, "entity_types", [])),
+        list(field_of(candidate_page, "entity_types", [])),
     )
-    entry(
+    entry_list(
         "aliases",
-        _render_list(list(field_of(base_page, "aliases", []))),
-        _render_list(list(field_of(candidate_page, "aliases", []))),
+        list(field_of(base_page, "aliases", [])),
+        list(field_of(candidate_page, "aliases", [])),
     )
-    entry(
+    entry_list(
         "tags",
-        _render_list(list(field_of(base_page, "tags", []))),
-        _render_list(list(field_of(candidate_page, "tags", []))),
+        list(field_of(base_page, "tags", [])),
+        list(field_of(candidate_page, "tags", [])),
     )
     entry(
         "review_after",
@@ -635,7 +653,111 @@ def _semantic_field_changes(
         after_anchors = ", ".join(_render_anchor(a) for a in after.evidence)
         if before_anchors != after_anchors:
             entry(f"claim.evidence:{claim_id}", before_anchors or "none", after_anchors or "none")
+
+    base_profile = getattr(base_page, "ariadne_profile", None) if base_page else None
+    candidate_profile = getattr(candidate_page, "ariadne_profile", None) if candidate_page else None
+    entry("ariadne_profile", _render_profile(base_profile), _render_profile(candidate_profile))
+    changes.extend(
+        _unrepresented_frontmatter_changes(
+            base_raw,
+            candidate_raw,
+            profile_changed=base_profile != candidate_profile,
+            path=path,
+        )
+    )
     return changes
+
+
+def _render_profile(profile: Any | None) -> str:
+    """One readable rendering of a supported typed Ariadne Context Profile."""
+    if profile is None:
+        return "none"
+    return json.dumps(msgspec.to_builtins(profile), sort_keys=True, default=str)
+
+
+#: Frontmatter keys whose changes the semantic review represents (typed
+#: CompiledPage fields plus the profile entry above). Everything else that
+#: changes is explicitly disclosed as the unrepresented remainder.
+_FRONTMATTER_REPRESENTED_KEYS = frozenset(
+    {
+        "title",
+        "summary",
+        "id",
+        "entity_types",
+        "aliases",
+        "tags",
+        "review_after",
+        "synthetic",
+        "lifecycle",
+        "visibility",
+        "sources",
+        "claims",
+    }
+)
+
+
+def _parsed_frontmatter(raw: bytes | None, path: str) -> dict[str, Any]:
+    """Parsed frontmatter of captured page bytes through the NATIVE parser.
+
+    Reuses :func:`lumio_wiki.knowledge_base._parse_frontmatter` (its broader
+    ``---``/``\n---`` delimiters accept every native page form, including
+    CRLF and closing delimiters my own narrower scanning could silently
+    drop). An absent raw side legitimately means ``{}``; a present page whose
+    frontmatter cannot be accounted for raises the bounded review refusal —
+    captured metadata never silently escapes accounting.
+    """
+    if raw is None:
+        return {}
+    from lumio_wiki.knowledge_base import FrontmatterError, _parse_frontmatter
+
+    try:
+        data, _body, _start = _parse_frontmatter(raw.decode("utf-8"), Path(path))
+    except (FrontmatterError, UnicodeDecodeError) as exc:
+        raise AuthoringReviewError(
+            f"the captured page {path!r} has frontmatter the review cannot "
+            f"account for ({exc}); refusing to review over unaccounted metadata",
+            code="authoring_review_error",
+        ) from exc
+    return data
+
+
+def _unrepresented_frontmatter_changes(
+    base_raw: bytes | None, candidate_raw: bytes | None, *, profile_changed: bool, path: str
+) -> list[SemanticFieldChange]:
+    """Explicitly disclose changed frontmatter the review does NOT represent.
+
+    Parsed-value comparison (never raw text) keeps formatting-only equivalent
+    metadata from masquerading as a changed fact; an absent side means absent
+    facts, so added/removed pages disclose their unrepresented keys too.
+    Unchanged unrepresented metadata alone never produces an entry.
+    """
+    base_meta = _parsed_frontmatter(base_raw, path)
+    candidate_meta = _parsed_frontmatter(candidate_raw, path)
+    represented = set(_FRONTMATTER_REPRESENTED_KEYS)
+    if profile_changed:
+        represented.add("ariadne_profile")
+    changed_keys = {
+        key
+        for key in set(base_meta) | set(candidate_meta)
+        if key not in represented and base_meta.get(key) != candidate_meta.get(key)
+    }
+    if not changed_keys:
+        return []
+    ordered = sorted(changed_keys)
+    before = "; ".join(
+        f"{key}={json.dumps(base_meta.get(key), sort_keys=True, default=str)}" for key in ordered
+    )
+    after = "; ".join(
+        f"{key}={json.dumps(candidate_meta.get(key), sort_keys=True, default=str)}"
+        for key in ordered
+    )
+    return [
+        SemanticFieldChange(
+            field="frontmatter.unrepresented",
+            before=before,
+            after=after,
+        )
+    ]
 
 
 def _page_review_change(
@@ -643,6 +765,8 @@ def _page_review_change(
     change: str,
     base_page: Any | None,
     candidate_page: Any | None,
+    base_raw: bytes | None = None,
+    candidate_raw: bytes | None = None,
 ) -> PageReviewChange:
     base_body = base_page.body if base_page is not None else None
     candidate_body = candidate_page.body if candidate_page is not None else None
@@ -684,7 +808,9 @@ def _page_review_change(
             | {f"+ {source_id}" for source_id in candidate_sources - base_sources}
         ),
         claims=claims,
-        semantic_changes=_semantic_field_changes(base_page, candidate_page),
+        semantic_changes=_semantic_field_changes(
+            base_page, candidate_page, base_raw, candidate_raw, path=path
+        ),
     )
 
 
@@ -1006,14 +1132,30 @@ def review_knowledge_changes(
             # Full parsed-page equality: a frontmatter-only edit (summary,
             # tags, lifecycle, ...) or a same-ID Claim edit is a real change.
             if base_pages[path] == candidate_pages[path]:
-                continue
+                # Parsed equality alone cannot skip a page whose captured
+                # frontmatter carries an unrepresented change (F3 remainder):
+                # keep it as an updated page so its remainder is displayed.
+                if not _unrepresented_frontmatter_changes(
+                    base.content.get(path),
+                    candidate.content.get(path),
+                    profile_changed=False,
+                    path=path,
+                ):
+                    continue
             change = "updated"
         elif path in candidate_pages:
             change = "added"
         else:
             change = "removed"
         page_changes.append(
-            _page_review_change(path, change, base_pages.get(path), candidate_pages.get(path))
+            _page_review_change(
+                path,
+                change,
+                base_pages.get(path),
+                candidate_pages.get(path),
+                base.content.get(path),
+                candidate.content.get(path),
+            )
         )
 
     # F2: every changed path under the selected subtree must have supported
