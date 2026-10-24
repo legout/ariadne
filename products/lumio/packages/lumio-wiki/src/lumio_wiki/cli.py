@@ -2976,6 +2976,7 @@ def _explicit_exchange_store(uri: str):
     """
     from urllib.parse import urlparse
 
+    from lumio_wiki.knowledge_base import KnowledgeBaseError
     from lumio_wiki.private_profile import ResolvedS3Exchange
     from lumio_wiki.s3_location import _require_obstore
 
@@ -2997,7 +2998,12 @@ def _explicit_exchange_store(uri: str):
             "aws_virtual_hosted_style_request": False,
         }
     config["copy_if_not_exists"] = "multipart"
-    obstore = _require_obstore()
+    try:
+        obstore = _require_obstore()
+    except KnowledgeBaseError as exc:
+        # F5: the optional-extra guard's actionable install guidance reaches
+        # the caller as this command's bounded versioned envelope.
+        raise CliError(str(exc), code="invalid_source_exchange") from exc
     try:
         store = obstore.store.S3Store(
             parsed.netloc,
@@ -3040,11 +3046,11 @@ def _exchange_selection(args: argparse.Namespace):
                 exit_code=2,
                 code="conflicting_private_selection",
             )
-        kb = getattr(args, "kb", None) or _resolve_default_kb_path()
+        kb = getattr(args, "kb", None)
         if not kb:
             raise CliError(
-                "profile-mode source-exchange requires the selected Knowledge Base: "
-                "pass --kb <kb-path> (spec 0010 §2.1)",
+                "profile-mode source-exchange requires the explicitly selected "
+                "Knowledge Base: pass --kb <kb-path> (spec 0010 §2.1)",
                 exit_code=2,
                 code="invalid_private_profile",
             )

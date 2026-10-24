@@ -40,8 +40,9 @@ from typing import Any
 import msgspec
 
 from lumio_wiki.private_profile import ResolvedS3Exchange
-from lumio_wiki.s3_location import _join, _require_obstore
+from lumio_wiki.s3_location import _join
 from lumio_wiki.source_handoff import (
+    _ARCHIVE_OVERHEAD_MAX_BYTES,
     BASELINE_KIND,
     CONTAINER_OVERHEAD_MAX_BYTES,
     HANDOFF_KIND,
@@ -79,6 +80,14 @@ READY_MAX_BYTES = 64 * 1024
 #: 8 MiB container overhead). The ceiling is enforced on bytes actually read,
 #: not only on stat/head results.
 _UPLOAD_READ_CEILING = MANIFEST_MAX_BYTES + TOTAL_PAYLOAD_MAX_BYTES + CONTAINER_OVERHEAD_MAX_BYTES
+
+#: Kind-specific download ceilings from the same accepted transfer bounds
+#: (review F1): a baseline snapshot container is the 4 MiB manifest plus tar
+#: overhead; a full handoff adds the 2 GiB payload and container-overhead
+#: allowances. The ceiling over the REMOTE declared count is enforced before
+#: any archive fetch, and independently on the actual streamed bytes.
+_BASELINE_ARCHIVE_CEILING = MANIFEST_MAX_BYTES + _ARCHIVE_OVERHEAD_MAX_BYTES
+_FULL_ARCHIVE_CEILING = MANIFEST_MAX_BYTES + TOTAL_PAYLOAD_MAX_BYTES + CONTAINER_OVERHEAD_MAX_BYTES
 
 #: Bounded local I/O unit for capture, download staging and remote streams.
 _IO_CHUNK_BYTES = 1024 * 1024
@@ -124,6 +133,55 @@ def _require_hex64(value: object, what: str) -> str:
     return value
 
 
+def _require_ready_hex(value: object, what: str) -> str:
+    """A malformed REMOTE ready field is an integrity failure (review F2)."""
+    if not isinstance(value, str) or not _HEX64.match(value):
+        raise SourceExchangeError(
+            f"the completion record {what} must be exactly 64 lowercase hex characters",
+            code="exchange_integrity_mismatch",
+        )
+    return value
+
+
+def _obstore() -> Any:
+    """The locked obstore module, normalized to the exchange boundary (F5).
+
+    The optional-extra guard's actionable install guidance is preserved
+    verbatim; its foreign exception type never crosses the public boundary.
+    """
+    from lumio_wiki.knowledge_base import KnowledgeBaseError
+    from lumio_wiki.s3_location import _require_obstore
+
+    try:
+        return _require_obstore()
+    except KnowledgeBaseError as exc:
+        raise SourceExchangeError(str(exc)) from exc
+
+
+def _archive_ceiling(kind: str) -> int:
+    """The accepted container bound for one transfer kind (review F1)."""
+    if kind == BASELINE_KIND:
+        return _BASELINE_ARCHIVE_CEILING
+    return _FULL_ARCHIVE_CEILING
+
+
+def _refuse_inside_git_worktree(path: str | Path, what: str) -> None:
+    """Refuse a private selection inside ANY Git worktree (review F4).
+
+    Resolved paths (symlinked parents included) are checked for an enclosing
+    ``.git`` marker so private transfers and originals never enter a content
+    repository — including ignored directories — regardless of CLI mode.
+    """
+    resolved = Path(path).resolve()
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            raise SourceExchangeError(
+                f"the {what} resolves inside a Git worktree; private transfer "
+                "artifacts never enter content repositories — select a private "
+                "location outside every worktree"
+            )
+
+
 def _exchange_parts(exchange: ResolvedS3Exchange) -> tuple[Any, str]:
     store = getattr(exchange, "store", None)
     prefix = getattr(exchange, "prefix", None)
@@ -160,13 +218,14 @@ def _temp_workspace() -> Path:
     land inside a content repository through ambient TMPDIR selection.
     """
     root = Path(tempfile.gettempdir()).resolve()
-    for candidate in (root, *root.parents):
-        if (candidate / ".git").exists():
-            raise SourceExchangeError(
-                "the configured temporary directory resolves inside a Git worktree; "
-                "point TMPDIR at private storage outside content repositories"
-            )
-    return Path(tempfile.mkdtemp(prefix="lumio-source-exchange-"))
+    _refuse_inside_git_worktree(root, "configured temporary directory")
+    try:
+        return Path(tempfile.mkdtemp(prefix="lumio-source-exchange-"))
+    except OSError as exc:
+        raise SourceExchangeError(
+            "allocating private temporary storage failed; free space or point "
+            "TMPDIR at private storage and retry",
+        ) from exc
 
 
 def _capture_transfer(transfer_path: Path, workspace: Path) -> tuple[Path, str, int]:
@@ -179,7 +238,10 @@ def _capture_transfer(transfer_path: Path, workspace: Path) -> tuple[Path, str, 
     try:
         size_hint = transfer_path.stat().st_size
     except OSError as exc:
-        raise SourceExchangeError(f"the transfer file could not be opened: {exc}") from exc
+        raise SourceExchangeError(
+            "the transfer file could not be opened; select the exported transfer "
+            "artifact and retry",
+        ) from exc
     if size_hint > _UPLOAD_READ_CEILING:
         raise SourceExchangeError(
             f"the transfer file exceeds the container bound ({size_hint} bytes); an "
@@ -204,7 +266,9 @@ def _capture_transfer(transfer_path: Path, workspace: Path) -> tuple[Path, str, 
                 digest.update(chunk)
                 target.write(chunk)
     except OSError as exc:
-        raise SourceExchangeError(f"the transfer file could not be read: {exc}") from exc
+        raise SourceExchangeError(
+            "the transfer file could not be read; select the exported transfer artifact and retry",
+        ) from exc
     if total == 0:
         raise SourceExchangeError("the transfer file is empty; a transfer archive is required")
     return captured, digest.hexdigest(), total
@@ -285,7 +349,7 @@ class _BoundedUploadReader(io.RawIOBase):
 
 def _get_bounded(store: Any, key: str, limit: int) -> bytes:
     """Read one small remote object fully, refusing anything beyond ``limit``."""
-    obstore = _require_obstore()
+    obstore = _obstore()
     try:
         meta = obstore.head(store, key)
         if meta["size"] > limit:
@@ -318,7 +382,7 @@ def _get_bounded(store: Any, key: str, limit: int) -> bytes:
 
 def _verify_final(store: Any, key: str, *, digest: str, byte_count: int) -> None:
     """Stream-verify the complete final object's byte count and digest."""
-    obstore = _require_obstore()
+    obstore = _obstore()
     try:
         meta = obstore.head(store, key)
         if meta["size"] != byte_count:
@@ -361,7 +425,7 @@ def _copy_to_final(
     """Atomic copy-if-absent to the final key with lost-response recovery."""
     from obstore.exceptions import AlreadyExistsError, NotSupportedError
 
-    obstore = _require_obstore()
+    obstore = _obstore()
     try:
         obstore.copy(store, staging_key, final_key, overwrite=False)
         return
@@ -370,6 +434,11 @@ def _copy_to_final(
             _verify_final(store, final_key, digest=digest, byte_count=byte_count)
             return  # an identical retry converges on the existing immutable object
         except SourceExchangeError as exc:
+            if exc.code != "exchange_integrity_mismatch":
+                # F7: denied, missing or transient verification keeps its own
+                # category — it is not an identity conflict.
+                raise
+            # Readable verified bytes differ: a genuine identity conflict.
             raise SourceExchangeError(
                 "a different transfer already exists under this transfer identifier; "
                 "resolve the conflict explicitly — the existing final object is "
@@ -392,7 +461,19 @@ def _copy_to_final(
         try:
             _verify_final(store, final_key, digest=digest, byte_count=byte_count)
             return
-        except SourceExchangeError:
+        except SourceExchangeError as verify_exc:
+            if verify_exc.code == "exchange_integrity_mismatch":
+                # F7: verified different bytes after a lost response conflict.
+                raise SourceExchangeError(
+                    "a different transfer already exists under this transfer "
+                    "identifier; resolve the conflict explicitly — the existing "
+                    "final object is immutable and was not modified",
+                    code="exchange_conflict",
+                ) from verify_exc
+            if verify_exc.code == "exchange_access_denied":
+                raise verify_exc from exc
+            # Absence or a transient outcome after a lost response: retry the
+            # operation; absence alone is not an identity conflict.
             raise SourceExchangeError(
                 "the conditional copy to the private exchange failed before the "
                 "final object was verifiable; retry the upload with the same "
@@ -418,20 +499,25 @@ def _publish_ready(store: Any, ready_key: str, payload: bytes) -> None:
     """Create-only ready publication with identical-retry and lost recovery."""
     from obstore.exceptions import AlreadyExistsError, NotSupportedError
 
-    obstore = _require_obstore()
+    obstore = _obstore()
     try:
         obstore.put(store, ready_key, payload, mode="create")
         return
     except AlreadyExistsError:
         try:
-            if _get_bounded(store, ready_key, READY_MAX_BYTES) == payload:
-                return  # an identical retry converges; ready is never rewritten
+            existing = _get_bounded(store, ready_key, READY_MAX_BYTES)
         except SourceExchangeError as exc:
+            if exc.code in ("exchange_access_denied", "exchange_not_found"):
+                # F7: a denied comparison stays access denial; a vanished
+                # record is not an identity conflict.
+                raise
             raise SourceExchangeError(
                 "a completion record for this transfer identifier exists but could "
                 "not be compared; it is immutable and never rewritten",
                 code="exchange_conflict",
             ) from exc
+        if existing == payload:
+            return  # an identical retry converges; ready is never rewritten
         raise SourceExchangeError(
             "a different completion record already exists for this transfer "
             "identifier; resolve the conflict explicitly",
@@ -449,10 +535,29 @@ def _publish_ready(store: Any, ready_key: str, payload: bytes) -> None:
         if classified is not None:
             raise classified from exc
         try:
-            if _get_bounded(store, ready_key, READY_MAX_BYTES) == payload:
+            existing = _get_bounded(store, ready_key, READY_MAX_BYTES)
+        except SourceExchangeError as verify_exc:
+            if verify_exc.code == "exchange_access_denied":
+                raise verify_exc from exc
+            if verify_exc.code == "exchange_integrity_mismatch":
+                # F7: an unreadable/oversized existing record after a lost
+                # response is a different record: conflict.
+                raise SourceExchangeError(
+                    "a different completion record already exists for this "
+                    "transfer identifier; resolve the conflict explicitly",
+                    code="exchange_conflict",
+                ) from verify_exc
+            # Expected absence after a failed NEW write (or a transient read):
+            # the original failed-write category stands — absence alone is not
+            # an identity conflict.
+        else:
+            if existing == payload:
                 return  # the write landed; only the response was lost
-        except SourceExchangeError:
-            pass
+            raise SourceExchangeError(
+                "a different completion record already exists for this transfer "
+                "identifier; resolve the conflict explicitly",
+                code="exchange_conflict",
+            ) from None
         raise SourceExchangeError(
             "publishing the completion record failed; retry the upload with the same transfer file",
         ) from exc
@@ -493,13 +598,13 @@ def _parse_ready(payload: bytes) -> tuple[str, str, int, str]:
             code="exchange_integrity_mismatch",
         )
     kind = record["kind"]
-    if kind not in _KNOWN_KINDS:
+    if not isinstance(kind, str) or kind not in _KNOWN_KINDS:
         raise SourceExchangeError(
             "the completion record names an unknown artifact kind",
             code="exchange_integrity_mismatch",
         )
-    transfer_id = _require_hex64(record["transfer_id"], "the completion record transfer_id")
-    sha256 = _require_hex64(record["sha256"], "the completion record sha256")
+    transfer_id = _require_ready_hex(record["transfer_id"], "transfer_id")
+    sha256 = _require_ready_hex(record["sha256"], "sha256")
     byte_count = record["byte_count"]
     if type(byte_count) is not int or byte_count <= 0:
         raise SourceExchangeError(
@@ -522,11 +627,14 @@ def upload_source_transfer(
     bytes converge; different bytes under the same identifier refuse as a
     conflict. The returned record is public-safe.
     """
-    obstore = _require_obstore()
+    obstore = _obstore()
     store, prefix = _exchange_parts(exchange)
     path = Path(transfer_path)
+    _refuse_inside_git_worktree(path, "transfer file")
     if not path.is_file():
-        raise SourceExchangeError(f"transfer file not found: {path}")
+        raise SourceExchangeError(
+            "the transfer file does not exist; select the exported transfer artifact"
+        )
     workspace = _temp_workspace()
     try:
         captured, digest, byte_count = _capture_transfer(path, workspace)
@@ -536,7 +644,8 @@ def upload_source_transfer(
             reader = _BoundedUploadReader(captured, _UPLOAD_READ_CEILING)
         except OSError as exc:
             raise SourceExchangeError(
-                f"the captured transfer could not be reopened for upload: {exc}"
+                "the captured transfer could not be reopened for upload; retry "
+                "the upload with the same transfer file",
             ) from exc
         try:
             with reader:
@@ -571,9 +680,16 @@ def upload_source_transfer(
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-def _stream_to_staged(store: Any, key: str, staged: Path, *, byte_count: int) -> str:
-    """Stream the final object into private staging while hashing it."""
-    obstore = _require_obstore()
+def _stream_to_staged(
+    store: Any, key: str, staged: Path, *, byte_count: int, max_bytes: int
+) -> str:
+    """Stream the final object into private staging while hashing it.
+
+    Both the declared byte count and the independent kind ceiling bound the
+    actual streamed bytes (review F1): a remote-advertised count is never the
+    only resource authority.
+    """
+    obstore = _obstore()
     hasher = hashlib.sha256()
     total = 0
     try:
@@ -581,7 +697,7 @@ def _stream_to_staged(store: Any, key: str, staged: Path, *, byte_count: int) ->
         with open(staged, "wb") as target:
             for buf in result.stream(min_chunk_size=_IO_CHUNK_BYTES):
                 total += len(buf)
-                if total > byte_count:
+                if total > byte_count or total > max_bytes:
                     raise SourceExchangeError(
                         "the remote transfer object exceeds its expected byte count",
                         code="exchange_integrity_mismatch",
@@ -605,6 +721,80 @@ def _stream_to_staged(store: Any, key: str, staged: Path, *, byte_count: int) ->
     return hasher.hexdigest()
 
 
+def _identical_output(output: Path, *, digest: str, byte_count: int) -> bool:
+    """Whether an existing output file already carries the verified bytes."""
+    hasher = hashlib.sha256()
+    read = 0
+    try:
+        with open(output, "rb") as handle:
+            while True:
+                chunk = handle.read(_IO_CHUNK_BYTES)
+                if not chunk:
+                    break
+                read += len(chunk)
+                if read > byte_count:
+                    return False
+                hasher.update(chunk)
+    except OSError as exc:
+        raise SourceExchangeError(
+            "the existing output file could not be read; remove it or choose another output path",
+            code="exchange_conflict",
+        ) from exc
+    return read == byte_count and hasher.hexdigest() == digest
+
+
+def _publish_output(staged: Path, output: Path, *, digest: str, byte_count: int) -> None:
+    """Publish verified bytes atomically onto the destination filesystem (F3).
+
+    The verified archive is copied into an operation-owned private temporary
+    ON the destination filesystem (re-verified byte-for-byte while copying),
+    then published with a create-only hard link: never a copy into the final
+    name, never replace-existing. An unrelated destination appearing
+    concurrently makes the link fail; identical bytes converge, different
+    bytes conflict, and an unsupported primitive is a safe bounded failure.
+    """
+    fd, temp_name = tempfile.mkstemp(dir=output.parent, prefix=".lumio-exchange-", suffix=".tmp")
+    temp_path = Path(temp_name)
+    try:
+        hasher = hashlib.sha256()
+        total = 0
+        with os.fdopen(fd, "wb") as target, open(staged, "rb") as source:
+            while True:
+                chunk = source.read(_IO_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                hasher.update(chunk)
+                target.write(chunk)
+        if total != byte_count or hasher.hexdigest() != digest:
+            raise SourceExchangeError(
+                "staging the verified transfer onto the destination filesystem "
+                "failed its byte count or digest verification",
+                code="exchange_integrity_mismatch",
+            )
+        try:
+            os.link(temp_path, output)
+        except FileExistsError:
+            if _identical_output(output, digest=digest, byte_count=byte_count):
+                return  # a concurrent identical publication converges
+            raise SourceExchangeError(
+                "the output file already exists with different bytes; remove it "
+                "or choose another output path",
+                code="exchange_conflict",
+            ) from None
+        except OSError as exc:
+            raise SourceExchangeError(
+                "atomic no-clobber publication is not supported on the selected "
+                "output filesystem; choose a filesystem supporting atomic "
+                "publication",
+            ) from exc
+    finally:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass  # best-effort cleanup of the operation-owned temporary
+
+
 def download_source_transfer(
     transfer_id: str,
     digest: str,
@@ -625,6 +815,7 @@ def download_source_transfer(
     _require_hex64(transfer_id, "the transfer identifier")
     _require_hex64(digest, "the expected transfer digest")
     output = Path(output_path)
+    _refuse_inside_git_worktree(output, "download output path")
     ready_key = _join(prefix, transfer_id, READY_MEMBER)
     final_key = _join(prefix, transfer_id, TRANSFER_MEMBER)
     try:
@@ -651,12 +842,27 @@ def download_source_transfer(
             "and expected digest",
             code="exchange_integrity_mismatch",
         )
+    # F1: the remote declared count is never resource authority — refuse any
+    # count above the kind's written container ceiling BEFORE fetching bytes.
+    ceiling = _archive_ceiling(kind)
+    if byte_count > ceiling:
+        raise SourceExchangeError(
+            f"the completion record declares {byte_count} bytes, above its "
+            "transfer kind's container ceiling; an explicit refusal, never an "
+            "unbounded download",
+            code="exchange_integrity_mismatch",
+        )
     if not output.parent.exists():
-        raise SourceExchangeError(f"the output parent directory does not exist: {output.parent}")
+        raise SourceExchangeError(
+            "the output parent directory does not exist; create it or select "
+            "another output location"
+        )
     workspace = _temp_workspace()
     staged = workspace / TRANSFER_MEMBER
     try:
-        actual = _stream_to_staged(store, final_key, staged, byte_count=byte_count)
+        actual = _stream_to_staged(
+            store, final_key, staged, byte_count=byte_count, max_bytes=ceiling
+        )
         if actual != digest:
             raise SourceExchangeError(
                 "the downloaded transfer failed integrity verification against the expected digest",
@@ -672,32 +878,20 @@ def download_source_transfer(
         if output.exists():
             # Never silently destroy an unrelated existing local file; an
             # identical prior download is the convergent retry.
-            existing = hashlib.sha256()
-            read = 0
-            try:
-                with open(output, "rb") as handle:
-                    while True:
-                        chunk = handle.read(_IO_CHUNK_BYTES)
-                        if not chunk:
-                            break
-                        read += len(chunk)
-                        if read > byte_count:
-                            existing = None
-                            break
-                        existing.update(chunk)
-            except OSError as exc:
-                raise SourceExchangeError(
-                    f"the existing output file could not be read: {exc}",
-                    code="exchange_conflict",
-                ) from exc
-            if existing is None or existing.hexdigest() != digest:
+            if not _identical_output(output, digest=digest, byte_count=byte_count):
                 raise SourceExchangeError(
                     "the output file already exists with different bytes; remove it "
                     "or choose another output path",
                     code="exchange_conflict",
                 )
         else:
-            os.replace(staged, output)
+            try:
+                _publish_output(staged, output, digest=digest, byte_count=byte_count)
+            except OSError as exc:
+                raise SourceExchangeError(
+                    "publishing the verified transfer failed on a local I/O "
+                    "error; retry the download",
+                ) from exc
         return SourceTransfer(
             schema_version=SOURCE_EXCHANGE_SCHEMA_VERSION,
             operation="download",
