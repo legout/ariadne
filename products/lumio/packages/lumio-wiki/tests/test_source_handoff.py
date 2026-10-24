@@ -1547,6 +1547,7 @@ def test_handoff_errors_are_structured(case, tmp_path, capsys, monkeypatch):
         argv[argv.index("--digest") + 1] = digest
     elif case == "references_duplicate_key":
         monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(world["store_dir"]))
+        (tmp_path / "transfer").mkdir(parents=True, exist_ok=True)
         references = tmp_path / "transfer" / "references.json"
         references.write_text('{"schema_version":1,"schema_version":1,"references":[]}')
         argv = [
@@ -1585,6 +1586,7 @@ def test_handoff_errors_are_structured(case, tmp_path, capsys, monkeypatch):
         ]
     else:  # export_output_non_directory_parent: a regular file as parent.
         monkeypatch.setenv(SOURCE_STORE_ENV_VAR, str(world["store_dir"]))
+        (tmp_path / "transfer").mkdir(parents=True, exist_ok=True)
         blocker = tmp_path / "transfer" / "plain-file"
         blocker.write_text("a regular file, not a directory")
         argv = [
@@ -1658,8 +1660,8 @@ def test_handoff_rejects_tar_extensions_before_body(variant, tmp_path, capsys, m
             # Documented tar fact: a PAX extended header is a physical 'x'
             # record whose "<len> path=<value>\n" body overrides the following
             # header's name the same way.
-            line = b"23 path=manifest.json\n"
-            assert len(line) == 23
+            line = b"22 path=manifest.json\n"
+            assert len(line) == 22
             tar.addfile(_raw_info("PaxHeader", len(line), tarfile.XHDTYPE), io.BytesIO(line))
         tar.addfile(
             _raw_info("mn", len(manifest_payload), tarfile.REGTYPE),
@@ -1667,6 +1669,7 @@ def test_handoff_rejects_tar_extensions_before_body(variant, tmp_path, capsys, m
         )
         for name, data in _valid_entries():
             tar.addfile(_raw_info(name, len(data), tarfile.REGTYPE), io.BytesIO(data))
+    crafted.parent.mkdir(parents=True, exist_ok=True)
     crafted.write_bytes(buffer.getvalue())
     digest = hashlib.sha256(buffer.getvalue()).hexdigest()
 
@@ -1726,6 +1729,9 @@ def test_handoff_rejects_tar_extensions_before_body(variant, tmp_path, capsys, m
     assert reads  # the importer really consumed bytes through the wrapper
     assert max(reads) <= 1024 * 1024, reads  # no size-proportional single read
     assert sum(reads) <= crafted.stat().st_size, reads  # single pass, nothing re-read
+    # Literal before-extension-body boundary (supplemental disposition): the
+    # refusal may consume at most the FIRST physical 512-byte tar header.
+    assert sum(reads) <= 512, reads
     assert _canonical_snapshot(mreg_dir, mstore_dir) == snapshot
 
 
