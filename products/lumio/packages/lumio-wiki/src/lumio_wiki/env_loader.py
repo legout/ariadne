@@ -77,6 +77,13 @@ RETRIEVAL_MODE_ENV_VAR: Final[str] = "LUMIO_RETRIEVAL_MODE"
 #: derived from S3 object locations.
 READER_BASE_URL_ENV_VAR: Final[str] = "LUMIO_READER_BASE_URL"
 
+#: Explicit private Source Exchange URI (spec 0010 §6, plan 0010 J4):
+#: a credential-free object-store URI such as ``s3://bucket/exchange``
+#: recorded by project setup or exported directly. Private; never commit it.
+#: Endpoint, region and credentials are resolved per invocation through the
+#: existing S3 resolution machinery; the URI itself carries no secrets.
+SOURCE_EXCHANGE_ENV_VAR: Final[str] = "LUMIO_SOURCE_EXCHANGE"
+
 #: S3-compatible connection settings. Deployment configuration: ``setup``
 #: never writes them, but they may be recorded in a project ``.env`` and are
 #: read with exported-process precedence.
@@ -95,6 +102,7 @@ ENV_ALLOWLIST: Final[frozenset[str]] = frozenset(
         SOURCE_STORE_ENV_VAR,
         SOURCE_REGISTRY_ENV_VAR,
         ARTIFACT_RETENTION_ENV_VAR,
+        SOURCE_EXCHANGE_ENV_VAR,
         RETRIEVAL_BACKEND_ENV_VAR,
         RETRIEVAL_MODE_ENV_VAR,
         S3_REGION_ENV_VAR,

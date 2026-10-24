@@ -84,6 +84,7 @@ from lumio_wiki.env_loader import (
     READER_BASE_URL_ENV_VAR,
     RETRIEVAL_BACKEND_ENV_VAR,
     RETRIEVAL_MODE_ENV_VAR,
+    SOURCE_EXCHANGE_ENV_VAR,
     SOURCE_REGISTRY_ENV_VAR,
     SOURCE_STORE_ENV_VAR,
     discover_kb_path_from_project_env,
@@ -224,6 +225,15 @@ _MACHINE_ERROR_MESSAGES.update(
         "missing_artifact_store": (
             "source-handoff requires a selected private Source Artifact Store"
         ),
+        # Spec 0010 §6 / plan 0010 J4: safe transport failure categories. The
+        # underlying messages never echo endpoints, bucket/prefix locations,
+        # paths or credentials carried by raw SDK exceptions.
+        "invalid_source_exchange": "the private source exchange operation failed",
+        "exchange_not_found": "the requested transfer or completion record is missing",
+        "exchange_access_denied": "the private exchange denied access",
+        "exchange_conflict": "a conflicting transfer already exists",
+        "exchange_integrity_mismatch": "the transfer failed integrity verification",
+        "exchange_unsupported": "the exchange lacks a required transport capability",
     }
 )
 
@@ -258,6 +268,8 @@ def _bootstrap_error_schema_version(args: argparse.Namespace) -> int | None:
     if getattr(args, "source_bootstrap_command", None) is not None:
         return 1
     if getattr(args, "source_handoff_command", None) is not None:
+        return 1
+    if getattr(args, "source_exchange_command", None) is not None:
         return 1
     return 1 if getattr(args, "journey_command", None) is not None else None
 
@@ -2946,6 +2958,162 @@ def _cmd_source_handoff(args: argparse.Namespace) -> int:
         print(f"  artifacts retained: {result.artifacts_retained}")
         print(f"  provenance records: {result.provenance_records}")
         print("Import retains verified originals additively; it grants no publication approval.")
+    return 0
+
+
+def _explicit_exchange_store(uri: str):
+    """Build the exchange-only (store, prefix) from one explicit S3 URI (§6).
+
+    The documented legacy env resolution (``_s3_config_from_env``) selects
+    endpoint/region/credentials, but the store is constructed DIRECTLY with
+    the effective endpoint pinned at ``aws_endpoint_url_s3`` and conditional
+    copy configured: ``from_url`` re-parses config keys in their
+    Python-facing ``aws_``-stripped form, in which the S3-specific endpoint
+    key is not parseable (obstore 0.11.1 round-trip asymmetry; see
+    ``test_profile_s3_connection_ignores_ambient_selection``), and an
+    exchange client must never reuse or mutate a canonical publication
+    client. No service fallback: an unresolvable selection refuses.
+    """
+    from urllib.parse import urlparse
+
+    from lumio_wiki.private_profile import ResolvedS3Exchange
+    from lumio_wiki.s3_location import _require_obstore
+
+    _reject_unsafe_uri(uri)
+    parsed = urlparse(uri)
+    if parsed.scheme.lower() not in ("s3", "s3a") or not parsed.netloc or "/" in parsed.netloc:
+        raise CliError(
+            "the private exchange must be an S3 object-store URI like s3://bucket/prefix",
+            code="invalid_source_exchange",
+        )
+    config, client_options = _s3_config_from_env()
+    endpoint = config.get("aws_endpoint")
+    if endpoint:
+        # Pin the selected endpoint at the documented top precedence and use
+        # path-style addressing against explicit S3-compatible endpoints.
+        config = {
+            **config,
+            "aws_endpoint_url_s3": endpoint,
+            "aws_virtual_hosted_style_request": False,
+        }
+    config["copy_if_not_exists"] = "multipart"
+    obstore = _require_obstore()
+    try:
+        store = obstore.store.S3Store(
+            parsed.netloc,
+            config=config,
+            client_options=client_options or None,
+        )
+    except Exception as exc:
+        raise CliError(
+            "could not construct the private exchange connection from the selected URI",
+            code="invalid_source_exchange",
+        ) from exc
+    return ResolvedS3Exchange(store=store, prefix=parsed.path.strip("/"))
+
+
+def _exchange_selection(args: argparse.Namespace):
+    """Resolve the private exchange: exclusive profile mode or explicit route.
+
+    Profile mode resolves ONLY the ``exchange`` resource and additionally
+    refuses a competing ``--exchange``/``LUMIO_SOURCE_EXCHANGE`` selection
+    (spec 0010 §2.1/§6); it requires ``--kb`` for namespace/containment, and
+    the transfer/output files must stay outside the selected content
+    repository. The legacy explicit route needs no Knowledge Base.
+    """
+    from lumio_wiki.git_authoring import GitAuthoringError, resolve_repository
+
+    profile_path = getattr(args, "private_profile", None)
+    env_exchange = os.environ.get(SOURCE_EXCHANGE_ENV_VAR) or load_project_config().get(
+        SOURCE_EXCHANGE_ENV_VAR
+    )
+    if profile_path is not None:
+        competitors = []
+        if getattr(args, "exchange", None):
+            competitors.append("--exchange")
+        if env_exchange:
+            competitors.append(SOURCE_EXCHANGE_ENV_VAR)
+        if competitors:
+            raise CliError(
+                "private profile selection is exclusive: remove the competing "
+                f"selection(s) {', '.join(competitors)} or drop --private-profile",
+                exit_code=2,
+                code="conflicting_private_selection",
+            )
+        kb = getattr(args, "kb", None) or _resolve_default_kb_path()
+        if not kb:
+            raise CliError(
+                "profile-mode source-exchange requires the selected Knowledge Base: "
+                "pass --kb <kb-path> (spec 0010 §2.1)",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+        try:
+            repo_root, _subtree = resolve_repository(kb)
+        except GitAuthoringError as exc:
+            raise CliError(str(exc), code="git_authoring_error") from exc
+        for raw in (getattr(args, "file", None), getattr(args, "output", None)):
+            if raw is None:
+                continue
+            if Path(raw).resolve().is_relative_to(repo_root):
+                raise CliError(
+                    "the transfer/output files must stay outside the content "
+                    "repository; private transfer artifacts never enter Git",
+                    exit_code=2,
+                    code="invalid_source_exchange",
+                )
+        selection = _private_profile_selection(args, kb, frozenset({"exchange"}))
+        if selection is None or selection.exchange is None:  # pragma: no cover - contract
+            raise CliError(
+                "the selected private profile declares no private exchange connection",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+        return selection.exchange
+    uri = getattr(args, "exchange", None) or env_exchange
+    if not uri:
+        raise CliError(
+            "source-exchange requires an explicit private exchange: pass --exchange "
+            f"<s3-uri>, set {SOURCE_EXCHANGE_ENV_VAR}, or select --private-profile "
+            "<file> (spec 0010 §6)",
+            exit_code=2,
+            code="invalid_source_exchange",
+        )
+    return _explicit_exchange_store(uri)
+
+
+def _cmd_source_exchange(args: argparse.Namespace) -> int:
+    """``source-exchange upload|download``: private S3 transfer transport (§6)."""
+    from lumio_wiki.source_exchange import (
+        SourceExchangeError,
+        SourceTransfer,
+        download_source_transfer,
+        upload_source_transfer,
+    )
+
+    command = args.source_exchange_command
+    try:
+        exchange = _exchange_selection(args)
+        if command == "upload":
+            result: SourceTransfer = upload_source_transfer(args.file, exchange=exchange)
+        else:
+            result = download_source_transfer(
+                args.id, args.digest, exchange=exchange, output_path=args.output
+            )
+    except SourceExchangeError as exc:
+        raise CliError(str(exc), code=exc.code) from exc
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **msgspec.to_builtins(result)}))
+        return 0
+    verb = "Uploaded" if command == "upload" else "Downloaded"
+    print(f"{verb} a private source transfer ({result.kind}).")
+    print(f"  transfer id:  {result.transfer_id}")
+    print(f"  byte count:   {result.byte_count}")
+    print(f"  sha256:       {result.sha256}")
+    if command == "upload":
+        print("Share the identifier and digest out-of-band; the transfer stays private.")
+    else:
+        print("Verified against the completion record and expected digest before exposure.")
     return 0
 
 
@@ -8512,6 +8680,97 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     handoff_import_parser.set_defaults(func=_cmd_source_handoff)
+
+    # source-exchange — private S3 transfer transport (spec 0010 §6).
+    source_exchange_parser = subparsers.add_parser(
+        "source-exchange",
+        help=("Upload/download private transfers through an S3 exchange (spec 0010 §6)."),
+        description=(
+            "Transport one exported Source Baseline Snapshot or Source Handoff "
+            "Bundle through an explicitly selected private S3-compatible "
+            "exchange: the captured bytes are validated with the existing "
+            "transfer validators, streamed to unique private staging, promoted "
+            "by atomic copy-if-absent to the immutable final object, verified "
+            "by complete read-back, and only then advertised by a create-only "
+            "completion record. Downloads verify the completion record and the "
+            "complete artifact before exposing any output. Manual private "
+            "transfer remains available without any S3 dependency."
+        ),
+    )
+    source_exchange_sub = source_exchange_parser.add_subparsers(
+        dest="source_exchange_command", required=True, metavar="<source-exchange-command>"
+    )
+
+    def _add_exchange_selection_arguments(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--exchange",
+            type=str,
+            default=None,
+            help=(
+                "Explicit private exchange URI (s3://bucket/prefix). "
+                f"Alternative: {SOURCE_EXCHANGE_ENV_VAR} or --private-profile."
+            ),
+        )
+        parser.add_argument(
+            "--kb",
+            type=str,
+            default=None,
+            help=(
+                "Selected Knowledge Base root; required with --private-profile "
+                "for namespace and containment."
+            ),
+        )
+        _add_private_profile_argument(parser)
+        parser.add_argument(
+            "--json", action="store_true", help="Emit a stable machine-readable result."
+        )
+
+    exchange_upload_parser = source_exchange_sub.add_parser(
+        "upload",
+        help="Upload one transfer and publish readiness last.",
+    )
+    exchange_upload_parser.add_argument(
+        "--file",
+        required=True,
+        type=Path,
+        help=(
+            "Path to the exported Source Baseline Snapshot or Source Handoff "
+            "Bundle archive (outside the content repository in profile mode)."
+        ),
+    )
+    _add_exchange_selection_arguments(exchange_upload_parser)
+    exchange_upload_parser.set_defaults(func=_cmd_source_exchange)
+
+    exchange_download_parser = source_exchange_sub.add_parser(
+        "download",
+        help="Download one verified transfer by exact id and digest.",
+    )
+    exchange_download_parser.add_argument(
+        "--id",
+        required=True,
+        type=str,
+        help="The exact 64-hex-character transfer identifier.",
+    )
+    exchange_download_parser.add_argument(
+        "--digest",
+        required=True,
+        type=str,
+        help=(
+            "Expected SHA-256 of the complete transfer archive, supplied "
+            "out-of-band from maintainer-approved setup or operator selection."
+        ),
+    )
+    exchange_download_parser.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help=(
+            "Path for the verified transfer archive; an unrelated existing "
+            "file is never silently destroyed."
+        ),
+    )
+    _add_exchange_selection_arguments(exchange_download_parser)
+    exchange_download_parser.set_defaults(func=_cmd_source_exchange)
 
     # extract — one real original through the actual processor (spec 0010 §3).
     extract_parser = subparsers.add_parser(

@@ -485,6 +485,13 @@ from lumio_wiki.source_handoff import (
     inspect_source_handoff,
     parse_reference_selection,
 )
+from lumio_wiki.source_exchange import (
+    SOURCE_EXCHANGE_SCHEMA_VERSION,
+    SourceExchangeError,
+    SourceTransfer,
+    download_source_transfer,
+    upload_source_transfer,
+)
 from lumio_wiki.authoring_journey import (
     AuthoringJourneyError,
     CandidateBinding,
@@ -941,6 +948,11 @@ __all__ = [
     "import_source_handoff",
     "inspect_source_handoff",
     "parse_reference_selection",
+    "SOURCE_EXCHANGE_SCHEMA_VERSION",
+    "SourceExchangeError",
+    "SourceTransfer",
+    "download_source_transfer",
+    "upload_source_transfer",
     "AuthoringJourneyError",
     "CandidateBinding",
     "CandidateRequest",

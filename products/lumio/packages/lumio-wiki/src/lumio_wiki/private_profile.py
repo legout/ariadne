@@ -336,6 +336,11 @@ def _s3_connection_client(
         "aws_virtual_hosted_style_request": connection.url_style == "vhost",
         "aws_skip_signature": False,
     }
+    if what == "exchange":
+        # J4 amendment (spec 0010 §6 r4): ONLY exchange clients pin conditional
+        # copy-if-absent, required by the streaming staging/copy transport.
+        # Artifact-store and publication construction stay unchanged.
+        config["copy_if_not_exists"] = "multipart"
     client_options: dict[str, object] | None = (
         {"allow_http": True} if connection.endpoint.startswith("http://") else None
     )
