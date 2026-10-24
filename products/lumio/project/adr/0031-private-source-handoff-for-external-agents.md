@@ -23,6 +23,14 @@ baseline bindings on a fresh contributor machine, the owner chose
 “Metadata-only baseline bootstrap.” Specification 0010 revision 2 §5.1 captures
 that decision; plan revision 2 remains proposed and execution remains excluded.
 
+Scoped amendment, 2026-10-24: the owner approved the J4 exchange amendment and
+reconciliation of specification0010, this ADR and plan0010 before continuing
+supervised implementation. The locked optional client (obstore 0.11.1) buffers
+whole input for create-only puts; its multipart put streams but permits overwrite.
+A disposable SeaweedFS 4.45 probe established streaming multipart upload followed
+by atomic conditional copy, conflict refusal and preservation of the final digest.
+This is compatibility evidence for that service, not all S3-compatible providers.
+
 Git transports compiled content and exact source references, but excludes private
 Source Registry history and original artifacts. A maintainer on another machine
 cannot admit managed content merely by fetching its PR when those exact Source
@@ -42,6 +50,14 @@ bundle/import contract for manual private transfer. The exchange is temporary
 delivery infrastructure, separate from the maintainer's canonical private store
 and public publication destination. Existing deployment credential mechanisms
 authorize transport; Lumio introduces no central identity or source service.
+
+For bounded streaming with the existing optional client, upload through a unique
+private temporary staging object, then atomically copy-if-absent to the immutable
+final transfer object. Verify the final object before publishing its immutable
+completion record. Temporary staging is not a ready transfer and is excluded from
+the final-object immutability guarantee. Specification0010 §6 owns its exact
+behavior. This avoids a new dependency or custom S3 signing/client while retaining
+bounded memory and immutable final objects.
 
 Initialize fresh contributor history with a separate Source Baseline Snapshot:
 maintainer-provided exact-base metadata, without original bytes. Use the same
@@ -69,6 +85,12 @@ read-only under ADR-0028.
   in favor of metadata-only bootstrap: it unnecessarily expands original-document
   access and transfer volume. Removing exact-version checks would lose provenance
   guarantees and is not the chosen solution.
+- Buffering a whole multi-source bundle for create-only put violates bounded
+  streaming. Multipart overwrite directly at the final key violates immutability.
+  Private staging plus conditional copy preserves both requirements with the
+  existing dependency, at the cost of temporary residue and a storage capability
+  requirement. A new dependency or custom S3 transport would add wider unqualified
+  work; unsupported services retain the manual transfer route.
 - Putting originals into the Git content repository violates existing source
   privacy/export boundaries and is not an alternative selected by this decision.
 
@@ -78,7 +100,12 @@ The bundle is a versioned compatibility surface and requires explicit identity,
 integrity, import-conflict and retry contracts. A digest establishes content
 integrity, not author identity or human approval. Deployment permissions and Git
 review remain necessary. Exchange cleanup is operator-controlled; canonical
-retained originals must survive disappearance of the exchange copy.
+retained originals must survive disappearance of the exchange copy. Deployments
+must support multipart upload and atomic conditional server-side copy for automated
+exchange. Temporary staging objects and incomplete multipart uploads may remain;
+operators control their lifecycle. The application adds no remote cleanup command
+or automatic remote deletion. Existing public transfer and importer interfaces,
+including Ariadne consumers, remain unchanged.
 
 No new persisted authoring lifecycle, application dependency, custom encryption,
 automatic IAM provisioning or implementation/integration authority follows from

@@ -1,7 +1,15 @@
 # Specification 0010: External-agent authoring journey
 
-Status: approved design with scoped owner amendment. Written revision: 3.
-Date: 2026-10-23.
+Status: approved design with scoped owner amendments. Written revision: 4.
+Date: 2026-10-24.
+
+Approved scoped amendment, 2026-10-24: in BB thread `thr_52d92z7irz`, the owner
+approved the proposed J4 exchange amendment and directed reconciliation of this
+specification, ADR-0031 and plan0010 followed by supervised implementation and
+validation. Revision 4 scopes upload immutability to final objects, permits private
+per-attempt staging, and requires conditional-copy capability in §6. The existing
+execution grant and this amendment supersede historical no-implementation wording
+below only for supervised isolated work; no target integration or publication.
 
 Approval: in BB thread `thr_52d92z7irz`, 2026-10-23, the owner explicitly
 approved “specification 0010 revision 1 and ADR-0031 as written” and requested
@@ -25,7 +33,9 @@ The owner selected skill + CLI + native Git as the first complete supported
 journey, independent contributor and maintainer environments, BB with Pi as the
 first qualified harness, and a private S3-compatible exchange with manual bundle
 fallback. Revision 1 and implementation planning were explicitly approved, followed
-by the scoped bootstrap decision above. Execution remains excluded.
+by scoped bootstrap, private profile and J4 exchange amendments. The owner later
+approved supervised execution through the implementation plan and reconfirmed J4
+implementation and validation on 2026-10-24.
 
 This specification owns the conversational document-authoring journey in
 `lumio-wiki`: guided setup, extraction, original retention, multi-page authoring,
@@ -294,17 +304,42 @@ are machine-local, separate from the canonical registry and publication target.
 Use authenticated transport and existing provider credential resolution. Do not
 make objects public or put signed URLs in review history.
 
-Uploads are immutable. Publish the discoverable completion record only after all
-required bundle bytes have been uploaded and verified. Downloads require an exact
-handoff identifier plus expected digest and verify the complete artifact before
-import. The identifier grants no storage access. PR metadata names neither a
-private bucket/path nor a bearer credential.
+Final `<id>/transfer.tar` objects and `ready.json` completion records are immutable.
+An upload may use one private temporary object at
+`<exchange-prefix>/_staging/<256-bit-random-attempt-id>/transfer.tar` per attempt.
+The attempt ID is independent of the transfer ID; retries never reuse a staging
+key. Staging keys are never returned as transfer references, completion records,
+public links or PR metadata, and readers never import from them. Temporary staging
+objects are excluded from the final-object immutability guarantee.
+
+Capture local input once into bounded private temporary storage outside the
+Content Repository. Validate that captured file through the existing transfer
+validators and upload those same captured bytes in bounded chunks. Create the
+final transfer object through atomic server-side copy-if-absent; never substitute
+a check-then-overwrite sequence. If the destination exists or a response is lost,
+verify the complete final object's byte count and digest: matching bytes converge,
+different bytes refuse as a conflict. Verify the final remote object before
+publishing `ready.json` create-only. Incomplete attempts cannot advertise readiness.
+Both artifact kinds use this route and their existing importers.
+
+The exchange must support multipart upload and atomic conditional server-side
+copy. Unsupported operations produce a bounded, distinguishable capability error
+and leave manual transfer available; they never weaken immutability. Downloads
+require an exact handoff identifier plus expected digest and verify the complete
+artifact before import. The identifier grants no storage access. PR metadata
+names neither a private bucket/path nor a bearer credential.
 
 The deployment owner provisions exchange permissions. Contributors need only
 their permitted submission/read scope; they do not require access to the
 maintainer registry or publication credentials. Lumio does not provision IAM.
 Retention/cleanup is operator-controlled; import does not automatically delete
-the exchange copy. Loss of a transfer object after successful import must not
+the exchange copy. Temporary objects and abandoned multipart uploads can remain
+after success or interruption. Operators manage their removal with staging-prefix
+and incomplete-multipart lifecycle policies where supported; Lumio adds no cleanup
+command or automatic remote deletion. Staging must remain available long enough
+for active copies; expiration or interruption fails honestly and permits retry
+with a new attempt ID. Operation-owned local temporary files are removed when the
+operation finishes. Loss of a transfer object after successful import must not
 make admitted knowledge depend on the exchange.
 
 Network interruption permits retry with the same bundle identity. Authentication,
@@ -400,9 +435,11 @@ Exchange and Source Baseline Snapshot are captured in the owning glossary.
 [Accepted ADR-0031](../adr/0031-private-source-handoff-for-external-agents.md)
 records the exchange trade-off. This revision defines approved behavior and
 acceptance. The [implementation plan](../plans/2026-10-23-0010-external-agent-authoring-journey.md)
-freezes the proposed interface spellings, bundle schema/version and numeric bounds
-for plan review. Execution is explicitly excluded by the owner. Ariadne impact
-assessment is reconciled with separately approved
+freezes interface spellings, bundle schema/version and numeric bounds. Supervised
+isolated implementation is authorized by the owner's execution grant; integration
+and publication remain excluded. Temporary staging is an implementation detail
+of Source Exchange, with no new domain term. ADR-0031 records its approved trade-off.
+Ariadne impact is reconciled with separately approved
 [Ariadne spec0033](../../../ariadne/project/specs/2026-10-23-0033-managed-knowledge-authoring.md)
-and its proposed plan. That source owns the Core admission extension; neither
-design approval authorizes runtime implementation.
+and plan0033. J4 changes no public transfer/import interface and needs no Ariadne
+contract amendment; that source continues owning the Core admission extension.

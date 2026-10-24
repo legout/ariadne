@@ -8,25 +8,34 @@ scope. No target integration, push, PR publication, release or production access
 Harness human confirmations and fixture-remote/service selection remain required
 when their planned steps are reached; never fabricate them.
 
-Status: proposed. Plan revision: 3. Date: 2026-10-23.
+Status: approved for supervised isolated execution. Plan revision: 4.
+Date: 2026-10-24.
 
-Readiness: approved spec0010 revision 3 includes metadata-only bootstrap and the
-owner-approved §2.1 private profile contract. This revision reconciles the shared
-resolver, setup and integration seams with approved Ariadne spec0033 revision 1.
-The plan is proposed for review; execution is explicitly unauthorized.
+Scoped execution amendment — 2026-10-24: the owner approved the proposed J4 exchange
+amendment, directed reconciliation of specification0010, ADR-0031 and this plan,
+and authorized continued supervised J4 implementation and validation. Revision 4
+adds private per-attempt staging and conditional final copy, operator-managed
+residue, and an explicit service capability requirement. No dependency change,
+public interface change, target integration, push or publication is authorized.
+
+Readiness: approved spec0010 revision 4 includes metadata-only bootstrap, the
+shared §2.1 private profile contract and the scoped §6 exchange amendment.
+Ariadne spec0033 revision 1 and its public consumption contracts remain unchanged.
 
 ## Goal, authority and capture
 
 Deliver the complete BB + Pi document contribution journey in
-[specification 0010 revision 3](../specs/2026-10-23-0010-external-agent-authoring-journey.md),
+[specification 0010 revision 4](../specs/2026-10-23-0010-external-agent-authoring-journey.md),
 including independent contributor/maintainer environments and the private
 S3-compatible exchange with manual bundle fallback.
 
 The owner approved the specification and [ADR-0031](../adr/0031-private-source-handoff-for-external-agents.md)
 as written in BB thread `thr_52d92z7irz`, then requested this plan and an assessment
 of Ariadne applicability. The owner explicitly said **do not start implementation**.
-This plan is awaiting review; it grants no execution, service startup, external
-PR creation, integration, push, release or production-data access.
+That planning-only restriction is historical: the execution header and scoped
+J4 approval above now authorize isolated implementation. Service fixtures still
+require explicit parent allocation; external PR creation, target integration,
+push, release and production-data access remain excluded.
 
 Capture: Source Handoff Bundle, Source Exchange and Source Baseline Snapshot are
 recorded in [CONTEXT.md](../../CONTEXT.md); ADR-0031 is accepted with the scoped
@@ -34,7 +43,10 @@ bootstrap amendment. Spec0010 r1 was approved as written; r2 captures the subseq
 owner-selected metadata-only bootstrap; r3 captures the explicitly approved shared
 private profile contract. On 2026-10-23 the owner approved Ariadne spec0033r1,
 ADR-0026's amendment and Lumio §2.1 and requested this reconciliation, again
-excluding implementation. Plan details remain proposed.
+excluding implementation at that planning stage. The owner subsequently granted
+execution and approved the J4 amendment. Revision 4 records it in spec §6, the
+transfer transport decomposition, J4/V4 and later operator guidance; ADR-0031
+records why. Temporary staging introduces no new domain term.
 Planning Contract version 1; installed skill revision provenance unknown.
 Baseline inspected: `dcc95a9`. No tests or runtime changes were made during
 planning. Test names below are planned checks, not passing evidence.
@@ -325,13 +337,28 @@ versions keep their state. The full-source import path uses this metadata seam
 then marks availability only after retained-byte verification. Keep origin metadata
 in private provenance and maintain honest local timestamps.
 
-The private exchange stores immutable `<id>/transfer.tar` and a small `ready.json`
-completion record containing only format version, artifact kind, ID, byte count
-and transfer digest. Publish `ready.json` create-only after verifying the complete archive.
-Readers never import an upload without a matching completion record and expected
-digest. Same ID/different bytes is a conflict. A lost response is recovered by
-verifying the existing immutable object; a partial upload cannot be reported as
-ready. No cleanup command or signed-link distribution is added in this plan.
+The private exchange stores immutable final `<id>/transfer.tar` and a small
+`ready.json` completion record containing only format version, artifact kind, ID,
+byte count and transfer digest. Capture and validate local input once in bounded
+private temporary storage outside the Content Repository, then stream those same
+bytes through multipart put to a new private
+`_staging/<256-bit-random-attempt-id>/transfer.tar` key under the exchange prefix.
+Retries never reuse a staging key. These temporary objects are excluded from the
+final-object immutability guarantee and are never published as transfer references.
+Use atomic server-side copy-if-absent for the final key, verify its complete byte
+count and digest, then publish `ready.json` create-only. Readers never import
+without a matching completion record and expected digest. Same ID/different bytes
+is a conflict. A lost response is recovered by verifying the existing immutable
+final object; a partial upload cannot be reported as ready. Never fall back to
+check-then-overwrite if conditional copy is unsupported: report a safe distinct
+capability refusal and retain manual transfer.
+
+Temporary objects and abandoned multipart uploads may remain after success or
+interruption. Their lifecycle is operator-controlled; no cleanup command,
+automatic remote deletion or signed-link distribution is added. Remove
+operation-owned local temporary files when finished. The selected service must
+support multipart upload and atomic conditional server-side copy. The dedicated
+SeaweedFS 4.45 probe proves that service's compatibility only.
 
 New project configuration: `LUMIO_SOURCE_EXCHANGE` (credential-free URI),
 `LUMIO_SUBMISSION_MODE=commit|github-pr`, `LUMIO_GIT_REMOTE`, and
@@ -494,12 +521,23 @@ S3 and rejects invalid input before canonical registry mutation.
 - [ ] Implement immutable upload/download for both transfer kinds and completion
   record validation with the existing optional S3 client. Reuse J0/J3 verification; never build another
   importer. Report safe auth, missing-object, conflict and integrity errors.
-- [ ] Recover retries by checking immutable objects and publish readiness last;
-  keep canonical source/publication client configuration independent.
+- [ ] Capture and validate local bytes once, multipart-upload through a unique
+  private staging key, and atomically copy-if-absent to the final transfer key.
+  Verify the complete final object and publish readiness last. Recover retries
+  and lost responses by checking immutable final objects; refuse conflicts and
+  unsupported conditional copy without an overwrite fallback.
+- [ ] Pin conditional-copy configuration only on exchange clients and keep
+  canonical source/publication client configuration independent. Retain temporary
+  remote residue under operator lifecycle control; remove local operation-owned
+  temporary files.
 
 Files: create `source_exchange.py`; modify `cli.py`, `__init__.py`,
 `env_loader.py`; narrowly reuse S3 client construction without unrelated CLI
-refactoring. Create `packages/lumio-wiki/tests/test_source_exchange_s3_compat.py`.
+refactoring. In `private_profile.py`, configure `copy_if_not_exists: multipart`
+only for exchange clients, preserving profile endpoint/credential isolation and
+leaving artifact/publication clients unchanged. The explicit CLI route pins the
+same effective exchange behavior. No public JP contract changes. Create
+`packages/lumio-wiki/tests/test_source_exchange_s3_compat.py`.
 Depends on reviewed J3. Produces `SourceTransfer` for J5/J6. Covers AC5, AC7, AC11,
 network retry and transfer-disclosure part of AC10.
 
@@ -512,7 +550,12 @@ oracle: ready absent until all bytes verify; final digest equals fixture bytes;
 denied credentials never retrieve the object; diagnostics reveal no secret. Cover
 both artifact kinds in that transfer fixture, including refusal to import a
 metadata snapshot through the full-source importer; do not duplicate V0/V3 parsing
-cases at the transport layer.
+cases at the transport layer. Exercise a bundle larger than 5 MiB through the
+multipart streaming path, preservation of existing final bytes on conflict,
+interruption before readiness and retry, strict download verification, safe
+capability/permission errors and staging disclosure boundaries. Keep every
+existing assertion. Reuse the feasibility evidence for named-service compatibility;
+the new product behavior still receives V4 and independent review.
 Use one retained service for V4/J6 where possible, no repeated successful run.
 Execution authorization must name the fixture endpoint/service before startup;
 missing tooling or permissions is a blocker, not permission to weaken the check.
@@ -524,7 +567,10 @@ the same importer, with no dependency on exchange availability after import.
 - [ ] Add read-only Git diagnosis and journey setup composition, including required
   retention, explicit private profile creation/selection and submission mode.
   Use JP's resolver rather than a second profile parser. Exchange credentials stay
-  independently selected in the profile; native publication selection remains separate. Contributor
+  independently selected in the profile; native publication selection remains separate.
+  Explain required conditional-copy service capability and operator-managed
+  staging/incomplete-multipart lifecycle; unsupported exchange retains manual
+  transfer. Contributor
   setup succeeds without publication credentials. Never claim push permission
   merely from `ls-remote` success or invoke test pushes.
 - [ ] For a nonempty managed clone, show missing baseline metadata and guide the
@@ -554,7 +600,9 @@ the local-remote test. Final candidate review includes this boundary.
 - [ ] Update `data/skill/SKILL.md`, `data/skill/PROTOCOL.md`, `docs/quickstart.md`,
   package `README.md`, and add `docs/howto-source-handoff.md`. Teach the exact
   commands, user review, configured commit/PR action, retry checks and maintainer
-  admission. Link approved Ariadne spec/plan0033 and distinguish its separately
+  admission. Document private staging, operator-controlled remote residue and
+  required conditional-copy capability without exposing private paths in public
+  submission results. Link approved Ariadne spec/plan0033 and distinguish its separately
   delivered integrated admission from standalone Lumio; CLI configuration alone
   cannot qualify the Core journey.
 - [ ] Add `examples/external-agent-journey/README.md` with the deterministic
