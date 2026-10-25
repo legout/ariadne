@@ -1811,6 +1811,72 @@ def _write_journey_submission_env(env_path: Path, submission: dict[str, str | No
         )
 
 
+def _resolve_skill_binding(args: argparse.Namespace, *, project_dir: Path) -> dict | None:
+    """Resolve the concrete skill action read-only BEFORE preview (R2).
+
+    Binds the agent/scope selection, overwrite, the resolved destination, its
+    current state, the packaged contract identity and the concrete
+    keep/install intent, so the digest and recheck cover exactly what a
+    confirmation authorizes. No skill file is written here.
+    """
+    agent = getattr(args, "agent", None)
+    scope = getattr(args, "skill_scope", None)
+    if agent is None and scope is None:
+        return None
+    from lumio_wiki.skill import SkillError, packaged_contract_hash, skill_status
+
+    try:
+        status = skill_status(agent, scope=scope, project_dir=project_dir)
+    except SkillError as exc:
+        raise CliError(str(exc), exit_code=2, code="invalid_empty_setup") from exc
+    overwrite = bool(getattr(args, "overwrite", False))
+    intent = "install" if (status.state == "missing" or overwrite) else "keep"
+    return {
+        "agent": agent,
+        "scope": scope,
+        "overwrite": overwrite,
+        "project_dir": str(project_dir),
+        "target": str(status.target),
+        "state": status.state,
+        "intent": intent,
+        "packaged_contract": packaged_contract_hash(),
+    }
+
+
+def _execute_bound_skill_action(selection: dict | None) -> None:
+    """Execute exactly the preview-bound skill action (R2: never re-derived
+    from mutable CLI args at apply time)."""
+    if selection is None:
+        return
+    from lumio_wiki.skill import SkillError, install_skill, skill_status
+
+    agent = selection["agent"]
+    scope = selection["scope"]
+    project_dir = Path(selection["project_dir"])
+    try:
+        if selection["intent"] == "install":
+            target = install_skill(
+                agent,
+                scope=scope,
+                project_dir=project_dir,
+                overwrite=selection["overwrite"],
+            )
+            print(f"  skill install:  {target}")
+            print("  skill discovery: restart the agent or start a new session")
+        else:
+            status = skill_status(agent, scope=scope, project_dir=project_dir)
+            if status.state == "current":
+                print(f"  skill install:  CURRENT ({status.target})")
+            else:
+                print(
+                    f"  skill install:  SKIPPED ({status.state}; run "
+                    f"'lumio-wiki skill update' for this target)",
+                    file=sys.stderr,
+                )
+    except SkillError as exc:
+        print(f"  skill install:  SKIPPED ({exc})", file=sys.stderr)
+
+
 def _maybe_install_skill(args: argparse.Namespace, *, project_dir: Path) -> None:
     """Optional, explicit skill install, shared by the setup routes (J5a).
 
@@ -1818,45 +1884,41 @@ def _maybe_install_skill(args: argparse.Namespace, *, project_dir: Path) -> None
     target was requested (ADR-0017); a stale/modified installation is kept
     and reported with its explicit update path.
     """
-    agent = getattr(args, "agent", None)
-    scope = getattr(args, "skill_scope", None)
-    if agent is None and scope is None:
-        return
-    from lumio_wiki.skill import SkillError, install_skill, skill_status
-
-    try:
-        status = skill_status(agent, scope=scope, project_dir=project_dir)
-        if status.state == "current":
-            print(f"  skill install:  CURRENT ({status.target})")
-        elif status.state == "missing" or getattr(args, "overwrite", False):
-            target = install_skill(
-                agent,
-                scope=scope,
-                project_dir=project_dir,
-                overwrite=getattr(args, "overwrite", False),
-            )
-            print(f"  skill install:  {target}")
-            print("  skill discovery: restart the agent or start a new session")
-        else:
-            print(
-                f"  skill install:  SKIPPED ({status.state}; run "
-                f"'lumio-wiki skill update' for this target)",
-                file=sys.stderr,
-            )
-    except SkillError as exc:
-        print(f"  skill install:  SKIPPED ({exc})", file=sys.stderr)
+    _execute_bound_skill_action(_resolve_skill_binding(args, project_dir=project_dir))
 
 
 def _require_namespace(value: str) -> str | None:
     return None if value and value == value.strip() else "a non-empty namespace is required"
 
 
-def _empty_setup_skill_detail(args: argparse.Namespace) -> str | None:
-    agent = getattr(args, "agent", None)
-    scope = getattr(args, "skill_scope", None)
-    if agent is None and scope is None:
-        return None
-    return f"agent skill ({agent or 'shared'}/{scope or 'project'})"
+def _render_env_with_journey_settings(
+    existing_text: str | None, kb_display: Path | str, submission: dict[str, str | None]
+) -> str:
+    """Render the exact final .env content for the creation route (R4).
+
+    Pure read-only rendering with ``_upsert_env_var`` semantics; the
+    confirmed bytes are applied through the atomic-write machinery at apply
+    time, so a partial write preserves the prior file.
+    """
+    updates = [
+        (KB_PATH_ENV_VAR, str(kb_display)),
+        (SUBMISSION_MODE_ENV_VAR, submission["mode"] or "commit"),
+    ]
+    if submission["remote"] is not None:
+        updates.append((GIT_REMOTE_ENV_VAR, submission["remote"]))
+    if submission["branch"] is not None:
+        updates.append((GIT_TARGET_BRANCH_ENV_VAR, submission["branch"]))
+    lines = list(existing_text.splitlines()) if existing_text is not None else []
+    for key, value in updates:
+        found = False
+        for index, line in enumerate(lines):
+            if line.startswith(f"{key}="):
+                lines[index] = f"{key}={value}"
+                found = True
+                break
+        if not found:
+            lines.append(f"{key}={value}")
+    return "\n".join(lines) + "\n"
 
 
 def _print_empty_setup_preview(plan, *, interactive: bool) -> None:
@@ -2001,8 +2063,25 @@ def _run_empty_journey_setup(
     new_payload: str | None = None
     if not profile_path.exists():
         # Noninteractive missing files were refused at the journey gate; only
-        # the interactive wizard may propose contents (§2.1/§2.2) — the file
-        # itself is written only inside the confirmed apply.
+        # the interactive wizard may propose contents (§2.1/§2.2) — and the
+        # NEW destination itself is validated BEFORE any question or write,
+        # with the same ordering and semantics as the adopted wizard route
+        # (R1): resolved containment first, then the entry kind.
+        if Path(os.path.realpath(profile_path)).is_relative_to(facts.repository_root):
+            raise CliError(
+                "the selected private profile file must live OUTSIDE the content "
+                "repository (resolved symlinks included)",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+        if os.path.lexists(profile_path):
+            raise CliError(
+                "the selected private profile path is a symlink or not a regular "
+                "file; setup never follows or replaces it — select a new "
+                "regular file path",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
         home = Path.home()
         new_payload = _collect_profile_payload(
             profile_path,
@@ -2011,6 +2090,30 @@ def _run_empty_journey_setup(
             registry_default=home / ".lumio" / "registries" / namespace,
             store_default=home / ".lumio" / "artifacts" / namespace,
         )
+    # R2: the concrete skill action is resolved read-only BEFORE the preview.
+    skill_binding = _resolve_skill_binding(args, project_dir=project_dir)
+    # R4: the exact configuration outputs are rendered read-only BEFORE the
+    # preview; the confirmed bytes are applied atomically at apply time.
+    agents_enabled = not getattr(args, "no_agents_md", False)
+    env_path = project_dir / ".env"
+    agents_path = project_dir / "AGENTS.md"
+
+    def _render_env_bytes() -> bytes:
+        existing = env_path.read_text(encoding="utf-8") if env_path.exists() else None
+        return _render_env_with_journey_settings(existing, target, submission).encode("utf-8")
+
+    def _render_agents_bytes() -> bytes | None:
+        if not agents_enabled:
+            return None
+        existing = agents_path.read_text(encoding="utf-8") if agents_path.exists() else None
+        return _render_agents_md_section(
+            existing,
+            target,
+            publish_to=None,
+            retrieval=None,
+            source_store=None,
+        ).encode("utf-8")
+
     try:
         plan = plan_empty_setup(
             target=target,
@@ -2019,12 +2122,16 @@ def _run_empty_journey_setup(
             new_profile_payload=new_payload,
             submission=submission,
             project_dir=project_dir,
-            agents_enabled=not getattr(args, "no_agents_md", False),
-            skill_detail=_empty_setup_skill_detail(args),
+            agents_enabled=agents_enabled,
+            env_bytes=_render_env_bytes(),
+            agents_bytes=_render_agents_bytes(),
+            skill=skill_binding,
         )
     except PrivateProfileError as exc:
         raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
     except EmptySetupError as exc:
+        if as_json:
+            print(f"setup failure ({exc.code}): {exc}", file=sys.stderr)
         raise CliError(str(exc), exit_code=2, code=exc.code) from exc
     confirm = getattr(args, "confirm", None)
     if confirm is not None:
@@ -2060,28 +2167,37 @@ def _run_empty_journey_setup(
     env_path = project_dir / ".env"
 
     def _write_env() -> None:
-        _upsert_env_var(env_path, KB_PATH_ENV_VAR, str(plan.target))
+        from lumio_wiki.mutation import atomic_write_bytes
+
+        atomic_write_bytes(env_path, plan.env_bytes)
         print(f"  .env:           {env_path} ({KB_PATH_ENV_VAR}={plan.target})")
         _write_journey_submission_env(env_path, plan.submission)
 
     def _write_agents() -> None:
-        _write_agents_md_section(
-            project_dir / "AGENTS.md",
-            plan.target,
-            publish_to=None,
-            retrieval=None,
-            source_store=None,
-        )
-        print(f"  AGENTS.md:      {project_dir / 'AGENTS.md'}")
+        from lumio_wiki.mutation import atomic_write_bytes
+
+        # The update action exists only when rendered bytes were bound at
+        # plan time (agents_enabled); apply writes exactly those bytes.
+        if plan.agents_bytes is not None:
+            atomic_write_bytes(agents_path, plan.agents_bytes)
+        print(f"  AGENTS.md:      {agents_path}")
 
     def _install_skill() -> None:
-        _maybe_install_skill(args, project_dir=project_dir)
+        _execute_bound_skill_action(plan.skill)
 
     try:
         # The creation-only --json envelope stays the sole stdout content:
         # the shared human-progress prints are captured here, not removed.
         with redirect_stdout(io.StringIO()) if as_json else nullcontext():
-            recheck_plan(plan)
+            # R2/R4: recheck rebuilds the plan from live facts — freshly
+            # rendered configuration bytes and a freshly resolved skill
+            # binding — so drift between preview and apply refuses.
+            recheck_plan(
+                plan,
+                env_bytes=_render_env_bytes(),
+                agents_bytes=_render_agents_bytes(),
+                skill=_resolve_skill_binding(args, project_dir=project_dir),
+            )
             written = apply_plan(
                 plan,
                 write_env=_write_env,
@@ -2089,6 +2205,10 @@ def _run_empty_journey_setup(
                 install_skill=_install_skill,
             )
     except EmptySetupError as exc:
+        # R6: headless agents still see the safe local residue/recovery
+        # details next to the frozen JSON error envelope.
+        if as_json:
+            print(f"setup failure ({exc.code}): {exc}", file=sys.stderr)
         raise CliError(str(exc), exit_code=2, code=exc.code) from exc
     if as_json:
         print(json.dumps(build_envelope(plan, phase="applied"), sort_keys=True))
@@ -2640,18 +2760,18 @@ def _agents_md_s3_config(
     )
 
 
-def _write_agents_md_section(
-    agents_md: Path,
+def _render_agents_md_section(
+    existing_text: str | None,
     kb_path: Path | str,
     *,
     publish_to: str | None = None,
     retrieval: str | None = None,
     source_store: str | None = None,
-) -> None:
-    """Write or update the Lumio KB section in an AGENTS.md file.
+) -> str:
+    """Render the exact final AGENTS.md content (pure read-only merge, R4).
 
-    If the file already contains the marker comment, the existing section is
-    replaced in place. Otherwise the section is appended.
+    Same semantics as the historical writer: an existing marked section is
+    replaced in place; otherwise the section is appended (or created).
     """
     section = (
         _AGENTS_MD_MARKER
@@ -2661,40 +2781,57 @@ def _write_agents_md_section(
             s3_config=_agents_md_s3_config(publish_to, retrieval, source_store),
         )
     )
+    if existing_text is not None and _AGENTS_MD_MARKER in existing_text:
+        # Replace the existing section: the marker through the next `##`
+        # heading AFTER the section's own heading. The section the writer
+        # emits starts with its own `## Lumio Knowledge Base` heading, so
+        # the first `##` line after the marker belongs to the section
+        # itself and must not terminate the replaced span (otherwise each
+        # update prepends a fresh copy and duplicates the section).
+        lines = existing_text.split("\n")
+        start = None
+        end = len(lines)
+        own_heading_seen = False
+        for i, line in enumerate(lines):
+            if _AGENTS_MD_MARKER in line:
+                start = i
+                continue
+            if start is None:
+                continue
+            if line.startswith("## "):
+                if not own_heading_seen:
+                    own_heading_seen = True
+                    continue
+                end = i
+                break
+        if start is not None:
+            lines = lines[:start] + section.split("\n") + lines[end:]
+            return "\n".join(lines)
+    if existing_text is None:
+        return section + "\n"
+    return existing_text.rstrip() + "\n\n" + section + "\n"
 
-    if agents_md.exists():
-        content = agents_md.read_text(encoding="utf-8")
-        if _AGENTS_MD_MARKER in content:
-            # Replace the existing section: the marker through the next `##`
-            # heading AFTER the section's own heading. The section the writer
-            # emits starts with its own `## Lumio Knowledge Base` heading, so
-            # the first `##` line after the marker belongs to the section
-            # itself and must not terminate the replaced span (otherwise each
-            # update prepends a fresh copy and duplicates the section).
-            lines = content.split("\n")
-            start = None
-            end = len(lines)
-            own_heading_seen = False
-            for i, line in enumerate(lines):
-                if _AGENTS_MD_MARKER in line:
-                    start = i
-                    continue
-                if start is None:
-                    continue
-                if line.startswith("## "):
-                    if not own_heading_seen:
-                        own_heading_seen = True
-                        continue
-                    end = i
-                    break
-            if start is not None:
-                lines = lines[:start] + section.split("\n") + lines[end:]
-                agents_md.write_text("\n".join(lines), encoding="utf-8")
-                return
-        # Append
-        agents_md.write_text(content.rstrip() + "\n\n" + section + "\n", encoding="utf-8")
-    else:
-        agents_md.write_text(section + "\n", encoding="utf-8")
+
+def _write_agents_md_section(
+    agents_md: Path,
+    kb_path: Path | str,
+    *,
+    publish_to: str | None = None,
+    retrieval: str | None = None,
+    source_store: str | None = None,
+) -> None:
+    """Write or update the Lumio KB section in an AGENTS.md file."""
+    existing = agents_md.read_text(encoding="utf-8") if agents_md.exists() else None
+    agents_md.write_text(
+        _render_agents_md_section(
+            existing,
+            kb_path,
+            publish_to=publish_to,
+            retrieval=retrieval,
+            source_store=source_store,
+        ),
+        encoding="utf-8",
+    )
 
 
 def _upsert_env_var(env_path: Path, key: str, value: str) -> None:

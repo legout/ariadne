@@ -755,8 +755,10 @@ def test_empty_setup_preserves_existing_configuration_on_write_failure(
             self._handle = handle
 
         def write(self, data):
-            blob = bytes(data) if isinstance(data, (bytes, bytearray, memoryview)) else data.encode(
-                "utf-8", "replace"
+            blob = (
+                bytes(data)
+                if isinstance(data, (bytes, bytearray, memoryview))
+                else data.encode("utf-8", "replace")
             )
             if unique_marker in blob:
                 fired.append(True)

@@ -29,6 +29,7 @@ from lumio_wiki.private_profile import (
 from lumio_wiki.source_references import (
     SOURCE_REFERENCE_MANIFEST_BASENAME,
     SOURCE_REFERENCE_MANIFEST_VERSION,
+    SourceReferenceError,
     SourceReferenceManifest,
     parse_source_reference_manifest,
     serialize_source_reference_manifest,
@@ -77,7 +78,9 @@ class EmptySetupPlan(msgspec.Struct, frozen=True):
     submission: dict  # msgspec forbids generic dict params; plain mapping
     project_dir: Path
     agents_enabled: bool
-    skill_detail: str | None
+    skill: dict | None
+    env_bytes: bytes
+    agents_bytes: bytes | None
     facts: AuthoringFacts
     actions: list[SetupAction]
     manifest_bytes: bytes
@@ -223,11 +226,23 @@ def _target_state(
         return "empty", entries, None
     manifest: SourceReferenceManifest | None = None
     if (target / SOURCE_REFERENCE_MANIFEST_BASENAME).exists():
-        # A present-but-malformed manifest is surfaced by the strict parser:
-        # existing manifests are never reinterpreted as an empty KB.
-        manifest = parse_source_reference_manifest(
-            (target / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
-        )
+        # A present-but-malformed manifest becomes a bounded setup refusal
+        # with recovery guidance (R5): existing manifests are never
+        # reinterpreted as an empty KB, and parser failures never escape the
+        # public CLI.
+        try:
+            manifest = parse_source_reference_manifest(
+                (target / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+            )
+        except (SourceReferenceError, OSError) as exc:
+            raise EmptySetupError(
+                f"the creation target {target} carries a malformed or unreadable "
+                f"Source Reference Manifest ({exc}); recover it manually or "
+                "adopt it through the explicit Git-authoring adoption "
+                "contract, or choose a different authoring location — setup "
+                "never reinterprets or overwrites it (spec 0010 §2.2)",
+                code="adoption_required",
+            ) from exc
     return "nonempty", entries, manifest
 
 
@@ -289,7 +304,9 @@ def plan_empty_setup(
     submission: dict,
     project_dir: Path,
     agents_enabled: bool,
-    skill_detail: str | None,
+    env_bytes: bytes,
+    agents_bytes: bytes | None,
+    skill: dict | None,
 ) -> EmptySetupPlan:
     """Validate every input and build the one recheckable action list.
 
@@ -306,6 +323,32 @@ def plan_empty_setup(
     facts = discover_authoring_location(target)
     state, entries, manifest = _target_state(target, facts.repository_root)
     _refuse_ineligible(state, entries, manifest, target=target, namespace=namespace)
+    # R3: selected project guidance/skill destinations must not land inside
+    # the Knowledge Base itself — their Markdown would break KB validation.
+    # Refused during planning with actionable guidance; the settled page
+    # scanner and the requested actions stay untouched.
+    guidance: list[tuple[str, Path]] = []
+    if agents_enabled:
+        guidance.append(("the setup-generated AGENTS.md", project_dir / "AGENTS.md"))
+    if skill is not None:
+        guidance.append(("the selected agent skill destination", Path(skill["target"])))
+    for label, destination in guidance:
+        if destination == target or destination.is_relative_to(target):
+            if destination.name == "AGENTS.md":
+                raise EmptySetupError(
+                    f"{label} at {destination} would land inside the selected "
+                    f"Knowledge Base {target} and break its own validation "
+                    "(spec 0010 §2.2): run setup from a project directory "
+                    "outside the Knowledge Base, or pass --no-agents-md"
+                )
+            raise EmptySetupError(
+                f"{label} at {destination} would land inside the selected "
+                f"Knowledge Base {target} and its Markdown would break KB "
+                "validation (spec 0010 §2.2): choose a project directory "
+                "outside the Knowledge Base, a user-level skill target "
+                "(--skill-scope user or an --agent home installation), or "
+                "drop the skill selection"
+            )
     if new_profile_payload is not None:
         # Interactive collection produced the declaration as text: validate
         # it in memory — the file itself is written only inside apply.
@@ -370,14 +413,26 @@ def plan_empty_setup(
         )
     submission_detail = "/".join(str(submission.get(key)) for key in ("mode", "remote", "branch"))
     actions.append(
-        SetupAction("update-env", str(env_path), None, f"journey settings ({submission_detail})")
-    )
-    if agents_enabled:
-        actions.append(
-            SetupAction("update-agents-md", str(agents_path), None, "setup guidance section")
+        SetupAction(
+            "update-env",
+            str(env_path),
+            hashlib.sha256(env_bytes).hexdigest(),
+            f"journey settings ({submission_detail})",
         )
-    if skill_detail is not None:
-        actions.append(SetupAction("install-skill", str(project_dir), None, skill_detail))
+    )
+    if agents_enabled and agents_bytes is not None:
+        actions.append(
+            SetupAction(
+                "update-agents-md",
+                str(agents_path),
+                hashlib.sha256(agents_bytes).hexdigest(),
+                "setup guidance section",
+            )
+        )
+    if skill is not None:
+        actions.append(
+            SetupAction("install-skill", skill["target"], None, f"{skill['intent']} skill bundle")
+        )
     fingerprints = {
         "target_state": state,
         "target_entries": entries,
@@ -385,6 +440,14 @@ def plan_empty_setup(
         "env": _file_digest(env_path) or "absent",
         "agents_md": _file_digest(agents_path) or "absent",
     }
+    skill_fingerprint: dict | None = None
+    if skill is not None:
+        from lumio_wiki.skill import SKILL_FILENAME
+
+        skill_fingerprint = {
+            **skill,
+            "skill_file": _file_digest(Path(skill["target"]) / SKILL_FILENAME) or "absent",
+        }
     digest_payload = {
         "schema_version": EMPTY_SETUP_SCHEMA_VERSION,
         "operation": "setup_empty",
@@ -406,6 +469,7 @@ def plan_empty_setup(
         ],
         "private_declaration": _declaration_view(profile),
         "input_fingerprints": fingerprints,
+        "skill": skill_fingerprint,
     }
     next_actions = [
         "stage and commit the created files with native Git — setup never "
@@ -422,7 +486,9 @@ def plan_empty_setup(
         submission=dict(submission),
         project_dir=project_dir,
         agents_enabled=agents_enabled,
-        skill_detail=skill_detail,
+        skill=dict(skill) if skill is not None else None,
+        env_bytes=env_bytes,
+        agents_bytes=agents_bytes,
         facts=facts,
         actions=actions,
         manifest_bytes=manifest_bytes,
@@ -431,12 +497,18 @@ def plan_empty_setup(
     )
 
 
-def recheck_plan(plan: EmptySetupPlan) -> None:
+def recheck_plan(
+    plan: EmptySetupPlan,
+    *,
+    env_bytes: bytes,
+    agents_bytes: bytes | None,
+    skill: dict | None,
+) -> None:
     """Rebuild the plan from fresh facts and refuse drift before apply.
 
-    Changed branch, target occupancy, profile bytes or any other previewed
-    input require a new preview and confirmation — never silent substitution
-    (spec 0010 §2.2).
+    Changed branch, target occupancy, profile bytes, rendered configuration
+    bytes or skill destination state each require a new preview and
+    confirmation — never silent substitution (spec 0010 §2.2, R2/R4).
     """
     try:
         fresh = plan_empty_setup(
@@ -447,7 +519,9 @@ def recheck_plan(plan: EmptySetupPlan) -> None:
             submission=plan.submission,
             project_dir=plan.project_dir,
             agents_enabled=plan.agents_enabled,
-            skill_detail=plan.skill_detail,
+            env_bytes=env_bytes,
+            agents_bytes=agents_bytes,
+            skill=skill,
         )
     except (EmptySetupError, PrivateProfileError) as exc:
         raise EmptySetupError(
@@ -481,8 +555,10 @@ def apply_plan(
     from lumio_wiki.knowledge_base import seeded_control_file, write_control_file
 
     written: list[str] = []
+    current: SetupAction | None = None
     try:
         for action in plan.actions:
+            current = action
             path = Path(action.path)
             if action.kind == "create-directory":
                 path.mkdir(parents=True, exist_ok=True)
@@ -528,13 +604,18 @@ def apply_plan(
                 # through the shared setup mechanism.
                 install_skill()
     except OSError as exc:
+        failing = (
+            f"{current.kind} at {current.path}" if current is not None else "an unknown action"
+        )
         raise EmptySetupError(
             f"the empty setup stopped on an I/O failure "
-            f"({exc.strerror or exc}); operation-owned files already "
-            f"written: {', '.join(written) or 'none'}; no pre-existing "
-            "operator content was changed — resolve the failure and re-run "
-            "the preview (a retry never reinitializes a created Knowledge "
-            "Base) (spec 0010 §2.2)",
+            f"({exc.strerror or exc}) while performing {failing}; "
+            f"operation-owned paths already written: {', '.join(written) or 'none'}; "
+            "the failing path may hold a PARTIAL file — inspect it; "
+            "pre-existing operator content outside these action paths was "
+            "not modified; resolve the failure and re-run the preview (a "
+            "retry never reinitializes a created Knowledge Base) "
+            "(spec 0010 §2.2)",
             code="setup_incomplete",
         ) from exc
     return written
