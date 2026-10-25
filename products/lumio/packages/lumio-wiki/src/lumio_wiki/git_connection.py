@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import subprocess
 from pathlib import Path
 from typing import Final
@@ -133,30 +132,27 @@ def _bounded(text: str) -> str:
     return text.strip()[:_MESSAGE_LIMIT]
 
 
-def _stderr_summary(result: subprocess.CompletedProcess[str] | None) -> str:
-    """One bounded, sanitized stderr line from a failed Git command."""
-    if result is None:
-        return "the Git executable did not answer"
-    lines = [line.strip() for line in (result.stderr or "").splitlines() if line.strip()]
-    detail = lines[-1] if lines else f"git exited with code {result.returncode}"
-    return _sanitize_credentials(detail)[:_MESSAGE_LIMIT]
+def _ssh_batch_shell_command(shell_command: str) -> str | None:
+    """Force BatchMode on one shell-form SSH command without changing it.
 
-
-def _ssh_batch_command(command: str) -> str | None:
-    """Force BatchMode on one SSH command without discarding its selection.
-
-    OpenSSH keeps the FIRST value for an option, so ``BatchMode=yes`` is
-    inserted immediately after the program token, ahead of the operator's own
-    options (identities, agents and custom flags are preserved). Returns
-    ``None`` when the command cannot be split safely.
+    ``GIT_SSH_COMMAND``/``core.sshCommand`` are interpreted by the shell
+    (git(1)), so the command string is preserved verbatim apart from
+    inserting ``-oBatchMode=yes`` immediately after the program token —
+    OpenSSH keeps the first obtained value, so the option also wins over a
+    later conflicting one, while quoting and shell expansion stay intact.
+    Only a plain ``ssh``/``…/ssh`` program token is recognized; anything
+    else (quoted programs, env prefixes, wrappers) returns ``None`` so the
+    caller refuses instead of executing a changed command (review F4).
     """
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
+    parts = shell_command.strip().split(None, 1)
+    if not parts:
         return None
-    if not tokens:
+    program = parts[0]
+    if Path(program).name != "ssh":
         return None
-    return shlex.join([tokens[0], _SSH_BATCH_OPTION, *tokens[1:]])
+    if len(parts) == 1:
+        return f"{program} {_SSH_BATCH_OPTION}"
+    return f"{program} {_SSH_BATCH_OPTION} {parts[1]}"
 
 
 def _base_probe_env() -> dict[str, str]:
@@ -206,28 +202,31 @@ def _probe(
 
 
 def _resolve_ssh_command(project: Path | None, env: dict[str, str]) -> str | None:
-    """Return the effective SSH command, forced noninteractive (review F4).
+    """Return the effective noninteractive SSH command, or ``None`` when the
+    operator's selection cannot be made safely unattended (review F4).
 
-    Resolution follows Git's documented precedence — ``GIT_SSH_COMMAND``
-    overrides ``core.sshCommand`` overrides ``GIT_SSH`` — so an operator's
-    selected command is extended with BatchMode, never discarded. Without a
-    configured command, the ordinary ``ssh`` transport is used. ``None``
-    means the configured command cannot be made safely unattended.
+    Git's documented precedence and forms are preserved (git(1)):
+    ``GIT_SSH_COMMAND`` (shell-interpreted) overrides ``core.sshCommand``
+    (same shell form) overrides ``GIT_SSH`` — a program path only, which may
+    even contain spaces, so no OpenSSH option can be added without changing
+    the documented form; the probe refuses that selection instead.
     """
-    command = env.get("GIT_SSH_COMMAND")
-    if not command and project is not None:
+    shell_command = env.get("GIT_SSH_COMMAND")
+    if not shell_command and project is not None:
         result, _error = _probe(
             _git_argv(project, "config", "--get", "core.sshcommand"),
             timeout=_LOCAL_TIMEOUT_SECONDS,
             env=env,
         )
         if result is not None and result.returncode == 0:
-            command = (result.stdout or "").strip()
-    if not command:
-        command = env.get("GIT_SSH")
-    if not command:
-        return f"ssh {_SSH_BATCH_OPTION}"
-    return _ssh_batch_command(command)
+            configured = (result.stdout or "").strip()
+            if configured:
+                shell_command = configured
+    if shell_command:
+        return _ssh_batch_shell_command(shell_command)
+    if env.get("GIT_SSH"):
+        return None
+    return f"ssh {_SSH_BATCH_OPTION}"
 
 
 def _git_argv(project: Path | None, *args: str) -> list[str]:
@@ -319,8 +318,9 @@ def _probe_remote(
     if ssh_unavailable:
         code = "probe_unavailable"
         message = (
-            "the configured SSH command cannot be made noninteractive for an "
-            "unattended probe; check GIT_SSH_COMMAND/core.sshCommand"
+            "the configured SSH selection cannot be made noninteractive for "
+            "an unattended probe without changing it; check "
+            "GIT_SSH_COMMAND/core.sshCommand/GIT_SSH"
         )
         blockers.append(f"remote read probe unavailable ({code}): {message}")
         guidance.append(_CREDENTIAL_GUIDANCE)
@@ -354,14 +354,24 @@ def _probe_remote(
         code = "timeout"
         message = f"git ls-remote did not answer within {int(_REMOTE_TIMEOUT_SECONDS)}s"
     else:
+        # Classification reads Git's stderr internally; the emitted message
+        # is FIXED per category (review F3) — arbitrary stderr never leaves
+        # this module. The safe URL projection is the only variable part.
         stderr = "" if ls_result is None else (ls_result.stderr or "")
         lowered = stderr.lower()
-        code = (
-            "authentication_failed"
-            if any(marker in lowered for marker in _AUTH_FAILURE_MARKERS)
-            else "probe_failed"
-        )
-        message = _stderr_summary(ls_result)
+        if any(marker in lowered for marker in _AUTH_FAILURE_MARKERS):
+            code = "authentication_failed"
+            message = (
+                f"authentication failed for remote {name!r} at {url}"
+                " (Git diagnostic details: [redacted])"
+            )
+        else:
+            code = "probe_failed"
+            exit_status = ls_result.returncode if ls_result is not None else -1
+            message = (
+                "the read-only remote probe failed "
+                f"(git exit code {exit_status}) for remote {name!r} at {url}"
+            )
     blockers.append(f"remote read probe failed ({code}): {message}")
     guidance.append(_CREDENTIAL_GUIDANCE)
     return GitRemoteStatus(

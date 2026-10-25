@@ -851,3 +851,202 @@ def test_journey_checks_selected_content_repository(tmp_path: Path, monkeypatch,
     # No remote/registry/store mutation happened anywhere.
     assert _snapshot(content) == content_before
     assert (private / "registry").exists() == registry_existed
+
+
+# ---------------------------------------------------------------------------
+# Extra repair regressions (delta-review findings F1/F3/F4).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("case", ["noninteractive-unset", "interactive-pr-explicit"])
+def test_journey_target_requires_native_fact(case, tmp_path: Path, monkeypatch, capsys):
+    """F1: without a native selected-remote default-target fact, a local
+    commit leaves the target unset and an interactively selected PR mode
+    requires an explicit target — a conventional branch name is never
+    manufactured as a discovered fact."""
+    project = _init_repo(tmp_path / "project")
+    real_base = "release" if case.startswith("noninteractive") else "master"
+    _git(project, "symbolic-ref", "HEAD", f"refs/heads/{real_base}")
+    kb = _adopted_kb(project)
+    _commit(project, "base")
+    if case == "interactive-pr-explicit":
+        bare = tmp_path / "origin.git"
+        bare.mkdir()
+        _git(bare, "init", "-q", "--bare")
+        _git(project, "remote", "add", "origin", str(bare))
+    private = tmp_path / "private"
+    profile = _write_profile(
+        private / "profile.json", namespace=NAMESPACE, registry=private / "registry"
+    )
+    monkeypatch.chdir(project)
+    _clean_lumio_env(monkeypatch)
+
+    # Fixture proof, independent of the implementation: no upstream tracking
+    # and no remote default-target refs exist anywhere in this repository.
+    assert not (project / ".git" / "refs" / "remotes").exists()
+    assert not (project / ".git" / "packed-refs").exists()
+    upstream_probe = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(project),
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+        capture_output=True,
+    )
+    assert upstream_probe.returncode != 0
+
+    if case == "noninteractive-unset":
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        before = _content_snapshot(project)
+        rc = cli.main(["setup", str(kb), "--journey", "--private-profile", str(profile)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        after = _content_snapshot(project)
+        assert set(after) - set(before) == {".env", "AGENTS.md"}
+        # Local commit without a native fact: the target stays unset — no
+        # conventional branch name is recorded as if discovered.
+        assert _env_value(project / ".env", GIT_TARGET_BRANCH_ENV_VAR) is None
+        assert GIT_TARGET_BRANCH_ENV_VAR in out
+    else:
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        # PR mode selected interactively on a previously unconfigured project;
+        # Enter on the target question cannot substitute an explicit target
+        # (bounded retries, then refusal before any write).
+        answers = iter(["p", "", "", "", ""])
+        monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+        before = _content_snapshot(project)
+        rc = cli.main(["setup", str(kb), "--journey", "--private-profile", str(profile)])
+        assert rc == 2
+        assert _content_snapshot(project) == before
+        assert not (project / ".env").exists()
+        assert not (project / "AGENTS.md").exists()
+
+
+def test_git_check_omits_non_url_diagnostics(tmp_path: Path, monkeypatch, capsys):
+    """F3: non-URL private diagnostic text from a failed probe never reaches
+    any rendering; the emitted failure message is FIXED per category and
+    stable across different diagnostics of that same category."""
+    from lumio_wiki import git_connection
+
+    project = _init_repo(tmp_path / "project")
+    _git(project, "remote", "add", "origin", str(tmp_path / "origin.git"))
+    real_run = subprocess.run
+    stderr_cycle = iter(
+        [
+            "git@example.invalid: PERMISSION DENIED (private diagnostic: SECRETKEYFILE)",
+            "git@example.invalid: Permission denied (other note PRIVATESENTINEL2)",
+            "fatal: Could not read from remote repository (SECRETKEYFILE)",
+        ]
+    )
+
+    def failing_ls_remote(argv, **kwargs):
+        if "ls-remote" in argv:
+            return subprocess.CompletedProcess(argv, 128, stdout="", stderr=next(stderr_cycle))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(git_connection.subprocess, "run", failing_ls_remote)
+    first = check_git_connection(project)
+    second = check_git_connection(project)
+
+    # Meaningful classification is preserved ...
+    assert first.remote.failure_code == "authentication_failed"
+    assert second.remote.failure_code == "authentication_failed"
+    # ... but arbitrary stderr is never emitted: both sentinels are absent
+    # from the whole machine report, and the two diagnostics of one category
+    # share ONE fixed message.
+    for report in (first, second):
+        rendered = json.dumps(msgspec.to_builtins(report))
+        assert "SECRETKEYFILE" not in rendered
+        assert "PRIVATESENTINEL2" not in rendered
+        assert report.remote.failure_message is not None
+    assert first.remote.failure_message == second.remote.failure_message
+    for blocker in first.blockers + tuple(second.blockers):
+        assert "SECRETKEYFILE" not in blocker
+        assert "PRIVATESENTINEL2" not in blocker
+    # The ordinary CLI human rendering uses the same fixed safe boundary.
+    assert cli.main(["git-check", str(project)]) == 0
+    human_out = capsys.readouterr().out
+    assert "SECRETKEYFILE" not in human_out
+    assert "PRIVATESENTINEL2" not in human_out
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "env-shell-homedir",
+        "core-sshcommand-homedir",
+        "executable-path-space",
+        "env-prefix-wrapper",
+    ],
+)
+def test_git_check_preserves_selected_ssh_semantics(case, tmp_path: Path, monkeypatch):
+    """F4: Git's documented distinction is preserved. Shell-interpreted
+    GIT_SSH_COMMAND/core.sshCommand keep their exact string (quoting and
+    $HOME expansion intact) while gaining BatchMode after the ssh program
+    token; an executable-path GIT_SSH is never split or rewritten; env
+    prefixes and wrappers refuse with bounded unavailability instead of
+    executing a changed command."""
+    from lumio_wiki import git_connection
+
+    operator_shell_command = 'ssh -i "$HOME/.ssh/synthetic-key"'
+    expected_effective = 'ssh -oBatchMode=yes -i "$HOME/.ssh/synthetic-key"'
+    project = _init_repo(tmp_path / "project")
+    _git(project, "remote", "add", "origin", "ssh://git@example.invalid/j5/repo.git")
+    for variable in ("GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS", "SSH_ASKPASS"):
+        monkeypatch.delenv(variable, raising=False)
+    if case == "env-shell-homedir":
+        monkeypatch.setenv("GIT_SSH_COMMAND", operator_shell_command)
+    elif case == "core-sshcommand-homedir":
+        _git(project, "config", "core.sshCommand", operator_shell_command)
+    elif case == "executable-path-space":
+        monkeypatch.setenv("GIT_SSH", "/synthetic bin/ssh-wrapper")
+    else:
+        monkeypatch.setenv(
+            "GIT_SSH_COMMAND", "env LD_LIBRARY_PATH=/opt/priv ssh -i /tmp/synthetic-key"
+        )
+
+    real_run = subprocess.run
+    calls: list[tuple[list[str], dict]] = []
+
+    def observing(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        if "ls-remote" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(git_connection.subprocess, "run", observing)
+    report = check_git_connection(project)
+    ls_remote_calls = [entry for entry in calls if "ls-remote" in entry[0]]
+    get_url_envs = [kwargs.get("env") or {} for argv, kwargs in calls if "get-url" in argv]
+
+    if case in ("env-shell-homedir", "core-sshcommand-homedir"):
+        assert report.remote.read == "success"
+        assert len(ls_remote_calls) == 1
+        _argv, kwargs = ls_remote_calls[0]
+        assert kwargs.get("stdin") is subprocess.DEVNULL
+        # Authored from Git's documented shell form: the operator string is
+        # preserved verbatim (quoting and $HOME expansion intact) and gains
+        # BatchMode immediately after the ssh program token.
+        assert kwargs["env"]["GIT_SSH_COMMAND"] == expected_effective
+    else:
+        # The executable-path selection and the unrecognized wrapper/prefix
+        # refuse with bounded unavailability BEFORE executing any changed
+        # command, keeping the operator's selection untouched.
+        assert ls_remote_calls == []
+        assert report.remote.read == "failed"
+        assert report.remote.failure_code == "probe_unavailable"
+        assert get_url_envs, "the remote URL lookup must still run locally"
+        for env in get_url_envs:
+            if case == "executable-path-space":
+                assert env.get("GIT_SSH") == "/synthetic bin/ssh-wrapper"
+                assert "GIT_SSH_COMMAND" not in env
+            else:
+                assert (
+                    env["GIT_SSH_COMMAND"]
+                    == "env LD_LIBRARY_PATH=/opt/priv ssh -i /tmp/synthetic-key"
+                )

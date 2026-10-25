@@ -1294,10 +1294,12 @@ def _resolve_journey_profile(args: argparse.Namespace, *, kb_path: Path, interac
     """Load the explicitly selected private profile — or create it only after
     an interactive preview and confirmation (spec 0010 §2.1, plan 0010 J5).
 
-    Noninteractive setup never invents a profile. The created file is this
-    flow's own residue: an invalid selection is removed again so a refusal
-    leaves nothing behind. The profile path itself is never persisted in
-    tracked content.
+    Returns ``(profile, created_path)``; ``created_path`` names the file this
+    flow created (``None`` for an existing selection) so a later required-
+    selection refusal can remove exactly the operation-owned creation.
+    Noninteractive setup never invents a profile; an invalid selection is
+    removed again so a refusal leaves nothing behind. The profile path
+    itself is never persisted in tracked content.
     """
     from lumio_wiki.private_profile import PrivateProfileError, load_private_profile
     from lumio_wiki.source_references import load_source_reference_manifest
@@ -1305,7 +1307,7 @@ def _resolve_journey_profile(args: argparse.Namespace, *, kb_path: Path, interac
     profile_path: Path = args.private_profile
     if profile_path.exists():
         try:
-            return load_private_profile(profile_path, kb_root=kb_path)
+            return load_private_profile(profile_path, kb_root=kb_path), None
         except PrivateProfileError as exc:
             raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
     # The canonical destination is validated BEFORE anything is created
@@ -1380,7 +1382,7 @@ def _resolve_journey_profile(args: argparse.Namespace, *, kb_path: Path, interac
         choices={"y": "y", "yes": "y", "n": "n", "no": "n"},
     )
     if answer != "y":
-        return None
+        return None, None
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         descriptor = os.open(
@@ -1399,7 +1401,7 @@ def _resolve_journey_profile(args: argparse.Namespace, *, kb_path: Path, interac
         handle.write(preview + "\n")
     print(f"  private profile: {profile_path}")
     try:
-        return load_private_profile(profile_path, kb_root=kb_path)
+        return load_private_profile(profile_path, kb_root=kb_path), profile_path
     except PrivateProfileError as exc:
         with suppress(OSError):
             profile_path.unlink()
@@ -1466,6 +1468,35 @@ def _journey_git_facts(
     return repo_root, remotes, upstream
 
 
+def _selected_remote_target_fact(
+    repo_root: Path | None,
+    remotes: list[str],
+    upstream: tuple[str, str] | None,
+    remote_name: str | None,
+) -> str | None:
+    """A native default-target fact about the SELECTED remote, or ``None``.
+
+    The current branch's upstream counts only when it tracks the selected
+    remote; otherwise the remote's own HEAD symbolic ref (present after a
+    normal clone) is that remote's default target. An upstream belonging to
+    a different remote is not a fact about the selected one, and a
+    conventional branch name is never manufactured as a discovered fact
+    (review F1).
+    """
+    if repo_root is None or remote_name is None or remote_name not in remotes:
+        return None
+    if upstream is not None and upstream[0] == remote_name:
+        return upstream[1]
+    symbolic = _git_read_lines(
+        repo_root, "symbolic-ref", "--quiet", "--short", f"refs/remotes/{remote_name}/HEAD"
+    )
+    prefix = f"{remote_name}/"
+    for line in symbolic:
+        if line.startswith(prefix) and len(line) > len(prefix):
+            return line[len(prefix) :]
+    return None
+
+
 def _precheck_journey_submission(*, interactive: bool) -> dict[str, str]:
     """Refuse unresolved REQUIRED selections before any journey write.
 
@@ -1517,11 +1548,10 @@ def _journey_submission_settings(
 
     Valid existing settings (exported process values over the project .env)
     are preserved noninteractively and become the interactive Enter defaults.
-    Unresolved optional selections use only unambiguous native facts — a
-    configured 'origin', the sole configured remote, or the current branch's
-    upstream tracking target (falling back to the conventional 'main');
-    remote/target are honestly left unrecorded for local-commit setups when
-    no native fact applies.
+    A target comes only from an actual selected-remote tracking/default-target
+    fact; without one it stays unset for local commits, and PR mode requires
+    an explicit target — a conventional branch name is never recorded as a
+    discovered fact (review F1).
     """
     existing = load_project_config()
     overrides = required or {}
@@ -1534,7 +1564,7 @@ def _journey_submission_settings(
     branch = _valid_journey_word(existing.get(GIT_TARGET_BRANCH_ENV_VAR)) or _valid_journey_word(
         overrides.get(GIT_TARGET_BRANCH_ENV_VAR)
     )
-    _repo_root, remotes, upstream = _journey_git_facts(kb_path)
+    repo_root, remotes, upstream = _journey_git_facts(kb_path)
     default_remote = None
     if "origin" in remotes:
         default_remote = "origin"
@@ -1542,7 +1572,6 @@ def _journey_submission_settings(
         default_remote = remotes[0]
     elif upstream is not None and upstream[0] in remotes:
         default_remote = upstream[0]
-    default_branch = upstream[1] if upstream is not None else "main"
     if interactive:
         mode = (
             _wizard_ask(
@@ -1563,15 +1592,37 @@ def _journey_submission_settings(
             default=remote or default_remote or "origin",
             validate=_require_journey_word,
         )
-        branch = _wizard_ask(
-            f"Git target branch [{branch or default_branch}]: ",
-            default=branch or default_branch,
-            validate=_require_journey_word,
-        )
     else:
         mode = mode or "commit"
         remote = remote or default_remote
-        branch = branch or default_branch
+    target_fact = _selected_remote_target_fact(repo_root, remotes, upstream, remote)
+    target_default = branch or target_fact
+    if interactive:
+        if mode == "github-pr":
+            # PR mode requires an explicit target: without a native fact the
+            # question offers no default, so Enter cannot manufacture one.
+            branch = _wizard_ask(
+                (
+                    f"Git target branch [{target_default}]: "
+                    if target_default is not None
+                    else "Git target branch (required; no native default-target fact detected): "
+                ),
+                default=target_default,
+                validate=_require_journey_word,
+            )
+        else:
+            conventional = (
+                " (conventional; no native default-target fact detected)"
+                if target_default is None
+                else ""
+            )
+            branch = _wizard_ask(
+                f"Git target branch [{target_default or 'main'}]{conventional}: ",
+                default=target_default if target_default is not None else "main",
+                validate=_require_journey_word,
+            )
+    else:
+        branch = target_default
     if mode == "github-pr" and (remote is None or branch is None):
         raise CliError(
             "LUMIO_SUBMISSION_MODE=github-pr requires an explicit Git remote and "
@@ -1961,7 +2012,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         journey_kb = kb_path
         journey_interactive = sys.stdin.isatty() and sys.stdout.isatty()
         journey_required = _precheck_journey_submission(interactive=journey_interactive)
-        journey_profile = _resolve_journey_profile(
+        journey_profile, journey_created_path = _resolve_journey_profile(
             args,
             kb_path=journey_kb,
             interactive=journey_interactive,
@@ -1979,11 +2030,20 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 code="invalid_private_profile",
             )
         journey_registry = _resolve_journey_registry(journey_profile, kb_path=journey_kb)
-        journey_submission = _journey_submission_settings(
-            journey_kb,
-            interactive=journey_interactive,
-            required=journey_required,
-        )
+        try:
+            journey_submission = _journey_submission_settings(
+                journey_kb,
+                interactive=journey_interactive,
+                required=journey_required,
+            )
+        except CliError:
+            # Required selections resolve before private profile/.env writes:
+            # a refusal after an operation-created profile removes exactly
+            # that creation, leaving no partial setup state (review F1).
+            if journey_created_path is not None:
+                with suppress(OSError):
+                    journey_created_path.unlink()
+            raise
         # Failure-prone readiness work runs BEFORE the selected setup writes:
         # the composed check targets the SELECTED content repository and its
         # selected remote, never the directory setup was invoked from.
@@ -2036,6 +2096,12 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             print(
                 f"  .env:           {env_path} "
                 f"({GIT_TARGET_BRANCH_ENV_VAR}={journey_submission['branch']})"
+            )
+        else:
+            print(
+                f"  .env:           {GIT_TARGET_BRANCH_ENV_VAR} not recorded (no "
+                "selected-remote default-target fact); record an explicit target "
+                "before PR submission"
             )
 
     # 5. Write/append AGENTS.md unless --no-agents-md.
