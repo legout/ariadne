@@ -127,6 +127,11 @@ def _bundle_state(target: Path):
         return "symlink"
     if not os.path.lexists(target):
         return "absent"
+    if target.is_file():
+        # R2 root entry: the destination itself is subject to replacement
+        # (native explicit overwrite of an incomplete manual install) — its
+        # regular-file bytes are bound, not just directory descendants.
+        return f"regular-file:{_file_digest(target)}"
     entries: list = []
     for path in sorted(target.rglob("*")):
         relative = path.relative_to(target).as_posix()

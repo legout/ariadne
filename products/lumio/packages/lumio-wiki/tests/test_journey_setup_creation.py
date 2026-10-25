@@ -1240,3 +1240,88 @@ def test_empty_setup_reports_discrete_owned_residue(case, tmp_path, monkeypatch,
         assert b"OPERATOR_KEEP=marker-4c" in env_path.read_bytes()
         assert str(target).encode() in env_path.read_bytes()
         assert agents_path.read_bytes() == agents_bytes
+
+
+def test_empty_setup_binds_regular_file_skill_destination(tmp_path, monkeypatch, capsys):
+    """R2 root entry: when the selected skill destination is itself a
+    regular file (an incomplete manual install), its entry kind and bytes
+    are bound — a post-preview edit refuses a stale confirmation before any
+    write, and a fresh explicit-overwrite confirmation still installs the
+    native bundle."""
+    repo = _init_repo(tmp_path / "project")
+    target = repo / "kb"
+    private = tmp_path / "private"
+    profile = _write_profile(private / "profile.json", namespace=NAMESPACE, registry=private / "r1")
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(repo)
+    _clean_lumio_env(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+    # Native fixture facts: resolve the user-scope destination read-only,
+    # then place authored operator bytes there as a REGULAR FILE.
+    resolved = skill_status(scope="user", home=home)
+    assert resolved.state == "missing"
+    skill_root = resolved.target
+    operator_bytes = b"operator manual partial install bytes\n"
+    skill_root.parent.mkdir(parents=True)  # the manual install implies parents
+    skill_root.write_bytes(operator_bytes)
+    assert skill_root.is_file()  # root entry is a regular file
+    assert skill_status(scope="user", home=home).state == "corrupt"
+
+    base_argv = [
+        "setup",
+        str(target),
+        "--journey",
+        "--create-empty",
+        "--namespace",
+        NAMESPACE,
+        "--private-profile",
+        str(profile),
+        "--skill-scope",
+        "user",
+        "--overwrite",
+    ]
+    assert cli.main([*base_argv, "--json"]) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["ready"] is True
+    digest = preview["setup_digest"]
+
+    # Post-preview operator edit of the root file; the coarse status stays
+    # corrupt, so only bound bytes can catch the drift.
+    changed_bytes = operator_bytes + b"# operator edit after preview (root file)\n"
+    skill_root.write_bytes(changed_bytes)
+    assert skill_status(scope="user", home=home).state == "corrupt"
+
+    rc = cli.main([*base_argv, "--confirm", digest, "--json"])
+    assert rc == 2
+    refused = json.loads(capsys.readouterr().out)
+    assert refused["ok"] is False
+    assert refused["error"]["code"] in ("setup_target_changed", "setup_confirmation_mismatch")
+    # The refusal preceded every write: the changed operator bytes survive
+    # as the same regular file, and no setup target/config was created.
+    assert skill_root.is_file()
+    assert skill_root.read_bytes() == changed_bytes
+    assert not target.exists()
+    assert not (repo / ".env").exists()
+    assert not (repo / "AGENTS.md").exists()
+
+    # Positive tail: a FRESH preview/confirm of the unchanged file still
+    # supports the native explicit-overwrite path (oracle: native package
+    # facts — current bundle with its known files — not a copied digest).
+    assert cli.main([*base_argv, "--json"]) == 0
+    fresh_digest = json.loads(capsys.readouterr().out)["setup_digest"]
+    rc = cli.main([*base_argv, "--confirm", fresh_digest, "--json"])
+    assert rc == 0
+    capsys.readouterr()
+    final_status = skill_status(scope="user", home=home)
+    assert final_status.state == "current"
+    assert final_status.target == skill_root
+    for bundle_file in (SKILL_FILENAME, "PROTOCOL.md"):
+        assert (skill_root / bundle_file).is_file()
+    # The confirmed setup applied its remaining actions normally.
+    assert (target / "lumio.yaml").is_file()
+    manifest = parse_source_reference_manifest(
+        (target / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
+    )
+    assert manifest.namespace == NAMESPACE and manifest.sources == {}
