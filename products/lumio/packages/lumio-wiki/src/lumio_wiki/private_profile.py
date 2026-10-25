@@ -358,6 +358,83 @@ def _s3_connection_client(
     return store, connection.prefix
 
 
+def _declaration_from_object(raw: dict, *, repo_root: Path, namespace: str) -> PrivateSourceProfile:
+    """Validate one parsed profile object against an explicit repository
+    root and namespace (internal shared seam, plan 0010 JP/J5a).
+
+    ``load_private_profile`` and the prospective empty-setup preview share
+    this one schema/namespace/containment implementation; the public loader
+    keeps its adopted-KB precondition, while setup's preview passes the
+    selected repository root and namespace directly.
+    """
+    _exact_keys(
+        raw,
+        {"schema_version", "namespace", "source_registry", "retention", "artifact_store"},
+        {"exchange"},
+        what="private profile",
+    )
+    version = raw["schema_version"]
+    if type(version) is not int or version != PRIVATE_PROFILE_SCHEMA_VERSION:
+        raise PrivateProfileError(
+            f"private profile schema_version must be {PRIVATE_PROFILE_SCHEMA_VERSION}"
+        )
+    declared = _require_text(raw["namespace"], what="private profile namespace")
+    if declared != namespace:
+        raise PrivateProfileError(
+            f"the profile namespace {declared!r} does not match the selected "
+            f"namespace {namespace!r}"
+        )
+    retention = raw["retention"]
+    if retention not in _RETENTION_VALUES:
+        raise PrivateProfileError(
+            f"private profile retention must be one of: {', '.join(_RETENTION_VALUES)}"
+        )
+    source_registry = _absolute_directory(raw["source_registry"], what="source_registry")
+    artifact_store = _parse_artifact_store(raw["artifact_store"])
+    exchange: PrivateS3Connection | None = None
+    if raw.get("exchange") is not None:
+        exchange = _parse_s3_connection(raw["exchange"], what="exchange")
+    _refuse_inside_repository(source_registry, repo_root, what="Source Registry directory")
+    if isinstance(artifact_store, PrivateLocalStore):
+        _refuse_inside_repository(artifact_store.root, repo_root, what="artifact store directory")
+    return PrivateSourceProfile(
+        schema_version=version,
+        namespace=declared,
+        source_registry=source_registry,
+        retention=retention,
+        artifact_store=artifact_store,
+        exchange=exchange,
+    )
+
+
+def _load_declaration(
+    profile_path: Path, *, repo_root: Path, namespace: str
+) -> PrivateSourceProfile:
+    """Read and validate one profile file against an explicit repository
+    root and namespace (internal; no adopted-KB precondition)."""
+    # The profile FILE itself stays outside the Content Repository too
+    # (§2.1), including ignored locations — resolved before its contents are
+    # read, so an inside placement never reaches parsing or any resolution.
+    try:
+        resolved_profile = profile_path.resolve()
+    except OSError as exc:
+        raise PrivateProfileError(f"cannot resolve the private profile file: {exc}") from exc
+    _refuse_inside_repository(resolved_profile, repo_root, what="profile file")
+    try:
+        raw_bytes = profile_path.read_bytes()
+    except OSError as exc:
+        raise PrivateProfileError(
+            f"cannot read the private profile file: {exc.strerror or exc}"
+        ) from exc
+    try:
+        raw = json.loads(raw_bytes, object_pairs_hook=_reject_duplicate_keys)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise PrivateProfileError(f"the private profile is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise PrivateProfileError("the private profile must be a single JSON object")
+    return _declaration_from_object(raw, repo_root=repo_root, namespace=namespace)
+
+
 def load_private_profile(profile_path: str | Path, *, kb_root: str | Path) -> PrivateSourceProfile:
     """Read and validate ONE explicitly selected private profile file.
 
@@ -384,65 +461,7 @@ def load_private_profile(profile_path: str | Path, *, kb_root: str | Path) -> Pr
             "the selected Knowledge Base has no Source Reference Manifest; a private "
             "profile requires an adopted Git-authoring Knowledge Base"
         )
-    # The profile FILE itself stays outside the Content Repository too
-    # (§2.1), including ignored locations — resolved before its contents are
-    # read, so an inside placement never reaches parsing or any resolution.
-    try:
-        resolved_profile = Path(profile_path).resolve()
-    except OSError as exc:
-        raise PrivateProfileError(f"cannot resolve the private profile file: {exc}") from exc
-    _refuse_inside_repository(resolved_profile, repo_root, what="profile file")
-    path = Path(profile_path)
-    try:
-        raw_bytes = path.read_bytes()
-    except OSError as exc:
-        raise PrivateProfileError(
-            f"cannot read the private profile file: {exc.strerror or exc}"
-        ) from exc
-    try:
-        raw = json.loads(raw_bytes, object_pairs_hook=_reject_duplicate_keys)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise PrivateProfileError(f"the private profile is not valid JSON: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise PrivateProfileError("the private profile must be a single JSON object")
-    _exact_keys(
-        raw,
-        {"schema_version", "namespace", "source_registry", "retention", "artifact_store"},
-        {"exchange"},
-        what="private profile",
-    )
-    version = raw["schema_version"]
-    if type(version) is not int or version != PRIVATE_PROFILE_SCHEMA_VERSION:
-        raise PrivateProfileError(
-            f"private profile schema_version must be {PRIVATE_PROFILE_SCHEMA_VERSION}"
-        )
-    namespace = _require_text(raw["namespace"], what="private profile namespace")
-    if namespace != manifest.namespace:
-        raise PrivateProfileError(
-            f"the profile namespace {namespace!r} does not match the selected "
-            f"Knowledge Base namespace {manifest.namespace!r}"
-        )
-    retention = raw["retention"]
-    if retention not in _RETENTION_VALUES:
-        raise PrivateProfileError(
-            f"private profile retention must be one of: {', '.join(_RETENTION_VALUES)}"
-        )
-    source_registry = _absolute_directory(raw["source_registry"], what="source_registry")
-    artifact_store = _parse_artifact_store(raw["artifact_store"])
-    exchange: PrivateS3Connection | None = None
-    if raw.get("exchange") is not None:
-        exchange = _parse_s3_connection(raw["exchange"], what="exchange")
-    _refuse_inside_repository(source_registry, repo_root, what="Source Registry directory")
-    if isinstance(artifact_store, PrivateLocalStore):
-        _refuse_inside_repository(artifact_store.root, repo_root, what="artifact store directory")
-    return PrivateSourceProfile(
-        schema_version=version,
-        namespace=namespace,
-        source_registry=source_registry,
-        retention=retention,
-        artifact_store=artifact_store,
-        exchange=exchange,
-    )
+    return _load_declaration(Path(profile_path), repo_root=repo_root, namespace=manifest.namespace)
 
 
 def resolve_private_profile(

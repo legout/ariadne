@@ -27,6 +27,7 @@ no OpenAI client is required for text and Markdown ingestion.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import mimetypes
 import os
@@ -35,7 +36,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
-from contextlib import suppress
+from contextlib import nullcontext, redirect_stdout, suppress
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -241,6 +242,20 @@ _MACHINE_ERROR_MESSAGES.update(
     }
 )
 
+# Spec 0010 §2.2 / plan 0010 J5a: the confirmed empty-KB creation route
+# reports the frozen refusal categories through the same bounded envelope.
+_MACHINE_ERROR_MESSAGES.update(
+    {
+        "invalid_empty_setup": "the empty Knowledge Base setup selection is invalid",
+        "setup_confirmation_mismatch": (
+            "the supplied setup confirmation does not match the current preview"
+        ),
+        "setup_target_changed": ("the selected authoring target changed after the preview"),
+        "adoption_required": ("existing content requires explicit Git-authoring adoption first"),
+        "setup_incomplete": ("the setup stopped on an I/O failure; inspect the reported residue"),
+    }
+)
+
 
 def _emit_machine_error(exc: CliError, *, schema_version: int | None = None) -> None:
     """Emit one stable error object without a traceback or exception chain.
@@ -267,8 +282,11 @@ def _bootstrap_error_schema_version(args: argparse.Namespace) -> int | None:
     Minimal command-specific selection: only the source-bootstrap,
     source-handoff, extract, ingest-candidate and authoring review/check
     commands opt in, so every legacy error envelope is unchanged. This also
-    covers the early Knowledge-Base path-selection refusal raised in ``main``.
+    covers the early Knowledge-Base path-selection refusal raised in ``main``
+    and the creation-only setup ``--json`` route (J5a).
     """
+    if getattr(args, "create_empty", False):
+        return 1
     if getattr(args, "source_bootstrap_command", None) is not None:
         return 1
     if getattr(args, "source_handoff_command", None) is not None:
@@ -1290,6 +1308,54 @@ def _git_read_lines(repo_root: Path, *git_args: str) -> list[str]:
     return [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
 
 
+def _collect_profile_payload(
+    profile_path: Path,
+    *,
+    repo_root: Path,
+    namespace: str,
+    registry_default: Path,
+    store_default: Path,
+) -> str:
+    """Ask for one new private profile's declaration and preview it (§2.1).
+
+    Shared by the adopted wizard route (which writes the file only after its
+    own confirmation) and the empty-create route (which carries the payload
+    into the confirmed apply); nothing is written here.
+    """
+    registry_raw = _wizard_ask(
+        f"Private Source Registry directory [{registry_default}]: ",
+        default=str(registry_default),
+    ) or str(registry_default)
+    store_raw = _wizard_ask(
+        f"Private artifact store directory [{store_default}]: ",
+        default=str(store_default),
+    ) or str(store_default)
+    registry_root = Path(registry_raw).expanduser()
+    store_root = Path(store_raw).expanduser()
+    for label, root in (("Source Registry", registry_root), ("artifact store", store_root)):
+        if Path(os.path.realpath(root)).is_relative_to(repo_root):
+            raise CliError(
+                f"the private {label} directory must live OUTSIDE the content "
+                "repository (resolved symlinks included)",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+    payload = {
+        "schema_version": 1,
+        "namespace": namespace,
+        "source_registry": str(registry_root.resolve()),
+        "retention": "required",
+        "artifact_store": {
+            "kind": "local",
+            "root": str(store_root.resolve()),
+        },
+    }
+    preview = json.dumps(payload, indent=2, sort_keys=True)
+    print(f"New private profile preview ({profile_path}):")
+    print(preview)
+    return preview
+
+
 def _resolve_journey_profile(args: argparse.Namespace, *, kb_path: Path, interactive: bool):
     """Load the explicitly selected private profile — or create it only after
     an interactive preview and confirmation (spec 0010 §2.1, plan 0010 J5).
@@ -1340,39 +1406,13 @@ def _resolve_journey_profile(args: argparse.Namespace, *, kb_path: Path, interac
             code="invalid_private_profile",
         )
     home = Path.home()
-    registry_default = home / ".lumio" / "registries" / manifest.namespace
-    store_default = home / ".lumio" / "artifacts" / manifest.namespace
-    registry_raw = _wizard_ask(
-        f"Private Source Registry directory [{registry_default}]: ",
-        default=str(registry_default),
-    ) or str(registry_default)
-    store_raw = _wizard_ask(
-        f"Private artifact store directory [{store_default}]: ",
-        default=str(store_default),
-    ) or str(store_default)
-    registry_root = Path(registry_raw).expanduser()
-    store_root = Path(store_raw).expanduser()
-    for label, root in (("Source Registry", registry_root), ("artifact store", store_root)):
-        if Path(os.path.realpath(root)).is_relative_to(repo_root):
-            raise CliError(
-                f"the private {label} directory must live OUTSIDE the content "
-                "repository (resolved symlinks included)",
-                exit_code=2,
-                code="invalid_private_profile",
-            )
-    payload = {
-        "schema_version": 1,
-        "namespace": manifest.namespace,
-        "source_registry": str(registry_root.resolve()),
-        "retention": "required",
-        "artifact_store": {
-            "kind": "local",
-            "root": str(store_root.resolve()),
-        },
-    }
-    preview = json.dumps(payload, indent=2, sort_keys=True)
-    print(f"New private profile preview ({profile_path}):")
-    print(preview)
+    preview = _collect_profile_payload(
+        profile_path,
+        repo_root=repo_root,
+        namespace=manifest.namespace,
+        registry_default=home / ".lumio" / "registries" / manifest.namespace,
+        store_default=home / ".lumio" / "artifacts" / manifest.namespace,
+    )
     answer = _wizard_ask(
         "Write this private profile? [y/N] ",
         default="n",
@@ -1747,6 +1787,316 @@ def _print_journey_report(
         print("    not available for the selected Knowledge Base repository")
 
 
+def _write_journey_submission_env(env_path: Path, submission: dict[str, str | None]) -> None:
+    """Record the selected journey submission settings in .env (J5/J5a)."""
+    journey_mode = submission["mode"] or "commit"
+    _upsert_env_var(env_path, SUBMISSION_MODE_ENV_VAR, journey_mode)
+    print(f"  .env:           {env_path} ({SUBMISSION_MODE_ENV_VAR}={journey_mode})")
+    if submission["remote"] is not None:
+        _upsert_env_var(env_path, GIT_REMOTE_ENV_VAR, submission["remote"])
+        print(f"  .env:           {env_path} ({GIT_REMOTE_ENV_VAR}={submission['remote']})")
+    else:
+        print(
+            f"  .env:           {GIT_REMOTE_ENV_VAR} not recorded (no Git remote "
+            "configured); rerun setup interactively or set it in .env"
+        )
+    if submission["branch"] is not None:
+        _upsert_env_var(env_path, GIT_TARGET_BRANCH_ENV_VAR, submission["branch"])
+        print(f"  .env:           {env_path} ({GIT_TARGET_BRANCH_ENV_VAR}={submission['branch']})")
+    else:
+        print(
+            f"  .env:           {GIT_TARGET_BRANCH_ENV_VAR} not recorded (no "
+            "selected-remote default-target fact); record an explicit target "
+            "before PR submission"
+        )
+
+
+def _maybe_install_skill(args: argparse.Namespace, *, project_dir: Path) -> None:
+    """Optional, explicit skill install, shared by the setup routes (J5a).
+
+    Project bootstrap never writes into an agent trust surface unless one
+    target was requested (ADR-0017); a stale/modified installation is kept
+    and reported with its explicit update path.
+    """
+    agent = getattr(args, "agent", None)
+    scope = getattr(args, "skill_scope", None)
+    if agent is None and scope is None:
+        return
+    from lumio_wiki.skill import SkillError, install_skill, skill_status
+
+    try:
+        status = skill_status(agent, scope=scope, project_dir=project_dir)
+        if status.state == "current":
+            print(f"  skill install:  CURRENT ({status.target})")
+        elif status.state == "missing" or getattr(args, "overwrite", False):
+            target = install_skill(
+                agent,
+                scope=scope,
+                project_dir=project_dir,
+                overwrite=getattr(args, "overwrite", False),
+            )
+            print(f"  skill install:  {target}")
+            print("  skill discovery: restart the agent or start a new session")
+        else:
+            print(
+                f"  skill install:  SKIPPED ({status.state}; run "
+                f"'lumio-wiki skill update' for this target)",
+                file=sys.stderr,
+            )
+    except SkillError as exc:
+        print(f"  skill install:  SKIPPED ({exc})", file=sys.stderr)
+
+
+def _require_namespace(value: str) -> str | None:
+    return None if value and value == value.strip() else "a non-empty namespace is required"
+
+
+def _empty_setup_skill_detail(args: argparse.Namespace) -> str | None:
+    agent = getattr(args, "agent", None)
+    scope = getattr(args, "skill_scope", None)
+    if agent is None and scope is None:
+        return None
+    return f"agent skill ({agent or 'shared'}/{scope or 'project'})"
+
+
+def _print_empty_setup_preview(plan, *, interactive: bool) -> None:
+    """Show the one concrete §2.2 preview: location, namespace, actions."""
+    unborn = plan.facts.current_commit is None
+    commit_state = (
+        "unborn named branch; the first Authoring Revision is created explicitly with native Git"
+        if unborn
+        else f"commit {plan.facts.current_commit}"
+    )
+    print()
+    print("Empty managed Knowledge Base setup (spec 0010 §2.2) — preview; nothing written yet:")
+    print(
+        f"  authoring worktree: {plan.facts.repository_root} "
+        f"(branch {plan.facts.branch}, {commit_state})"
+    )
+    print(f"  Knowledge Base subtree: {plan.facts.subtree or '(repository root)'}")
+    print(f"  namespace: {plan.namespace}")
+    new_profile = plan.new_profile_payload is not None
+    print(
+        f"  private profile: namespace={plan.namespace}, retention=required "
+        "("
+        + (
+            "new declaration; the file is written only on confirmation"
+            if new_profile
+            else "file stays outside versioned content"
+        )
+        + ")"
+    )
+    print("Planned actions (local paths only; private locations never enter authored files):")
+    for action in plan.actions:
+        suffix = f" ({action.detail})" if action.detail else ""
+        print(f"  - {action.kind}: {action.path}{suffix}")
+    print(f"  setup digest: {plan.setup_digest}")
+    if not interactive:
+        print(
+            "Create exactly this Knowledge Base by re-running setup with --confirm <setup-digest>."
+        )
+
+
+def _print_empty_setup_applied(plan, written: list[str]) -> None:
+    """Report created paths and the remaining native-Git actions truthfully."""
+    print()
+    print("Empty managed Knowledge Base created (native Git owns commits):")
+    for path in written:
+        print(f"  {path}")
+    print("Next steps:")
+    for index, item in enumerate(plan.next_actions, start=1):
+        print(f"  {index}. {item}")
+
+
+def _run_empty_journey_setup(
+    args: argparse.Namespace,
+    *,
+    project_dir: Path,
+    kb_path: Path | None,
+    from_uri: str | None,
+) -> int:
+    """One confirmed preview/apply path for empty managed-KB creation (§2.2).
+
+    Headless runs preview by default and apply only with ``--confirm``; the
+    interactive route collects the same choices, shows the same preview and
+    asks for confirmation. Every write happens inside the guarded apply
+    after a fresh recheck.
+    """
+    from lumio_wiki.journey_setup import (
+        EmptySetupError,
+        apply_plan,
+        build_envelope,
+        discover_authoring_location,
+        plan_empty_setup,
+        recheck_plan,
+    )
+    from lumio_wiki.private_profile import PrivateProfileError
+
+    as_json = bool(getattr(args, "json", False))
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if from_uri is not None:
+        raise CliError(
+            "--create-empty selects a local authoring path inside a registered "
+            "Git worktree; it cannot combine with --from (spec 0010 §2.2)",
+            exit_code=2,
+            code="invalid_empty_setup",
+        )
+    if kb_path is None:
+        raise CliError(
+            "--create-empty requires an explicit local <kb> path inside a "
+            "registered Git worktree (spec 0010 §2.2)",
+            exit_code=2,
+            code="invalid_empty_setup",
+        )
+    if (
+        getattr(args, "publish_to", None) is not None
+        or getattr(args, "retrieval", None) is not None
+    ):
+        raise CliError(
+            "the empty creation route records only the guided journey settings; "
+            "configure the publication destination or retrieval backend later "
+            "with ordinary setup (spec 0010 §2.2)",
+            exit_code=2,
+            code="invalid_empty_setup",
+        )
+    target = kb_path.resolve()
+    try:
+        facts = discover_authoring_location(target)
+    except EmptySetupError as exc:
+        raise CliError(str(exc), exit_code=2, code=exc.code) from exc
+    namespace = getattr(args, "namespace", None)
+    if namespace is not None and _require_namespace(namespace) is not None:
+        raise CliError(
+            "the --namespace value must be an explicit non-empty namespace; it "
+            "is never generated or taken from an unrelated profile "
+            "(spec 0010 §2.2)",
+            exit_code=2,
+            code="invalid_empty_setup",
+        )
+    if namespace is None:
+        if not interactive:
+            raise CliError(
+                "--create-empty requires an explicit --namespace <namespace>; "
+                "interactive setup may collect it when omitted (spec 0010 §2.2)",
+                exit_code=2,
+                code="invalid_empty_setup",
+            )
+        asked = _wizard_ask(
+            "Knowledge Base Namespace (stable identity, e.g. urn:uuid:...): ",
+            validate=_require_namespace,
+        )
+        # _require_namespace refuses empty input, so a returned answer is a
+        # validated non-empty namespace; None is impossible here.
+        if asked is None:  # pragma: no cover - validation contract
+            raise CliError(
+                "a Knowledge Base Namespace is required (spec 0010 §2.2)",
+                exit_code=2,
+                code="invalid_empty_setup",
+            )
+        namespace = asked
+    # Required submission choices are collected and validated BEFORE any
+    # write (§2.2), from the selected worktree's native Git facts.
+    submission = _journey_submission_settings(facts.repository_root, interactive=interactive)
+    profile_path: Path = args.private_profile
+    new_payload: str | None = None
+    if not profile_path.exists():
+        # Noninteractive missing files were refused at the journey gate; only
+        # the interactive wizard may propose contents (§2.1/§2.2) — the file
+        # itself is written only inside the confirmed apply.
+        home = Path.home()
+        new_payload = _collect_profile_payload(
+            profile_path,
+            repo_root=facts.repository_root,
+            namespace=namespace,
+            registry_default=home / ".lumio" / "registries" / namespace,
+            store_default=home / ".lumio" / "artifacts" / namespace,
+        )
+    try:
+        plan = plan_empty_setup(
+            target=target,
+            namespace=namespace,
+            profile_path=profile_path,
+            new_profile_payload=new_payload,
+            submission=submission,
+            project_dir=project_dir,
+            agents_enabled=not getattr(args, "no_agents_md", False),
+            skill_detail=_empty_setup_skill_detail(args),
+        )
+    except PrivateProfileError as exc:
+        raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+    except EmptySetupError as exc:
+        raise CliError(str(exc), exit_code=2, code=exc.code) from exc
+    confirm = getattr(args, "confirm", None)
+    if confirm is not None:
+        if confirm != plan.setup_digest:
+            raise CliError(
+                "the supplied --confirm digest does not match the freshly "
+                "revalidated preview; changed selections, a changed target or "
+                "a stale confirmation require re-running the preview "
+                "(spec 0010 §2.2)",
+                exit_code=2,
+                code="setup_confirmation_mismatch",
+            )
+        # The confirm token already authorizes the freshly revalidated plan:
+        # this run emits exactly the applied envelope or one bounded error.
+    else:
+        # Preview-only (noninteractive) or interactive confirmation: show the
+        # one concrete preview first (§2.2).
+        if as_json:
+            print(json.dumps(build_envelope(plan, phase="preview"), sort_keys=True))
+        else:
+            _print_empty_setup_preview(plan, interactive=interactive)
+        if interactive:
+            answer = _wizard_ask(
+                "Apply exactly this setup? [y/N] ",
+                default="n",
+                choices={"y": "y", "yes": "y", "n": "n", "no": "n"},
+            )
+            if answer != "y":
+                print("empty managed setup cancelled; nothing was written", file=sys.stderr)
+                return 1
+        else:
+            return 0
+    env_path = project_dir / ".env"
+
+    def _write_env() -> None:
+        _upsert_env_var(env_path, KB_PATH_ENV_VAR, str(plan.target))
+        print(f"  .env:           {env_path} ({KB_PATH_ENV_VAR}={plan.target})")
+        _write_journey_submission_env(env_path, plan.submission)
+
+    def _write_agents() -> None:
+        _write_agents_md_section(
+            project_dir / "AGENTS.md",
+            plan.target,
+            publish_to=None,
+            retrieval=None,
+            source_store=None,
+        )
+        print(f"  AGENTS.md:      {project_dir / 'AGENTS.md'}")
+
+    def _install_skill() -> None:
+        _maybe_install_skill(args, project_dir=project_dir)
+
+    try:
+        # The creation-only --json envelope stays the sole stdout content:
+        # the shared human-progress prints are captured here, not removed.
+        with redirect_stdout(io.StringIO()) if as_json else nullcontext():
+            recheck_plan(plan)
+            written = apply_plan(
+                plan,
+                write_env=_write_env,
+                write_agents=_write_agents,
+                install_skill=_install_skill,
+            )
+    except EmptySetupError as exc:
+        raise CliError(str(exc), exit_code=2, code=exc.code) from exc
+    if as_json:
+        print(json.dumps(build_envelope(plan, phase="applied"), sort_keys=True))
+    else:
+        _print_empty_setup_applied(plan, written)
+    return 0
+
+
 def _cmd_setup(args: argparse.Namespace) -> int:
     """One-command project setup: KB + .env + AGENTS.md + optional skill install.
 
@@ -1806,6 +2156,21 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     # explicit private profile is required and exclusive, and nothing is
     # written until the whole journey selection validates.
     journey = bool(getattr(args, "journey", False))
+    create_empty = bool(getattr(args, "create_empty", False))
+    if create_empty and not journey:
+        raise CliError(
+            "--create-empty selects confirmed empty-KB creation in the guided "
+            "journey (spec 0010 §2.2): also pass --journey",
+            exit_code=2,
+            code="invalid_empty_setup",
+        )
+    if getattr(args, "json", False) and not create_empty:
+        raise CliError(
+            "setup --json serves the --create-empty creation route only; "
+            "ordinary setup output is unchanged (spec 0010 §2.2)",
+            exit_code=2,
+            code="invalid_empty_setup",
+        )
     profile_path: Path | None = getattr(args, "private_profile", None)
     if profile_path is not None and not journey:
         raise CliError(
@@ -1859,6 +2224,12 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 "invents a profile (spec 0010 §2.1)",
                 exit_code=2,
                 code="invalid_private_profile",
+            )
+        if create_empty:
+            # §2.2 creation is its own confirmed preview/apply route; it never
+            # falls through to the unconditional plain-create branch below.
+            return _run_empty_journey_setup(
+                args, project_dir=project_dir, kb_path=kb_path, from_uri=from_uri
             )
         if (
             from_uri is None
@@ -2027,32 +2398,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         _upsert_env_var(env_path, ARTIFACT_RETENTION_ENV_VAR, artifact_retention)
         print(f"  .env:           {env_path} ({ARTIFACT_RETENTION_ENV_VAR}={artifact_retention})")
     if journey and journey_submission is not None:
-        journey_mode = journey_submission["mode"] or "commit"
-        _upsert_env_var(env_path, SUBMISSION_MODE_ENV_VAR, journey_mode)
-        print(f"  .env:           {env_path} ({SUBMISSION_MODE_ENV_VAR}={journey_mode})")
-        if journey_submission["remote"] is not None:
-            _upsert_env_var(env_path, GIT_REMOTE_ENV_VAR, journey_submission["remote"])
-            print(
-                f"  .env:           {env_path} "
-                f"({GIT_REMOTE_ENV_VAR}={journey_submission['remote']})"
-            )
-        else:
-            print(
-                f"  .env:           {GIT_REMOTE_ENV_VAR} not recorded (no Git remote "
-                "configured); rerun setup interactively or set it in .env"
-            )
-        if journey_submission["branch"] is not None:
-            _upsert_env_var(env_path, GIT_TARGET_BRANCH_ENV_VAR, journey_submission["branch"])
-            print(
-                f"  .env:           {env_path} "
-                f"({GIT_TARGET_BRANCH_ENV_VAR}={journey_submission['branch']})"
-            )
-        else:
-            print(
-                f"  .env:           {GIT_TARGET_BRANCH_ENV_VAR} not recorded (no "
-                "selected-remote default-target fact); record an explicit target "
-                "before PR submission"
-            )
+        _write_journey_submission_env(env_path, journey_submission)
 
     # 5. Write/append AGENTS.md unless --no-agents-md.
     if not getattr(args, "no_agents_md", False):
@@ -2068,32 +2414,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
     # 6. Optional, explicit skill install. Project bootstrap never writes into
     # an agent trust surface unless one target was requested (ADR-0017).
-    agent = getattr(args, "agent", None)
-    scope = getattr(args, "skill_scope", None)
-    if agent is not None or scope is not None:
-        from lumio_wiki.skill import SkillError, install_skill, skill_status
-
-        try:
-            status = skill_status(agent, scope=scope, project_dir=project_dir)
-            if status.state == "current":
-                print(f"  skill install:  CURRENT ({status.target})")
-            elif status.state == "missing" or getattr(args, "overwrite", False):
-                target = install_skill(
-                    agent,
-                    scope=scope,
-                    project_dir=project_dir,
-                    overwrite=getattr(args, "overwrite", False),
-                )
-                print(f"  skill install:  {target}")
-                print("  skill discovery: restart the agent or start a new session")
-            else:
-                print(
-                    f"  skill install:  SKIPPED ({status.state}; run "
-                    f"'lumio-wiki skill update' for this target)",
-                    file=sys.stderr,
-                )
-        except SkillError as exc:
-            print(f"  skill install:  SKIPPED ({exc})", file=sys.stderr)
+    _maybe_install_skill(args, project_dir=project_dir)
 
     print()
     print("Setup complete. Next steps:")
@@ -2187,8 +2508,12 @@ passage or say it is not covered.
 Before writing, explicitly select a registered Git branch/worktree, adopt its
 stable Source Reference Manifest namespace, and select a private Source Registry
 outside Git/public content (`--source-registry` or `LUMIO_SOURCE_REGISTRY`).
-Setup does not initialize Git or infer adoption. Stage only authored/control/
-manifest files, never raw/private data.
+Create a NEW empty managed Knowledge Base with `setup <kb> --journey
+--create-empty --namespace <ns> --private-profile <file>` — preview first,
+then `--confirm <setup-digest>`; native Git prepares the branch/worktree
+itself. Existing nonempty content needs the explicit Git-authoring adoption:
+setup never initializes Git, infers adoption or guesses private history.
+Stage only authored/control/manifest files, never raw/private data.
 
 1. Author a Compiled Page (YAML frontmatter + Markdown body) that declares the
    source identity in `sources[].id`.
@@ -7753,6 +8078,51 @@ def build_parser() -> argparse.ArgumentParser:
             "confirmation (never noninteractively). Exclusive: competing "
             "--source-store/--artifact-retention and environment selections "
             "are refused."
+        ),
+    )
+    setup_parser.add_argument(
+        "--create-empty",
+        dest="create_empty",
+        action="store_true",
+        help=(
+            "Confirmed empty managed-KB creation in the guided journey "
+            "(spec 0010 §2.2): previews creating <kb> inside its registered "
+            "Git worktree with an explicit namespace and an empty v1 Source "
+            "Reference Manifest, then applies only with --confirm "
+            "<setup-digest> (or interactive confirmation). The target must "
+            "be absent or truly empty; existing content requires explicit "
+            "adoption. Setup never creates/switches branches or commits."
+        ),
+    )
+    setup_parser.add_argument(
+        "--namespace",
+        dest="namespace",
+        default=None,
+        metavar="NAMESPACE",
+        help=(
+            "Explicit Knowledge Base Namespace for --create-empty "
+            "(spec 0010 §2.2); interactive setup may collect it when omitted. "
+            "Never generated or taken from an unrelated profile."
+        ),
+    )
+    setup_parser.add_argument(
+        "--confirm",
+        dest="confirm",
+        default=None,
+        metavar="SETUP-DIGEST",
+        help=(
+            "Authorize exactly the freshly revalidated --create-empty "
+            "preview carrying this setup digest; a mismatch refuses before "
+            "any write."
+        ),
+    )
+    setup_parser.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "Creation-only (--create-empty) machine envelope: schema_version, "
+            "phase, setup_digest, authoring facts, actions and next actions. "
+            "Ordinary setup output is unchanged."
         ),
     )
     setup_parser.set_defaults(func=_cmd_setup)
