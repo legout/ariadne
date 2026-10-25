@@ -517,9 +517,21 @@ def test_journey_profile_creation_requires_confirmation(tmp_path: Path, monkeypa
     home = tmp_path / "home"
 
     # Declining the confirmation: no profile, no .env, no AGENTS.md, and no
-    # registry/store directories created anywhere.
-    answers = iter(["", "", "n"])
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    # registry/store directories created anywhere. The seam is order-aware
+    # (submission questions now precede profile creation) and supplies the
+    # explicit target the old flow accepted as a default; every assertion
+    # below is unchanged.
+    def make_answer(confirm: str):
+        def answer(prompt: str) -> str:
+            if "Git target branch" in prompt:
+                return "main"
+            if "Write this private profile" in prompt:
+                return confirm
+            return ""
+
+        return answer
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": make_answer("n")(prompt))
     rc = cli.main(["setup", str(kb), "--journey", "--private-profile", str(profile)])
     assert rc == 1
     assert not profile.exists()
@@ -530,8 +542,7 @@ def test_journey_profile_creation_requires_confirmation(tmp_path: Path, monkeypa
 
     # Confirming writes exactly the previewed profile; the registry/store
     # directories themselves are still not created by setup.
-    answers = iter(["", "", "y", "", "", ""])
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    monkeypatch.setattr("builtins.input", lambda prompt="": make_answer("y")(prompt))
     rc = cli.main(["setup", str(kb), "--journey", "--private-profile", str(profile)])
     assert rc == 0
     capsys.readouterr()
@@ -1050,3 +1061,169 @@ def test_git_check_preserves_selected_ssh_semantics(case, tmp_path: Path, monkey
                     env["GIT_SSH_COMMAND"]
                     == "env LD_LIBRARY_PATH=/opt/priv ssh -i /tmp/synthetic-key"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Selection repair regressions (extra delta review: F1 target/prewrite,
+# F4 executable-path/transport scoping).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("case", ["enter-leaves-unset", "authored-target-persists"])
+def test_journey_interactive_local_target_optional(case, tmp_path: Path, monkeypatch, capsys):
+    """F1: interactively selected LOCAL commit mode with no native fact — an
+    empty Enter leaves the target unset exactly like noninteractive local
+    mode; an actually authored nonempty target persists."""
+    project = _init_repo(tmp_path / "project")
+    _git(project, "symbolic-ref", "HEAD", "refs/heads/master")
+    kb = _adopted_kb(project)
+    _commit(project, "base")
+    private = tmp_path / "private"
+    profile = _write_profile(
+        private / "profile.json", namespace=NAMESPACE, registry=private / "registry"
+    )
+    monkeypatch.chdir(project)
+    _clean_lumio_env(monkeypatch)
+    # Fixture proof: no upstream tracking and no remote default-target refs.
+    assert not (project / ".git" / "refs" / "remotes").exists()
+    assert not (project / ".git" / "packed-refs").exists()
+    upstream_probe = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(project),
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+        capture_output=True,
+    )
+    assert upstream_probe.returncode != 0
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    answers = iter(["", "", "master"] if case == "authored-target-persists" else ["", "", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    rc = cli.main(["setup", str(kb), "--journey", "--private-profile", str(profile)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    env = project / ".env"
+    assert _env_value(env, SUBMISSION_MODE_ENV_VAR) == "commit"
+    if case == "enter-leaves-unset":
+        # Empty Enter must not persist a conventional target: unset, honestly
+        # disclosed, with no native fact to derive one from.
+        assert _env_value(env, GIT_TARGET_BRANCH_ENV_VAR) is None
+        assert GIT_TARGET_BRANCH_ENV_VAR in out
+    else:
+        assert _env_value(env, GIT_TARGET_BRANCH_ENV_VAR) == "master"
+
+
+@pytest.mark.parametrize("case", ["missing-target-refusal", "keyboard-interrupt"])
+def test_journey_submission_precedes_profile_creation(case, tmp_path: Path, monkeypatch):
+    """F1: submission choices are collected and validated BEFORE any private
+    profile creation — a missing-required-target refusal or a Ctrl+C during
+    selection leaves zero filesystem changes (no file, no created parent
+    directories, no project config)."""
+    project = _init_repo(tmp_path / "project")
+    _git(project, "symbolic-ref", "HEAD", "refs/heads/master")
+    kb = _adopted_kb(project)
+    _commit(project, "base")
+    profile = tmp_path / "private" / "profiles" / "new-profile.json"
+    assert not profile.parent.exists()
+    monkeypatch.chdir(project)
+    _clean_lumio_env(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    def answer(prompt: str) -> str:
+        # Order-aware for both the current (creation-first) and repaired
+        # (submission-first) flows, so the fixture never exhausts answers.
+        if "Submission mode" in prompt:
+            return "p"
+        if "Git target branch" in prompt:
+            if case == "keyboard-interrupt":
+                raise KeyboardInterrupt
+            return ""
+        if "Git remote for submissions" in prompt:
+            return ""
+        if "Write this private profile" in prompt:
+            return "y"
+        return ""
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": answer(prompt))
+    before = _snapshot(tmp_path)
+    if case == "keyboard-interrupt":
+        with pytest.raises(KeyboardInterrupt):
+            cli.main(["setup", str(kb), "--journey", "--private-profile", str(profile)])
+    else:
+        rc = cli.main(["setup", str(kb), "--journey", "--private-profile", str(profile)])
+        assert rc == 2
+    assert _snapshot(tmp_path) == before
+    assert not profile.parent.exists()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "executable-path-ssh-url",
+        "executable-path-scp-like",
+        "wrapper-https-transport",
+        "wrapper-local-transport",
+    ],
+)
+def test_git_check_scopes_ssh_selection_to_transport(case, tmp_path: Path, monkeypatch):
+    """F4: a recognized ordinary OpenSSH executable-path selection stays
+    usable (same executable, BatchMode via Git's shell override), and SSH
+    unavailability only refuses remotes that actually use SSH — never HTTPS
+    or a real local remote."""
+    from lumio_wiki import git_connection
+
+    project = _init_repo(tmp_path / "project")
+    if case == "wrapper-local-transport":
+        bare = tmp_path / "origin.git"
+        bare.mkdir()
+        _git(bare, "init", "-q", "--bare")
+        remote_url: str = str(bare)
+    elif case == "wrapper-https-transport":
+        remote_url = "https://example.invalid/j5/repo.git"
+    elif case == "executable-path-scp-like":
+        remote_url = "git@example.invalid:j5/repo.git"
+    else:
+        remote_url = "ssh://git@example.invalid/j5/repo.git"
+    _git(project, "remote", "add", "origin", remote_url)
+    for variable in ("GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS", "SSH_ASKPASS"):
+        monkeypatch.delenv(variable, raising=False)
+    if case.startswith("executable-path"):
+        monkeypatch.setenv("GIT_SSH", "/usr/bin/ssh")
+    else:
+        monkeypatch.setenv("GIT_SSH", "/synthetic bin/ssh-wrapper")
+
+    real_run = subprocess.run
+    calls: list[tuple[list[str], dict]] = []
+
+    def observing(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        if "ls-remote" in argv and case != "wrapper-local-transport":
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(git_connection.subprocess, "run", observing)
+    report = check_git_connection(project)
+    ls_remote_calls = [entry for entry in calls if "ls-remote" in entry[0]]
+
+    assert report.remote.read == "success"
+    assert len(ls_remote_calls) == 1
+    _argv, kwargs = ls_remote_calls[0]
+    env = kwargs.get("env") or {}
+    if case.startswith("executable-path"):
+        # The SAME selected executable is preserved (no substitution, no
+        # splitting) and gains BatchMode through Git's shell-form override
+        # with the pathname safely quoted.
+        assert kwargs.get("stdin") is subprocess.DEVNULL
+        assert env["GIT_SSH_COMMAND"] == "/usr/bin/ssh -oBatchMode=yes"
+        assert env.get("GIT_SSH") == "/usr/bin/ssh"
+    else:
+        # An unsupported SSH wrapper never blocks a non-SSH transport.
+        assert "GIT_SSH_COMMAND" not in env
+        assert env.get("GIT_SSH") == "/synthetic bin/ssh-wrapper"

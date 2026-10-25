@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Final
@@ -207,9 +208,12 @@ def _resolve_ssh_command(project: Path | None, env: dict[str, str]) -> str | Non
 
     Git's documented precedence and forms are preserved (git(1)):
     ``GIT_SSH_COMMAND`` (shell-interpreted) overrides ``core.sshCommand``
-    (same shell form) overrides ``GIT_SSH`` — a program path only, which may
-    even contain spaces, so no OpenSSH option can be added without changing
-    the documented form; the probe refuses that selection instead.
+    (same shell form) overrides ``GIT_SSH`` — a program pathname, not a
+    shell command. A recognized ordinary OpenSSH pathname (``…/ssh``) keeps
+    the SAME selected executable — never split or substituted — and gains
+    BatchMode through Git's shell-form override with the pathname safely
+    quoted; any other pathname (wrappers, paths with spaces) stays bounded-
+    unavailable because no option can be added without changing it.
     """
     shell_command = env.get("GIT_SSH_COMMAND")
     if not shell_command and project is not None:
@@ -224,7 +228,12 @@ def _resolve_ssh_command(project: Path | None, env: dict[str, str]) -> str | Non
                 shell_command = configured
     if shell_command:
         return _ssh_batch_shell_command(shell_command)
-    if env.get("GIT_SSH"):
+    program_path = env.get("GIT_SSH")
+    if program_path:
+        if Path(program_path).name == "ssh" and not any(
+            character.isspace() for character in program_path
+        ):
+            return f"{shlex.quote(program_path)} {_SSH_BATCH_OPTION}"
         return None
     return f"ssh {_SSH_BATCH_OPTION}"
 
@@ -288,6 +297,26 @@ def _probe_repository(
     return GitRepositoryStatus(is_repository=True, branch=branch, clean=clean)
 
 
+def _is_ssh_transport(raw_url: str) -> bool:
+    """Whether the selected effective remote URL actually uses SSH.
+
+    Recognizes ordinary ``ssh://`` URLs and scp-like ``[user@]host:path``
+    forms. Any other scheme (https, git, file, …) and plain local paths are
+    NOT SSH: incidental punctuation in a local path never scopes the SSH
+    refusal to it (review F4).
+    """
+    stripped = raw_url.strip()
+    if stripped.startswith("ssh://"):
+        return True
+    if "://" in stripped:
+        return False
+    head = stripped.split("/", 1)[0]
+    if ":" not in head:
+        return False
+    host = head.split(":", 1)[0]
+    return "@" in host or "." in host
+
+
 def _probe_remote(
     project: Path,
     remote: str | None,
@@ -314,8 +343,12 @@ def _probe_remote(
             failure_code=None,
             failure_message=None,
         )
-    url = _bounded(_sanitize_credentials(url_result.stdout))
-    if ssh_unavailable:
+    raw_url = (url_result.stdout or "").strip()
+    url = _bounded(_sanitize_credentials(raw_url))
+    if ssh_unavailable and _is_ssh_transport(raw_url):
+        # SSH-specific inability refuses only a remote that actually uses
+        # SSH; HTTPS/local/file transports proceed with their own credential
+        # mechanisms (review F4).
         code = "probe_unavailable"
         message = (
             "the configured SSH selection cannot be made noninteractive for "
