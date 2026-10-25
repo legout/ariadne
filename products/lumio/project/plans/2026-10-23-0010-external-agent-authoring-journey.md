@@ -8,8 +8,18 @@ scope. No target integration, push, PR publication, release or production access
 Harness human confirmations and fixture-remote/service selection remain required
 when their planned steps are reached; never fabricate them.
 
-Status: approved for supervised isolated execution. Plan revision: 4.
-Date: 2026-10-24.
+Status: prior slices approved for supervised isolated execution; revision 5's J5a
+decomposition is prepared for review before implementation. Plan revision: 5.
+Date: 2026-10-25.
+
+Scoped setup amendment — 2026-10-25: the owner selected previewed, confirmed
+empty-KB creation with explicit namespace/authoring location, retaining explicit
+adoption for nonempty KBs, and requested spec0010/plan0010 reconciliation before
+implementation. Specification revision 5 §2.2/AC12 owns that resolved behavior.
+This revision adds one sequential J5a slice and its agent-facing confirmation
+interface below. No product implementation is part of this reconciliation;
+earlier isolated execution authority does not imply that J5a has been implemented
+or its new interface reviewed. Target integration/publication remain excluded.
 
 Scoped execution amendment — 2026-10-24: the owner approved the proposed J4 exchange
 amendment, directed reconciliation of specification0010, ADR-0031 and this plan,
@@ -18,14 +28,15 @@ adds private per-attempt staging and conditional final copy, operator-managed
 residue, and an explicit service capability requirement. No dependency change,
 public interface change, target integration, push or publication is authorized.
 
-Readiness: approved spec0010 revision 4 includes metadata-only bootstrap, the
-shared §2.1 private profile contract and the scoped §6 exchange amendment.
+Readiness: approved spec0010 revision 5 includes metadata-only bootstrap, the
+shared §2.1 private profile contract, the scoped §6 exchange amendment and
+confirmed empty-KB creation with explicit nonempty adoption in §2.2.
 Ariadne spec0033 revision 1 and its public consumption contracts remain unchanged.
 
 ## Goal, authority and capture
 
 Deliver the complete BB + Pi document contribution journey in
-[specification 0010 revision 4](../specs/2026-10-23-0010-external-agent-authoring-journey.md),
+[specification 0010 revision 5](../specs/2026-10-23-0010-external-agent-authoring-journey.md),
 including independent contributor/maintainer environments and the private
 S3-compatible exchange with manual bundle fallback.
 
@@ -46,10 +57,18 @@ ADR-0026's amendment and Lumio §2.1 and requested this reconciliation, again
 excluding implementation at that planning stage. The owner subsequently granted
 execution and approved the J4 amendment. Revision 4 records it in spec §6, the
 transfer transport decomposition, J4/V4 and later operator guidance; ADR-0031
-records why. Temporary staging introduces no new domain term.
+records why. Temporary staging introduces no new domain term. Revision 5 captures
+the owner's empty-KB setup decision in §2.2/AC12 and J5a/V5a. Existing namespace,
+Control File and Source Reference Manifest terms suffice; no glossary addition
+or ADR amendment is needed. This is ordinary confirmed creation within ADR-0029,
+not a new authoring lifecycle. Shared private-profile format/public signatures,
+ADR-0031 and Ariadne spec0033 remain unchanged. J5a's concrete interface and
+decomposition below await review before dispatch; the behavior choice is resolved.
 Planning Contract version 1; installed skill revision provenance unknown.
-Baseline inspected: `dcc95a9`. No tests or runtime changes were made during
-planning. Test names below are planned checks, not passing evidence.
+Initial baseline inspected: `dcc95a9`; J5a's existing setup/profile/manifest seams
+were inspected at reviewed J5 result `6e5bc981`. No tests or runtime changes were
+made during this planning reconciliation. New test names below are planned checks,
+not passing evidence; prior execution evidence remains in the existing run state.
 
 ## Ariadne applicability and scope boundary
 
@@ -171,6 +190,42 @@ existing commands and their JSON contracts.
 | `source-exchange download --id <id> --digest <sha256> --exchange <s3-uri> --output <file> --json` | `download_source_transfer(transfer_id, digest, *, exchange, output_path) -> SourceTransfer` | `source_exchange.py`; both explicit artifact kinds |
 | `git-check <project> [--remote <name>] --json` | `check_git_connection(project, *, remote=None) -> GitConnectionReport` | `git_connection.py` |
 | `setup <kb> --journey --private-profile <file> [existing setup flags]` | existing setup composition | `cli.py` and `env_loader.py` |
+| `setup <kb> --journey --create-empty --namespace <namespace> --private-profile <file> [--confirm <setup-digest>] [--json]` | CLI composition; no new public SDK export | J5a; `cli.py`, internal `journey_setup.py`, shared private-profile validation |
+
+### Confirmed empty setup interface (J5a; revision 5 proposal)
+
+`--create-empty` explicitly selects §2.2 creation and requires `--journey`.
+`<kb>` is the author-selected path inside an existing registered Git worktree;
+the preview identifies its resolved repository root, branch and KB subtree.
+`--namespace` supplies the explicit namespace (interactive setup may collect it
+when omitted). Namespace is never silently generated or taken from an unrelated
+profile. The profile must agree with the selection. Setup never creates/switches
+Git branches or commits; native Git prepares the chosen worktree beforehand.
+
+Without `--confirm`, a noninteractive call validates and returns a read-only
+preview. `--confirm <setup-digest>` authorizes the exact freshly revalidated
+preview; a mismatch refuses before writes. Interactive setup uses the same
+preview/apply path and explicit confirmation after collecting required choices.
+With a missing private-profile file, only the existing interactive collection
+may propose its contents; noninteractive callers select a valid existing profile.
+All creation routes validate the proposed manifest/namespace/profile before any
+target writes, without weakening ordinary adopted-KB validation.
+
+The creation-only `--json` envelope uses `schema_version: 1`, `ok`,
+`operation: setup_empty`, `phase: preview|applied`, `ready`, `setup_digest`,
+`authoring` (repository root, branch, subtree, current commit or explicit unborn
+state), `namespace`, `actions`, `blockers` and `next_actions`. Actions identify
+local paths and create/update/install intentions without credentials. Only the
+local preview carries private locations. `setup_digest` is SHA-256 of canonical
+JSON for the selected authoring identity, namespace, action paths/content hashes,
+private non-secret declaration and relevant existing/absent input fingerprints;
+exclude diagnostic timing, live credential values and capability messages.
+No persisted setup-approval database or receipt is introduced. Errors use the
+existing bounded versioned envelope, including `invalid_empty_setup`,
+`setup_confirmation_mismatch`, `setup_target_changed`, `adoption_required` and
+`setup_incomplete`; preview blockers are not approval. Existing setup without
+`--create-empty` retains its output contract. Reuse existing submission settings
+and optional skill flags rather than adding another configuration source.
 
 ### Shared private profile interface (JP; consumed by Ariadne A1)
 
@@ -564,6 +619,11 @@ the same importer, with no dependency on exchange availability after import.
 
 ## J5 — Guide setup, connection checks and skill refresh
 
+Execution note: the original J5 diagnostic/setup surface and F1–F5 repairs have
+scoped passing reviews through frozen result `6e5bc981`; this does not satisfy
+the newly resolved empty-creation requirement. J5a completes that requirement
+before J6. Reuse applicable J5 evidence rather than reopening settled findings.
+
 - [ ] Add read-only Git diagnosis and journey setup composition, including required
   retention, explicit private profile creation/selection and submission mode.
   Use JP's resolver rather than a second profile parser. Exchange credentials stay
@@ -595,6 +655,98 @@ tests cover atomic replacement; no duplicate suite. Actual SSH/HTTPS credential
 mechanisms are exercised by the selected harness qualification, not inferred from
 the local-remote test. Final candidate review includes this boundary.
 
+## J5a — Preview and confirm empty managed-KB creation
+
+One sequential vertical slice, dependent on reviewed J5 and the owner-approved
+spec §2.2/AC12. Real caller: an external agent invokes setup without a TTY, or an
+operator uses the interactive wizard. Inputs are operator-selected local paths,
+namespace and private profile, not hostile content; existing no-overwrite,
+containment and confirmation guarantees remain binding. Security: no new network,
+credential or dependency boundary; preserve JP's private-path/secret guarantees.
+Risk is premature/incorrect local writes and accidental adoption of existing
+content, not an invented malicious-operator threat model.
+
+- [ ] Add the creation interface above and a single internal preview/apply path.
+  Discover the containing registered worktree read-only from the selected path's
+  nearest existing parent when the KB directory is absent; use native Git facts
+  and explicit named-branch/unborn state. Reuse namespace/manifest validation and
+  seeded Control File generation. Refuse nonempty or conflicting targets before
+  any creation. Do not require the nonexistent KB directory to pass an API whose
+  precondition is an existing directory, and do not make it exist to bypass that
+  precondition.
+- [ ] Factor only the private-profile declaration/schema/namespace/containment
+  validation needed to validate a prospective KB. Keep one implementation called
+  by the existing public loader and setup's preview, with explicit repository root
+  and namespace passed internally. Public `load_private_profile` and
+  `resolve_private_profile` signatures, existing adopted-KB checks and all JP
+  assertions remain unchanged. Never write a temporary target manifest or resolve
+  artifact/exchange credentials just to validate an empty setup.
+- [ ] Collect required choices and profile declarations before the preview;
+  preview all intended writes, then recheck and apply only confirmed actions.
+  Create the seeded Control File and namespace-bound manifest with empty sources
+  and bindings. Reuse existing project-setting/skill mechanisms after confirmation,
+  preserving local modifications and explicit skill-update choices. Refuse target
+  or branch drift before apply; never overwrite content that appeared meanwhile.
+  Expected filesystem errors produce bounded incomplete results identifying
+  operation-owned residue. Do not delete operator files or add a generic rollback
+  framework. Rerun selects matching existing managed state or explains conflict;
+  it never reinitializes it.
+- [ ] Preserve ordinary adopted-KB selection and explicit nonempty adoption.
+  Replace the blanket "create and adopt first" guidance for eligible empty targets
+  with the previewed route, while giving actionable prerequisites for nonempty
+  unadopted content and missing Git worktrees. Update the setup-generated AGENTS
+  guidance in the same slice; it must not claim that empty setup requires manual
+  manifest authoring. Never infer existing source identities/private history.
+
+Files: create internal `src/lumio_wiki/journey_setup.py` for the ephemeral setup
+plan, digest and guarded apply; modify `cli.py` for interaction/serialization and
+`private_profile.py` for the shared internal validation seam. Add
+`tests/test_journey_setup_creation.py`; retain `test_journey_setup.py` assertions,
+adapting only input instrumentation when question order changes. No new public
+SDK exports, profile schema/version, environment variables or base dependencies.
+`source_references.py`, `knowledge_base.seeded_control_file`/`write_control_file`,
+`git_authoring.resolve_repository` and
+existing Git plumbing are consumed; don't refactor their settled lifecycle.
+If the private-profile factoring cannot preserve its public contract, return the
+specific conflict to the owner before widening JP or Ariadne scope.
+
+Validation V5a, `new-test`, at the public setup CLI seam:
+
+- `test_empty_journey_setup_preview_confirm_and_retry`: hand-authored namespace,
+  selected worktree/branch and outside private profile; independent before/after
+  filesystem and Git index/ref snapshots. Preview writes nothing; confirmation
+  creates only previewed setup files, whose manifest parses with the exact selected
+  namespace and empty maps; normal KB validation passes, private history remains
+  empty, native Git still owns commits. Retry preserves content. Cover headless
+  preview/confirm and the same interactive confirmation path without duplicating
+  the existing credential/skill tests.
+- `test_empty_journey_setup_refuses_without_writes`: a compact family for declined
+  confirmation, missing/invalid namespace/profile selection, changed authoring
+  identity or newly occupied target, existing unadopted content and invalid private
+  containment. Expected results come from §2.2's stated rules and pre-call facts;
+  use directory snapshots including absent parent directories. A named write-failure
+  seam checks honest incomplete reporting and preservation of pre-existing files.
+
+One focused new module establishes the creation boundary; no manufactured RED is
+required for this new feature. Before factoring private-profile validation, pin its
+existing schema/namespace/containment behavior with applicable existing checks;
+reuse those results until the factoring changes their code, then rerun those
+affected cases. Reuse all unrelated J0–J4 evidence. Existing J5 selection/privacy/
+confirmation tests run once against the changed setup route, preserving every
+assertion. No test is added merely for another layer or a percentage target.
+From `products/lumio`, the new focused command is:
+
+```sh
+uv run --locked pytest -q packages/lumio-wiki/tests/test_journey_setup_creation.py
+```
+
+The parent binds exact affected existing JP/J5 selectors and scoped lint to the
+implementation grant after preflight; no broader repeated suites. Review the
+changed confirmation/mutation boundary before J6 consumes it, with one authorized
+fix pass and one delta recheck. Completion: AC12 demonstrated, existing adoption/
+profile contracts preserved, exact committed result reviewed. No publication or
+target integration follows. J6 supplies packaged guidance and harness qualification.
+
 ## J6 — Package the skill and qualify the full journey
 
 - [ ] Update `data/skill/SKILL.md`, `data/skill/PROTOCOL.md`, `docs/quickstart.md`,
@@ -605,6 +757,10 @@ the local-remote test. Final candidate review includes this boundary.
   submission results. Link approved Ariadne spec/plan0033 and distinguish its separately
   delivered integrated admission from standalone Lumio; CLI configuration alone
   cannot qualify the Core journey.
+- [ ] Teach J5a's preview/confirm empty-create route, native-Git worktree prerequisite,
+  explicit namespace and separate nonempty adoption path in those same documents.
+  Do not describe a fresh contributor clone as a new empty KB or replace AC11's
+  metadata-bootstrap start with an easier empty-KB demonstration.
 - [ ] Add `examples/external-agent-journey/README.md` with the deterministic
   synthetic source/expected output and a manual BB + Pi recipe. Keep this as the
   product's reproducible usage example, not another sign-off ledger.
@@ -620,7 +776,7 @@ the local-remote test. Final candidate review includes this boundary.
   repository/remote/store. Native Git hosting checks use a disposable authorized
   repository, not a customer repository. Keep tests synthetic and owned.
 
-Depends on all previous slices; covers full AC1–11 integration and AC4 PR retries.
+Depends on all previous slices including J5a; covers AC1–12 integration and AC4 PR retries.
 Validation V6, `existing-check` plus the required harness journey: tests establish
 deterministic contracts; the host run establishes attachment access, actual skill
 use, readable display, human confirmations, native GitHub submission and separate
@@ -649,7 +805,7 @@ recheck; remaining blockers return to the owner.
 
 | Spec AC | Tasks |
 | --- | --- |
-| 1 | JP, J5, J6 |
+| 1 | JP, J5, J5a, J6 |
 | 2 | J1, J6 |
 | 3 | J2, J6 |
 | 4 | J2, J5, J6 |
@@ -658,9 +814,10 @@ recheck; remaining blockers return to the owner.
 | 7 | J3, J4 |
 | 8 | J3 |
 | 9 | J3, J6 and retained exact-revision publication checks |
-| 10 | JP, J0–J6 with native export/reader checks |
+| 10 | JP, J0–J6 including J5a with native export/reader checks |
 | 11 | J0, J1, J4, J5, J6 |
-| §2.1 shared profile | JP, J5, J6; Ariadne A1/A3 consume and qualify |
+| 12, §2.2 | J5a, J6 guidance/integration |
+| §2.1 shared profile | JP, J5, J5a (internal validation reuse only), J6; Ariadne A1/A3 consume and qualify |
 
 Focused commands (after execution approval), from `products/lumio`:
 
@@ -689,12 +846,14 @@ are outside this plan.
 
 ## Review readiness and remaining boundaries
 
-This is proposed plan revision 3 for approved spec0010 revision 3. D0 is resolved;
-JP and J2 define the public producer seams consumed by Ariadne plan0033. The shared
-profile contract is approved; its exact representation and decomposition above
-are proposed for plan review. No unresolved owner behavior decision blocks this
-handoff, and no implementation authority is granted. Freeze accepted producer
-interfaces before dependent Core work; material contract changes return to shaping.
+This is plan revision 5 for approved spec0010 revision 5. D0 and the empty-create
+versus nonempty-adoption choice are resolved. Prior slices retain their execution
+authority and scoped evidence; J5a's new confirmation interface/decomposition is
+prepared for review before implementation. No new product code was written during
+this reconciliation. JP/J2 public producer interfaces consumed by Ariadne plan0033
+stay unchanged; J5a's internal validation reuse does not grant Core project
+creation/adoption. Review the concrete J5a plan before dispatch. Integration,
+publication and the selected harness's real human confirmations remain separate.
 
 Ariadne plan0033 owns Core Git diagnostics, managed-source admission, composed
 review and integrated qualification. It shares producer interfaces/evidence, not

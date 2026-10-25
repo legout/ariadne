@@ -1,7 +1,15 @@
 # Specification 0010: External-agent authoring journey
 
-Status: approved design with scoped owner amendments. Written revision: 4.
-Date: 2026-10-24.
+Status: approved design with scoped owner amendments. Written revision: 5.
+Date: 2026-10-25.
+
+Approved scoped amendment, 2026-10-25: in BB thread `thr_52d92z7irz`, the owner
+selected previewed, confirmed empty-KB creation in guided setup, with explicit
+namespace and authoring location, while preserving explicit adoption for nonempty
+KBs. The owner directed reconciliation of this specification and plan0010 before
+implementation. Revision 5 resolves that setup scope in §2.2 and AC12. This
+reconciliation changes documentation only; the new setup slice is not implemented
+or qualified by the earlier J5 checks.
 
 Approved scoped amendment, 2026-10-24: in BB thread `thr_52d92z7irz`, the owner
 approved the proposed J4 exchange amendment and directed reconciliation of this
@@ -33,9 +41,10 @@ The owner selected skill + CLI + native Git as the first complete supported
 journey, independent contributor and maintainer environments, BB with Pi as the
 first qualified harness, and a private S3-compatible exchange with manual bundle
 fallback. Revision 1 and implementation planning were explicitly approved, followed
-by scoped bootstrap, private profile and J4 exchange amendments. The owner later
-approved supervised execution through the implementation plan and reconfirmed J4
-implementation and validation on 2026-10-24.
+by scoped bootstrap, private profile, J4 exchange and empty-KB setup amendments.
+Supervised execution was approved through the implementation plan, with J4
+implementation and validation reconfirmed on 2026-10-24. The 2026-10-25 setup
+decision requires the revision 5 reconciliation before its implementation.
 
 This specification owns the conversational document-authoring journey in
 `lumio-wiki`: guided setup, extraction, original retention, multi-page authoring,
@@ -145,8 +154,68 @@ and signatures must be frozen in the reconciled plan before implementation.
 This additive setup/resolver contract changes no transfer format, native page
 profile or reader API. Ariadne specification 0033 owns how Core binds the
 resolved choices into overall review and rechecks them at confirmation. Plan0010
-revision 3 captures the interface/setup/qualification changes. Its decomposition
-remains proposed; no implementation is authorized.
+revision 3 originally captured these interface/setup/qualification changes for
+review; the later execution grant authorized that existing slice. Revision 5's
+prospective-KB validation reuse preserves those public contracts.
+
+### 2.2 Confirmed empty-KB creation and existing-content adoption
+
+Guided setup distinguishes creating an empty managed KB from selecting an
+already-adopted KB. Creation requires an explicitly selected KB path and Knowledge
+Base Namespace, and a preview identifying the containing registered Git worktree,
+current branch and KB subtree. The user selects that authoring location; setup
+does not infer it from a publication destination or private profile. Native Git
+prepares the repository/branch/worktree when needed; setup gives actionable
+guidance for that prerequisite and does not silently initialize Git, switch
+branches, stage files, commit or push. An unborn named branch is allowed; the
+first Authoring Revision is still created explicitly with native Git.
+
+The creation target must be absent or an empty directory in that selected
+worktree. A repository-root target may contain its own Git administration entry;
+other existing entries, including ignored content, make it ineligible for empty
+creation. Existing Control Files, manifests or pages are not overwritten or
+reinterpreted as an empty KB. Resolved paths must remain inside the selected
+worktree. Detached/bare locations, ambiguous destinations and conflicting targets
+are refused before writes with guidance to choose an authoring branch/location.
+
+Resolve required submission choices and validate the namespace, prospective
+Source Reference Manifest, private profile and private storage locations before
+creating any KB/profile/configuration file or parent directory. Reuse §2.1's
+schema and containment validation against the proposed namespace/repository;
+do not create a temporary manifest in the target to make validation possible.
+Required retention remains mandatory. Empty setup requires no source history,
+artifact/exchange credential resolution, source import or publication permission.
+
+Show one concrete preview of the selected repository/branch/subtree, namespace,
+new Control File and empty Source Reference Manifest, any proposed private profile,
+and the exact project-setting/AGENTS/skill actions selected for setup. Private
+locations appear only in local setup output, never authored KB files. Confirmation
+authorizes those displayed changes only. The noninteractive route previews by
+default and requires a confirmation tied to that preview; an agent obtains the
+human's decision before applying it. The interactive route collects selections,
+shows the same preview and asks for confirmation. Refusal, cancellation and
+invalid/missing selections produce no setup writes. Recheck the selected branch,
+destinations and relevant input bytes before apply; changed inputs require a new
+preview, not silent substitution.
+
+Confirmed creation writes the normal seeded Control File and a valid v1 Source
+Reference Manifest containing the chosen namespace with empty `sources` and
+`bindings`. There are no invented pages, Source Versions, provenance records or
+retained artifacts. Keep private profile/configuration outside versioned content
+under the existing rules. Report created paths and remaining native-Git actions
+truthfully. An I/O failure reports incomplete setup and any operation-owned residue,
+never success; it must not overwrite or delete pre-existing operator content.
+A retry never reinitializes a created KB: select an existing matching managed KB
+or refuse a conflicting/incomplete target with explicit recovery guidance.
+
+For a nonempty already-adopted KB, preserve its namespace and exact bindings and
+continue existing setup/baseline guidance. For nonempty content without a valid
+Source Reference Manifest, stop the managed setup with an explicit adoption
+prerequisite: select the namespace and review source identities/exact bindings
+through the existing Git-authoring adoption contract before returning. Creating
+an empty manifest over those pages, inferring private history, or automatically
+adopting legacy content is outside this amendment. This also applies to existing
+lower-level KB scaffolding that has not been explicitly adopted.
 
 ## 3. Source reading and complete candidate authoring
 
@@ -419,6 +488,14 @@ No silent global skill replacement, format migration or private-app work.
     still refuses until the missing originals are actually retained. The maintainer
     can publish using its retained baseline originals plus the new contribution's
     full source handoff. The BB + Pi journey must start from this nonempty baseline.
+12. An agent or interactive user previews a new empty KB at an explicit authoring
+    location and namespace, then confirms exactly that setup. Preview/cancellation,
+    invalid selections and changed preconditions leave no setup writes; confirmed
+    creation yields a valid empty managed KB and no fabricated source history.
+    Retry preserves created/existing content. Nonempty adopted selection preserves
+    namespace/bindings; unadopted or conflicting nonempty content receives explicit
+    adoption guidance without modification. This check supplements, never replaces,
+    AC11's nonempty-baseline independent-environment qualification.
 
 Qualification includes one real BB + Pi attachment/review journey with two
 independent environments and a private S3-compatible exchange, plus focused
@@ -443,3 +520,12 @@ Ariadne impact is reconciled with separately approved
 [Ariadne spec0033](../../../ariadne/project/specs/2026-10-23-0033-managed-knowledge-authoring.md)
 and plan0033. J4 changes no public transfer/import interface and needs no Ariadne
 contract amendment; that source continues owning the Core admission extension.
+Revision 5 uses the existing Knowledge Base Namespace, Control File, Source
+Reference Manifest and native Git authoring terms; no glossary addition or new
+ADR is needed. Confirmed empty initialization is setup composition within ADR-0029,
+not a new authoring/admission lifecycle; ADR-0031's transfer decisions are unchanged.
+The §2.1 public resolver and profile format remain compatible for Ariadne. Integrated
+Core project creation/adoption remains owned by spec0033 and is not added here.
+The owner settled the empty-create versus explicit-nonempty-adoption choice;
+plan0010 revision 5 makes its implementation/confirmation details reviewable
+before the new slice starts. No product implementation occurred in this revision.
