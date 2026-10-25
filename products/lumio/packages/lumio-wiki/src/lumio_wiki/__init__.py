@@ -519,6 +519,11 @@ from lumio_wiki.authoring_review import (
     review_authoring_candidate,
     review_knowledge_changes,
 )
+from lumio_wiki.git_connection import (
+    REPORT_SCHEMA_VERSION as GIT_CONNECTION_SCHEMA_VERSION,
+    GitConnectionReport,
+    check_git_connection,
+)
 
 __all__ = [
     "ACTIVITY_LOG_ARTIFACT",
@@ -976,6 +981,9 @@ __all__ = [
     "load_authoring_review_report",
     "review_authoring_candidate",
     "review_knowledge_changes",
+    "GIT_CONNECTION_SCHEMA_VERSION",
+    "GitConnectionReport",
+    "check_git_connection",
 ]
 
 __version__ = "0.5.1"

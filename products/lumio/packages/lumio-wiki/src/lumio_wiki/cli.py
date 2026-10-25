@@ -79,6 +79,8 @@ from lumio_wiki.citation_actions import (
 )
 from lumio_wiki.env_loader import (
     ARTIFACT_RETENTION_ENV_VAR,
+    GIT_REMOTE_ENV_VAR,
+    GIT_TARGET_BRANCH_ENV_VAR,
     KB_PATH_ENV_VAR,
     PUBLISH_TO_ENV_VAR,
     READER_BASE_URL_ENV_VAR,
@@ -87,6 +89,7 @@ from lumio_wiki.env_loader import (
     SOURCE_EXCHANGE_ENV_VAR,
     SOURCE_REGISTRY_ENV_VAR,
     SOURCE_STORE_ENV_VAR,
+    SUBMISSION_MODE_ENV_VAR,
     discover_kb_path_from_project_env,
     discover_nearest_env_file,
     load_project_config,
@@ -1270,6 +1273,267 @@ def _clone_git_kb(url: str) -> Path:
     return target
 
 
+def _git_read_lines(repo_root: Path, *git_args: str) -> list[str]:
+    """Run one read-only Git query, returning clean stdout lines (never raises)."""
+    try:
+        result = subprocess.run(
+            ["git", "--no-optional-locks", "-C", str(repo_root), *git_args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+
+
+def _resolve_journey_profile(args: argparse.Namespace, *, kb_path: Path, interactive: bool):
+    """Load the explicitly selected private profile — or create it only after
+    an interactive preview and confirmation (spec 0010 §2.1, plan 0010 J5).
+
+    Noninteractive setup never invents a profile. The created file is this
+    flow's own residue: an invalid selection is removed again so a refusal
+    leaves nothing behind. The profile path itself is never persisted in
+    tracked content.
+    """
+    from lumio_wiki.private_profile import PrivateProfileError, load_private_profile
+    from lumio_wiki.source_references import load_source_reference_manifest
+
+    profile_path: Path = args.private_profile
+    if profile_path.exists():
+        try:
+            return load_private_profile(profile_path, kb_root=kb_path)
+        except PrivateProfileError as exc:
+            raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+    manifest = load_source_reference_manifest(kb_path)
+    if manifest is None:
+        raise CliError(
+            "--journey requires an adopted Git-authoring Knowledge Base with a "
+            "Source Reference Manifest; adopt one first, then re-run setup --journey",
+            exit_code=2,
+            code="invalid_private_profile",
+        )
+    home = Path.home()
+    registry_default = home / ".lumio" / "registries" / manifest.namespace
+    store_default = home / ".lumio" / "artifacts" / manifest.namespace
+    registry_raw = _wizard_ask(
+        f"Private Source Registry directory [{registry_default}]: ",
+        default=str(registry_default),
+    ) or str(registry_default)
+    store_raw = _wizard_ask(
+        f"Private artifact store directory [{store_default}]: ",
+        default=str(store_default),
+    ) or str(store_default)
+    payload = {
+        "schema_version": 1,
+        "namespace": manifest.namespace,
+        "source_registry": str(Path(registry_raw).expanduser().resolve()),
+        "retention": "required",
+        "artifact_store": {
+            "kind": "local",
+            "root": str(Path(store_raw).expanduser().resolve()),
+        },
+    }
+    preview = json.dumps(payload, indent=2, sort_keys=True)
+    print(f"New private profile preview ({profile_path}):")
+    print(preview)
+    answer = _wizard_ask(
+        "Write this private profile? [y/N] ",
+        default="n",
+        choices={"y": "y", "yes": "y", "n": "n", "no": "n"},
+    )
+    if answer != "y":
+        return None
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
+    profile_path.write_text(preview + "\n", encoding="utf-8")
+    print(f"  private profile: {profile_path}")
+    try:
+        return load_private_profile(profile_path, kb_root=kb_path)
+    except PrivateProfileError as exc:
+        with suppress(OSError):
+            profile_path.unlink()
+        raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+
+
+def _resolve_journey_registry(profile, *, kb_path: Path):
+    """Open only the profile's Source Registry through the JP resolver (§2.1).
+
+    Registry-only needs keep artifact/exchange credentials untouched:
+    metadata-bootstrap readiness never requires them (plan 0010 J5).
+    """
+    from lumio_wiki.private_profile import (
+        PrivateProfileError,
+        resolve_private_profile,
+    )
+
+    try:
+        resolved = resolve_private_profile(profile, kb_root=kb_path, needs=frozenset({"registry"}))
+    except PrivateProfileError as exc:
+        raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+    return resolved.source_registry
+
+
+def _journey_submission_settings(kb_path: Path, *, interactive: bool) -> dict[str, str | None]:
+    """Select the submission mode and Git remote/target branch (spec 0010 §2).
+
+    Interactive setup asks with bracketed defaults; noninteractive setup takes
+    the safe local-commit default and records remote/branch only when they are
+    unambiguous (configured 'origin', current branch). Everything recorded is
+    printed; nothing is guessed silently.
+    """
+    repo_root: Path | None = None
+    from lumio_wiki.git_authoring import GitAuthoringError, resolve_repository
+
+    try:
+        repo_root, _subtree = resolve_repository(kb_path)
+    except GitAuthoringError:
+        repo_root = None
+    remotes = _git_read_lines(repo_root, "remote") if repo_root is not None else []
+    current = (
+        _git_read_lines(repo_root, "symbolic-ref", "--quiet", "--short", "HEAD")
+        if repo_root is not None
+        else []
+    )
+    current_branch = current[0] if current else None
+    if interactive:
+        mode = (
+            _wizard_ask(
+                "Submission mode after confirmation: [c]ommit locally or [p]ull-request? ",
+                default="commit",
+                choices={
+                    "c": "commit",
+                    "commit": "commit",
+                    "p": "github-pr",
+                    "pr": "github-pr",
+                    "github-pr": "github-pr",
+                },
+            )
+            or "commit"
+        )
+        default_remote = "origin" if not remotes or "origin" in remotes else remotes[0]
+        remote_name = _wizard_ask(
+            f"Git remote for submissions [{default_remote}]: ",
+            default=default_remote,
+        )
+        default_branch = current_branch or "main"
+        target_branch = _wizard_ask(
+            f"Git target branch [{default_branch}]: ", default=default_branch
+        )
+    else:
+        mode = "commit"
+        remote_name = "origin" if "origin" in remotes else (remotes[0] if remotes else None)
+        target_branch = current_branch
+    return {"mode": mode, "remote": remote_name, "branch": target_branch}
+
+
+def _print_journey_report(
+    args: argparse.Namespace,
+    *,
+    project_dir: Path,
+    kb_path: Path,
+    profile,
+    registry,
+    submission: dict[str, str | None] | None,
+) -> None:
+    """Print the read-only journey readiness report (plan 0010 J5).
+
+    Reports baseline-metadata coverage, exchange capability truthfully
+    (configuration alone proves nothing), the separate publication boundary,
+    skill drift with an explicit update path, and the read-only connection
+    check. Nothing here mutates repositories, stores or skills.
+    """
+    from lumio_wiki.source_references import load_source_reference_manifest
+
+    print()
+    print("Guided authoring journey (spec 0010 §2):")
+    print(
+        f"  private profile: namespace={profile.namespace}, "
+        f"retention={profile.retention} (file stays outside versioned content)"
+    )
+    manifest = load_source_reference_manifest(kb_path)
+    missing: list[str] = []
+    if manifest is not None and registry is not None:
+        for entity_id, bindings in sorted(manifest.bindings.items()):
+            for source_id, digest in sorted(bindings.items()):
+                if registry.find_version(source_id, digest) is None:
+                    missing.append(f"{entity_id} -> {source_id} ({digest[:12]}...)")
+    if missing:
+        print("  baseline metadata: MISSING exact registered versions for:")
+        for item in missing[:10]:
+            print(f"    {item}")
+        print(
+            "    Obtain the maintainer's exact-base Source Baseline Snapshot and its "
+            "expected\n"
+            "    digest (maintainer-approved setup or direct operator selection), then "
+            "preview\n"
+            "    and explicitly confirm its import — setup imports nothing by itself:"
+        )
+        print(
+            "      lumio-wiki source-bootstrap inspect <kb> --snapshot <file> "
+            "--digest <sha256>\\n"
+            "        --revision <full-commit> --source-registry <private-registry>"
+        )
+        print(
+            "      lumio-wiki source-bootstrap import <kb> --snapshot <file> "
+            "--digest <sha256>\\n"
+            "        --revision <full-commit> --source-registry <private-registry> "
+            "--confirm <preview-digest>"
+        )
+    elif manifest is not None:
+        print(
+            "  baseline metadata: every current manifest binding resolves to an "
+            "exact registered version"
+        )
+    if profile.exchange is not None:
+        print(
+            "  exchange: configured. Automated transfer additionally requires multipart "
+            "upload\n"
+            "    and atomic conditional server-side copy; capability is proven only by "
+            "an\n"
+            "    actual transfer, never by configuration. Private staging objects and "
+            "incomplete multipart\n"
+            "    uploads are operator-managed residue; manual bundle transfer remains "
+            "available."
+        )
+    else:
+        print(
+            "  exchange: not configured; private bundle transfer uses the manual route "
+            "(spec 0010 §6)."
+        )
+    print(
+        "  publication: authoring and handoff need no publication credentials; a "
+        "publication\n"
+        "    destination and its credentials remain a separate maintainer selection."
+    )
+    agent = getattr(args, "agent", None)
+    scope = getattr(args, "skill_scope", None)
+    if agent is not None or scope is not None:
+        from lumio_wiki.skill import SkillError, skill_status
+
+        try:
+            status = skill_status(agent, scope=scope, project_dir=project_dir)
+            print(f"  skill: {status.state} ({status.target})")
+            if status.state == "current":
+                print(
+                    "    up to date; explicit update stays available with 'lumio-wiki skill update'"
+                )
+            else:
+                print("    kept as installed; explicit update: 'lumio-wiki skill update'")
+                print("    restart the agent or start a new session after updating")
+        except SkillError as exc:
+            print(f"  skill: {exc}")
+    else:
+        print(
+            "  skill drift: not checked (no skill target selected); run 'lumio-wiki skill status'"
+        )
+    print(
+        f"  connection: verify remote access read-only with "
+        f"'lumio-wiki git-check {project_dir} --json'"
+    )
+
+
 def _cmd_setup(args: argparse.Namespace) -> int:
     """One-command project setup: KB + .env + AGENTS.md + optional skill install.
 
@@ -1325,6 +1589,78 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             "--publish-to records an S3 publication destination for a local "
             "Maintainer worktree; it cannot be combined with --from"
         )
+    # 1b. Guided journey selection (spec 0010 §2/§2.1, plan 0010 J5): the
+    # explicit private profile is required and exclusive, and nothing is
+    # written until the whole journey selection validates.
+    journey = bool(getattr(args, "journey", False))
+    profile_path: Path | None = getattr(args, "private_profile", None)
+    if profile_path is not None and not journey:
+        raise CliError(
+            "--private-profile selects the guided authoring journey: also pass --journey"
+        )
+    if journey:
+        if profile_path is None:
+            raise CliError(
+                "--journey requires an explicit --private-profile <file>: select an "
+                "existing private source profile, or run setup in an interactive "
+                "terminal to preview and confirm creating one (spec 0010 §2.1)",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+        if from_uri is not None and from_uri.startswith("s3://"):
+            raise CliError(
+                "--journey configures a local Git-authoring Knowledge Base; it cannot "
+                "combine with the read-only S3 --from form"
+            )
+        if source_store is not None or artifact_retention is not None:
+            raise CliError(
+                "private profile selection is exclusive: remove the competing "
+                "--source-store/--artifact-retention selection(s) or drop --journey "
+                "--private-profile (spec 0010 §2.1)",
+                exit_code=2,
+                code="conflicting_private_selection",
+            )
+        env_config = load_project_config()
+        env_competitors = [
+            variable
+            for variable in (
+                SOURCE_REGISTRY_ENV_VAR,
+                SOURCE_STORE_ENV_VAR,
+                ARTIFACT_RETENTION_ENV_VAR,
+                SOURCE_EXCHANGE_ENV_VAR,
+            )
+            if os.environ.get(variable) or env_config.get(variable)
+        ]
+        if env_competitors:
+            raise CliError(
+                "private profile selection is exclusive: remove the competing "
+                f"selection(s) {', '.join(env_competitors)} or drop --journey "
+                "--private-profile (spec 0010 §2.1)",
+                exit_code=2,
+                code="conflicting_private_selection",
+            )
+        if not profile_path.exists() and not (sys.stdin.isatty() and sys.stdout.isatty()):
+            raise CliError(
+                f"the selected private profile does not exist: {profile_path}. Pass "
+                "an existing --private-profile <file>; noninteractive setup never "
+                "invents a profile (spec 0010 §2.1)",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+        if (
+            from_uri is None
+            and kb_path is not None
+            and not (kb_path / "lumio.yaml").exists()
+            and not any(kb_path.glob("*.md"))
+        ):
+            raise CliError(
+                "--journey requires an adopted Git-authoring Knowledge Base with a "
+                "Source Reference Manifest; create and adopt the Knowledge Base "
+                "first, then re-run setup --journey (adoption never guesses private "
+                "history)",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
     # Bounded git transport (approved design 2026-09-15): an s3:// --from
     # value keeps the S3 reader path byte-for-byte; any other value is a git
     # clone URL that is cloned, validated, and recorded as LUMIO_KB_PATH.
@@ -1403,6 +1739,42 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             created = True
         kb_display = kb_path
 
+    # 3b. Guided journey composition (spec 0010 §2/§2.1, plan 0010 J5): the
+    # private profile is validated or interactively created and confirmed, and
+    # the journey machine settings are selected — all before any .env write.
+    journey_profile = None
+    journey_registry = None
+    journey_submission: dict[str, str | None] | None = None
+    journey_kb: Path | None = None
+    if journey:
+        if kb_path is None:
+            # Unreachable: journey refused the read-only S3 form above and the
+            # local form resolved a Knowledge Base path.
+            raise CliError("no local Knowledge Base resolved for the guided journey")
+        journey_kb = kb_path
+        journey_profile = _resolve_journey_profile(
+            args,
+            kb_path=journey_kb,
+            interactive=sys.stdin.isatty() and sys.stdout.isatty(),
+        )
+        if journey_profile is None:
+            print("journey setup aborted; nothing was written", file=sys.stderr)
+            return 1
+        if journey_profile.retention != "required":
+            raise CliError(
+                "the guided managed journey requires retention 'required' in the "
+                "selected private profile (spec 0010 §2.1); authoring and handoff "
+                "with 'disabled' retention stay available through the explicit "
+                "lower-level commands",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+        journey_registry = _resolve_journey_registry(journey_profile, kb_path=journey_kb)
+        journey_submission = _journey_submission_settings(
+            journey_kb,
+            interactive=sys.stdin.isatty() and sys.stdout.isatty(),
+        )
+
     # 4. Write .env (create or update each line only when configured this run).
     _upsert_env_var(env_path, KB_PATH_ENV_VAR, str(kb_display))
     print(f"  .env:           {env_path} ({KB_PATH_ENV_VAR}={kb_display})")
@@ -1418,6 +1790,27 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     if artifact_retention is not None:
         _upsert_env_var(env_path, ARTIFACT_RETENTION_ENV_VAR, artifact_retention)
         print(f"  .env:           {env_path} ({ARTIFACT_RETENTION_ENV_VAR}={artifact_retention})")
+    if journey and journey_submission is not None:
+        journey_mode = journey_submission["mode"] or "commit"
+        _upsert_env_var(env_path, SUBMISSION_MODE_ENV_VAR, journey_mode)
+        print(f"  .env:           {env_path} ({SUBMISSION_MODE_ENV_VAR}={journey_mode})")
+        if journey_submission["remote"] is not None:
+            _upsert_env_var(env_path, GIT_REMOTE_ENV_VAR, journey_submission["remote"])
+            print(
+                f"  .env:           {env_path} "
+                f"({GIT_REMOTE_ENV_VAR}={journey_submission['remote']})"
+            )
+        else:
+            print(
+                f"  .env:           {GIT_REMOTE_ENV_VAR} not recorded (no Git remote "
+                "configured); rerun setup interactively or set it in .env"
+            )
+        if journey_submission["branch"] is not None:
+            _upsert_env_var(env_path, GIT_TARGET_BRANCH_ENV_VAR, journey_submission["branch"])
+            print(
+                f"  .env:           {env_path} "
+                f"({GIT_TARGET_BRANCH_ENV_VAR}={journey_submission['branch']})"
+            )
 
     # 5. Write/append AGENTS.md unless --no-agents-md.
     if not getattr(args, "no_agents_md", False):
@@ -1479,6 +1872,15 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     # (issue #175), collected from the just-written configuration.
     print()
     _print_setup_status_summary()
+    if journey and journey_profile is not None and journey_kb is not None:
+        _print_journey_report(
+            args,
+            project_dir=project_dir,
+            kb_path=journey_kb,
+            profile=journey_profile,
+            registry=journey_registry,
+            submission=journey_submission,
+        )
     return 0
 
 
@@ -4986,6 +5388,49 @@ def _print_setup_status_summary() -> None:
     print(_render_status(status))
 
 
+def _cmd_git_check(args: argparse.Namespace) -> int:
+    """``git-check``: read-only Git connection diagnosis (spec 0010 §2, plan J5)."""
+    from lumio_wiki.git_connection import check_git_connection
+
+    report = check_git_connection(args.project, remote=args.remote)
+    if getattr(args, "json", False):
+        print(json.dumps(msgspec.to_builtins(report), indent=2, sort_keys=True))
+        return 0
+    tool = f"available ({report.tool.version})" if report.tool.available else "MISSING"
+    identity = (
+        f"{report.identity.user_name} <{report.identity.user_email}>"
+        if report.identity.configured
+        else "not configured"
+    )
+    repository = (
+        f"work tree (branch {report.repository.branch}, "
+        f"{'clean' if report.repository.clean else 'dirty'})"
+        if report.repository.is_repository
+        else "not a Git work tree"
+    )
+    if report.remote.configured:
+        remote = (
+            f"{report.remote.name} -> {report.remote.url}: read {report.remote.read}"
+            if report.remote.url is not None
+            else f"{report.remote.name}: read {report.remote.read}"
+        )
+        if report.remote.failure_code is not None:
+            remote += f" ({report.remote.failure_code})"
+    else:
+        remote = f"{report.remote.name}: not configured"
+    print(f"project:     {report.project}")
+    print(f"git:         {tool}")
+    print(f"identity:    {identity}")
+    print(f"repository:  {repository}")
+    print(f"remote:      {remote}")
+    print(f"push/PR:     {report.push_pr} (a successful read proves read access only)")
+    for blocker in report.blockers:
+        print(f"blocker:     {blocker}")
+    for line in report.guidance:
+        print(f"guidance:    {line}")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Retrieval evaluation harness (issue #138): recall@k per pipeline stage
 # against a versioned gold set, over the public retrieve seam. Model-free at
@@ -7039,6 +7484,33 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Replace a stale or corrupt skill when an install target is requested.",
     )
+    setup_parser.add_argument(
+        "--journey",
+        action="store_true",
+        help=(
+            "Configure the guided external-agent authoring journey (spec 0010 "
+            "§2): requires --private-profile with retention 'required', and "
+            "records the submission mode and Git remote/target branch machine "
+            "settings. Setup reports skill drift and baseline-metadata "
+            "readiness; it imports nothing and never persists private paths "
+            "in tracked content."
+        ),
+    )
+    setup_parser.add_argument(
+        "--private-profile",
+        dest="private_profile",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help=(
+            "Explicit private source profile (spec 0010 §2.1) for --journey: "
+            "an existing file is validated through the public resolver; a "
+            "missing file is previewed and written only after interactive "
+            "confirmation (never noninteractively). Exclusive: competing "
+            "--source-store/--artifact-retention and environment selections "
+            "are refused."
+        ),
+    )
     setup_parser.set_defaults(func=_cmd_setup)
 
     # init
@@ -8783,6 +9255,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_exchange_selection_arguments(exchange_download_parser)
     exchange_download_parser.set_defaults(func=_cmd_source_exchange)
+
+    # git-check — read-only Git connection diagnosis (spec 0010 §2, plan J5).
+    git_check_parser = subparsers.add_parser(
+        "git-check",
+        help="Read-only Git connection diagnosis for the authoring journey.",
+        description=(
+            "Probe the local Git tool, identity, repository state and the "
+            "selected remote's readability through bounded read-only commands "
+            "(spec 0010 §2). A successful read proves READ access only: push "
+            "and pull-request capability stay explicitly unverified; no test "
+            "push, branch or PR is ever attempted. Credential values are "
+            "never read or echoed."
+        ),
+    )
+    git_check_parser.add_argument(
+        "project",
+        type=Path,
+        help="Local project directory to diagnose.",
+    )
+    git_check_parser.add_argument(
+        "--remote",
+        default=None,
+        metavar="NAME",
+        help="Remote name to probe (default: origin).",
+    )
+    git_check_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the versioned machine report.",
+    )
+    git_check_parser.set_defaults(func=_cmd_git_check)
 
     # extract — one real original through the actual processor (spec 0010 §3).
     extract_parser = subparsers.add_parser(

@@ -90,6 +90,15 @@ SOURCE_EXCHANGE_ENV_VAR: Final[str] = "LUMIO_SOURCE_EXCHANGE"
 S3_REGION_ENV_VAR: Final[str] = "LUMIO_S3_REGION"
 S3_ENDPOINT_ENV_VAR: Final[str] = "LUMIO_S3_ENDPOINT"
 
+#: Guided authoring journey submission settings (spec 0010 §2, plan 0010 J5):
+#: nonsecret machine-local values recorded by ``setup --journey`` — how a
+#: confirmed candidate is submitted (``commit`` or ``github-pr``) and which
+#: Git remote/branch receives it. Publication destinations, exchange
+#: endpoints and credentials stay separate selections.
+SUBMISSION_MODE_ENV_VAR: Final[str] = "LUMIO_SUBMISSION_MODE"
+GIT_REMOTE_ENV_VAR: Final[str] = "LUMIO_GIT_REMOTE"
+GIT_TARGET_BRANCH_ENV_VAR: Final[str] = "LUMIO_GIT_TARGET_BRANCH"
+
 #: The explicit Lumio configuration allowlist (issue #161, ADR-0019).
 #: ``.env`` discovery loads ONLY these keys; arbitrary project keys never
 #: enter ``os.environ``. Credential keys are deliberately absent: setup never
@@ -103,6 +112,9 @@ ENV_ALLOWLIST: Final[frozenset[str]] = frozenset(
         SOURCE_REGISTRY_ENV_VAR,
         ARTIFACT_RETENTION_ENV_VAR,
         SOURCE_EXCHANGE_ENV_VAR,
+        SUBMISSION_MODE_ENV_VAR,
+        GIT_REMOTE_ENV_VAR,
+        GIT_TARGET_BRANCH_ENV_VAR,
         RETRIEVAL_BACKEND_ENV_VAR,
         RETRIEVAL_MODE_ENV_VAR,
         S3_REGION_ENV_VAR,
