@@ -9,7 +9,9 @@ absent parent directories — never values copied from implementation output.
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -23,8 +25,10 @@ from lumio_wiki.env_loader import (
     SUBMISSION_MODE_ENV_VAR,
 )
 from lumio_wiki.knowledge_base import seeded_control_file, write_control_file
+from lumio_wiki.skill import SKILL_FILENAME, install_skill
 from lumio_wiki.source_references import (
     SOURCE_REFERENCE_MANIFEST_BASENAME,
+    SourceReferenceError,
     SourceReferenceManifest,
     parse_source_reference_manifest,
     serialize_source_reference_manifest,
@@ -495,3 +499,380 @@ def test_empty_setup_io_failure_reports_incomplete_residue(tmp_path: Path, monke
     assert rc == 2
     refused = json.loads(capsys.readouterr().out)
     assert refused["error"]["code"] == "adoption_required"
+
+
+# ---------------------------------------------------------------------------
+# Review regression families (R1–R6, parent disposition 2026-10-25).
+# ---------------------------------------------------------------------------
+
+
+def _tree_snapshot(root: Path) -> dict[str, bytes | str]:
+    """Files by bytes PLUS directory and symlink identity, so absence of
+    parent directories and unchanged symlink targets are provable."""
+    state: dict[str, bytes | str] = {}
+    for entry in sorted(root.rglob("*")):
+        relative = entry.relative_to(root).as_posix()
+        if entry.is_symlink():
+            state[relative] = "symlink:" + os.readlink(entry)
+        elif entry.is_dir():
+            state[relative] = "dir"
+        elif entry.is_file():
+            state[relative] = entry.read_bytes()
+    return state
+
+
+def _interactive(monkeypatch, answers: dict[str, str]) -> None:
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    def answer(prompt: str) -> str:
+        for marker, value in answers.items():
+            if marker in prompt:
+                return value
+        return ""
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": answer(prompt))
+
+
+@pytest.mark.parametrize("case", ["missing-inside-path", "dangling-inside-symlink"])
+def test_empty_setup_new_profile_location_is_validated_before_writes(
+    case, tmp_path: Path, monkeypatch, capsys
+):
+    """R1: a NEW interactive profile destination inside the content
+    repository is refused before ANY write — parent directories included —
+    independent of the apply answer; symlink/operator bytes untouched."""
+    repo = _init_repo(tmp_path / "project")
+    target = repo / "kb"
+    # A real existing OUTSIDE registry/store pair; the interactive selection
+    # proposes a NEW profile at an inside-repository destination.
+    outside_registry = tmp_path / "outside-registry"
+    outside_store = tmp_path / "outside-store"
+    if case == "missing-inside-path":
+        selected: Path = repo / "private" / "new-profile.json"
+        assert not selected.parent.exists()
+    else:
+        inside = repo / "inside" / "new-profile.json"
+        selected = tmp_path / "link-to-inside.json"
+        os.symlink(str(inside), str(selected))
+        assert not inside.parent.exists()
+    monkeypatch.chdir(repo)
+    _clean_lumio_env(monkeypatch)
+    _interactive(
+        monkeypatch,
+        {
+            "Private Source Registry directory": str(outside_registry),
+            "Private artifact store directory": str(outside_store),
+            "Apply exactly this setup": "y",  # refusal must not depend on cancel
+        },
+    )
+    argv = [
+        "setup",
+        str(target),
+        "--journey",
+        "--create-empty",
+        "--namespace",
+        NAMESPACE,
+        "--private-profile",
+        str(selected),
+    ]
+    before = _tree_snapshot(tmp_path)
+    rc = cli.main(argv)
+    captured = capsys.readouterr()
+    assert rc == 2
+    combined = captured.out + captured.err
+    assert "outside" in combined or "content repository" in combined
+    # Bounded refusal BEFORE any setup write: no created parents, no KB, no
+    # project configuration anywhere.
+    assert _tree_snapshot(tmp_path) == before
+    if case == "dangling-inside-symlink":
+        inside_link = str(repo / "inside" / "new-profile.json")
+        assert selected.is_symlink() and os.readlink(selected) == inside_link
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "skill-modified-after-overwrite-preview",
+        "overwrite-added-at-confirmation",
+        "agent-pi-destination-preview",
+    ],
+)
+def test_empty_setup_skill_confirmation_binds_selection_and_state(
+    case, tmp_path: Path, monkeypatch, capsys
+):
+    """R2: the selected skill action is bound to the preview — intervening
+    skill-byte changes or a confirmation-time --overwrite addition refuse
+    before writes; an agent destination preview names the real target."""
+    repo = _init_repo(tmp_path / "project")
+    target = repo / "kb"
+    private = tmp_path / "private"
+    profile = _write_profile(private / "profile.json", namespace=NAMESPACE, registry=private / "r1")
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(repo)
+    _clean_lumio_env(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    if case == "agent-pi-destination-preview":
+        pi_target = install_skill(agent="pi", home=home)  # real native target
+        skill_file = pi_target / SKILL_FILENAME
+        argv = [
+            "setup",
+            str(target),
+            "--journey",
+            "--create-empty",
+            "--namespace",
+            NAMESPACE,
+            "--private-profile",
+            str(profile),
+            "--agent",
+            "pi",
+        ]
+        before = _tree_snapshot(tmp_path)
+        rc = cli.main(argv)
+        assert rc == 0
+        out = capsys.readouterr().out
+        # The preview must identify the ACTUAL destination, not the project dir.
+        assert str(pi_target) in out
+        # Destination preview writes nothing and fabricates no expected bytes.
+        assert _tree_snapshot(tmp_path) == before
+        return
+    skill_target = install_skill(scope="user", home=home)
+    skill_file = skill_target / SKILL_FILENAME
+    base_argv = [
+        "setup",
+        str(target),
+        "--journey",
+        "--create-empty",
+        "--namespace",
+        NAMESPACE,
+        "--private-profile",
+        str(profile),
+        "--skill-scope",
+        "user",
+    ]
+    if case == "skill-modified-after-overwrite-preview":
+        assert cli.main([*base_argv, "--overwrite", "--json"]) == 0
+        digest = json.loads(capsys.readouterr().out)["setup_digest"]
+        # The operator edits the installed skill AFTER seeing the preview.
+        marker = b"\n# local operator edit after preview R2\n"
+        skill_file.write_bytes(skill_file.read_bytes() + marker)
+        modified_bytes = skill_file.read_bytes()
+        rc = cli.main([*base_argv, "--overwrite", "--confirm", digest, "--json"])
+    else:
+        marker = b"\n# local operator edit before preview R2\n"
+        skill_file.write_bytes(skill_file.read_bytes() + marker)
+        modified_bytes = skill_file.read_bytes()
+        assert cli.main([*base_argv, "--json"]) == 0
+        digest = json.loads(capsys.readouterr().out)["setup_digest"]
+        # --overwrite appears only on the confirmation invocation.
+        rc = cli.main([*base_argv, "--overwrite", "--confirm", digest, "--json"])
+    assert rc == 2
+    refused = json.loads(capsys.readouterr().out)
+    assert refused["ok"] is False
+    assert refused["error"]["code"] in ("setup_target_changed", "setup_confirmation_mismatch")
+    # Refusal happened before writes: the changed local skill bytes survive
+    # (independent read-back, not package bytes) and the target KB stays absent.
+    assert skill_file.read_bytes() == modified_bytes
+    assert not target.exists()
+    assert not (repo / ".env").exists()
+    assert not (repo / "AGENTS.md").exists()
+
+
+@pytest.mark.parametrize("case", ["default-agents-at-kb-root", "project-skill-inside-kb"])
+def test_empty_setup_refuses_guidance_inside_kb(case, tmp_path: Path, monkeypatch, capsys):
+    """R3: planning refuses project guidance/skill destinations that land
+    inside the selected repository-root KB, before any write, with an
+    actionable alternate-location/flag remedy (§2.2 root topology)."""
+    repo = _init_repo(tmp_path / "project")  # repository-root target, .git only
+    private = tmp_path / "private"
+    profile = _write_profile(private / "profile.json", namespace=NAMESPACE, registry=private / "r1")
+    monkeypatch.chdir(repo)  # the normal same-directory invocation
+    _clean_lumio_env(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    argv = [
+        "setup",
+        str(repo),
+        "--journey",
+        "--create-empty",
+        "--namespace",
+        NAMESPACE,
+        "--private-profile",
+        str(profile),
+    ]
+    if case == "project-skill-inside-kb":
+        argv += ["--no-agents-md", "--skill-scope", "project"]
+    before = _tree_snapshot(tmp_path)
+    rc = cli.main(argv)
+    assert rc == 2
+    err = capsys.readouterr().err
+    if case == "default-agents-at-kb-root":
+        assert "AGENTS.md" in err
+        assert "--no-agents-md" in err or "outside" in err
+    else:
+        assert "skill" in err.lower()
+        assert "--skill-scope" in err or "outside" in err.lower() or "--no-agents-md" in err
+    # Refused before writes: the .git-only repository root stays .git-only.
+    assert _tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("destination", ["env", "agents-md"])
+def test_empty_setup_preserves_existing_configuration_on_write_failure(
+    destination, tmp_path: Path, monkeypatch, capsys
+):
+    """R4: a partial write failure on an EXISTING configuration file leaves
+    its prior operator bytes identical (real I/O seam; content-triggered so
+    same-dir temporary writes stay covered)."""
+    repo = _init_repo(tmp_path / "project")
+    target = repo / "kb"
+    private = tmp_path / "private"
+    profile = _write_profile(private / "profile.json", namespace=NAMESPACE, registry=private / "r1")
+    if destination == "env":
+        config_path = repo / ".env"
+        operator_bytes = b"OPERATOR_KEEP=marker-7f3a-unrelated\n"
+        # Unique fixture content in the NEW .env write: the KB location line.
+        unique_marker = (KB_PATH_ENV_VAR + "=").encode()
+    else:
+        config_path = repo / "AGENTS.md"
+        operator_bytes = b"# operator notes - unrelated pre-existing content\n"
+        # Unique fixture content in the NEW AGENTS write: the settled section marker.
+        unique_marker = b"<!-- lumio-wiki-kb -->"
+    config_path.write_bytes(operator_bytes)
+    monkeypatch.chdir(repo)
+    _clean_lumio_env(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    argv = _setup_argv(target, profile) + ["--json"]
+    assert cli.main(argv) == 0
+    digest = json.loads(capsys.readouterr().out)["setup_digest"]
+
+    # Delegating io.open wrapper: every real write delegates, except content
+    # carrying the unique fixture marker — that write flushes a short prefix
+    # through the real stream, then fails. Handles str/bytes, close/context.
+    fired: list[bool] = []
+    real_open = io.open
+
+    class _PartialHandle:
+        def __init__(self, handle) -> None:
+            self._handle = handle
+
+        def write(self, data):
+            blob = bytes(data) if isinstance(data, (bytes, bytearray, memoryview)) else data.encode(
+                "utf-8", "replace"
+            )
+            if unique_marker in blob:
+                fired.append(True)
+                prefix = data[:4]
+                self._handle.write(prefix)
+                self._handle.flush()
+                raise OSError(28, "No space left on device")
+            return self._handle.write(data)
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            self._handle.close()
+            return False
+
+    def partial_open(file, mode="r", *args, **kwargs):
+        handle = real_open(file, mode, *args, **kwargs)
+        if any(flag in mode for flag in ("w", "a", "x")):
+            return _PartialHandle(handle)
+        return handle
+
+    monkeypatch.setattr(io, "open", partial_open)
+    rc = cli.main([*_setup_argv(target, profile), "--confirm", digest])
+    monkeypatch.setattr(io, "open", real_open)
+    assert fired, "injection did not fire; the unique fixture content was not written"
+    assert rc == 2
+    assert "I/O failure" in capsys.readouterr().err
+    # The pre-existing operator configuration survived the failed write.
+    assert config_path.read_bytes() == operator_bytes
+
+
+def test_empty_setup_malformed_manifest_retry_is_bounded(tmp_path: Path, monkeypatch, capsys):
+    """R5: a real incomplete target with a malformed .lumio-authoring.yaml
+    gets the bounded versioned refusal with recovery guidance on preview AND
+    retry — never a raw parser exception — and nothing changes on disk."""
+    repo = _init_repo(tmp_path / "project")
+    target = repo / "kb"
+    target.mkdir(parents=True)
+    malformed = b"version: two\nnamespace: [[unterminated\nnot-a-manifest: {{{\n"
+    (target / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(malformed)
+    private = tmp_path / "private"
+    profile = _write_profile(private / "profile.json", namespace=NAMESPACE, registry=private / "r1")
+    monkeypatch.chdir(repo)
+    _clean_lumio_env(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    before = _tree_snapshot(tmp_path)
+    for _attempt in ("preview", "retry"):
+        rc = cli.main(_setup_argv(target, profile) + ["--json"])
+        captured = capsys.readouterr()
+        assert rc == 2
+        refused = json.loads(captured.out)
+        assert refused["ok"] is False
+        assert refused["error"]["code"] in ("invalid_empty_setup", "adoption_required")
+        assert "SourceReferenceError" not in captured.out + captured.err
+        assert (
+            "recover" in captured.err.lower()
+            or "adoption" in captured.err.lower()
+            or "recovery" in refused["error"].get("message", "").lower()
+        )
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_empty_setup_json_failure_discloses_actual_residue(tmp_path: Path, monkeypatch, capsys):
+    """R6: a --json confirmation whose manifest write fails after real
+    partial bytes emits the single bounded setup_incomplete envelope while
+    stderr discloses the ACTUAL owned residue: the partial manifest file and
+    operation-created parent directories (independent filesystem facts)."""
+    repo = _init_repo(tmp_path / "project")
+    target = repo / "deep" / "nest" / "kb"  # initially absent nested parents
+    assert not target.parent.parent.exists()
+    private = tmp_path / "private"
+    profile = _write_profile(private / "profile.json", namespace=NAMESPACE, registry=private / "r1")
+    operator_file = repo / "operator-notes.txt"
+    operator_bytes = b"operator content - must survive\n"
+    operator_file.write_bytes(operator_bytes)
+    monkeypatch.chdir(repo)
+    _clean_lumio_env(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    argv = _setup_argv(target, profile) + ["--json"]
+    assert cli.main(argv) == 0
+    digest = json.loads(capsys.readouterr().out)["setup_digest"]
+
+    # Thin actual-I/O wrapper: the manifest write persists a real 16-byte
+    # prefix, then fails.
+    real_write_bytes = Path.write_bytes
+
+    def partial_write_bytes(self, data):
+        if self.name == SOURCE_REFERENCE_MANIFEST_BASENAME:
+            real_write_bytes(self, data[:16])
+            raise OSError(28, "No space left on device")
+        return real_write_bytes(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", partial_write_bytes)
+    rc = cli.main([*_setup_argv(target, profile), "--confirm", digest, "--json"])
+    monkeypatch.setattr(Path, "write_bytes", real_write_bytes)
+    assert rc == 2
+    captured = capsys.readouterr()
+    # Exactly one bounded JSON error; the frozen envelope is unchanged.
+    envelope = json.loads(captured.out)
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "setup_incomplete"
+    # Independent filesystem facts: the partial manifest really exists as a
+    # short non-parseable prefix, and the operation created the parents.
+    partial_manifest = target / SOURCE_REFERENCE_MANIFEST_BASENAME
+    assert partial_manifest.is_file()
+    partial_bytes = partial_manifest.read_bytes()
+    assert 0 < len(partial_bytes) < 64
+    with pytest.raises(SourceReferenceError):
+        parse_source_reference_manifest(partial_bytes)
+    assert target.parent.is_dir() and target.parent.parent.is_dir()
+    # The disclosed residue names the partial manifest and the created tree.
+    assert str(partial_manifest) in captured.err
+    assert str(target.parent) in captured.err
+    # Operator content preserved byte-for-byte.
+    assert operator_file.read_bytes() == operator_bytes
