@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -36,6 +37,7 @@ from lumio_wiki.source_references import (
     SourceReferenceManifest,
     serialize_source_reference_manifest,
 )
+from lumio_wiki.source_registry import SourceRegistry
 
 NAMESPACE = "urn:uuid:5f9d1c0e-8b4a-4c2f-9d31-2e7a6b8c4d05"
 SOURCE_ID = "j5-operator-manual"
@@ -590,3 +592,264 @@ def test_journey_setup_keeps_modified_skill_until_explicit_update(
     combined = captured.out + captured.err
     assert "skill update" in combined
     assert "restart the agent or start a new session" in combined
+
+
+# ---------------------------------------------------------------------------
+# Review findings F1–F5: named RED regressions (parent-accepted contract
+# defects). Expectations come from spec0010 r4 §§2/2.1, plan0010 r4 J5/V5
+# and hand-authored operator/fixture facts — never product output.
+# ---------------------------------------------------------------------------
+
+
+def _operator_project(tmp_path: Path) -> tuple[Path, Path]:
+    """Contributor clone on an authored feature branch whose operator already
+    selected submission settings in ``.env`` (github-pr / upstream / main),
+    with both ``origin`` and ``upstream`` remotes configured."""
+    maintainer = _init_repo(tmp_path / "maintainer")
+    _adopted_kb(maintainer)
+    _commit(maintainer, "base")
+    project = tmp_path / "contributor" / "clone"
+    subprocess.run(
+        ["git", "clone", "-q", str(maintainer), str(project)],
+        capture_output=True,
+        check=True,
+    )
+    _git(project, "config", "user.email", "contributor@example.com")
+    _git(project, "config", "user.name", "Contributor")
+    _git(project, "checkout", "-q", "-b", "feature/authoring")
+    _git(project, "remote", "add", "upstream", str(maintainer))
+    (project / ".env").write_text(
+        "LUMIO_SUBMISSION_MODE=github-pr\n"
+        "LUMIO_GIT_REMOTE=upstream\n"
+        "LUMIO_GIT_TARGET_BRANCH=main\n"
+        "LUMIO_RETRIEVAL_BACKEND=zero-index\n",
+        encoding="utf-8",
+    )
+    return project, project / "kb"
+
+
+@pytest.mark.parametrize("route", ["noninteractive", "interactive-defaults"])
+def test_journey_preserves_submission_selection(route, tmp_path: Path, monkeypatch, capsys):
+    """F1: an operator's valid existing submission selections survive a
+    journey rerun, and interactive Enter defaults reflect them — the current
+    branch and remote sorting never silently reselect the target."""
+    project, kb = _operator_project(tmp_path)
+    registry_dir = tmp_path / "private" / "registry"
+    SourceRegistry(registry_dir).register_source(SOURCE_ID, SOURCE_BYTES)
+    profile = _write_profile(
+        tmp_path / "private" / "profile.json", namespace=NAMESPACE, registry=registry_dir
+    )
+    monkeypatch.chdir(project)
+    _clean_lumio_env(monkeypatch)
+    if route == "noninteractive":
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    else:
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        # Enter accepts the EXISTING selections as defaults (three questions).
+        answers = iter(["", "", ""])
+        monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    registry_before = (registry_dir / "sources.json").read_bytes()
+    profile_before = profile.read_bytes()
+    rc = cli.main(["setup", str(kb), "--journey", "--private-profile", str(profile)])
+    assert rc == 0
+
+    # Oracle: the hand-authored operator configuration, not emitted defaults.
+    env = project / ".env"
+    assert _env_value(env, SUBMISSION_MODE_ENV_VAR) == "github-pr"
+    assert _env_value(env, GIT_REMOTE_ENV_VAR) == "upstream"
+    assert _env_value(env, GIT_TARGET_BRANCH_ENV_VAR) == "main"
+    # Unrelated settings and private state stay untouched.
+    assert _env_value(env, "LUMIO_RETRIEVAL_BACKEND") == "zero-index"
+    assert (registry_dir / "sources.json").read_bytes() == registry_before
+    assert profile.read_bytes() == profile_before
+
+
+def test_journey_profile_creation_refuses_dangling_inside_symlink(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """F2: a pre-provisioned outside symlink whose missing target lies inside
+    the repository must cause refusal BEFORE any write — the link stays as
+    provisioned and nothing materializes inside the repository."""
+    project = _init_repo(tmp_path / "project")
+    kb = _adopted_kb(project)
+    _commit(project, "base")
+    monkeypatch.chdir(project)
+    _clean_lumio_env(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    inside_target = project / ".git" / "profile.json"
+    link = tmp_path / "private" / "profile-link.json"
+    link.parent.mkdir(parents=True)
+    os.symlink(str(inside_target), link)
+    repo_before = _snapshot(project)
+
+    answers = iter(["", "", "y"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    rc = cli.main(["setup", str(kb), "--journey", "--private-profile", str(link)])
+
+    assert rc == 2
+    # The outside selection is exactly what the operator provisioned.
+    assert os.path.islink(link)
+    assert os.readlink(link) == str(inside_target)
+    # Nothing materialized inside the repository; no setup writes happened.
+    assert not inside_target.exists()
+    assert _snapshot(project) == repo_before
+    assert not (project / ".env").exists()
+    assert not (project / "AGENTS.md").exists()
+
+
+def test_git_check_omits_query_credentials(tmp_path: Path, monkeypatch, capsys):
+    """F3: diagnosing an unsafe existing configuration (credential in the URL
+    query/fragment) never reproduces that credential in any report or CLI
+    output, while the failure classification stays truthful."""
+    from lumio_wiki import git_connection
+
+    project = _init_repo(tmp_path / "project")
+    unsafe_url = "https://example.invalid/repo.git?access_token=SECRETTOKEN#private-sentinel"
+    _git(project, "remote", "add", "origin", unsafe_url)
+
+    real_run = subprocess.run
+
+    def failing_ls_remote(argv, **kwargs):
+        if "ls-remote" in argv:
+            return subprocess.CompletedProcess(
+                argv, 128, stdout="", stderr=f"fatal: Authentication failed for '{unsafe_url}'"
+            )
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(git_connection.subprocess, "run", failing_ls_remote)
+
+    report = check_git_connection(project)
+    # Classification stays truthful.
+    assert report.remote.read == "failed"
+    assert report.remote.failure_code == "authentication_failed"
+    # No credential material survives anywhere in the machine report.
+    rendered = json.dumps(msgspec.to_builtins(report))
+    assert "SECRETTOKEN" not in rendered
+    assert "private-sentinel" not in rendered
+    # Nor in the CLI machine or human renderings.
+    assert cli.main(["git-check", str(project), "--json"]) == 0
+    machine_out = capsys.readouterr().out
+    assert "SECRETTOKEN" not in machine_out
+    assert cli.main(["git-check", str(project)]) == 0
+    human_out = capsys.readouterr().out
+    assert "SECRETTOKEN" not in human_out
+    assert "private-sentinel" not in human_out
+
+
+@pytest.mark.parametrize("mode", ["ordinary-ssh", "existing-ssh-command"])
+def test_git_check_probe_is_noninteractive(mode, tmp_path: Path, monkeypatch):
+    """F4: the actual public probe never owns an interactive terminal and SSH
+    authentication cannot prompt. Mechanism under test: child stdin is closed
+    (DEVNULL) and GIT_SSH_COMMAND forces BatchMode=yes — appending to, never
+    replacing, an operator-configured command (identities/agents preserved)."""
+    from lumio_wiki import git_connection
+
+    project = _init_repo(tmp_path / "project")
+    _git(project, "remote", "add", "origin", "ssh://git@example.invalid/j5/repo.git")
+    for variable in ("GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS"):
+        monkeypatch.delenv(variable, raising=False)
+    if mode == "existing-ssh-command":
+        monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i /tmp/synthetic-operator-key")
+
+    real_run = subprocess.run
+    ls_remote_calls: list[tuple[list[str], dict]] = []
+
+    def observing_ls_remote(argv, **kwargs):
+        if "ls-remote" in argv:
+            ls_remote_calls.append((list(argv), kwargs))
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(git_connection.subprocess, "run", observing_ls_remote)
+    report = check_git_connection(project)
+
+    # The public probe completed its read-only diagnosis.
+    assert report.remote.read == "success"
+    assert len(ls_remote_calls) == 1
+    argv, kwargs = ls_remote_calls[0]
+    assert "ls-remote" in argv
+    # The child never owns the interactive terminal.
+    assert kwargs.get("stdin") is subprocess.DEVNULL
+    # SSH cannot open a password/passphrase/askpass prompt; BatchMode keeps
+    # ordinary agent and explicit-key authentication working.
+    env = kwargs.get("env") or {}
+    ssh_command = env.get("GIT_SSH_COMMAND", "")
+    assert "BatchMode=yes" in ssh_command
+    if mode == "existing-ssh-command":
+        assert "-i /tmp/synthetic-operator-key" in ssh_command
+
+
+def test_journey_checks_selected_content_repository(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """F5: journey setup composes the read-only connection check for the
+    SELECTED content repository and its selected remote — not merely a hint
+    aimed at the unrelated checkout setup was invoked from."""
+    app = _init_repo(tmp_path / "app")
+    (app / "main.py").write_text("print('app')\n", encoding="utf-8")
+    _commit(app, "app base")
+    maintainer = _init_repo(tmp_path / "maintainer")
+    _adopted_kb(maintainer)
+    _commit(maintainer, "kb base")
+    content = tmp_path / "content" / "clone"
+    subprocess.run(
+        ["git", "clone", "-q", str(maintainer), str(content)],
+        capture_output=True,
+        check=True,
+    )
+    _git(content, "config", "user.email", "contributor@example.com")
+    _git(content, "config", "user.name", "Contributor")
+    # The selected non-origin remote is the sole configured content remote.
+    _git(content, "remote", "rename", "origin", "project")
+    kb = content / "kb"
+    private = tmp_path / "private"
+    profile = _write_profile(
+        private / "profile.json", namespace=NAMESPACE, registry=private / "registry"
+    )
+
+    monkeypatch.chdir(app)
+    _clean_lumio_env(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+    real_run = subprocess.run
+    ls_remote_calls: list[tuple[list[str], dict]] = []
+
+    def observing(argv, **kwargs):
+        if "ls-remote" in argv:
+            ls_remote_calls.append((list(argv), kwargs))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr("subprocess.run", observing)
+
+    content_before = _snapshot(content)
+    app_before = _content_snapshot(app)
+    registry_existed = (private / "registry").exists()
+    rc = cli.main(["setup", str(kb), "--journey", "--private-profile", str(profile)])
+    assert rc == 0
+    out = capsys.readouterr().out
+
+    # Only the explicitly selected setup actions wrote in the app project.
+    app_after = _content_snapshot(app)
+    assert set(app_after) - set(app_before) == {".env", "AGENTS.md"}
+    for relative, blob in app_before.items():
+        assert app_after[relative] == blob
+
+    # The named contract: setup itself probes the SELECTED content repository
+    # and its selected remote (the local remote is genuinely readable).
+    assert any(
+        "ls-remote" in argv and str(content) in argv and "project" in argv
+        for argv, _kwargs in ls_remote_calls
+    )
+    # Read access is reported with push/PR explicitly unverified, aligned with
+    # the selected target — never the unrelated application checkout.
+    assert "unverified" in out
+    assert str(content) in out
+    # CLI/version/capability status is composed honestly, not skipped.
+    assert "kb_location" in out
+    # No remote/registry/store mutation happened anywhere.
+    assert _snapshot(content) == content_before
+    assert (private / "registry").exists() == registry_existed
