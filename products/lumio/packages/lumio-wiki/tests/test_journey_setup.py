@@ -783,9 +783,7 @@ def test_git_check_probe_is_noninteractive(mode, tmp_path: Path, monkeypatch):
         assert "-i /tmp/synthetic-operator-key" in ssh_command
 
 
-def test_journey_checks_selected_content_repository(
-    tmp_path: Path, monkeypatch, capsys
-):
+def test_journey_checks_selected_content_repository(tmp_path: Path, monkeypatch, capsys):
     """F5: journey setup composes the read-only connection check for the
     SELECTED content repository and its selected remote — not merely a hint
     aimed at the unrelated checkout setup was invoked from."""

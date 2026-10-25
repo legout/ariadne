@@ -30,6 +30,7 @@ import argparse
 import json
 import mimetypes
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1307,6 +1308,30 @@ def _resolve_journey_profile(args: argparse.Namespace, *, kb_path: Path, interac
             return load_private_profile(profile_path, kb_root=kb_path)
         except PrivateProfileError as exc:
             raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+    # The canonical destination is validated BEFORE anything is created
+    # (review F2): an operator's symlink is never followed, replaced or
+    # deleted by setup.
+    from lumio_wiki.git_authoring import GitAuthoringError, resolve_repository
+
+    try:
+        repo_root, _subtree = resolve_repository(kb_path)
+    except GitAuthoringError as exc:
+        raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+    if Path(os.path.realpath(profile_path)).is_relative_to(repo_root):
+        raise CliError(
+            "the selected private profile file must live OUTSIDE the content "
+            "repository (resolved symlinks included)",
+            exit_code=2,
+            code="invalid_private_profile",
+        )
+    if os.path.lexists(profile_path) and not profile_path.is_file():
+        raise CliError(
+            "the selected private profile path is a symlink or not a regular "
+            "file; setup never follows or replaces it — select a new regular "
+            "file path",
+            exit_code=2,
+            code="invalid_private_profile",
+        )
     manifest = load_source_reference_manifest(kb_path)
     if manifest is None:
         raise CliError(
@@ -1326,14 +1351,24 @@ def _resolve_journey_profile(args: argparse.Namespace, *, kb_path: Path, interac
         f"Private artifact store directory [{store_default}]: ",
         default=str(store_default),
     ) or str(store_default)
+    registry_root = Path(registry_raw).expanduser()
+    store_root = Path(store_raw).expanduser()
+    for label, root in (("Source Registry", registry_root), ("artifact store", store_root)):
+        if Path(os.path.realpath(root)).is_relative_to(repo_root):
+            raise CliError(
+                f"the private {label} directory must live OUTSIDE the content "
+                "repository (resolved symlinks included)",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
     payload = {
         "schema_version": 1,
         "namespace": manifest.namespace,
-        "source_registry": str(Path(registry_raw).expanduser().resolve()),
+        "source_registry": str(registry_root.resolve()),
         "retention": "required",
         "artifact_store": {
             "kind": "local",
-            "root": str(Path(store_raw).expanduser().resolve()),
+            "root": str(store_root.resolve()),
         },
     }
     preview = json.dumps(payload, indent=2, sort_keys=True)
@@ -1347,7 +1382,21 @@ def _resolve_journey_profile(args: argparse.Namespace, *, kb_path: Path, interac
     if answer != "y":
         return None
     profile_path.parent.mkdir(parents=True, exist_ok=True)
-    profile_path.write_text(preview + "\n", encoding="utf-8")
+    try:
+        descriptor = os.open(
+            str(profile_path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+        )
+    except FileExistsError as exc:
+        raise CliError(
+            f"the selected profile path already exists: {profile_path}; setup "
+            "never replaces an existing file",
+            exit_code=2,
+            code="invalid_private_profile",
+        ) from exc
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(preview + "\n")
     print(f"  private profile: {profile_path}")
     try:
         return load_private_profile(profile_path, kb_root=kb_path)
@@ -1375,33 +1424,130 @@ def _resolve_journey_registry(profile, *, kb_path: Path):
     return resolved.source_registry
 
 
-def _journey_submission_settings(kb_path: Path, *, interactive: bool) -> dict[str, str | None]:
-    """Select the submission mode and Git remote/target branch (spec 0010 §2).
+def _valid_journey_word(value: str | None) -> str | None:
+    """One nonempty, whitespace-free word usable as a .env setting value."""
+    if not value or "=" in value or any(character.isspace() for character in value):
+        return None
+    return value
 
-    Interactive setup asks with bracketed defaults; noninteractive setup takes
-    the safe local-commit default and records remote/branch only when they are
-    unambiguous (configured 'origin', current branch). Everything recorded is
-    printed; nothing is guessed silently.
+
+def _require_journey_word(value: str) -> str | None:
+    return None if _valid_journey_word(value) else "a single nonempty word is required"
+
+
+def _journey_git_facts(
+    kb_path: Path,
+) -> tuple[Path | None, list[str], tuple[str, str] | None]:
+    """Native Git facts for unambiguous submission defaults (spec 0010 §2).
+
+    Reports the configured remotes and the current branch's upstream tracking
+    target — the meaningful default-target facts. A remote is never chosen by
+    sort order, and the current authoring branch is never used as a target.
     """
-    repo_root: Path | None = None
     from lumio_wiki.git_authoring import GitAuthoringError, resolve_repository
 
     try:
         repo_root, _subtree = resolve_repository(kb_path)
     except GitAuthoringError:
-        repo_root = None
-    remotes = _git_read_lines(repo_root, "remote") if repo_root is not None else []
-    current = (
-        _git_read_lines(repo_root, "symbolic-ref", "--quiet", "--short", "HEAD")
-        if repo_root is not None
-        else []
+        return None, [], None
+    remotes = _git_read_lines(repo_root, "remote")
+    upstream_full = _git_read_lines(
+        repo_root,
+        "rev-parse",
+        "--abbrev-ref",
+        "--symbolic-full-name",
+        "--quiet",
+        "@{upstream}",
     )
-    current_branch = current[0] if current else None
+    upstream: tuple[str, str] | None = None
+    if upstream_full and "/" in upstream_full[0]:
+        remote_name, upstream_branch = upstream_full[0].split("/", 1)
+        upstream = (remote_name, upstream_branch)
+    return repo_root, remotes, upstream
+
+
+def _precheck_journey_submission(*, interactive: bool) -> dict[str, str]:
+    """Refuse unresolved REQUIRED selections before any journey write.
+
+    Only github-pr mode requires a remote and target branch (review F1).
+    Interactive setup resolves them here, before a profile is created;
+    noninteractive setup refuses instead of selecting an arbitrary remote
+    or the current authoring branch as a PR target.
+    """
+    existing = load_project_config()
+    if existing.get(SUBMISSION_MODE_ENV_VAR) != "github-pr":
+        return {}
+    required: dict[str, str] = {}
+    missing: list[tuple[str, str]] = []
+    for variable, label in (
+        (GIT_REMOTE_ENV_VAR, "LUMIO_GIT_REMOTE"),
+        (GIT_TARGET_BRANCH_ENV_VAR, "LUMIO_GIT_TARGET_BRANCH"),
+    ):
+        value = _valid_journey_word(existing.get(variable))
+        if value is not None:
+            required[variable] = value
+        else:
+            missing.append((variable, label))
+    if not missing:
+        return required
+    if not interactive:
+        names = ", ".join(label for _variable, label in missing)
+        raise CliError(
+            "LUMIO_SUBMISSION_MODE=github-pr requires an explicit Git remote and "
+            f"target branch ({names} unset): record them in .env or run setup "
+            "interactively — setup never picks an arbitrary remote or the "
+            "current authoring branch as a PR target",
+            exit_code=2,
+            code="invalid_journey_submission",
+        )
+    for variable, label in missing:
+        answer = _wizard_ask(f"{label} for github-pr submissions: ", validate=_require_journey_word)
+        if answer is not None:
+            required[variable] = answer
+    return required
+
+
+def _journey_submission_settings(
+    kb_path: Path,
+    *,
+    interactive: bool,
+    required: dict[str, str] | None = None,
+) -> dict[str, str | None]:
+    """Select the submission mode and Git remote/target branch (spec 0010 §2).
+
+    Valid existing settings (exported process values over the project .env)
+    are preserved noninteractively and become the interactive Enter defaults.
+    Unresolved optional selections use only unambiguous native facts — a
+    configured 'origin', the sole configured remote, or the current branch's
+    upstream tracking target (falling back to the conventional 'main');
+    remote/target are honestly left unrecorded for local-commit setups when
+    no native fact applies.
+    """
+    existing = load_project_config()
+    overrides = required or {}
+    mode = existing.get(SUBMISSION_MODE_ENV_VAR)
+    if mode not in ("commit", "github-pr"):
+        mode = None
+    remote = _valid_journey_word(existing.get(GIT_REMOTE_ENV_VAR)) or _valid_journey_word(
+        overrides.get(GIT_REMOTE_ENV_VAR)
+    )
+    branch = _valid_journey_word(existing.get(GIT_TARGET_BRANCH_ENV_VAR)) or _valid_journey_word(
+        overrides.get(GIT_TARGET_BRANCH_ENV_VAR)
+    )
+    _repo_root, remotes, upstream = _journey_git_facts(kb_path)
+    default_remote = None
+    if "origin" in remotes:
+        default_remote = "origin"
+    elif len(remotes) == 1:
+        default_remote = remotes[0]
+    elif upstream is not None and upstream[0] in remotes:
+        default_remote = upstream[0]
+    default_branch = upstream[1] if upstream is not None else "main"
     if interactive:
         mode = (
             _wizard_ask(
                 "Submission mode after confirmation: [c]ommit locally or [p]ull-request? ",
-                default="commit",
+                default=mode or "commit",
                 choices={
                     "c": "commit",
                     "commit": "commit",
@@ -1412,20 +1558,30 @@ def _journey_submission_settings(kb_path: Path, *, interactive: bool) -> dict[st
             )
             or "commit"
         )
-        default_remote = "origin" if not remotes or "origin" in remotes else remotes[0]
-        remote_name = _wizard_ask(
-            f"Git remote for submissions [{default_remote}]: ",
-            default=default_remote,
+        remote = _wizard_ask(
+            f"Git remote for submissions [{remote or default_remote or 'origin'}]: ",
+            default=remote or default_remote or "origin",
+            validate=_require_journey_word,
         )
-        default_branch = current_branch or "main"
-        target_branch = _wizard_ask(
-            f"Git target branch [{default_branch}]: ", default=default_branch
+        branch = _wizard_ask(
+            f"Git target branch [{branch or default_branch}]: ",
+            default=branch or default_branch,
+            validate=_require_journey_word,
         )
     else:
-        mode = "commit"
-        remote_name = "origin" if "origin" in remotes else (remotes[0] if remotes else None)
-        target_branch = current_branch
-    return {"mode": mode, "remote": remote_name, "branch": target_branch}
+        mode = mode or "commit"
+        remote = remote or default_remote
+        branch = branch or default_branch
+    if mode == "github-pr" and (remote is None or branch is None):
+        raise CliError(
+            "LUMIO_SUBMISSION_MODE=github-pr requires an explicit Git remote and "
+            "target branch: record LUMIO_GIT_REMOTE/LUMIO_GIT_TARGET_BRANCH in "
+            ".env or run setup interactively — setup never picks an arbitrary "
+            "remote or the current authoring branch as a PR target",
+            exit_code=2,
+            code="invalid_journey_submission",
+        )
+    return {"mode": mode, "remote": remote, "branch": branch}
 
 
 def _print_journey_report(
@@ -1436,13 +1592,16 @@ def _print_journey_report(
     profile,
     registry,
     submission: dict[str, str | None] | None,
+    connection=None,
+    repo_root: Path | None = None,
 ) -> None:
     """Print the read-only journey readiness report (plan 0010 J5).
 
     Reports baseline-metadata coverage, exchange capability truthfully
     (configuration alone proves nothing), the separate publication boundary,
-    skill drift with an explicit update path, and the read-only connection
-    check. Nothing here mutates repositories, stores or skills.
+    skill drift with an explicit update path, and the composed read-only
+    connection check for the SELECTED content repository and its selected
+    remote. Nothing here mutates repositories, stores or skills.
     """
     from lumio_wiki.source_references import load_source_reference_manifest
 
@@ -1528,10 +1687,56 @@ def _print_journey_report(
         print(
             "  skill drift: not checked (no skill target selected); run 'lumio-wiki skill status'"
         )
-    print(
-        f"  connection: verify remote access read-only with "
-        f"'lumio-wiki git-check {project_dir} --json'"
-    )
+    print("  connection:")
+    if connection is not None and repo_root is not None:
+        state = "clean" if connection.repository.clean else "dirty"
+        print(
+            f"    repository: {repo_root} "
+            f"(branch {connection.repository.branch or 'unknown'}, {state})"
+        )
+        identity = (
+            "configured"
+            if connection.identity.configured
+            else "INCOMPLETE — set user.name/user.email"
+        )
+        print(f"    Git identity: {identity}")
+        print(f"    remote {connection.remote.name!r}: read access {connection.remote.read}")
+        print(
+            "    push/PR: unverified — a successful read never proves write "
+            "access; no test push/PR was attempted"
+        )
+        for blocker in connection.blockers:
+            print(f"    blocker: {blocker}")
+        from lumio_wiki.skill import package_version
+
+        print(f"    cli: lumio-wiki {package_version()}")
+        from importlib.util import find_spec
+
+        from lumio_wiki.private_profile import PrivateS3Connection
+
+        needs_s3 = profile.exchange is not None or isinstance(
+            profile.artifact_store, PrivateS3Connection
+        )
+        if needs_s3:
+            available = find_spec("obstore") is not None
+            print(
+                "    optional S3 capability (lumio-wiki[s3]): "
+                + (
+                    "available"
+                    if available
+                    else "NOT installed — required for the configured exchange or "
+                    "S3 artifact transport; manual transfer remains available"
+                )
+            )
+        else:
+            print("    optional capabilities: none required for metadata bootstrap")
+        print(
+            "    verify again read-only: lumio-wiki git-check "
+            f"{shlex.quote(str(repo_root))} --remote "
+            f"{shlex.quote(str(connection.remote.name))} --json"
+        )
+    else:
+        print("    not available for the selected Knowledge Base repository")
 
 
 def _cmd_setup(args: argparse.Namespace) -> int:
@@ -1746,16 +1951,20 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     journey_registry = None
     journey_submission: dict[str, str | None] | None = None
     journey_kb: Path | None = None
+    journey_repo_root: Path | None = None
+    journey_connection = None
     if journey:
         if kb_path is None:
             # Unreachable: journey refused the read-only S3 form above and the
             # local form resolved a Knowledge Base path.
             raise CliError("no local Knowledge Base resolved for the guided journey")
         journey_kb = kb_path
+        journey_interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        journey_required = _precheck_journey_submission(interactive=journey_interactive)
         journey_profile = _resolve_journey_profile(
             args,
             kb_path=journey_kb,
-            interactive=sys.stdin.isatty() and sys.stdout.isatty(),
+            interactive=journey_interactive,
         )
         if journey_profile is None:
             print("journey setup aborted; nothing was written", file=sys.stderr)
@@ -1772,8 +1981,25 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         journey_registry = _resolve_journey_registry(journey_profile, kb_path=journey_kb)
         journey_submission = _journey_submission_settings(
             journey_kb,
-            interactive=sys.stdin.isatty() and sys.stdout.isatty(),
+            interactive=journey_interactive,
+            required=journey_required,
         )
+        # Failure-prone readiness work runs BEFORE the selected setup writes:
+        # the composed check targets the SELECTED content repository and its
+        # selected remote, never the directory setup was invoked from.
+        from lumio_wiki.git_authoring import GitAuthoringError, resolve_repository
+        from lumio_wiki.git_connection import check_git_connection
+
+        try:
+            journey_repo_root, _subtree = resolve_repository(journey_kb)
+        except GitAuthoringError:
+            # Unreachable: load_private_profile already refused a non-repo KB.
+            journey_repo_root = None  # pragma: no cover - resolver contract
+        if journey_repo_root is not None:
+            journey_connection = check_git_connection(
+                journey_repo_root,
+                remote=journey_submission["remote"],
+            )
 
     # 4. Write .env (create or update each line only when configured this run).
     _upsert_env_var(env_path, KB_PATH_ENV_VAR, str(kb_display))
@@ -1880,6 +2106,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             profile=journey_profile,
             registry=journey_registry,
             submission=journey_submission,
+            connection=journey_connection,
+            repo_root=journey_repo_root,
         )
     return 0
 
