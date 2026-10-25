@@ -278,6 +278,81 @@ def main() -> int:
             "installed Git author/admit/query and Git-free validation/read/query passed:", revision
         )
 
+    # Spec 0010 (plan J6): the managed external-agent journey surface must ship
+    # in the base wheel — the new public SDK exports, the packaged skill/protocol
+    # guidance for it, and the new CLI routes — without any optional extra.
+    # Presence/help checks prove shipping and wiring only, never end-to-end
+    # semantics; source-level contract tests and the harness journey own those.
+    journey_exports = (
+        "load_private_profile",
+        "resolve_private_profile",
+        "export_source_baseline",
+        "inspect_source_baseline",
+        "import_source_baseline",
+        "export_source_handoff",
+        "inspect_source_handoff",
+        "import_source_handoff",
+        "upload_source_transfer",
+        "download_source_transfer",
+        "extract_source",
+        "ingest_candidate",
+        "review_authoring_candidate",
+        "review_knowledge_changes",
+        "check_authoring_commit",
+        "check_git_connection",
+    )
+    for name in journey_exports:
+        assert callable(getattr(lumio_wiki, name, None)), name
+    for name in (
+        "PrivateSourceProfile",
+        "ResolvedPrivateSources",
+        "BaselineExport",
+        "HandoffExport",
+        "SourceTransfer",
+        "CandidateRequest",
+        "CandidateResult",
+        "ExtractionResult",
+        "AuthoringReview",
+        "KnowledgeChangeReview",
+        "CommitCheck",
+        "GitConnectionReport",
+    ):
+        assert getattr(lumio_wiki, name, None) is not None, name
+
+    from lumio_wiki.skill import resolve_protocol_path, resolve_skill_path
+
+    packaged_skill = resolve_skill_path().read_text(encoding="utf-8")
+    packaged_protocol = resolve_protocol_path().read_text(encoding="utf-8")
+    journey_guidance_markers = (
+        "private-profile",
+        "source-bootstrap",
+        "source-handoff",
+        "source-exchange",
+        "ingest-candidate",
+        "authoring-review",
+        "authoring-check",
+        "git-check",
+        "extract",
+        "create-empty",
+    )
+    for marker in journey_guidance_markers:
+        assert marker in packaged_skill, f"packaged SKILL.md lost journey route {marker!r}"
+        assert marker in packaged_protocol, f"packaged PROTOCOL.md lost journey route {marker!r}"
+
+    for command in (
+        "git-check",
+        "private-profile",
+        "source-bootstrap",
+        "source-handoff",
+        "source-exchange",
+        "extract",
+        "ingest-candidate",
+        "authoring-review",
+        "authoring-check",
+    ):
+        _cli(command, "--help", cwd=valid_fixture)
+    print("installed managed-journey exports, skill guidance and CLI routes present")
+
     imported_forbidden = {
         name.split(".", 1)[0] for name in sys.modules if name.split(".", 1)[0] in FORBIDDEN
     }

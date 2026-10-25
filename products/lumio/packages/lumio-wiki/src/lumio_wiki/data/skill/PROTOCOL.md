@@ -512,6 +512,182 @@ When a consumer reports pinned-context results:
   SQL rewrite or numerical authority. Syncing a Git checkout never activates
   an integrated release.
 
+## 14. External-agent authoring journey (spec 0010)
+
+Two environments: a **contributor** coding agent authors from a real
+attached document in its own checkout with its own private registry and
+credentials; a **maintainer** elsewhere imports the private sources and
+admits the publication. Git carries content and exact references; originals,
+private registry state, and credentials never enter the repository, the PR,
+or published output. One machine-local **private source profile** (JSON v1:
+`schema_version`, `namespace`, absolute `source_registry`,
+`retention: required|disabled`, `artifact_store` as a local directory or S3
+connection, optional `exchange` S3 connection; credential fields carry
+environment-variable NAMES only) selects the private resources per
+operation. It selects neither Git credentials nor a publication destination.
+`retention: required` is mandatory for this journey. Full walkthrough:
+`docs/howto-source-handoff.md` in the Lumio repository.
+
+### 14.1 Connection check and guided setup
+
+```text
+lumio-wiki git-check <project> [--remote NAME] [--json]
+lumio-wiki private-profile inspect <profile> [--kb <kb>] [--json]
+lumio-wiki setup <kb> --journey --private-profile <file>
+lumio-wiki setup <kb> --journey --create-empty --namespace <ns> \
+  --private-profile <file> [--confirm <setup-digest>] [--json]
+```
+
+`git-check` runs bounded read-only probes of the Git tool, identity,
+repository state, and the remote's readability. A successful read proves
+READ access only — push and pull-request capability stay explicitly
+unverified; no test push, branch, or PR is ever attempted, and credential
+values are never read or echoed. `private-profile inspect` reports safe
+validity/capabilities without private paths or credential names. Journey
+setup records the non-secret submission settings (`LUMIO_SUBMISSION_MODE`,
+`LUMIO_GIT_REMOTE`, `LUMIO_GIT_TARGET_BRANCH`), reports skill drift and
+baseline readiness, and imports nothing. `--create-empty` previews creating
+a NEW empty managed KB inside an already registered native Git worktree
+(setup never initializes Git or commits); `--confirm` authorizes exactly the
+freshly revalidated preview, and a changed target or stale digest refuses
+before any write. Nonempty adopted KBs keep their namespace/bindings;
+unadopted nonempty content is refused with adoption guidance. The empty
+route never substitutes for the baseline bootstrap below.
+
+### 14.2 Baseline bootstrap (metadata only)
+
+```text
+lumio-wiki source-bootstrap export <kb> --revision <full> --output <file> \
+  [--source-registry <dir> | --private-profile <file>] --json
+lumio-wiki source-bootstrap inspect <kb> --snapshot <file> --digest <sha256> \
+  --revision <full> [--source-registry <dir> | --private-profile <file>] --json
+lumio-wiki source-bootstrap import <kb> --snapshot <file> --digest <sha256> \
+  --revision <full> [--source-registry <dir> | --private-profile <file>] \
+  [--confirm <preview-digest>] --json
+```
+
+A fresh contributor of a NONEMPTY managed KB imports the maintainer's
+**Source Baseline Snapshot**: exact Source Version metadata for the selected
+base revision, no original bytes. The expected archive sha256 comes out-of
+-band from maintainer-approved setup or direct operator selection — never
+from trusting the archive. Verify kind/format/namespace/revision/coverage
+before mutation; import is additive and idempotent, preserves history and
+verified local availability, and never manufactures byte verification or
+source access. Baseline originals stay maintainer-private: report them as
+unavailable, and required-retention publication on the contributor keeps
+refusing. A **Source Handoff Bundle** is the different, content-bearing kind
+(full §5); each importer refuses the other kind.
+
+### 14.3 Extract, author, apply one complete candidate
+
+```text
+lumio-wiki extract <file> --output <private-dir> [--json]
+lumio-wiki ingest-candidate <kb> --candidate <request.json> \
+  [--source-registry <dir> | --private-profile <file>] [--json]
+```
+
+Read the ACTUAL attachment bytes; `extract` persists normalized text, real
+coordinates, the original digest, and the actual processor identity outside
+every Git worktree, and discloses missing extras, conversion failures, empty
+or bounded results truthfully (PDF/Office/image need `lumio-wiki[documents]`).
+Read existing vocabulary first (`hot`/`index`/`search`/`page`); author pages
+and any ontology additions outside the repository. The v1 candidate request
+JSON is `{schema_version: 1, base_revision: <full 40-hex>, sources:
+[{source_id, original_path, expected_digest, intent: new|update}], pages:
+[<authored page paths>], control: <optional complete lumio.yaml path>}`.
+`ingest-candidate` validates the COMPLETE candidate (pages, ontology,
+cross-page references, exact manifest bindings) before any private
+registration or write; new/changed originals are registered, retained, and
+byte-verified before success; failures roll the authored tree back while
+reusable immutable private residue stays retry-safe. Nothing is committed.
+Filename/title matches never establish identity — `intent` is explicit.
+
+### 14.4 Review, human confirmation, commit verification
+
+```text
+lumio-wiki authoring-review <kb> --base <full-commit> \
+  [--source-registry <dir> | --private-profile <file>] [--json] > review.json
+git add <intended paths> && git commit -m "..."
+lumio-wiki authoring-check <kb> --review review.json --revision <full-commit> [--json]
+```
+
+Stage exactly the intended paths first. `authoring-review` captures the
+complete staged tree in private temporary Git storage (never touching the
+user's index/worktree, never committing) and reports bodies/body diffs,
+semantic changes (Claims, Entity types, ontology, lifecycle, visibility,
+source support), validation results, exact path/blob identities, excluded
+unstaged/untracked work, and one review digest. YAML stays out of the
+ordinary review; large reviews are paginated and never imply review of
+undisplayed content. The report is stateless evidence: it approves nothing
+and authenticates no one — SHOW it to the user and wait for their explicit
+decision before committing with native Git. `authoring-check` then compares
+the COMPLETE commit tree with the reviewed submitted tree and verifies the
+base is an ancestor; a changed file, source binding, or hook/concurrent edit
+is a named mismatch with a nonzero exit. Never reset or repair silently:
+re-review the changed candidate and ask again; an earlier confirmation
+never carries forward.
+
+### 14.5 Private handoff, exchange, submission, retry
+
+```text
+lumio-wiki source-handoff export <kb> --base <full> --revision <full> \
+  --output <bundle> [--references <selection.json>] \
+  [--source-registry <dir> | --private-profile <file>] --json
+lumio-wiki source-exchange upload --file <transfer> (--exchange <s3-uri> \
+  | LUMIO_SOURCE_EXCHANGE | --kb <kb> --private-profile <file>) [--json]
+lumio-wiki source-exchange download --id <64-hex-id> --digest <sha256> \
+  --output <file> (--exchange <s3-uri> | env | --kb <kb> --private-profile) [--json]
+```
+
+`source-handoff export` selects the exact Source Versions required by
+new/changed bindings between two explicit commits (plus optional
+supplementary exact references) and their original bytes into one bounded,
+versioned, digest-verified archive OUTSIDE the repository; unavailable
+originals block export. Uploads validate the captured bytes once, stream
+them through a unique private `_staging/<attempt>/transfer.tar` key, promote
+them by ATOMIC copy-if-absent to the immutable final `<id>/transfer.tar`,
+verify the complete final object, and publish readiness last (create-only
+`ready.json`). Same id with different bytes is a conflict; a lost response
+recovers by verifying the existing final object. The service must support
+multipart upload and atomic conditional copy (SeaweedFS 4.45 is the proven
+reference); an unsupported operation is a distinct `exchange_unsupported`
+refusal and MANUAL TRANSFER of the same archive remains available with no
+S3 dependency. Temporary staging objects and abandoned multipart uploads
+are operator-managed residue; there is no cleanup command and admitted
+knowledge never depends on the exchange.
+
+Submit with native Git tooling per the configured mode (local commit, or
+branch push + PR). The submission output carries a readable summary, the
+validation outcome, the exact revision, and the transfer id/digest ONLY —
+never originals, signed URLs, private paths, or bucket names. On retry,
+INSPECT the existing remote branch/PR by exact repository/head/base before
+creating anything: never duplicate a completed submission, never force-push,
+never auto-merge.
+
+### 14.6 Maintainer import and independent admission
+
+```text
+lumio-wiki source-handoff inspect <kb> --bundle <file> --digest <sha256> \
+  --revision <full> [--source-registry <dir> | --private-profile <file>] --json
+lumio-wiki source-handoff import <kb> --bundle <file> --digest <sha256> \
+  --revision <full> [--source-registry <dir> | --private-profile <file>] \
+  [--confirm <preview-digest>] --json
+lumio-wiki publish <kb> --revision <final-full-commit> --to <dest> \
+  --expected-current <version-or-none> [--source-registry <dir> | --private-profile <file>]
+```
+
+The maintainer verifies the out-of-band digest, previews, then confirms the
+import against the selected revision. Existing exact versions are reused,
+existing metadata/history is never overwritten, and conflicts block with an
+explicit resolution requirement; import changes no authored pages, activates
+no lifecycle, publishes nothing. Then review the FINAL integrated commit
+freshly (merge/rebase may change identity; the contributor's confirmations
+ever carry over) and admit through the ordinary §8 publish gate: required
+retention verifies all referenced non-synthetic originals in the
+maintainer's canonical store. PR approval, source import, and Git merge are
+NOT Publication Admission. Cite from the admitted snapshot: Canonical Page
+Title + printed path + exact passage.
+
 ## Guardrails
 
 - **Cite paths and passages.** Every domain claim must cite the Canonical

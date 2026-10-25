@@ -7,7 +7,10 @@ provider are required: the base `lumio-wiki` wheel, plain Git, and you (the
 host coding agent) as the Distiller are enough. Publishing immutable versions
 to S3-compatible object storage — and read-only Reader projects against them
 — is a separate optional guide:
-[`docs/howto-s3-publish.md`](howto-s3-publish.md).
+[`docs/howto-s3-publish.md`](howto-s3-publish.md). Contributing to a Knowledge
+Base from a separate agent environment (real attachment → human review →
+native Git pull request → private source handoff → maintainer admission) is
+covered by [`docs/howto-source-handoff.md`](howto-source-handoff.md).
 
 Time: ~15 minutes. You end with a Maintainer project that admits one exact
 reviewed Git revision to a visible local Published Version, then answers
@@ -430,6 +433,11 @@ Never point a Maintainer worktree at the S3 prefix as if it were a filesystem.
   rule.
 - [`docs/howto-s3-publish.md`](howto-s3-publish.md) — the optional S3 journey:
   `weed mini` locally, immutable Published Versions, Reader projects, LanceDB.
+- [`docs/howto-source-handoff.md`](howto-source-handoff.md) — the
+  external-agent authoring journey: contributor/maintainer environments,
+  metadata-only baseline bootstrap, private Source Handoff Bundles, the
+  optional S3 exchange, and independent maintainer admission. Runnable
+  example: [`examples/external-agent-journey/`](../examples/external-agent-journey/).
 - The canonical joint local tutorial (Lumio + Ariadne in one walkthrough) in
   the Ariadne repository:
   [`docs/tutorials/lumio-ariadne-local.md`](https://github.com/legout/ariadne/blob/main/integration/docs/tutorials/lumio-ariadne-local.md).
