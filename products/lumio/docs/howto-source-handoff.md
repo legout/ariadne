@@ -141,7 +141,7 @@ export LUMIO_SUBMISSION_MODE=commit
 export LUMIO_GIT_REMOTE=origin
 export LUMIO_GIT_TARGET_BRANCH=main
 git clone "$KB_REMOTE" "$CONTRIB_WS/kb-repo"
-BASE=$(git -C "$CONTRIB_WS/kb-repo" rev-parse HEAD)
+export BASE=$(git -C "$CONTRIB_WS/kb-repo" rev-parse HEAD)
 (cd "$CONTRIB_WS" && lumio-wiki setup "$CONTRIB_WS/kb-repo" \
   --journey --private-profile "$CONTRIB_PRIVATE/profile.json")
 ```
@@ -157,7 +157,7 @@ lumio-wiki source-bootstrap inspect "$CONTRIB_WS/kb-repo" \
   --digest "$BASELINE_SHA256" --revision "$BASE" \
   --private-profile "$CONTRIB_PRIVATE/profile.json" --json \
   > "$CONTRIB_PRIVATE/inbound/baseline-preview.json"
-BASELINE_CONFIRM=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["preview_digest"])' \
+BASELINE_CONFIRM=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["confirmation_digest"])' \
   "$CONTRIB_PRIVATE/inbound/baseline-preview.json")
 lumio-wiki source-bootstrap import "$CONTRIB_WS/kb-repo" \
   --snapshot "$CONTRIB_PRIVATE/inbound/baseline.tar" \
@@ -206,11 +206,11 @@ the JSON file's location — so generate the request from expanded variables
 with the standard library instead of hand-typing paths:
 
 ```bash
-ORIG_SHA256=$(sha256sum "$CONTRIB_PRIVATE/inbound/oncall-runbook.md" | cut -d' ' -f1)
-python3 - <<'PY'
-import json, os
+export ORIG_SHA256=$(sha256sum "$CONTRIB_PRIVATE/inbound/oncall-runbook.md" | cut -d' ' -f1)
+python3 - "$CONTRIB_PRIVATE" <<'PY'
+import json, os, sys
 from pathlib import Path
-private = Path(os.environ["CONTRIB_PRIVATE"]).resolve()
+private = Path(sys.argv[1]).resolve()
 request = {
     "schema_version": 1,
     "base_revision": os.environ["BASE"],
@@ -263,59 +263,36 @@ lumio-wiki authoring-review "$CONTRIB_WS/kb-repo" --base "$BASE" \
   > "$CONTRIB_PRIVATE/review.json"
 ```
 
-**Ask ONE informed human decision.** Present, together: the displayed
-candidate (new page bodies, before/after diffs with explicit deletions, the
-plain-language summary of semantic changes, validation outcome), the
-CONFIGURED submission action — commit-only (submission ends at the local
-commit), or branch push of `oncall-runbook` to the configured
-remote/base — and the private transfer that follows (a Source Handoff
-Bundle through the private channel or exchange). One explicit decision
-authorizes exactly this candidate and this selected action set; a changed
-candidate or a different action needs a fresh decision. YAML is not shown;
-large reviews are paginated and never imply review of undisplayed content.
+**Ask ONE informed human decision.** The submission mode is exactly one of
+the two configured settings — `commit` (the default; submission ends at the
+verified local commit, and a configured remote/base NEVER authorizes a push
+in commit mode) or `github-pr` (selected explicitly BEFORE this decision,
+requiring the actual configured repository/remote/head/base). Present,
+together: the displayed candidate (new page bodies, before/after diffs with
+explicit deletions, the plain-language summary of semantic changes,
+validation outcome), the SELECTED action — commit mode's verified local
+commit, or `github-pr` mode's push and pull request against the named
+repository/head/base — and the private transfer that follows (a Source
+Handoff Bundle through the private channel or exchange).
+One explicit decision authorizes exactly this candidate and this selected
+action set; changing the mode afterwards needs a fresh decision. YAML is not
+shown; large reviews are paginated and never imply review of undisplayed
+content.
 
 Only after that decision, commit with native Git and verify the whole
 resulting commit against the reviewed candidate — a post-commit hook or
-concurrent edit produces a named mismatch and stops the submission:
+concurrent edit produces a named mismatch and stops the submission. In
+commit mode the submission ENDS here, even though a remote is configured:
 
 ```bash
 git -C "$CONTRIB_WS/kb-repo" commit -m "Add on-call escalation runbook"
 REV=$(git -C "$CONTRIB_WS/kb-repo" rev-parse HEAD)
 lumio-wiki authoring-check "$CONTRIB_WS/kb-repo" --review "$CONTRIB_PRIVATE/review.json" \
   --revision "$REV" --json
-# branch-push mode only (part of the authorized action), never in commit-only mode:
-git -C "$CONTRIB_WS/kb-repo" push -u origin oncall-runbook
 ```
 
 If anything changed after confirmation, do not carry the approval forward:
 re-review the changed candidate and ask again.
-
-### GitHub pull-request mode (requires your approved hosted repository)
-
-Prepare a public-safe PR body first, INSPECT for an existing PR by exact
-repository/head/base BEFORE creating anything, then create with explicit
-targets — never `--fill`, never a duplicate, never a force-push, never an
-auto-merge:
-
-```bash
-cat > "$CONTRIB_PRIVATE/pr-body.md" <<EOF
-Adds two pages and one ontology addition from the on-call runbook.
-
-- Validation: complete candidate passed (authoring-check green)
-- Exact revision: $REV
-- Private source transfer id/digest: see handoff receipt exchanged separately
-EOF
-git ls-remote "$KB_REMOTE" oncall-runbook
-gh pr list --repo <owner/repo> --head oncall-runbook --base main
-gh pr create --repo <owner/repo> --head oncall-runbook --base main \
-  --title "Add on-call escalation runbook" --body-file "$CONTRIB_PRIVATE/pr-body.md"
-```
-
-The PR body carries a readable summary, the validation outcome, the exact
-revision, and the transfer id/digest pointer only: never original documents,
-signed URLs, private paths, or bucket names. `<owner/repo>` is an explicit
-operator substitution for YOUR approved disposable repository — not a
-placeholder a script may silently fill.
 
 ## 6. Contributor: private handoff
 
@@ -331,6 +308,8 @@ lumio-wiki source-handoff export "$CONTRIB_WS/kb-repo" --base "$BASE" --revision
   --output "$CONTRIB_PRIVATE/outbound/handoff.tar" \
   --private-profile "$CONTRIB_PRIVATE/profile.json" --json \
   > "$CONTRIB_PRIVATE/outbound/handoff-export.json"
+HANDOFF_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["transfer_id"])' \
+  "$CONTRIB_PRIVATE/outbound/handoff-export.json")
 HANDOFF_SHA256=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bundle_sha256"])' \
   "$CONTRIB_PRIVATE/outbound/handoff-export.json")
 ```
@@ -348,8 +327,50 @@ lumio-wiki source-exchange upload --file "$CONTRIB_PRIVATE/outbound/handoff.tar"
 
 **Retries inspect before creating or mutating.** Before pushing or opening
 another PR, look up the existing remote branch/PR by exact
-repository/head/base; never force-push or auto-merge to recover, and never
-create a duplicate of an already-completed submission.
+repository/head/base; an existing match is reported and reused, never
+duplicated; never force-push or auto-merge to recover.
+
+### GitHub pull-request mode (requires your approved hosted repository)
+
+PR mode is selected explicitly BEFORE the human decision (§5) with the
+actual configured repository/remote/head/base. Its ordering is fixed: exact
+commit verification (§5) → private handoff FIRST, obtaining the ACTUAL
+`HANDOFF_ID`/`HANDOFF_SHA256` (above) → then the public-safe body carrying
+those actual values, the exact revision, the validation outcome and the
+summary → then exact-target retry inspection → only then the push/PR
+mutation. `gh` below is one native-tool example, not a requirement — any
+explicit native Git/host mechanism with the same targets and ordering is
+equivalent:
+
+```bash
+cat > "$CONTRIB_PRIVATE/pr-body.md" <<EOF
+Adds two pages and one ontology addition from the on-call runbook.
+
+- Validation: complete candidate passed (authoring-check green)
+- Exact revision: $REV
+- Private source transfer id: $HANDOFF_ID
+- Private source transfer sha256: $HANDOFF_SHA256
+EOF
+# Inspect BOTH the remote branch and the exact-target PR list BEFORE any
+# push/create mutation:
+git ls-remote "$KB_REMOTE" oncall-runbook
+EXISTING=$(gh pr list --repo <owner/repo> --head oncall-runbook --base main \
+  --json number,url --jq 'length')
+if [ "$EXISTING" != "0" ]; then
+  echo "Matching pull request already exists — report/reuse it; no push, no create:"
+  gh pr list --repo <owner/repo> --head oncall-runbook --base main --json number,url
+else
+  git push -u origin oncall-runbook
+  gh pr create --repo <owner/repo> --head oncall-runbook --base main \
+    --title "Add on-call escalation runbook" --body-file "$CONTRIB_PRIVATE/pr-body.md"
+fi
+```
+
+The body carries the actual transfer id/digest, exact revision, validation
+outcome and summary ONLY: never original documents, signed URLs, private
+paths, or bucket names. `<owner/repo>` is an explicit operator substitution
+for YOUR approved disposable repository — not a placeholder a script may
+silently fill. Nothing here runs as part of any local walkthrough.
 
 ## 7. Maintainer: import, final review, admission
 
@@ -372,7 +393,7 @@ lumio-wiki source-handoff inspect "$MAINT_WS/kb" \
   --bundle "$MAINT_PRIVATE/inbound/handoff.tar" --digest "$HANDOFF_SHA256" \
   --revision "$CONTRIB_REV" --private-profile "$MAINT_PRIVATE/profile.json" --json \
   > "$MAINT_PRIVATE/inbound/handoff-preview.json"
-HANDOFF_CONFIRM=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["preview_digest"])' \
+HANDOFF_CONFIRM=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["confirmation_digest"])' \
   "$MAINT_PRIVATE/inbound/handoff-preview.json")
 lumio-wiki source-handoff import "$MAINT_WS/kb" \
   --bundle "$MAINT_PRIVATE/inbound/handoff.tar" --digest "$HANDOFF_SHA256" \

@@ -90,6 +90,8 @@ git -C "$MAINT_WS/kb" config user.name "Aurora Maintainer"
 git -C "$MAINT_WS/kb" config user.email "maintainer@lumio-journey.example"
 git -C "$MAINT_WS/kb" add lumio.yaml .lumio-authoring.yaml
 git -C "$MAINT_WS/kb" commit -m "Adopt the Aurora baseline control files"
+# Operator provisioning of this local fixture's clone source (not a contributor
+# submission): a disposable bare remote advertising the baseline branch.
 git init --bare -b main "$KB_REMOTE"
 git -C "$MAINT_WS/kb" remote add origin "$KB_REMOTE"
 ```
@@ -445,14 +447,15 @@ lumio-wiki authoring-review "$CONTRIB_WS/kb-repo" --base "$BASE" \
 **[HUMAN — one decision]** Before any submission step, the agent presents,
 together: the displayed candidate (both new page bodies, the new
 `team`/`escalates-to` ontology entries, the accepted Claim, validation
-outcome), the configured submission action — commit locally on branch
-`oncall-runbook` and push that branch to `origin` (`$KB_REMOTE`), base
-`main`, no pull request — and the private transfer that follows (a Source
-Handoff Bundle through the private channel). One explicit human decision
-covers exactly this candidate and this selected action set; a changed
-candidate or action needs a fresh decision. In commit-only mode without a
-push target, submission ends at the local commit and the transfer is arranged
-separately.
+outcome) and the SELECTED submission action. The mode is exactly the
+configured setting — `commit` (the default here: submission ends at the
+verified local commit; the configured `origin`/`main` NEVER authorizes a
+push in commit mode) or `github-pr` (selected explicitly BEFORE this
+decision, requiring the actual configured repository/remote/head/base).
+One explicit human decision covers exactly this candidate and this selected
+action set, including the private transfer that follows (a Source Handoff
+Bundle through the private channel); a changed candidate, or a different
+mode/action, needs a fresh decision.
 
 <!-- j6:contrib-commit -->
 ```bash
@@ -460,32 +463,8 @@ git -C "$CONTRIB_WS/kb-repo" commit -m "Add on-call escalation runbook and Suppo
 REV=$(git -C "$CONTRIB_WS/kb-repo" rev-parse HEAD)
 lumio-wiki authoring-check "$CONTRIB_WS/kb-repo" --review "$CONTRIB_PRIVATE/review.json" \
   --revision "$REV" --json
-git -C "$CONTRIB_WS/kb-repo" push -u origin oncall-runbook
+# commit mode ENDS the submission here — no push happens even though origin exists.
 ```
-
-**GitHub pull-request mode (alternative).** Requires your approved hosted
-repository and credentials; nothing in this walkthrough contacts any host.
-Prepare a public-safe body first, inspect for an existing PR by exact
-repository/head/base BEFORE creating anything, then create with explicit
-targets — never `--fill`, never a duplicate, never a force-push:
-
-```bash
-cat > "$CONTRIB_PRIVATE/pr-body.md" <<EOF
-Adds two pages and one ontology addition from the on-call runbook.
-
-- Validation: complete candidate passed (authoring-check green)
-- Exact revision: $REV
-- Private source transfer id/digest: see handoff receipt exchanged separately
-EOF
-git ls-remote "$KB_REMOTE" oncall-runbook
-gh pr list --repo <owner/repo> --head oncall-runbook --base main
-gh pr create --repo <owner/repo> --head oncall-runbook --base main \
-  --title "Add on-call escalation runbook" --body-file "$CONTRIB_PRIVATE/pr-body.md"
-```
-
-The PR body names the exact revision and validation result; the transfer
-id/digest travels with the private handoff receipt, never private paths,
-originals, or signed URLs.
 
 ## 6. Contributor: private handoff
 
@@ -509,6 +488,46 @@ cp "$CONTRIB_PRIVATE/outbound/handoff-export.json" "$MAINT_PRIVATE/inbound/"
 The bundle (outside every Git worktree) carries the exact new Source Version
 and its original bytes for the reviewed contribution range only.
 
+**GitHub pull-request mode (alternative; requires your approved hosted
+repository).** PR mode is selected explicitly BEFORE the human decision (§5)
+with the actual configured repository/remote/head/base. Its ordering is
+fixed: exact commit verification (§5) → private handoff FIRST, obtaining the
+ACTUAL `HANDOFF_ID`/`HANDOFF_SHA256` (above) → then the public-safe body
+carrying those actual values, the exact revision, the validation outcome and
+the summary → then exact-target retry inspection → only then the push/PR
+mutation. An existing matching PR is reported and reused, never duplicated.
+`gh` is one native-tool example, not a requirement; nothing here runs as part
+of this local walkthrough:
+
+```bash
+cat > "$CONTRIB_PRIVATE/pr-body.md" <<EOF
+Adds two pages and one ontology addition from the on-call runbook.
+
+- Validation: complete candidate passed (authoring-check green)
+- Exact revision: $REV
+- Private source transfer id: $HANDOFF_ID
+- Private source transfer sha256: $HANDOFF_SHA256
+EOF
+# Inspect BOTH the remote branch and the exact-target PR list BEFORE any
+# push/create mutation:
+git ls-remote "$KB_REMOTE" oncall-runbook
+EXISTING=$(gh pr list --repo <owner/repo> --head oncall-runbook --base main \
+  --json number,url --jq 'length')
+if [ "$EXISTING" != "0" ]; then
+  echo "Matching pull request already exists — report/reuse it; no push, no create:"
+  gh pr list --repo <owner/repo> --head oncall-runbook --base main --json number,url
+else
+  git push -u origin oncall-runbook
+  gh pr create --repo <owner/repo> --head oncall-runbook --base main \
+    --title "Add on-call escalation runbook" --body-file "$CONTRIB_PRIVATE/pr-body.md"
+fi
+```
+
+The body carries the actual transfer id/digest, exact revision, validation
+outcome and summary ONLY — never private paths, originals, or signed URLs.
+`<owner/repo>` is an explicit operator substitution for YOUR approved
+disposable repository.
+
 ## 7. Maintainer: integrate, import, fresh admission, cited read
 
 <!-- j6:maint-integrate -->
@@ -519,7 +538,13 @@ export MAINT_PRIVATE="$JOURNEY/maintainer-private"
 export CONTRIB_WS="$JOURNEY/contributor"
 export CONTRIB_PRIVATE="$JOURNEY/contributor-private"
 export KB_REMOTE="${KB_REMOTE:-$JOURNEY/remote/kb.git}"
-git -C "$MAINT_WS/kb" fetch origin oncall-runbook
+# OPERATOR-OWNED LOCAL FIXTURE TRANSFER (not a contributor submission step):
+# commit mode ended the contributor's submission at the verified local commit,
+# so the operator running this two-directory fixture bridges the contribution
+# to the maintainer with ordinary native Git — fetching the branch directly
+# from the contributor checkout. On a real two-machine journey the
+# contribution arrives through the hosted remote/PR instead.
+git -C "$MAINT_WS/kb" fetch "$CONTRIB_WS/kb-repo" oncall-runbook
 CONTRIB_REV=$(git -C "$MAINT_WS/kb" rev-parse FETCH_HEAD)
 git -C "$MAINT_WS/kb" merge --no-ff "$CONTRIB_REV" -m "Merge on-call escalation runbook"
 FINAL_REV=$(git -C "$MAINT_WS/kb" rev-parse HEAD)

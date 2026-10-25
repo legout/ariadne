@@ -396,17 +396,27 @@ step:
   never a substitute for the nonempty baseline route).
 - Review is human: `authoring-review <kb> --base <full-commit>` displays
   bodies, diffs with deletions, and semantic changes; ask **one informed
-  decision** covering the displayed candidate, the CONFIGURED submission
-  action (commit-only, or branch push/PR with its exact remote/base) and the
-  private transfer — then commit on a native contribution branch from the
-  exact baseline (never the default branch) and verify with
+  decision** covering the displayed candidate, the SELECTED submission
+  action and the private transfer. The mode is exactly the configured
+  `commit` or `github-pr` setting — `commit` ends submission at the verified
+  local commit (a configured remote/base NEVER authorizes a push in commit
+  mode); `github-pr` is selected explicitly BEFORE the decision with the
+  actual configured repository/remote/head/base. Then commit on a native
+  contribution branch from the exact baseline (never the default branch)
+  and verify with
   `authoring-check <kb> --review <report> --revision <full-commit>`. A hook
   or post-confirmation edit stops submission; re-review, never carry an
-  approval forward. `git-check` proves read access only — never claim push
+  approval forward; a different mode/action needs a fresh decision.
+  `git-check` proves read access only — never claim push
   or PR capability from it.
 - Transfer privately: `source-handoff export` → `source-exchange upload`
-  (or manual transfer of the same archive). Submission output (PR body,
-  summaries) carries the exact revision and transfer id/digest ONLY — never
+  (or manual transfer of the same archive). PR mode's fixed order: verified
+  commit → handoff first (actual transfer id/digest) → public-safe body
+  with those actual values, exact revision and validation outcome →
+  exact-target retry inspection → only then push/PR mutation; an existing
+  matching PR is reported and reused, never duplicated. Submission output
+  (PR body, summaries) carries the exact revision and transfer id/digest
+  ONLY — never
   originals, private paths, bucket names, or signed URLs. On retry, inspect
   the existing remote branch/PR by exact repository/head/base; never
   duplicate, force-push, or auto-merge.

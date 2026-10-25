@@ -622,11 +622,14 @@ unstaged/untracked work, and one review digest. YAML stays out of the
 ordinary review; large reviews are paginated and never imply review of
 undisplayed content. The report is stateless evidence: it approves nothing
 and authenticates no one — ask ONE informed human decision covering, together:
-the displayed candidate, the CONFIGURED submission action (commit-only, or
-branch push with its remote/base, or branch push plus PR with explicit
-repository/head/base), and the private transfer that follows. Only that
-decision authorizes the native Git commit; commit-only mode ends submission
-at the local commit. `authoring-check` then compares
+the displayed candidate, the SELECTED submission action and the private
+transfer that follows. The mode is exactly the configured `commit` or
+`github-pr` setting: `commit` ends submission at the verified local commit
+(a configured remote/base never authorizes a push in commit mode);
+`github-pr` is selected explicitly BEFORE the decision and requires the
+actual configured repository/remote/head/base. Only that
+decision authorizes the native Git commit; a different mode/action needs a
+fresh decision. `authoring-check` then compares
 the COMPLETE commit tree with the reviewed submitted tree and verifies the
 base is an ancestor; a changed file, source binding, or hook/concurrent edit
 is a named mismatch with a nonzero exit. Never reset or repair silently:
@@ -663,14 +666,21 @@ are operator-managed residue; there is no cleanup command and admitted
 knowledge never depends on the exchange.
 
 Submit with native Git tooling per the configured mode and the human's
-selected action (commit-only ends at the local commit; branch-push mode
-pushes the contribution branch; PR mode uses explicit repository/head/base
-with a prepared public-safe body — never `--fill`). The submission output
+selected action. The mode is exactly `commit` or `github-pr`:
+`commit` ENDS submission at the verified local commit — no push or PR
+operation runs in commit mode, even when a remote/base is configured.
+`github-pr` requires the actual configured repository/remote/head/base and
+follows the fixed ordering: exact commit verification → private handoff
+FIRST (obtaining the ACTUAL transfer id/digest) → public-safe body carrying
+those actual values, the exact revision, the validation outcome and the
+summary (never `--fill`, never a receipt-pointer substitute) → exact-target
+retry inspection → only then the push/PR mutation. The submission output
 carries a readable summary, the
 validation outcome, the exact revision, and the transfer id/digest ONLY —
 never originals, signed URLs, private paths, or bucket names. On retry,
 INSPECT the existing remote branch/PR by exact repository/head/base BEFORE
-any mutation: never duplicate a completed submission, never force-push,
+any mutation; an existing match is reported and reused, never duplicated:
+never force-push,
 never auto-merge.
 
 ### 14.6 Maintainer import and independent admission
