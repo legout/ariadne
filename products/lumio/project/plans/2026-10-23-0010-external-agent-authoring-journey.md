@@ -8,9 +8,16 @@ scope. No target integration, push, PR publication, release or production access
 Harness human confirmations and fixture-remote/service selection remain required
 when their planned steps are reached; never fabricate them.
 
-Status: prior slices approved for supervised isolated execution; revision 5's J5a
-decomposition is prepared for review before implementation. Plan revision: 5.
+Status: approved for supervised isolated execution, including revision 5's J5a
+interface and decomposition. Plan revision: 5.
 Date: 2026-10-25.
+
+Revision 5 execution approval, 2026-10-25: in BB thread `thr_52d92z7irz`, the
+owner explicitly approved "specification 0010 revision 5 and plan0010 revision 5's
+J5a interface and decomposition" and directed continued supervised implementation
+and validation, with no target integration or publication. This supersedes the
+reconciliation's pending-review status below; no behavioral/interface change is
+made by recording the approval.
 
 Scoped setup amendment — 2026-10-25: the owner selected previewed, confirmed
 empty-KB creation with explicit namespace/authoring location, retaining explicit
@@ -192,7 +199,7 @@ existing commands and their JSON contracts.
 | `setup <kb> --journey --private-profile <file> [existing setup flags]` | existing setup composition | `cli.py` and `env_loader.py` |
 | `setup <kb> --journey --create-empty --namespace <namespace> --private-profile <file> [--confirm <setup-digest>] [--json]` | CLI composition; no new public SDK export | J5a; `cli.py`, internal `journey_setup.py`, shared private-profile validation |
 
-### Confirmed empty setup interface (J5a; revision 5 proposal)
+### Confirmed empty setup interface (J5a; approved revision 5)
 
 `--create-empty` explicitly selects §2.2 creation and requires `--journey`.
 `<kb>` is the author-selected path inside an existing registered Git worktree;
@@ -849,10 +856,10 @@ are outside this plan.
 This is plan revision 5 for approved spec0010 revision 5. D0 and the empty-create
 versus nonempty-adoption choice are resolved. Prior slices retain their execution
 authority and scoped evidence; J5a's new confirmation interface/decomposition is
-prepared for review before implementation. No new product code was written during
+approved for supervised implementation. No new product code was written during
 this reconciliation. JP/J2 public producer interfaces consumed by Ariadne plan0033
 stay unchanged; J5a's internal validation reuse does not grant Core project
-creation/adoption. Review the concrete J5a plan before dispatch. Integration,
+creation/adoption. J5a dispatch follows the recorded revision 5 approval. Integration,
 publication and the selected harness's real human confirmations remain separate.
 
 Ariadne plan0033 owns Core Git diagnostics, managed-source admission, composed

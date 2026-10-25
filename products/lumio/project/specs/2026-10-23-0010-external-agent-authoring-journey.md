@@ -3,6 +3,12 @@
 Status: approved design with scoped owner amendments. Written revision: 5.
 Date: 2026-10-25.
 
+Revision 5 execution approval, 2026-10-25: in BB thread `thr_52d92z7irz`, the
+owner explicitly approved "specification 0010 revision 5 and plan0010 revision 5's
+J5a interface and decomposition" and directed continued supervised implementation
+and validation, with no target integration or publication. This supersedes the
+pre-implementation status of the reconciliation below; it is not a completion claim.
+
 Approved scoped amendment, 2026-10-25: in BB thread `thr_52d92z7irz`, the owner
 selected previewed, confirmed empty-KB creation in guided setup, with explicit
 namespace and authoring location, while preserving explicit adoption for nonempty
@@ -44,7 +50,8 @@ fallback. Revision 1 and implementation planning were explicitly approved, follo
 by scoped bootstrap, private profile, J4 exchange and empty-KB setup amendments.
 Supervised execution was approved through the implementation plan, with J4
 implementation and validation reconfirmed on 2026-10-24. The 2026-10-25 setup
-decision requires the revision 5 reconciliation before its implementation.
+decision was reconciled in revision 5 and its J5a interface/decomposition then
+explicitly approved for supervised implementation and validation.
 
 This specification owns the conversational document-authoring journey in
 `lumio-wiki`: guided setup, extraction, original retention, multi-page authoring,
