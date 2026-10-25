@@ -217,8 +217,19 @@ def _temp_workspace() -> Path:
     when it sits inside a Git worktree: private captured transfer bytes never
     land inside a content repository through ambient TMPDIR selection.
     """
-    root = Path(tempfile.gettempdir()).resolve()
-    _refuse_inside_git_worktree(root, "configured temporary directory")
+    root_of_temp = None
+    try:
+        root_of_temp = Path(tempfile.gettempdir()).resolve()
+    except OSError as exc:
+        # F5: discovery failures (CPython's documented FileNotFoundError
+        # listing candidate directories) stay inside the operation boundary;
+        # candidate paths never enter the message.
+        raise SourceExchangeError(
+            "allocating private temporary storage failed; no usable temporary "
+            "directory is available — free space or point TMPDIR at private "
+            "storage and retry",
+        ) from exc
+    _refuse_inside_git_worktree(root_of_temp, "configured temporary directory")
     try:
         return Path(tempfile.mkdtemp(prefix="lumio-source-exchange-"))
     except OSError as exc:
@@ -470,7 +481,9 @@ def _copy_to_final(
                     "final object is immutable and was not modified",
                     code="exchange_conflict",
                 ) from verify_exc
-            if verify_exc.code == "exchange_access_denied":
+            if verify_exc.code in ("exchange_access_denied", "exchange_not_found"):
+                # F7: a denied or genuinely-absent final keeps its truthful
+                # classified category after an ambiguous copy response.
                 raise verify_exc from exc
             # Absence or a transient outcome after a lost response: retry the
             # operation; absence alone is not an identity conflict.
@@ -507,9 +520,10 @@ def _publish_ready(store: Any, ready_key: str, payload: bytes) -> None:
         try:
             existing = _get_bounded(store, ready_key, READY_MAX_BYTES)
         except SourceExchangeError as exc:
-            if exc.code in ("exchange_access_denied", "exchange_not_found"):
-                # F7: a denied comparison stays access denial; a vanished
-                # record is not an identity conflict.
+            if exc.code != "exchange_integrity_mismatch":
+                # F7: denied, missing or transient comparison failures keep
+                # their own truthful category — only an established different
+                # record is a conflict.
                 raise
             raise SourceExchangeError(
                 "a completion record for this transfer identifier exists but could "

@@ -1672,3 +1672,201 @@ def test_exchange_recovery_lost_ready_with_different_record_is_conflict(tmp_path
     )
     assert ready_now == original_ready  # record unchanged
     assert conflicting_digest != facts["sha256"]  # the payloads genuinely differ
+
+
+# ---------------------------------------------------------------------------
+# Extra delta-review regressions (j4-delta-review.md, surviving F5/F7). Each
+# pins a named contract with independent expectations from the safe-error and
+# classification contract — never copied product output.
+# ---------------------------------------------------------------------------
+
+
+def test_exchange_profile_missing_s3_extra_is_bounded(tmp_path, capsys, monkeypatch):
+    """F5: profile-mode exchange selection with the optional S3 extra absent
+    must produce a bounded version-1 CLI refusal with actionable '[s3]'
+    guidance — never a foreign KnowledgeBaseError or traceback."""
+    import sys as _sys
+
+    from lumio_wiki.env_loader import (
+        ARTIFACT_RETENTION_ENV_VAR,
+        KB_PATH_ENV_VAR,
+        SOURCE_EXCHANGE_ENV_VAR,
+        SOURCE_REGISTRY_ENV_VAR,
+        SOURCE_STORE_ENV_VAR,
+    )
+
+    for variable in (
+        SOURCE_EXCHANGE_ENV_VAR,
+        SOURCE_REGISTRY_ENV_VAR,
+        SOURCE_STORE_ENV_VAR,
+        ARTIFACT_RETENTION_ENV_VAR,
+        KB_PATH_ENV_VAR,
+    ):
+        monkeypatch.delenv(variable, raising=False)
+    # Fixture setup BEFORE the import boundary: a valid private profile with
+    # its declared credential variables set, an explicit --kb, and a real
+    # exported transfer artifact (never uploaded).
+    world = _baseline_world(tmp_path)
+    artifact = world["snapshot"]
+    profile = tmp_path / "contributor" / "profile.json"
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "namespace": NAMESPACE,
+                "source_registry": str((tmp_path / "contributor" / "registry").resolve()),
+                "retention": "required",
+                "artifact_store": {
+                    "kind": "local",
+                    "root": str((tmp_path / "contributor" / "store").resolve()),
+                },
+                "exchange": {
+                    "kind": "s3",
+                    "bucket": _BUCKET,
+                    "prefix": _PREFIX,
+                    "endpoint": _ENDPOINT,
+                    "region": _os.environ.get("LUMIO_S3_REGION", "us-east-1"),
+                    "url_style": "path",
+                    "credentials": {
+                        "access_key_id_env": "LUMIO_S3_TEST_CONTRIBUTOR_ACCESS_KEY_ID",
+                        "secret_access_key_env": "LUMIO_S3_TEST_CONTRIBUTOR_SECRET_ACCESS_KEY",
+                    },
+                },
+            }
+        )
+    )
+    monkeypatch.setitem(_sys.modules, "obstore", None)  # import boundary only
+
+    code = main(
+        [
+            "source-exchange",
+            "upload",
+            "--file",
+            str(artifact),
+            "--private-profile",
+            str(profile),
+            "--kb",
+            str(world["kb"]),
+            "--json",
+        ]
+    )
+    envelope = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert envelope["schema_version"] == 1
+    assert envelope["error"]["code"] == "invalid_source_exchange"
+    _assert_no_disclosure(json.dumps(envelope))
+
+    code = main(
+        [
+            "source-exchange",
+            "upload",
+            "--file",
+            str(artifact),
+            "--private-profile",
+            str(profile),
+            "--kb",
+            str(world["kb"]),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "[s3]" in captured.err  # actionable install guidance
+    assert "traceback" not in (captured.err + captured.out).lower()
+    _assert_no_disclosure(captured.err + captured.out)
+
+
+def test_exchange_temp_discovery_failure_is_bounded(tmp_path, monkeypatch):
+    """F5: temp-directory DISCOVERY failure on the public SDK route must be a
+    bounded SourceExchangeError whose text carries no candidate paths."""
+    world = _baseline_world(tmp_path)
+    artifact = world["snapshot"]
+    remote_calls = {"count": 0}
+    saved = {}
+    for name in ("put", "copy", "head", "get", "list"):
+        saved[name] = getattr(obstore, name)
+
+        def _wrapper(*args, __name=name, **kwargs):
+            remote_calls["count"] += 1
+            return saved[__name](*args, **kwargs)
+
+        setattr(obstore, name, _wrapper)
+
+    def _discovery_failure():
+        raise FileNotFoundError(
+            "No usable temporary directory found in ['/private-sentinel-one', "
+            "'/private-sentinel-two']"
+        )
+
+    monkeypatch.setattr("tempfile.gettempdir", _discovery_failure)
+    try:
+        with pytest.raises(SourceExchangeError) as refused:
+            upload_source_transfer(artifact, exchange=_exchange("contributor"))
+    finally:
+        for name, real in saved.items():
+            setattr(obstore, name, real)
+    assert refused.value.code == "invalid_source_exchange"
+    assert "/private-sentinel" not in str(refused.value)
+    _assert_no_disclosure(str(refused.value))
+    assert remote_calls["count"] == 0  # no remote mutation before the refusal
+
+
+def test_exchange_existing_ready_transient_read_is_not_conflict(tmp_path):
+    """F7: on an identical retry, a transient (exhausted) comparison read of
+    the existing ready record stays a retryable invalid_source_exchange —
+    never an identity conflict."""
+    world, artifact, facts = _upload_baseline(tmp_path)
+    ready_key = _raw_key(facts["transfer_id"], "ready.json")
+    real_head = obstore.head
+    fired = {"transient": 0}
+
+    def wrapped_head(store, path, *args, **kwargs):
+        if path == ready_key and not fired["transient"]:
+            fired["transient"] += 1
+            raise RuntimeError("synthetic transient transport exhaustion")
+        return real_head(store, path, *args, **kwargs)
+
+    obstore.head = wrapped_head
+    try:
+        with pytest.raises(SourceExchangeError) as refused:
+            upload_source_transfer(artifact, exchange=_exchange("contributor"))
+    finally:
+        obstore.head = real_head
+    assert fired["transient"] == 1  # the comparison window was reached
+    assert refused.value.code == "invalid_source_exchange"
+    maintainer_raw = _role_store("maintainer")
+    ready_now = json.loads(bytes(obstore.get(maintainer_raw, ready_key).bytes()))
+    assert ready_now["sha256"] == facts["sha256"]  # ready unchanged
+    remote_digest, _total = _remote_digest(
+        maintainer_raw, _raw_key(facts["transfer_id"], "transfer.tar")
+    )
+    assert remote_digest == facts["sha256"]  # final unchanged
+
+
+def test_exchange_lost_copy_missing_final_stays_missing(tmp_path):
+    """F7: an ambiguous lost copy response whose verification finds the final
+    object genuinely ABSENT must retain exchange_not_found — never a generic
+    error, a conflict, or a published ready record."""
+    world = _baseline_world(tmp_path)
+    artifact = world["snapshot"]
+    facts = _expected_transfer("source-baseline", "upload", artifact)
+    real_copy = obstore.copy
+    fired = {"copy": 0}
+
+    def wrapped_copy(store, from_, to, *args, **kwargs):
+        fired["copy"] += 1
+        raise RuntimeError("injected ambiguous copy response")
+
+    obstore.copy = wrapped_copy
+    try:
+        with pytest.raises(SourceExchangeError) as refused:
+            upload_source_transfer(artifact, exchange=_exchange("contributor"))
+    finally:
+        obstore.copy = real_copy
+    assert fired["copy"] == 1  # the copy seam fired
+    assert refused.value.code == "exchange_not_found"
+    maintainer_raw = _role_store("maintainer")
+    with pytest.raises(FileNotFoundError):
+        obstore.head(maintainer_raw, _raw_key(facts["transfer_id"], "transfer.tar"))
+    with pytest.raises(FileNotFoundError):
+        obstore.head(maintainer_raw, _raw_key(facts["transfer_id"], "ready.json"))

@@ -3090,6 +3090,7 @@ def _exchange_selection(args: argparse.Namespace):
 
 def _cmd_source_exchange(args: argparse.Namespace) -> int:
     """``source-exchange upload|download``: private S3 transfer transport (§6)."""
+    from lumio_wiki.knowledge_base import KnowledgeBaseError
     from lumio_wiki.source_exchange import (
         SourceExchangeError,
         SourceTransfer,
@@ -3108,6 +3109,11 @@ def _cmd_source_exchange(args: argparse.Namespace) -> int:
             )
     except SourceExchangeError as exc:
         raise CliError(str(exc), code=exc.code) from exc
+    except KnowledgeBaseError as exc:
+        # F5: profile-mode selection crosses the unchanged JP resolver to the
+        # optional-extra guard; its actionable guidance reaches the caller as
+        # this command's bounded versioned envelope instead of a traceback.
+        raise CliError(str(exc), code="invalid_source_exchange") from exc
     if getattr(args, "json", False):
         print(json.dumps({"ok": True, **msgspec.to_builtins(result)}))
         return 0
