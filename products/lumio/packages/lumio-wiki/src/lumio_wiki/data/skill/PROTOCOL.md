@@ -611,7 +611,9 @@ git add <intended paths> && git commit -m "..."
 lumio-wiki authoring-check <kb> --review review.json --revision <full-commit> [--json]
 ```
 
-Stage exactly the intended paths first. `authoring-review` captures the
+Stage exactly the intended paths first — on a native contribution branch
+prepared from the exact baseline, never the default branch. `authoring-review`
+captures the
 complete staged tree in private temporary Git storage (never touching the
 user's index/worktree, never committing) and reports bodies/body diffs,
 semantic changes (Claims, Entity types, ontology, lifecycle, visibility,
@@ -619,13 +621,17 @@ source support), validation results, exact path/blob identities, excluded
 unstaged/untracked work, and one review digest. YAML stays out of the
 ordinary review; large reviews are paginated and never imply review of
 undisplayed content. The report is stateless evidence: it approves nothing
-and authenticates no one — SHOW it to the user and wait for their explicit
-decision before committing with native Git. `authoring-check` then compares
+and authenticates no one — ask ONE informed human decision covering, together:
+the displayed candidate, the CONFIGURED submission action (commit-only, or
+branch push with its remote/base, or branch push plus PR with explicit
+repository/head/base), and the private transfer that follows. Only that
+decision authorizes the native Git commit; commit-only mode ends submission
+at the local commit. `authoring-check` then compares
 the COMPLETE commit tree with the reviewed submitted tree and verifies the
 base is an ancestor; a changed file, source binding, or hook/concurrent edit
 is a named mismatch with a nonzero exit. Never reset or repair silently:
 re-review the changed candidate and ask again; an earlier confirmation
-never carries forward.
+never carries forward, and a changed action needs a fresh decision.
 
 ### 14.5 Private handoff, exchange, submission, retry
 
@@ -656,12 +662,15 @@ S3 dependency. Temporary staging objects and abandoned multipart uploads
 are operator-managed residue; there is no cleanup command and admitted
 knowledge never depends on the exchange.
 
-Submit with native Git tooling per the configured mode (local commit, or
-branch push + PR). The submission output carries a readable summary, the
+Submit with native Git tooling per the configured mode and the human's
+selected action (commit-only ends at the local commit; branch-push mode
+pushes the contribution branch; PR mode uses explicit repository/head/base
+with a prepared public-safe body — never `--fill`). The submission output
+carries a readable summary, the
 validation outcome, the exact revision, and the transfer id/digest ONLY —
 never originals, signed URLs, private paths, or bucket names. On retry,
-INSPECT the existing remote branch/PR by exact repository/head/base before
-creating anything: never duplicate a completed submission, never force-push,
+INSPECT the existing remote branch/PR by exact repository/head/base BEFORE
+any mutation: never duplicate a completed submission, never force-push,
 never auto-merge.
 
 ### 14.6 Maintainer import and independent admission
@@ -682,7 +691,7 @@ existing metadata/history is never overwritten, and conflicts block with an
 explicit resolution requirement; import changes no authored pages, activates
 no lifecycle, publishes nothing. Then review the FINAL integrated commit
 freshly (merge/rebase may change identity; the contributor's confirmations
-ever carry over) and admit through the ordinary §8 publish gate: required
+never carry over) and admit through the ordinary §8 publish gate: required
 retention verifies all referenced non-synthetic originals in the
 maintainer's canonical store. PR approval, source import, and Git merge are
 NOT Publication Admission. Cite from the admitted snapshot: Canonical Page

@@ -3,63 +3,146 @@
 A self-contained walkthrough of the
 [private source-handoff guide](../../docs/howto-source-handoff.md) using
 synthetic content only. A maintainer starts from a nonempty Knowledge Base; a
-**contributor coding agent in BB + Pi** receives one real attached document,
-authors two related pages plus one ontology addition, gets a human review,
-submits a native Git pull request, and the maintainer imports the private
-source and admits the publication. No script is provided on purpose: the
-harness steps (attachment, readable review, human confirmation) are manual by
-design — that is what this example exercises.
+**contributor coding agent in BB + Pi** (the selected initial qualification
+target — no real harness run is claimed here) receives one real attached
+document, authors two related pages plus one ontology addition, gets a human
+review, submits through native Git, and the maintainer imports the private
+source and admits the publication. No script ships with this example on
+purpose: the harness steps (attachment, readable review, human confirmation)
+are manual by design — that is what this example exercises.
 
-All content below is hand-authored and deterministic: the same inputs produce
-the same pages. Copy the blocks verbatim into the named files.
+Everything below is hand-authored and deterministic: run the blocks of each
+role in order, in one shell per role (a terminal on the maintainer machine and
+one on the contributor machine; here both may live on one workstation with
+separate directories). All private working files — originals, authored pages,
+profiles, registries, artifact stores, transfer archives — live at ABSOLUTE
+paths OUTSIDE every Git worktree; the two roles never share a registry, store,
+or credentials.
 
-## Synthetic namespace and identities
+## Synthetic identities
 
 | Identity | Value |
 |---|---|
 | Knowledge Base Namespace | `urn:uuid:9c1f5b2e-0010-4a10-9a10-5f3e8d2c7b31` |
-| Baseline source (maintainer-only) | `aurora-product-notes` |
+| Baseline source (maintainer-only original) | `aurora-product-notes` |
 | Contribution source (the attachment) | `oncall-runbook-2026` |
-| New Entity Types | `team` (ontology addition) |
-| New predicate | `escalates-to` (`procedure` → `team`) |
+| Baseline page | `Aurora Helpdesk` → `entities/aurora_helpdesk.md` |
+| Contribution page 1 | `On-call Escalation Runbook` → `procedures/on-call_escalation_runbook.md` |
+| Contribution page 2 | `Support Ops on-call Rotation` → `concepts/support_ops_on-call_rotation.md` |
+| Ontology additions | Entity Type `team`; predicates `escalates-to`/`escalated-by` |
+| Source facts kept in the pages | acknowledgement within **5 minutes**; escalation after **10 minutes** |
+
+Title routing preserves hyphens and replaces spaces with underscores — the
+expected paths above are what the CLI routes and what the final citation uses.
+
+## 0. Shared scaffold
+
+<!-- j6:shared-env -->
+```bash
+export JOURNEY="$HOME/lumio-journey-example"          # scratch root; delete to reset
+export MAINT_WS="$JOURNEY/maintainer"                 # maintainer workspace (Git repo lives here)
+export MAINT_PRIVATE="$JOURNEY/maintainer-private"    # maintainer registry/store/profiles/originals
+export CONTRIB_WS="$JOURNEY/contributor"              # contributor workspace (fresh clone lands here)
+export CONTRIB_PRIVATE="$JOURNEY/contributor-private" # contributor registry/store/profiles/inbound
+# The Git remote the contributor clones. Default: a disposable local bare repo this
+# walkthrough creates (no network). Point KB_REMOTE at your approved hosted remote for
+# a real two-machine run; the commands are identical.
+export KB_REMOTE="${KB_REMOTE:-$JOURNEY/remote/kb.git}"
+mkdir -p "$MAINT_WS" "$MAINT_PRIVATE"/{registry,artifacts,originals,authored,outbound,inbound} \
+         "$CONTRIB_WS" "$CONTRIB_PRIVATE"/{registry,artifacts,inbound,authored,outbound,extract}
+```
 
 ## 1. Maintainer: baseline Knowledge Base
 
-The maintainer Knowledge Base already contains one page bound to the baseline
-source. Create it once (any machine; private state stays outside the repo):
+### 1.1 Control File, manifest, native Git preparation
 
+<!-- j6:maint-git-init -->
 ```bash
-mkdir -p maintainer/kb/entities && cd maintainer/kb
-cat > lumio.yaml <<'YAML'
+mkdir -p "$MAINT_WS/kb"
+cat > "$MAINT_WS/kb/lumio.yaml" <<'YAML'
+version: 2
+mode: "categorized"
+categories:
+  - name: concepts
+    description: "Core ideas, definitions, and mental models."
+  - name: entities
+    description: "Named people, organizations, products, and tools."
+  - name: procedures
+    description: "Runbooks, methods, and checklists."
 ontology:
   entity_types:
     software-system:
       description: "A deployed software product or platform."
     procedure:
       description: "A reviewed runbook or operating procedure."
-  predicates:
-    described-as:
-      literal_kind: string
+  predicates: {}
   redirects: {}
 YAML
-cat > .lumio-authoring.yaml <<'YAML'
+cat > "$MAINT_WS/kb/.lumio-authoring.yaml" <<'YAML'
 version: 1
 namespace: "urn:uuid:9c1f5b2e-0010-4a10-9a10-5f3e8d2c7b31"
 sources: {}
 bindings: {}
 YAML
+# Native Git prepares the authoring repository; setup never initializes Git.
+git init -b main "$MAINT_WS/kb"
+git -C "$MAINT_WS/kb" config user.name "Aurora Maintainer"
+git -C "$MAINT_WS/kb" config user.email "maintainer@lumio-journey.example"
+git -C "$MAINT_WS/kb" add lumio.yaml .lumio-authoring.yaml
+git -C "$MAINT_WS/kb" commit -m "Adopt the Aurora baseline control files"
+git init --bare -b main "$KB_REMOTE"
+git -C "$MAINT_WS/kb" remote add origin "$KB_REMOTE"
 ```
 
-`kb/entities/aurora-helpdesk.md` (baseline page, bound to the baseline source
-the contributor will never receive):
+### 1.2 Private profile and baseline inputs (outside Git)
 
-```markdown
+<!-- j6:maint-private-files -->
+```bash
+cat > "$MAINT_PRIVATE/profile.json" <<'JSON'
+{
+  "schema_version": 1,
+  "namespace": "urn:uuid:9c1f5b2e-0010-4a10-9a10-5f3e8d2c7b31",
+  "source_registry": "REGISTRY_PLACEHOLDER",
+  "retention": "required",
+  "artifact_store": { "kind": "local", "root": "ARTIFACTS_PLACEHOLDER" }
+}
+JSON
+python3 - "$MAINT_PRIVATE/profile.json" "$MAINT_PRIVATE" <<'PY'
+import json, sys
+from pathlib import Path
+profile_path, private_root = Path(sys.argv[1]), Path(sys.argv[2])
+profile = json.loads(profile_path.read_text(encoding="utf-8"))
+profile["source_registry"] = str((private_root / "registry").resolve())
+profile["artifact_store"]["root"] = str((private_root / "artifacts").resolve())
+profile_path.write_text(json.dumps(profile, indent=2) + "\n", encoding="utf-8")
+PY
+lumio-wiki private-profile inspect "$MAINT_PRIVATE/profile.json" --kb "$MAINT_WS/kb" --json
+```
+
+The one-off `python3` substitution writes your actual ABSOLUTE registry/store
+paths into the profile — profile paths must be absolute and are validated
+against repo containment, so never leave the placeholders in.
+
+<!-- j6:maint-baseline-inputs -->
+```bash
+cat > "$MAINT_PRIVATE/originals/aurora-product-notes.md" <<'EOF'
+# Aurora product notes (internal)
+
+Owner: Support Ops. Last reviewed: 2026-10-01.
+
+Aurora is the support helpdesk this Knowledge Base documents. Aurora
+operating procedures live in this Knowledge Base under procedures/.
+EOF
+cat > "$MAINT_PRIVATE/authored/aurora-helpdesk.md" <<'EOF'
 ---
 title: "Aurora Helpdesk"
 id: "entity:aurora-helpdesk"
 entity_types: ["software-system"]
 tags: ["support", "product"]
 summary: "The Aurora helpdesk product this Knowledge Base documents."
+category: entities
+type: definition
+durability_rationale: "Stable product definition maintained by Support Ops."
 lifecycle: "approved"
 visibility: "internal"
 sources:
@@ -70,83 +153,164 @@ claims: []
 
 # Aurora Helpdesk
 
-Aurora is the support helpdesk this Knowledge Base documents.
+Aurora is the support helpdesk this Knowledge Base documents. Its operating
+procedures live in this Knowledge Base under procedures/.
+EOF
 ```
 
-Register the baseline original privately (maintainer only), commit, and note
-the exact base commit:
+### 1.3 Managed baseline ingestion and baseline commit
 
+<!-- j6:maint-baseline -->
 ```bash
-lumio-wiki ingest ./kb aurora-product-notes.md \
-  --compiled-page aurora-page.md --source-id aurora-product-notes \
-  --private-profile maintainer-profile.json
-git -C ./kb add -A && git -C ./kb commit -m "Adopt Aurora baseline"
-BASE=$(git -C ./kb rev-parse HEAD)
+lumio-wiki ingest "$MAINT_WS/kb" "$MAINT_PRIVATE/originals/aurora-product-notes.md" \
+  --compiled-page "$MAINT_PRIVATE/authored/aurora-helpdesk.md" \
+  --source-id aurora-product-notes \
+  --private-profile "$MAINT_PRIVATE/profile.json"
+lumio-wiki validate "$MAINT_WS/kb"
+git -C "$MAINT_WS/kb" add -A
+git -C "$MAINT_WS/kb" commit -m "Add the Aurora baseline page"
+BASE=$(git -C "$MAINT_WS/kb" rev-parse HEAD)
+git -C "$MAINT_WS/kb" push -u origin main
+echo "baseline revision: $BASE"
 ```
 
-Export and deliver the **Source Baseline Snapshot** (metadata only — the
-contributor gets no baseline originals), and share `sha256sum baseline.tar`
-out-of-band:
+### 1.4 Baseline snapshot for the fresh contributor
 
+<!-- j6:maint-snapshot -->
 ```bash
-lumio-wiki source-bootstrap export ./kb --revision "$BASE" \
-  --output baseline.tar --private-profile maintainer-profile.json --json
+lumio-wiki source-bootstrap export "$MAINT_WS/kb" --revision "$BASE" \
+  --output "$MAINT_PRIVATE/outbound/baseline.tar" \
+  --private-profile "$MAINT_PRIVATE/profile.json" --json \
+  > "$MAINT_PRIVATE/outbound/baseline-export.json"
+BASELINE_SHA256=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["snapshot_sha256"])' \
+  "$MAINT_PRIVATE/outbound/baseline-export.json")
+echo "send the contributor, over your private channel: baseline.tar and $BASELINE_SHA256"
 ```
 
-## 2. Contributor: fresh clone and bootstrap
+The snapshot carries exact baseline Source Version METADATA only — the
+contributor never receives `aurora-product-notes.md`.
 
-On the contributor machine (separate checkout, registry, credentials):
+## 2. Contributor: fresh clone, bootstrap, connection check
 
+<!-- j6:contrib-workspace -->
 ```bash
-git clone <the-kb-remote> kb-repo && cd kb-repo
-BASE=$(git rev-parse HEAD)
-lumio-wiki git-check . --remote origin --json          # read access only
-lumio-wiki setup ./kb --journey --private-profile contributor-profile.json
-lumio-wiki source-bootstrap inspect ./kb --snapshot baseline.tar \
-  --digest <maintainer-sha256> --revision "$BASE" \
-  --private-profile contributor-profile.json --json
-lumio-wiki source-bootstrap import ./kb --snapshot baseline.tar \
-  --digest <maintainer-sha256> --revision "$BASE" \
-  --private-profile contributor-profile.json --confirm <preview-digest> --json
+export JOURNEY="$HOME/lumio-journey-example"
+export MAINT_WS="$JOURNEY/maintainer"
+export MAINT_PRIVATE="$JOURNEY/maintainer-private"
+export CONTRIB_WS="$JOURNEY/contributor"
+export CONTRIB_PRIVATE="$JOURNEY/contributor-private"
+export KB_REMOTE="${KB_REMOTE:-$JOURNEY/remote/kb.git}"
+# Operator-selected submission settings recorded by journey setup (non-secret):
+export LUMIO_SUBMISSION_MODE=commit
+export LUMIO_GIT_REMOTE=origin
+export LUMIO_GIT_TARGET_BRANCH=main
+cat > "$CONTRIB_PRIVATE/profile.json" <<'JSON'
+{
+  "schema_version": 1,
+  "namespace": "urn:uuid:9c1f5b2e-0010-4a10-9a10-5f3e8d2c7b31",
+  "source_registry": "REGISTRY_PLACEHOLDER",
+  "retention": "required",
+  "artifact_store": { "kind": "local", "root": "ARTIFACTS_PLACEHOLDER" }
+}
+JSON
+python3 - "$CONTRIB_PRIVATE/profile.json" "$CONTRIB_PRIVATE" <<'PY'
+import json, sys
+from pathlib import Path
+profile_path, private_root = Path(sys.argv[1]), Path(sys.argv[2])
+profile = json.loads(profile_path.read_text(encoding="utf-8"))
+profile["source_registry"] = str((private_root / "registry").resolve())
+profile["artifact_store"]["root"] = str((private_root / "artifacts").resolve())
+profile_path.write_text(json.dumps(profile, indent=2) + "\n", encoding="utf-8")
+PY
 ```
 
-The baseline original stays inspectable-but-unavailable:
-`lumio-wiki source inspect ./kb --source-id aurora-product-notes` reports it
-truthfully, and required-retention publication on the contributor refuses.
+(The profile file itself is validated against a Knowledge Base below, after
+the clone exists; `private-profile inspect` without `--kb` needs
+`LUMIO_KB_PATH` or a project `.env`, which a fresh contributor terminal
+does not have yet.)
 
-## 3. The attachment (the only input the contributor receives)
+<!-- j6:contrib-bootstrap -->
+```bash
+git clone "$KB_REMOTE" "$CONTRIB_WS/kb-repo"
+git -C "$CONTRIB_WS/kb-repo" config user.name "Aurora Contributor"
+git -C "$CONTRIB_WS/kb-repo" config user.email "contributor@lumio-journey.example"
+lumio-wiki private-profile inspect "$CONTRIB_PRIVATE/profile.json" \
+  --kb "$CONTRIB_WS/kb-repo" --json
+export BASE=$(git -C "$CONTRIB_WS/kb-repo" rev-parse HEAD)
+lumio-wiki git-check "$CONTRIB_WS/kb-repo" --remote origin --json   # read access only
+(cd "$CONTRIB_WS" && lumio-wiki setup "$CONTRIB_WS/kb-repo" \
+  --journey --private-profile "$CONTRIB_PRIVATE/profile.json")
+# The maintainer's snapshot arrives over your private channel (here: a local copy),
+# together with its out-of-band digest:
+cp "$MAINT_PRIVATE/outbound/baseline.tar" "$CONTRIB_PRIVATE/inbound/baseline.tar"
+cp "$MAINT_PRIVATE/outbound/baseline-export.json" "$CONTRIB_PRIVATE/inbound/"
+BASELINE_SHA256=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["snapshot_sha256"])' \
+  "$CONTRIB_PRIVATE/inbound/baseline-export.json")
+lumio-wiki source-bootstrap inspect "$CONTRIB_WS/kb-repo" --snapshot "$CONTRIB_PRIVATE/inbound/baseline.tar" \
+  --digest "$BASELINE_SHA256" --revision "$BASE" \
+  --private-profile "$CONTRIB_PRIVATE/profile.json" --json \
+  > "$CONTRIB_PRIVATE/inbound/baseline-preview.json"
+BASELINE_CONFIRM=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["confirmation_digest"])' \
+  "$CONTRIB_PRIVATE/inbound/baseline-preview.json")
+lumio-wiki source-bootstrap import "$CONTRIB_WS/kb-repo" --snapshot "$CONTRIB_PRIVATE/inbound/baseline.tar" \
+  --digest "$BASELINE_SHA256" --revision "$BASE" \
+  --private-profile "$CONTRIB_PRIVATE/profile.json" --confirm "$BASELINE_CONFIRM" --json
+```
 
-In a BB session with the lumio-wiki skill installed, ask the contributor
-agent to author from **this attached file** (`oncall-runbook.md`). Exact
-content:
+<!-- j6:contrib-inspect-original -->
+```bash
+# Truthful unavailability: the baseline version resolves, its bytes do not exist here.
+lumio-wiki source inspect "$CONTRIB_WS/kb-repo" --source-id aurora-product-notes \
+  --source-registry "$CONTRIB_PRIVATE/registry"
+lumio-wiki source fetch "$CONTRIB_WS/kb-repo" --source-id aurora-product-notes \
+  --source-registry "$CONTRIB_PRIVATE/registry" \
+  --output "$CONTRIB_PRIVATE/inbound/should-not-exist.md" || echo "fetch refused: no retained original"
+```
 
-```markdown
+## 3. The attachment (the only new input the contributor receives)
+
+In a BB session with the lumio-wiki skill installed, the contributor agent
+receives `oncall-runbook.md` as a real attachment and saves it (here:
+`$CONTRIB_PRIVATE/inbound/oncall-runbook.md`). The agent must read these real
+bytes — never guess from the filename:
+
+<!-- j6:contrib-attachment -->
+```bash
+cat > "$CONTRIB_PRIVATE/inbound/oncall-runbook.md" <<'EOF'
 # Support runbook: on-call escalation (internal)
 
 Last reviewed: 2026-10-20. Owner: Support Ops.
 
-1. Any Sev-1 incident page Aurora Helpdesk automatically.
+1. Any Sev-1 incident pages Aurora Helpdesk automatically.
 2. The on-call engineer acknowledges within 5 minutes.
 3. If unacknowledged after 10 minutes, the page escalates to the
    Support Ops on-call rotation lead.
 4. Sev-2 incidents follow the same rotation during business hours only.
+EOF
+lumio-wiki extract "$CONTRIB_PRIVATE/inbound/oncall-runbook.md" \
+  --output "$CONTRIB_PRIVATE/extract" --json
 ```
 
-The agent must read these real bytes (`extract`), not guess from the
-filename:
+## 4. Expected authored output (deterministic, hand-authored)
 
+Two pages from one original plus the ontology addition. These are the
+EXPECTED results an agent must produce from the attachment (assert review
+against them); `~/...` never appears inside the machine-read request JSON
+below — request paths are absolute, and any relative string would resolve
+from the process working directory, not from the request file's location.
+
+<!-- j6:contrib-author -->
 ```bash
-lumio-wiki extract oncall-runbook.md --output ~/private/extract --json
-```
-
-## 4. Expected authored output (deterministic)
-
-Two pages from one original, plus the ontology addition. These bodies are
-the expected result — assertions during review compare against them.
-`~/private/authored/lumio.yaml` (complete Control File candidate; the
-`team` type and `escalates-to` predicate are the ontology addition):
-
-```yaml
+cat > "$CONTRIB_PRIVATE/authored/lumio.yaml" <<'YAML'
+version: 2
+mode: "categorized"
+categories:
+  - name: concepts
+    description: "Core ideas, definitions, and mental models."
+  - name: entities
+    description: "Named people, organizations, products, and tools."
+  - name: procedures
+    description: "Runbooks, methods, and checklists."
 ontology:
   entity_types:
     software-system:
@@ -156,8 +320,6 @@ ontology:
     team:
       description: "A named group owning procedures and escalation."
   predicates:
-    described-as:
-      literal_kind: string
     escalates-to:
       subject_types: [procedure]
       object_types: [team]
@@ -167,11 +329,8 @@ ontology:
       object_types: [procedure]
       inverse: escalates-to
   redirects: {}
-```
-
-`~/private/authored/oncall-escalation-runbook.md`:
-
-```markdown
+YAML
+cat > "$CONTRIB_PRIVATE/authored/oncall-escalation-runbook.md" <<'EOF'
 ---
 title: "On-call Escalation Runbook"
 category: procedures
@@ -192,21 +351,18 @@ claims:
     object: "entity:support-ops-rotation"
     status: "accepted"
     evidence:
-      - lines: [9, 11]
+      - lines: [6, 8]
 ---
 
 # On-call Escalation Runbook
 
 Aurora Helpdesk automatically pages the on-call engineer for any Sev-1
-incident; the engineer acknowledges within 5 minutes. An unacknowledged page
-escalates to the [Support Ops on-call rotation](support-ops-rotation.md)
-lead after 10 minutes. Sev-2 incidents use the same rotation during business
-hours only.
-```
-
-`~/private/authored/support-ops-rotation.md`:
-
-```markdown
+incident; the engineer acknowledges within 5 minutes. An unacknowledged
+page escalates to the [Support Ops on-call rotation](../concepts/support_ops_on-call_rotation.md)
+lead after 10 minutes. Sev-2 incidents use the same rotation during
+business hours only.
+EOF
+cat > "$CONTRIB_PRIVATE/authored/support-ops-rotation.md" <<'EOF'
 ---
 title: "Support Ops on-call Rotation"
 category: concepts
@@ -229,107 +385,208 @@ claims: []
 The Support Ops on-call rotation owns Aurora Helpdesk escalation. Its lead
 receives pages that the on-call engineer has not acknowledged within the
 runbook's 10-minute window.
+EOF
 ```
 
-## 5. Candidate, review, confirmation, commit
+The Claim's `evidence.lines` are 1-based BODY coordinates of the runbook page
+itself (the closing `---` delimiter line counts as body line 1): lines 6–8
+cover the 5-minute acknowledgement and the 10-minute escalation. The body
+link targets the actual routed rotation path
+`concepts/support_ops_on-call_rotation.md`, relative from
+`procedures/`.
 
-`~/private/candidate.json` (compute the digest from the real attachment:
-
-`sha256sum oncall-runbook.md`):
-
-```json
-{
-  "schema_version": 1,
-  "base_revision": "<BASE: full 40-hex commit>",
-  "sources": [
-    { "source_id": "oncall-runbook-2026", "original_path": "oncall-runbook.md",
-      "expected_digest": "<sha256 of oncall-runbook.md>", "intent": "new" }
-  ],
-  "pages": ["~/private/authored/oncall-escalation-runbook.md",
-            "~/private/authored/support-ops-rotation.md"],
-  "control": "~/private/authored/lumio.yaml"
+<!-- j6:contrib-request -->
+```bash
+export ORIG_SHA256=$(sha256sum "$CONTRIB_PRIVATE/inbound/oncall-runbook.md" | cut -d' ' -f1)
+python3 - <<'PY'
+import json, os
+from pathlib import Path
+private = Path(os.environ["CONTRIB_PRIVATE"]).resolve()
+base = os.environ["BASE"]
+request = {
+    "schema_version": 1,
+    "base_revision": base,
+    "sources": [
+        {
+            "source_id": "oncall-runbook-2026",
+            "original_path": str(private / "inbound" / "oncall-runbook.md"),
+            "expected_digest": os.environ["ORIG_SHA256"],
+            "intent": "new",
+        }
+    ],
+    "pages": [
+        str(private / "authored" / "oncall-escalation-runbook.md"),
+        str(private / "authored" / "support-ops-rotation.md"),
+    ],
+    "control": str(private / "authored" / "lumio.yaml"),
 }
+(private / "candidate.json").write_text(json.dumps(request, indent=2) + "\n", encoding="utf-8")
+print((private / "candidate.json").read_text(encoding="utf-8"))
+PY
 ```
 
-Apply the complete candidate, stage, and review:
+Generating the request with the standard library keeps every path an
+already-expanded absolute string — no `~/` shorthand and no quoting traps.
+
+## 5. Candidate, review, ONE informed human decision, commit
+
+<!-- j6:contrib-candidate -->
+```bash
+lumio-wiki ingest-candidate "$CONTRIB_WS/kb-repo" --candidate "$CONTRIB_PRIVATE/candidate.json" \
+  --private-profile "$CONTRIB_PRIVATE/profile.json" --json
+# Prepare the native contribution branch from the exact baseline; never submit main.
+git -C "$CONTRIB_WS/kb-repo" checkout -b oncall-runbook
+git -C "$CONTRIB_WS/kb-repo" add -A
+lumio-wiki authoring-review "$CONTRIB_WS/kb-repo" --base "$BASE" \
+  --private-profile "$CONTRIB_PRIVATE/profile.json" --json \
+  > "$CONTRIB_PRIVATE/review.json"
+```
+
+**[HUMAN — one decision]** Before any submission step, the agent presents,
+together: the displayed candidate (both new page bodies, the new
+`team`/`escalates-to` ontology entries, the accepted Claim, validation
+outcome), the configured submission action — commit locally on branch
+`oncall-runbook` and push that branch to `origin` (`$KB_REMOTE`), base
+`main`, no pull request — and the private transfer that follows (a Source
+Handoff Bundle through the private channel). One explicit human decision
+covers exactly this candidate and this selected action set; a changed
+candidate or action needs a fresh decision. In commit-only mode without a
+push target, submission ends at the local commit and the transfer is arranged
+separately.
+
+<!-- j6:contrib-commit -->
+```bash
+git -C "$CONTRIB_WS/kb-repo" commit -m "Add on-call escalation runbook and Support Ops rotation"
+REV=$(git -C "$CONTRIB_WS/kb-repo" rev-parse HEAD)
+lumio-wiki authoring-check "$CONTRIB_WS/kb-repo" --review "$CONTRIB_PRIVATE/review.json" \
+  --revision "$REV" --json
+git -C "$CONTRIB_WS/kb-repo" push -u origin oncall-runbook
+```
+
+**GitHub pull-request mode (alternative).** Requires your approved hosted
+repository and credentials; nothing in this walkthrough contacts any host.
+Prepare a public-safe body first, inspect for an existing PR by exact
+repository/head/base BEFORE creating anything, then create with explicit
+targets — never `--fill`, never a duplicate, never a force-push:
 
 ```bash
-lumio-wiki ingest-candidate ./kb --candidate ~/private/candidate.json \
-  --private-profile contributor-profile.json --json
-git -C . add kb/
-lumio-wiki authoring-review ./kb --base "$BASE" \
-  --private-profile contributor-profile.json --json > review.json
+cat > "$CONTRIB_PRIVATE/pr-body.md" <<EOF
+Adds two pages and one ontology addition from the on-call runbook.
+
+- Validation: complete candidate passed (authoring-check green)
+- Exact revision: $REV
+- Private source transfer id/digest: see handoff receipt exchanged separately
+EOF
+git ls-remote "$KB_REMOTE" oncall-runbook
+gh pr list --repo <owner/repo> --head oncall-runbook --base main
+gh pr create --repo <owner/repo> --head oncall-runbook --base main \
+  --title "Add on-call escalation runbook" --body-file "$CONTRIB_PRIVATE/pr-body.md"
 ```
 
-**[HUMAN]** The agent shows both new page bodies, the new
-`team`/`escalates-to` ontology entries, and the accepted Claim, then asks for
-an explicit decision. Only after the human confirms the displayed candidate:
+The PR body names the exact revision and validation result; the transfer
+id/digest travels with the private handoff receipt, never private paths,
+originals, or signed URLs.
 
+## 6. Contributor: private handoff
+
+<!-- j6:contrib-handoff -->
 ```bash
-git commit -m "Add on-call escalation runbook and Support Ops rotation"
-REV=$(git rev-parse HEAD)
-lumio-wiki authoring-check ./kb --review review.json --revision "$REV" --json
+lumio-wiki source-handoff export "$CONTRIB_WS/kb-repo" --base "$BASE" --revision "$REV" \
+  --output "$CONTRIB_PRIVATE/outbound/handoff.tar" \
+  --private-profile "$CONTRIB_PRIVATE/profile.json" --json \
+  > "$CONTRIB_PRIVATE/outbound/handoff-export.json"
+HANDOFF_SHA256=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bundle_sha256"])' \
+  "$CONTRIB_PRIVATE/outbound/handoff-export.json")
+HANDOFF_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["transfer_id"])' \
+  "$CONTRIB_PRIVATE/outbound/handoff-export.json")
+echo "send the maintainer, over your private channel: handoff.tar ($HANDOFF_ID / $HANDOFF_SHA256)"
+# Manual private transfer (no S3 dependency). For the S3 exchange variant, see
+# docs/howto-source-handoff.md §1 and §6: same archive, upload/download instead of cp.
+cp "$CONTRIB_PRIVATE/outbound/handoff.tar" "$MAINT_PRIVATE/inbound/handoff.tar"
+cp "$CONTRIB_PRIVATE/outbound/handoff-export.json" "$MAINT_PRIVATE/inbound/"
 ```
 
-## 6. Handoff, exchange, pull request
+The bundle (outside every Git worktree) carries the exact new Source Version
+and its original bytes for the reviewed contribution range only.
 
+## 7. Maintainer: integrate, import, fresh admission, cited read
+
+<!-- j6:maint-integrate -->
 ```bash
-lumio-wiki source-handoff export ./kb --base "$BASE" --revision "$REV" \
-  --output handoff.tar --private-profile contributor-profile.json --json
-sha256sum handoff.tar
-lumio-wiki source-exchange upload --file handoff.tar \
-  --kb ./kb --private-profile contributor-profile.json --json
-git push -u origin HEAD && gh pr create --fill
+export JOURNEY="$HOME/lumio-journey-example"
+export MAINT_WS="$JOURNEY/maintainer"
+export MAINT_PRIVATE="$JOURNEY/maintainer-private"
+export CONTRIB_WS="$JOURNEY/contributor"
+export CONTRIB_PRIVATE="$JOURNEY/contributor-private"
+export KB_REMOTE="${KB_REMOTE:-$JOURNEY/remote/kb.git}"
+git -C "$MAINT_WS/kb" fetch origin oncall-runbook
+CONTRIB_REV=$(git -C "$MAINT_WS/kb" rev-parse FETCH_HEAD)
+git -C "$MAINT_WS/kb" merge --no-ff "$CONTRIB_REV" -m "Merge on-call escalation runbook"
+FINAL_REV=$(git -C "$MAINT_WS/kb" rev-parse HEAD)
+lumio-wiki validate "$MAINT_WS/kb"
+echo "contribution: $CONTRIB_REV  final: $FINAL_REV"
 ```
 
-The PR text names the exact revision, the validation outcome, and the
-transfer id/digest from the upload result — nothing private. If the push or
-PR may already have succeeded (for example after an interrupted run), look up
-the existing branch/PR by exact repository/head/base before retrying; never
-open a duplicate and never force-push.
-
-## 7. Maintainer: import, final review, admission, cited read
-
+<!-- j6:maint-import -->
 ```bash
-lumio-wiki source-exchange download --id <transfer-id> --digest <sha256> \
-  --output handoff.tar --kb ./kb --private-profile maintainer-profile.json --json
-lumio-wiki source-handoff inspect ./kb --bundle handoff.tar --digest <sha256> \
-  --revision "$REV" --private-profile maintainer-profile.json --json
-lumio-wiki source-handoff import ./kb --bundle handoff.tar --digest <sha256> \
-  --revision "$REV" --private-profile maintainer-profile.json \
-  --confirm <preview-digest> --json
+HANDOFF_SHA256=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bundle_sha256"])' \
+  "$MAINT_PRIVATE/inbound/handoff-export.json")
+lumio-wiki source-handoff inspect "$MAINT_WS/kb" --bundle "$MAINT_PRIVATE/inbound/handoff.tar" \
+  --digest "$HANDOFF_SHA256" --revision "$CONTRIB_REV" \
+  --private-profile "$MAINT_PRIVATE/profile.json" --json \
+  > "$MAINT_PRIVATE/inbound/handoff-preview.json"
+HANDOFF_CONFIRM=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["confirmation_digest"])' \
+  "$MAINT_PRIVATE/inbound/handoff-preview.json")
+lumio-wiki source-handoff import "$MAINT_WS/kb" --bundle "$MAINT_PRIVATE/inbound/handoff.tar" \
+  --digest "$HANDOFF_SHA256" --revision "$CONTRIB_REV" \
+  --private-profile "$MAINT_PRIVATE/profile.json" --confirm "$HANDOFF_CONFIRM" --json
 ```
 
-**[HUMAN]** The maintainer reviews the final integrated commit freshly
-(`authoring-review` against its own base after merge/rebase — the
-contributor's confirmation never carries over), then confirms the ordinary
-`publish` preview against the maintainer's retained originals:
+The maintainer imports against the selected contribution revision; the
+digest comes over the private channel with the bundle, never from the bundle
+alone.
 
+**[HUMAN — maintainer admission]** The maintainer reviews the FINAL
+integrated commit freshly (the merge changed the commit identity; the
+contributor's confirmations never carry over) and gives their own explicit
+publication decision on the displayed preview below. PR approval, source
+import, and the Git merge are NOT Publication Admission.
+
+<!-- j6:maint-publish -->
 ```bash
-lumio-wiki publish ./kb --revision "$FINAL_REV" --to ./published \
-  --expected-current none --private-profile maintainer-profile.json
-# only after the maintainer authorizes the displayed review:
-lumio-wiki publish ./kb --revision "$FINAL_REV" --to ./published \
-  --expected-current none --private-profile maintainer-profile.json \
-  --confirm <review-digest>
+lumio-wiki publish "$MAINT_WS/kb" --revision "$FINAL_REV" --to "$MAINT_WS/published" \
+  --expected-current none --private-profile "$MAINT_PRIVATE/profile.json" --json \
+  > "$MAINT_PRIVATE/publish-preview.json"
+REVIEW_DIGEST=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["review_digest"])' \
+  "$MAINT_PRIVATE/publish-preview.json")
+# Only after the maintainer authorizes the displayed review:
+lumio-wiki publish "$MAINT_WS/kb" --revision "$FINAL_REV" --to "$MAINT_WS/published" \
+  --expected-current none --private-profile "$MAINT_PRIVATE/profile.json" \
+  --confirm "$REVIEW_DIGEST" --json
 ```
 
-Finally, a cited read from the admitted snapshot:
-
+<!-- j6:cited-read -->
 ```bash
-lumio-wiki search ./published "escalation" --limit 2
-lumio-wiki page ./published "On-call Escalation Runbook"
+lumio-wiki search "$MAINT_WS/published" escalation --limit 2
+lumio-wiki page "$MAINT_WS/published" "On-call Escalation Runbook"
 ```
+
+Expected cited read (exact routed path, hyphen preserved):
 
 > The on-call engineer acknowledges within **5 minutes**; an unacknowledged
 > Sev-1 page escalates to the Support Ops rotation lead after **10 minutes**.
-> — On-call Escalation Runbook (`procedures/oncall_escalation_runbook.md`)
+> — On-call Escalation Runbook (`procedures/on-call_escalation_runbook.md`)
 
 ## What this example does and does not prove
 
-Running it end-to-end through real BB + Pi sessions exercises attachment
-reading, readable review, human confirmation, native Git submission, private
-transfer, independent import, and maintainer admission. It does not prove
-universal harness support, factual correctness of distilled content, or the
-separately planned integrated Ariadne journey
+Run end-to-end, it demonstrates the standalone CLI journey deterministically:
+metadata-only bootstrap from a nonempty baseline, truthful baseline-original
+unavailability, one complete two-page/ontology candidate, readable review
+with whole-commit verification, branch submission, manual private handoff
+with independent registries/stores, maintainer import, independent admission
+and a cited read. It does NOT constitute the real BB + Pi harness
+qualification (actual attachment handling in BB, real human decisions,
+hosted PR, S3 exchange, independent machines) — that remains pending
+qualification work — and it does not cover the separately planned integrated
+Ariadne journey
 ([spec 0033](../../../ariadne/project/specs/2026-10-23-0033-managed-knowledge-authoring.md)).

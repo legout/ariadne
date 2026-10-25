@@ -395,8 +395,11 @@ step:
   <setup-digest>` (registered native Git worktree required; preview/confirm;
   never a substitute for the nonempty baseline route).
 - Review is human: `authoring-review <kb> --base <full-commit>` displays
-  bodies, diffs with deletions, and semantic changes; **wait for the user's
-  explicit decision**, then commit with native Git and verify with
+  bodies, diffs with deletions, and semantic changes; ask **one informed
+  decision** covering the displayed candidate, the CONFIGURED submission
+  action (commit-only, or branch push/PR with its exact remote/base) and the
+  private transfer — then commit on a native contribution branch from the
+  exact baseline (never the default branch) and verify with
   `authoring-check <kb> --review <report> --revision <full-commit>`. A hook
   or post-confirmation edit stops submission; re-review, never carry an
   approval forward. `git-check` proves read access only — never claim push
