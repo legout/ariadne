@@ -300,21 +300,23 @@ def _probe_repository(
 def _is_ssh_transport(raw_url: str) -> bool:
     """Whether the selected effective remote URL actually uses SSH.
 
-    Recognizes ordinary ``ssh://`` URLs and scp-like ``[user@]host:path``
-    forms. Any other scheme (https, git, file, …) and plain local paths are
-    NOT SSH: incidental punctuation in a local path never scopes the SSH
-    refusal to it (review F4).
+    Recognizes ordinary ``ssh://`` URLs and Git's native scp-like forms: per
+    git-clone(1), ``[user@]host:path`` — including short aliases like
+    ``work:repo.git`` — is scp-like exactly when no slash occurs before the
+    first colon; a local path containing a colon is disambiguated by an
+    absolute path or a ``./`` prefix. Any other scheme (https, git, file, …)
+    and plain local paths are NOT SSH (review F4). No hostname punctuation
+    is required and no SSH is executed to discover the transport.
     """
     stripped = raw_url.strip()
     if stripped.startswith("ssh://"):
         return True
     if "://" in stripped:
         return False
-    head = stripped.split("/", 1)[0]
-    if ":" not in head:
+    colon = stripped.find(":")
+    if colon == -1:
         return False
-    host = head.split(":", 1)[0]
-    return "@" in host or "." in host
+    return "/" not in stripped[:colon]
 
 
 def _probe_remote(

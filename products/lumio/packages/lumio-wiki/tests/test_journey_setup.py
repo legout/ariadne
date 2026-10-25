@@ -1227,3 +1227,71 @@ def test_git_check_scopes_ssh_selection_to_transport(case, tmp_path: Path, monke
         # An unsupported SSH wrapper never blocks a non-SSH transport.
         assert "GIT_SSH_COMMAND" not in env
         assert env.get("GIT_SSH") == "/synthetic bin/ssh-wrapper"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "short-alias-unsupported-ssh",
+        "explicit-relative-local-colon",
+        "absolute-path-local-colon",
+    ],
+)
+def test_git_check_short_alias_and_explicit_local_paths(case, tmp_path: Path, monkeypatch):
+    """F4 transport: Git's native scp-like rule — a colon before any slash
+    (including short aliases like work:repo.git) is an SSH transport whose
+    unsupported selection is refused unattended; explicit local paths with a
+    colon (./work:repo.git or absolute) are local remotes that really read."""
+    from lumio_wiki import git_connection
+
+    project = _init_repo(tmp_path / "project")
+    bare: Path | None = None
+    if case == "short-alias-unsupported-ssh":
+        remote_url = "work:repo.git"
+    elif case == "explicit-relative-local-colon":
+        bare = project / "work:repo.git"
+        bare.mkdir()
+        _git(bare, "init", "-q", "--bare")
+        remote_url = "./work:repo.git"
+    else:
+        bare = tmp_path / "work:origin.git"
+        bare.mkdir()
+        _git(bare, "init", "-q", "--bare")
+        remote_url = str(bare)
+    _git(project, "remote", "add", "origin", remote_url)
+    # Independent native fixture fact: the configured effective URL is the
+    # authored string, and any local bare target genuinely exists.
+    assert _git(project, "remote", "get-url", "origin") == remote_url
+    if bare is not None:
+        assert (bare / "HEAD").is_file()
+    for variable in ("GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS", "SSH_ASKPASS"):
+        monkeypatch.delenv(variable, raising=False)
+    # Supported-in-Git but deliberately unsupported-by-checker SSH selection.
+    monkeypatch.setenv("GIT_SSH_COMMAND", "env LD_LIBRARY_PATH=/opt/priv ssh -i /tmp/synthetic-key")
+
+    real_run = subprocess.run
+    calls: list[tuple[list[str], dict]] = []
+
+    def observing(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        if "ls-remote" in argv and case == "short-alias-unsupported-ssh":
+            # The alias is an SSH transport: stub so a bypass never reaches
+            # the network; the refusal must happen before any ls-remote.
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(git_connection.subprocess, "run", observing)
+    report = check_git_connection(project)
+    ls_remote_calls = [entry for entry in calls if "ls-remote" in entry[0]]
+
+    if case == "short-alias-unsupported-ssh":
+        # Native scp-like short alias: the unsupported SSH selection must be
+        # refused unattended, never executed unchanged.
+        assert ls_remote_calls == []
+        assert report.remote.read == "failed"
+        assert report.remote.failure_code == "probe_unavailable"
+    else:
+        # Explicit local paths with a colon really read; no SSH refusal.
+        assert len(ls_remote_calls) == 1
+        assert report.remote.read == "success"
+        assert report.remote.failure_code is None
