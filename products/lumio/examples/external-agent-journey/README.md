@@ -517,7 +517,7 @@ if [ "$EXISTING" != "0" ]; then
   echo "Matching pull request already exists — report/reuse it; no push, no create:"
   gh pr list --repo <owner/repo> --head oncall-runbook --base main --json number,url
 else
-  git push -u origin oncall-runbook
+  git -C "$CONTRIB_WS/kb-repo" push -u origin oncall-runbook
   gh pr create --repo <owner/repo> --head oncall-runbook --base main \
     --title "Add on-call escalation runbook" --body-file "$CONTRIB_PRIVATE/pr-body.md"
 fi
