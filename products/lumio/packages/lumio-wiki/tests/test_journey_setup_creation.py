@@ -25,7 +25,7 @@ from lumio_wiki.env_loader import (
     SUBMISSION_MODE_ENV_VAR,
 )
 from lumio_wiki.knowledge_base import seeded_control_file, write_control_file
-from lumio_wiki.skill import SKILL_FILENAME, install_skill
+from lumio_wiki.skill import SKILL_FILENAME, install_skill, skill_status
 from lumio_wiki.source_references import (
     SOURCE_REFERENCE_MANIFEST_BASENAME,
     SourceReferenceError,
@@ -878,3 +878,365 @@ def test_empty_setup_json_failure_discloses_actual_residue(tmp_path: Path, monke
     assert str(target.parent) in captured.err
     # Operator content preserved byte-for-byte.
     assert operator_file.read_bytes() == operator_bytes
+
+
+# ---------------------------------------------------------------------------
+# Second delta-review regression families (owner-authorized, R1/R2/R4/R6).
+# ---------------------------------------------------------------------------
+
+
+def _inventory_segment(stderr: str, label: str) -> list[str]:
+    """Exact discrete entries of one labeled residue segment (no prefix
+    matching: each listed path must stand alone between separators). The
+    literal 'none' placeholder the product prints for an EMPTY segment is
+    not a path."""
+    marker = f"{label}:"
+    assert marker in stderr, f"missing labeled inventory segment '{marker}' in:\n{stderr}"
+    segment = stderr.split(marker, 1)[1].split(";", 1)[0]
+    return [
+        entry.strip() for entry in segment.split(",") if entry.strip() and entry.strip() != "none"
+    ]
+
+
+def test_empty_setup_rechecks_profile_destination_before_writes(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """R1 delta: a destination occupied by a DIRECTORY during the open
+    confirmation prompt refuses BEFORE any setup write; the operator's
+    directory survives and absent-vs-occupied is never conflated."""
+    repo = _init_repo(tmp_path / "project")
+    target = repo / "kb"
+    selected = tmp_path / "outside-choice" / "new-profile.json"  # absent, outside
+    assert not selected.parent.exists()
+    outside_registry = tmp_path / "registry"
+    outside_store = tmp_path / "store"
+    monkeypatch.chdir(repo)
+    _clean_lumio_env(monkeypatch)
+    operator_snapshot: dict = {}
+
+    def answer(prompt: str) -> str:
+        if "Apply exactly this setup" in prompt:
+            # The operator creates a DIRECTORY at the proposed destination
+            # while the confirmation prompt is open — deliberately not a
+            # file, so unreadable-vs-absent conflation is exercised.
+            selected.mkdir(parents=True)
+            assert selected.is_dir()
+            operator_snapshot["tree"] = _tree_snapshot(tmp_path)
+            return "y"
+        if "Private Source Registry directory" in prompt:
+            return str(outside_registry)
+        if "Private artifact store directory" in prompt:
+            return str(outside_store)
+        return ""
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": answer(prompt))
+    rc = cli.main(
+        [
+            "setup",
+            str(target),
+            "--journey",
+            "--create-empty",
+            "--namespace",
+            NAMESPACE,
+            "--private-profile",
+            str(selected),
+        ]
+    )
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "changed after the preview" in err
+    # Bounded refusal BEFORE any setup write: the tree is identical to the
+    # operator's own post-action state (directory preserved, no KB, no
+    # project configuration, no created parents).
+    assert _tree_snapshot(tmp_path) == operator_snapshot["tree"]
+    assert selected.is_dir() and list(selected.iterdir()) == []
+
+
+def test_empty_setup_binds_installed_skill_bundle_bytes(tmp_path: Path, monkeypatch, capsys):
+    """R2 delta: installed bundle contents subject to replacement
+    (PROTOCOL.md here, not just SKILL.md or the coarse status) are bound — a
+    second distinct protocol edit during confirmation refuses before any
+    write and the exact new operator bytes survive."""
+    repo = _init_repo(tmp_path / "project")
+    target = repo / "kb"
+    private = tmp_path / "private"
+    profile = _write_profile(private / "profile.json", namespace=NAMESPACE, registry=private / "r1")
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(repo)
+    _clean_lumio_env(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    skill_target = install_skill(scope="user", home=home)
+    protocol = skill_target / "PROTOCOL.md"
+    skill_file = skill_target / SKILL_FILENAME
+    assert protocol.is_file() and skill_file.is_file()
+    # First local edit: bundle no longer current (fixture guard).
+    protocol.write_bytes(protocol.read_bytes() + b"\n# operator protocol edit A\n")
+    status_before = skill_status(scope="user", home=home).state
+    assert status_before != "current"
+    skill_bytes = skill_file.read_bytes()
+    base_argv = [
+        "setup",
+        str(target),
+        "--journey",
+        "--create-empty",
+        "--namespace",
+        NAMESPACE,
+        "--private-profile",
+        str(profile),
+        "--skill-scope",
+        "user",
+        "--overwrite",
+    ]
+    assert cli.main([*base_argv, "--json"]) == 0
+    digest = json.loads(capsys.readouterr().out)["setup_digest"]
+    # Second DISTINCT protocol edit while the coarse status is unchanged.
+    operator_bytes = protocol.read_bytes() + b"\n# operator protocol edit B (distinct)\n"
+    protocol.write_bytes(operator_bytes)
+    assert skill_status(scope="user", home=home).state == status_before
+    assert skill_file.read_bytes() == skill_bytes  # SKILL.md untouched guard
+    rc = cli.main([*base_argv, "--confirm", digest, "--json"])
+    assert rc == 2
+    refused = json.loads(capsys.readouterr().out)
+    assert refused["ok"] is False
+    assert refused["error"]["code"] in ("setup_target_changed", "setup_confirmation_mismatch")
+    # The refusal preceded every write: the exact new operator bytes and the
+    # untouched SKILL.md survive, and no setup target/config was created.
+    assert protocol.read_bytes() == operator_bytes
+    assert skill_file.read_bytes() == skill_bytes
+    assert not target.exists()
+    assert not (repo / ".env").exists()
+    assert not (repo / "AGENTS.md").exists()
+
+
+def test_empty_setup_preserves_env_after_atomic_publication(tmp_path: Path, monkeypatch, capsys):
+    """R4 delta: after the confirmed .env bytes are published atomically, no
+    later direct destination rewrite may truncate the file — unrelated
+    operator facts survive complete, and the atomic publication is observed.
+    On repaired code the redundant rewrite is absent; the injection firing
+    is recorded but never required."""
+    repo = _init_repo(tmp_path / "project")
+    target = repo / "kb"
+    private = tmp_path / "private"
+    profile = _write_profile(private / "profile.json", namespace=NAMESPACE, registry=private / "r1")
+    env_path = repo / ".env"
+    env_path.write_bytes(b"OPERATOR_TOKEN=keep-123\nOPERATOR_NAME=acme\n")
+    monkeypatch.chdir(repo)
+    _clean_lumio_env(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    argv = _setup_argv(target, profile) + ["--json"]
+    assert cli.main(argv) == 0
+    digest = json.loads(capsys.readouterr().out)["setup_digest"]
+
+    # PATH-triggered at the real io.open seam: only a DIRECT destination
+    # write of .env fails after a short real prefix; the atomic publication
+    # writes through a same-dir temporary path and never trips this.
+    fired: list[bool] = []
+    real_open = io.open
+
+    class _PrefixThenFail:
+        def __init__(self, handle) -> None:
+            self._handle = handle
+
+        def write(self, data):
+            fired.append(True)
+            blob = bytes(data) if not isinstance(data, str) else data
+            self._handle.write(blob[:4])
+            self._handle.flush()
+            raise OSError(28, "No space left on device")
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            self._handle.close()
+            return False
+
+    def destination_open(file, mode="r", *args, **kwargs):
+        handle = real_open(file, mode, *args, **kwargs)
+        if (
+            any(flag in mode for flag in ("w", "a", "x"))
+            and isinstance(file, (str, os.PathLike))
+            and Path(file) == env_path
+        ):
+            return _PrefixThenFail(handle)
+        return handle
+
+    monkeypatch.setattr(io, "open", destination_open)
+    rc = cli.main([*_setup_argv(target, profile), "--confirm", digest, "--json"])
+    monkeypatch.setattr(io, "open", real_open)
+    assert rc in (0, 2)
+    env_now = env_path.read_bytes()
+    # Unrelated operator facts survive COMPLETE in every honest outcome.
+    assert b"OPERATOR_TOKEN=keep-123" in env_now
+    assert b"OPERATOR_NAME=acme" in env_now
+    if rc == 0:
+        # The atomic publication of the confirmed bytes is independently
+        # observed: the intended values are present, complete.
+        assert str(target).encode() in env_now
+        assert KB_PATH_ENV_VAR.encode() + b"=" in env_now
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "deep-ancestors-manifest-failure",
+        "partial-mkdir-failure",
+        "updated-then-failed",
+    ],
+)
+def test_empty_setup_reports_discrete_owned_residue(case, tmp_path, monkeypatch, capsys):
+    """R6 delta: residue reporting distinguishes operation-CREATED paths
+    (each absent ancestor listed discretely), UPDATED pre-existing operator
+    files, and the possibly-partial failing path — fixed JSON envelope, safe
+    local stderr, no prefix-matched pseudo-disclosure."""
+    repo = _init_repo(tmp_path / "project")
+    private = tmp_path / "private"
+    profile = _write_profile(private / "profile.json", namespace=NAMESPACE, registry=private / "r1")
+    monkeypatch.chdir(repo)
+    _clean_lumio_env(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    env_path = repo / ".env"
+    agents_path = repo / "AGENTS.md"
+    if case == "deep-ancestors-manifest-failure":
+        target = repo / "deep" / "nest" / "kb"
+        deep = repo / "deep"
+        nest = repo / "deep" / "nest"
+        assert not deep.exists()  # pre-call absence facts
+        argv = _setup_argv(target, profile) + ["--json"]
+        assert cli.main(argv) == 0
+        digest = json.loads(capsys.readouterr().out)["setup_digest"]
+        real_write_bytes = Path.write_bytes
+
+        def failing_write_bytes(self, data):
+            if self.name == SOURCE_REFERENCE_MANIFEST_BASENAME:
+                raise OSError(28, "No space left on device")
+            return real_write_bytes(self, data)
+
+        monkeypatch.setattr(Path, "write_bytes", failing_write_bytes)
+        rc = cli.main([*_setup_argv(target, profile), "--confirm", digest, "--json"])
+        monkeypatch.setattr(Path, "write_bytes", real_write_bytes)
+        assert rc == 2
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["error"]["code"] == "setup_incomplete"
+        created = _inventory_segment(captured.err, "operation-created paths")
+        # Every absent ancestor is listed as its OWN discrete entry.
+        for created_path in (deep, nest, target, target / "lumio.yaml"):
+            assert str(created_path) in created
+        partial = _inventory_segment(captured.err, "possibly-partial path")
+        assert str(target / SOURCE_REFERENCE_MANIFEST_BASENAME) in partial
+        assert _inventory_segment(captured.err, "updated pre-existing operator files") == []
+    elif case == "partial-mkdir-failure":
+        target = repo / "deep2" / "nest2" / "kb"
+        deep = repo / "deep2"
+        nest = repo / "deep2" / "nest2"
+        assert not deep.exists()
+        argv = _setup_argv(target, profile) + ["--json"]
+        assert cli.main(argv) == 0
+        digest = json.loads(capsys.readouterr().out)["setup_digest"]
+        real_mkdir = Path.mkdir
+
+        def partial_mkdir(self, mode=0o777, parents=False, exist_ok=False):
+            if parents and self == target:
+                # Real creation of only the FIRST missing ancestor, then fail
+                # (partial recursive directory creation).
+                probe = target
+                shallowest = target
+                while not probe.exists() and probe != probe.parent:
+                    shallowest = probe
+                    probe = probe.parent
+                real_mkdir(shallowest, parents=True, exist_ok=True)
+                raise OSError(28, "No space left on device")
+            return real_mkdir(self, mode=mode, parents=parents, exist_ok=exist_ok)
+
+        monkeypatch.setattr(Path, "mkdir", partial_mkdir)
+        rc = cli.main([*_setup_argv(target, profile), "--confirm", digest, "--json"])
+        monkeypatch.setattr(Path, "mkdir", real_mkdir)
+        assert rc == 2
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["error"]["code"] == "setup_incomplete"
+        # Observed filesystem facts: the first ancestor exists, deeper ones
+        # were never created.
+        assert deep.is_dir()
+        assert not nest.exists() and not target.exists()
+        created = _inventory_segment(captured.err, "operation-created paths")
+        assert str(deep) in created
+        assert str(nest) not in created and str(target) not in created
+        partial = _inventory_segment(captured.err, "possibly-partial path")
+        assert str(target) in partial
+        assert _inventory_segment(captured.err, "updated pre-existing operator files") == []
+    else:
+        target = repo / "kb"
+        env_bytes = b"OPERATOR_KEEP=marker-4c\n"
+        agents_bytes = b"# operator notes 4c\n"
+        env_path.write_bytes(env_bytes)
+        agents_path.write_bytes(agents_bytes)
+        argv = _setup_argv(target, profile) + ["--json"]
+        assert cli.main(argv) == 0
+        digest = json.loads(capsys.readouterr().out)["setup_digest"]
+        real_open = io.open
+        fired: list[bool] = []
+
+        class _FailOnAgents:
+            def __init__(self, handle) -> None:
+                self._handle = handle
+
+            def write(self, data):
+                blob = (
+                    bytes(data)
+                    if isinstance(data, (bytes, bytearray, memoryview))
+                    else data.encode("utf-8", "replace")
+                )
+                if b"<!-- lumio-wiki-kb -->" in blob:
+                    fired.append(True)
+                    prefix = data[:4]
+                    self._handle.write(prefix)
+                    self._handle.flush()
+                    raise OSError(28, "No space left on device")
+                return self._handle.write(data)
+
+            def __getattr__(self, name):
+                return getattr(self._handle, name)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                self._handle.close()
+                return False
+
+        def agents_content_open(file, mode="r", *args, **kwargs):
+            handle = real_open(file, mode, *args, **kwargs)
+            if any(flag in mode for flag in ("w", "a", "x")):
+                return _FailOnAgents(handle)
+            return handle
+
+        monkeypatch.setattr(io, "open", agents_content_open)
+        rc = cli.main([*_setup_argv(target, profile), "--confirm", digest, "--json"])
+        monkeypatch.setattr(io, "open", real_open)
+        assert fired
+        assert rc == 2
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["error"]["code"] == "setup_incomplete"
+        created = _inventory_segment(captured.err, "operation-created paths")
+        for created_path in (
+            target,
+            target / "lumio.yaml",
+            target / SOURCE_REFERENCE_MANIFEST_BASENAME,
+        ):
+            assert str(created_path) in created
+        updated = _inventory_segment(captured.err, "updated pre-existing operator files")
+        assert str(env_path) in updated  # pre-existing, successfully updated
+        assert str(agents_path) not in updated  # it failed, not updated
+        partial = _inventory_segment(captured.err, "possibly-partial path")
+        assert str(agents_path) in partial
+        # The updated .env holds the complete intended values plus operator
+        # facts; the failed AGENTS destination keeps its operator bytes.
+        assert b"OPERATOR_KEEP=marker-4c" in env_path.read_bytes()
+        assert str(target).encode() in env_path.read_bytes()
+        assert agents_path.read_bytes() == agents_bytes

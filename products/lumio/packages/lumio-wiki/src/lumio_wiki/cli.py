@@ -1787,13 +1787,11 @@ def _print_journey_report(
         print("    not available for the selected Knowledge Base repository")
 
 
-def _write_journey_submission_env(env_path: Path, submission: dict[str, str | None]) -> None:
-    """Record the selected journey submission settings in .env (J5/J5a)."""
+def _print_journey_submission_env(env_path: Path, submission: dict[str, str | None]) -> None:
+    """Report the selected journey submission settings (shared prints)."""
     journey_mode = submission["mode"] or "commit"
-    _upsert_env_var(env_path, SUBMISSION_MODE_ENV_VAR, journey_mode)
     print(f"  .env:           {env_path} ({SUBMISSION_MODE_ENV_VAR}={journey_mode})")
     if submission["remote"] is not None:
-        _upsert_env_var(env_path, GIT_REMOTE_ENV_VAR, submission["remote"])
         print(f"  .env:           {env_path} ({GIT_REMOTE_ENV_VAR}={submission['remote']})")
     else:
         print(
@@ -1801,7 +1799,6 @@ def _write_journey_submission_env(env_path: Path, submission: dict[str, str | No
             "configured); rerun setup interactively or set it in .env"
         )
     if submission["branch"] is not None:
-        _upsert_env_var(env_path, GIT_TARGET_BRANCH_ENV_VAR, submission["branch"])
         print(f"  .env:           {env_path} ({GIT_TARGET_BRANCH_ENV_VAR}={submission['branch']})")
     else:
         print(
@@ -1809,6 +1806,17 @@ def _write_journey_submission_env(env_path: Path, submission: dict[str, str | No
             "selected-remote default-target fact); record an explicit target "
             "before PR submission"
         )
+
+
+def _write_journey_submission_env(env_path: Path, submission: dict[str, str | None]) -> None:
+    """Record the selected journey submission settings in .env (J5)."""
+    journey_mode = submission["mode"] or "commit"
+    _upsert_env_var(env_path, SUBMISSION_MODE_ENV_VAR, journey_mode)
+    if submission["remote"] is not None:
+        _upsert_env_var(env_path, GIT_REMOTE_ENV_VAR, submission["remote"])
+    if submission["branch"] is not None:
+        _upsert_env_var(env_path, GIT_TARGET_BRANCH_ENV_VAR, submission["branch"])
+    _print_journey_submission_env(env_path, submission)
 
 
 def _resolve_skill_binding(args: argparse.Namespace, *, project_dir: Path) -> dict | None:
@@ -2169,9 +2177,11 @@ def _run_empty_journey_setup(
     def _write_env() -> None:
         from lumio_wiki.mutation import atomic_write_bytes
 
+        # R4: the confirmed .env bytes are applied ONCE, atomically; the
+        # progress prints never rewrite the destination.
         atomic_write_bytes(env_path, plan.env_bytes)
         print(f"  .env:           {env_path} ({KB_PATH_ENV_VAR}={plan.target})")
-        _write_journey_submission_env(env_path, plan.submission)
+        _print_journey_submission_env(env_path, plan.submission)
 
     def _write_agents() -> None:
         from lumio_wiki.mutation import atomic_write_bytes

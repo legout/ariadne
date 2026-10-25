@@ -104,6 +104,41 @@ def _file_digest(path: Path) -> str | None:
         return None
 
 
+def _profile_destination_state(profile_path: Path) -> str:
+    """Distinguish absent from occupied/nonregular destination entries (R1).
+
+    A directory, symlink or unreadable entry is NEVER reported as absent:
+    the prospective-destination fingerprint must not conflate them.
+    """
+    if profile_path.is_symlink():
+        return "symlink"
+    if not os.path.lexists(profile_path):
+        return "absent"
+    if profile_path.is_file():
+        return f"file:{_file_digest(profile_path)}"
+    return "occupied"
+
+
+def _bundle_state(target: Path):
+    """Deterministic read-only fingerprint of everything in an installed
+    skill bundle that a replacement would touch (R2) — every entry, not
+    just SKILL.md or a coarse status classification."""
+    if target.is_symlink():
+        return "symlink"
+    if not os.path.lexists(target):
+        return "absent"
+    entries: list = []
+    for path in sorted(target.rglob("*")):
+        relative = path.relative_to(target).as_posix()
+        if path.is_symlink():
+            entries.append([relative, "symlink"])
+        elif path.is_dir():
+            entries.append([relative, "dir"])
+        else:
+            entries.append([relative, _file_digest(path)])
+    return entries
+
+
 def _canonical_digest(payload: dict) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -350,6 +385,25 @@ def plan_empty_setup(
                 "drop the skill selection"
             )
     if new_profile_payload is not None:
+        # R1: the prospective destination is revalidated here and in every
+        # recheck — resolved containment plus absent/occupied entry kind —
+        # so drift at the confirmation prompt refuses BEFORE any action or
+        # parent-directory write; create-only application stays the final
+        # guard.
+        if Path(os.path.realpath(profile_path)).is_relative_to(facts.repository_root):
+            raise EmptySetupError(
+                "the selected private profile file must live OUTSIDE the content "
+                "repository (resolved symlinks included)",
+                code="invalid_private_profile",
+            )
+        if os.path.lexists(profile_path):
+            raise EmptySetupError(
+                f"the selected private profile destination {profile_path} is "
+                "already occupied (existing file, directory or symlink); "
+                "setup never replaces it — select a new regular file path "
+                "and re-run the preview",
+                code="setup_target_changed",
+            )
         # Interactive collection produced the declaration as text: validate
         # it in memory — the file itself is written only inside apply.
         try:
@@ -436,17 +490,15 @@ def plan_empty_setup(
     fingerprints = {
         "target_state": state,
         "target_entries": entries,
-        "profile_file": _file_digest(profile_path) or "absent",
+        "profile_file": _profile_destination_state(profile_path),
         "env": _file_digest(env_path) or "absent",
         "agents_md": _file_digest(agents_path) or "absent",
     }
     skill_fingerprint: dict | None = None
     if skill is not None:
-        from lumio_wiki.skill import SKILL_FILENAME
-
         skill_fingerprint = {
             **skill,
-            "skill_file": _file_digest(Path(skill["target"]) / SKILL_FILENAME) or "absent",
+            "installed_bundle": _bundle_state(Path(skill["target"])),
         }
     digest_payload = {
         "schema_version": EMPTY_SETUP_SCHEMA_VERSION,
@@ -554,21 +606,41 @@ def apply_plan(
     """
     from lumio_wiki.knowledge_base import seeded_control_file, write_control_file
 
-    written: list[str] = []
+    created: list[str] = []
+    updated: list[str] = []
+
+    def _missing_ancestors(path: Path) -> list[Path]:
+        """Absent ancestors of ``path`` (including itself when absent),
+        shallowest first — recorded BEFORE any creation (R6)."""
+        missing: list[Path] = []
+        probe = path
+        while not probe.exists() and probe != probe.parent:
+            missing.append(probe)
+            probe = probe.parent
+        missing.reverse()
+        return missing
+
     current: SetupAction | None = None
     try:
         for action in plan.actions:
             current = action
             path = Path(action.path)
             if action.kind == "create-directory":
-                path.mkdir(parents=True, exist_ok=True)
-                written.append(action.path)
+                missing = _missing_ancestors(path)
+                try:
+                    path.mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    # Partial recursive creation: only ancestors that
+                    # actually exist now are operation-created residue.
+                    created.extend(str(part) for part in missing if part.exists())
+                    raise
+                created.extend(str(part) for part in missing)
             elif action.kind == "create-control-file":
                 write_control_file(path.parent, seeded_control_file())
-                written.append(action.path)
+                created.append(action.path)
             elif action.kind == "create-manifest":
                 path.write_bytes(plan.manifest_bytes)
-                written.append(action.path)
+                created.append(action.path)
             elif action.kind == "create-profile":
                 # Same care as the adopted wizard route: create-only, never
                 # following or replacing an existing file.
@@ -576,7 +648,13 @@ def apply_plan(
                     raise EmptySetupError(
                         "internal error: profile creation action without a collected declaration"
                     )
-                path.parent.mkdir(parents=True, exist_ok=True)
+                missing = _missing_ancestors(path.parent)
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    created.extend(str(part) for part in missing if part.exists())
+                    raise
+                created.extend(str(part) for part in missing)
                 try:
                     descriptor = os.open(
                         str(path),
@@ -592,13 +670,15 @@ def apply_plan(
                     ) from exc
                 with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                     handle.write(plan.new_profile_payload + "\n")
-                written.append(action.path)
+                created.append(action.path)
             elif action.kind == "update-env":
+                existed = path.exists()
                 write_env()
-                written.append(action.path)
+                (updated if existed else created).append(action.path)
             elif action.kind == "update-agents-md":
+                existed = path.exists()
                 write_agents()
-                written.append(action.path)
+                (updated if existed else created).append(action.path)
             elif action.kind == "install-skill":
                 # The skill step reports its own honest outcome (kept/SKIPPED)
                 # through the shared setup mechanism.
@@ -610,15 +690,17 @@ def apply_plan(
         raise EmptySetupError(
             f"the empty setup stopped on an I/O failure "
             f"({exc.strerror or exc}) while performing {failing}; "
-            f"operation-owned paths already written: {', '.join(written) or 'none'}; "
-            "the failing path may hold a PARTIAL file — inspect it; "
+            f"operation-created paths: {', '.join(created) or 'none'}; "
+            f"updated pre-existing operator files: {', '.join(updated) or 'none'}; "
+            f"possibly-partial path: {current.path if current is not None else 'unknown'}; "
+            "the failing path may hold a partial file — inspect it; "
             "pre-existing operator content outside these action paths was "
             "not modified; resolve the failure and re-run the preview (a "
             "retry never reinitializes a created Knowledge Base) "
             "(spec 0010 §2.2)",
             code="setup_incomplete",
         ) from exc
-    return written
+    return created + updated
 
 
 def build_envelope(plan: EmptySetupPlan, *, phase: str) -> dict:
