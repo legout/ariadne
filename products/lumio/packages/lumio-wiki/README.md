@@ -34,6 +34,12 @@ For the *why* and the vision, read the domain docs — this README documents
   the optional S3/Docker publication path lives in
   [`docs/howto-s3-publish.md`](https://github.com/legout/ariadne/blob/main/products/lumio/docs/howto-s3-publish.md). Runnable via
   [`examples/onboarding-journey/`](https://github.com/legout/ariadne/tree/main/products/lumio/examples/onboarding-journey).
+- [`docs/howto-source-handoff.md`](https://github.com/legout/ariadne/blob/main/products/lumio/docs/howto-source-handoff.md) — the external-agent
+  authoring journey (spec 0010): contributor/maintainer environments,
+  metadata-only baseline bootstrap, private Source Handoff Bundles, the
+  optional S3 exchange, and independent maintainer admission. Runnable
+  synthetic example:
+  [`examples/external-agent-journey/`](https://github.com/legout/ariadne/tree/main/products/lumio/examples/external-agent-journey).
 - Joint local tutorial (Lumio + Ariadne), canonical and cross-repository:
   [`docs/tutorials/lumio-ariadne-local.md`](https://github.com/legout/ariadne/blob/main/integration/docs/tutorials/lumio-ariadne-local.md)
   in this repository's Ariadne-side docs. The SDK links to it; the joint
@@ -134,6 +140,19 @@ lumio-wiki publish-s3 <kb> [dest] --revision <full-commit-id> --expected-current
 lumio-wiki rollback-s3 <dest> --version <v> --expected-current <active>  # reactivate a historical S3 version (preview/confirm)
 lumio-wiki cleanup-s3 <dest>                      # report incomplete S3 version prefixes; deletes nothing
 lumio-wiki diff-s3 <dest> --from <v1> --to <v2>   # deterministic delta between two immutable S3 versions
+# External-agent authoring journey (spec 0010; see docs/howto-source-handoff.md)
+lumio-wiki git-check <project> [--remote NAME]   # read-only Git diagnosis: read access only, push/PR stay unverified
+lumio-wiki private-profile inspect <file> [--kb <kb>]  # safe inspection of one private source profile
+lumio-wiki setup <kb> --journey --private-profile <file>  # guided journey setup (submission settings, drift, baseline readiness)
+lumio-wiki setup <kb> --journey --create-empty --namespace <ns> --private-profile <file> [--confirm <setup-digest>]  # preview/confirm empty-KB creation
+lumio-wiki source-bootstrap export|inspect|import <kb> ...  # metadata-only Source Baseline Snapshot (fresh contributor bootstrap)
+lumio-wiki extract <file> --output <private-dir>  # normalized extraction of one real original, outside Git
+lumio-wiki ingest-candidate <kb> --candidate <request.json>  # apply one complete multi-page/ontology candidate (nothing commits)
+lumio-wiki authoring-review <kb> --base <full-commit>  # readable review of the staged candidate (stateless evidence)
+lumio-wiki authoring-check <kb> --review <report.json> --revision <full-commit>  # verify the whole commit against its review
+lumio-wiki source-handoff export|inspect|import <kb> ...  # private Source Handoff Bundle: exact versions + original bytes
+lumio-wiki source-exchange upload --file <transfer> ...    # private S3 exchange transport (immutable final objects, ready-last)
+lumio-wiki source-exchange download --id <id> --digest <sha256> --output <file> ...  # verified transfer download
 ```
 
 Git is required for authoring and admission, not ordinary reads, queries or
@@ -260,6 +279,12 @@ application lives in a separate private repository (ADR-0025).
   Artifact Store (S3-compatible), exact source bindings, Page Removal with claim and
   body-link repair, Published Versions with binding manifests, OKF
   interchange.
+- **External-agent authoring journey** — contributor/maintainer handoff
+  (spec 0010): private source profiles, metadata-only baseline bootstrap,
+  complete managed candidates, readable review with commit verification,
+  private Source Handoff Bundles over an S3-compatible exchange or manual
+  transfer, and independent maintainer admission
+  ([docs/howto-source-handoff.md](https://github.com/legout/ariadne/blob/main/products/lumio/docs/howto-source-handoff.md)).
 - **Maintenance** — lint, cross-link candidates, Dream Cycle diagnostics
   (link, duplicate, synthesis, transitive impact), S3 published-version diff.
 - **Optional Ariadne Context Profile** — versioned native Metric/Policy

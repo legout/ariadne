@@ -11,7 +11,8 @@ description: >-
   model provider is required for base text/Markdown ingestion. Triggers
   include "lumio", "knowledge base", "wiki", "compiled page", "ingest",
   "authoring", "publish", "migration", "navigation index", "hot index", "graph path",
-  "related pages", "retrieval ladder", and "validate the Knowledge Base".
+  "related pages", "retrieval ladder", "source handoff", "private source profile",
+  "baseline bootstrap", "external agent", and "validate the Knowledge Base".
 license: Apache 2.0
 metadata:
   distribution: lumio-wiki
@@ -365,6 +366,68 @@ version I read?"), diff the two immutable versions read-only:
    versions ARE the audit trail (ADR-0022), and change reports stay in the
    conversation that requested them.
 
+## Workflow: external-agent authoring journey (contributor ⇄ maintainer)
+
+When a **contributor** agent (this skill in another harness session, on
+another checkout with its own private registry and credentials) authors from
+a real attached document and a **maintainer** elsewhere admits it, use the
+spec-0010 journey commands. Full walkthrough:
+`docs/howto-source-handoff.md`; exact grammar in [PROTOCOL.md](PROTOCOL.md)
+§14. One machine-local **private source profile** (JSON v1) selects the
+private registry/store/retention per operation — check any profile safely
+with `lumio-wiki private-profile inspect <file> [--kb <kb>]` (the output
+names no private path or credential). Rules that stay binding at every
+step:
+
+- Read the **actual attachment bytes** (`lumio-wiki extract <file> --output
+  <private-dir>`); disclose extraction loss/limits; never invent content from
+  a filename. Author candidates and working files **outside Git**.
+- Identity is explicit: `intent: new|update` per source, stable `source_id`s;
+  a matching filename or title is never identity. One original may produce
+  several pages plus ontology additions — apply them as ONE complete
+  candidate (`ingest-candidate`), never as partial ingests.
+- A fresh contributor starts from the maintainer's **metadata-only Source
+  Baseline Snapshot** (`source-bootstrap export/inspect/import` with the
+  out-of-band sha256 + exact base commit). Baseline originals stay with the
+  maintainer; `source inspect` reports them truthfully; contributor-side
+  required-retention publication keeps refusing. A **new empty KB** uses
+  `setup <kb> --journey --create-empty --namespace <ns> --confirm
+  <setup-digest>` (registered native Git worktree required; preview/confirm;
+  never a substitute for the nonempty baseline route).
+- Review is human: `authoring-review <kb> --base <full-commit>` displays
+  bodies, diffs with deletions, and semantic changes; ask **one informed
+  decision** covering the displayed candidate, the SELECTED submission
+  action and the private transfer. The mode is exactly the configured
+  `commit` or `github-pr` setting — `commit` ends submission at the verified
+  local commit (a configured remote/base NEVER authorizes a push in commit
+  mode); `github-pr` is selected explicitly BEFORE the decision with the
+  actual configured repository/remote/head/base. Then commit on a native
+  contribution branch from the exact baseline (never the default branch)
+  and verify with
+  `authoring-check <kb> --review <report> --revision <full-commit>`. A hook
+  or post-confirmation edit stops submission; re-review, never carry an
+  approval forward; a different mode/action needs a fresh decision.
+  `git-check` proves read access only — never claim push
+  or PR capability from it.
+- Transfer privately: `source-handoff export` → `source-exchange upload`
+  (or manual transfer of the same archive). PR mode's fixed order: verified
+  commit → handoff first (actual transfer id/digest) → public-safe body
+  with those actual values, exact revision and validation outcome →
+  exact-target retry inspection → only then push/PR mutation; an existing
+  matching PR is reported and reused, never duplicated. Submission output
+  (PR body, summaries) carries the exact revision and transfer id/digest
+  ONLY — never
+  originals, private paths, bucket names, or signed URLs. On retry, inspect
+  the existing remote branch/PR by exact repository/head/base; never
+  duplicate, force-push, or auto-merge.
+- The maintainer imports (`source-exchange download` → `source-handoff
+  inspect/import --confirm <preview-digest>`), reviews the final integrated
+  commit freshly, and admits publication through the ordinary
+  `publish` preview/confirm gate with its own retained originals. PR
+  approval, import, and merge are NOT Publication Admission, and the
+  contributor needs no publication credentials. Cite from the admitted
+  snapshot as always (title + printed path + passage).
+
 ## Workflow: exchange (choose the right surface)
 
 Four exchange surfaces exist; pick by what must travel (ADR-0024):
@@ -385,6 +448,12 @@ Claims and untyped Extracted References, marked by `kind`. No
    blind merge/overwrite mode.
 4. **Content-bearing ingestion** — the ordinary `ingest` workflow (you are
    the Distiller). Use for raw sources and authored pages.
+5. **Private source transfer between contributor and maintainer
+   environments** — `source-bootstrap` (metadata-only baseline) and
+   `source-handoff` (exact versions + original bytes) with the optional
+   `source-exchange` S3 transport or manual private transfer (spec 0010,
+   ADR-0031). Originals and registry history travel ONLY through these
+   private routes; see `docs/howto-source-handoff.md`.
 
 Visibility filtering on graph export is enforced, not disclosed:
    `--scope public` can never leak an internal/restricted title, summary, or

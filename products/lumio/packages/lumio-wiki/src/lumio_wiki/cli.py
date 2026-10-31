@@ -27,14 +27,16 @@ no OpenAI client is required for text and Markdown ingestion.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import mimetypes
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
-from contextlib import suppress
+from contextlib import nullcontext, redirect_stdout, suppress
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -79,13 +81,17 @@ from lumio_wiki.citation_actions import (
 )
 from lumio_wiki.env_loader import (
     ARTIFACT_RETENTION_ENV_VAR,
+    GIT_REMOTE_ENV_VAR,
+    GIT_TARGET_BRANCH_ENV_VAR,
     KB_PATH_ENV_VAR,
     PUBLISH_TO_ENV_VAR,
     READER_BASE_URL_ENV_VAR,
     RETRIEVAL_BACKEND_ENV_VAR,
     RETRIEVAL_MODE_ENV_VAR,
+    SOURCE_EXCHANGE_ENV_VAR,
     SOURCE_REGISTRY_ENV_VAR,
     SOURCE_STORE_ENV_VAR,
+    SUBMISSION_MODE_ENV_VAR,
     discover_kb_path_from_project_env,
     discover_nearest_env_file,
     load_project_config,
@@ -165,20 +171,129 @@ class CliError(Exception):
 
 _MACHINE_ERROR_MESSAGES: dict[str, str] = {}
 
+# Spec 0010 §3 / plan 0010 J1: the extraction and candidate commands report
+# stable, safe failure categories with actionable static messages; private
+# paths and credential values never enter the envelope.
+_MACHINE_ERROR_MESSAGES.update(
+    {
+        "authoring_journey_error": "the authoring journey operation failed",
+        "missing_source": "the original source file does not exist",
+        "unreadable_source": "the original source could not be read",
+        "source_too_large": "the original exceeds the supported size ceiling",
+        "output_inside_repository": ("extraction output must stay outside the content repository"),
+        "empty_extraction": "the extraction produced no normalized text",
+        "conversion_failed": "the document conversion failed",
+        "missing_documents_extra": ("the routed document processor needs the documents extra"),
+        "invalid_candidate_request": "the candidate request is not a valid v1 request",
+        "invalid_base_revision": "the selected base revision is not usable",
+        "base_namespace_mismatch": ("the base revision namespace differs from the worktree"),
+        "request_inside_repository": (
+            "candidate working files must live outside the content repository"
+        ),
+        "invalid_control_candidate": "the candidate Control File is invalid",
+        "invalid_candidate": "the complete candidate failed validation",
+        "invalid_worktree_kb": ("the authoring worktree Knowledge Base does not validate"),
+        "page_routing_error": "an authored page fails ingest routing validation",
+        "missing_entity_id": "an authored page carries no Entity ID",
+        "missing_page": "an authored page file is missing or unreadable",
+        "missing_original": "a candidate original is missing or unreadable",
+        "digest_mismatch": "a declared digest does not match the actual bytes",
+        "identity_conflict": (
+            "the declared source intent conflicts with the base or private history"
+        ),
+        "unsafe_worktree": ("uncommitted author changes exist at a candidate target path"),
+        "retention_required": ("new/changed originals require a selected Source Artifact Store"),
+        "retention_failed": "retained original bytes failed verification",
+        "artifact_access_failed": ("the selected artifact store denied or failed a coverage read"),
+        "registration_mismatch": "the registry recorded inconsistent provenance",
+        "apply_failed": ("the candidate was not applied; authored files were restored"),
+        "authoring_review_error": "the authoring review operation failed",
+        "changes_outside_kb": (
+            "the submission contains changes outside the selected Knowledge Base"
+        ),
+        "invalid_review_report": "the review report is not a valid v1 report",
+        "invalid_candidate_tree": "the named candidate tree does not exist in this repository",
+        "staged_tree_unavailable": "no staged candidate is available to review",
+        "invalid_revision": "the selected revision is not an exact usable commit",
+        "incomplete_review_scope": (
+            "the submission contains paths with no supported review display"
+        ),
+        "invalid_staged_control": (
+            "the staged Control File is invalid and cannot be semantically reviewed"
+        ),
+        "entity_identity_conflict": ("an update would replace an existing page's Entity identity"),
+        "private_selection_inside_repository": (
+            "private originals, registries and stores must stay outside the repository"
+        ),
+        "invalid_source_handoff": "the source handoff operation failed",
+        "artifact_store_error": "the private Source Artifact Store operation failed",
+        "missing_artifact_store": (
+            "source-handoff requires a selected private Source Artifact Store"
+        ),
+        # Spec 0010 §6 / plan 0010 J4: safe transport failure categories. The
+        # underlying messages never echo endpoints, bucket/prefix locations,
+        # paths or credentials carried by raw SDK exceptions.
+        "invalid_source_exchange": "the private source exchange operation failed",
+        "exchange_not_found": "the requested transfer or completion record is missing",
+        "exchange_access_denied": "the private exchange denied access",
+        "exchange_conflict": "a conflicting transfer already exists",
+        "exchange_integrity_mismatch": "the transfer failed integrity verification",
+        "exchange_unsupported": "the exchange lacks a required transport capability",
+    }
+)
 
-def _emit_machine_error(exc: CliError) -> None:
-    """Emit one stable error object without a traceback or exception chain."""
-    print(
-        json.dumps(
-            {
-                "ok": False,
-                "error": {
-                    "code": exc.code,
-                    "message": _MACHINE_ERROR_MESSAGES.get(exc.code, "command failed"),
-                },
-            }
-        )
-    )
+# Spec 0010 §2.2 / plan 0010 J5a: the confirmed empty-KB creation route
+# reports the frozen refusal categories through the same bounded envelope.
+_MACHINE_ERROR_MESSAGES.update(
+    {
+        "invalid_empty_setup": "the empty Knowledge Base setup selection is invalid",
+        "setup_confirmation_mismatch": (
+            "the supplied setup confirmation does not match the current preview"
+        ),
+        "setup_target_changed": ("the selected authoring target changed after the preview"),
+        "adoption_required": ("existing content requires explicit Git-authoring adoption first"),
+        "setup_incomplete": ("the setup stopped on an I/O failure; inspect the reported residue"),
+    }
+)
+
+
+def _emit_machine_error(exc: CliError, *, schema_version: int | None = None) -> None:
+    """Emit one stable error object without a traceback or exception chain.
+
+    ``schema_version`` is supplied only by commands whose frozen result
+    contract versions failures too (source-bootstrap, plan 0010 interface
+    inventory); legacy command error envelopes stay unchanged.
+    """
+    envelope: dict = {
+        "ok": False,
+        "error": {
+            "code": exc.code,
+            "message": _MACHINE_ERROR_MESSAGES.get(exc.code, "command failed"),
+        },
+    }
+    if schema_version is not None:
+        envelope["schema_version"] = schema_version
+    print(json.dumps(envelope))
+
+
+def _bootstrap_error_schema_version(args: argparse.Namespace) -> int | None:
+    """New plan-0010 JSON failures carry ``schema_version: 1``.
+
+    Minimal command-specific selection: only the source-bootstrap,
+    source-handoff, extract, ingest-candidate and authoring review/check
+    commands opt in, so every legacy error envelope is unchanged. This also
+    covers the early Knowledge-Base path-selection refusal raised in ``main``
+    and the creation-only setup ``--json`` route (J5a).
+    """
+    if getattr(args, "create_empty", False):
+        return 1
+    if getattr(args, "source_bootstrap_command", None) is not None:
+        return 1
+    if getattr(args, "source_handoff_command", None) is not None:
+        return 1
+    if getattr(args, "source_exchange_command", None) is not None:
+        return 1
+    return 1 if getattr(args, "journey_command", None) is not None else None
 
 
 def default_ingest_dir(kb_root: str | Path) -> Path:
@@ -219,6 +334,20 @@ def _infer_content_type(path: Path) -> str:
 def _resolve_index_dir(args: argparse.Namespace, kb_root: Path) -> Path:
     raw = getattr(args, "index_dir", None)
     return Path(raw) if raw else default_index_dir(kb_root)
+
+
+def _add_private_profile_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--private-profile",
+        type=Path,
+        default=None,
+        help=(
+            "Select ONE explicit machine-local private source profile file "
+            "(spec 0010 §2.1): it supplies the private Source Registry, "
+            "artifact store and retention policy for this operation; "
+            "competing --source-registry/environment selections are refused."
+        ),
+    )
 
 
 def _load_kb(path: str | Path) -> tuple[KnowledgeBase, ValidationReport]:
@@ -1163,6 +1292,941 @@ def _clone_git_kb(url: str) -> Path:
     return target
 
 
+def _git_read_lines(repo_root: Path, *git_args: str) -> list[str]:
+    """Run one read-only Git query, returning clean stdout lines (never raises)."""
+    try:
+        result = subprocess.run(
+            ["git", "--no-optional-locks", "-C", str(repo_root), *git_args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+
+
+def _collect_profile_payload(
+    profile_path: Path,
+    *,
+    repo_root: Path,
+    namespace: str,
+    registry_default: Path,
+    store_default: Path,
+) -> str:
+    """Ask for one new private profile's declaration and preview it (§2.1).
+
+    Shared by the adopted wizard route (which writes the file only after its
+    own confirmation) and the empty-create route (which carries the payload
+    into the confirmed apply); nothing is written here.
+    """
+    registry_raw = _wizard_ask(
+        f"Private Source Registry directory [{registry_default}]: ",
+        default=str(registry_default),
+    ) or str(registry_default)
+    store_raw = _wizard_ask(
+        f"Private artifact store directory [{store_default}]: ",
+        default=str(store_default),
+    ) or str(store_default)
+    registry_root = Path(registry_raw).expanduser()
+    store_root = Path(store_raw).expanduser()
+    for label, root in (("Source Registry", registry_root), ("artifact store", store_root)):
+        if Path(os.path.realpath(root)).is_relative_to(repo_root):
+            raise CliError(
+                f"the private {label} directory must live OUTSIDE the content "
+                "repository (resolved symlinks included)",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+    payload = {
+        "schema_version": 1,
+        "namespace": namespace,
+        "source_registry": str(registry_root.resolve()),
+        "retention": "required",
+        "artifact_store": {
+            "kind": "local",
+            "root": str(store_root.resolve()),
+        },
+    }
+    preview = json.dumps(payload, indent=2, sort_keys=True)
+    print(f"New private profile preview ({profile_path}):")
+    print(preview)
+    return preview
+
+
+def _resolve_journey_profile(args: argparse.Namespace, *, kb_path: Path, interactive: bool):
+    """Load the explicitly selected private profile — or create it only after
+    an interactive preview and confirmation (spec 0010 §2.1, plan 0010 J5).
+
+    Noninteractive setup never invents a profile; an invalid selection is
+    removed again so a refusal leaves nothing behind. The profile path
+    itself is never persisted in tracked content.
+    """
+    from lumio_wiki.private_profile import PrivateProfileError, load_private_profile
+    from lumio_wiki.source_references import load_source_reference_manifest
+
+    profile_path: Path = args.private_profile
+    if profile_path.exists():
+        try:
+            return load_private_profile(profile_path, kb_root=kb_path)
+        except PrivateProfileError as exc:
+            raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+    # The canonical destination is validated BEFORE anything is created
+    # (review F2): an operator's symlink is never followed, replaced or
+    # deleted by setup.
+    from lumio_wiki.git_authoring import GitAuthoringError, resolve_repository
+
+    try:
+        repo_root, _subtree = resolve_repository(kb_path)
+    except GitAuthoringError as exc:
+        raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+    if Path(os.path.realpath(profile_path)).is_relative_to(repo_root):
+        raise CliError(
+            "the selected private profile file must live OUTSIDE the content "
+            "repository (resolved symlinks included)",
+            exit_code=2,
+            code="invalid_private_profile",
+        )
+    if os.path.lexists(profile_path) and not profile_path.is_file():
+        raise CliError(
+            "the selected private profile path is a symlink or not a regular "
+            "file; setup never follows or replaces it — select a new regular "
+            "file path",
+            exit_code=2,
+            code="invalid_private_profile",
+        )
+    manifest = load_source_reference_manifest(kb_path)
+    if manifest is None:
+        raise CliError(
+            "--journey requires an adopted Git-authoring Knowledge Base with a "
+            "Source Reference Manifest; adopt one first, then re-run setup --journey",
+            exit_code=2,
+            code="invalid_private_profile",
+        )
+    home = Path.home()
+    preview = _collect_profile_payload(
+        profile_path,
+        repo_root=repo_root,
+        namespace=manifest.namespace,
+        registry_default=home / ".lumio" / "registries" / manifest.namespace,
+        store_default=home / ".lumio" / "artifacts" / manifest.namespace,
+    )
+    answer = _wizard_ask(
+        "Write this private profile? [y/N] ",
+        default="n",
+        choices={"y": "y", "yes": "y", "n": "n", "no": "n"},
+    )
+    if answer != "y":
+        return None
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(
+            str(profile_path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+        )
+    except FileExistsError as exc:
+        raise CliError(
+            f"the selected profile path already exists: {profile_path}; setup "
+            "never replaces an existing file",
+            exit_code=2,
+            code="invalid_private_profile",
+        ) from exc
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(preview + "\n")
+    print(f"  private profile: {profile_path}")
+    try:
+        return load_private_profile(profile_path, kb_root=kb_path)
+    except PrivateProfileError as exc:
+        with suppress(OSError):
+            profile_path.unlink()
+        raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+
+
+def _resolve_journey_registry(profile, *, kb_path: Path):
+    """Open only the profile's Source Registry through the JP resolver (§2.1).
+
+    Registry-only needs keep artifact/exchange credentials untouched:
+    metadata-bootstrap readiness never requires them (plan 0010 J5).
+    """
+    from lumio_wiki.private_profile import (
+        PrivateProfileError,
+        resolve_private_profile,
+    )
+
+    try:
+        resolved = resolve_private_profile(profile, kb_root=kb_path, needs=frozenset({"registry"}))
+    except PrivateProfileError as exc:
+        raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+    return resolved.source_registry
+
+
+def _valid_journey_word(value: str | None) -> str | None:
+    """One nonempty, whitespace-free word usable as a .env setting value."""
+    if not value or "=" in value or any(character.isspace() for character in value):
+        return None
+    return value
+
+
+def _require_journey_word(value: str) -> str | None:
+    return None if _valid_journey_word(value) else "a single nonempty word is required"
+
+
+def _journey_git_facts(
+    kb_path: Path,
+) -> tuple[Path | None, list[str], tuple[str, str] | None]:
+    """Native Git facts for unambiguous submission defaults (spec 0010 §2).
+
+    Reports the configured remotes and the current branch's upstream tracking
+    target — the meaningful default-target facts. A remote is never chosen by
+    sort order, and the current authoring branch is never used as a target.
+    """
+    from lumio_wiki.git_authoring import GitAuthoringError, resolve_repository
+
+    try:
+        repo_root, _subtree = resolve_repository(kb_path)
+    except GitAuthoringError:
+        return None, [], None
+    remotes = _git_read_lines(repo_root, "remote")
+    upstream_full = _git_read_lines(
+        repo_root,
+        "rev-parse",
+        "--abbrev-ref",
+        "--symbolic-full-name",
+        "--quiet",
+        "@{upstream}",
+    )
+    upstream: tuple[str, str] | None = None
+    if upstream_full and "/" in upstream_full[0]:
+        remote_name, upstream_branch = upstream_full[0].split("/", 1)
+        upstream = (remote_name, upstream_branch)
+    return repo_root, remotes, upstream
+
+
+def _selected_remote_target_fact(
+    repo_root: Path | None,
+    remotes: list[str],
+    upstream: tuple[str, str] | None,
+    remote_name: str | None,
+) -> str | None:
+    """A native default-target fact about the SELECTED remote, or ``None``.
+
+    The current branch's upstream counts only when it tracks the selected
+    remote; otherwise the remote's own HEAD symbolic ref (present after a
+    normal clone) is that remote's default target. An upstream belonging to
+    a different remote is not a fact about the selected one, and a
+    conventional branch name is never manufactured as a discovered fact
+    (review F1).
+    """
+    if repo_root is None or remote_name is None or remote_name not in remotes:
+        return None
+    if upstream is not None and upstream[0] == remote_name:
+        return upstream[1]
+    symbolic = _git_read_lines(
+        repo_root, "symbolic-ref", "--quiet", "--short", f"refs/remotes/{remote_name}/HEAD"
+    )
+    prefix = f"{remote_name}/"
+    for line in symbolic:
+        if line.startswith(prefix) and len(line) > len(prefix):
+            return line[len(prefix) :]
+    return None
+
+
+def _journey_submission_settings(
+    kb_path: Path,
+    *,
+    interactive: bool,
+) -> dict[str, str | None]:
+    """Select the submission mode and Git remote/target branch (spec 0010 §2).
+
+    Valid existing settings (exported process values over the project .env)
+    are preserved noninteractively and become the interactive Enter defaults.
+    A target comes only from an actual selected-remote tracking/default-target
+    fact or an explicitly supplied operator answer; without one it stays unset
+    for local commits — interactively an empty Enter leaves it unset exactly
+    like noninteractive local mode — and PR mode requires an explicit target
+    (review F1).
+    """
+    existing = load_project_config()
+    mode = existing.get(SUBMISSION_MODE_ENV_VAR)
+    if mode not in ("commit", "github-pr"):
+        mode = None
+    remote = _valid_journey_word(existing.get(GIT_REMOTE_ENV_VAR))
+    branch = _valid_journey_word(existing.get(GIT_TARGET_BRANCH_ENV_VAR))
+    repo_root, remotes, upstream = _journey_git_facts(kb_path)
+    default_remote = None
+    if "origin" in remotes:
+        default_remote = "origin"
+    elif len(remotes) == 1:
+        default_remote = remotes[0]
+    elif upstream is not None and upstream[0] in remotes:
+        default_remote = upstream[0]
+    if interactive:
+        mode = (
+            _wizard_ask(
+                "Submission mode after confirmation: [c]ommit locally or [p]ull-request? ",
+                default=mode or "commit",
+                choices={
+                    "c": "commit",
+                    "commit": "commit",
+                    "p": "github-pr",
+                    "pr": "github-pr",
+                    "github-pr": "github-pr",
+                },
+            )
+            or "commit"
+        )
+        remote = _wizard_ask(
+            f"Git remote for submissions [{remote or default_remote or 'origin'}]: ",
+            default=remote or default_remote or "origin",
+            validate=_require_journey_word,
+        )
+    else:
+        mode = mode or "commit"
+        remote = remote or default_remote
+    target_fact = _selected_remote_target_fact(repo_root, remotes, upstream, remote)
+    target_default = branch or target_fact
+    if interactive:
+        if mode == "github-pr":
+            # PR mode requires an explicit target: without a native fact the
+            # question offers no default, so Enter cannot manufacture one.
+            branch = _wizard_ask(
+                (
+                    f"Git target branch [{target_default}]: "
+                    if target_default is not None
+                    else "Git target branch (required; no native default-target fact detected): "
+                ),
+                default=target_default,
+                validate=_require_journey_word,
+            )
+        elif target_default is not None:
+            branch = _wizard_ask(
+                f"Git target branch [{target_default}]: ",
+                default=target_default,
+                validate=_require_journey_word,
+            )
+        else:
+            # Local commit with no configured value or native fact: the
+            # question is optional and Enter leaves the target unset —
+            # exactly like noninteractive local mode. No conventional branch
+            # name is offered as a default (review F1).
+            branch = _wizard_ask(
+                "Git target branch (optional; Enter leaves it unset — no native "
+                "default-target fact): ",
+                optional=True,
+                validate=_require_journey_word,
+            )
+    else:
+        branch = target_default
+    if mode == "github-pr" and (remote is None or branch is None):
+        raise CliError(
+            "LUMIO_SUBMISSION_MODE=github-pr requires an explicit Git remote and "
+            "target branch: record LUMIO_GIT_REMOTE/LUMIO_GIT_TARGET_BRANCH in "
+            ".env or run setup interactively — setup never picks an arbitrary "
+            "remote or the current authoring branch as a PR target",
+            exit_code=2,
+            code="invalid_journey_submission",
+        )
+    return {"mode": mode, "remote": remote, "branch": branch}
+
+
+def _print_journey_report(
+    args: argparse.Namespace,
+    *,
+    project_dir: Path,
+    kb_path: Path,
+    profile,
+    registry,
+    submission: dict[str, str | None] | None,
+    connection=None,
+    repo_root: Path | None = None,
+) -> None:
+    """Print the read-only journey readiness report (plan 0010 J5).
+
+    Reports baseline-metadata coverage, exchange capability truthfully
+    (configuration alone proves nothing), the separate publication boundary,
+    skill drift with an explicit update path, and the composed read-only
+    connection check for the SELECTED content repository and its selected
+    remote. Nothing here mutates repositories, stores or skills.
+    """
+    from lumio_wiki.source_references import load_source_reference_manifest
+
+    print()
+    print("Guided authoring journey (spec 0010 §2):")
+    print(
+        f"  private profile: namespace={profile.namespace}, "
+        f"retention={profile.retention} (file stays outside versioned content)"
+    )
+    manifest = load_source_reference_manifest(kb_path)
+    missing: list[str] = []
+    if manifest is not None and registry is not None:
+        for entity_id, bindings in sorted(manifest.bindings.items()):
+            for source_id, digest in sorted(bindings.items()):
+                if registry.find_version(source_id, digest) is None:
+                    missing.append(f"{entity_id} -> {source_id} ({digest[:12]}...)")
+    if missing:
+        print("  baseline metadata: MISSING exact registered versions for:")
+        for item in missing[:10]:
+            print(f"    {item}")
+        print(
+            "    Obtain the maintainer's exact-base Source Baseline Snapshot and its "
+            "expected\n"
+            "    digest (maintainer-approved setup or direct operator selection), then "
+            "preview\n"
+            "    and explicitly confirm its import — setup imports nothing by itself:"
+        )
+        print(
+            "      lumio-wiki source-bootstrap inspect <kb> --snapshot <file> "
+            "--digest <sha256>\\n"
+            "        --revision <full-commit> --source-registry <private-registry>"
+        )
+        print(
+            "      lumio-wiki source-bootstrap import <kb> --snapshot <file> "
+            "--digest <sha256>\\n"
+            "        --revision <full-commit> --source-registry <private-registry> "
+            "--confirm <preview-digest>"
+        )
+    elif manifest is not None:
+        print(
+            "  baseline metadata: every current manifest binding resolves to an "
+            "exact registered version"
+        )
+    if profile.exchange is not None:
+        print(
+            "  exchange: configured. Automated transfer additionally requires multipart "
+            "upload\n"
+            "    and atomic conditional server-side copy; capability is proven only by "
+            "an\n"
+            "    actual transfer, never by configuration. Private staging objects and "
+            "incomplete multipart\n"
+            "    uploads are operator-managed residue; manual bundle transfer remains "
+            "available."
+        )
+    else:
+        print(
+            "  exchange: not configured; private bundle transfer uses the manual route "
+            "(spec 0010 §6)."
+        )
+    print(
+        "  publication: authoring and handoff need no publication credentials; a "
+        "publication\n"
+        "    destination and its credentials remain a separate maintainer selection."
+    )
+    agent = getattr(args, "agent", None)
+    scope = getattr(args, "skill_scope", None)
+    if agent is not None or scope is not None:
+        from lumio_wiki.skill import SkillError, skill_status
+
+        try:
+            status = skill_status(agent, scope=scope, project_dir=project_dir)
+            print(f"  skill: {status.state} ({status.target})")
+            if status.state == "current":
+                print(
+                    "    up to date; explicit update stays available with 'lumio-wiki skill update'"
+                )
+            else:
+                print("    kept as installed; explicit update: 'lumio-wiki skill update'")
+                print("    restart the agent or start a new session after updating")
+        except SkillError as exc:
+            print(f"  skill: {exc}")
+    else:
+        print(
+            "  skill drift: not checked (no skill target selected); run 'lumio-wiki skill status'"
+        )
+    print("  connection:")
+    if connection is not None and repo_root is not None:
+        state = "clean" if connection.repository.clean else "dirty"
+        print(
+            f"    repository: {repo_root} "
+            f"(branch {connection.repository.branch or 'unknown'}, {state})"
+        )
+        identity = (
+            "configured"
+            if connection.identity.configured
+            else "INCOMPLETE — set user.name/user.email"
+        )
+        print(f"    Git identity: {identity}")
+        print(f"    remote {connection.remote.name!r}: read access {connection.remote.read}")
+        print(
+            "    push/PR: unverified — a successful read never proves write "
+            "access; no test push/PR was attempted"
+        )
+        for blocker in connection.blockers:
+            print(f"    blocker: {blocker}")
+        from lumio_wiki.skill import package_version
+
+        print(f"    cli: lumio-wiki {package_version()}")
+        from importlib.util import find_spec
+
+        from lumio_wiki.private_profile import PrivateS3Connection
+
+        needs_s3 = profile.exchange is not None or isinstance(
+            profile.artifact_store, PrivateS3Connection
+        )
+        if needs_s3:
+            available = find_spec("obstore") is not None
+            print(
+                "    optional S3 capability (lumio-wiki[s3]): "
+                + (
+                    "available"
+                    if available
+                    else "NOT installed — required for the configured exchange or "
+                    "S3 artifact transport; manual transfer remains available"
+                )
+            )
+        else:
+            print("    optional capabilities: none required for metadata bootstrap")
+        print(
+            "    verify again read-only: lumio-wiki git-check "
+            f"{shlex.quote(str(repo_root))} --remote "
+            f"{shlex.quote(str(connection.remote.name))} --json"
+        )
+    else:
+        print("    not available for the selected Knowledge Base repository")
+
+
+def _print_journey_submission_env(env_path: Path, submission: dict[str, str | None]) -> None:
+    """Report the selected journey submission settings (shared prints)."""
+    journey_mode = submission["mode"] or "commit"
+    print(f"  .env:           {env_path} ({SUBMISSION_MODE_ENV_VAR}={journey_mode})")
+    if submission["remote"] is not None:
+        print(f"  .env:           {env_path} ({GIT_REMOTE_ENV_VAR}={submission['remote']})")
+    else:
+        print(
+            f"  .env:           {GIT_REMOTE_ENV_VAR} not recorded (no Git remote "
+            "configured); rerun setup interactively or set it in .env"
+        )
+    if submission["branch"] is not None:
+        print(f"  .env:           {env_path} ({GIT_TARGET_BRANCH_ENV_VAR}={submission['branch']})")
+    else:
+        print(
+            f"  .env:           {GIT_TARGET_BRANCH_ENV_VAR} not recorded (no "
+            "selected-remote default-target fact); record an explicit target "
+            "before PR submission"
+        )
+
+
+def _write_journey_submission_env(env_path: Path, submission: dict[str, str | None]) -> None:
+    """Record the selected journey submission settings in .env (J5)."""
+    journey_mode = submission["mode"] or "commit"
+    _upsert_env_var(env_path, SUBMISSION_MODE_ENV_VAR, journey_mode)
+    if submission["remote"] is not None:
+        _upsert_env_var(env_path, GIT_REMOTE_ENV_VAR, submission["remote"])
+    if submission["branch"] is not None:
+        _upsert_env_var(env_path, GIT_TARGET_BRANCH_ENV_VAR, submission["branch"])
+    _print_journey_submission_env(env_path, submission)
+
+
+def _resolve_skill_binding(args: argparse.Namespace, *, project_dir: Path) -> dict | None:
+    """Resolve the concrete skill action read-only BEFORE preview (R2).
+
+    Binds the agent/scope selection, overwrite, the resolved destination, its
+    current state, the packaged contract identity and the concrete
+    keep/install intent, so the digest and recheck cover exactly what a
+    confirmation authorizes. No skill file is written here.
+    """
+    agent = getattr(args, "agent", None)
+    scope = getattr(args, "skill_scope", None)
+    if agent is None and scope is None:
+        return None
+    from lumio_wiki.skill import SkillError, packaged_contract_hash, skill_status
+
+    try:
+        status = skill_status(agent, scope=scope, project_dir=project_dir)
+    except SkillError as exc:
+        raise CliError(str(exc), exit_code=2, code="invalid_empty_setup") from exc
+    overwrite = bool(getattr(args, "overwrite", False))
+    intent = "install" if (status.state == "missing" or overwrite) else "keep"
+    return {
+        "agent": agent,
+        "scope": scope,
+        "overwrite": overwrite,
+        "project_dir": str(project_dir),
+        "target": str(status.target),
+        "state": status.state,
+        "intent": intent,
+        "packaged_contract": packaged_contract_hash(),
+    }
+
+
+def _execute_bound_skill_action(selection: dict | None) -> None:
+    """Execute exactly the preview-bound skill action (R2: never re-derived
+    from mutable CLI args at apply time)."""
+    if selection is None:
+        return
+    from lumio_wiki.skill import SkillError, install_skill, skill_status
+
+    agent = selection["agent"]
+    scope = selection["scope"]
+    project_dir = Path(selection["project_dir"])
+    try:
+        if selection["intent"] == "install":
+            target = install_skill(
+                agent,
+                scope=scope,
+                project_dir=project_dir,
+                overwrite=selection["overwrite"],
+            )
+            print(f"  skill install:  {target}")
+            print("  skill discovery: restart the agent or start a new session")
+        else:
+            status = skill_status(agent, scope=scope, project_dir=project_dir)
+            if status.state == "current":
+                print(f"  skill install:  CURRENT ({status.target})")
+            else:
+                print(
+                    f"  skill install:  SKIPPED ({status.state}; run "
+                    f"'lumio-wiki skill update' for this target)",
+                    file=sys.stderr,
+                )
+    except SkillError as exc:
+        print(f"  skill install:  SKIPPED ({exc})", file=sys.stderr)
+
+
+def _maybe_install_skill(args: argparse.Namespace, *, project_dir: Path) -> None:
+    """Optional, explicit skill install, shared by the setup routes (J5a).
+
+    Project bootstrap never writes into an agent trust surface unless one
+    target was requested (ADR-0017); a stale/modified installation is kept
+    and reported with its explicit update path.
+    """
+    _execute_bound_skill_action(_resolve_skill_binding(args, project_dir=project_dir))
+
+
+def _require_namespace(value: str) -> str | None:
+    return None if value and value == value.strip() else "a non-empty namespace is required"
+
+
+def _render_env_with_journey_settings(
+    existing_text: str | None, kb_display: Path | str, submission: dict[str, str | None]
+) -> str:
+    """Render the exact final .env content for the creation route (R4).
+
+    Pure read-only rendering with ``_upsert_env_var`` semantics; the
+    confirmed bytes are applied through the atomic-write machinery at apply
+    time, so a partial write preserves the prior file.
+    """
+    updates = [
+        (KB_PATH_ENV_VAR, str(kb_display)),
+        (SUBMISSION_MODE_ENV_VAR, submission["mode"] or "commit"),
+    ]
+    if submission["remote"] is not None:
+        updates.append((GIT_REMOTE_ENV_VAR, submission["remote"]))
+    if submission["branch"] is not None:
+        updates.append((GIT_TARGET_BRANCH_ENV_VAR, submission["branch"]))
+    lines = list(existing_text.splitlines()) if existing_text is not None else []
+    for key, value in updates:
+        found = False
+        for index, line in enumerate(lines):
+            if line.startswith(f"{key}="):
+                lines[index] = f"{key}={value}"
+                found = True
+                break
+        if not found:
+            lines.append(f"{key}={value}")
+    return "\n".join(lines) + "\n"
+
+
+def _print_empty_setup_preview(plan, *, interactive: bool) -> None:
+    """Show the one concrete §2.2 preview: location, namespace, actions."""
+    unborn = plan.facts.current_commit is None
+    commit_state = (
+        "unborn named branch; the first Authoring Revision is created explicitly with native Git"
+        if unborn
+        else f"commit {plan.facts.current_commit}"
+    )
+    print()
+    print("Empty managed Knowledge Base setup (spec 0010 §2.2) — preview; nothing written yet:")
+    print(
+        f"  authoring worktree: {plan.facts.repository_root} "
+        f"(branch {plan.facts.branch}, {commit_state})"
+    )
+    print(f"  Knowledge Base subtree: {plan.facts.subtree or '(repository root)'}")
+    print(f"  namespace: {plan.namespace}")
+    new_profile = plan.new_profile_payload is not None
+    print(
+        f"  private profile: namespace={plan.namespace}, retention=required "
+        "("
+        + (
+            "new declaration; the file is written only on confirmation"
+            if new_profile
+            else "file stays outside versioned content"
+        )
+        + ")"
+    )
+    print("Planned actions (local paths only; private locations never enter authored files):")
+    for action in plan.actions:
+        suffix = f" ({action.detail})" if action.detail else ""
+        print(f"  - {action.kind}: {action.path}{suffix}")
+    print(f"  setup digest: {plan.setup_digest}")
+    if not interactive:
+        print(
+            "Create exactly this Knowledge Base by re-running setup with --confirm <setup-digest>."
+        )
+
+
+def _print_empty_setup_applied(plan, written: list[str]) -> None:
+    """Report created paths and the remaining native-Git actions truthfully."""
+    print()
+    print("Empty managed Knowledge Base created (native Git owns commits):")
+    for path in written:
+        print(f"  {path}")
+    print("Next steps:")
+    for index, item in enumerate(plan.next_actions, start=1):
+        print(f"  {index}. {item}")
+
+
+def _run_empty_journey_setup(
+    args: argparse.Namespace,
+    *,
+    project_dir: Path,
+    kb_path: Path | None,
+    from_uri: str | None,
+) -> int:
+    """One confirmed preview/apply path for empty managed-KB creation (§2.2).
+
+    Headless runs preview by default and apply only with ``--confirm``; the
+    interactive route collects the same choices, shows the same preview and
+    asks for confirmation. Every write happens inside the guarded apply
+    after a fresh recheck.
+    """
+    from lumio_wiki.journey_setup import (
+        EmptySetupError,
+        apply_plan,
+        build_envelope,
+        discover_authoring_location,
+        plan_empty_setup,
+        recheck_plan,
+    )
+    from lumio_wiki.private_profile import PrivateProfileError
+
+    as_json = bool(getattr(args, "json", False))
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if from_uri is not None:
+        raise CliError(
+            "--create-empty selects a local authoring path inside a registered "
+            "Git worktree; it cannot combine with --from (spec 0010 §2.2)",
+            exit_code=2,
+            code="invalid_empty_setup",
+        )
+    if kb_path is None:
+        raise CliError(
+            "--create-empty requires an explicit local <kb> path inside a "
+            "registered Git worktree (spec 0010 §2.2)",
+            exit_code=2,
+            code="invalid_empty_setup",
+        )
+    if (
+        getattr(args, "publish_to", None) is not None
+        or getattr(args, "retrieval", None) is not None
+    ):
+        raise CliError(
+            "the empty creation route records only the guided journey settings; "
+            "configure the publication destination or retrieval backend later "
+            "with ordinary setup (spec 0010 §2.2)",
+            exit_code=2,
+            code="invalid_empty_setup",
+        )
+    target = kb_path.resolve()
+    try:
+        facts = discover_authoring_location(target)
+    except EmptySetupError as exc:
+        raise CliError(str(exc), exit_code=2, code=exc.code) from exc
+    namespace = getattr(args, "namespace", None)
+    if namespace is not None and _require_namespace(namespace) is not None:
+        raise CliError(
+            "the --namespace value must be an explicit non-empty namespace; it "
+            "is never generated or taken from an unrelated profile "
+            "(spec 0010 §2.2)",
+            exit_code=2,
+            code="invalid_empty_setup",
+        )
+    if namespace is None:
+        if not interactive:
+            raise CliError(
+                "--create-empty requires an explicit --namespace <namespace>; "
+                "interactive setup may collect it when omitted (spec 0010 §2.2)",
+                exit_code=2,
+                code="invalid_empty_setup",
+            )
+        asked = _wizard_ask(
+            "Knowledge Base Namespace (stable identity, e.g. urn:uuid:...): ",
+            validate=_require_namespace,
+        )
+        # _require_namespace refuses empty input, so a returned answer is a
+        # validated non-empty namespace; None is impossible here.
+        if asked is None:  # pragma: no cover - validation contract
+            raise CliError(
+                "a Knowledge Base Namespace is required (spec 0010 §2.2)",
+                exit_code=2,
+                code="invalid_empty_setup",
+            )
+        namespace = asked
+    # Required submission choices are collected and validated BEFORE any
+    # write (§2.2), from the selected worktree's native Git facts.
+    submission = _journey_submission_settings(facts.repository_root, interactive=interactive)
+    profile_path: Path = args.private_profile
+    new_payload: str | None = None
+    if not profile_path.exists():
+        # Noninteractive missing files were refused at the journey gate; only
+        # the interactive wizard may propose contents (§2.1/§2.2) — and the
+        # NEW destination itself is validated BEFORE any question or write,
+        # with the same ordering and semantics as the adopted wizard route
+        # (R1): resolved containment first, then the entry kind.
+        if Path(os.path.realpath(profile_path)).is_relative_to(facts.repository_root):
+            raise CliError(
+                "the selected private profile file must live OUTSIDE the content "
+                "repository (resolved symlinks included)",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+        if os.path.lexists(profile_path):
+            raise CliError(
+                "the selected private profile path is a symlink or not a regular "
+                "file; setup never follows or replaces it — select a new "
+                "regular file path",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+        home = Path.home()
+        new_payload = _collect_profile_payload(
+            profile_path,
+            repo_root=facts.repository_root,
+            namespace=namespace,
+            registry_default=home / ".lumio" / "registries" / namespace,
+            store_default=home / ".lumio" / "artifacts" / namespace,
+        )
+    # R2: the concrete skill action is resolved read-only BEFORE the preview.
+    skill_binding = _resolve_skill_binding(args, project_dir=project_dir)
+    # R4: the exact configuration outputs are rendered read-only BEFORE the
+    # preview; the confirmed bytes are applied atomically at apply time.
+    agents_enabled = not getattr(args, "no_agents_md", False)
+    env_path = project_dir / ".env"
+    agents_path = project_dir / "AGENTS.md"
+
+    def _render_env_bytes() -> bytes:
+        existing = env_path.read_text(encoding="utf-8") if env_path.exists() else None
+        return _render_env_with_journey_settings(existing, target, submission).encode("utf-8")
+
+    def _render_agents_bytes() -> bytes | None:
+        if not agents_enabled:
+            return None
+        existing = agents_path.read_text(encoding="utf-8") if agents_path.exists() else None
+        return _render_agents_md_section(
+            existing,
+            target,
+            publish_to=None,
+            retrieval=None,
+            source_store=None,
+        ).encode("utf-8")
+
+    try:
+        plan = plan_empty_setup(
+            target=target,
+            namespace=namespace,
+            profile_path=profile_path,
+            new_profile_payload=new_payload,
+            submission=submission,
+            project_dir=project_dir,
+            agents_enabled=agents_enabled,
+            env_bytes=_render_env_bytes(),
+            agents_bytes=_render_agents_bytes(),
+            skill=skill_binding,
+        )
+    except PrivateProfileError as exc:
+        raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+    except EmptySetupError as exc:
+        if as_json:
+            print(f"setup failure ({exc.code}): {exc}", file=sys.stderr)
+        raise CliError(str(exc), exit_code=2, code=exc.code) from exc
+    confirm = getattr(args, "confirm", None)
+    if confirm is not None:
+        if confirm != plan.setup_digest:
+            raise CliError(
+                "the supplied --confirm digest does not match the freshly "
+                "revalidated preview; changed selections, a changed target or "
+                "a stale confirmation require re-running the preview "
+                "(spec 0010 §2.2)",
+                exit_code=2,
+                code="setup_confirmation_mismatch",
+            )
+        # The confirm token already authorizes the freshly revalidated plan:
+        # this run emits exactly the applied envelope or one bounded error.
+    else:
+        # Preview-only (noninteractive) or interactive confirmation: show the
+        # one concrete preview first (§2.2).
+        if as_json:
+            print(json.dumps(build_envelope(plan, phase="preview"), sort_keys=True))
+        else:
+            _print_empty_setup_preview(plan, interactive=interactive)
+        if interactive:
+            answer = _wizard_ask(
+                "Apply exactly this setup? [y/N] ",
+                default="n",
+                choices={"y": "y", "yes": "y", "n": "n", "no": "n"},
+            )
+            if answer != "y":
+                print("empty managed setup cancelled; nothing was written", file=sys.stderr)
+                return 1
+        else:
+            return 0
+    env_path = project_dir / ".env"
+
+    def _write_env() -> None:
+        from lumio_wiki.mutation import atomic_write_bytes
+
+        # R4: the confirmed .env bytes are applied ONCE, atomically; the
+        # progress prints never rewrite the destination.
+        atomic_write_bytes(env_path, plan.env_bytes)
+        print(f"  .env:           {env_path} ({KB_PATH_ENV_VAR}={plan.target})")
+        _print_journey_submission_env(env_path, plan.submission)
+
+    def _write_agents() -> None:
+        from lumio_wiki.mutation import atomic_write_bytes
+
+        # The update action exists only when rendered bytes were bound at
+        # plan time (agents_enabled); apply writes exactly those bytes.
+        if plan.agents_bytes is not None:
+            atomic_write_bytes(agents_path, plan.agents_bytes)
+        print(f"  AGENTS.md:      {agents_path}")
+
+    def _install_skill() -> None:
+        _execute_bound_skill_action(plan.skill)
+
+    try:
+        # The creation-only --json envelope stays the sole stdout content:
+        # the shared human-progress prints are captured here, not removed.
+        with redirect_stdout(io.StringIO()) if as_json else nullcontext():
+            # R2/R4: recheck rebuilds the plan from live facts — freshly
+            # rendered configuration bytes and a freshly resolved skill
+            # binding — so drift between preview and apply refuses.
+            recheck_plan(
+                plan,
+                env_bytes=_render_env_bytes(),
+                agents_bytes=_render_agents_bytes(),
+                skill=_resolve_skill_binding(args, project_dir=project_dir),
+            )
+            written = apply_plan(
+                plan,
+                write_env=_write_env,
+                write_agents=_write_agents,
+                install_skill=_install_skill,
+            )
+    except EmptySetupError as exc:
+        # R6: headless agents still see the safe local residue/recovery
+        # details next to the frozen JSON error envelope.
+        if as_json:
+            print(f"setup failure ({exc.code}): {exc}", file=sys.stderr)
+        raise CliError(str(exc), exit_code=2, code=exc.code) from exc
+    if as_json:
+        print(json.dumps(build_envelope(plan, phase="applied"), sort_keys=True))
+    else:
+        _print_empty_setup_applied(plan, written)
+    return 0
+
+
 def _cmd_setup(args: argparse.Namespace) -> int:
     """One-command project setup: KB + .env + AGENTS.md + optional skill install.
 
@@ -1218,6 +2282,99 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             "--publish-to records an S3 publication destination for a local "
             "Maintainer worktree; it cannot be combined with --from"
         )
+    # 1b. Guided journey selection (spec 0010 §2/§2.1, plan 0010 J5): the
+    # explicit private profile is required and exclusive, and nothing is
+    # written until the whole journey selection validates.
+    journey = bool(getattr(args, "journey", False))
+    create_empty = bool(getattr(args, "create_empty", False))
+    if create_empty and not journey:
+        raise CliError(
+            "--create-empty selects confirmed empty-KB creation in the guided "
+            "journey (spec 0010 §2.2): also pass --journey",
+            exit_code=2,
+            code="invalid_empty_setup",
+        )
+    if getattr(args, "json", False) and not create_empty:
+        raise CliError(
+            "setup --json serves the --create-empty creation route only; "
+            "ordinary setup output is unchanged (spec 0010 §2.2)",
+            exit_code=2,
+            code="invalid_empty_setup",
+        )
+    profile_path: Path | None = getattr(args, "private_profile", None)
+    if profile_path is not None and not journey:
+        raise CliError(
+            "--private-profile selects the guided authoring journey: also pass --journey"
+        )
+    if journey:
+        if profile_path is None:
+            raise CliError(
+                "--journey requires an explicit --private-profile <file>: select an "
+                "existing private source profile, or run setup in an interactive "
+                "terminal to preview and confirm creating one (spec 0010 §2.1)",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+        if from_uri is not None and from_uri.startswith("s3://"):
+            raise CliError(
+                "--journey configures a local Git-authoring Knowledge Base; it cannot "
+                "combine with the read-only S3 --from form"
+            )
+        if source_store is not None or artifact_retention is not None:
+            raise CliError(
+                "private profile selection is exclusive: remove the competing "
+                "--source-store/--artifact-retention selection(s) or drop --journey "
+                "--private-profile (spec 0010 §2.1)",
+                exit_code=2,
+                code="conflicting_private_selection",
+            )
+        env_config = load_project_config()
+        env_competitors = [
+            variable
+            for variable in (
+                SOURCE_REGISTRY_ENV_VAR,
+                SOURCE_STORE_ENV_VAR,
+                ARTIFACT_RETENTION_ENV_VAR,
+                SOURCE_EXCHANGE_ENV_VAR,
+            )
+            if os.environ.get(variable) or env_config.get(variable)
+        ]
+        if env_competitors:
+            raise CliError(
+                "private profile selection is exclusive: remove the competing "
+                f"selection(s) {', '.join(env_competitors)} or drop --journey "
+                "--private-profile (spec 0010 §2.1)",
+                exit_code=2,
+                code="conflicting_private_selection",
+            )
+        if not profile_path.exists() and not (sys.stdin.isatty() and sys.stdout.isatty()):
+            raise CliError(
+                f"the selected private profile does not exist: {profile_path}. Pass "
+                "an existing --private-profile <file>; noninteractive setup never "
+                "invents a profile (spec 0010 §2.1)",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+        if create_empty:
+            # §2.2 creation is its own confirmed preview/apply route; it never
+            # falls through to the unconditional plain-create branch below.
+            return _run_empty_journey_setup(
+                args, project_dir=project_dir, kb_path=kb_path, from_uri=from_uri
+            )
+        if (
+            from_uri is None
+            and kb_path is not None
+            and not (kb_path / "lumio.yaml").exists()
+            and not any(kb_path.glob("*.md"))
+        ):
+            raise CliError(
+                "--journey requires an adopted Git-authoring Knowledge Base with a "
+                "Source Reference Manifest; create and adopt the Knowledge Base "
+                "first, then re-run setup --journey (adoption never guesses private "
+                "history)",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
     # Bounded git transport (approved design 2026-09-15): an s3:// --from
     # value keeps the S3 reader path byte-for-byte; any other value is a git
     # clone URL that is cloned, validated, and recorded as LUMIO_KB_PATH.
@@ -1296,6 +2453,65 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             created = True
         kb_display = kb_path
 
+    # 3b. Guided journey composition (spec 0010 §2/§2.1, plan 0010 J5): the
+    # private profile is validated or interactively created and confirmed, and
+    # the journey machine settings are selected — all before any .env write.
+    journey_profile = None
+    journey_registry = None
+    journey_submission: dict[str, str | None] | None = None
+    journey_kb: Path | None = None
+    journey_repo_root: Path | None = None
+    journey_connection = None
+    if journey:
+        if kb_path is None:
+            # Unreachable: journey refused the read-only S3 form above and the
+            # local form resolved a Knowledge Base path.
+            raise CliError("no local Knowledge Base resolved for the guided journey")
+        journey_kb = kb_path
+        journey_interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        # Submission choices are collected and validated BEFORE any private
+        # profile creation or .env write: a refusal or interruption during
+        # selection leaves no created file, parent directories, or project
+        # configuration (the prewrite contract, review F1).
+        journey_submission = _journey_submission_settings(
+            journey_kb,
+            interactive=journey_interactive,
+        )
+        journey_profile = _resolve_journey_profile(
+            args,
+            kb_path=journey_kb,
+            interactive=journey_interactive,
+        )
+        if journey_profile is None:
+            print("journey setup aborted; nothing was written", file=sys.stderr)
+            return 1
+        if journey_profile.retention != "required":
+            raise CliError(
+                "the guided managed journey requires retention 'required' in the "
+                "selected private profile (spec 0010 §2.1); authoring and handoff "
+                "with 'disabled' retention stay available through the explicit "
+                "lower-level commands",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+        journey_registry = _resolve_journey_registry(journey_profile, kb_path=journey_kb)
+        # Failure-prone readiness work runs BEFORE the selected setup writes:
+        # the composed check targets the SELECTED content repository and its
+        # selected remote, never the directory setup was invoked from.
+        from lumio_wiki.git_authoring import GitAuthoringError, resolve_repository
+        from lumio_wiki.git_connection import check_git_connection
+
+        try:
+            journey_repo_root, _subtree = resolve_repository(journey_kb)
+        except GitAuthoringError:
+            # Unreachable: load_private_profile already refused a non-repo KB.
+            journey_repo_root = None  # pragma: no cover - resolver contract
+        if journey_repo_root is not None:
+            journey_connection = check_git_connection(
+                journey_repo_root,
+                remote=journey_submission["remote"],
+            )
+
     # 4. Write .env (create or update each line only when configured this run).
     _upsert_env_var(env_path, KB_PATH_ENV_VAR, str(kb_display))
     print(f"  .env:           {env_path} ({KB_PATH_ENV_VAR}={kb_display})")
@@ -1311,6 +2527,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     if artifact_retention is not None:
         _upsert_env_var(env_path, ARTIFACT_RETENTION_ENV_VAR, artifact_retention)
         print(f"  .env:           {env_path} ({ARTIFACT_RETENTION_ENV_VAR}={artifact_retention})")
+    if journey and journey_submission is not None:
+        _write_journey_submission_env(env_path, journey_submission)
 
     # 5. Write/append AGENTS.md unless --no-agents-md.
     if not getattr(args, "no_agents_md", False):
@@ -1326,32 +2544,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
     # 6. Optional, explicit skill install. Project bootstrap never writes into
     # an agent trust surface unless one target was requested (ADR-0017).
-    agent = getattr(args, "agent", None)
-    scope = getattr(args, "skill_scope", None)
-    if agent is not None or scope is not None:
-        from lumio_wiki.skill import SkillError, install_skill, skill_status
-
-        try:
-            status = skill_status(agent, scope=scope, project_dir=project_dir)
-            if status.state == "current":
-                print(f"  skill install:  CURRENT ({status.target})")
-            elif status.state == "missing" or getattr(args, "overwrite", False):
-                target = install_skill(
-                    agent,
-                    scope=scope,
-                    project_dir=project_dir,
-                    overwrite=getattr(args, "overwrite", False),
-                )
-                print(f"  skill install:  {target}")
-                print("  skill discovery: restart the agent or start a new session")
-            else:
-                print(
-                    f"  skill install:  SKIPPED ({status.state}; run "
-                    f"'lumio-wiki skill update' for this target)",
-                    file=sys.stderr,
-                )
-        except SkillError as exc:
-            print(f"  skill install:  SKIPPED ({exc})", file=sys.stderr)
+    _maybe_install_skill(args, project_dir=project_dir)
 
     print()
     print("Setup complete. Next steps:")
@@ -1372,6 +2565,17 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     # (issue #175), collected from the just-written configuration.
     print()
     _print_setup_status_summary()
+    if journey and journey_profile is not None and journey_kb is not None:
+        _print_journey_report(
+            args,
+            project_dir=project_dir,
+            kb_path=journey_kb,
+            profile=journey_profile,
+            registry=journey_registry,
+            submission=journey_submission,
+            connection=journey_connection,
+            repo_root=journey_repo_root,
+        )
     return 0
 
 
@@ -1434,8 +2638,12 @@ passage or say it is not covered.
 Before writing, explicitly select a registered Git branch/worktree, adopt its
 stable Source Reference Manifest namespace, and select a private Source Registry
 outside Git/public content (`--source-registry` or `LUMIO_SOURCE_REGISTRY`).
-Setup does not initialize Git or infer adoption. Stage only authored/control/
-manifest files, never raw/private data.
+Create a NEW empty managed Knowledge Base with `setup <kb> --journey
+--create-empty --namespace <ns> --private-profile <file>` — preview first,
+then `--confirm <setup-digest>`; native Git prepares the branch/worktree
+itself. Existing nonempty content needs the explicit Git-authoring adoption:
+setup never initializes Git, infers adoption or guesses private history.
+Stage only authored/control/manifest files, never raw/private data.
 
 1. Author a Compiled Page (YAML frontmatter + Markdown body) that declares the
    source identity in `sources[].id`.
@@ -1562,18 +2770,18 @@ def _agents_md_s3_config(
     )
 
 
-def _write_agents_md_section(
-    agents_md: Path,
+def _render_agents_md_section(
+    existing_text: str | None,
     kb_path: Path | str,
     *,
     publish_to: str | None = None,
     retrieval: str | None = None,
     source_store: str | None = None,
-) -> None:
-    """Write or update the Lumio KB section in an AGENTS.md file.
+) -> str:
+    """Render the exact final AGENTS.md content (pure read-only merge, R4).
 
-    If the file already contains the marker comment, the existing section is
-    replaced in place. Otherwise the section is appended.
+    Same semantics as the historical writer: an existing marked section is
+    replaced in place; otherwise the section is appended (or created).
     """
     section = (
         _AGENTS_MD_MARKER
@@ -1583,40 +2791,57 @@ def _write_agents_md_section(
             s3_config=_agents_md_s3_config(publish_to, retrieval, source_store),
         )
     )
+    if existing_text is not None and _AGENTS_MD_MARKER in existing_text:
+        # Replace the existing section: the marker through the next `##`
+        # heading AFTER the section's own heading. The section the writer
+        # emits starts with its own `## Lumio Knowledge Base` heading, so
+        # the first `##` line after the marker belongs to the section
+        # itself and must not terminate the replaced span (otherwise each
+        # update prepends a fresh copy and duplicates the section).
+        lines = existing_text.split("\n")
+        start = None
+        end = len(lines)
+        own_heading_seen = False
+        for i, line in enumerate(lines):
+            if _AGENTS_MD_MARKER in line:
+                start = i
+                continue
+            if start is None:
+                continue
+            if line.startswith("## "):
+                if not own_heading_seen:
+                    own_heading_seen = True
+                    continue
+                end = i
+                break
+        if start is not None:
+            lines = lines[:start] + section.split("\n") + lines[end:]
+            return "\n".join(lines)
+    if existing_text is None:
+        return section + "\n"
+    return existing_text.rstrip() + "\n\n" + section + "\n"
 
-    if agents_md.exists():
-        content = agents_md.read_text(encoding="utf-8")
-        if _AGENTS_MD_MARKER in content:
-            # Replace the existing section: the marker through the next `##`
-            # heading AFTER the section's own heading. The section the writer
-            # emits starts with its own `## Lumio Knowledge Base` heading, so
-            # the first `##` line after the marker belongs to the section
-            # itself and must not terminate the replaced span (otherwise each
-            # update prepends a fresh copy and duplicates the section).
-            lines = content.split("\n")
-            start = None
-            end = len(lines)
-            own_heading_seen = False
-            for i, line in enumerate(lines):
-                if _AGENTS_MD_MARKER in line:
-                    start = i
-                    continue
-                if start is None:
-                    continue
-                if line.startswith("## "):
-                    if not own_heading_seen:
-                        own_heading_seen = True
-                        continue
-                    end = i
-                    break
-            if start is not None:
-                lines = lines[:start] + section.split("\n") + lines[end:]
-                agents_md.write_text("\n".join(lines), encoding="utf-8")
-                return
-        # Append
-        agents_md.write_text(content.rstrip() + "\n\n" + section + "\n", encoding="utf-8")
-    else:
-        agents_md.write_text(section + "\n", encoding="utf-8")
+
+def _write_agents_md_section(
+    agents_md: Path,
+    kb_path: Path | str,
+    *,
+    publish_to: str | None = None,
+    retrieval: str | None = None,
+    source_store: str | None = None,
+) -> None:
+    """Write or update the Lumio KB section in an AGENTS.md file."""
+    existing = agents_md.read_text(encoding="utf-8") if agents_md.exists() else None
+    agents_md.write_text(
+        _render_agents_md_section(
+            existing,
+            kb_path,
+            publish_to=publish_to,
+            retrieval=retrieval,
+            source_store=source_store,
+        ),
+        encoding="utf-8",
+    )
 
 
 def _upsert_env_var(env_path: Path, key: str, value: str) -> None:
@@ -2255,6 +3480,30 @@ def _cmd_hot(args: argparse.Namespace) -> int:
     return 0
 
 
+def _managed_ingest_selection(args: argparse.Namespace, kb_root):
+    """The ONE shared managed-ingest private selection (spec 0010 §2.1).
+
+    Profile mode is exclusive and resolves registry+artifacts together;
+    without it, the legacy explicit ``--source-registry``/environment
+    selection applies unchanged. URL/research provenance callbacks consume
+    this same selection so no managed route re-resolves private state
+    differently from the worktree ingest itself.
+    """
+    resolved = _private_profile_selection(args, kb_root, frozenset({"registry", "artifacts"}))
+    if resolved is None:
+        return _git_source_registry(args), _artifact_store_from_env()
+    registry = resolved.source_registry
+    if registry is None:
+        # Unreachable with the needs set above; keeps the native contract
+        # explicit instead of passing an unresolved selection onward.
+        raise CliError(
+            "the selected private profile did not resolve a Source Registry",
+            exit_code=2,
+            code="invalid_private_profile",
+        )
+    return registry, resolved.artifact_store
+
+
 def _ingest_into_worktree_cli(
     args: argparse.Namespace,
     kb,
@@ -2267,6 +3516,7 @@ def _ingest_into_worktree_cli(
     raw_source_path: Path | None = None,
     rows: Sequence[tuple[str, object]] = (),
     persist_observation=None,
+    selection=None,
 ) -> int:
     """Shared managed worktree ingest for ingest/ingest-url/ingest-research (G3).
 
@@ -2279,7 +3529,9 @@ def _ingest_into_worktree_cli(
     from lumio_wiki.git_authoring import GitAuthoringError, ingest_into_worktree
     from lumio_wiki.mutation import MutationRollbackError
 
-    registry = _git_source_registry(args)
+    if selection is None:
+        selection = _managed_ingest_selection(args, kb.root)
+    registry, artifact_store = selection
     if registry is None:
         raise CliError(
             "Git-native managed ingest requires the explicitly selected private "
@@ -2287,7 +3539,6 @@ def _ingest_into_worktree_cli(
             f"{SOURCE_REGISTRY_ENV_VAR}",
             exit_code=2,
         )
-    artifact_store = _artifact_store_from_env()
     try:
         result = ingest_into_worktree(
             kb.root,
@@ -2488,6 +3739,718 @@ def _git_source_registry(args: argparse.Namespace):
         raise CliError(f"cannot open Source Registry at {text!r}: {exc}") from exc
 
 
+def _private_profile_selection(args: argparse.Namespace, kb_root, needs: frozenset[str]):
+    """Resolve an explicit ``--private-profile`` selection, or ``None``.
+
+    Profile mode is exclusive (spec 0010 §2.1): one selected file supplies
+    the registry, artifact store and retention policy, so any competing
+    flag or environment/project selection is refused instead of merged.
+    Without ``--private-profile`` every existing resolution behavior is
+    unchanged. Declared credential variables remain valid inputs and are
+    consumed by the public resolver, never here.
+    """
+    profile_path = getattr(args, "private_profile", None)
+    if profile_path is None:
+        return None
+    competitors: list[str] = []
+    if getattr(args, "source_registry", None):
+        competitors.append("--source-registry")
+    project = load_project_config()
+    for variable in (SOURCE_REGISTRY_ENV_VAR, SOURCE_STORE_ENV_VAR, ARTIFACT_RETENTION_ENV_VAR):
+        if os.environ.get(variable) or project.get(variable):
+            competitors.append(variable)
+    if competitors:
+        raise CliError(
+            "private profile selection is exclusive: remove the competing "
+            f"selection(s) {', '.join(competitors)} or drop --private-profile",
+            exit_code=2,
+            code="conflicting_private_selection",
+        )
+    from lumio_wiki.private_profile import (
+        PrivateProfileError,
+        load_private_profile,
+        resolve_private_profile,
+    )
+
+    try:
+        profile = load_private_profile(profile_path, kb_root=kb_root)
+        return resolve_private_profile(profile, kb_root=kb_root, needs=needs)
+    except PrivateProfileError as exc:
+        raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+
+
+def _cmd_private_profile_inspect(args: argparse.Namespace) -> int:
+    """``private-profile inspect``: safe read-only validation (spec 0010 §2.1)."""
+    from lumio_wiki.private_profile import (
+        PrivateProfileError,
+        PrivateS3Connection,
+        load_private_profile,
+    )
+
+    kb = getattr(args, "kb", None) or _resolve_default_kb_path()
+    if not kb:
+        raise CliError(
+            "no Knowledge Base path provided. Pass --kb <kb-path>, export "
+            "LUMIO_KB_PATH, or run 'lumio-wiki setup <kb>' to write .env."
+        )
+    try:
+        profile = load_private_profile(args.profile, kb_root=kb)
+    except PrivateProfileError as exc:
+        raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
+    # Safe capabilities only: never private paths, bucket/prefix details or
+    # credential environment variable names (spec 0010 §2.1).
+    artifact_store = "s3" if isinstance(profile.artifact_store, PrivateS3Connection) else "local"
+    exchange = "s3" if profile.exchange is not None else "manual"
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "ok": True,
+                    "valid": True,
+                    "namespace": profile.namespace,
+                    "retention": profile.retention,
+                    "artifact_store": artifact_store,
+                    "exchange": exchange,
+                }
+            )
+        )
+    else:
+        print("Private Source Profile: valid")
+        print(f"  namespace:       {profile.namespace}")
+        print(f"  retention:       {profile.retention}")
+        print(f"  artifact store:  {artifact_store}")
+        print(f"  exchange:        {exchange}")
+        print("Inspection is read-only; it creates no registry, store or publication state.")
+    return 0
+
+
+def _bootstrap_source_registry(args: argparse.Namespace, kb_root: Path):
+    """Resolve the bootstrap Source Registry: registry-only profile or explicit flag.
+
+    Spec 0010 §2.1/§5.1: profile mode resolves only the ``registry`` resource
+    (metadata bootstrap needs no artifact store or exchange access, so no
+    unused S3 credentials are ever touched); without a profile the explicit
+    ``--source-registry`` selection is required — bootstrap never guesses
+    private state.
+    """
+    selection = _private_profile_selection(args, kb_root, frozenset({"registry"}))
+    if selection is not None:
+        if selection.source_registry is None:  # pragma: no cover - resolver contract
+            raise CliError(
+                "the selected private profile resolved no Source Registry for a "
+                "registry-only bootstrap",
+                code="invalid_private_profile",
+            )
+        return selection.source_registry
+    registry = _git_source_registry(args)
+    if registry is None:
+        raise CliError(
+            "source-bootstrap requires an explicitly selected private Source Registry: "
+            "pass --source-registry <dir> or --private-profile <file> (spec 0010 §2.1)",
+            code="missing_source_registry",
+        )
+    return registry
+
+
+def _cmd_source_bootstrap(args: argparse.Namespace) -> int:
+    """``source-bootstrap export|inspect|import``: metadata-only bootstrap (§5.1)."""
+    from lumio_wiki.git_authoring import GitAuthoringError
+    from lumio_wiki.source_handoff import (
+        BaselineExport,
+        BaselineImport,
+        BaselinePreview,
+        SourceBaselineError,
+        export_source_baseline,
+        import_source_baseline,
+        inspect_source_baseline,
+    )
+    from lumio_wiki.source_registry import SourceRegistryError
+
+    kb = Path(args.path)
+    command = args.source_bootstrap_command
+    try:
+        registry = _bootstrap_source_registry(args, kb)
+        if command == "export":
+            result: BaselineExport | BaselinePreview | BaselineImport
+            result = export_source_baseline(
+                kb, args.revision, source_registry=registry, output_path=args.output
+            )
+        elif command == "inspect":
+            result = inspect_source_baseline(
+                kb,
+                args.snapshot,
+                args.revision,
+                expected_digest=args.digest,
+                source_registry=registry,
+            )
+        else:
+            result = import_source_baseline(
+                kb,
+                args.snapshot,
+                args.revision,
+                expected_digest=args.digest,
+                source_registry=registry,
+                confirmation=args.confirm,
+            )
+    except SourceBaselineError as exc:
+        raise CliError(str(exc), code="invalid_source_baseline") from exc
+    except SourceRegistryError as exc:
+        raise CliError(str(exc), code="source_registry_error") from exc
+    except GitAuthoringError as exc:
+        raise CliError(str(exc), code="git_authoring_error") from exc
+    known: tuple[type, ...] = (BaselineExport, BaselinePreview, BaselineImport)
+    if not isinstance(result, known):  # pragma: no cover
+        raise CliError("unexpected bootstrap result", code="invalid_source_baseline")
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **msgspec.to_builtins(result)}))
+        return 0
+    if command == "export":
+        print(f"Exported Source Baseline Snapshot: {result.output_path}")
+        print(f"  namespace:          {result.namespace}")
+        print(f"  revision:           {result.revision}")
+        print(f"  bindings/versions:  {result.binding_count}/{result.version_count}")
+        print(f"  snapshot sha256:    {result.snapshot_sha256}")
+        print("Share the digest out-of-band; the snapshot carries no original bytes.")
+    elif command == "inspect":
+        print("Baseline preview: ready" if result.ready else "Baseline preview: BLOCKED")
+        for blocker in result.blockers:
+            print(f"  blocker: {blocker}")
+        print(f"  namespace:          {result.namespace}")
+        print(f"  versions to add/reuse: {result.versions_to_add}/{result.versions_to_reuse}")
+        print(f"  Confirmation digest: {result.confirmation_digest}")
+        print("Preview is read-only and grants no approval; confirmation binds this exact preview.")
+    elif result.status == "preview":
+        print("Baseline import preview (no changes were made).")
+        for blocker in result.blockers:
+            print(f"  blocker: {blocker}")
+        print(f"  Confirmation digest: {result.confirmation_digest}")
+        print("Re-run with --confirm <preview-digest> to import.")
+    else:
+        print(f"Imported baseline metadata for revision {result.revision}.")
+        print(f"  versions added/reused: {result.versions_added}/{result.versions_reused}")
+        print(f"  provenance records: {result.provenance_records}")
+        print("No original bytes were transferred or marked available.")
+    return 0
+
+
+def _handoff_selection(args: argparse.Namespace, kb_root: Path):
+    """Resolve the full-handoff registry and artifact store (spec 0010 §2.1/§5).
+
+    Profile mode resolves registry+artifacts together and refuses competing
+    selections; without a profile the legacy explicit ``--source-registry`` /
+    environment registry plus ``LUMIO_SOURCE_STORE`` artifact-store selection
+    applies unchanged. A handoff moves original bytes, so BOTH resources are
+    required — it never guesses private state.
+    """
+    registry, artifact_store = _managed_ingest_selection(args, kb_root)
+    if registry is None:
+        raise CliError(
+            "source-handoff requires an explicitly selected private Source Registry: "
+            "pass --source-registry <dir>, set "
+            f"{SOURCE_REGISTRY_ENV_VAR}, or select --private-profile <file> "
+            "(spec 0010 §2.1)",
+            code="missing_source_registry",
+        )
+    if artifact_store is None:
+        raise CliError(
+            "source-handoff requires a private Source Artifact Store for original "
+            f"bytes: set {SOURCE_STORE_ENV_VAR} or select --private-profile <file> "
+            "(spec 0010 §2.1)",
+            code="missing_artifact_store",
+        )
+    return registry, artifact_store
+
+
+def _cmd_source_handoff(args: argparse.Namespace) -> int:
+    """``source-handoff export|inspect|import``: full bundle transfer (§5)."""
+    from lumio_wiki.artifact_store import ArtifactStoreError
+    from lumio_wiki.git_authoring import GitAuthoringError, resolve_repository
+    from lumio_wiki.source_handoff import (
+        HandoffExport,
+        HandoffImport,
+        HandoffPreview,
+        SourceHandoffError,
+        export_source_handoff,
+        import_source_handoff,
+        inspect_source_handoff,
+        parse_reference_selection,
+    )
+    from lumio_wiki.source_registry import SourceRegistryError
+
+    kb = Path(args.path)
+    command = args.source_handoff_command
+    try:
+        registry, artifact_store = _handoff_selection(args, kb)
+        if command == "export":
+            references = None
+            if getattr(args, "references", None) is not None:
+                references_path = Path(args.references)
+                repo_root, _subtree = resolve_repository(kb)
+                if references_path.resolve().is_relative_to(repo_root):
+                    # F1: the reference selection is private input; refuse a
+                    # repository-contained file BEFORE reading it.
+                    raise CliError(
+                        "the references selection must stay outside the content "
+                        "repository; private selection files never enter Git",
+                        code="invalid_source_handoff",
+                    )
+                references = parse_reference_selection(references_path.read_bytes())
+            result: HandoffExport | HandoffPreview | HandoffImport
+            result = export_source_handoff(
+                kb,
+                args.base,
+                args.revision,
+                source_registry=registry,
+                artifact_store=artifact_store,
+                output_path=args.output,
+                references=references,
+            )
+        elif command == "inspect":
+            result = inspect_source_handoff(
+                kb,
+                args.bundle,
+                args.revision,
+                expected_digest=args.digest,
+                source_registry=registry,
+                artifact_store=artifact_store,
+            )
+        else:
+            result = import_source_handoff(
+                kb,
+                args.bundle,
+                args.revision,
+                expected_digest=args.digest,
+                source_registry=registry,
+                artifact_store=artifact_store,
+                confirmation=args.confirm,
+            )
+    except SourceHandoffError as exc:
+        raise CliError(str(exc), code="invalid_source_handoff") from exc
+    except SourceRegistryError as exc:
+        raise CliError(str(exc), code="source_registry_error") from exc
+    except GitAuthoringError as exc:
+        raise CliError(str(exc), code="git_authoring_error") from exc
+    except ArtifactStoreError as exc:
+        raise CliError(str(exc), code="artifact_store_error") from exc
+    except OSError as exc:
+        # F2: ordinary transfer/filesystem failures (a missing or unreadable
+        # references file, an impossible output parent) surface as the
+        # bounded versioned envelope, never as a raw escaping exception.
+        raise CliError(
+            f"the source handoff operation failed on a filesystem error: {exc}",
+            code="invalid_source_handoff",
+        ) from exc
+    known: tuple[type, ...] = (HandoffExport, HandoffPreview, HandoffImport)
+    if not isinstance(result, known):  # pragma: no cover
+        raise CliError("unexpected handoff result", code="invalid_source_handoff")
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **msgspec.to_builtins(result)}))
+        return 0
+    if command == "export":
+        print(f"Exported Source Handoff Bundle: {result.output_path}")
+        print(f"  namespace:          {result.namespace}")
+        print(f"  base/contribution:  {result.base_revision}/{result.revision}")
+        print(f"  bindings/versions:  {result.binding_count}/{result.version_count}")
+        print(f"  unique payloads:    {result.payload_count}")
+        print(f"  bundle sha256:      {result.bundle_sha256}")
+        print("Share the digest out-of-band; the bundle stays private.")
+    elif command == "inspect":
+        print("Handoff preview: ready" if result.ready else "Handoff preview: BLOCKED")
+        for blocker in result.blockers:
+            print(f"  blocker: {blocker}")
+        print(f"  namespace:          {result.namespace}")
+        print(f"  versions to add/reuse: {result.versions_to_add}/{result.versions_to_reuse}")
+        print(f"  artifacts to retain: {result.artifacts_to_retain}")
+        print(f"  Confirmation digest: {result.confirmation_digest}")
+        print("Preview is read-only and grants no approval; confirmation binds this exact preview.")
+    elif result.status == "preview":
+        print("Handoff import preview (no changes were made).")
+        for blocker in result.blockers:
+            print(f"  blocker: {blocker}")
+        print(f"  Confirmation digest: {result.confirmation_digest}")
+        print("Re-run with --confirm <preview-digest> to import.")
+    else:
+        print(f"Imported handoff for revision {result.revision}.")
+        print(f"  versions added/reused: {result.versions_added}/{result.versions_reused}")
+        print(f"  artifacts retained: {result.artifacts_retained}")
+        print(f"  provenance records: {result.provenance_records}")
+        print("Import retains verified originals additively; it grants no publication approval.")
+    return 0
+
+
+def _explicit_exchange_store(uri: str):
+    """Build the exchange-only (store, prefix) from one explicit S3 URI (§6).
+
+    The documented legacy env resolution (``_s3_config_from_env``) selects
+    endpoint/region/credentials, but the store is constructed DIRECTLY with
+    the effective endpoint pinned at ``aws_endpoint_url_s3`` and conditional
+    copy configured: ``from_url`` re-parses config keys in their
+    Python-facing ``aws_``-stripped form, in which the S3-specific endpoint
+    key is not parseable (obstore 0.11.1 round-trip asymmetry; see
+    ``test_profile_s3_connection_ignores_ambient_selection``), and an
+    exchange client must never reuse or mutate a canonical publication
+    client. No service fallback: an unresolvable selection refuses.
+    """
+    from urllib.parse import urlparse
+
+    from lumio_wiki.knowledge_base import KnowledgeBaseError
+    from lumio_wiki.private_profile import ResolvedS3Exchange
+    from lumio_wiki.s3_location import _require_obstore
+
+    _reject_unsafe_uri(uri)
+    parsed = urlparse(uri)
+    if parsed.scheme.lower() not in ("s3", "s3a") or not parsed.netloc or "/" in parsed.netloc:
+        raise CliError(
+            "the private exchange must be an S3 object-store URI like s3://bucket/prefix",
+            code="invalid_source_exchange",
+        )
+    config, client_options = _s3_config_from_env()
+    endpoint = config.get("aws_endpoint")
+    if endpoint:
+        # Pin the selected endpoint at the documented top precedence and use
+        # path-style addressing against explicit S3-compatible endpoints.
+        config = {
+            **config,
+            "aws_endpoint_url_s3": endpoint,
+            "aws_virtual_hosted_style_request": False,
+        }
+    config["copy_if_not_exists"] = "multipart"
+    try:
+        obstore = _require_obstore()
+    except KnowledgeBaseError as exc:
+        # F5: the optional-extra guard's actionable install guidance reaches
+        # the caller as this command's bounded versioned envelope.
+        raise CliError(str(exc), code="invalid_source_exchange") from exc
+    try:
+        store = obstore.store.S3Store(
+            parsed.netloc,
+            config=config,
+            client_options=client_options or None,
+        )
+    except Exception as exc:
+        raise CliError(
+            "could not construct the private exchange connection from the selected URI",
+            code="invalid_source_exchange",
+        ) from exc
+    return ResolvedS3Exchange(store=store, prefix=parsed.path.strip("/"))
+
+
+def _exchange_selection(args: argparse.Namespace):
+    """Resolve the private exchange: exclusive profile mode or explicit route.
+
+    Profile mode resolves ONLY the ``exchange`` resource and additionally
+    refuses a competing ``--exchange``/``LUMIO_SOURCE_EXCHANGE`` selection
+    (spec 0010 §2.1/§6); it requires ``--kb`` for namespace/containment, and
+    the transfer/output files must stay outside the selected content
+    repository. The legacy explicit route needs no Knowledge Base.
+    """
+    from lumio_wiki.git_authoring import GitAuthoringError, resolve_repository
+
+    profile_path = getattr(args, "private_profile", None)
+    env_exchange = os.environ.get(SOURCE_EXCHANGE_ENV_VAR) or load_project_config().get(
+        SOURCE_EXCHANGE_ENV_VAR
+    )
+    if profile_path is not None:
+        competitors = []
+        if getattr(args, "exchange", None):
+            competitors.append("--exchange")
+        if env_exchange:
+            competitors.append(SOURCE_EXCHANGE_ENV_VAR)
+        if competitors:
+            raise CliError(
+                "private profile selection is exclusive: remove the competing "
+                f"selection(s) {', '.join(competitors)} or drop --private-profile",
+                exit_code=2,
+                code="conflicting_private_selection",
+            )
+        kb = getattr(args, "kb", None)
+        if not kb:
+            raise CliError(
+                "profile-mode source-exchange requires the explicitly selected "
+                "Knowledge Base: pass --kb <kb-path> (spec 0010 §2.1)",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+        try:
+            repo_root, _subtree = resolve_repository(kb)
+        except GitAuthoringError as exc:
+            raise CliError(str(exc), code="git_authoring_error") from exc
+        for raw in (getattr(args, "file", None), getattr(args, "output", None)):
+            if raw is None:
+                continue
+            if Path(raw).resolve().is_relative_to(repo_root):
+                raise CliError(
+                    "the transfer/output files must stay outside the content "
+                    "repository; private transfer artifacts never enter Git",
+                    exit_code=2,
+                    code="invalid_source_exchange",
+                )
+        selection = _private_profile_selection(args, kb, frozenset({"exchange"}))
+        if selection is None or selection.exchange is None:  # pragma: no cover - contract
+            raise CliError(
+                "the selected private profile declares no private exchange connection",
+                exit_code=2,
+                code="invalid_private_profile",
+            )
+        return selection.exchange
+    uri = getattr(args, "exchange", None) or env_exchange
+    if not uri:
+        raise CliError(
+            "source-exchange requires an explicit private exchange: pass --exchange "
+            f"<s3-uri>, set {SOURCE_EXCHANGE_ENV_VAR}, or select --private-profile "
+            "<file> (spec 0010 §6)",
+            exit_code=2,
+            code="invalid_source_exchange",
+        )
+    return _explicit_exchange_store(uri)
+
+
+def _cmd_source_exchange(args: argparse.Namespace) -> int:
+    """``source-exchange upload|download``: private S3 transfer transport (§6)."""
+    from lumio_wiki.knowledge_base import KnowledgeBaseError
+    from lumio_wiki.source_exchange import (
+        SourceExchangeError,
+        SourceTransfer,
+        download_source_transfer,
+        upload_source_transfer,
+    )
+
+    command = args.source_exchange_command
+    try:
+        exchange = _exchange_selection(args)
+        if command == "upload":
+            result: SourceTransfer = upload_source_transfer(args.file, exchange=exchange)
+        else:
+            result = download_source_transfer(
+                args.id, args.digest, exchange=exchange, output_path=args.output
+            )
+    except SourceExchangeError as exc:
+        raise CliError(str(exc), code=exc.code) from exc
+    except KnowledgeBaseError as exc:
+        # F5: profile-mode selection crosses the unchanged JP resolver to the
+        # optional-extra guard; its actionable guidance reaches the caller as
+        # this command's bounded versioned envelope instead of a traceback.
+        raise CliError(str(exc), code="invalid_source_exchange") from exc
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **msgspec.to_builtins(result)}))
+        return 0
+    verb = "Uploaded" if command == "upload" else "Downloaded"
+    print(f"{verb} a private source transfer ({result.kind}).")
+    print(f"  transfer id:  {result.transfer_id}")
+    print(f"  byte count:   {result.byte_count}")
+    print(f"  sha256:       {result.sha256}")
+    if command == "upload":
+        print("Share the identifier and digest out-of-band; the transfer stays private.")
+    else:
+        print("Verified against the completion record and expected digest before exposure.")
+    return 0
+
+
+def _cmd_extract(args: argparse.Namespace) -> int:
+    """``extract``: one real original through the actual processor (spec 0010 §3)."""
+    from lumio_wiki.authoring_journey import AuthoringJourneyError, extract_source
+
+    try:
+        result = extract_source(args.file, output_dir=args.output)
+    except AuthoringJourneyError as exc:
+        raise CliError(str(exc), code=exc.code) from exc
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **msgspec.to_builtins(result)}))
+        return 0
+    print("Extracted source (no distillation, nothing committed):")
+    print(f"  original:  {result.filename} ({result.size} bytes)")
+    print(f"  sha256:    {result.source_sha256}")
+    print(f"  processor: {result.processor}")
+    print(f"  sections:  {len(result.sections)} (coordinates as reported by the processor)")
+    if result.incomplete:
+        print("  note:      an extraction bound was hit; completeness is not claimed")
+    print(f"  output:    {result.output_path} (outside the content repository)")
+    return 0
+
+
+def _cmd_ingest_candidate(args: argparse.Namespace) -> int:
+    """``ingest-candidate``: one complete multi-page/ontology candidate (§3)."""
+    from lumio_wiki.authoring_journey import (
+        AuthoringJourneyError,
+        ingest_candidate,
+        load_candidate_request,
+    )
+    from lumio_wiki.git_authoring import GitAuthoringError
+    from lumio_wiki.mutation import MutationRollbackError
+    from lumio_wiki.source_registry import SourceRegistryError
+
+    kb = Path(args.path)
+    registry, artifact_store = _managed_ingest_selection(args, kb)
+    if registry is None:
+        raise CliError(
+            "ingest-candidate requires the explicitly selected private Source "
+            "Registry: pass --source-registry <dir>, set "
+            f"{SOURCE_REGISTRY_ENV_VAR}, or select --private-profile <file> "
+            "(spec 0010 §2.1)",
+        )
+    try:
+        # The working request file itself lives outside the content
+        # repository (plan0010 Candidate request v1), including through a
+        # symlink that resolves inside; checked before loading/processing it.
+        from lumio_wiki.authoring_journey import _refuse_request_files_inside_repository
+        from lumio_wiki.git_authoring import resolve_repository as _resolve_repository
+
+        request_repo_root, _request_subtree = _resolve_repository(kb)
+        _refuse_request_files_inside_repository(request_repo_root, args.candidate)
+        request = load_candidate_request(args.candidate)
+        result = ingest_candidate(
+            kb,
+            request,
+            source_registry=registry,
+            artifact_store=artifact_store,
+        )
+    except AuthoringJourneyError as exc:
+        raise CliError(str(exc), code=exc.code) from exc
+    except (
+        GitAuthoringError,
+        ManagedIngestError,
+        MutationRollbackError,
+        SourceRegistryError,
+    ) as exc:
+        raise CliError(str(exc), exit_code=1, code="authoring_journey_error") from exc
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **msgspec.to_builtins(result)}))
+        return 0
+    print("Applied one complete candidate into the Git authoring worktree (nothing committed):")
+    print(f"  pages:     {', '.join(result.page_paths)}")
+    print(f"  entities:  {', '.join(result.entity_ids)}")
+    registered = ", ".join(result.registered_sources) if result.registered_sources else "none"
+    print(f"  sources:   {registered} (registered and retained before this success)")
+    print(
+        f"  coverage:  {result.metadata_coverage} metadata / "
+        f"{result.retained_coverage} retained originals"
+    )
+    if result.control_updated:
+        print("  ontology:  candidate Control File applied")
+    print(f"  manifest:  {result.manifest_path}")
+    print("Review the changes and commit them with Git; publication admits an exact commit.")
+    return 0
+
+
+def _review_source_registry(args: argparse.Namespace, kb_root: Path):
+    """Resolve the review Source Registry: registry-only profile, flag, or None.
+
+    Spec 0010 §4: review optionally resolves exact Source Versions. Profile
+    mode resolves ONLY the ``registry`` resource (an artifact store or
+    exchange is never touched for review); without a selection the review
+    stays honest with exact-version verification disclosed as unavailable —
+    it never guesses private state.
+    """
+    selection = _private_profile_selection(args, kb_root, frozenset({"registry"}))
+    if selection is not None:
+        if selection.source_registry is None:  # pragma: no cover - resolver contract
+            raise CliError(
+                "the selected private profile resolved no Source Registry for a "
+                "registry-only review",
+                code="invalid_private_profile",
+            )
+        return selection.source_registry
+    return _git_source_registry(args)
+
+
+def _cmd_authoring_review(args: argparse.Namespace) -> int:
+    """``authoring-review``: readable review of the staged candidate (spec 0010 §4)."""
+    from lumio_wiki.authoring_review import AuthoringReviewError, review_authoring_candidate
+    from lumio_wiki.git_authoring import GitAuthoringError
+
+    kb = Path(args.path)
+    try:
+        review = review_authoring_candidate(
+            kb, args.base, source_registry=_review_source_registry(args, kb)
+        )
+    except AuthoringReviewError as exc:
+        raise CliError(str(exc), exit_code=1, code=exc.code) from exc
+    except GitAuthoringError as exc:
+        raise CliError(str(exc), exit_code=1, code="authoring_review_error") from exc
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **msgspec.to_builtins(review)}))
+        return 0
+    knowledge = review.knowledge
+    print("Authoring review (stateless evidence; it approves nothing):")
+    print(f"  base:      {review.base_revision}")
+    print(f"  head:      {review.head_revision}")
+    print(f"  submitted: full Git tree {review.submitted_tree}")
+    print(f"  namespace: {review.namespace} (subtree {review.kb_subtree or '/'})")
+    for page in knowledge.pages:
+        detail = "frontmatter-only" if page.frontmatter_only else page.change
+        print(f"  page:      {page.path} ({detail})")
+        if page.body_diff:
+            for line in page.body_diff.splitlines():
+                print(f"      {line}")
+        if page.lifecycle:
+            print(f"  lifecycle: {page.lifecycle}")
+        if page.visibility:
+            print(f"  visibility: {page.visibility}")
+        if page.entity_types:
+            print(f"  entity types: {' '.join(page.entity_types)}")
+        if page.sources:
+            print(f"  source support: {' '.join(page.sources)}")
+        for claim in page.claims:
+            transition = (
+                f" ({claim.before} -> {claim.after})" if (claim.before or claim.after) else ""
+            )
+            print(f"  claim:     {claim.change} {claim.claim_id} ({claim.predicate}){transition}")
+        for semantic in page.semantic_changes:
+            print(f"  semantic:  {semantic.field}: {semantic.before} -> {semantic.after}")
+    for change in knowledge.ontology_changes:
+        definition = (
+            f" ({change.before} -> {change.after})" if (change.before or change.after) else ""
+        )
+        print(f"  ontology:  {change.change} {change.name}{definition}")
+    for change in knowledge.control_changes:
+        print(f"  control:   {change.field}: {change.before} -> {change.after}")
+    for change in knowledge.manifest_changes:
+        print(f"  manifest:  {change}")
+    excluded = review.excluded_unstaged + review.excluded_untracked
+    if excluded:
+        print(f"  excluded:  {', '.join(excluded)} (not part of this submission)")
+    verification = (
+        "resolved against the selected registry"
+        if knowledge.exact_source_verification == "registry"
+        else "unavailable (no Source Registry selected)"
+    )
+    print(f"  sources:   exact-version verification {verification}")
+    print(f"  valid:     {knowledge.kb_valid} (digest {review.review_digest})")
+    return 0
+
+
+def _cmd_authoring_check(args: argparse.Namespace) -> int:
+    """``authoring-check``: verify one whole commit against its review (§4)."""
+    from lumio_wiki.authoring_review import (
+        AuthoringReviewError,
+        check_authoring_commit,
+        load_authoring_review_report,
+    )
+    from lumio_wiki.git_authoring import GitAuthoringError
+
+    kb = Path(args.path)
+    try:
+        review = load_authoring_review_report(args.review)
+        check = check_authoring_commit(kb, review, args.revision)
+    except AuthoringReviewError as exc:
+        raise CliError(str(exc), exit_code=1, code=exc.code) from exc
+    except GitAuthoringError as exc:
+        raise CliError(str(exc), exit_code=1, code="authoring_review_error") from exc
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **msgspec.to_builtins(check)}))
+    else:
+        print(f"Commit check against the reviewed candidate (base {check.base_revision}):")
+        print(f"  commit: {check.commit} (tree {check.commit_tree})")
+        for mismatch in check.mismatches:
+            print(f"  mismatch: {mismatch}")
+        if check.matches_reviewed_candidate:
+            print("  the commit contains exactly the reviewed candidate")
+        else:
+            print("  the commit does NOT match the reviewed candidate; do not submit it")
+    return 0 if check.matches_reviewed_candidate else 1
+
+
 def _artifact_retention_required() -> bool:
     """Whether artifact retention is configured as required (issue #164).
 
@@ -2518,6 +4481,12 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     if (compiled_page is None) != (source_id is None):
         raise CliError(
             "--compiled-page and --source-id must be supplied together (issue #149 managed ingest)."
+        )
+    if compiled_page is None and getattr(args, "private_profile", None):
+        raise CliError(
+            "--private-profile selects the private configuration for managed "
+            "ingest (--compiled-page/--source-id) and publication routes only",
+            exit_code=2,
         )
     source_path = Path(args.file)
     if not source_path.is_file():
@@ -2780,14 +4749,15 @@ def _cmd_ingest_url(args: argparse.Namespace) -> int:
     # selected registry root, exact-version-bound — console output
     # alone is not preservation.
 
+    registry, artifact_store = _managed_ingest_selection(args, kb.root)
+
     def _persist_url_observation(source_id, content_hash):
         from lumio_wiki.private_provenance import write_observation_record
 
-        selected_registry = _git_source_registry(args)
-        if selected_registry is None:  # unreachable after the CLI guard
+        if registry is None:  # unreachable after the CLI guard
             raise OSError("no Source Registry selected")
         write_observation_record(
-            selected_registry.root,
+            registry.root,
             "provenance",
             source_id,
             content_hash,
@@ -2813,6 +4783,7 @@ def _cmd_ingest_url(args: argparse.Namespace) -> int:
             ("retrieved_at:", result.retrieved_at),
         ],
         persist_observation=_persist_url_observation,
+        selection=(registry, artifact_store),
     )
 
 
@@ -2913,14 +4884,15 @@ def _cmd_ingest_research(args: argparse.Namespace) -> int:
     for consulted_source in consulted:
         print(f"  {consulted_source.url} ({consulted_source.accessed_at})")
 
+    registry, artifact_store = _managed_ingest_selection(args, kb.root)
+
     def _persist_research_observation(source_id, content_hash):
         from lumio_wiki.private_provenance import write_observation_record
 
-        selected_registry = _git_source_registry(args)
-        if selected_registry is None:  # unreachable after the CLI guard
+        if registry is None:  # unreachable after the CLI guard
             raise OSError("no Source Registry selected")
         write_observation_record(
-            selected_registry.root,
+            registry.root,
             "provenance",
             source_id,
             content_hash,
@@ -2948,6 +4920,7 @@ def _cmd_ingest_research(args: argparse.Namespace) -> int:
         raw_source_path=report,
         rows=[("consulted:", f"{len(consulted)} sources")],
         persist_observation=_persist_research_observation,
+        selection=(registry, artifact_store),
     )
 
 
@@ -3295,9 +5268,17 @@ def _cmd_publish_revision(args: argparse.Namespace) -> int:
             "has been admitted at the destination yet",
             exit_code=2,
         )
-    registry = _git_source_registry(args)
-    retention_required = _artifact_retention_required()
-    artifact_store = _artifact_store_from_env()
+    resolved = _private_profile_selection(
+        args, Path(args.path), frozenset({"registry", "artifacts"})
+    )
+    if resolved is not None:
+        registry = resolved.source_registry
+        retention_required = resolved.retention_required
+        artifact_store = resolved.artifact_store
+    else:
+        registry = _git_source_registry(args)
+        retention_required = _artifact_retention_required()
+        artifact_store = _artifact_store_from_env()
     if retention_required and artifact_store is None:
         raise CliError(
             "artifact retention is required but no Source Artifact Store is configured",
@@ -4121,6 +6102,49 @@ def _print_setup_status_summary() -> None:
         print(f"status:  (not resolvable yet: {exc})")
         return
     print(_render_status(status))
+
+
+def _cmd_git_check(args: argparse.Namespace) -> int:
+    """``git-check``: read-only Git connection diagnosis (spec 0010 §2, plan J5)."""
+    from lumio_wiki.git_connection import check_git_connection
+
+    report = check_git_connection(args.project, remote=args.remote)
+    if getattr(args, "json", False):
+        print(json.dumps(msgspec.to_builtins(report), indent=2, sort_keys=True))
+        return 0
+    tool = f"available ({report.tool.version})" if report.tool.available else "MISSING"
+    identity = (
+        f"{report.identity.user_name} <{report.identity.user_email}>"
+        if report.identity.configured
+        else "not configured"
+    )
+    repository = (
+        f"work tree (branch {report.repository.branch}, "
+        f"{'clean' if report.repository.clean else 'dirty'})"
+        if report.repository.is_repository
+        else "not a Git work tree"
+    )
+    if report.remote.configured:
+        remote = (
+            f"{report.remote.name} -> {report.remote.url}: read {report.remote.read}"
+            if report.remote.url is not None
+            else f"{report.remote.name}: read {report.remote.read}"
+        )
+        if report.remote.failure_code is not None:
+            remote += f" ({report.remote.failure_code})"
+    else:
+        remote = f"{report.remote.name}: not configured"
+    print(f"project:     {report.project}")
+    print(f"git:         {tool}")
+    print(f"identity:    {identity}")
+    print(f"repository:  {repository}")
+    print(f"remote:      {remote}")
+    print(f"push/PR:     {report.push_pr} (a successful read proves read access only)")
+    for blocker in report.blockers:
+        print(f"blocker:     {blocker}")
+    for line in report.guidance:
+        print(f"guidance:    {line}")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -6176,6 +8200,78 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Replace a stale or corrupt skill when an install target is requested.",
     )
+    setup_parser.add_argument(
+        "--journey",
+        action="store_true",
+        help=(
+            "Configure the guided external-agent authoring journey (spec 0010 "
+            "§2): requires --private-profile with retention 'required', and "
+            "records the submission mode and Git remote/target branch machine "
+            "settings. Setup reports skill drift and baseline-metadata "
+            "readiness; it imports nothing and never persists private paths "
+            "in tracked content."
+        ),
+    )
+    setup_parser.add_argument(
+        "--private-profile",
+        dest="private_profile",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help=(
+            "Explicit private source profile (spec 0010 §2.1) for --journey: "
+            "an existing file is validated through the public resolver; a "
+            "missing file is previewed and written only after interactive "
+            "confirmation (never noninteractively). Exclusive: competing "
+            "--source-store/--artifact-retention and environment selections "
+            "are refused."
+        ),
+    )
+    setup_parser.add_argument(
+        "--create-empty",
+        dest="create_empty",
+        action="store_true",
+        help=(
+            "Confirmed empty managed-KB creation in the guided journey "
+            "(spec 0010 §2.2): previews creating <kb> inside its registered "
+            "Git worktree with an explicit namespace and an empty v1 Source "
+            "Reference Manifest, then applies only with --confirm "
+            "<setup-digest> (or interactive confirmation). The target must "
+            "be absent or truly empty; existing content requires explicit "
+            "adoption. Setup never creates/switches branches or commits."
+        ),
+    )
+    setup_parser.add_argument(
+        "--namespace",
+        dest="namespace",
+        default=None,
+        metavar="NAMESPACE",
+        help=(
+            "Explicit Knowledge Base Namespace for --create-empty "
+            "(spec 0010 §2.2); interactive setup may collect it when omitted. "
+            "Never generated or taken from an unrelated profile."
+        ),
+    )
+    setup_parser.add_argument(
+        "--confirm",
+        dest="confirm",
+        default=None,
+        metavar="SETUP-DIGEST",
+        help=(
+            "Authorize exactly the freshly revalidated --create-empty "
+            "preview carrying this setup digest; a mismatch refuses before "
+            "any write."
+        ),
+    )
+    setup_parser.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "Creation-only (--create-empty) machine envelope: schema_version, "
+            "phase, setup_digest, authoring facts, actions and next actions. "
+            "Ordinary setup output is unchanged."
+        ),
+    )
     setup_parser.set_defaults(func=_cmd_setup)
 
     # init
@@ -6489,6 +8585,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Manifest."
         ),
     )
+    _add_private_profile_argument(ingest_parser)
     _add_ingest_dir_argument(ingest_parser)
     ingest_parser.set_defaults(func=_cmd_ingest)
 
@@ -6745,6 +8842,7 @@ def build_parser() -> argparse.ArgumentParser:
             f"directory (fallback: {SOURCE_REGISTRY_ENV_VAR})."
         ),
     )
+    _add_private_profile_argument(ingest_url_parser)
     _add_ingest_dir_argument(ingest_url_parser)
     ingest_url_parser.set_defaults(func=_cmd_ingest_url)
 
@@ -6787,6 +8885,7 @@ def build_parser() -> argparse.ArgumentParser:
             f"directory (fallback: {SOURCE_REGISTRY_ENV_VAR})."
         ),
     )
+    _add_private_profile_argument(ingest_research_parser)
     _add_ingest_dir_argument(ingest_research_parser)
     ingest_research_parser.set_defaults(func=_cmd_ingest_research)
 
@@ -6911,6 +9010,7 @@ def build_parser() -> argparse.ArgumentParser:
             f"directory (fallback: {SOURCE_REGISTRY_ENV_VAR})."
         ),
     )
+    _add_private_profile_argument(publish_parser)
     publish_parser.add_argument(
         "--retrieval",
         choices=["zero-index", "lancedb"],
@@ -6969,6 +9069,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Explicit private Source Registry directory.",
     )
+    _add_private_profile_argument(publish_s3_parser)
     publish_s3_parser.add_argument("--json", action="store_true")
     publish_s3_parser.add_argument(
         "--retrieval",
@@ -7546,6 +9647,555 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor_parser.set_defaults(func=_cmd_doctor)
 
+    # private-profile — explicit private source configuration (spec 0010 §2.1).
+    private_profile_parser = subparsers.add_parser(
+        "private-profile",
+        help="Inspect one explicit private source profile file (spec 0010 §2.1).",
+        description=(
+            "Read-only inspection of ONE explicitly selected machine-local "
+            "private source profile: reports validity and declared capabilities "
+            "only — never private paths, bucket/prefix details or credential "
+            "environment variable names. Creates no registry, store or "
+            "publication state."
+        ),
+    )
+    private_profile_sub = private_profile_parser.add_subparsers(
+        dest="private_profile_command", required=True, metavar="<private-profile-command>"
+    )
+    private_profile_inspect_parser = private_profile_sub.add_parser(
+        "inspect",
+        help="Validate one profile file against the selected Knowledge Base.",
+    )
+    private_profile_inspect_parser.add_argument(
+        "profile",
+        type=Path,
+        help="Path to the explicitly selected private profile JSON file.",
+    )
+    private_profile_inspect_parser.add_argument(
+        "--kb",
+        type=str,
+        default=None,
+        help=(
+            "Knowledge Base root the profile must match (namespace and "
+            "containment). When omitted, resolved like other commands: "
+            "LUMIO_KB_PATH, then the nearest project .env."
+        ),
+    )
+    private_profile_inspect_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a stable machine-readable inspection result.",
+    )
+    private_profile_inspect_parser.set_defaults(func=_cmd_private_profile_inspect)
+
+    # source-bootstrap — metadata-only baseline bootstrap (spec 0010 §5.1).
+    source_bootstrap_parser = subparsers.add_parser(
+        "source-bootstrap",
+        help=("Export/inspect/import a metadata-only Source Baseline Snapshot (spec 0010 §5.1)."),
+        description=(
+            "Bootstrap one fresh contributor from exact baseline metadata: the "
+            "maintainer exports the exact Source Version metadata referenced by a "
+            "selected Git base revision; the contributor verifies the out-of-band "
+            "digest and additively imports it against that same base. The snapshot "
+            "carries no original or extracted bytes and confers no source access, "
+            "availability or publication permission; import without --confirm is a "
+            "read-only preview."
+        ),
+    )
+    source_bootstrap_sub = source_bootstrap_parser.add_subparsers(
+        dest="source_bootstrap_command", required=True, metavar="<source-bootstrap-command>"
+    )
+    bootstrap_export_parser = source_bootstrap_sub.add_parser(
+        "export",
+        help="Export a snapshot for one exact base revision (maintainer side).",
+    )
+    _add_kb_argument(bootstrap_export_parser)
+    bootstrap_export_parser.add_argument(
+        "--revision",
+        required=True,
+        type=str,
+        help="The exact FULL commit id (40 hex characters) of the selected base.",
+    )
+    bootstrap_export_parser.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="Snapshot archive path to write (manifest-only uncompressed tar).",
+    )
+    bootstrap_export_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Explicitly selected private Source Registry directory holding the "
+            "baseline Source Versions."
+        ),
+    )
+    _add_private_profile_argument(bootstrap_export_parser)
+    bootstrap_export_parser.add_argument(
+        "--json", action="store_true", help="Emit a stable machine-readable result."
+    )
+    bootstrap_export_parser.set_defaults(func=_cmd_source_bootstrap)
+
+    def _add_bootstrap_verify_arguments(parser: argparse.ArgumentParser) -> None:
+        _add_kb_argument(parser)
+        parser.add_argument(
+            "--snapshot",
+            required=True,
+            type=Path,
+            help="Path to the Source Baseline Snapshot archive.",
+        )
+        parser.add_argument(
+            "--digest",
+            required=True,
+            type=str,
+            help=(
+                "Expected SHA-256 of the complete archive, supplied out-of-band "
+                "from maintainer-approved setup or direct operator selection."
+            ),
+        )
+        parser.add_argument(
+            "--revision",
+            required=True,
+            type=str,
+            help="The exact FULL commit id (40 hex characters) of the selected base.",
+        )
+        parser.add_argument(
+            "--source-registry",
+            type=Path,
+            default=None,
+            help="Explicitly selected private destination Source Registry directory.",
+        )
+        _add_private_profile_argument(parser)
+        parser.add_argument(
+            "--json", action="store_true", help="Emit a stable machine-readable result."
+        )
+
+    bootstrap_inspect_parser = source_bootstrap_sub.add_parser(
+        "inspect",
+        help="Preview one snapshot against the selected base (read-only).",
+    )
+    _add_bootstrap_verify_arguments(bootstrap_inspect_parser)
+    bootstrap_inspect_parser.set_defaults(func=_cmd_source_bootstrap)
+
+    bootstrap_import_parser = source_bootstrap_sub.add_parser(
+        "import",
+        help=(
+            "Import one snapshot additively; without --confirm this previews "
+            "the exact import instead."
+        ),
+    )
+    _add_bootstrap_verify_arguments(bootstrap_import_parser)
+    bootstrap_import_parser.add_argument(
+        "--confirm",
+        type=str,
+        default=None,
+        metavar="<preview-digest>",
+        help=(
+            "The exact confirmation digest reported by the preview; binds this "
+            "snapshot, revision and coverage — a stale or wrong digest refuses."
+        ),
+    )
+    bootstrap_import_parser.set_defaults(func=_cmd_source_bootstrap)
+
+    # source-handoff — full private bundle transfer (spec 0010 §5).
+    source_handoff_parser = subparsers.add_parser(
+        "source-handoff",
+        help=("Export/inspect/import a full Source Handoff Bundle (spec 0010 §5)."),
+        description=(
+            "Transfer the exact Source Versions and original bytes selected by "
+            "new/changed source bindings between two explicit commits of one "
+            "Knowledge Base, plus optional supplementary exact references. The "
+            "importer streams and verifies the complete bounded archive against "
+            "the selected contribution before any canonical registry or store "
+            "write; import without --confirm is a read-only preview. A handoff "
+            "confers no content approval, lifecycle activation or publication "
+            "permission."
+        ),
+    )
+    source_handoff_sub = source_handoff_parser.add_subparsers(
+        dest="source_handoff_command", required=True, metavar="<source-handoff-command>"
+    )
+    handoff_export_parser = source_handoff_sub.add_parser(
+        "export",
+        help="Export one bundle for an explicit base/contribution range (contributor side).",
+    )
+    _add_kb_argument(handoff_export_parser)
+    handoff_export_parser.add_argument(
+        "--base",
+        required=True,
+        type=str,
+        help="The exact FULL commit id (40 hex characters) of the selected base.",
+    )
+    handoff_export_parser.add_argument(
+        "--revision",
+        required=True,
+        type=str,
+        help="The exact FULL commit id (40 hex characters) of the contribution.",
+    )
+    handoff_export_parser.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="Bundle archive path to write (uncompressed tar; outside the content repo).",
+    )
+    handoff_export_parser.add_argument(
+        "--references",
+        type=Path,
+        default=None,
+        help=(
+            "Optional supplementary-reference selection file: strict JSON "
+            '{"schema_version": 1, "references": [{"source_id": ..., '
+            '"content_hash": ...}, ...]}. Every pair must resolve in the '
+            "selected contribution revision's bindings; no latest-version fallback."
+        ),
+    )
+    handoff_export_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Explicitly selected private Source Registry directory holding the "
+            "exact selected versions."
+        ),
+    )
+    _add_private_profile_argument(handoff_export_parser)
+    handoff_export_parser.add_argument(
+        "--json", action="store_true", help="Emit a stable machine-readable result."
+    )
+    handoff_export_parser.set_defaults(func=_cmd_source_handoff)
+
+    def _add_handoff_verify_arguments(parser: argparse.ArgumentParser) -> None:
+        _add_kb_argument(parser)
+        parser.add_argument(
+            "--bundle",
+            required=True,
+            type=Path,
+            help="Path to the Source Handoff Bundle archive.",
+        )
+        parser.add_argument(
+            "--digest",
+            required=True,
+            type=str,
+            help=(
+                "Expected SHA-256 of the complete archive, supplied out-of-band "
+                "from maintainer-approved setup or direct operator selection."
+            ),
+        )
+        parser.add_argument(
+            "--revision",
+            required=True,
+            type=str,
+            help="The exact FULL commit id (40 hex characters) of the contribution.",
+        )
+        parser.add_argument(
+            "--source-registry",
+            type=Path,
+            default=None,
+            help="Explicitly selected private destination Source Registry directory.",
+        )
+        _add_private_profile_argument(parser)
+        parser.add_argument(
+            "--json", action="store_true", help="Emit a stable machine-readable result."
+        )
+
+    handoff_inspect_parser = source_handoff_sub.add_parser(
+        "inspect",
+        help="Preview one bundle against the selected contribution (read-only).",
+    )
+    _add_handoff_verify_arguments(handoff_inspect_parser)
+    handoff_inspect_parser.set_defaults(func=_cmd_source_handoff)
+
+    handoff_import_parser = source_handoff_sub.add_parser(
+        "import",
+        help=(
+            "Import one bundle additively; without --confirm this previews "
+            "the exact import instead."
+        ),
+    )
+    _add_handoff_verify_arguments(handoff_import_parser)
+    handoff_import_parser.add_argument(
+        "--confirm",
+        type=str,
+        default=None,
+        metavar="<preview-digest>",
+        help=(
+            "The exact confirmation digest reported by the preview; binds this "
+            "bundle, Git range and selection — a stale or wrong digest refuses."
+        ),
+    )
+    handoff_import_parser.set_defaults(func=_cmd_source_handoff)
+
+    # source-exchange — private S3 transfer transport (spec 0010 §6).
+    source_exchange_parser = subparsers.add_parser(
+        "source-exchange",
+        help=("Upload/download private transfers through an S3 exchange (spec 0010 §6)."),
+        description=(
+            "Transport one exported Source Baseline Snapshot or Source Handoff "
+            "Bundle through an explicitly selected private S3-compatible "
+            "exchange: the captured bytes are validated with the existing "
+            "transfer validators, streamed to unique private staging, promoted "
+            "by atomic copy-if-absent to the immutable final object, verified "
+            "by complete read-back, and only then advertised by a create-only "
+            "completion record. Downloads verify the completion record and the "
+            "complete artifact before exposing any output. Manual private "
+            "transfer remains available without any S3 dependency."
+        ),
+    )
+    source_exchange_sub = source_exchange_parser.add_subparsers(
+        dest="source_exchange_command", required=True, metavar="<source-exchange-command>"
+    )
+
+    def _add_exchange_selection_arguments(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--exchange",
+            type=str,
+            default=None,
+            help=(
+                "Explicit private exchange URI (s3://bucket/prefix). "
+                f"Alternative: {SOURCE_EXCHANGE_ENV_VAR} or --private-profile."
+            ),
+        )
+        parser.add_argument(
+            "--kb",
+            type=str,
+            default=None,
+            help=(
+                "Selected Knowledge Base root; required with --private-profile "
+                "for namespace and containment."
+            ),
+        )
+        _add_private_profile_argument(parser)
+        parser.add_argument(
+            "--json", action="store_true", help="Emit a stable machine-readable result."
+        )
+
+    exchange_upload_parser = source_exchange_sub.add_parser(
+        "upload",
+        help="Upload one transfer and publish readiness last.",
+    )
+    exchange_upload_parser.add_argument(
+        "--file",
+        required=True,
+        type=Path,
+        help=(
+            "Path to the exported Source Baseline Snapshot or Source Handoff "
+            "Bundle archive (outside the content repository in profile mode)."
+        ),
+    )
+    _add_exchange_selection_arguments(exchange_upload_parser)
+    exchange_upload_parser.set_defaults(func=_cmd_source_exchange)
+
+    exchange_download_parser = source_exchange_sub.add_parser(
+        "download",
+        help="Download one verified transfer by exact id and digest.",
+    )
+    exchange_download_parser.add_argument(
+        "--id",
+        required=True,
+        type=str,
+        help="The exact 64-hex-character transfer identifier.",
+    )
+    exchange_download_parser.add_argument(
+        "--digest",
+        required=True,
+        type=str,
+        help=(
+            "Expected SHA-256 of the complete transfer archive, supplied "
+            "out-of-band from maintainer-approved setup or operator selection."
+        ),
+    )
+    exchange_download_parser.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help=(
+            "Path for the verified transfer archive; an unrelated existing "
+            "file is never silently destroyed."
+        ),
+    )
+    _add_exchange_selection_arguments(exchange_download_parser)
+    exchange_download_parser.set_defaults(func=_cmd_source_exchange)
+
+    # git-check — read-only Git connection diagnosis (spec 0010 §2, plan J5).
+    git_check_parser = subparsers.add_parser(
+        "git-check",
+        help="Read-only Git connection diagnosis for the authoring journey.",
+        description=(
+            "Probe the local Git tool, identity, repository state and the "
+            "selected remote's readability through bounded read-only commands "
+            "(spec 0010 §2). A successful read proves READ access only: push "
+            "and pull-request capability stay explicitly unverified; no test "
+            "push, branch or PR is ever attempted. Credential values are "
+            "never read or echoed."
+        ),
+    )
+    git_check_parser.add_argument(
+        "project",
+        type=Path,
+        help="Local project directory to diagnose.",
+    )
+    git_check_parser.add_argument(
+        "--remote",
+        default=None,
+        metavar="NAME",
+        help="Remote name to probe (default: origin).",
+    )
+    git_check_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the versioned machine report.",
+    )
+    git_check_parser.set_defaults(func=_cmd_git_check)
+
+    # extract — one real original through the actual processor (spec 0010 §3).
+    extract_parser = subparsers.add_parser(
+        "extract",
+        help="Extract one original into normalized material outside Git (spec 0010 §3).",
+        description=(
+            "Read one real original file, route it through the existing "
+            "SourceProcessor seam, and persist normalized text, real "
+            "section/page coordinates, the original digest and the actual "
+            "processor identity as one digest-addressed JSON record under the "
+            "selected private output directory — outside any content "
+            "repository. No model provider distills here; missing files, "
+            "missing document extras, conversion failures, empty results and "
+            "detected bounds are disclosed truthfully."
+        ),
+    )
+    extract_parser.add_argument(
+        "file",
+        type=Path,
+        help="Path to the readable original source file.",
+    )
+    extract_parser.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help=(
+            "Private output directory for the digest-addressed extraction "
+            "record; must live outside every Git worktree."
+        ),
+    )
+    extract_parser.add_argument(
+        "--json", action="store_true", help="Emit a stable machine-readable result."
+    )
+    extract_parser.set_defaults(func=_cmd_extract, journey_command=True)
+
+    # ingest-candidate — one complete multi-page/ontology candidate (§3).
+    ingest_candidate_parser = subparsers.add_parser(
+        "ingest-candidate",
+        help="Apply one complete managed candidate into the authoring worktree.",
+        description=(
+            "Read one candidate request (explicit base revision, original "
+            "source records with expected digests and new/update intent, "
+            "authored page paths, optional complete lumio.yaml) from outside "
+            "the content repository. The COMPLETE candidate — pages, ontology, "
+            "cross-page references, exact manifest bindings — is validated "
+            "before any private registration or authoring-file write; new or "
+            "changed originals are registered, retained and verified before "
+            "success; failures roll the authored tree back while immutable "
+            "private residue stays retry-safe. Nothing is committed."
+        ),
+    )
+    _add_kb_argument(ingest_candidate_parser)
+    ingest_candidate_parser.add_argument(
+        "--candidate",
+        required=True,
+        type=Path,
+        help=(
+            "Path to the v1 candidate request JSON file (schema_version 1; "
+            "working files it references live outside the content repository)."
+        ),
+    )
+    ingest_candidate_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Explicitly selected private Source Registry directory (fallback: "
+            f"{SOURCE_REGISTRY_ENV_VAR}); or select --private-profile <file>."
+        ),
+    )
+    _add_private_profile_argument(ingest_candidate_parser)
+    ingest_candidate_parser.add_argument(
+        "--json", action="store_true", help="Emit a stable machine-readable result."
+    )
+    ingest_candidate_parser.set_defaults(func=_cmd_ingest_candidate, journey_command=True)
+
+    # authoring-review — readable review of the staged candidate (§4).
+    authoring_review_parser = subparsers.add_parser(
+        "authoring-review",
+        help="Review the staged candidate against one exact base commit (spec 0010 §4).",
+        description=(
+            "Capture the complete staged tree and HEAD in private temporary "
+            "Git storage (never touching the user's index, worktree or object "
+            "database, never committing), then review the selected Knowledge "
+            "Base subtree against one explicit full base commit: bodies and "
+            "body diffs, structured semantic changes (Claims, Entity types, "
+            "ontology, lifecycle, visibility, source support), validation and "
+            "exact path/blob identities, bound by one review digest. Unstaged "
+            "and untracked work is disclosed as excluded paths. Any submitted "
+            "change outside the Knowledge Base is refused. The report is "
+            "stateless evidence: it approves nothing and authenticates no one."
+        ),
+    )
+    _add_kb_argument(authoring_review_parser)
+    authoring_review_parser.add_argument(
+        "--base",
+        required=True,
+        help=(
+            "FULL commit id (40 hex characters) of the reviewed base; branch "
+            "names and abbreviations are refused."
+        ),
+    )
+    authoring_review_parser.add_argument(
+        "--source-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Optional private Source Registry for exact Source Version "
+            f"resolution (fallback: {SOURCE_REGISTRY_ENV_VAR}); or select "
+            "--private-profile <file>. Without either, exact-source "
+            "verification is disclosed as unavailable."
+        ),
+    )
+    _add_private_profile_argument(authoring_review_parser)
+    authoring_review_parser.add_argument(
+        "--json", action="store_true", help="Emit a stable machine-readable result."
+    )
+    authoring_review_parser.set_defaults(func=_cmd_authoring_review, journey_command=True)
+
+    # authoring-check — verify the whole resulting commit (§4).
+    authoring_check_parser = subparsers.add_parser(
+        "authoring-check",
+        help="Verify one whole commit against its review report (spec 0010 §4).",
+        description=(
+            "Compare the COMPLETE commit tree identity with the reviewed "
+            "submitted tree — not just a body or Knowledge-Base fingerprint — "
+            "and verify the reviewed base is an ancestor. A changed file, "
+            "source binding or hook/concurrent edit produces a named mismatch "
+            "and a nonzero exit; only the exact reviewed candidate passes. No "
+            "recovery or reset is attempted and no human approval is claimed."
+        ),
+    )
+    _add_kb_argument(authoring_check_parser)
+    authoring_check_parser.add_argument(
+        "--review",
+        required=True,
+        type=Path,
+        help="Path to the review report JSON emitted by authoring-review --json.",
+    )
+    authoring_check_parser.add_argument(
+        "--revision",
+        required=True,
+        help="FULL commit id (40 hex characters) of the resulting commit.",
+    )
+    authoring_check_parser.add_argument(
+        "--json", action="store_true", help="Emit a stable machine-readable result."
+    )
+    authoring_check_parser.set_defaults(func=_cmd_authoring_check, journey_command=True)
+
     # mcp — read-only MCP server over stdio (PRD-0007, ADR-0028); needs [mcp].
     mcp_parser = subparsers.add_parser(
         "mcp",
@@ -7961,7 +10611,7 @@ def main(argv: list[str] | None = None) -> int:
             "export LUMIO_KB_PATH, or run 'lumio-wiki setup <kb>' to write .env."
         )
         if getattr(args, "json", False):
-            _emit_machine_error(missing)
+            _emit_machine_error(missing, schema_version=_bootstrap_error_schema_version(args))
         else:
             print(f"error: {missing}", file=sys.stderr)
         return missing.exit_code
@@ -7969,7 +10619,7 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except CliError as exc:
         if getattr(args, "json", False):
-            _emit_machine_error(exc)
+            _emit_machine_error(exc, schema_version=_bootstrap_error_schema_version(args))
         else:
             print(f"error: {exc}", file=sys.stderr)
         return exc.exit_code

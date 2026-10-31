@@ -30,6 +30,8 @@ from pathlib import Path
 from lumio_wiki.mutation import atomic_write_bytes
 
 __all__ = [
+    "write_baseline_origin_record",
+    "write_handoff_origin_record",
     "write_observation_record",
 ]
 
@@ -80,3 +82,77 @@ def write_observation_record(
         )
     atomic_write_bytes(record_path, record_bytes)
     return record_path
+
+
+def write_baseline_origin_record(
+    root: str | Path,
+    *,
+    namespace: str,
+    snapshot_digest: str,
+    revision: str,
+    source_id: str,
+    content_hash: str,
+    origin_created_at: str,
+) -> Path:
+    """Record one Source Baseline Snapshot origin observation (spec 0010 §5.1).
+
+    Binds the exact snapshot digest, Git base revision and namespace to one
+    imported exact version, and preserves the sender's ``origin_created_at``
+    as labeled private provenance — the local registry record keeps its own
+    honest local registration time instead of adopting it. Identical retries
+    converge on the existing record; changed facts accumulate a new immutable
+    record, never an overwrite.
+    """
+    return write_observation_record(
+        root,
+        "baseline-imports",
+        source_id,
+        content_hash,
+        {
+            "schema_version": 1,
+            "kind": "source-baseline-import",
+            "namespace": namespace,
+            "snapshot_digest": snapshot_digest,
+            "revision": revision,
+            "origin_created_at": origin_created_at,
+        },
+    )
+
+
+def write_handoff_origin_record(
+    root: str | Path,
+    *,
+    namespace: str,
+    bundle_digest: str,
+    base_revision: str,
+    revision: str,
+    source_id: str,
+    content_hash: str,
+    origin_created_at: str,
+) -> Path:
+    """Record one full Source Handoff Bundle origin observation (spec 0010 §5).
+
+    Binds the exact bundle digest and the ORIGINAL handoff base/contribution
+    revisions to one imported exact version, and preserves the sender's
+    ``origin_created_at`` as labeled private provenance — the local registry
+    record keeps its own honest local registration time instead of adopting
+    it. A rebase may change Git commit identities later; this record is never
+    rewritten to track them. Identical retries converge on the existing
+    record; changed facts accumulate a new immutable record, never an
+    overwrite.
+    """
+    return write_observation_record(
+        root,
+        "handoff-imports",
+        source_id,
+        content_hash,
+        {
+            "schema_version": 1,
+            "kind": "source-handoff-import",
+            "namespace": namespace,
+            "bundle_digest": bundle_digest,
+            "base_revision": base_revision,
+            "revision": revision,
+            "origin_created_at": origin_created_at,
+        },
+    )

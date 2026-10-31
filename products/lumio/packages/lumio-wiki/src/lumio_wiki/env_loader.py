@@ -77,11 +77,27 @@ RETRIEVAL_MODE_ENV_VAR: Final[str] = "LUMIO_RETRIEVAL_MODE"
 #: derived from S3 object locations.
 READER_BASE_URL_ENV_VAR: Final[str] = "LUMIO_READER_BASE_URL"
 
+#: Explicit private Source Exchange URI (spec 0010 §6, plan 0010 J4):
+#: a credential-free object-store URI such as ``s3://bucket/exchange``
+#: recorded by project setup or exported directly. Private; never commit it.
+#: Endpoint, region and credentials are resolved per invocation through the
+#: existing S3 resolution machinery; the URI itself carries no secrets.
+SOURCE_EXCHANGE_ENV_VAR: Final[str] = "LUMIO_SOURCE_EXCHANGE"
+
 #: S3-compatible connection settings. Deployment configuration: ``setup``
 #: never writes them, but they may be recorded in a project ``.env`` and are
 #: read with exported-process precedence.
 S3_REGION_ENV_VAR: Final[str] = "LUMIO_S3_REGION"
 S3_ENDPOINT_ENV_VAR: Final[str] = "LUMIO_S3_ENDPOINT"
+
+#: Guided authoring journey submission settings (spec 0010 §2, plan 0010 J5):
+#: nonsecret machine-local values recorded by ``setup --journey`` — how a
+#: confirmed candidate is submitted (``commit`` or ``github-pr``) and which
+#: Git remote/branch receives it. Publication destinations, exchange
+#: endpoints and credentials stay separate selections.
+SUBMISSION_MODE_ENV_VAR: Final[str] = "LUMIO_SUBMISSION_MODE"
+GIT_REMOTE_ENV_VAR: Final[str] = "LUMIO_GIT_REMOTE"
+GIT_TARGET_BRANCH_ENV_VAR: Final[str] = "LUMIO_GIT_TARGET_BRANCH"
 
 #: The explicit Lumio configuration allowlist (issue #161, ADR-0019).
 #: ``.env`` discovery loads ONLY these keys; arbitrary project keys never
@@ -95,6 +111,10 @@ ENV_ALLOWLIST: Final[frozenset[str]] = frozenset(
         SOURCE_STORE_ENV_VAR,
         SOURCE_REGISTRY_ENV_VAR,
         ARTIFACT_RETENTION_ENV_VAR,
+        SOURCE_EXCHANGE_ENV_VAR,
+        SUBMISSION_MODE_ENV_VAR,
+        GIT_REMOTE_ENV_VAR,
+        GIT_TARGET_BRANCH_ENV_VAR,
         RETRIEVAL_BACKEND_ENV_VAR,
         RETRIEVAL_MODE_ENV_VAR,
         S3_REGION_ENV_VAR,
