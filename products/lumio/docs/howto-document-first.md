@@ -11,6 +11,17 @@ review/admission paths retain those jobs.
 
 ## 1. Select the neutral control profile
 
+Before authoring, the Knowledge Base must be in a registered Git worktree
+with an explicitly adopted Source Reference Manifest. The selected full
+`base_revision` must also contain that manifest in the same namespace;
+ordinary setup alone does not establish this candidate-authoring prerequisite.
+For a new empty KB, follow the
+[confirmed journey setup](howto-source-handoff.md#8-starting-a-genuinely-new-empty-knowledge-base),
+then commit its generated controls and manifest before selecting the base.
+For an existing KB, preserve its adopted namespace and exact bindings; if the
+manifest is missing, complete explicit adoption before continuing rather than
+creating an empty manifest over existing source history.
+
 For a new Knowledge Base, `document_first_control_file()` starts with the same
 category seed as `seeded_control_file()` and adds only this Entity Type:
 
@@ -40,7 +51,13 @@ empty ontology.
 Keep originals, authored pages, candidate controls, registries, and artifact
 stores outside the content repository. Give the page a stable artifact Entity
 ID, `entity_types: ["knowledge-artifact"]`, valid metadata, an exact Source,
-and no inferred Claims. For example:
+and no inferred Claims. Choose a category already configured in the selected
+Control File. The example uses `procedures`, which the new category seed
+provides; for an existing KB without that category, replace it with a configured
+category (or separately review a control change), rather than assuming that
+`document_first_control_file()` adds categories to supplied controls.
+
+For example:
 
 ```markdown
 ---
