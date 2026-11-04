@@ -57,13 +57,19 @@ function successfulResponse() {
   });
 }
 
-async function createSession(cwd: string, sessionManager: any, selectedModel: any, calls: string[]) {
+async function createSession(
+  cwd: string,
+  sessionManager: any,
+  selectedModel: any,
+  calls: string[],
+  compaction: any = { enabled: false, keepRecentTokens: 0 },
+) {
   const modelRuntime = await agent.ModelRuntime.create({
     authPath: `${cwd}/agent/auth.json`,
     modelsPath: null,
     refreshOnCreate: false,
   });
-  const settingsManager = agent.SettingsManager.inMemory({ compaction: { enabled: false } });
+  const settingsManager = agent.SettingsManager.inMemory({ compaction });
   const resourceLoader = new agent.DefaultResourceLoader({
     cwd,
     agentDir: `${cwd}/agent`,
@@ -108,6 +114,41 @@ async function createSession(cwd: string, sessionManager: any, selectedModel: an
   return session;
 }
 
+function appendWorkspaceHistory(manager: any) {
+  manager.appendMessage({ role: "user", content: "Read the synthetic page", timestamp: 1 });
+  manager.appendMessage({
+    role: "assistant",
+    content: [
+      {
+        type: "toolCall",
+        id: "approved-read",
+        name: "mcp__lumio-workspace__read_knowledge",
+        arguments: { title: "Synthetic" },
+      },
+    ],
+    api: "openai-completions",
+    provider: "fixture",
+    model: "allowed",
+    usage: zeroUsage,
+    stopReason: "toolUse",
+    timestamp: 2,
+  });
+  manager.appendMessage({
+    role: "toolResult",
+    toolCallId: "approved-read",
+    toolName: "mcp__lumio-workspace__read_knowledge",
+    content: [{ type: "text", text: SENTINEL }],
+    details: {},
+    isError: false,
+    timestamp: 3,
+  });
+  manager.appendMessage({
+    role: "user",
+    content: "Continue with the approved result",
+    timestamp: 4,
+  });
+}
+
 test("forbidden model cannot send retained workspace history after switch or resume", async () => {
   const previousAllowlist = process.env.LUMIO_WORKSPACE_ALLOWED_MODELS;
   process.env.LUMIO_WORKSPACE_ALLOWED_MODELS = "fixture/allowed";
@@ -116,35 +157,13 @@ test("forbidden model cannot send retained workspace history after switch or res
   let session: any;
   let resumed: any;
   let clean: any;
+  let allowedCompaction: any;
+  let manual: any;
+  let automatic: any;
+  let branch: any;
   try {
     const manager = agent.SessionManager.create(cwd, `${cwd}/sessions`);
-    manager.appendMessage({ role: "user", content: "Read the synthetic page", timestamp: 1 });
-    manager.appendMessage({
-      role: "assistant",
-      content: [
-        {
-          type: "toolCall",
-          id: "approved-read",
-          name: "mcp__lumio-workspace__read_knowledge",
-          arguments: { title: "Synthetic" },
-        },
-      ],
-      api: "openai-completions",
-      provider: "fixture",
-      model: "allowed",
-      usage: zeroUsage,
-      stopReason: "toolUse",
-      timestamp: 2,
-    });
-    manager.appendMessage({
-      role: "toolResult",
-      toolCallId: "approved-read",
-      toolName: "mcp__lumio-workspace__read_knowledge",
-      content: [{ type: "text", text: SENTINEL }],
-      details: {},
-      isError: false,
-      timestamp: 3,
-    });
+    appendWorkspaceHistory(manager);
 
     session = await createSession(cwd, manager, allowedModel, calls);
     await session.prompt("Use the approved result");
@@ -168,10 +187,81 @@ test("forbidden model cannot send retained workspace history after switch or res
     await clean.prompt("A clean conversation remains usable");
     expect(calls).toHaveLength(2);
     expect(calls[1]).not.toContain(SENTINEL);
+    clean.dispose();
+    clean = undefined;
+
+    allowedCompaction = await createSession(
+      cwd,
+      agent.SessionManager.inMemory(cwd),
+      allowedModel,
+      calls,
+    );
+    appendWorkspaceHistory(allowedCompaction.sessionManager);
+    await allowedCompaction.compact();
+    expect(calls).toHaveLength(3);
+    expect(calls[2]).toContain(SENTINEL);
+    allowedCompaction.dispose();
+    allowedCompaction = undefined;
+
+    manual = await createSession(cwd, agent.SessionManager.inMemory(cwd), forbiddenModel, calls);
+    appendWorkspaceHistory(manual.sessionManager);
+    const manualStart = calls.length;
+    const manualError = await manual.compact().then(
+      () => undefined,
+      (error) => error,
+    );
+    const manualEnd = calls.length;
+
+    const automaticManager = agent.SessionManager.inMemory(cwd);
+    appendWorkspaceHistory(automaticManager);
+    automaticManager.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "Allowed answer" }],
+      api: "openai-completions",
+      provider: "fixture",
+      model: "allowed",
+      usage: { ...zeroUsage, input: 1000, totalTokens: 1000 },
+      stopReason: "stop",
+      timestamp: 5,
+    });
+    automatic = await createSession(cwd, automaticManager, forbiddenModel, calls, {
+      enabled: true,
+      reserveTokens: 127001,
+      keepRecentTokens: 0,
+    });
+    const automaticStart = calls.length;
+    await automatic.prompt("Automatic compaction must not disclose the retained history");
+    const automaticEnd = calls.length;
+
+    branch = await createSession(cwd, agent.SessionManager.inMemory(cwd), forbiddenModel, calls);
+    appendWorkspaceHistory(branch.sessionManager);
+    const branchTarget = branch.sessionManager
+      .getBranch()
+      .find((entry: any) => entry.type === "message" && entry.message.role === "user").id;
+    const branchStart = calls.length;
+    const branchResult = await branch.navigateTree(branchTarget, { summarize: true });
+
+    expect({
+      manualError: manualError?.message,
+      manualRequests: calls.slice(manualStart, manualEnd),
+      automaticRequests: calls.slice(automaticStart, automaticEnd),
+      branchCancelled: branchResult.cancelled,
+      branchRequests: calls.slice(branchStart),
+    }).toEqual({
+      manualError: "Compaction cancelled",
+      manualRequests: [],
+      automaticRequests: [],
+      branchCancelled: true,
+      branchRequests: [],
+    });
   } finally {
     session?.dispose();
     resumed?.dispose();
     clean?.dispose();
+    allowedCompaction?.dispose();
+    manual?.dispose();
+    automatic?.dispose();
+    branch?.dispose();
     if (previousAllowlist === undefined) delete process.env.LUMIO_WORKSPACE_ALLOWED_MODELS;
     else process.env.LUMIO_WORKSPACE_ALLOWED_MODELS = previousAllowlist;
   }

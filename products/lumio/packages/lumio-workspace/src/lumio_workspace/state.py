@@ -70,6 +70,31 @@ class WorkspaceState:
                 (session_id, json.dumps(data), expires_at),
             )
 
+    def update_browser_session(
+        self, session_id: str, data: dict, *, expires_at: int
+    ) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE browser_sessions SET data = ?, expires_at = ? WHERE session_id = ?",
+                (json.dumps(data), expires_at, session_id),
+            )
+            return cursor.rowcount == 1
+
+    def rotate_browser_session(
+        self, old_session_id: str, new_session_id: str, data: dict, *, expires_at: int
+    ) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM browser_sessions WHERE session_id = ?", (old_session_id,)
+            )
+            if cursor.rowcount != 1:
+                return False
+            connection.execute(
+                "INSERT INTO browser_sessions (session_id, data, expires_at) VALUES (?, ?, ?)",
+                (new_session_id, json.dumps(data), expires_at),
+            )
+            return True
+
     def delete_browser_session(self, session_id: str) -> None:
         with self._connect() as connection:
             connection.execute(

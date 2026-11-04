@@ -67,6 +67,24 @@ export default function (pi: ExtensionAPI) {
       pi.appendEntry(DISCLOSURE_ENTRY);
     }
   });
+  pi.on("session_before_compact", (_event, ctx) => {
+    if (!modelAllowed && hasWorkspaceMaterial(ctx)) {
+      ctx.ui.setStatus(
+        "lumio-workspace",
+        `compaction cancelled: retained workspace content is not allowed for ${modelName(ctx)}`,
+      );
+      return { cancel: true };
+    }
+  });
+  pi.on("session_before_tree", (event, ctx) => {
+    if (event.preparation.userWantsSummary && !modelAllowed && hasWorkspaceMaterial(ctx)) {
+      ctx.ui.setStatus(
+        "lumio-workspace",
+        `branch summary cancelled: retained workspace content is not allowed for ${modelName(ctx)}`,
+      );
+      return { cancel: true };
+    }
+  });
   pi.on("before_provider_request", (_event, ctx) => {
     if (!modelAllowed && hasWorkspaceMaterial(ctx)) {
       // Throwing here is fail-open in Pi; aborting reaches the provider signal before fetch.

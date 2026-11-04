@@ -409,3 +409,98 @@ def test_opaque_browser_session_lifecycle(tmp_path: Path, monkeypatch) -> None:
         expired = client.get("/workspace", follow_redirects=False)
         assert expired.status_code == 303
         assert expired.headers["location"] == "/auth/login"
+
+
+def test_overlapping_login_cannot_restore_rotated_browser_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    identity = _identity_config()
+    config = WorkspaceConfig(
+        workspace_id="workspace-fixture",
+        external_url="https://workspace.test",
+        published_path=tmp_path,
+        published_version=None,
+        state_path=tmp_path / "state.sqlite3",
+        identity=identity,
+    )
+    state = WorkspaceState(config.state_path)
+    old_actor = Actor(tenant_id=TENANT, object_id=PERSON)
+    new_actor = Actor(tenant_id=TENANT, object_id="person-object-456")
+    state.grant(config.workspace_id, old_actor)
+    state.grant(config.workspace_id, new_actor)
+    old_credential = "old-authenticated-browser-session"
+    state.save_browser_session(
+        old_credential,
+        {"actor": {"tenant_id": old_actor.tenant_id, "object_id": old_actor.object_id}},
+        expires_at=int(time.time()) + 3600,
+    )
+    login_loaded = asyncio.Event()
+    finish_login = asyncio.Event()
+
+    # The old request has loaded actor A at the real middleware seam. Hold its
+    # handler until a newer callback has rotated that credential to actor B.
+    async def login(_self, request):
+        login_loaded.set()
+        await finish_login.wait()
+        request.session["_state_entra"] = {
+            "state": "stale-oauth-state",
+            "code_verifier": "stale-pkce-verifier",
+        }
+        return RedirectResponse("https://login.microsoftonline.com/authorize", status_code=303)
+
+    async def callback(_self, _request):
+        return new_actor
+
+    monkeypatch.setattr(EntraBrowserAuth, "login", login)
+    monkeypatch.setattr(EntraBrowserAuth, "authenticate_callback", callback)
+    app = create_app(
+        config,
+        token_verifier=EntraTokenVerifier(
+            identity, key_set=JsonWebKey.import_key_set({"keys": []})
+        ),
+    )
+
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with (
+            httpx.AsyncClient(
+                transport=transport,
+                base_url="https://workspace.test",
+            ) as old_client,
+            httpx.AsyncClient(
+                transport=transport,
+                base_url="https://workspace.test",
+            ) as callback_client,
+        ):
+            old_request = asyncio.create_task(
+                old_client.get(
+                    "/auth/login",
+                    headers={"cookie": f"lumio_workspace_session={old_credential}"},
+                    follow_redirects=False,
+                )
+            )
+            await login_loaded.wait()
+            callback_response = await callback_client.get(
+                "/auth/callback",
+                headers={"cookie": f"lumio_workspace_session={old_credential}"},
+                follow_redirects=False,
+            )
+            new_credential = callback_response.cookies.get("lumio_workspace_session")
+            finish_login.set()
+            old_response = await old_request
+
+            assert callback_response.status_code == 303
+            assert old_response.status_code == 303
+            assert new_credential and new_credential != old_credential
+            assert old_response.cookies.get("lumio_workspace_session") in (None, "")
+            assert state.load_browser_session(old_credential) is None
+            assert state.load_browser_session(new_credential) == {
+                "actor": {"tenant_id": new_actor.tenant_id, "object_id": new_actor.object_id}
+            }
+
+            old_browser = await old_client.get("/workspace", follow_redirects=False)
+            new_browser = await callback_client.get("/workspace", follow_redirects=False)
+            assert old_browser.status_code == 303
+            assert new_browser.status_code == 200
+
+    asyncio.run(scenario())

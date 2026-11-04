@@ -75,16 +75,31 @@ class BrowserSessionMiddleware:
                         self.state.delete_browser_session(session_id)
                     session_id = None
                 else:
-                    if session.cleared:
-                        if session_id:
-                            self.state.delete_browser_session(session_id)
-                        session_id = None
-                    session_id = session_id or secrets.token_urlsafe(32)
-                    self.state.save_browser_session(
-                        session_id,
-                        dict(session),
-                        expires_at=int(time.time()) + self.max_age,
-                    )
+                    expires_at = int(time.time()) + self.max_age
+                    if session.cleared and session_id:
+                        new_session_id = secrets.token_urlsafe(32)
+                        session_id = (
+                            new_session_id
+                            if self.state.rotate_browser_session(
+                                session_id, new_session_id, dict(session), expires_at=expires_at
+                            )
+                            else None
+                        )
+                    elif session.cleared:
+                        session_id = secrets.token_urlsafe(32)
+                        self.state.save_browser_session(
+                            session_id, dict(session), expires_at=expires_at
+                        )
+                    elif session_id:
+                        if not self.state.update_browser_session(
+                            session_id, dict(session), expires_at=expires_at
+                        ):
+                            session_id = None
+                    else:
+                        session_id = secrets.token_urlsafe(32)
+                        self.state.save_browser_session(
+                            session_id, dict(session), expires_at=expires_at
+                        )
                 headers = MutableHeaders(scope=message)
                 if session_id:
                     headers.append("set-cookie", self._cookie(session_id, self.max_age))
