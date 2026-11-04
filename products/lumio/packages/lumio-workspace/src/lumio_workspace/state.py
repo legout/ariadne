@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,9 +30,51 @@ class WorkspaceState:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS browser_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL
+                )
+                """
+            )
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=5)
+
+    def load_browser_session(self, session_id: str) -> dict | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT data, expires_at FROM browser_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if row[1] <= int(time.time()):
+                connection.execute(
+                    "DELETE FROM browser_sessions WHERE session_id = ?", (session_id,)
+                )
+                return None
+        data = json.loads(row[0])
+        return data if isinstance(data, dict) else None
+
+    def save_browser_session(
+        self, session_id: str, data: dict, *, expires_at: int
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO browser_sessions (session_id, data, expires_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET data = excluded.data, "
+                "expires_at = excluded.expires_at",
+                (session_id, json.dumps(data), expires_at),
+            )
+
+    def delete_browser_session(self, session_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM browser_sessions WHERE session_id = ?", (session_id,)
+            )
 
     def grant(self, workspace_id: str, actor: Actor, capability: str = "read") -> None:
         if capability != "read":

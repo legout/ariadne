@@ -10,7 +10,7 @@ Use the owner-selected workforce tenant. Tenant IDs, application IDs, secrets, a
 
 1. Create a single-tenant application registration for the workspace service. Set `accessTokenAcceptedVersion` to `2`.
 2. Add a **Web** redirect URI exactly matching `https://WORKSPACE_HOST/auth/callback`. Create its client secret only in Entra and deliver it to the server through the owner-controlled secret mechanism. Pi never receives this secret.
-3. Under **Expose an API**, set the Application ID URI to `api://WEB_API_APPLICATION_ID` and add the delegated scope `Knowledge.Read` with a readable admin/user description such as “Read admitted workspace knowledge.” The configured audience is then `api://WEB_API_APPLICATION_ID`.
+3. Under **Expose an API**, set the Application ID URI to `api://WEB_API_APPLICATION_ID` and add the delegated scope `Knowledge.Read` with a readable admin/user description such as “Read admitted workspace knowledge.” For v2 access tokens, configure the audience as the API application client ID GUID `WEB_API_APPLICATION_ID`; Microsoft always puts that client ID in `aud`. Keep the `api://` URI for the delegated scope, not as the expected v2 audience.
 4. Grant the public Pi application below delegated permission for `Knowledge.Read` and complete any tenant-required consent. No broad directory, mail, document, or repository permission is needed.
 
 The browser uses authorization-code OIDC with PKCE and `openid profile`; its ID token creates only the server-managed browser session. The Pi API flow uses a distinct resource-scoped access token. Neither credential substitutes for the other, and neither grants workspace membership by itself.
@@ -44,12 +44,11 @@ export LUMIO_WORKSPACE_PUBLISHED_PATH='/private/published-kb'
 export LUMIO_WORKSPACE_PUBLISHED_VERSION='OPTIONAL_EXACT_VERSION'
 export LUMIO_WORKSPACE_STATE_PATH='/private/workspace/state.sqlite3'
 export LUMIO_WORKSPACE_TENANT_ID='TENANT_ID'
-export LUMIO_WORKSPACE_API_AUDIENCE='api://WEB_API_APPLICATION_ID'
+export LUMIO_WORKSPACE_API_AUDIENCE='WEB_API_APPLICATION_ID'
 export LUMIO_WORKSPACE_PI_CLIENT_ID='PUBLIC_PI_APPLICATION_ID'
 export LUMIO_WORKSPACE_BROWSER_CLIENT_ID='WEB_API_APPLICATION_ID'
 export LUMIO_WORKSPACE_BROWSER_CLIENT_SECRET='SERVER_ONLY_SECRET'
 export LUMIO_WORKSPACE_BROWSER_REDIRECT_URI='https://WORKSPACE_HOST/auth/callback'
-export LUMIO_WORKSPACE_SESSION_SECRET='SERVER_ONLY_SESSION_SECRET'
 ```
 
 Keep the state directory private and owner-only. Do not put configuration or secrets in prompts, source documents, tracked files, MCP results, or Pi settings. Start with `python -m lumio_workspace serve`; the default listener is `127.0.0.1:8000` behind private HTTPS.
@@ -64,7 +63,7 @@ python -m lumio_workspace grant --object-id 'ENTRA_PERSON_OBJECT_ID'
 
 Remove access with `revoke --object-id ...`. Every MCP read/search/status operation checks current SQLite membership before resolving published content, so removal blocks new operations even while an Entra token remains cryptographically valid. Entra account-disable timing still follows provider token/session lifetimes.
 
-Browser status is at `https://WORKSPACE_HOST/workspace`; `/auth/login` starts the separate browser OIDC flow. No browser action in W1 admits or publishes anything.
+Browser status is at `https://WORKSPACE_HOST/workspace`; `/auth/login` starts the separate browser OIDC flow. OAuth state and the authenticated actor are stored in the private SQLite database. The browser receives only an opaque, Secure, HttpOnly, SameSite=Lax cookie; sign-in rotates that credential, and server-side deletion or the one-hour expiry refuses an old cookie. No browser action in W1 admits or publishes anything.
 
 ## 5. Connect Pi
 
@@ -80,6 +79,6 @@ export LUMIO_WORKSPACE_ALLOWED_MODELS='APPROVED_PROVIDER/APPROVED_MODEL'
 export LUMIO_WORKSPACE_CALLBACK_PORT='8765'
 ```
 
-Reload Pi, run `/workspace` to inspect configuration and model disclosure status, then use `/mcp` to inspect `lumio-workspace` and sign in. The available read-only tools are `workspace_status`, `read_knowledge`, and `search_knowledge`. The extension checks the exact provider/model before every workspace MCP call and rechecks after model changes; an empty or nonmatching allowlist blocks reads before content can be returned. This is trusted-client disclosure policy, not remote attestation.
+Reload Pi, run `/workspace` to inspect configuration and model disclosure status, then use `/mcp` to inspect `lumio-workspace` and sign in. The available read-only tools are `workspace_status`, `read_knowledge`, and `search_knowledge`. The extension checks the exact provider/model before every workspace MCP call and rechecks after model changes; an empty or nonmatching allowlist blocks reads before content can be returned. After a successful workspace result, it also aborts any provider request that would carry retained workspace history to a nonallowed model, including after a model switch or session resume. Clean conversations without workspace results remain usable. This is trusted-client disclosure policy, not remote attestation.
 
 No tenant provisioning, live account use, real data, service exposure, or live interoperability claim is authorized by this W1 implementation. Qualification requires the owner-approved synthetic tenant/registrations, two human identities, private HTTPS, installed Pi, and a pinned synthetic published sentinel page.

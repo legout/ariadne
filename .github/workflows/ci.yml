@@ -30,6 +30,14 @@ jobs:
       - name: Lumio native full suite (-n 4, never auto)
         run: uv run --locked pytest -q -n 4
         working-directory: products/lumio
+      - uses: oven-sh/setup-bun@v2
+      - name: Install isolated Pi disclosure-test runtime
+        run: npm install --prefix "$RUNNER_TEMP/lumio-pi-runtime" @earendil-works/pi-coding-agent@1.5.0
+      - name: Pi workspace client disclosure guard
+        env:
+          PI_CODING_AGENT_ENTRY: ${{ runner.temp }}/lumio-pi-runtime/node_modules/@earendil-works/pi-coding-agent/dist/index.js
+          PI_AI_COMPAT_ENTRY: ${{ runner.temp }}/lumio-pi-runtime/node_modules/@earendil-works/pi-ai/dist/compat.js
+        run: bun test products/lumio/clients/pi-workspace/disclosure-boundary.test.ts
 
   # Spec 0030 §5: joint source tests consume Core and SDK from the SAME
   # checked-out commit — no second repository and no public-SDK substitution

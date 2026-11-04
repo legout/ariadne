@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,7 +34,6 @@ class IdentityConfig:
     browser_client_id: str
     browser_client_secret: str
     browser_redirect_uri: str
-    session_secret: str
 
     @classmethod
     def from_env(cls) -> IdentityConfig:
@@ -46,7 +48,6 @@ class IdentityConfig:
             browser_client_id=_required("LUMIO_WORKSPACE_BROWSER_CLIENT_ID"),
             browser_client_secret=_required("LUMIO_WORKSPACE_BROWSER_CLIENT_SECRET"),
             browser_redirect_uri=_required("LUMIO_WORKSPACE_BROWSER_REDIRECT_URI"),
-            session_secret=_required("LUMIO_WORKSPACE_SESSION_SECRET"),
         )
 
     def __post_init__(self) -> None:
@@ -56,7 +57,6 @@ class IdentityConfig:
             self.pi_client_id,
             self.browser_client_id,
             self.browser_client_secret,
-            self.session_secret,
         ):
             if not value:
                 raise ValueError("identity configuration values must not be empty")
@@ -79,13 +79,21 @@ class EntraTokenVerifier:
         self.config = config
         self._key_set = key_set
         self._lock = asyncio.Lock()
+        self._last_forced_refresh: float | None = None
         self._jwt = JsonWebToken(["RS256"])
 
-    async def _load_key_set(self) -> KeySet:
-        if self._key_set is not None:
+    async def _load_key_set(self, *, force_refresh: bool = False) -> KeySet:
+        if self._key_set is not None and not force_refresh:
             return self._key_set
         async with self._lock:
-            if self._key_set is not None:
+            if self._key_set is not None and not force_refresh:
+                return self._key_set
+            now = time.monotonic()
+            if (
+                self._key_set is not None
+                and self._last_forced_refresh is not None
+                and now - self._last_forced_refresh < 60
+            ):
                 return self._key_set
             async with httpx.AsyncClient(timeout=10) as client:
                 metadata_response = await client.get(self.config.metadata_url)
@@ -96,39 +104,68 @@ class EntraTokenVerifier:
                 jwks_response = await client.get(metadata["jwks_uri"])
                 jwks_response.raise_for_status()
                 self._key_set = JsonWebKey.import_key_set(jwks_response.json())
+            if force_refresh:
+                self._last_forced_refresh = now
         return self._key_set
+
+    def _verify_with_key_set(self, token: str, key_set: KeySet) -> AccessToken | None:
+        claims = self._jwt.decode(
+            token,
+            key_set,
+            claims_options={
+                "iss": {"essential": True, "value": self.config.issuer},
+                "aud": {"essential": True, "value": self.config.audience},
+                "exp": {"essential": True},
+                "iat": {"essential": True},
+                "tid": {"essential": True, "value": self.config.tenant_id},
+                "oid": {"essential": True},
+                "azp": {"essential": True, "value": self.config.pi_client_id},
+                "scp": {"essential": True},
+            },
+        )
+        claims.validate()
+        scopes = claims["scp"].split()
+        if not claims["oid"] or "Knowledge.Read" not in scopes:
+            return None
+        return AccessToken(
+            token=token,
+            client_id=claims["azp"],
+            scopes=scopes,
+            expires_at=claims["exp"],
+            resource=self.config.audience,
+            subject=claims["oid"],
+            claims=dict(claims),
+        )
+
+    @staticmethod
+    def _unknown_kid(token: str, key_set: KeySet) -> bool:
+        try:
+            header_segment = token.split(".", 1)[0]
+            padded = header_segment + "=" * (-len(header_segment) % 4)
+            header = json.loads(base64.urlsafe_b64decode(padded))
+            kid = header.get("kid")
+        except (TypeError, ValueError):
+            return False
+        return isinstance(kid, str) and bool(kid) and all(
+            key.as_dict().get("kid") != kid for key in key_set.keys
+        )
 
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
-            claims = self._jwt.decode(
-                token,
-                await self._load_key_set(),
-                claims_options={
-                    "iss": {"essential": True, "value": self.config.issuer},
-                    "aud": {"essential": True, "value": self.config.audience},
-                    "exp": {"essential": True},
-                    "iat": {"essential": True},
-                    "tid": {"essential": True, "value": self.config.tenant_id},
-                    "oid": {"essential": True},
-                    "azp": {"essential": True, "value": self.config.pi_client_id},
-                    "scp": {"essential": True},
-                },
-            )
-            claims.validate()
-            scopes = claims["scp"].split()
-            if not claims["oid"] or "Knowledge.Read" not in scopes:
-                return None
-            return AccessToken(
-                token=token,
-                client_id=claims["azp"],
-                scopes=scopes,
-                expires_at=claims["exp"],
-                resource=self.config.audience,
-                subject=claims["oid"],
-                claims=dict(claims),
-            )
+            key_set = await self._load_key_set()
+            for refreshed in (False, True):
+                try:
+                    return self._verify_with_key_set(token, key_set)
+                except (JoseError, KeyError, ValueError):
+                    if refreshed or not self._unknown_kid(token, key_set):
+                        return None
+                    refreshed_key_set = await self._load_key_set(force_refresh=True)
+                    if refreshed_key_set is key_set:
+                        return None
+                    key_set = refreshed_key_set
         except (JoseError, httpx.HTTPError, KeyError, TypeError, ValueError):
             return None
+        return None
 
 
 class EntraBrowserAuth:

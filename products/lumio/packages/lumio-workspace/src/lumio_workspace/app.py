@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import secrets
+import time
 from dataclasses import dataclass
+from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -16,7 +19,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
-from starlette.middleware.sessions import SessionMiddleware
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
@@ -26,6 +29,70 @@ from .state import Actor, WorkspaceState
 
 class WorkspaceError(ToolError):
     pass
+
+
+class _BrowserSession(dict):
+    cleared = False
+
+    def clear(self) -> None:
+        super().clear()
+        self.cleared = True
+
+
+class BrowserSessionMiddleware:
+    def __init__(self, app: Any, state: WorkspaceState, *, max_age: int = 3600) -> None:
+        self.app = app
+        self.state = state
+        self.max_age = max_age
+
+    def _cookie(self, value: str, max_age: int) -> str:
+        return (
+            f"lumio_workspace_session={value}; Path=/; Max-Age={max_age}; "
+            "HttpOnly; Secure; SameSite=lax"
+        )
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        cookies = SimpleCookie()
+        try:
+            cookies.load(Headers(scope=scope).get("cookie", ""))
+        except CookieError:
+            pass
+        morsel = cookies.get("lumio_workspace_session")
+        supplied_id = morsel.value if morsel else None
+        data = self.state.load_browser_session(supplied_id) if supplied_id else None
+        session_id = supplied_id if data is not None else None
+        session = _BrowserSession(data or {})
+        scope["session"] = session
+
+        async def send_with_session(message) -> None:
+            nonlocal session_id
+            if message["type"] == "http.response.start":
+                if not session:
+                    if session_id:
+                        self.state.delete_browser_session(session_id)
+                    session_id = None
+                else:
+                    if session.cleared:
+                        if session_id:
+                            self.state.delete_browser_session(session_id)
+                        session_id = None
+                    session_id = session_id or secrets.token_urlsafe(32)
+                    self.state.save_browser_session(
+                        session_id,
+                        dict(session),
+                        expires_at=int(time.time()) + self.max_age,
+                    )
+                headers = MutableHeaders(scope=message)
+                if session_id:
+                    headers.append("set-cookie", self._cookie(session_id, self.max_age))
+                elif supplied_id:
+                    headers.append("set-cookie", self._cookie("", 0))
+            await send(message)
+
+        await self.app(scope, receive, send_with_session)
 
 
 @dataclass(frozen=True)
@@ -183,11 +250,4 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             allowed_origins=[config.external_url],
         ),
     )
-    return SessionMiddleware(
-        mcp_app,
-        secret_key=config.identity.session_secret,
-        session_cookie="lumio_workspace_session",
-        max_age=3600,
-        https_only=True,
-        same_site="lax",
-    )
+    return BrowserSessionMiddleware(mcp_app, state)

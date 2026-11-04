@@ -1,10 +1,22 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const SERVER = "lumio-workspace";
+const DISCLOSURE_ENTRY = "lumio-workspace-disclosure";
 const TOOL_NAME = /^mcp__lumio[_-]workspace__/;
 
 function modelName(ctx: ExtensionContext): string {
   return ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
+}
+
+function hasWorkspaceMaterial(ctx: ExtensionContext): boolean {
+  return ctx.sessionManager.getBranch().some((entry) => {
+    if (entry.type === "custom") return entry.customType === DISCLOSURE_ENTRY;
+    return (
+      entry.type === "message" &&
+      entry.message.role === "toolResult" &&
+      TOOL_NAME.test(entry.message.toolName)
+    );
+  });
 }
 
 export default function (pi: ExtensionAPI) {
@@ -49,6 +61,22 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => applyModelPolicy(ctx));
   pi.on("model_select", (_event, ctx) => applyModelPolicy(ctx));
+  pi.on("tool_execution_end", (event) => {
+    if (TOOL_NAME.test(event.toolName) && !event.isError) {
+      // Keep disclosure taint after compaction removes the original tool result.
+      pi.appendEntry(DISCLOSURE_ENTRY);
+    }
+  });
+  pi.on("before_provider_request", (_event, ctx) => {
+    if (!modelAllowed && hasWorkspaceMaterial(ctx)) {
+      // Throwing here is fail-open in Pi; aborting reaches the provider signal before fetch.
+      ctx.abort();
+      ctx.ui.setStatus(
+        "lumio-workspace",
+        `outbound request aborted: retained workspace content is not allowed for ${modelName(ctx)}`,
+      );
+    }
+  });
   pi.on("tool_call", (event) => {
     if (TOOL_NAME.test(event.toolName) && !modelAllowed) {
       return {
