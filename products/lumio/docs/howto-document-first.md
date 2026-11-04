@@ -1,0 +1,122 @@
+# How-to: author a document-first candidate with the SDK
+
+Use the document-first profile when a runbook or other document should enter a
+Knowledge Base before anyone designs a business ontology. The page represents
+the artifact itself; it does not become a person, service, customer, or other
+business object mentioned in its text.
+
+The SDK stays model-free. It creates no Claims, manifest writer, page-format
+parser, or publication authority. The existing complete-candidate and native
+review/admission paths retain those jobs.
+
+## 1. Select the neutral control profile
+
+For a new Knowledge Base, `document_first_control_file()` starts with the same
+category seed as `seeded_control_file()` and adds only this Entity Type:
+
+```yaml
+knowledge-artifact:
+  description: "A document, record, or other knowledge artifact. Its referent is the artifact itself, not a person, organization, service, or business object mentioned in it."
+```
+
+For an existing Knowledge Base, pass its parsed Control File so categories,
+pins, redirects, IDs, and unrelated ontology entries are preserved:
+
+```python
+from lumio_wiki import document_first_control_file, load_control_file
+
+control = document_first_control_file(load_control_file(kb_path))
+```
+
+The helper returns a value; it does not write it. An existing
+`knowledge-artifact` type is reused only when its parsed definition exactly
+matches the definition above. A conflicting local definition raises
+`ControlFileError` for explicit resolution instead of overwriting or merging
+its meaning. Ordinary `seeded_control_file()` and generic setup retain their
+empty ontology.
+
+## 2. Author one neutral page and complete candidate
+
+Keep originals, authored pages, candidate controls, registries, and artifact
+stores outside the content repository. Give the page a stable artifact Entity
+ID, `entity_types: ["knowledge-artifact"]`, valid metadata, an exact Source,
+and no inferred Claims. For example:
+
+```markdown
+---
+id: "entity:restart-worker-runbook"
+title: "Restart Worker"
+entity_types: ["knowledge-artifact"]
+category: procedures
+type: "runbook"
+durability_rationale: "The source runbook permanently supports this procedure."
+tags: ["operations"]
+summary: "Restart the worker after replacing its configuration."
+lifecycle: "draft"
+visibility: "internal"
+sources:
+  - id: "restart-worker-runbook-source"
+    title: "Restart worker runbook"
+claims: []
+synthetic: false
+---
+# Restart Worker
+
+Restart the worker after replacing its configuration.
+```
+
+Serialize the selected control value to a private working location and pass it
+through the existing `CandidateRequest` path. This example assumes `kb_path`
+and `private_path` are absolute `Path` objects, `base_revision` is the exact
+full base commit, and the original and authored page already exist at the
+shown private paths:
+
+```python
+from hashlib import sha256
+
+from lumio_wiki import (
+    CandidateRequest,
+    CandidateSourceRecord,
+    LocalDirectoryArtifactStore,
+    SourceRegistry,
+    document_first_control_file,
+    ingest_candidate,
+    load_control_file,
+    write_control_file,
+)
+
+original = private_path / "originals" / "restart-worker.md"
+authored_page = private_path / "authored" / "restart-worker.md"
+control = document_first_control_file(load_control_file(kb_path))
+control_path = write_control_file(private_path / "candidate-control", control)
+
+request = CandidateRequest(
+    schema_version=1,
+    base_revision=base_revision,
+    sources=[
+        CandidateSourceRecord(
+            source_id="restart-worker-runbook-source",
+            original_path=str(original),
+            expected_digest=sha256(original.read_bytes()).hexdigest(),
+            intent="new",
+        )
+    ],
+    pages=[str(authored_page)],
+    control=str(control_path),
+)
+result = ingest_candidate(
+    kb_path,
+    request,
+    source_registry=SourceRegistry(private_path / "registry"),
+    artifact_store=LocalDirectoryArtifactStore(private_path / "artifacts"),
+)
+```
+
+The result binds the stable Entity to the exact source content hash and writes
+an uncommitted authoring candidate. Validation and successful ingestion are
+not Publication Admission. Review the resulting Git diff, then use the native
+exact-revision preview and explicitly authorized confirmation flow in
+[`howto-source-handoff.md`](howto-source-handoff.md) or the local flow in
+[`quickstart.md`](quickstart.md). A later enrichment may add separately
+reviewed business Entities and Claims; it must not silently retype this
+artifact Entity.

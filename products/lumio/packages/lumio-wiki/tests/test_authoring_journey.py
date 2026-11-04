@@ -1068,3 +1068,253 @@ def test_candidate_preserves_existing_entity_identity(tmp_path):
     assert {p: p.read_bytes() for p in sorted(kb.rglob("*")) if p.is_file()} == kb_files_before
     registry_after = registry_state.read_bytes() if registry_state.exists() else None
     assert registry_after == registry_before
+
+
+def test_document_first_candidate_uses_neutral_type_without_retyping_existing_page(tmp_path):
+    """A neutral runbook coexists with, rather than retypes, an existing Entity."""
+    from lumio_wiki import document_first_control_file
+    from lumio_wiki.authoring_journey import (
+        CandidateRequest,
+        CandidateSourceRecord,
+        ingest_candidate,
+    )
+    from lumio_wiki.git_authoring import preview_publication, publish_revision
+    from lumio_wiki.knowledge_base import (
+        ControlFileError,
+        load_control_file,
+        seeded_control_file,
+        write_control_file,
+    )
+    from lumio_wiki.location import PublishedFilesystemLocation
+    from lumio_wiki.records import EntityTypeDefinition
+    from lumio_wiki.source_references import (
+        SourceReferenceManifest,
+        serialize_source_reference_manifest,
+    )
+
+    artifact_description = (
+        "A document, record, or other knowledge artifact. Its referent is the "
+        "artifact itself, not a person, organization, service, or business object "
+        "mentioned in it."
+    )
+    generic = seeded_control_file()
+    assert generic.ontology is not None
+    document_first = document_first_control_file()
+    assert document_first.ontology is not None
+    assert document_first.categories == generic.categories
+    assert document_first.hot_index == generic.hot_index
+    assert document_first.ontology.entity_types["knowledge-artifact"] == (
+        EntityTypeDefinition(description=artifact_description)
+    )
+    assert document_first.ontology.predicates == {}
+    assert document_first.ontology.redirects == []
+    # Opting into the new profile never changes the generic empty-ontology seed.
+    assert generic.ontology.entity_types == {}
+    assert generic.ontology.predicates == {}
+    assert generic.ontology.redirects == []
+
+    repo = _init_repo(tmp_path / "repo")
+    kb = repo / "kb"
+    (kb / "concepts").mkdir(parents=True)
+    (kb / "lumio.yaml").write_text(
+        """\
+version: 2
+mode: "categorized"
+categories:
+  - name: concepts
+  - name: procedures
+hot_index:
+  - title: "Field Guide"
+ontology:
+  entity_types:
+    note:
+      description: "An existing note."
+  predicates: {}
+  redirects:
+    entity:old-field-guide: entity:field-guide
+"""
+    )
+    (kb / "concepts" / "field-guide.md").write_text(
+        """\
+---
+id: "entity:field-guide"
+title: "Field Guide"
+entity_types: ["note"]
+category: concepts
+type: "note"
+durability_rationale: "The field notes permanently support this page."
+tags: ["reference"]
+summary: "An existing note whose meaning must remain unchanged."
+lifecycle: "approved"
+visibility: "internal"
+sources:
+  - id: "field-notes"
+    title: "Field notes"
+claims: []
+synthetic: false
+---
+# Field Guide
+
+Keep the existing field guide identity.\n"""
+    )
+    (kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(
+                version=1,
+                namespace=NAMESPACE,
+                sources={},
+                bindings={},
+            )
+        )
+    )
+    base = _commit(repo, "baseline revision")
+    existing_control = load_control_file(kb)
+    assert existing_control is not None and existing_control.ontology is not None
+    candidate_control = document_first_control_file(existing_control)
+    assert candidate_control.categories == existing_control.categories
+    assert candidate_control.hot_index == existing_control.hot_index
+    assert candidate_control.ontology is not None
+    assert candidate_control.ontology.entity_types["note"] == (
+        existing_control.ontology.entity_types["note"]
+    )
+    assert candidate_control.ontology.predicates == existing_control.ontology.predicates
+    assert candidate_control.ontology.redirects == existing_control.ontology.redirects
+    assert document_first_control_file(candidate_control) == candidate_control
+
+    # An independently authored same-name definition is not semantic compatibility.
+    outside = tmp_path / "outside"
+    conflict_root = outside / "conflict-control"
+    conflict_root.mkdir(parents=True)
+    (conflict_root / "lumio.yaml").write_text(
+        """\
+version: 2
+mode: "categorized"
+categories:
+  - name: concepts
+ontology:
+  entity_types:
+    knowledge-artifact:
+      description: "A customer mentioned in a document."
+  predicates: {}
+  redirects: {}
+"""
+    )
+    conflicting_control = load_control_file(conflict_root)
+    kb_files_before = {p: p.read_bytes() for p in sorted(kb.rglob("*")) if p.is_file()}
+    with pytest.raises(ControlFileError, match="knowledge-artifact.*conflicts"):
+        document_first_control_file(conflicting_control)
+    assert {p: p.read_bytes() for p in sorted(kb.rglob("*")) if p.is_file()} == kb_files_before
+
+    runbook_entity = "entity:restart-worker-runbook"
+    runbook_source = "restart-worker-runbook-source"
+    runbook_body = (
+        "# Restart Worker\n\nRestart the worker after replacing its configuration.\n"
+    )
+    original = outside / "originals" / "restart-worker.md"
+    original.parent.mkdir(parents=True)
+    original.write_text(runbook_body)
+    runbook_digest = hashlib.sha256(original.read_bytes()).hexdigest()
+    authored = outside / "authored" / "restart-worker.md"
+    authored.parent.mkdir(parents=True)
+    authored.write_text(
+        """\
+---
+id: "entity:restart-worker-runbook"
+title: "Restart Worker"
+entity_types: ["knowledge-artifact"]
+category: procedures
+type: "runbook"
+durability_rationale: "The source runbook permanently supports this procedure."
+tags: ["operations"]
+summary: "Restart the worker after replacing its configuration."
+lifecycle: "draft"
+visibility: "internal"
+sources:
+  - id: "restart-worker-runbook-source"
+    title: "Restart worker runbook"
+claims: []
+synthetic: false
+---
+"""
+        + runbook_body
+    )
+    control_path = write_control_file(outside / "candidate-control", candidate_control)
+    request = CandidateRequest(
+        schema_version=1,
+        base_revision=base,
+        sources=[
+            CandidateSourceRecord(
+                source_id=runbook_source,
+                original_path=str(original),
+                expected_digest=runbook_digest,
+                intent="new",
+            )
+        ],
+        pages=[str(authored)],
+        control=str(control_path),
+    )
+    registry = SourceRegistry(outside / "registry")
+    store = LocalDirectoryArtifactStore(outside / "store")
+    result = ingest_candidate(
+        kb,
+        request,
+        source_registry=registry,
+        artifact_store=store,
+    )
+    assert result.entity_ids == [runbook_entity]
+    assert result.control_updated is True
+    assert len(result.bindings) == 1
+    binding = result.bindings[0]
+    assert binding.entity_id == runbook_entity
+    assert binding.source_id == runbook_source
+    assert binding.content_hash == runbook_digest
+    assert binding.registered is True and binding.retained is True
+
+    revision = _commit(repo, "Add document-first runbook")
+    destination = tmp_path / "published"
+    review = preview_publication(
+        kb,
+        revision,
+        destination,
+        "none",
+        source_registry=registry,
+        artifact_store=store,
+    )
+    assert review.blocking_diagnostics == []
+    receipt = publish_revision(
+        kb,
+        revision,
+        destination,
+        "none",
+        review.review_digest,
+        source_registry=registry,
+        artifact_store=store,
+    )
+    assert receipt.activated is True
+
+    snapshot = PublishedFilesystemLocation(destination).resolve()
+    assert snapshot.validation_report.is_valid
+    published_kb = snapshot.knowledge_base
+    runbook = published_kb.lookup_by_title("Restart Worker")
+    assert len(runbook) == 1
+    assert runbook[0].id == runbook_entity
+    assert runbook[0].entity_types == ["knowledge-artifact"]
+    assert runbook[0].claims == []
+    read = published_kb.read_page("Restart Worker")
+    assert read.content.strip() == runbook_body.strip()
+    assert read.entity_id == runbook_entity
+    assert read.entity_types == ["knowledge-artifact"]
+    assert read.claims == []
+    existing = published_kb.lookup_by_title("Field Guide")
+    assert len(existing) == 1
+    assert existing[0].id == "entity:field-guide"
+    assert existing[0].entity_types == ["note"]
+    redirected = published_kb.resolve_entity("entity:old-field-guide")
+    assert redirected.entity is not None
+    assert redirected.entity.id == "entity:field-guide"
+    assert published_kb.control is not None
+    assert published_kb.control.hot_index == existing_control.hot_index
+    assert published_kb.control.ontology is not None
+    assert published_kb.control.ontology.entity_types["knowledge-artifact"] == (
+        EntityTypeDefinition(description=artifact_description)
+    )
