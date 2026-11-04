@@ -7,13 +7,14 @@ import tomllib
 ROOT = Path(__file__).parents[1]
 MEMBER = ROOT / "products" / "lumio" / "packages" / "lumio-wiki"
 LANCEDB_MEMBER = ROOT / "products" / "lumio" / "packages" / "lumio-lancedb"
+WORKSPACE_MEMBER = ROOT / "products" / "lumio" / "packages" / "lumio-workspace"
 
 
 def _toml(path: Path) -> dict:
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
-def test_uv_workspace_root_is_coordination_only_with_three_members():
+def test_uv_workspace_root_is_coordination_only_with_four_members():
     root = _toml(ROOT / "pyproject.toml")
     # The workspace root is coordination only: it is not itself a distributable
     # package (ADR-0010, issue #102; ADR-0025 repository split — the web
@@ -25,10 +26,12 @@ def test_uv_workspace_root_is_coordination_only_with_three_members():
         "products/ariadne/packages/ariadne-data",
         "products/lumio/packages/lumio-lancedb",
         "products/lumio/packages/lumio-wiki",
+        "products/lumio/packages/lumio-workspace",
     ]
     assert root["tool"]["uv"]["sources"]["ariadne-data"] == {"workspace": True}
     assert root["tool"]["uv"]["sources"]["lumio-wiki"] == {"workspace": True}
     assert root["tool"]["uv"]["sources"]["lumio-lancedb"] == {"workspace": True}
+    assert root["tool"]["uv"]["sources"]["lumio-workspace"] == {"workspace": True}
     # Root default is shared coverage only (spec 0031 §4): coordination tests
     # plus the two paired integration modules; Lumio's native suite runs from
     # products/lumio with its own selection, Core from its member directory.
@@ -69,19 +72,32 @@ def test_uv_workspace_root_is_coordination_only_with_three_members():
         "src/lumio_lancedb"
     ]
 
+    workspace_member = _toml(WORKSPACE_MEMBER / "pyproject.toml")
+    assert workspace_member["project"]["name"] == "lumio-workspace"
+    assert workspace_member["project"]["requires-python"] == ">=3.14"
+    assert workspace_member["project"]["license"] == "Apache-2.0"
+    assert workspace_member["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == [
+        "src/lumio_workspace"
+    ]
+
 
 def test_workspace_has_one_root_lockfile_and_disjoint_import_roots():
     assert (ROOT / "uv.lock").is_file()
     assert not (MEMBER / "uv.lock").exists()
     assert not (LANCEDB_MEMBER / "uv.lock").exists()
+    assert not (WORKSPACE_MEMBER / "uv.lock").exists()
     assert not (ROOT / "src").exists()
     assert (MEMBER / "src" / "lumio_wiki").is_dir()
     assert (LANCEDB_MEMBER / "src" / "lumio_lancedb").is_dir()
+    assert (WORKSPACE_MEMBER / "src" / "lumio_workspace").is_dir()
     # No two wheels may own the same concrete Python module path (ADR-0010).
     assert not (MEMBER / "src" / "lumio").exists()
     assert not (MEMBER / "src" / "lumio_lancedb").exists()
     assert not (LANCEDB_MEMBER / "src" / "lumio_wiki").exists()
     assert not (LANCEDB_MEMBER / "src" / "lumio").exists()
+    assert not (WORKSPACE_MEMBER / "src" / "lumio_wiki").exists()
+    assert not (WORKSPACE_MEMBER / "src" / "lumio_lancedb").exists()
+    assert not (WORKSPACE_MEMBER / "src" / "lumio").exists()
 
 
 def test_workspace_ci_runs_the_full_suite():
