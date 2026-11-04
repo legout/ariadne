@@ -5,6 +5,8 @@ extends: ADR-0029
 
 # ADR-0031: Private source handoff for external agents
 
+**Approved scoped operating-model revision, 2026-11-04:** [shared ADR-0028](../../../../project/adr/0028-agent-first-shared-workspaces.md) / [spec0034](../../../../project/specs/2026-11-04-0034-agent-first-shared-workspaces.md) revisit the shared-host alternative below for the ordinary team journey. Independent environments and their exact-source handoff remain an advanced path, not a prerequisite for every contributor. The shared direction is approved with #85, but this notice neither supersedes the accepted transfer contract nor authorizes service implementation/deployment.
+
 ## Context
 
 The owner chose skill + CLI + native Git as Lumio's first complete external-agent

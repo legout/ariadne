@@ -1,5 +1,7 @@
 # Product-oriented Ariadne–Lumio repository layout
 
+**Approved scoped follow-up outside approved revision 1, 2026-11-04:** [spec0034 §10](2026-11-04-0034-agent-first-shared-workspaces.md#10-technical-realization) places the optional workspace service under `products/lumio/packages/lumio-workspace/` and its Pi client under `products/lumio/clients/pi-workspace/`. The owner approved a fourth uv member and its exact layout-test amendment with #85; implementation is not started or newly authorized. Product ownership, root coordination-only behavior and existing private-app/Agent boundaries remain unchanged.
+
 Status: **approved, revision 1** (2026-10-21).
 
 Owner approval after the recorded draft handoff: “Ok. Setze das um.” This

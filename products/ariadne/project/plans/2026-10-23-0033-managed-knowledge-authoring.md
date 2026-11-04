@@ -1,5 +1,7 @@
 # Plan 0033: Managed knowledge authoring and integrated admission
 
+**Approved managed-route follow-up, 2026-11-04:** [Ariadne data plan0034 D0](2026-11-04-0034-managed-data-onboarding.md#d0--satisfy-the-existing-native-managed-admission-dependency) defines consuming this plan's canonical A1/A2 after accepted JP/J2, with the shared service replacing per-contributor setup. The owner approved that new route/order with shared spec0034 and the new plans; it grants no new execution and does not broaden the earlier execution grant below. A0/A3 and Lumio J6 retain their independent-host scope and existing authority. This notice neither marks them complete nor revokes prior scoped permission.
+
 Execution authority — 2026-10-23: after receiving these exact plans, the owner
 said “Go ahead with the plan.” This approves this decomposition and supervised
 isolated implementation in dependency order. Earlier proposed/no-implementation

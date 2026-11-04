@@ -1,5 +1,7 @@
 # Specification 0010: External-agent authoring journey
 
+**Approved scoped follow-up, 2026-11-04 (outside approved revision 5):** [shared spec0034](../../../../project/specs/2026-11-04-0034-agent-first-shared-workspaces.md) defines owner-managed team contribution through existing agent apps. This specification continues to own the independent-host Git/bootstrap/private-handoff route; that route is not the selected default contributor setup. Existing source and admission guarantees remain. The approved new plans own the managed route; this notice neither executes nor supersedes this independent-host revision.
+
 Status: approved design with scoped owner amendments. Written revision: 5.
 Date: 2026-10-25.
 

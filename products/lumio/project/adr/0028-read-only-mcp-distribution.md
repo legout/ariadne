@@ -4,6 +4,8 @@ status: accepted
 
 # ADR-0028: Read-Only MCP Distribution Surface
 
+**Approved scoped follow-up, 2026-11-04:** [shared ADR-0028](../../../../project/adr/0028-agent-first-shared-workspaces.md) and [spec0034](../../../../project/specs/2026-11-04-0034-agent-first-shared-workspaces.md) define an owner-managed team path through existing agent apps. This existing MCP surface remains read-only. Spec0034 revision 3 defines the approved separate Pi/Entra/browser-action contract; this notice adds no write/admission powers to existing MCP tools and grants no new execution.
+
 ## Context
 
 The Knowledge Base SDK reaches coding agents through two surfaces: the

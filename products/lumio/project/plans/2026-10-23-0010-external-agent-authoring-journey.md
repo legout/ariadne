@@ -1,5 +1,7 @@
 # Plan 0010: External-agent authoring journey
 
+**Approved managed-route follow-up, 2026-11-04:** [shared plan0034](../../../../project/plans/2026-11-04-0034-agent-first-shared-workspaces.md) reuses native source/candidate/review interfaces in one owner-managed server; [Lumio plan0011](2026-11-04-0011-document-first-enrichment.md) adds document-first defaults and enrichment. Both plans are approved for ticketization with #85, not newly authorized for execution. This plan still owns the advanced independent-host Git/bootstrap/private-handoff journey, including pending J6 qualification; its prior scoped execution authority below is unchanged. A managed-client demonstration does not complete J6.
+
 Execution authority — 2026-10-23: after receiving these exact plans, the owner
 said “Go ahead with the plan.” This approves this decomposition and supervised
 isolated implementation in dependency order. Earlier proposed/no-implementation

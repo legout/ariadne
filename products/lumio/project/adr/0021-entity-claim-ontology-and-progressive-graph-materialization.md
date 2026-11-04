@@ -5,6 +5,8 @@ amends: ADR-0008, ADR-0011, ADR-0013, ADR-0014, ADR-0016
 
 # ADR-0021: Entity-Claim Ontology and Progressive Graph Materialization
 
+**Approved scoped follow-up, 2026-11-04:** [ADR-0032](0032-document-first-progressive-enrichment.md) and [spec0003 revision 3](../specs/0003-model-assisted-extraction.md) define document-first defaults and optional agent-led enrichment. They retain this typed-page/Claim contract using a neutral artifact type rather than requiring a user-designed domain ontology. The scoped extension is accepted with #85; this ADR's identity, graph, evidence, and admission guarantees remain in force.
+
 _Scoped amendment, owner-approved 2026-10-15: [ADR-0029](0029-git-native-knowledge-authoring.md)
 and specification 0008 r1 govern the Git-authoring replacement. Candidate assertions and entity mutations use Git revisions, not persisted proposals; Entity/Claim/Evidence and graph trust constraints remain.
 The legacy implementation is not changed or deployed by this amendment._

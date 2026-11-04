@@ -1,5 +1,7 @@
 # Specification 0033: Managed knowledge authoring and integrated admission
 
+**Approved scoped follow-up, 2026-11-04 (outside approved revision 1):** [shared spec0034](../../../../project/specs/2026-11-04-0034-agent-first-shared-workspaces.md) defines owner-managed contribution/review, retaining the source-retention and native overall-admission guarantees here without requiring a deployment on every contributor machine. This existing specification still owns its independent-environment integration contract. Neither the approved new design nor this notice claims pending integration is delivered or authorizes new execution; the new plans record the approved managed-route dependency selection.
+
 Status: owner-approved complete design, revision 1. Date: 2026-10-23.
 
 Owner decisions: in BB thread `thr_52d92z7irz`, the owner requested shaping

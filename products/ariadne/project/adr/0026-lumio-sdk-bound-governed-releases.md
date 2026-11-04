@@ -5,6 +5,8 @@ amends: ADR-0011, ADR-0024
 
 # ADR-0026: Lumio SDK and atomically bound governed releases
 
+**Approved scoped operating-model extension, 2026-11-04:** [shared ADR-0028](../../../../project/adr/0028-agent-first-shared-workspaces.md) / [spec0034](../../../../project/specs/2026-11-04-0034-agent-first-shared-workspaces.md) define an owner-managed boundary that executes exact human-authorized actions through the native SDKs. The direct SDK, private-source checks, standalone independence, build/content binding, and Core-last activation remain. Spec0034 revision 3 explicitly owns the approved transport and per-user boundary; actual source grants, fixture access and implementation remain separately authorized.
+
 ## Accepted managed-source configuration amendment — 2026-10-23
 
 The owner selected a **private local profile** while shaping the Ariadne

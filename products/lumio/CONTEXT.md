@@ -1,13 +1,13 @@
 # Lumio
 
-Deployable chat for trusted knowledge and data. The MVP is a single-tenant, deployable browser agent platform that answers questions over a compiled Markdown knowledge base, with the wiki kept portable outside the web app.
+Shared, source-backed knowledge for teams. Lumio keeps internal documentation, runbooks, meeting notes, and other team knowledge in a portable Knowledge Base, useful independently of analytics.
 
 ## Language
 
 ### Product and knowledge artifacts
 
 **Lumio**:
-The product. Deployable chat for trusted knowledge and data.
+The product for shared, source-backed team knowledge, usable independently of Ariadne analytics.
 _Avoid_: llm-wiki-agent, the wiki chatbot, the knowledge-base agent.
 
 **Knowledge Base**:

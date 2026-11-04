@@ -1,5 +1,7 @@
 # PRD-0001: Lumio Knowledge Agent Platform
 
+**Approved public-foundation direction, 2026-11-04:** the owner requires standalone shared Lumio use and selected existing agent apps as the primary interface. [Approved shared spec0034 revision 3](../../../../project/specs/2026-11-04-0034-agent-first-shared-workspaces.md) captures that team operating path. The browser/runtime design below remains scoped to the separate private application, not a mandatory prerequisite of the new public path. This notice grants no application changes or implementation authority; spec0034 owns the approved public team route without replacing the private-app contract.
+
 _Status: approved platform behavior. Historical approval predates planning-contract v1; the exact approval reference and capture checkpoint are not recorded, so new execution requires an approved revision or bounded change. ADR-0025 moved the foundation and private application into separate repositories without changing this platform-level target. Stack decisions live in ADR-0001 and ADR-0002; vocabulary lives in `CONTEXT.md`._
 
 ## Problem Statement
