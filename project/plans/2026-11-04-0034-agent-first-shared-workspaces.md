@@ -4,7 +4,9 @@
 
 Canonical task bodies now live in the linked GitHub issues; this file owns the interface/dependency/coverage overview, not duplicate task instructions.
 
-Status: **owner-approved implementation plan, revision 1; ticketized**. Date: 2026-11-04.
+Status: **owner-approved implementation plan, revision 2; ticketized**. Date: 2026-11-04.
+
+**Scoped execution amendment — 2026-11-04:** The owner approved starting W1 / #86 and L1 / #87 in parallel, supervised, using Pi workers on `kimi-coding/k3.1-pro` with `high` thinking and Pi reviewers on `openai-codex/gpt-6.1-terra` with `xhigh` thinking; the owner subsequently selected BB threads as the host. Use separate registered worktrees and disjoint ownership: W1 owns the new service/client and workspace wiring; L1 owns the SDK neutral-default helper, its focused test and document-first guide. This supersedes only the initial sequential scheduling instruction in #85–87 and the linked overviews. All later task dependencies and review gates remain unchanged. Live Entra qualification stays blocked until the owner supplies an approved fixture; local checks do not complete W1 or unblock W2. No target integration, push, deployment or release is authorized. Approval source: owner messages in BB thread `thr_26ccqihn5b`.
 
 ## Goal, authority, and boundaries
 
@@ -24,7 +26,7 @@ GitHub issue publication is authorized; implementation, tenant registration, dep
 | [Lumio plan0011](../../products/lumio/project/plans/2026-11-04-0011-document-first-enrichment.md) | L1 neutral document defaults; L2 reviewed enrichment; L3 source-update impact | L1 before W2; W3 before managed L2; L2 before L3 |
 | [Ariadne data plan0034](../../products/ariadne/project/plans/2026-11-04-0034-managed-data-onboarding.md) | D0 native integration prerequisite; D1–D3 source/file/database/S3 workflows | W3 and D0 before D1; D1 before D2/D3 |
 
-Recommended single-writer order: **W1 → L1 → W2 → W3 → W4 → D0 → D1 → D2 → D3 → L2 → L3 → W5 → W6**. W4 makes a full standalone document path available before analytics. Optional enrichment never becomes a prerequisite for that document path. Independent product internals may later be assigned in parallel only after consumed interfaces are accepted and write ownership is disjoint; the service and Pi client are shared write targets, so parallel execution is not assumed.
+Approved delivery order after the scoped amendment: **(W1 ∥ L1) → W2 → W3 → W4 → D0 → D1 → D2 → D3 → L2 → L3 → W5 → W6**. W1 and L1 may run concurrently in their disjoint owned surfaces; both interfaces must be accepted before W2. Remaining work retains single-writer ordering. W4 makes a full standalone document path available before analytics. Optional enrichment never becomes a prerequisite for that document path. Independent product internals may later be assigned in parallel only after consumed interfaces are accepted and write ownership is disjoint; the service and Pi client are shared write targets, so parallel execution is not assumed.
 
 W6 closes the selected first milestone only after all required input categories and product tasks are covered. Old Lumio J6 and Core A0/A3 independent-host qualifications remain separate obligations for their original route, not requirements to set up every managed contributor machine.
 
