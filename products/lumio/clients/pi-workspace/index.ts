@@ -21,6 +21,7 @@ function hasWorkspaceMaterial(ctx: ExtensionContext): boolean {
 
 export default function (pi: ExtensionAPI) {
   const url = process.env.LUMIO_WORKSPACE_URL?.replace(/\/$/, "");
+  const authMode = process.env.LUMIO_WORKSPACE_AUTH_MODE;
   const clientId = process.env.LUMIO_WORKSPACE_PI_CLIENT_ID;
   const scope = process.env.LUMIO_WORKSPACE_SCOPE;
   const metadataUrl = process.env.LUMIO_WORKSPACE_AUTH_METADATA_URL;
@@ -30,7 +31,11 @@ export default function (pi: ExtensionAPI) {
       .map((value) => value.trim())
       .filter(Boolean),
   );
-  const missing = !url || !clientId || !scope || !metadataUrl;
+  const missing =
+    !url ||
+    (authMode === "local-token"
+      ? !process.env.LUMIO_WORKSPACE_API_TOKEN
+      : authMode !== "entra" || !clientId || !scope || !metadataUrl);
   let modelAllowed = false;
   let summaryNeedsDisclosure = false;
 
@@ -42,7 +47,16 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus("lumio-workspace", message);
   }
 
-  if (!missing && url && clientId && scope && metadataUrl) {
+  if (!missing && url && authMode === "local-token") {
+    pi.registerMcpServer(SERVER, {
+      url: `${url}/mcp`,
+      description: "Read admitted knowledge from the configured shared Lumio workspace",
+      exposure: "direct",
+      headers: { Authorization: "Bearer ${LUMIO_WORKSPACE_API_TOKEN}" },
+    });
+  }
+
+  if (!missing && url && authMode === "entra" && clientId && scope && metadataUrl) {
     const callbackPort = Number(process.env.LUMIO_WORKSPACE_CALLBACK_PORT ?? "8765");
     if (!Number.isInteger(callbackPort) || callbackPort < 1 || callbackPort > 65535) {
       throw new Error("LUMIO_WORKSPACE_CALLBACK_PORT must be a valid TCP port");
@@ -117,18 +131,25 @@ export default function (pi: ExtensionAPI) {
     description: "Show Lumio workspace connection guidance and model disclosure status",
     handler: async (_args, ctx) => {
       if (missing) {
+        const settings =
+          authMode === "local-token"
+            ? "LUMIO_WORKSPACE_URL, LUMIO_WORKSPACE_API_TOKEN and LUMIO_WORKSPACE_ALLOWED_MODELS"
+            : "LUMIO_WORKSPACE_PI_CLIENT_ID, LUMIO_WORKSPACE_SCOPE, " +
+              "LUMIO_WORKSPACE_AUTH_METADATA_URL and LUMIO_WORKSPACE_ALLOWED_MODELS";
         ctx.ui.notify(
-          "Set LUMIO_WORKSPACE_URL, LUMIO_WORKSPACE_PI_CLIENT_ID, LUMIO_WORKSPACE_SCOPE, " +
-            "LUMIO_WORKSPACE_AUTH_METADATA_URL and LUMIO_WORKSPACE_ALLOWED_MODELS, then reload.",
+          `Set LUMIO_WORKSPACE_AUTH_MODE to local-token or entra, then set ${settings}, then reload.`,
           "warning",
         );
         return;
       }
       const policy = modelAllowed ? "allowed" : "blocked";
+      const guidance =
+        authMode === "local-token"
+          ? "Use /mcp to inspect the token-authenticated connection. Browser sign-in is separate."
+          : "Use /mcp to inspect the connection and sign in with the pre-registered public client. " +
+            "No client secret is configured in Pi.";
       ctx.ui.notify(
-        `Workspace: ${url}/mcp\nModel ${modelName(ctx)}: ${policy}\n` +
-          "Use /mcp to inspect the connection and sign in with the pre-registered public client. " +
-          "No client secret is configured in Pi.",
+        `Workspace: ${url}/mcp\nModel ${modelName(ctx)}: ${policy}\n${guidance}`,
         modelAllowed ? "info" : "warning",
       );
     },

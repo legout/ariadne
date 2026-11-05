@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import workspaceExtension from "./index.ts";
 
 const SENTINEL = "synthetic-private-workspace-sentinel";
+const API_TOKEN = "synthetic-local-api-token-not-a-credential";
 const agentEntry = process.env.PI_CODING_AGENT_ENTRY;
 const aiCompatEntry = process.env.PI_AI_COMPAT_ENTRY;
 if (!agentEntry || !aiCompatEntry) {
@@ -57,12 +58,52 @@ function successfulResponse(content = "ok") {
   });
 }
 
+function workspaceReadResponse() {
+  const chunk = {
+    id: "chatcmpl-fixture",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "fixture",
+    choices: [
+      {
+        index: 0,
+        delta: {
+          role: "assistant",
+          tool_calls: [
+            {
+              index: 0,
+              id: "call-workspace-read",
+              type: "function",
+              function: {
+                name: "mcp__lumio_workspace__read_knowledge",
+                arguments: JSON.stringify({ title: "Synthetic" }),
+              },
+            },
+          ],
+        },
+        finish_reason: null,
+      },
+    ],
+  };
+  const done = {
+    ...chunk,
+    choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  };
+  return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: ${JSON.stringify(done)}\n\ndata: [DONE]\n\n`, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
 async function createSession(
   cwd: string,
   sessionManager: any,
   selectedModel: any,
   calls: string[],
   compaction: any = { enabled: false, keepRecentTokens: 0 },
+  mcp = false,
+  respond?: (body: string) => Response,
 ) {
   const modelRuntime = await agent.ModelRuntime.create({
     authPath: `${cwd}/agent/auth.json`,
@@ -76,6 +117,14 @@ async function createSession(
     settingsManager,
     extensionFactories: [
       workspaceExtension,
+      ...(mcp
+        ? [
+            agent.createMcpExtension({
+              loadConfig: () => ({ servers: [], errors: [] }),
+              logPath: `${cwd}/agent/mcp.log`,
+            }),
+          ]
+        : []),
       (pi: any) => {
         pi.registerProvider("fixture", {
           baseUrl: "https://fixture.invalid/v1",
@@ -93,7 +142,7 @@ async function createSession(
                 ) && body.includes(SENTINEL)
                   ? `Derived private branch summary: ${SENTINEL}`
                   : "ok";
-                return successfulResponse(derivedSummary);
+                return respond ? respond(body) : successfulResponse(derivedSummary);
               },
             }),
         });
@@ -113,7 +162,7 @@ async function createSession(
     resourceLoader,
     sessionManager,
     settingsManager,
-    noTools: "all",
+    noTools: mcp ? "builtin" : "all",
     sessionStartEvent: { type: "session_start", reason: sessionManager.isPersisted() ? "resume" : "startup" },
   });
   await session.bindExtensions({ mode: "json" });
@@ -325,5 +374,191 @@ test("forbidden model cannot send retained workspace history after switch or res
     resumedBranch?.dispose();
     if (previousAllowlist === undefined) delete process.env.LUMIO_WORKSPACE_ALLOWED_MODELS;
     else process.env.LUMIO_WORKSPACE_ALLOWED_MODELS = previousAllowlist;
+  }
+});
+
+test("local API token authenticates real MCP reads without entering model or session material", async () => {
+  const environmentNames = [
+    "LUMIO_WORKSPACE_AUTH_MODE",
+    "LUMIO_WORKSPACE_URL",
+    "LUMIO_WORKSPACE_API_TOKEN",
+    "LUMIO_WORKSPACE_ALLOWED_MODELS",
+    "LUMIO_WORKSPACE_PI_CLIENT_ID",
+    "LUMIO_WORKSPACE_SCOPE",
+    "LUMIO_WORKSPACE_AUTH_METADATA_URL",
+  ];
+  const previousEnvironment = new Map(
+    environmentNames.map((name) => [name, process.env[name]] as const),
+  );
+  const actors = new Map([[API_TOKEN, "alice"]]);
+  const members = new Set(["alice"]);
+  const readActors: string[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      const authorization = request.headers.get("authorization") ?? "";
+      const actor = authorization.startsWith("Bearer ")
+        ? actors.get(authorization.slice("Bearer ".length))
+        : undefined;
+      if (!actor) return new Response("workspace access is not available", { status: 401 });
+      if (request.method === "GET") return new Response(null, { status: 405 });
+      if (request.method !== "POST") return new Response(null, { status: 405 });
+
+      const message: any = await request.json();
+      if (message.id === undefined) return new Response(null, { status: 202 });
+      const respond = (result: unknown) =>
+        Response.json({ jsonrpc: "2.0", id: message.id, result });
+      if (message.method === "initialize") {
+        return respond({
+          protocolVersion: message.params.protocolVersion,
+          capabilities: { tools: {} },
+          serverInfo: { name: "synthetic-workspace", version: "1" },
+          instructions: "Read the fixed synthetic publication",
+        });
+      }
+      if (message.method === "tools/list") {
+        return respond({
+          tools: [
+            {
+              name: "read_knowledge",
+              description: "Read the fixed synthetic page",
+              inputSchema: {
+                type: "object",
+                properties: { title: { type: "string" } },
+                required: ["title"],
+              },
+            },
+          ],
+        });
+      }
+      if (message.method === "tools/call" && message.params.name === "read_knowledge") {
+        readActors.push(actor);
+        if (!members.has(actor)) {
+          return respond({
+            content: [{ type: "text", text: "workspace access is not available" }],
+            isError: true,
+          });
+        }
+        return respond({
+          content: [{ type: "text", text: SENTINEL }],
+          structuredContent: { found: true, title: "Synthetic", markdown: SENTINEL },
+          isError: false,
+        });
+      }
+      return Response.json({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: { code: -32601, message: "method not found" },
+      });
+    },
+  });
+
+  const cwd = await mkdtemp("/tmp/lumio-pi-local-token-");
+  const calls: string[] = [];
+  const respond = (body: string) => {
+    const request = JSON.parse(body);
+    return request.messages.at(-1)?.role === "tool"
+      ? successfulResponse()
+      : workspaceReadResponse();
+  };
+  let session: any;
+  let resumed: any;
+  let forbiddenClean: any;
+  try {
+    for (const name of environmentNames) delete process.env[name];
+    process.env.LUMIO_WORKSPACE_AUTH_MODE = "local-token";
+    process.env.LUMIO_WORKSPACE_URL = `http://127.0.0.1:${server.port}`;
+    process.env.LUMIO_WORKSPACE_API_TOKEN = API_TOKEN;
+    process.env.LUMIO_WORKSPACE_ALLOWED_MODELS = "fixture/allowed";
+
+    const manager = agent.SessionManager.create(cwd, `${cwd}/sessions`);
+    session = await createSession(
+      cwd,
+      manager,
+      allowedModel,
+      calls,
+      { enabled: false, keepRecentTokens: 0 },
+      true,
+      respond,
+    );
+    await session.prompt("Read the synthetic page");
+    expect(readActors).toEqual(["alice"]);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toContain(SENTINEL);
+
+    // Independent oracle: the same valid actor loses its current membership.
+    members.delete("alice");
+    await session.prompt("Read the synthetic page again");
+    expect(readActors).toEqual(["alice", "alice"]);
+    expect(calls).toHaveLength(4);
+
+    const toolResults = manager
+      .getBranch()
+      .filter(
+        (entry: any) => entry.type === "message" && entry.message.role === "toolResult",
+      )
+      .map((entry: any) => entry.message);
+    expect(toolResults).toHaveLength(2);
+    expect(toolResults[0].isError).toBe(false);
+    expect(JSON.stringify(toolResults[0].content)).toContain(SENTINEL);
+    expect(toolResults[1].isError).toBe(true);
+    expect(JSON.stringify(toolResults[1].content)).not.toContain(SENTINEL);
+
+    await session.setModel(forbiddenModel);
+    await session.prompt("Retained workspace content must not leave Pi");
+    expect(calls).toHaveLength(4);
+    const sessionFile = manager.getSessionFile();
+    session.dispose();
+    session = undefined;
+
+    resumed = await createSession(
+      cwd,
+      agent.SessionManager.open(sessionFile),
+      forbiddenModel,
+      calls,
+      { enabled: false, keepRecentTokens: 0 },
+      true,
+      respond,
+    );
+    await resumed.prompt("Resumed workspace content must not leave Pi");
+    expect(calls).toHaveLength(4);
+    resumed.dispose();
+    resumed = undefined;
+
+    forbiddenClean = await createSession(
+      cwd,
+      agent.SessionManager.inMemory(cwd),
+      forbiddenModel,
+      calls,
+      { enabled: false, keepRecentTokens: 0 },
+      true,
+      respond,
+    );
+    await forbiddenClean.prompt("Attempt a workspace read without authorization");
+    // The blocked tool result is retained, so the forbidden follow-up request is also aborted.
+    expect(calls).toHaveLength(5);
+    expect(readActors).toEqual(["alice", "alice"]);
+    const blockedResult = forbiddenClean.sessionManager
+      .getBranch()
+      .find(
+        (entry: any) => entry.type === "message" && entry.message.role === "toolResult",
+      );
+    expect(blockedResult.message.isError).toBe(true);
+    expect(JSON.stringify(blockedResult.message.content)).toContain("not authorized");
+
+    const history = await readFile(sessionFile, "utf8");
+    expect(history).toContain(SENTINEL);
+    expect(history).not.toContain(API_TOKEN);
+    for (const body of calls) expect(body).not.toContain(API_TOKEN);
+  } finally {
+    session?.dispose();
+    resumed?.dispose();
+    forbiddenClean?.dispose();
+    server.stop(true);
+    for (const [name, value] of previousEnvironment) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
 });
