@@ -21,8 +21,12 @@ from typing import Any, NoReturn
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne.admission import reconcile
-from ariadne.authoring import AuthoringProject
+from ariadne.admission import reconcile  # pyright: ignore[reportMissingImports]
+from ariadne.authoring import AuthoringProject  # pyright: ignore[reportMissingImports]
+from ariadne.contribution_review import (  # pyright: ignore[reportMissingImports]
+    check_contribution_commit,
+    review_contribution,
+)
 
 
 class UsageError(ValueError):
@@ -322,6 +326,38 @@ def build_parser() -> _Parser:
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
 
+    contribution_review_cmd = sub.add_parser(
+        "contribution-review",
+        help="review the complete staged contribution tree; never approval or admission",
+    )
+    contribution_review_cmd.add_argument("--proposal", required=True, help="the proposal ID")
+    contribution_review_cmd.add_argument(
+        "--base", required=True, help="exact full base commit for the contribution"
+    )
+    contribution_review_cmd.add_argument(
+        "--context-private-profile",
+        default=None,
+        help="absolute private profile used only for registry-scoped source verification",
+    )
+    contribution_review_cmd.add_argument(
+        "--project", default=".", help="project root holding ariadne.yaml (default: .)"
+    )
+
+    contribution_check_cmd = sub.add_parser(
+        "contribution-check",
+        help="verify a human-created commit against its complete reviewed tree",
+    )
+    contribution_check_cmd.add_argument("--proposal", required=True, help="the proposal ID")
+    contribution_check_cmd.add_argument(
+        "--review", required=True, help="private JSON review returned by contribution-review"
+    )
+    contribution_check_cmd.add_argument(
+        "--revision", required=True, help="exact full commit to check"
+    )
+    contribution_check_cmd.add_argument(
+        "--project", default=".", help="project root holding ariadne.yaml (default: .)"
+    )
+
     return parser
 
 
@@ -370,6 +406,17 @@ def _read_inspection_request(file: str) -> tuple[object, object]:
     if isinstance(data, dict) and "candidate" in data and "family" not in data:
         return data["candidate"], data.get("limits")
     return data, None
+
+
+def _read_contribution_review(file: str) -> dict:
+    raw = Path(file).read_text(encoding="utf-8")
+    try:
+        review = json.loads(raw)
+    except ValueError as exc:
+        raise UsageError(f"{file}: contribution review is not valid JSON: {exc}") from None
+    if not isinstance(review, dict):
+        raise UsageError(f"{file}: contribution review must be one JSON object")
+    return review
 
 
 def _read_source_intake(file: str) -> tuple[list[dict], dict | None]:
@@ -444,6 +491,20 @@ def main(argv: list[str] | None = None) -> int:
             # HUMAN-ONLY (issue #37/G5): records a local rebase/merge; never an
             # MCP/Agent tool and never an automatic merge.
             result = reconcile(args.project, args.proposal, args.expected_revision, args.revision)
+        elif args.command == "contribution-review":
+            result = review_contribution(
+                args.project,
+                args.proposal,
+                base_revision=args.base,
+                private_profile=args.context_private_profile,
+            )
+        elif args.command == "contribution-check":
+            result = check_contribution_commit(
+                args.project,
+                args.proposal,
+                _read_contribution_review(args.review),
+                args.revision,
+            )
         elif args.command == "start":
             result = AuthoringProject(args.project).start_proposal(args.base_revision)
         elif args.command == "read":
