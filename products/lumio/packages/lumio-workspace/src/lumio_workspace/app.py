@@ -46,9 +46,12 @@ class _BrowserSession(dict):
 
 
 class BrowserSessionMiddleware:
-    def __init__(self, app: Any, state: WorkspaceState, *, max_age: int = 3600) -> None:
+    def __init__(
+        self, app: Any, state: WorkspaceState, *, auth_mode: str, max_age: int = 3600
+    ) -> None:
         self.app = app
         self.state = state
+        self.auth_mode = auth_mode
         self.max_age = max_age
 
     def _cookie(self, value: str, max_age: int) -> str:
@@ -69,6 +72,10 @@ class BrowserSessionMiddleware:
         morsel = cookies.get("lumio_workspace_session")
         supplied_id = morsel.value if morsel else None
         data = self.state.load_browser_session(supplied_id) if supplied_id else None
+        if data is not None and ("local_credential_id" in data) != (
+            self.auth_mode == "local-token"
+        ):
+            data = None
         session_id = supplied_id if data is not None else None
         session = _BrowserSession(data or {})
         scope["session"] = session
@@ -92,10 +99,13 @@ class BrowserSessionMiddleware:
                             else None
                         )
                     elif session.cleared:
-                        session_id = secrets.token_urlsafe(32)
-                        self.state.save_browser_session(
-                            session_id, dict(session), expires_at=expires_at
-                        )
+                        if supplied_id and self.state.browser_session_was_rotated(supplied_id):
+                            session_id = None
+                        else:
+                            session_id = secrets.token_urlsafe(32)
+                            self.state.save_browser_session(
+                                session_id, dict(session), expires_at=expires_at
+                            )
                     elif session_id:
                         if not self.state.update_browser_session(
                             session_id, dict(session), expires_at=expires_at
@@ -332,4 +342,4 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             allowed_origins=[config.external_url],
         ),
     )
-    return BrowserSessionMiddleware(mcp_app, state)
+    return BrowserSessionMiddleware(mcp_app, state, auth_mode=config.auth_mode)

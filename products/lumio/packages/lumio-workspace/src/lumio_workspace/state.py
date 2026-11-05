@@ -55,10 +55,18 @@ class WorkspaceState:
                 CREATE TABLE IF NOT EXISTS browser_sessions (
                     session_id TEXT PRIMARY KEY,
                     data TEXT NOT NULL,
-                    expires_at INTEGER NOT NULL
+                    expires_at INTEGER NOT NULL,
+                    rotated_at INTEGER
                 )
                 """
             )
+            session_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(browser_sessions)")
+            }
+            if "rotated_at" not in session_columns:
+                connection.execute(
+                    "ALTER TABLE browser_sessions ADD COLUMN rotated_at INTEGER"
+                )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS local_users (
@@ -86,7 +94,8 @@ class WorkspaceState:
     def load_browser_session(self, session_id: str) -> dict | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT data, expires_at FROM browser_sessions WHERE session_id = ?",
+                "SELECT data, expires_at FROM browser_sessions "
+                "WHERE session_id = ? AND rotated_at IS NULL",
                 (session_id,),
             ).fetchone()
             if row is None:
@@ -138,7 +147,8 @@ class WorkspaceState:
     ) -> bool:
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE browser_sessions SET data = ?, expires_at = ? WHERE session_id = ?",
+                "UPDATE browser_sessions SET data = ?, expires_at = ? "
+                "WHERE session_id = ? AND rotated_at IS NULL",
                 (json.dumps(data), expires_at, session_id),
             )
             return cursor.rowcount == 1
@@ -148,7 +158,9 @@ class WorkspaceState:
     ) -> bool:
         with self._connect() as connection:
             cursor = connection.execute(
-                "DELETE FROM browser_sessions WHERE session_id = ?", (old_session_id,)
+                "UPDATE browser_sessions SET rotated_at = ? "
+                "WHERE session_id = ? AND rotated_at IS NULL",
+                (int(time.time()), old_session_id),
             )
             if cursor.rowcount != 1:
                 return False
@@ -156,6 +168,23 @@ class WorkspaceState:
                 "INSERT INTO browser_sessions (session_id, data, expires_at) VALUES (?, ?, ?)",
                 (new_session_id, json.dumps(data), expires_at),
             )
+            return True
+
+    def browser_session_was_rotated(self, session_id: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT expires_at FROM browser_sessions "
+                "WHERE session_id = ? AND rotated_at IS NOT NULL",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            if row[0] <= int(time.time()):
+                connection.execute(
+                    "DELETE FROM browser_sessions WHERE session_id = ? AND rotated_at IS NOT NULL",
+                    (session_id,),
+                )
+                return False
             return True
 
     def delete_browser_session(self, session_id: str) -> None:
