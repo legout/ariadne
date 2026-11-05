@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -968,3 +969,126 @@ def test_task_recovery_distinguishes_prepared_and_completed_native_activation(
             reconnected, fixture.contributor_api, "workspace_status", {}, 9
         ).json()["result"]["structuredContent"]
         assert reader_status["published_version"] == unrelated["native_candidate"]
+
+
+def test_recovery_cannot_overwrite_newer_review_decision(tmp_path: Path, monkeypatch) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    config = fixture.config
+    with (
+        TestClient(create_app(config), base_url="https://workspace.test") as owner,
+        TestClient(create_app(config), base_url="https://workspace.test") as contributor,
+        TestClient(create_app(config), base_url="https://workspace.test") as reviewer,
+        TestClient(
+            create_app(replace(config, published_version=None)), base_url="https://workspace.test"
+        ) as reconnected,
+    ):
+        _confirm_setup(owner, fixture)
+        task = _contribute(
+            contributor,
+            fixture,
+            retry_key="recovery-decision-race",
+            title="Recovery Decision Race",
+            addition="Recovery must preserve an intervening human decision.",
+            source_id="recovery-decision-race-source",
+            filename="recovery-decision-race.md",
+            request_id=1,
+        )
+        _login(reviewer, fixture.reviewer_browser)
+        approval_digest = _digest(reviewer.get(f"/review/{task['task_id']}").text)
+        original_atomic_write = native_authoring.atomic_write_bytes
+
+        def fail_pointer_activation(path, data):
+            if Path(path) == published_pointer_path(config.published_path):
+                raise OSError("injected interruption before pointer activation")
+            return original_atomic_write(path, data)
+
+        monkeypatch.setattr(native_authoring, "atomic_write_bytes", fail_pointer_activation)
+        interrupted = _decision(reviewer, task["task_id"], approval_digest, "approve")
+        assert interrupted.status_code == 409
+        monkeypatch.setattr(native_authoring, "atomic_write_bytes", original_atomic_write)
+        receipt_path = (
+            config.published_path
+            / ".lumio-publication"
+            / "receipts"
+            / f"{task['native_candidate']}.json"
+        )
+        assert json.loads(receipt_path.read_text())["activated"] is False
+
+        stale_digest = _digest(reviewer.get(f"/review/{task['task_id']}").text)
+        changes_digest = _digest(reviewer.get(f"/review/{task['task_id']}").text)
+        original_finish = WorkspaceState.finish_review_task
+        recovery_read = threading.Event()
+        release_recovery = threading.Event()
+
+        def gate_stale_recovery(*args, **kwargs):
+            response = args[4]
+            if (
+                not recovery_read.is_set()
+                and response.get("review_generation", 0) == 0
+                and "publication" in response
+            ):
+                recovery_read.set()
+                if not release_recovery.wait(5):
+                    raise TimeoutError("test did not release recovery")
+            return original_finish(*args, **kwargs)
+
+        recovered = []
+        recovery_errors = []
+
+        def recover():
+            try:
+                response = _call_tool(
+                    reconnected,
+                    fixture.contributor_api,
+                    "get_task",
+                    {"task_id": task["task_id"]},
+                    10,
+                )
+                recovered.append(response.json()["result"]["structuredContent"])
+            except BaseException as exc:
+                recovery_errors.append(exc)
+
+        recovery_thread = threading.Thread(target=recover, name="stale-recovery")
+        monkeypatch.setattr(WorkspaceState, "finish_review_task", gate_stale_recovery)
+        recovery_thread.start()
+        try:
+            entered = recovery_read.wait(5)
+            if entered:
+                changes = _decision(reviewer, task["task_id"], changes_digest, "request_changes")
+                assert changes.status_code == 200, changes.text
+                assert changes.json()["review_generation"] == 1
+        finally:
+            release_recovery.set()
+            recovery_thread.join(5)
+            monkeypatch.setattr(WorkspaceState, "finish_review_task", original_finish)
+
+        assert not recovery_thread.is_alive()
+        if recovery_errors:
+            raise recovery_errors[0]
+        assert entered
+        assert len(recovered) == 1
+        assert recovered[0].get("review_generation") == 1
+        assert recovered[0].get("review_decision") == "request_changes"
+        assert recovered[0]["published"] is False
+
+        stale = _decision(reviewer, task["task_id"], stale_digest, "approve")
+        assert stale.status_code == 409, stale.text
+        assert (
+            PublishedFilesystemLocation(config.published_path).read_pointer()
+            == fixture.published_revision
+        )
+        with fixture.state._connect() as connection:
+            assert connection.execute(
+                "SELECT decision, status FROM review_actions WHERE action_digest = ?",
+                (stale_digest,),
+            ).fetchone() == ("", "issued")
+
+        fresh_digest = _digest(reviewer.get(f"/review/{task['task_id']}").text)
+        assert fresh_digest not in {approval_digest, stale_digest, changes_digest}
+        approved = _decision(reviewer, task["task_id"], fresh_digest, "approve")
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["published"] is True
+        assert (
+            PublishedFilesystemLocation(config.published_path).read_pointer()
+            == task["native_candidate"]
+        )

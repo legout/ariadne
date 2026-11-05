@@ -522,23 +522,37 @@ class WorkspaceState:
         )
 
     def finish_review_task(
-        self, workspace_id: str, task_id: str, status: str, response: dict
-    ) -> None:
+        self,
+        workspace_id: str,
+        task_id: str,
+        status: str,
+        response: dict,
+        *,
+        expected_response: dict | None = None,
+    ) -> bool:
+        parameters = (
+            status,
+            json.dumps(response, sort_keys=True),
+            int(time.time()),
+            workspace_id,
+            task_id,
+        )
+        expected = ""
+        if expected_response is not None:
+            expected = " AND response_json = ?"
+            parameters += (json.dumps(expected_response, sort_keys=True),)
         with self._connect() as connection:
             cursor = connection.execute(
                 "UPDATE operations SET status = ?, response_json = ?, updated_at = ? "
                 "WHERE workspace_id = ? AND operation_id = ? "
-                "AND action = 'prepare_contribution' AND status = 'pending_review'",
-                (
-                    status,
-                    json.dumps(response, sort_keys=True),
-                    int(time.time()),
-                    workspace_id,
-                    task_id,
-                ),
+                "AND action = 'prepare_contribution' AND status = 'pending_review'" + expected,
+                parameters,
             )
         if cursor.rowcount != 1:
+            if expected_response is not None:
+                return False
             raise ValueError("reviewed task changed before its outcome was recorded")
+        return True
 
     def issue_review_action(
         self,

@@ -426,7 +426,16 @@ class ReviewService:
                 ),
                 "publication": msgspec.to_builtins(receipt),
             }
-        self.state.finish_review_task(self.workspace_id, task_id, status, response)
+        persisted = self.state.finish_review_task(
+            self.workspace_id,
+            task_id,
+            status,
+            response,
+            expected_response=operation.response,
+        )
+        if not persisted:
+            current = self.state.get_review_task(self.workspace_id, task_id)
+            return None if current is None else current.response
         if receipt.activated:
             self.state.finish_review_action(approval.action_digest, "completed")
         return response
