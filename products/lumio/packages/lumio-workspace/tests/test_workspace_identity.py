@@ -427,17 +427,14 @@ def test_overlapping_login_cannot_restore_rotated_browser_session(
     old_actor = Actor(tenant_id=TENANT, object_id=PERSON)
     new_actor = Actor(tenant_id=TENANT, object_id="person-object-456")
     state.grant(config.workspace_id, new_actor)
-    old_credential = "old-authenticated-browser-session"
-    state.save_browser_session(
-        old_credential,
-        {"actor": {"tenant_id": old_actor.tenant_id, "object_id": old_actor.object_id}},
-        expires_at=int(time.time()) + 3600,
-    )
     login_loaded = asyncio.Event()
     finish_login = asyncio.Event()
+    arrival_started = asyncio.Event()
+    finish_arrival = asyncio.Event()
+    delay_arrival = False
 
-    # The old request has loaded actor A at the real middleware seam. Hold its
-    # handler until a newer callback has rotated that credential to actor B.
+    # Already-loaded ordering: hold actor A after the real middleware has loaded
+    # it. Delayed-arrival ordering: the ASGI gate holds cookie A before middleware.
     async def login(_self, request):
         login_loaded.set()
         await finish_login.wait()
@@ -459,62 +456,99 @@ def test_overlapping_login_cannot_restore_rotated_browser_session(
         ),
     )
 
+    async def gated_app(scope, receive, send):
+        nonlocal delay_arrival
+        if (
+            delay_arrival
+            and scope["type"] == "http"
+            and scope["path"] == "/workspace"
+        ):
+            delay_arrival = False
+            arrival_started.set()
+            await finish_arrival.wait()
+        await app(scope, receive, send)
+
     async def scenario() -> None:
-        transport = httpx.ASGITransport(app=app)
+        nonlocal delay_arrival
+        transport = httpx.ASGITransport(app=gated_app)
         async with httpx.AsyncClient(
             transport=transport,
             base_url="https://workspace.test",
         ) as browser:
-            browser.cookies.set(
-                "lumio_workspace_session", old_credential, domain="workspace.test"
-            )
-            old_request = asyncio.create_task(
-                browser.get("/auth/login", follow_redirects=False)
-            )
-            await login_loaded.wait()
-            callback_response = await browser.get("/auth/callback", follow_redirects=False)
-            new_credential = callback_response.cookies.get("lumio_workspace_session")
-            finish_login.set()
-            old_response = await old_request
-            browser_credential = browser.cookies.get("lumio_workspace_session")
-            next_browser = await browser.get("/workspace", follow_redirects=False)
-
-            assert {
-                "callback_status": callback_response.status_code,
-                "old_status": old_response.status_code,
-                "rotated": new_credential is not None and new_credential != old_credential,
-                "late_response_cleared_or_omitted": old_response.cookies.get(
-                    "lumio_workspace_session"
+            for ordering in ("already-loaded", "delayed-arrival"):
+                old_credential = f"{ordering}-authenticated-browser-session"
+                state.save_browser_session(
+                    old_credential,
+                    {
+                        "actor": {
+                            "tenant_id": old_actor.tenant_id,
+                            "object_id": old_actor.object_id,
+                        }
+                    },
+                    expires_at=int(time.time()) + 3600,
                 )
-                in (None, ""),
-                "browser_credential": browser_credential,
-                "old_session": state.load_browser_session(old_credential),
-                "new_session": (
-                    state.load_browser_session(new_credential) if new_credential else None
-                ),
-                "workspace_status": next_browser.status_code,
-                "workspace_json": (
-                    next_browser.json() if next_browser.status_code == 200 else next_browser.text
-                ),
-            } == {
-                "callback_status": 303,
-                "old_status": 303,
-                "rotated": True,
-                "late_response_cleared_or_omitted": True,
-                "browser_credential": new_credential,
-                "old_session": None,
-                "new_session": {
-                    "actor": {
-                        "tenant_id": new_actor.tenant_id,
-                        "object_id": new_actor.object_id,
-                    }
-                },
-                "workspace_status": 200,
-                "workspace_json": {
-                    "workspace": "workspace-fixture",
-                    "ready": True,
-                    "capabilities": ["read"],
-                },
-            }
+                browser.cookies.clear()
+                browser.cookies.set(
+                    "lumio_workspace_session", old_credential, domain="workspace.test"
+                )
+                delayed = ordering == "delayed-arrival"
+                delay_arrival = delayed
+                old_request = asyncio.create_task(
+                    browser.get(
+                        "/workspace" if delayed else "/auth/login",
+                        follow_redirects=False,
+                    )
+                )
+                await (arrival_started if delayed else login_loaded).wait()
+                callback_response = await browser.get("/auth/callback", follow_redirects=False)
+                new_credential = callback_response.cookies.get("lumio_workspace_session")
+                if delayed:
+                    finish_arrival.set()
+                else:
+                    finish_login.set()
+                old_response = await old_request
+                browser_credential = browser.cookies.get("lumio_workspace_session")
+                next_browser = await browser.get("/workspace", follow_redirects=False)
+
+                assert {
+                    "ordering": ordering,
+                    "callback_status": callback_response.status_code,
+                    "old_status": old_response.status_code,
+                    "rotated": new_credential is not None and new_credential != old_credential,
+                    "late_response_cookie": old_response.cookies.get(
+                        "lumio_workspace_session"
+                    ),
+                    "browser_credential": browser_credential,
+                    "old_session": state.load_browser_session(old_credential),
+                    "new_session": (
+                        state.load_browser_session(new_credential) if new_credential else None
+                    ),
+                    "workspace_status": next_browser.status_code,
+                    "workspace_json": (
+                        next_browser.json()
+                        if next_browser.status_code == 200
+                        else next_browser.text
+                    ),
+                } == {
+                    "ordering": ordering,
+                    "callback_status": 303,
+                    "old_status": 303,
+                    "rotated": True,
+                    "late_response_cookie": None,
+                    "browser_credential": new_credential,
+                    "old_session": None,
+                    "new_session": {
+                        "actor": {
+                            "tenant_id": new_actor.tenant_id,
+                            "object_id": new_actor.object_id,
+                        }
+                    },
+                    "workspace_status": 200,
+                    "workspace_json": {
+                        "workspace": "workspace-fixture",
+                        "ready": True,
+                        "capabilities": ["read"],
+                    },
+                }
 
     asyncio.run(scenario())

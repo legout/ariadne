@@ -66,10 +66,9 @@ class BrowserSessionMiddleware:
         session_id = supplied_id if data is not None else None
         session = _BrowserSession(data or {})
         scope["session"] = session
-        stale_response = False
 
         async def send_with_session(message) -> None:
-            nonlocal session_id, stale_response
+            nonlocal session_id
             if message["type"] == "http.response.start":
                 if not session:
                     if session_id:
@@ -86,7 +85,6 @@ class BrowserSessionMiddleware:
                             )
                             else None
                         )
-                        stale_response = session_id is None
                     elif session.cleared:
                         session_id = secrets.token_urlsafe(32)
                         self.state.save_browser_session(
@@ -97,17 +95,16 @@ class BrowserSessionMiddleware:
                             session_id, dict(session), expires_at=expires_at
                         ):
                             session_id = None
-                            stale_response = True
                     else:
                         session_id = secrets.token_urlsafe(32)
                         self.state.save_browser_session(
                             session_id, dict(session), expires_at=expires_at
                         )
                 headers = MutableHeaders(scope=message)
+                # Passive responses never delete cookies: a late response
+                # cannot know the browser's current credential.
                 if session_id:
                     headers.append("set-cookie", self._cookie(session_id, self.max_age))
-                elif supplied_id and not stale_response:
-                    headers.append("set-cookie", self._cookie("", 0))
             await send(message)
 
         await self.app(scope, receive, send_with_session)
