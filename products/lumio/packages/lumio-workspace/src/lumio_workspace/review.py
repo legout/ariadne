@@ -219,6 +219,7 @@ class ReviewService:
             "candidate": candidate,
             "submission_base": submission_base,
             "submission_review": operation.response.get("native_review", ""),
+            "review_generation": operation.response.get("review_generation", 0),
             "authoring_review": authoring.review_digest,
             "publication_review": publication.review_digest,
             "citations": citations,
@@ -436,6 +437,7 @@ class ReviewService:
                 "workspace review is not available", code="review_forbidden", status=403
             )
         operation = context.operation
+        review_generation = operation.response.get("review_generation", 0) + 1
         if decision == "approve":
             if context.publication.blocking_diagnostics:
                 raise ReviewError(
@@ -454,6 +456,7 @@ class ReviewService:
                 "status": "published",
                 "published": True,
                 "publication_outcome": "activated",
+                "review_generation": review_generation,
                 "publication": msgspec.to_builtins(receipt),
                 "citations": context.binding["citations"],
             }
@@ -468,6 +471,7 @@ class ReviewService:
             "status": "pending_review" if requested_changes else "rejected",
             "published": False,
             "review_decision": decision,
+            "review_generation": review_generation,
         }
         self.state.finish_review_task(
             self.workspace_id,

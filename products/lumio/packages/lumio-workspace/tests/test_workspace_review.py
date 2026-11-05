@@ -739,12 +739,28 @@ def test_fresh_browser_action_allows_reconsideration_and_pre_activation_retry(
         )
         _login(reviewer, fixture.reviewer_browser)
         first = _digest(reviewer.get(f"/review/{task['task_id']}").text)
+        overlapping = _digest(reviewer.get(f"/review/{task['task_id']}").text)
+        assert overlapping != first
         changes = _decision(reviewer, task["task_id"], first, "request_changes")
         assert changes.status_code == 200, changes.text
         assert changes.json()["status"] == "pending_review"
 
+        stale = _decision(reviewer, task["task_id"], overlapping, "approve")
+        assert stale.status_code == 409, stale.text
+        assert (
+            PublishedFilesystemLocation(fixture.config.published_path).read_pointer()
+            == fixture.published_revision
+        )
+        with fixture.state._connect() as connection:
+            assert connection.execute(
+                "SELECT decision FROM review_actions WHERE action_digest = ?", (overlapping,)
+            ).fetchone() == ("",)
+            assert connection.execute(
+                "SELECT action_digest, decision FROM review_actions WHERE decision != ''"
+            ).fetchall() == [(first, "request_changes")]
+
         second = _digest(reviewer.get(f"/review/{task['task_id']}").text)
-        assert second != first
+        assert second not in {first, overlapping}
         assert _decision(reviewer, task["task_id"], first, "approve").status_code == 409
 
         original_publish = PublicationService.publish
