@@ -30,6 +30,7 @@ import difflib
 import hashlib
 import json
 import os
+import pprint
 import re
 import shutil
 import subprocess
@@ -669,10 +670,10 @@ def _semantic_field_changes(
 
 
 def _render_profile(profile: Any | None) -> str:
-    """One readable rendering of a supported typed Ariadne Context Profile."""
+    """One readable, native-key-preserving rendering of a typed Ariadne profile."""
     if profile is None:
         return "none"
-    return json.dumps(msgspec.to_builtins(profile), sort_keys=True, default=str)
+    return pprint.pformat(msgspec.to_builtins(profile), sort_dicts=True)
 
 
 #: Composite containers whose RECORDS have represented leaves: the container
