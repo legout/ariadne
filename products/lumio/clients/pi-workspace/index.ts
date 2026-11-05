@@ -1,4 +1,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { randomUUID } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
+import { basename, resolve } from "node:path";
+import { uploadExactBytes } from "./upload.ts";
+
+const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
 
 const SERVER = "lumio-workspace";
 const DISCLOSURE_ENTRY = "lumio-workspace-disclosure";
@@ -50,7 +56,7 @@ export default function (pi: ExtensionAPI) {
   if (!missing && url && authMode === "local-token") {
     pi.registerMcpServer(SERVER, {
       url: `${url}/mcp`,
-      description: "Read admitted knowledge from the configured shared Lumio workspace",
+      description: "Read admitted knowledge and prepare pending Lumio workspace contributions",
       exposure: "direct",
       headers: { Authorization: "Bearer ${LUMIO_WORKSPACE_API_TOKEN}" },
     });
@@ -63,7 +69,7 @@ export default function (pi: ExtensionAPI) {
     }
     pi.registerMcpServer(SERVER, {
       url: `${url}/mcp`,
-      description: "Read admitted knowledge from the configured shared Lumio workspace",
+      description: "Read admitted knowledge and prepare pending Lumio workspace contributions",
       exposure: "direct",
       oauth: {
         clientId,
@@ -127,6 +133,69 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  pi.registerCommand("workspace-upload", {
+    description: "Upload exact selected bytes: /workspace-upload <source-id> <path> [retry=<key>]",
+    handler: async (args, ctx) => {
+      applyModelPolicy(ctx);
+      if (missing || !url) {
+        ctx.ui.notify("Configure the Lumio workspace before uploading; check /workspace.", "warning");
+        return;
+      }
+      if (authMode !== "local-token") {
+        ctx.ui.notify("Exact-byte upload currently requires explicit local-token mode.", "warning");
+        return;
+      }
+      if (!modelAllowed) {
+        ctx.ui.notify(
+          `Upload blocked before reading the original for model ${modelName(ctx)}.`,
+          "warning",
+        );
+        return;
+      }
+      const [sourceId, ...rest] = args.trim().split(/\s+/).filter(Boolean);
+      let retryKey = randomUUID();
+      if (rest.at(-1)?.startsWith("retry=")) {
+        retryKey = rest.pop()!.slice("retry=".length);
+      }
+      const fileArgument = rest.join(" ").trim();
+      if (!sourceId || !fileArgument || !retryKey) {
+        ctx.ui.notify(
+          "Usage: /workspace-upload <source-id> <path> [retry=<key>]",
+          "warning",
+        );
+        return;
+      }
+      const path = resolve(ctx.cwd, fileArgument.replace(/^@/, ""));
+      try {
+        const fileStat = await stat(path);
+        if (!fileStat.isFile() || fileStat.size === 0 || fileStat.size > MAX_SOURCE_BYTES) {
+          ctx.ui.notify("Select a nonempty regular file no larger than 25 MiB.", "warning");
+          return;
+        }
+        const bytes = await readFile(path);
+        const receipt = await uploadExactBytes({
+          baseUrl: url,
+          token: process.env.LUMIO_WORKSPACE_API_TOKEN ?? "",
+          sourceId,
+          filename: basename(path),
+          retryKey,
+          bytes,
+        });
+        ctx.ui.notify(
+          `Uploaded ${receipt.filename}: ${receipt.size} bytes, SHA-256 ${receipt.sha256}.`,
+          "info",
+        );
+        pi.sendUserMessage(
+          `Exact original uploaded as upload_id ${receipt.upload_id} for source ${receipt.source_id}. ` +
+            "Use read_source_material to inspect its normalized text and conversion facts before " +
+            "preparing a pending candidate.",
+        );
+      } catch (error) {
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+      }
+    },
+  });
+
   pi.registerCommand("workspace", {
     description: "Show Lumio workspace connection guidance and model disclosure status",
     handler: async (_args, ctx) => {
@@ -145,7 +214,9 @@ export default function (pi: ExtensionAPI) {
       const policy = modelAllowed ? "allowed" : "blocked";
       const guidance =
         authMode === "local-token"
-          ? "Use /mcp to inspect the token-authenticated connection. Browser sign-in is separate."
+          ? "Use /mcp to inspect the token-authenticated connection. " +
+            "Use /workspace-upload <source-id> <path> [retry=<key>] for exact bytes. " +
+            "Browser sign-in is separate."
           : "Use /mcp to inspect the connection and sign in with the pre-registered public client. " +
             "No client secret is configured in Pi.";
       ctx.ui.notify(

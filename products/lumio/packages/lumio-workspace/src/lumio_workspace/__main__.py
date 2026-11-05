@@ -31,8 +31,13 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     for name in ("grant", "revoke"):
-        command = commands.add_parser(name, help=f"{name} the W1 read capability")
+        command = commands.add_parser(name, help=f"{name} an explicit workspace capability")
         command.add_argument("--object-id", required=True, help="Entra object ID, never an email")
+        command.add_argument(
+            "--capability",
+            choices=("read", "setup", "contribute"),
+            default="read",
+        )
 
     local_user = commands.add_parser("local-user", help="create or disable a stable local user")
     local_user_commands = local_user.add_subparsers(dest="local_user_command", required=True)
@@ -49,6 +54,11 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("grant", "revoke"):
         command = local_membership_commands.add_parser(name)
         command.add_argument("--user-id", required=True)
+        command.add_argument(
+            "--capability",
+            choices=("read", "setup", "contribute"),
+            default="read",
+        )
 
     local_token = commands.add_parser(
         "local-token", help="issue or revoke a purpose-bound local credential"
@@ -69,9 +79,9 @@ def main(argv: list[str] | None = None) -> int:
         workspace_id, state, tenant_id = _state(entra=True)
         actor = Actor(tenant_id=tenant_id, object_id=args.object_id)
         if args.command == "grant":
-            state.grant(workspace_id, actor)
+            state.grant(workspace_id, actor, args.capability)
         else:
-            state.revoke(workspace_id, actor)
+            state.revoke(workspace_id, actor, args.capability)
         return 0
 
     workspace_id, state, _ = _state()
@@ -83,9 +93,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "local-membership":
         actor = local_actor(args.user_id)
         if args.local_membership_command == "grant":
-            state.grant(workspace_id, actor)
+            state.grant(workspace_id, actor, args.capability)
         else:
-            state.revoke(workspace_id, actor)
+            state.revoke(workspace_id, actor, args.capability)
     elif args.local_token_command == "issue":
         credential_id, token = state.issue_local_credential(
             args.user_id, args.purpose, expires_at=args.expires_at
