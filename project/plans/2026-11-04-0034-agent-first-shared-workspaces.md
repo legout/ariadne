@@ -88,6 +88,8 @@ Canonical task: [#86](https://github.com/legout/ariadne/issues/86). Dependencies
 
 Canonical task: [#88](https://github.com/legout/ariadne/issues/88). Dependencies: [W1 / #86](https://github.com/legout/ariadne/issues/86), [L1 / #87](https://github.com/legout/ariadne/issues/87).
 
+**Owner-approved W2 scope refinement — 2026-11-05:** In BB `thr_26ccqihn5b`, the owner limits #88 to new empty and already natively adopted Knowledge Bases. A nonempty unadopted target must be refused with a readable `adoption_required` explanation and no mutation; actual native adoption and its preview remain an explicitly OPEN follow-up, not delivered by #88. Existing adopted targets still require an explicit owner preview before managed attachment/setup; no silent adoption, identity reset or fabricated source history. The parent also authorizes the necessary narrow operator CLI/service README surface for explicit `setup`/`contribute` grant/revoke provisioning; default `read` grants remain unchanged, with no first-login owner inference or reader promotion. Exact byte transfer uses a supported Pi extension command selecting/reading original bytes, not normalized `@path` text. Preserve all other #88 acceptance and synthetic-only/no-integration restrictions.
+
 ## W3 — Another human reviews and publishes exactly that change
 
 Canonical task: [#89](https://github.com/legout/ariadne/issues/89). Dependencies: [W2 / #88](https://github.com/legout/ariadne/issues/88).
