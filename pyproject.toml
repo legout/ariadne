@@ -1,9 +1,10 @@
 # Workspace root — coordination only (spec 0030 §2, spec 0031 §4).
 # NOT a distributable package: this file declares the uv workspace, one
 # development lockfile, shared dev tooling and the shared coordination test
-# selection. The three members are products/ariadne/packages/ariadne-data,
-# products/lumio/packages/lumio-wiki and products/lumio/packages/lumio-lancedb;
-# the Agent keeps its own separate environment and is not a workspace member.
+# selection. The four members are products/ariadne/packages/ariadne-data,
+# products/lumio/packages/lumio-wiki, products/lumio/packages/lumio-lancedb
+# and products/lumio/packages/lumio-workspace; the Agent keeps its own
+# separate environment and is not a workspace member.
 # Product-native suites/lint run scoped from their product areas
 # (products/lumio/pytest.ini and .ruff.toml; the Core member's own config).
 [tool.uv]
@@ -14,6 +15,7 @@ members = [
     "products/ariadne/packages/ariadne-data",
     "products/lumio/packages/lumio-lancedb",
     "products/lumio/packages/lumio-wiki",
+    "products/lumio/packages/lumio-workspace",
 ]
 
 [tool.uv.sources]
@@ -22,6 +24,7 @@ members = [
 ariadne-data = { workspace = true }
 lumio-lancedb = { workspace = true }
 lumio-wiki = { workspace = true }
+lumio-workspace = { workspace = true }
 
 [dependency-groups]
 dev = [

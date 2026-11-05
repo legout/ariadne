@@ -95,7 +95,10 @@ def test_missing_mcp_extra_names_exact_install_command(tmp_path, monkeypatch, ca
     """A base install without [mcp] gets the exact command and no traceback."""
     monkeypatch.chdir(tmp_path)
     _clean_env(monkeypatch)
-    # Simulate the absent distribution (works whether or not mcp is installed).
+    # Simulate absence regardless of import order; monkeypatch restores the SDK.
+    for name in list(sys.modules):
+        if name == "mcp" or name.startswith("mcp."):
+            monkeypatch.delitem(sys.modules, name)
     monkeypatch.setitem(sys.modules, "mcp", None)
 
     rc = cli.main(["mcp", str(VALID)])
