@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from lumio_wiki.location import PublishedFilesystemLocation, open_knowledge_base
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -21,9 +21,15 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.requests import Request
-from starlette.responses import JSONResponse, RedirectResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from .auth import AuthenticationError, EntraBrowserAuth, EntraTokenVerifier, IdentityConfig
+from .auth import (
+    AuthenticationError,
+    EntraBrowserAuth,
+    EntraTokenVerifier,
+    IdentityConfig,
+    LocalTokenVerifier,
+)
 from .state import Actor, WorkspaceState
 
 
@@ -117,22 +123,29 @@ class WorkspaceConfig:
     published_path: Path
     published_version: str | None
     state_path: Path
-    identity: IdentityConfig
+    identity: IdentityConfig | None
+    auth_mode: str = "entra"
 
     @classmethod
     def from_env(cls) -> WorkspaceConfig:
+        auth_mode = _required("LUMIO_WORKSPACE_AUTH_MODE")
         return cls(
             workspace_id=_required("LUMIO_WORKSPACE_ID"),
             external_url=_required("LUMIO_WORKSPACE_EXTERNAL_URL").rstrip("/"),
             published_path=Path(_required("LUMIO_WORKSPACE_PUBLISHED_PATH")),
             published_version=os.environ.get("LUMIO_WORKSPACE_PUBLISHED_VERSION") or None,
             state_path=Path(_required("LUMIO_WORKSPACE_STATE_PATH")),
-            identity=IdentityConfig.from_env(),
+            identity=IdentityConfig.from_env() if auth_mode == "entra" else None,
+            auth_mode=auth_mode,
         )
 
     def __post_init__(self) -> None:
         if not self.workspace_id or not self.external_url.startswith("https://"):
             raise ValueError("workspace ID and an HTTPS external URL are required")
+        if self.auth_mode not in {"local-token", "entra"}:
+            raise ValueError("authentication mode must be local-token or entra")
+        if self.auth_mode == "entra" and self.identity is None:
+            raise ValueError("Entra mode requires identity configuration")
 
 
 def _required(name: str) -> str:
@@ -153,14 +166,22 @@ def _actor() -> Actor:
 def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None = None) -> Any:
     state = WorkspaceState(config.state_path)
     location = PublishedFilesystemLocation(config.published_path, version=config.published_version)
-    browser_auth = EntraBrowserAuth(config.identity)
-    verifier = token_verifier or EntraTokenVerifier(config.identity)
+    browser_auth = None
+    if config.auth_mode == "entra":
+        assert config.identity is not None
+        browser_auth = EntraBrowserAuth(config.identity)
+        default_verifier: TokenVerifier = EntraTokenVerifier(config.identity)
+        issuer = config.identity.issuer
+    else:
+        default_verifier = LocalTokenVerifier(state)
+        issuer = config.external_url
+    verifier = token_verifier or default_verifier
     server = MCPServer(
         "lumio-workspace",
         instructions="Read admitted knowledge only after current workspace membership is verified.",
         token_verifier=verifier,
         auth=AuthSettings(
-            issuer_url=AnyHttpUrl(config.identity.issuer),
+            issuer_url=AnyHttpUrl(issuer),
             resource_server_url=AnyHttpUrl(f"{config.external_url}/mcp"),
             required_scopes=["Knowledge.Read"],
             validate_token_resource=False,
@@ -225,12 +246,58 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             ],
         }
 
-    @server.custom_route("/auth/login", methods=["GET"], include_in_schema=False)
+    @server.custom_route("/auth/login", methods=["GET", "POST"], include_in_schema=False)
     async def login(request: Request) -> Response:
-        return await browser_auth.login(request)
+        if config.auth_mode == "entra":
+            if request.method != "GET":
+                return Response(status_code=405)
+            assert browser_auth is not None
+            return await browser_auth.login(request)
+        if request.method == "GET":
+            return HTMLResponse(
+                "<!doctype html><title>Workspace sign in</title>"
+                '<form method="post" action="/auth/login">'
+                '<label>Browser sign-in token <input name="token" type="password" '
+                'required autocomplete="off"></label>'
+                '<button type="submit">Sign in</button></form>'
+            )
+        if request.url.scheme != "https" or request.headers.get("origin") != config.external_url:
+            return JSONResponse({"error": "same-origin HTTPS POST required"}, status_code=403)
+        if request.headers.get("content-type", "").split(";", 1)[0] != (
+            "application/x-www-form-urlencoded"
+        ):
+            return JSONResponse({"error": "form POST required"}, status_code=415)
+        try:
+            body = await request.body()
+            if len(body) > 4096:
+                raise ValueError("login form too large")
+            fields = parse_qs(
+                body.decode(),
+                keep_blank_values=True,
+                strict_parsing=True,
+                max_num_fields=4,
+            )
+        except (UnicodeDecodeError, ValueError):
+            return JSONResponse({"error": "invalid login form"}, status_code=400)
+        tokens = fields.get("token", [])
+        if len(fields) != 1 or len(tokens) != 1:
+            return JSONResponse({"error": "browser sign-in failed"}, status_code=401)
+        credential = state.authenticate_local_credential(tokens[0], purpose="browser")
+        if credential is None:
+            return JSONResponse({"error": "browser sign-in failed"}, status_code=401)
+        request.session.clear()
+        request.session["actor"] = {
+            "tenant_id": credential.actor.tenant_id,
+            "object_id": credential.actor.object_id,
+        }
+        request.session["local_credential_id"] = credential.credential_id
+        return RedirectResponse("/workspace", status_code=303)
 
     @server.custom_route("/auth/callback", methods=["GET"], include_in_schema=False)
     async def callback(request: Request) -> Response:
+        if config.auth_mode != "entra":
+            return Response(status_code=404)
+        assert browser_auth is not None
         try:
             actor = await browser_auth.authenticate_callback(request)
         except AuthenticationError:

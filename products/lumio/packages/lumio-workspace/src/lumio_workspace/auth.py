@@ -17,7 +17,7 @@ from authlib.jose.errors import JoseError
 from mcp.server.auth.provider import AccessToken
 from starlette.requests import Request
 
-from .state import Actor
+from .state import Actor, WorkspaceState
 
 
 class AuthenticationError(Exception):
@@ -70,6 +70,31 @@ def _required(name: str) -> str:
     if not value:
         raise ValueError(f"missing required configuration: {name}")
     return value
+
+
+class LocalTokenVerifier:
+    """Authenticate only current, purpose-bound local API credentials."""
+
+    def __init__(self, state: WorkspaceState) -> None:
+        self.state = state
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        credential = self.state.authenticate_local_credential(token, purpose="api")
+        if credential is None:
+            return None
+        return AccessToken(
+            token=token,
+            client_id=f"local:{credential.actor.object_id}",
+            scopes=["Knowledge.Read"],
+            expires_at=credential.expires_at,
+            resource="lumio-workspace",
+            subject=credential.actor.object_id,
+            claims={
+                "tid": credential.actor.tenant_id,
+                "oid": credential.actor.object_id,
+                "credential_id": credential.credential_id,
+            },
+        )
 
 
 class EntraTokenVerifier:
