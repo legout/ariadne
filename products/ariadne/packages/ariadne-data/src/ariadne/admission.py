@@ -717,6 +717,18 @@ def _retained_confirmations(
 # ------------------------------------------------------------ the human commands
 
 
+def _resolve_private_sources(root: Path, private_profile: str | Path):
+    from lumio_wiki.private_profile import load_private_profile, resolve_private_profile
+
+    kb_root = root / "knowledge"
+    profile = load_private_profile(private_profile, kb_root=kb_root)
+    return resolve_private_profile(
+        profile,
+        kb_root=kb_root,
+        needs=frozenset({"registry", "artifacts"}),
+    )
+
+
 def overall_review(
     project,
     proposal,
@@ -728,11 +740,18 @@ def overall_review(
     scope=("public",),
     confirm_mappings=None,
     storage_profile=None,
+    private_profile=None,
 ):
     """Operator-only composite preview; no publication or activation."""
     from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
 
     project = Path(project).resolve()
+    root = project / proposals.WORKTREES_REL / proposal
+    if private_profile is not None and lumio_context.selector(root) is None:
+        raise ValueError("a private source profile cannot be used for standalone admission")
+    source_context = (
+        _resolve_private_sources(root, private_profile) if private_profile is not None else None
+    )
     displayed = admission_review(
         project, proposal, revision, reviewed_digest, confirm_mappings=confirm_mappings
     )
@@ -749,6 +768,7 @@ def overall_review(
         scope,
         confirm_mappings or [],
         storage_profile=storage_profile,
+        source_context=source_context,
     )
 
 
@@ -861,6 +881,7 @@ def admit_revision(
     confirm_mappings: list[str] | tuple[str, ...] | None = None,
     overall_preview: dict | None = None,
     confirmed_overall_digest: str | None = None,
+    private_profile=None,
 ) -> dict:
     """HUMAN-ONLY activation (the ``--confirm`` half of ``ariadne-admit``):
     record the operator's explicit confirmation for the exact reviewed revision
@@ -917,8 +938,17 @@ def admit_revision(
             evidence = _verified_evidence(project, proposal, revision, review)
             from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
 
-            selected_context = lumio_context.selector(project / proposals.WORKTREES_REL / proposal)
+            root = project / proposals.WORKTREES_REL / proposal
+            selected_context = lumio_context.selector(root)
+            source_context = None
+            if selected_context is None and private_profile is not None:
+                raise ValueError("a private source profile cannot be used for standalone admission")
             if selected_context is not None:
+                source_context = (
+                    _resolve_private_sources(root, private_profile)
+                    if private_profile is not None
+                    else None
+                )
                 if (
                     not overall_preview
                     or not confirmed_overall_digest
@@ -943,6 +973,7 @@ def admit_revision(
                     overall_preview["manifest"]["visibility_scope"],
                     confirm_mappings or [],
                     storage_profile=overall_preview["manifest"].get("storage_profile"),
+                    source_context=source_context,
                 )
                 if recomputed != overall_preview:
                     raise ValueError("composite review changed; new overall consent is required")
@@ -1076,7 +1107,9 @@ def admit_revision(
             }
             if selected_context is not None:
                 assert overall_preview is not None
-                publication_outcome = lumio_context.publish_and_verify(overall_preview)
+                publication_outcome = lumio_context.publish_and_verify(
+                    overall_preview, source_context=source_context
+                )
                 try:
                     descriptor["bound_release"] = overall_preview["manifest"]
                     descriptor["overall_confirmation"] = {
@@ -1445,11 +1478,18 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="declared Knowledge storage profile required for an s3:// context destination",
     )
+    parser.add_argument(
+        "--context-private-profile",
+        default=None,
+        help="explicit Lumio private source profile for managed overall admission",
+    )
     parser.add_argument("--context-expected-current", default="none")
     parser.add_argument("--visibility", action="append", default=None)
     parser.add_argument("--overall-digest", help="exact displayed composite confirmation digest")
     try:
         args = parser.parse_args(argv)
+        if args.context_private_profile and not args.context_destination:
+            raise UsageError("--context-private-profile requires --context-destination")
         composite = (
             overall_review(
                 args.project,
@@ -1461,6 +1501,7 @@ def main(argv: list[str] | None = None) -> int:
                 scope=args.visibility or ["public"],
                 confirm_mappings=args.confirm_mappings,
                 storage_profile=args.context_storage_profile,
+                private_profile=args.context_private_profile,
             )
             if args.context_destination
             else None
@@ -1475,6 +1516,7 @@ def main(argv: list[str] | None = None) -> int:
                 confirm_mappings=args.confirm_mappings,
                 overall_preview=composite,
                 confirmed_overall_digest=args.overall_digest,
+                private_profile=args.context_private_profile,
             )
         else:
             result = (

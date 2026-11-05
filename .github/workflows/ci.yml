@@ -43,7 +43,7 @@ jobs:
   # checked-out commit — no second repository and no public-SDK substitution
   # in this source-development job (the Core RELEASE job keeps its exact
   # published-producer pin). Separates the two test namespaces: this job runs
-  # Core's member suite (plus the two paired integration modules, now under
+  # Core's member suite (plus the paired integration modules, now under
   # integration/tests) under the member's own lint/pytest config, in a fresh
   # wheel environment without the optional LanceDB adapter.
   core-source:
@@ -76,6 +76,7 @@ jobs:
             --ignore=tests/test_s3_storage_access.py \
             --ignore=tests/test_s3_storage_profiles.py \
             "$GITHUB_WORKSPACE/integration/tests/lumio_metric_mvp.py" \
+            "$GITHUB_WORKSPACE/integration/tests/lumio_managed_sources.py" \
             "$GITHUB_WORKSPACE/integration/tests/lumio_local_context.py" \
             tests
         working-directory: products/ariadne/packages/ariadne-data
