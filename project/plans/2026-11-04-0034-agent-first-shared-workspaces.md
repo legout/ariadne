@@ -4,7 +4,7 @@
 
 Canonical task bodies now live in the linked GitHub issues; this file owns the interface/dependency/coverage overview, not duplicate task instructions.
 
-Status: **owner-approved implementation plan, revision 3; local-auth amendment ticketized**. Original date: 2026-11-04; local-auth planning: 2026-11-05.
+Status: **owner-approved implementation plan, revision 4; scoped W2 synthetic-development grant**. Original date: 2026-11-04; local-auth planning: 2026-11-05.
 
 **Scoped design approval — 2026-11-05:** Owner approved spec0034 revision 4's local-token design in BB thread `thr_26ccqihn5b` and requested this bounded plan before implementation. The owner subsequently approved plan revision 3 and authorized supervised isolated A1/A2 implementation with the specified focused checks and reviews in the same BB thread. This execution grant permits isolated candidate preparation only; no main integration, push, deployment, release, issue mutation or live Entra work. Existing ticket snapshots remain historical revision-3 sources; do not execute their superseded Entra-first prerequisites or silently rewrite them. This local amendment defines only new authentication work, not duplicate bodies for W2–W6.
 
@@ -83,6 +83,8 @@ Operational records contain actor/workspace/action/input identity, native base/c
 Canonical task: [#86](https://github.com/legout/ariadne/issues/86). Dependencies: no feature-task prerequisite; follow the approved delivery order.
 
 ## W2 — Initialize and submit a real text document without contributor Git
+
+**Scoped W2 development authorization — 2026-11-05:** In BB `thr_26ccqihn5b`, the owner authorizes isolated implementation of #88 on integrated, locally checked W1/L1 interfaces at `470d7b9a5406dd0a31bae1663aad91062b5dc172`, despite outstanding live qualification. #87/#99 are completed; #86/#100 remain open. This overrides only the W1-live-acceptance prerequisite for synthetic development, not feature acceptance, actual human/browser approval, or later task authority. Use BB Pi workers/reviewers and work largely autonomously. All data and credentials are synthetic; the documented default-Pi token exposure remains an accepted development-only risk, not fixed. No main integration/merge, push, deployment, release or live Entra without further authorization. The explicit request permits recording this grant in the plan and #88 only; do not close #86 or change native blocker edges to imply live qualification.
 
 Canonical task: [#88](https://github.com/legout/ariadne/issues/88). Dependencies: [W1 / #86](https://github.com/legout/ariadne/issues/86), [L1 / #87](https://github.com/legout/ariadne/issues/87).
 
