@@ -32,6 +32,7 @@ export default function (pi: ExtensionAPI) {
   );
   const missing = !url || !clientId || !scope || !metadataUrl;
   let modelAllowed = false;
+  let summaryNeedsDisclosure = false;
 
   function applyModelPolicy(ctx: ExtensionContext): void {
     modelAllowed = allowedModels.has(modelName(ctx));
@@ -77,13 +78,21 @@ export default function (pi: ExtensionAPI) {
     }
   });
   pi.on("session_before_tree", (event, ctx) => {
-    if (event.preparation.userWantsSummary && !modelAllowed && hasWorkspaceMaterial(ctx)) {
+    summaryNeedsDisclosure = event.preparation.userWantsSummary && hasWorkspaceMaterial(ctx);
+    if (summaryNeedsDisclosure && !modelAllowed) {
       ctx.ui.setStatus(
         "lumio-workspace",
         `branch summary cancelled: retained workspace content is not allowed for ${modelName(ctx)}`,
       );
       return { cancel: true };
     }
+  });
+  pi.on("session_tree", (event) => {
+    if (event.summaryEntry && summaryNeedsDisclosure) {
+      // A derived summary keeps the abandoned branch's disclosure provenance.
+      pi.appendEntry(DISCLOSURE_ENTRY);
+    }
+    summaryNeedsDisclosure = false;
   });
   pi.on("before_provider_request", (_event, ctx) => {
     if (!modelAllowed && hasWorkspaceMaterial(ctx)) {

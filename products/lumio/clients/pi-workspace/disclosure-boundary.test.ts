@@ -38,13 +38,13 @@ function model(id: string) {
 const allowedModel = model("allowed");
 const forbiddenModel = model("forbidden");
 
-function successfulResponse() {
+function successfulResponse(content = "ok") {
   const chunk = {
     id: "chatcmpl-fixture",
     object: "chat.completion.chunk",
     created: 1,
     model: "fixture",
-    choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }],
+    choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason: null }],
   };
   const done = {
     ...chunk,
@@ -86,8 +86,14 @@ async function createSession(
             ai.openAICompletionsApi().streamSimple(requestModel, context, {
               ...options,
               fetch: async (_input: unknown, init?: { body?: unknown }) => {
-                calls.push(String(init?.body ?? ""));
-                return successfulResponse();
+                const body = String(init?.body ?? "");
+                calls.push(body);
+                const derivedSummary = body.includes(
+                  "Create a structured summary of this conversation branch",
+                ) && body.includes(SENTINEL)
+                  ? `Derived private branch summary: ${SENTINEL}`
+                  : "ok";
+                return successfulResponse(derivedSummary);
               },
             }),
         });
@@ -143,9 +149,19 @@ function appendWorkspaceHistory(manager: any) {
     timestamp: 3,
   });
   manager.appendMessage({
+    role: "assistant",
+    content: [{ type: "text", text: `The approved page says ${SENTINEL}` }],
+    api: "openai-completions",
+    provider: "fixture",
+    model: "allowed",
+    usage: zeroUsage,
+    stopReason: "stop",
+    timestamp: 4,
+  });
+  manager.appendMessage({
     role: "user",
     content: "Continue with the approved result",
-    timestamp: 4,
+    timestamp: 5,
   });
 }
 
@@ -161,6 +177,8 @@ test("forbidden model cannot send retained workspace history after switch or res
   let manual: any;
   let automatic: any;
   let branch: any;
+  let allowedBranch: any;
+  let resumedBranch: any;
   try {
     const manager = agent.SessionManager.create(cwd, `${cwd}/sessions`);
     appendWorkspaceHistory(manager);
@@ -254,6 +272,47 @@ test("forbidden model cannot send retained workspace history after switch or res
       branchCancelled: true,
       branchRequests: [],
     });
+
+    const allowedBranchManager = agent.SessionManager.create(cwd, `${cwd}/branch-sessions`);
+    appendWorkspaceHistory(allowedBranchManager);
+    allowedBranch = await createSession(cwd, allowedBranchManager, allowedModel, calls);
+    const allowedBranchTarget = allowedBranch.sessionManager
+      .getBranch()
+      .find((entry: any) => entry.type === "message" && entry.message.role === "user").id;
+    const summaryStart = calls.length;
+    const allowedBranchResult = await allowedBranch.navigateTree(allowedBranchTarget, {
+      summarize: true,
+    });
+    const summaryEnd = calls.length;
+    await allowedBranch.setModel(forbiddenModel);
+    await allowedBranch.prompt("The derived summary must not leave Pi");
+    const forbiddenEnd = calls.length;
+    allowedBranch.dispose();
+    allowedBranch = undefined;
+
+    resumedBranch = await createSession(
+      cwd,
+      agent.SessionManager.open(allowedBranchManager.getSessionFile()),
+      forbiddenModel,
+      calls,
+    );
+    await resumedBranch.prompt("The restored derived summary must not leave Pi");
+
+    expect({
+      summaryRequests: summaryEnd - summaryStart,
+      summaryInputContainsSentinel: calls[summaryStart]?.includes(SENTINEL),
+      summaryAttached: allowedBranchResult.summaryEntry?.type,
+      summaryContainsSentinel: allowedBranchResult.summaryEntry?.summary.includes(SENTINEL),
+      forbiddenRequests: calls.slice(summaryEnd, forbiddenEnd),
+      resumedRequests: calls.slice(forbiddenEnd),
+    }).toEqual({
+      summaryRequests: 1,
+      summaryInputContainsSentinel: true,
+      summaryAttached: "branch_summary",
+      summaryContainsSentinel: true,
+      forbiddenRequests: [],
+      resumedRequests: [],
+    });
   } finally {
     session?.dispose();
     resumed?.dispose();
@@ -262,6 +321,8 @@ test("forbidden model cannot send retained workspace history after switch or res
     manual?.dispose();
     automatic?.dispose();
     branch?.dispose();
+    allowedBranch?.dispose();
+    resumedBranch?.dispose();
     if (previousAllowlist === undefined) delete process.env.LUMIO_WORKSPACE_ALLOWED_MODELS;
     else process.env.LUMIO_WORKSPACE_ALLOWED_MODELS = previousAllowlist;
   }
