@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Workspace setup</title>
+  </head>
+  <body>
+    <main>
+      <h1>Workspace setup</h1>
+      <p>Review the exact managed setup before confirming it. No content is published.</p>
+      <dl>
+        <dt>Workspace</dt><dd>$workspace</dd>
+        <dt>Setup kind</dt><dd>$kind</dd>
+        <dt>Knowledge Base Namespace</dt><dd>$namespace</dd>
+        <dt>Authoring location</dt><dd>$target</dd>
+        <dt>Current base</dt><dd>$base</dd>
+      </dl>
+      <h2>Actions</h2>
+      <ul>
+        $actions
+      </ul>
+      <form method="post" action="/setup">
+        <input type="hidden" name="digest" value="$digest">
+        <button type="submit">Confirm this setup</button>
+      </form>
+    </main>
+  </body>
+</html>

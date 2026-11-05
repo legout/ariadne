@@ -30,7 +30,10 @@ from .auth import (
     IdentityConfig,
     LocalTokenVerifier,
 )
-from .state import Actor, WorkspaceState
+from .contributions import ContributionError, ContributionService
+from .intake import IntakeService, UploadError
+from .setup import SetupError, apply_setup, preview_setup, render_setup
+from .state import Actor, RetryConflict, WorkspaceState
 
 
 class WorkspaceError(ToolError):
@@ -135,6 +138,14 @@ class WorkspaceConfig:
     state_path: Path
     identity: IdentityConfig | None
     auth_mode: str = "entra"
+    authoring_path: Path | None = None
+    private_profile_path: Path | None = None
+    private_root: Path | None = None
+    namespace: str | None = None
+
+    @property
+    def operational_root(self) -> Path:
+        return self.private_root or self.state_path.parent / "private"
 
     @classmethod
     def from_env(cls) -> WorkspaceConfig:
@@ -147,6 +158,10 @@ class WorkspaceConfig:
             state_path=Path(_required("LUMIO_WORKSPACE_STATE_PATH")),
             identity=IdentityConfig.from_env() if auth_mode == "entra" else None,
             auth_mode=auth_mode,
+            authoring_path=_optional_path("LUMIO_WORKSPACE_AUTHORING_PATH"),
+            private_profile_path=_optional_path("LUMIO_WORKSPACE_PRIVATE_PROFILE"),
+            private_root=_optional_path("LUMIO_WORKSPACE_PRIVATE_ROOT"),
+            namespace=os.environ.get("LUMIO_WORKSPACE_NAMESPACE") or None,
         )
 
     def __post_init__(self) -> None:
@@ -165,6 +180,11 @@ def _required(name: str) -> str:
     return value
 
 
+def _optional_path(name: str) -> Path | None:
+    value = os.environ.get(name)
+    return Path(value) if value else None
+
+
 def _actor() -> Actor:
     token = get_access_token()
     claims = token.claims if token else None
@@ -173,8 +193,20 @@ def _actor() -> Actor:
     return Actor(tenant_id=claims["tid"], object_id=claims["oid"])
 
 
+def _browser_actor(request: Request) -> Actor | None:
+    raw = request.session.get("actor")
+    if not isinstance(raw, dict):
+        return None
+    return Actor(
+        tenant_id=str(raw.get("tenant_id", "")),
+        object_id=str(raw.get("object_id", "")),
+    )
+
+
 def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None = None) -> Any:
     state = WorkspaceState(config.state_path)
+    intake = IntakeService(state, config.operational_root)
+    setup_previews: dict[str, tuple[Actor, Any]] = {}
     location = PublishedFilesystemLocation(config.published_path, version=config.published_version)
     browser_auth = None
     if config.auth_mode == "entra":
@@ -188,7 +220,10 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
     verifier = token_verifier or default_verifier
     server = MCPServer(
         "lumio-workspace",
-        instructions="Read admitted knowledge only after current workspace membership is verified.",
+        instructions=(
+            "Read admitted knowledge and prepare pending contributions only after current "
+            "workspace permission is verified."
+        ),
         token_verifier=verifier,
         auth=AuthSettings(
             issuer_url=AnyHttpUrl(issuer),
@@ -256,6 +291,168 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             ],
         }
 
+    def contribution_service() -> ContributionService:
+        if (
+            config.authoring_path is None
+            or config.private_profile_path is None
+        ):
+            raise WorkspaceError("workspace contribution is not configured")
+        return ContributionService(
+            state,
+            intake,
+            workspace_id=config.workspace_id,
+            external_url=config.external_url,
+            authoring_path=config.authoring_path,
+            profile_path=config.private_profile_path,
+        )
+
+    @server.tool()
+    def read_source_material(upload_id: str) -> dict[str, Any]:
+        """Return permitted normalized text and conversion facts for one exact upload."""
+        actor = _actor()
+        if not state.permits(config.workspace_id, actor, "contribute"):
+            raise WorkspaceError("workspace contribution is not available")
+        try:
+            material, _facts = intake.extract(config.workspace_id, actor, upload_id)
+        except UploadError as exc:
+            raise WorkspaceError(str(exc)) from exc
+        return material
+
+    @server.tool()
+    def prepare_contribution(
+        retry_key: str,
+        base_revision: str,
+        sources: list[dict],
+        pages: list[dict],
+    ) -> dict[str, Any]:
+        """Prepare one native pending candidate in an isolated registered worktree."""
+        actor = _actor()
+        if not state.permits(config.workspace_id, actor, "contribute"):
+            raise WorkspaceError("workspace contribution is not available")
+        try:
+            return contribution_service().prepare(
+                actor,
+                retry_key=retry_key,
+                base_revision=base_revision,
+                sources=sources,
+                pages=pages,
+            )
+        except (ContributionError, RetryConflict) as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    @server.tool()
+    def get_task(task_id: str) -> dict[str, Any]:
+        """Return actual actor-scoped native task state after reconnect."""
+        actor = _actor()
+        if not state.permits(config.workspace_id, actor, "contribute"):
+            raise WorkspaceError("workspace contribution is not available")
+        try:
+            return contribution_service().get(actor, task_id)
+        except ContributionError as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    @server.custom_route("/uploads", methods=["POST"], include_in_schema=False)
+    async def upload(request: Request) -> Response:
+        if request.url.scheme != "https":
+            return JSONResponse({"error": "HTTPS required"}, status_code=403)
+        try:
+            actor = _actor()
+        except WorkspaceError:
+            return JSONResponse({"error": "API authentication required"}, status_code=401)
+        if not state.permits(config.workspace_id, actor, "contribute"):
+            return JSONResponse(
+                {"error": "workspace contribution is not available"}, status_code=403
+            )
+        if request.headers.get("content-type", "").split(";", 1)[0] != (
+            "application/octet-stream"
+        ):
+            return JSONResponse({"error": "exact-byte stream required"}, status_code=415)
+        try:
+            raw = await intake.read_bounded(request.stream())
+            result = intake.save(
+                config.workspace_id,
+                actor,
+                request.headers.get("x-lumio-source-id", ""),
+                request.headers.get("x-lumio-filename", ""),
+                request.headers.get("x-lumio-retry-key", ""),
+                raw,
+            )
+        except RetryConflict as exc:
+            return JSONResponse({"error": str(exc), "code": "retry_conflict"}, status_code=409)
+        except UploadError as exc:
+            status = {
+                "source_too_large": 413,
+                "unsupported_original": 415,
+                "unsafe_path": 400,
+                "upload_not_found": 404,
+            }.get(exc.code, 400)
+            return JSONResponse({"error": str(exc), "code": exc.code}, status_code=status)
+        return JSONResponse(result)
+
+    @server.custom_route("/setup", methods=["GET", "POST"], include_in_schema=False)
+    async def setup(request: Request) -> Response:
+        actor = _browser_actor(request)
+        if actor is None:
+            if request.method == "GET":
+                return RedirectResponse("/auth/login", status_code=303)
+            return JSONResponse({"error": "browser authentication required"}, status_code=401)
+        if not state.permits(config.workspace_id, actor, "setup"):
+            return JSONResponse({"error": "workspace setup is not available"}, status_code=403)
+        if config.authoring_path is None or config.private_profile_path is None:
+            return JSONResponse({"error": "workspace setup is not configured"}, status_code=503)
+        if request.method == "POST":
+            if (
+                request.url.scheme != "https"
+                or request.headers.get("origin") != config.external_url
+            ):
+                return JSONResponse({"error": "same-origin HTTPS POST required"}, status_code=403)
+            if request.headers.get("content-type", "").split(";", 1)[0] != (
+                "application/x-www-form-urlencoded"
+            ):
+                return JSONResponse({"error": "form POST required"}, status_code=415)
+            try:
+                body = await request.body()
+                if len(body) > 8192:
+                    raise ValueError("setup form too large")
+                fields = parse_qs(
+                    body.decode(),
+                    keep_blank_values=True,
+                    strict_parsing=True,
+                    max_num_fields=2,
+                )
+            except (UnicodeDecodeError, ValueError):
+                return JSONResponse({"error": "invalid setup form"}, status_code=400)
+            digests = fields.get("digest", [])
+            if len(fields) != 1 or len(digests) != 1:
+                return JSONResponse({"error": "one setup digest is required"}, status_code=400)
+            selected = setup_previews.get(digests[0])
+            if selected is None or selected[0] != actor:
+                return JSONResponse(
+                    {"error": "a fresh owner setup preview is required"},
+                    status_code=409,
+                )
+            try:
+                result = apply_setup(state, actor, selected[1])
+            except SetupError as exc:
+                return JSONResponse(
+                    {"error": str(exc), "code": exc.code},
+                    status_code=409,
+                )
+            setup_previews.pop(digests[0], None)
+            return JSONResponse(result)
+        try:
+            preview = preview_setup(
+                workspace_id=config.workspace_id,
+                authoring_path=config.authoring_path,
+                profile_path=config.private_profile_path,
+                private_root=config.operational_root,
+                namespace=config.namespace,
+            )
+        except SetupError as exc:
+            return JSONResponse({"error": str(exc), "code": exc.code}, status_code=409)
+        setup_previews[preview.digest] = (actor, preview)
+        return HTMLResponse(render_setup(preview))
+
     @server.custom_route("/auth/login", methods=["GET", "POST"], include_in_schema=False)
     async def login(request: Request) -> Response:
         if config.auth_mode == "entra":
@@ -318,13 +515,9 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
 
     @server.custom_route("/workspace", methods=["GET"], include_in_schema=False)
     async def browser_status(request: Request) -> Response:
-        raw = request.session.get("actor")
-        if not isinstance(raw, dict):
+        actor = _browser_actor(request)
+        if actor is None:
             return RedirectResponse("/auth/login", status_code=303)
-        actor = Actor(
-            tenant_id=str(raw.get("tenant_id", "")),
-            object_id=str(raw.get("object_id", "")),
-        )
         capabilities = state.capabilities(config.workspace_id, actor)
         if "read" not in capabilities:
             return JSONResponse({"error": "workspace access is not available"}, status_code=403)

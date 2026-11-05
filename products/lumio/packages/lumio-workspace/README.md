@@ -2,7 +2,19 @@
 
 Optional Python 3.14 deployment package for one owner-managed Lumio workspace. It serves an explicitly configured, immutable Published Version through authenticated Streamable HTTP MCP and keeps browser sessions separate from Pi API access tokens.
 
-This W1 slice provides only `workspace_status`, `read_knowledge`, and `search_knowledge`. It does not upload, initialize, contribute, review, admit, or publish content. Live local-token/private-HTTPS client interoperability and the deferred live Entra leg remain unqualified until their owner-approved fixtures are run.
+The W1 surface provides `workspace_status`, `read_knowledge`, and `search_knowledge`. The isolated W2 surface adds owner-confirmed native setup, exact-byte upload, normalized text/Markdown material, and pending native candidates. It does not review, admit, or publish content. Live local-token/private-HTTPS client interoperability and the deferred live Entra leg remain unqualified until their owner-approved fixtures are run.
+
+W2 supports only new-empty and already natively adopted Knowledge Bases. A nonempty unadopted target is refused as `adoption_required` without mutation; native adoption/preview remains open follow-up work. Setup and contribution require separate, explicitly provisioned capabilities; no first-login owner or promotion from read is inferred. Set `LUMIO_WORKSPACE_AUTHORING_PATH`, `LUMIO_WORKSPACE_PRIVATE_PROFILE`, and optionally `LUMIO_WORKSPACE_PRIVATE_ROOT` to enable them. New-empty setup also needs an explicit `LUMIO_WORKSPACE_NAMESPACE`. Uploads accept only `.txt`, `.md`, and `.markdown` originals up to 25 MiB.
+
+For local-token mode, grant or revoke capabilities independently (the default remains `read`):
+
+```sh
+lumio-workspace local-membership grant --user-id OWNER_ID --capability setup
+lumio-workspace local-membership grant --user-id CONTRIBUTOR_ID --capability contribute
+lumio-workspace local-membership revoke --user-id CONTRIBUTOR_ID --capability contribute
+```
+
+Entra membership commands accept the same `--capability` option. Upload uses `POST /uploads` with an API credential and `application/octet-stream`; setup uses the separately browser-authenticated, same-origin `/setup` preview and POST.
 
 See [Shared workspace how-to](../../docs/howto-shared-workspace.md) for registration, configuration, owner bootstrap, and client connection.
 
@@ -31,4 +43,4 @@ lumio-workspace local-membership revoke --user-id USER_ID
 
 API credentials work only as API bearer tokens. Browser credentials work only in the same-origin HTTPS form POST at `/auth/login`; the GET form is inert and the raw credential is never placed in a URL. The resulting opaque server-managed session retains its source credential ID. Expiry, revocation, and user disable are checked on subsequent API/browser use, while membership removal is enforced independently.
 
-The existing Entra `grant` and `revoke` commands still require `LUMIO_WORKSPACE_TENANT_ID` and `--object-id`.
+The existing Entra `grant` and `revoke` commands still require `LUMIO_WORKSPACE_TENANT_ID` and `--object-id`; omitting `--capability` preserves their original read-only behavior.
