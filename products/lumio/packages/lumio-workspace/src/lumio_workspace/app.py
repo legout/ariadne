@@ -321,11 +321,12 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
     @server.tool()
     def prepare_contribution(
         retry_key: str,
-        base_revision: str,
         sources: list[dict],
         pages: list[dict],
+        base_revision: str | None = None,
+        continuation_task_id: str | None = None,
     ) -> dict[str, Any]:
-        """Prepare one native pending candidate in an isolated registered worktree."""
+        """Prepare a native candidate from a server-selected base or task continuation."""
         actor = _actor()
         if not state.permits(config.workspace_id, actor, "contribute"):
             raise WorkspaceError("workspace contribution is not available")
@@ -334,6 +335,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
                 actor,
                 retry_key=retry_key,
                 base_revision=base_revision,
+                continuation_task_id=continuation_task_id,
                 sources=sources,
                 pages=pages,
             )

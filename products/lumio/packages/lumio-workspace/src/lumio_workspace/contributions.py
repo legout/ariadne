@@ -35,6 +35,7 @@ from lumio_wiki.private_profile import (
 )
 
 from .intake import IntakeService, UploadError
+from .setup import SetupError, current_attachment_digest
 from .state import Actor, Operation, WorkspaceState
 
 _FULL_COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -134,21 +135,70 @@ class ContributionService:
                 "native private profile is unavailable", code="invalid_profile"
             ) from exc
 
+    def _require_attachment(self) -> None:
+        try:
+            digest = current_attachment_digest(
+                target=self.authoring_path,
+                profile_path=self.profile_path,
+            )
+        except SetupError as exc:
+            raise ContributionError(str(exc), code=exc.code) from exc
+        if not self.state.has_setup_attachment(self.workspace_id, digest):
+            raise ContributionError(
+                "an owner must confirm setup for the current authoring target and private binding",
+                code="setup_required",
+            )
+
+    def _managed_base(
+        self,
+        actor: Actor,
+        base_revision: str | None,
+        continuation_task_id: str | None,
+    ) -> str:
+        if continuation_task_id is not None:
+            continued = self.state.get_operation(
+                self.workspace_id,
+                actor,
+                "prepare_contribution",
+                continuation_task_id,
+            )
+            if continued is None or continued.status != "pending_review":
+                raise ContributionError(
+                    "continuation must name this actor's pending candidate",
+                    code="invalid_continuation",
+                )
+            managed = continued.response.get("native_candidate", "")
+        else:
+            repo_root, _subtree = resolve_repository(self.authoring_path)
+            managed = _git(repo_root, "rev-parse", "HEAD")
+        if not _FULL_COMMIT.fullmatch(managed):
+            raise ContributionError(
+                "the managed authoring base is unavailable", code="invalid_base"
+            )
+        if base_revision is not None and base_revision != managed:
+            raise ContributionError(
+                "base_revision does not match the server-selected authoring base",
+                code="invalid_base",
+            )
+        return managed
+
     def prepare(
         self,
         actor: Actor,
         *,
         retry_key: str,
-        base_revision: str,
         sources: list[dict],
         pages: list[dict],
+        base_revision: str | None = None,
+        continuation_task_id: str | None = None,
     ) -> dict:
         if not 1 <= len(retry_key) <= 200 or not retry_key.isprintable():
             raise ContributionError("retry key must be printable and at most 200 characters")
-        if not _FULL_COMMIT.fullmatch(base_revision):
+        if base_revision is not None and not _FULL_COMMIT.fullmatch(base_revision):
             raise ContributionError("base_revision must be a full Git commit", code="invalid_base")
         if not sources or not pages:
             raise ContributionError("at least one source and one page are required")
+        self._require_attachment()
         checked_pages = []
         for item in pages:
             try:
@@ -174,7 +224,8 @@ class ContributionService:
             checked_sources.append((operation, path, intent))
         input_digest = _digest(
             {
-                "base_revision": base_revision,
+                "requested_base": base_revision,
+                "continuation_task_id": continuation_task_id,
                 "sources": [
                     {
                         "source_id": operation.source_id,
@@ -189,38 +240,86 @@ class ContributionService:
                 ],
             }
         )
-        operation, created = self.state.start_operation(
+        operation, _created = self.state.start_operation(
             self.workspace_id,
             actor,
             "prepare_contribution",
             retry_key,
             input_digest,
         )
-        if not created and operation.response:
+        if operation.status != "pending":
             return operation.response
-        try:
-            response = self._prepare_native(
+        with self.state.operation_lock(operation) as acquired:
+            if not acquired:
+                return {
+                    **operation.response,
+                    "task_id": operation.operation_id,
+                    "status": "pending",
+                    "published": False,
+                }
+            current = self.state.get_operation(
+                self.workspace_id,
                 actor,
-                operation,
-                base_revision=base_revision,
-                sources=checked_sources,
-                pages=checked_pages,
-                conversion=conversion,
+                "prepare_contribution",
+                operation.operation_id,
             )
-        except (ContributionError, AuthoringJourneyError, AuthoringReviewError, UploadError) as exc:
-            code = getattr(exc, "code", "invalid_contribution")
-            response = {
-                "task_id": operation.operation_id,
-                "status": "failed",
-                "error": str(exc),
-                "code": code,
-            }
-            self.state.finish_operation(self.workspace_id, actor, operation, "failed", response)
-            raise ContributionError(str(exc), code=code) from exc
-        self.state.finish_operation(
-            self.workspace_id, actor, operation, "pending_review", response
-        )
-        return response
+            if current is None:
+                raise ContributionError("task is not available", code="task_not_found")
+            if current.status != "pending":
+                return current.response
+            try:
+                managed_base = current.response.get("native_base")
+                if managed_base is None:
+                    managed_base = self._managed_base(
+                        actor,
+                        base_revision,
+                        continuation_task_id,
+                    )
+                    self.state.finish_operation(
+                        self.workspace_id,
+                        actor,
+                        current,
+                        "pending",
+                        {
+                            "task_id": current.operation_id,
+                            "status": "pending",
+                            "native_base": managed_base,
+                            "published": False,
+                        },
+                    )
+                elif base_revision is not None and managed_base != base_revision:
+                    raise ContributionError(
+                        "base_revision does not match the persisted authoring base",
+                        code="invalid_base",
+                    )
+                response = self._prepare_native(
+                    actor,
+                    current,
+                    base_revision=managed_base,
+                    sources=checked_sources,
+                    pages=checked_pages,
+                    conversion=conversion,
+                )
+            except (
+                ContributionError,
+                AuthoringJourneyError,
+                AuthoringReviewError,
+                GitAuthoringError,
+                UploadError,
+            ) as exc:
+                code = getattr(exc, "code", "invalid_contribution")
+                response = {
+                    "task_id": current.operation_id,
+                    "status": "failed",
+                    "error": str(exc),
+                    "code": code,
+                }
+                self.state.finish_operation(self.workspace_id, actor, current, "failed", response)
+                raise ContributionError(str(exc), code=code) from exc
+            self.state.finish_operation(
+                self.workspace_id, actor, current, "pending_review", response
+            )
+            return response
 
     def _prepare_native(
         self,
@@ -233,6 +332,7 @@ class ContributionService:
         conversion: list[dict],
     ) -> dict:
         del actor  # Native work is bound to the already-persisted actor-scoped operation.
+        self._require_attachment()
         resources = self._resources()
         if resources.source_registry is None or resources.artifact_store is None:
             raise ContributionError(

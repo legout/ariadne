@@ -120,10 +120,21 @@ def preview_setup(
         )
     except (EmptySetupError, PrivateProfileError, SourceReferenceError, GitAuthoringError) as exc:
         raise SetupError(str(exc), code=getattr(exc, "code", "invalid_setup")) from exc
+    commit_action = {
+        "kind": "commit",
+        "path": str(target),
+        "detail": (
+            "create 'Initialize workspace knowledge base' from exactly lumio.yaml and "
+            f"{SOURCE_REFERENCE_MANIFEST_BASENAME} on base "
+            f"{plan.facts.current_commit or 'unborn'}; preserve every other index/worktree entry"
+        ),
+    }
     return SetupPreview(
         workspace_id=workspace_id,
         kind="empty",
-        digest=plan.setup_digest,
+        digest=_digest(
+            {"native_setup_digest": plan.setup_digest, "managed_commit": commit_action}
+        ),
         target=target,
         namespace=namespace,
         base_revision=plan.facts.current_commit,
@@ -134,7 +145,8 @@ def preview_setup(
                 "detail": action.detail,
             }
             for action in plan.actions
-        ],
+        ]
+        + [commit_action],
         plan=plan,
         profile_path=profile_path,
         private_root=private_root,
@@ -204,6 +216,38 @@ def _adopted_preview(
     )
 
 
+def current_attachment_digest(*, target: Path, profile_path: Path) -> str:
+    """Bind contributions to the confirmed resource identity, not a moving base commit."""
+    target = target.resolve()
+    try:
+        facts = discover_authoring_location(target)
+        manifest = load_source_reference_manifest(target)
+        if manifest is None:
+            raise SetupError("owner setup confirmation is required", code="setup_required")
+        profile = load_private_profile(profile_path, kb_root=target)
+        resolved = resolve_private_profile(
+            profile,
+            kb_root=target,
+            needs=frozenset({"registry", "artifacts"}),
+        )
+    except (PrivateProfileError, EmptySetupError, SourceReferenceError, GitAuthoringError) as exc:
+        raise SetupError(
+            "the current authoring target or private binding is unavailable",
+            code="setup_required",
+        ) from exc
+    return _digest(
+        {
+            "target": str(target),
+            "repository_root": str(facts.repository_root),
+            "branch": facts.branch,
+            "subtree": facts.subtree,
+            "namespace": manifest.namespace,
+            "profile_path": str(profile_path.resolve()),
+            "private_binding": resolved.binding_digest,
+        }
+    )
+
+
 def apply_setup(
     state: WorkspaceState,
     actor: Actor,
@@ -258,6 +302,9 @@ def apply_setup(
             "commit",
             "-qm",
             "Initialize workspace knowledge base",
+            "--",
+            "lumio.yaml",
+            SOURCE_REFERENCE_MANIFEST_BASENAME,
         )
         base_revision = _git(kb, "rev-parse", "HEAD")
     state.record_setup(
@@ -268,6 +315,10 @@ def apply_setup(
         target=preview.target,
         namespace=preview.namespace,
         base_revision=base_revision,
+        attachment_digest=current_attachment_digest(
+            target=preview.target,
+            profile_path=preview.profile_path,
+        ),
     )
     return {
         "ready": True,

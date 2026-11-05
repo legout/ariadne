@@ -14,7 +14,7 @@ lumio-workspace local-membership grant --user-id CONTRIBUTOR_ID --capability con
 lumio-workspace local-membership revoke --user-id CONTRIBUTOR_ID --capability contribute
 ```
 
-Entra membership commands accept the same `--capability` option. Upload uses `POST /uploads` with an API credential and `application/octet-stream`; setup uses the separately browser-authenticated, same-origin `/setup` preview and POST.
+Entra membership commands accept the same `--capability` option. Upload uses `POST /uploads` with an API credential and `application/octet-stream`; setup uses the separately browser-authenticated, same-origin `/setup` preview and POST. Contribution preparation selects and persists the authoring base server-side; an actor can edit its pending candidate through the opaque `continuation_task_id`, without a checkout or copied Git hash.
 
 See [Shared workspace how-to](../../docs/howto-shared-workspace.md) for registration, configuration, owner bootstrap, and client connection.
 

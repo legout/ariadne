@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import secrets
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -143,10 +146,18 @@ class WorkspaceState:
                     target TEXT NOT NULL,
                     namespace TEXT NOT NULL,
                     base_revision TEXT,
-                    created_at INTEGER NOT NULL
+                    created_at INTEGER NOT NULL,
+                    attachment_digest TEXT
                 )
                 """
             )
+            setup_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(setup_records)")
+            }
+            if "attachment_digest" not in setup_columns:
+                connection.execute(
+                    "ALTER TABLE setup_records ADD COLUMN attachment_digest TEXT"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=5)
@@ -356,6 +367,7 @@ class WorkspaceState:
         """Persist retry identity before repeatable work, or return its existing record."""
         now = int(time.time())
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT operation_id, status, response_json FROM operations "
                 "WHERE workspace_id = ? AND tenant_id = ? AND object_id = ? "
@@ -402,6 +414,22 @@ class WorkspaceState:
             operation_id, action, retry_key, input_digest, source_id, "pending", {}
         )
         return operation, True
+
+    @contextmanager
+    def operation_lock(self, operation: Operation) -> Iterator[bool]:
+        """Serialize active native work; a crashed process releases its OS lock."""
+        lock_path = self.path.parent / "operation-locks" / f"{operation.operation_id}.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
     def finish_operation(
         self,
@@ -458,10 +486,14 @@ class WorkspaceState:
         target: Path,
         namespace: str,
         base_revision: str | None,
+        attachment_digest: str,
     ) -> None:
         with self._connect() as connection:
             connection.execute(
-                "INSERT OR IGNORE INTO setup_records VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO setup_records "
+                "(workspace_id, setup_digest, tenant_id, object_id, kind, target, namespace, "
+                "base_revision, created_at, attachment_digest) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     workspace_id,
                     digest,
@@ -472,8 +504,17 @@ class WorkspaceState:
                     namespace,
                     base_revision,
                     int(time.time()),
+                    attachment_digest,
                 ),
             )
+
+    def has_setup_attachment(self, workspace_id: str, attachment_digest: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM setup_records WHERE workspace_id = ? AND attachment_digest = ?",
+                (workspace_id, attachment_digest),
+            ).fetchone()
+        return row is not None
 
     def capabilities(self, workspace_id: str, actor: Actor) -> tuple[str, ...]:
         with self._connect() as connection:
