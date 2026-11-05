@@ -28,6 +28,14 @@ class Actor:
 
 
 @dataclass(frozen=True)
+class ReviewAction:
+    action_digest: str
+    decision: str
+    binding: dict
+    status: str
+
+
+@dataclass(frozen=True)
 class LocalCredential:
     credential_id: str
     actor: Actor
@@ -532,6 +540,31 @@ class WorkspaceState:
         if cursor.rowcount != 1:
             raise ValueError("reviewed task changed before its outcome was recorded")
 
+    def issue_review_action(
+        self,
+        workspace_id: str,
+        actor: Actor,
+        task_id: str,
+        binding: dict,
+    ) -> str:
+        action_digest = secrets.token_hex(32)
+        now = int(time.time())
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO review_actions VALUES (?, ?, ?, ?, ?, '', ?, 'issued', ?, ?)",
+                (
+                    action_digest,
+                    workspace_id,
+                    task_id,
+                    actor.tenant_id,
+                    actor.object_id,
+                    json.dumps(binding, sort_keys=True),
+                    now,
+                    now,
+                ),
+            )
+        return action_digest
+
     def start_review_action(
         self,
         workspace_id: str,
@@ -541,26 +574,58 @@ class WorkspaceState:
         action_digest: str,
         binding: dict,
     ) -> bool:
-        now = int(time.time())
         with self._connect() as connection:
-            try:
-                connection.execute(
-                    "INSERT INTO review_actions VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
-                    (
-                        action_digest,
-                        workspace_id,
-                        task_id,
-                        actor.tenant_id,
-                        actor.object_id,
-                        decision,
-                        json.dumps(binding, sort_keys=True),
-                        now,
-                        now,
-                    ),
-                )
-            except sqlite3.IntegrityError:
-                return False
-        return True
+            cursor = connection.execute(
+                "UPDATE review_actions SET decision = ?, status = 'pending', updated_at = ? "
+                "WHERE action_digest = ? AND workspace_id = ? AND task_id = ? "
+                "AND tenant_id = ? AND object_id = ? AND binding_json = ? "
+                "AND decision = '' AND status = 'issued'",
+                (
+                    decision,
+                    int(time.time()),
+                    action_digest,
+                    workspace_id,
+                    task_id,
+                    actor.tenant_id,
+                    actor.object_id,
+                    json.dumps(binding, sort_keys=True),
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def get_review_approval(
+        self, workspace_id: str, task_id: str, candidate: str
+    ) -> ReviewAction | None:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT action_digest, binding_json, status FROM review_actions "
+                "WHERE workspace_id = ? AND task_id = ? AND decision = 'approve' "
+                "ORDER BY updated_at DESC, created_at DESC",
+                (workspace_id, task_id),
+            ).fetchall()
+        for action_digest, raw_binding, status in rows:
+            binding = json.loads(raw_binding)
+            if binding.get("candidate") == candidate:
+                return ReviewAction(action_digest, "approve", binding, status)
+        return None
+
+    def review_task_submitter(self, workspace_id: str, task_id: str) -> Actor | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT tenant_id, object_id FROM operations "
+                "WHERE workspace_id = ? AND operation_id = ? "
+                "AND action = 'prepare_contribution'",
+                (workspace_id, task_id),
+            ).fetchone()
+        return Actor(row[0], row[1]) if row is not None else None
+
+    def is_single_person_workspace(self, workspace_id: str, actor: Actor) -> bool:
+        with self._connect() as connection:
+            members = connection.execute(
+                "SELECT DISTINCT tenant_id, object_id FROM memberships WHERE workspace_id = ?",
+                (workspace_id,),
+            ).fetchall()
+        return len(members) == 1 and members[0] == (actor.tenant_id, actor.object_id)
 
     def finish_review_action(self, action_digest: str, status: str) -> None:
         with self._connect() as connection:

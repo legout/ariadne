@@ -362,8 +362,13 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         if not state.permits(config.workspace_id, actor, "contribute"):
             raise WorkspaceError("workspace contribution is not available")
         try:
-            return contribution_service().get(actor, task_id)
-        except ContributionError as exc:
+            current = contribution_service().get(actor, task_id)
+            if current["status"] == "pending_review":
+                recovered = review_service().reconcile_task(task_id)
+                if recovered is not None:
+                    return {"task_id": task_id, **recovered}
+            return current
+        except (ContributionError, ReviewError) as exc:
             raise WorkspaceError(str(exc)) from exc
 
     @server.custom_route("/uploads", methods=["POST"], include_in_schema=False)

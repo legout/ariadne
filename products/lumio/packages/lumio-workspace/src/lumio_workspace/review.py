@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import html
 import json
-import secrets
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import resources as package_resources
 from pathlib import Path
 from string import Template
@@ -66,11 +64,6 @@ class ReviewContext:
     action_digest: str
 
 
-def _digest(value: object) -> str:
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(payload.encode()).hexdigest()
-
-
 def _json(value: object) -> str:
     return json.dumps(msgspec.to_builtins(value), indent=2, ensure_ascii=False)
 
@@ -109,6 +102,53 @@ class ReviewService:
             destination=destination,
         )
 
+    def _authoring(
+        self,
+        task_kb: Path,
+        repo_root: Path,
+        base: str,
+        candidate: str,
+        resources: ResolvedPrivateSources,
+    ) -> AuthoringReview:
+        knowledge = review_knowledge_changes(
+            task_kb,
+            base,
+            source_registry=resources.source_registry,
+            candidate_tree=_tree(repo_root, candidate),
+        )
+        if knowledge.changes_outside_kb or knowledge.unreviewed_paths:
+            raise ReviewError(
+                "the candidate contains changes outside the supported readable review",
+                code="incomplete_review_scope",
+            )
+        authoring = AuthoringReview(
+            schema_version=AUTHORING_REVIEW_SCHEMA_VERSION,
+            validator_contract=AUTHORING_REVIEW_VALIDATOR_CONTRACT,
+            namespace=knowledge.namespace,
+            kb_subtree=knowledge.kb_subtree,
+            base_revision=knowledge.base_revision,
+            head_revision=knowledge.head_revision,
+            base_tree=_tree(repo_root, base),
+            submitted_tree=knowledge.candidate_tree,
+            excluded_unstaged=[],
+            excluded_untracked=[],
+            knowledge=knowledge,
+            review_digest="",
+        )
+        object.__setattr__(
+            authoring,
+            "review_digest",
+            _record_digest(authoring, "review_digest"),
+        )
+        checked = check_authoring_commit(task_kb, authoring, candidate)
+        if not checked.matches_reviewed_candidate:
+            raise ReviewError(
+                "the candidate differs from its exact native review: "
+                + "; ".join(checked.mismatches),
+                code="candidate_mismatch",
+            )
+        return authoring
+
     def _context(self, actor: Actor, task_id: str) -> ReviewContext:
         if not self.state.permits(self.workspace_id, actor, "review"):
             raise ReviewError(
@@ -119,11 +159,11 @@ class ReviewService:
             raise ReviewError("review task is not available", code="task_not_found", status=404)
         if operation.status != "pending_review":
             raise ReviewError("the candidate is not pending review", code="review_not_pending")
-        base = operation.response.get("native_base", "")
+        submission_base = operation.response.get("native_base", "")
         candidate = operation.response.get("native_candidate", "")
         try:
             repo_root, subtree = resolve_repository(self.authoring_path)
-            base = resolve_full_commit(repo_root, base)
+            submission_base = resolve_full_commit(repo_root, submission_base)
             candidate = resolve_full_commit(repo_root, candidate)
             task_kb = self.private_root / "worktrees" / task_id / subtree
             attachment = current_attachment_digest(
@@ -136,46 +176,19 @@ class ReviewService:
                     code="setup_required",
                 )
             resources = self.publication.resources()
-            knowledge = review_knowledge_changes(
-                task_kb,
-                base,
-                source_registry=resources.source_registry,
-                candidate_tree=_tree(repo_root, candidate),
-            )
-            if knowledge.changes_outside_kb or knowledge.unreviewed_paths:
+            # Preserve the native submission ancestry check independently of
+            # the complete effective review against the admitted publication.
+            self._authoring(task_kb, repo_root, submission_base, candidate, resources)
+            admitted = self.publication.current_version()
+            if admitted is None:
                 raise ReviewError(
-                    "the candidate contains changes outside the supported readable review",
+                    "no admitted Git baseline is available for a complete effective review",
                     code="incomplete_review_scope",
                 )
-            authoring = AuthoringReview(
-                schema_version=AUTHORING_REVIEW_SCHEMA_VERSION,
-                validator_contract=AUTHORING_REVIEW_VALIDATOR_CONTRACT,
-                namespace=knowledge.namespace,
-                kb_subtree=knowledge.kb_subtree,
-                base_revision=knowledge.base_revision,
-                head_revision=knowledge.head_revision,
-                base_tree=_tree(repo_root, base),
-                submitted_tree=knowledge.candidate_tree,
-                excluded_unstaged=[],
-                excluded_untracked=[],
-                knowledge=knowledge,
-                review_digest="",
-            )
-            object.__setattr__(
-                authoring,
-                "review_digest",
-                _record_digest(authoring, "review_digest"),
-            )
-            checked = check_authoring_commit(task_kb, authoring, candidate)
-            if not checked.matches_reviewed_candidate:
-                raise ReviewError(
-                    "the candidate differs from its exact native review: "
-                    + "; ".join(checked.mismatches),
-                    code="candidate_mismatch",
-                )
+            base = resolve_full_commit(repo_root, admitted)
+            authoring = self._authoring(task_kb, repo_root, base, candidate, resources)
             captured = capture_revision(task_kb, candidate)
-            expected = self.publication.current_version() or "none"
-            publication = self.publication.preview(task_kb, candidate, expected, resources)
+            publication = self.publication.preview(task_kb, candidate, admitted, resources)
             availability = self._source_availability(captured, resources)
         except ReviewError:
             raise
@@ -189,14 +202,26 @@ class ReviewService:
         ) as exc:
             raise ReviewError(str(exc), code="stale_review") from exc
 
+        citations = [
+            {
+                "title": page.title,
+                "path": page.path,
+                "published_version": publication.version,
+            }
+            for page in authoring.knowledge.pages
+            if page.change != "removed"
+        ]
         binding = {
             "workspace": self.workspace_id,
             "task": task_id,
             "reviewer": {"tenant_id": actor.tenant_id, "object_id": actor.object_id},
             "base": base,
             "candidate": candidate,
+            "submission_base": submission_base,
+            "submission_review": operation.response.get("native_review", ""),
             "authoring_review": authoring.review_digest,
             "publication_review": publication.review_digest,
+            "citations": citations,
             "attachment": attachment,
             "private_binding": resources.binding_digest,
             "retention": publication.retention,
@@ -212,7 +237,7 @@ class ReviewService:
             resources,
             availability,
             binding,
-            _digest(binding),
+            "",
         )
 
     @staticmethod
@@ -236,7 +261,16 @@ class ReviewService:
         return available
 
     def get(self, actor: Actor, task_id: str) -> ReviewContext:
-        return self._context(actor, task_id)
+        if not self.state.permits(self.workspace_id, actor, "review"):
+            raise ReviewError(
+                "workspace review is not available", code="review_forbidden", status=403
+            )
+        self.reconcile_task(task_id)
+        context = self._context(actor, task_id)
+        action = self.state.issue_review_action(
+            self.workspace_id, actor, task_id, context.binding
+        )
+        return replace(context, action_digest=action)
 
     def inspect_source(
         self, actor: Actor, task_id: str, source_id: str, entity_id: str
@@ -288,17 +322,29 @@ class ReviewService:
                 raise ReviewError(
                     "workspace review is not available", code="review_forbidden", status=403
                 )
+            self.reconcile_task(task_id)
             context = self._context(actor, task_id)
-            if not secrets.compare_digest(action_digest, context.action_digest):
-                raise ReviewError(
-                    "a fresh exact browser review is required", code="stale_or_forged_action"
-                )
+            if decision == "approve":
+                submitter = self.state.review_task_submitter(self.workspace_id, task_id)
+                if submitter is None:
+                    raise ReviewError(
+                        "review task is not available", code="task_not_found", status=404
+                    )
+                if actor == submitter and not (
+                    self.state.is_single_person_workspace(self.workspace_id, actor)
+                    and self.state.permits(self.workspace_id, actor, "contribute")
+                ):
+                    raise ReviewError(
+                        "publication approval requires a different workspace member",
+                        code="different_reviewer_required",
+                        status=403,
+                    )
             if not self.state.start_review_action(
                 self.workspace_id,
                 actor,
                 task_id,
                 decision,
-                context.action_digest,
+                action_digest,
                 context.binding,
             ):
                 raise ReviewError(
@@ -307,15 +353,82 @@ class ReviewService:
             try:
                 response = self._apply_decision(actor, context, decision)
             except Exception as exc:
-                self.state.finish_review_action(context.action_digest, "failed")
+                self.state.finish_review_action(action_digest, "failed")
                 if isinstance(exc, ReviewError):
                     raise
                 raise ReviewError(
                     f"the native review action did not complete: {exc}",
                     code="decision_failed",
                 ) from exc
-            self.state.finish_review_action(context.action_digest, "completed")
+            self.state.finish_review_action(action_digest, "completed")
             return response
+
+    def reconcile_task(self, task_id: str) -> dict | None:
+        operation = self.state.get_review_task(self.workspace_id, task_id)
+        if operation is None or operation.status != "pending_review":
+            return None
+        candidate = operation.response.get("native_candidate", "")
+        approval = self.state.get_review_approval(self.workspace_id, task_id, candidate)
+        if approval is None:
+            return None
+        try:
+            _repo_root, subtree = resolve_repository(self.authoring_path)
+            task_kb = self.private_root / "worktrees" / task_id / subtree
+            resources = self.publication.resources()
+            receipt = self.publication.recover(
+                task_kb,
+                candidate,
+                approval.binding["expected_current"],
+                approval.binding["publication_review"],
+                resources,
+            )
+            observed = self.publication.current_version()
+        except (
+            GitAuthoringError,
+            KnowledgeBaseError,
+            KeyError,
+            OSError,
+            PrivateProfileError,
+        ) as exc:
+            raise ReviewError(
+                f"the native publication outcome cannot be verified: {exc}",
+                code="publication_recovery_failed",
+            ) from exc
+        if receipt is None:
+            return None
+
+        if receipt.activated:
+            if "citations" not in approval.binding:
+                raise ReviewError(
+                    "the persisted approval lacks its complete citation binding",
+                    code="publication_recovery_failed",
+                )
+            status = "published"
+            response = {
+                **operation.response,
+                "status": status,
+                "published": True,
+                "publication_outcome": "activated",
+                "publication": msgspec.to_builtins(receipt),
+                "citations": approval.binding["citations"],
+            }
+        else:
+            status = "pending_review"
+            expected = approval.binding["expected_current"]
+            baseline = None if expected == "none" else expected
+            response = {
+                **operation.response,
+                "status": status,
+                "published": False,
+                "publication_outcome": (
+                    "not_activated" if observed == baseline else "indeterminate"
+                ),
+                "publication": msgspec.to_builtins(receipt),
+            }
+        self.state.finish_review_task(self.workspace_id, task_id, status, response)
+        if receipt.activated:
+            self.state.finish_review_action(approval.action_digest, "completed")
+        return response
 
     def _apply_decision(self, actor: Actor, context: ReviewContext, decision: str) -> dict:
         if not self.state.permits(self.workspace_id, actor, "review"):
@@ -336,21 +449,13 @@ class ReviewService:
             )
             if not receipt.activated:
                 raise ReviewError("native publication did not activate", code="publication_failed")
-            citations = [
-                {
-                    "title": page.title,
-                    "path": page.path,
-                    "published_version": receipt.version,
-                }
-                for page in context.authoring.knowledge.pages
-                if page.change != "removed"
-            ]
             response = {
                 **operation.response,
                 "status": "published",
                 "published": True,
+                "publication_outcome": "activated",
                 "publication": msgspec.to_builtins(receipt),
-                "citations": citations,
+                "citations": context.binding["citations"],
             }
             self.state.finish_review_task(
                 self.workspace_id, operation.operation_id, "published", response
@@ -435,6 +540,8 @@ def render_review(context: ReviewContext, pinned_version: str | None) -> str:
         task=html.escape(context.operation.operation_id),
         namespace=html.escape(authoring.namespace),
         base=html.escape(authoring.base_revision),
+        submission_base=html.escape(context.binding["submission_base"]),
+        submission_review=html.escape(context.binding["submission_review"]),
         candidate=html.escape(publication.revision),
         destination=html.escape(publication.destination),
         expected=html.escape(publication.expected_current),

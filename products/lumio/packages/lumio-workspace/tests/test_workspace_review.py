@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import lumio_wiki.git_authoring as native_authoring
 from lumio_wiki.artifact_store import LocalDirectoryArtifactStore
 from lumio_wiki.git_authoring import preview_publication, publish_revision
 from lumio_wiki.knowledge_base import (
@@ -15,13 +16,14 @@ from lumio_wiki.knowledge_base import (
     seeded_control_file,
     write_control_file,
 )
-from lumio_wiki.location import PublishedFilesystemLocation
+from lumio_wiki.location import PublishedFilesystemLocation, published_pointer_path
 from lumio_wiki.private_profile import load_private_profile, resolve_private_profile
 from lumio_wiki.source_references import (
     SourceReferenceManifest,
     serialize_source_reference_manifest,
 )
 from lumio_workspace import Actor, WorkspaceConfig, WorkspaceState, create_app
+from lumio_workspace.publication import PublicationService
 from starlette.testclient import TestClient
 
 NAMESPACE = "urn:uuid:6c6e21ec-98a4-4c0b-9153-c2eb5d3c2210"
@@ -30,6 +32,8 @@ ORIGINAL = b"# Restart worker\r\n\r\nStop the old worker.\r\n<unsafe>&review\r\n
 EXPECTED_SHA256 = hashlib.sha256(ORIGINAL).hexdigest()
 EXPECTED_BODY = "# Restart Worker\n\nStop the old worker.\n\n<unsafe>&review\n\nThen start it."
 EXPECTED_PATH = "procedures/restart_worker.md"
+ANCESTOR_BODY = "Ancestor page content must remain visible in the final review."
+CONTINUATION_BODY = "Continuation page content must also be visible in the final review."
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -145,18 +149,60 @@ def _prepare(
     addition: str,
     source_id: str,
     continuation_task_id: str | None = None,
+    filename: str = "restart-worker.md",
     request_id: int,
 ):
     arguments = {
         "retry_key": retry_key,
         "sources": [{"upload_id": upload_id, "intent": "new"}],
         "pages": [
-            {"filename": "restart-worker.md", "markdown": _page(title, addition, source_id)}
+            {"filename": filename, "markdown": _page(title, addition, source_id)}
         ],
     }
     if continuation_task_id is not None:
         arguments["continuation_task_id"] = continuation_task_id
     return _call_tool(client, token, "prepare_contribution", arguments, request_id)
+
+
+def _contribute(
+    client: TestClient,
+    fixture: Fixture,
+    *,
+    retry_key: str,
+    title: str,
+    addition: str,
+    source_id: str,
+    filename: str,
+    continuation_task_id: str | None = None,
+    request_id: int,
+) -> dict:
+    uploaded = _upload(client, fixture.contributor_api, ORIGINAL, retry_key, source_id)
+    assert uploaded.status_code == 200, uploaded.text
+    prepared = _prepare(
+        client,
+        fixture.contributor_api,
+        retry_key=retry_key,
+        upload_id=uploaded.json()["upload_id"],
+        title=title,
+        addition=addition,
+        source_id=source_id,
+        continuation_task_id=continuation_task_id,
+        filename=filename,
+        request_id=request_id,
+    )
+    result = prepared.json()["result"]
+    assert result["isError"] is False, result
+    return result["structuredContent"]
+
+
+def _confirm_setup(client: TestClient, fixture: Fixture) -> None:
+    _login(client, fixture.owner_browser)
+    response = client.post(
+        "/setup",
+        headers={"Origin": "https://workspace.test"},
+        data={"digest": _digest(client.get("/setup").text)},
+    )
+    assert response.status_code == 200, response.text
 
 
 def _login(client: TestClient, token: str) -> None:
@@ -197,7 +243,7 @@ class Fixture:
     artifact_path: Path
 
 
-def _fixture(tmp_path: Path, monkeypatch) -> Fixture:
+def _fixture(tmp_path: Path, monkeypatch, *, single_person: bool = False) -> Fixture:
     monkeypatch.setenv("LUMIO_WORKSPACE_ID", "workspace-fixture")
     monkeypatch.setenv("LUMIO_WORKSPACE_STATE_PATH", str(tmp_path / "state.sqlite3"))
     authoring_repo = tmp_path / "authoring-repo"
@@ -236,22 +282,33 @@ def _fixture(tmp_path: Path, monkeypatch) -> Fixture:
     )
     state = WorkspaceState(config.state_path)
     expires = int(time.time()) + 3600
-    for user in ("owner", "contributor", "reviewer"):
-        state.create_local_user(user)
-    owner = Actor(tenant_id="local", object_id="owner")
-    contributor = Actor(tenant_id="local", object_id="contributor")
-    reviewer = Actor(tenant_id="local", object_id="reviewer")
-    state.grant(config.workspace_id, owner, "setup")
-    state.grant(config.workspace_id, contributor)
-    state.grant(config.workspace_id, contributor, "contribute")
-    state.grant(config.workspace_id, reviewer, "review")
-    _, owner_browser = state.issue_local_credential("owner", "browser", expires_at=expires)
-    contributor_api = state.issue_local_credential("contributor", "api", expires_at=expires)[1]
+    if single_person:
+        state.create_local_user("solo")
+        owner = contributor = reviewer = Actor(tenant_id="local", object_id="solo")
+        for capability in ("read", "setup", "contribute", "review"):
+            state.grant(config.workspace_id, owner, capability)
+        users = ("solo",)
+    else:
+        users = ("owner", "contributor", "reviewer")
+        for user in users:
+            state.create_local_user(user)
+        owner = Actor(tenant_id="local", object_id="owner")
+        contributor = Actor(tenant_id="local", object_id="contributor")
+        reviewer = Actor(tenant_id="local", object_id="reviewer")
+        state.grant(config.workspace_id, owner, "setup")
+        state.grant(config.workspace_id, contributor)
+        state.grant(config.workspace_id, contributor, "contribute")
+        state.grant(config.workspace_id, reviewer, "review")
+    owner_id = owner.object_id
+    contributor_id = contributor.object_id
+    reviewer_id = reviewer.object_id
+    _, owner_browser = state.issue_local_credential(owner_id, "browser", expires_at=expires)
+    contributor_api = state.issue_local_credential(contributor_id, "api", expires_at=expires)[1]
     contributor_browser = state.issue_local_credential(
-        "contributor", "browser", expires_at=expires
+        contributor_id, "browser", expires_at=expires
     )[1]
-    reviewer_api = state.issue_local_credential("reviewer", "api", expires_at=expires)[1]
-    reviewer_browser = state.issue_local_credential("reviewer", "browser", expires_at=expires)[1]
+    reviewer_api = state.issue_local_credential(reviewer_id, "api", expires_at=expires)[1]
+    reviewer_browser = state.issue_local_credential(reviewer_id, "browser", expires_at=expires)[1]
     return Fixture(
         config,
         state,
@@ -405,7 +462,9 @@ def test_browser_review_is_required_and_binds_exact_candidate(tmp_path: Path, mo
         assert cross_origin.status_code == 403
         assert _decision(reviewer, task_id, "0" * 64, "approve").status_code == 409
         with fixture.state._connect() as connection:
-            assert connection.execute("SELECT COUNT(*) FROM review_actions").fetchone()[0] == 0
+            assert connection.execute(
+                "SELECT COUNT(*) FROM review_actions WHERE decision != ''"
+            ).fetchone()[0] == 0
 
         source_url = (
             f"/review/{task_id}/source/runbook-source/entity:restart-worker-runbook"
@@ -470,7 +529,9 @@ def test_browser_review_is_required_and_binds_exact_candidate(tmp_path: Path, mo
         assert PublishedFilesystemLocation(config.published_path).read_pointer() == candidate
         assert _decision(reviewer, task_id, fresh_digest, "approve").status_code == 409
         with fixture.state._connect() as connection:
-            assert connection.execute("SELECT COUNT(*) FROM review_actions").fetchone()[0] == 1
+            assert connection.execute(
+                "SELECT COUNT(*) FROM review_actions WHERE decision != ''"
+            ).fetchone()[0] == 1
 
         status = _call_tool(
             contributor, fixture.contributor_api, "get_task", {"task_id": task_id}, 5
@@ -531,3 +592,363 @@ def test_browser_review_is_required_and_binds_exact_candidate(tmp_path: Path, mo
         revoked = _decision(reviewer, fifth["task_id"], revoked_digest, "approve")
         assert revoked.status_code == 403
         assert PublishedFilesystemLocation(config.published_path).read_pointer() == candidate
+
+
+def test_continuation_review_shows_complete_effective_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    with (
+        TestClient(create_app(fixture.config), base_url="https://workspace.test") as owner,
+        TestClient(create_app(fixture.config), base_url="https://workspace.test") as contributor,
+        TestClient(create_app(fixture.config), base_url="https://workspace.test") as reviewer,
+    ):
+        _confirm_setup(owner, fixture)
+        ancestor = _contribute(
+            contributor,
+            fixture,
+            retry_key="effective-ancestor",
+            title="Effective Ancestor",
+            addition=ANCESTOR_BODY,
+            source_id="effective-ancestor-source",
+            filename="effective-ancestor.md",
+            request_id=1,
+        )
+        continuation = _contribute(
+            contributor,
+            fixture,
+            retry_key="effective-continuation",
+            title="Effective Continuation",
+            addition=CONTINUATION_BODY,
+            source_id="effective-continuation-source",
+            filename="effective-continuation.md",
+            continuation_task_id=ancestor["task_id"],
+            request_id=2,
+        )
+        assert continuation["native_base"] == ancestor["native_candidate"]
+
+        _login(reviewer, fixture.reviewer_browser)
+        review = reviewer.get(f"/review/{continuation['task_id']}")
+        assert review.status_code == 200, review.text
+        assert ANCESTOR_BODY in review.text
+        assert CONTINUATION_BODY in review.text
+        assert fixture.published_revision in review.text
+        assert continuation["native_base"] in review.text
+        assert continuation["native_candidate"] in review.text
+        assert (
+            PublishedFilesystemLocation(fixture.config.published_path).read_pointer()
+            == fixture.published_revision
+        )
+
+
+def test_approval_requires_another_person_unless_workspace_has_one_member(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    fixture.state.grant(fixture.config.workspace_id, fixture.reviewer, "contribute")
+    contributor = Actor(tenant_id="local", object_id="contributor")
+    fixture.state.grant(fixture.config.workspace_id, contributor, "review")
+    with (
+        TestClient(create_app(fixture.config), base_url="https://workspace.test") as owner,
+        TestClient(
+            create_app(fixture.config), base_url="https://workspace.test"
+        ) as contributor_client,
+        TestClient(
+            create_app(fixture.config), base_url="https://workspace.test"
+        ) as reviewer_client,
+        TestClient(create_app(fixture.config), base_url="https://workspace.test") as api_only,
+    ):
+        _confirm_setup(owner, fixture)
+        task = _contribute(
+            contributor_client,
+            fixture,
+            retry_key="different-person",
+            title="Different Person",
+            addition="A second person must approve this candidate.",
+            source_id="different-person-source",
+            filename="different-person.md",
+            request_id=1,
+        )
+        _login(contributor_client, fixture.contributor_browser)
+        digest = _digest(contributor_client.get(f"/review/{task['task_id']}").text)
+        api_only.headers["Authorization"] = f"Bearer {fixture.contributor_api}"
+        assert _decision(api_only, task["task_id"], digest, "approve").status_code == 401
+        self_approved = _decision(contributor_client, task["task_id"], digest, "approve")
+        assert self_approved.status_code == 403
+        assert (
+            PublishedFilesystemLocation(fixture.config.published_path).read_pointer()
+            == fixture.published_revision
+        )
+
+        _login(reviewer_client, fixture.reviewer_browser)
+        fresh = _digest(reviewer_client.get(f"/review/{task['task_id']}").text)
+        approved = _decision(reviewer_client, task["task_id"], fresh, "approve")
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["status"] == "published"
+
+    single_root = tmp_path / "single-person"
+    single_root.mkdir()
+    single = _fixture(single_root, monkeypatch, single_person=True)
+    with (
+        TestClient(create_app(single.config), base_url="https://workspace.test") as owner,
+        TestClient(
+            create_app(single.config), base_url="https://workspace.test"
+        ) as contributor_client,
+        TestClient(create_app(single.config), base_url="https://workspace.test") as reviewer_client,
+        TestClient(create_app(single.config), base_url="https://workspace.test") as api_only,
+    ):
+        _confirm_setup(owner, single)
+        task = _contribute(
+            contributor_client,
+            single,
+            retry_key="single-person",
+            title="Single Person",
+            addition="The sole capable member explicitly approves the combined action.",
+            source_id="single-person-source",
+            filename="single-person.md",
+            request_id=2,
+        )
+        _login(reviewer_client, single.reviewer_browser)
+        digest = _digest(reviewer_client.get(f"/review/{task['task_id']}").text)
+        api_only.headers["Authorization"] = f"Bearer {single.contributor_api}"
+        assert _decision(api_only, task["task_id"], digest, "approve").status_code == 401
+        approved = _decision(reviewer_client, task["task_id"], digest, "approve")
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["status"] == "published"
+
+
+def test_fresh_browser_action_allows_reconsideration_and_pre_activation_retry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    with (
+        TestClient(create_app(fixture.config), base_url="https://workspace.test") as owner,
+        TestClient(create_app(fixture.config), base_url="https://workspace.test") as contributor,
+        TestClient(create_app(fixture.config), base_url="https://workspace.test") as reviewer,
+    ):
+        _confirm_setup(owner, fixture)
+        task = _contribute(
+            contributor,
+            fixture,
+            retry_key="fresh-actions",
+            title="Fresh Actions",
+            addition="A fresh browser decision can reconsider this unchanged candidate.",
+            source_id="fresh-actions-source",
+            filename="fresh-actions.md",
+            request_id=1,
+        )
+        _login(reviewer, fixture.reviewer_browser)
+        first = _digest(reviewer.get(f"/review/{task['task_id']}").text)
+        changes = _decision(reviewer, task["task_id"], first, "request_changes")
+        assert changes.status_code == 200, changes.text
+        assert changes.json()["status"] == "pending_review"
+
+        second = _digest(reviewer.get(f"/review/{task['task_id']}").text)
+        assert second != first
+        assert _decision(reviewer, task["task_id"], first, "approve").status_code == 409
+
+        original_publish = PublicationService.publish
+
+        def fail_before_activation(*args, **kwargs):
+            raise OSError("injected failure before native activation")
+
+        monkeypatch.setattr(PublicationService, "publish", fail_before_activation)
+        failed = _decision(reviewer, task["task_id"], second, "approve")
+        assert failed.status_code == 409
+        assert (
+            PublishedFilesystemLocation(fixture.config.published_path).read_pointer()
+            == fixture.published_revision
+        )
+        monkeypatch.setattr(PublicationService, "publish", original_publish)
+
+        third = _digest(reviewer.get(f"/review/{task['task_id']}").text)
+        assert third not in {first, second}
+        assert _decision(reviewer, task["task_id"], second, "approve").status_code == 409
+        approved = _decision(reviewer, task["task_id"], third, "approve")
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["publication"]["version"] == task["native_candidate"]
+
+
+def test_task_recovery_distinguishes_prepared_and_completed_native_activation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    config = fixture.config
+    assert config.authoring_path is not None and config.private_profile_path is not None
+    with (
+        TestClient(create_app(config), base_url="https://workspace.test") as owner,
+        TestClient(create_app(config), base_url="https://workspace.test") as contributor,
+        TestClient(create_app(config), base_url="https://workspace.test") as reviewer,
+    ):
+        _confirm_setup(owner, fixture)
+        prepared = _contribute(
+            contributor,
+            fixture,
+            retry_key="prepared-not-activated",
+            title="Prepared Not Activated",
+            addition="A prepared receipt alone must not report publication.",
+            source_id="prepared-not-activated-source",
+            filename="prepared-not-activated.md",
+            request_id=1,
+        )
+        _login(reviewer, fixture.reviewer_browser)
+        prepared_digest = _digest(reviewer.get(f"/review/{prepared['task_id']}").text)
+        original_atomic_write = native_authoring.atomic_write_bytes
+
+        def fail_pointer_activation(path, data):
+            if Path(path) == published_pointer_path(config.published_path):
+                raise OSError("injected interruption before pointer activation")
+            return original_atomic_write(path, data)
+
+        monkeypatch.setattr(native_authoring, "atomic_write_bytes", fail_pointer_activation)
+        interrupted = _decision(reviewer, prepared["task_id"], prepared_digest, "approve")
+        assert interrupted.status_code == 409
+        monkeypatch.setattr(native_authoring, "atomic_write_bytes", original_atomic_write)
+        prepared_receipt_path = (
+            config.published_path
+            / ".lumio-publication"
+            / "receipts"
+            / f"{prepared['native_candidate']}.json"
+        )
+        assert json.loads(prepared_receipt_path.read_text())["activated"] is False
+        assert (
+            PublishedFilesystemLocation(config.published_path).read_pointer()
+            == fixture.published_revision
+        )
+
+        activated = _contribute(
+            contributor,
+            fixture,
+            retry_key="activated-before-bookkeeping-failure",
+            title="Activated After Interruption",
+            addition="The verified native activation must survive SQLite interruption.",
+            source_id="activated-after-interruption-source",
+            filename="activated-after-interruption.md",
+            request_id=2,
+        )
+        activated_digest = _digest(reviewer.get(f"/review/{activated['task_id']}").text)
+        original_finish = WorkspaceState.finish_review_task
+
+        def fail_task_bookkeeping(*args, **kwargs):
+            raise RuntimeError("injected SQLite failure after native activation")
+
+        monkeypatch.setattr(WorkspaceState, "finish_review_task", fail_task_bookkeeping)
+        interrupted = _decision(reviewer, activated["task_id"], activated_digest, "approve")
+        assert interrupted.status_code == 409
+        monkeypatch.setattr(WorkspaceState, "finish_review_task", original_finish)
+        assert (
+            PublishedFilesystemLocation(config.published_path).read_pointer()
+            == activated["native_candidate"]
+        )
+        unrelated = _contribute(
+            contributor,
+            fixture,
+            retry_key="unrelated-later-publication",
+            title="Unrelated Later Publication",
+            addition="A later pointer must not erase the earlier verified publication.",
+            source_id="unrelated-later-publication-source",
+            filename="unrelated-later-publication.md",
+            continuation_task_id=activated["task_id"],
+            request_id=7,
+        )
+
+    with TestClient(
+        create_app(replace(config, published_version=None)), base_url="https://workspace.test"
+    ) as reconnected:
+        prepared_status = _call_tool(
+            reconnected,
+            fixture.contributor_api,
+            "get_task",
+            {"task_id": prepared["task_id"]},
+            3,
+        ).json()["result"]["structuredContent"]
+        assert prepared_status["status"] == "pending_review"
+        assert prepared_status["published"] is False
+
+        recovered = _call_tool(
+            reconnected,
+            fixture.contributor_api,
+            "get_task",
+            {"task_id": activated["task_id"]},
+            4,
+        ).json()["result"]["structuredContent"]
+        assert recovered["status"] == "published"
+        assert recovered["published"] is True
+        assert recovered["publication"]["activated"] is True
+        assert recovered["publication"]["version"] == activated["native_candidate"]
+        assert recovered["citations"] == [
+            {
+                "title": "Activated After Interruption",
+                "path": "procedures/activated_after_interruption.md",
+                "published_version": activated["native_candidate"],
+            }
+        ]
+        reader_status = _call_tool(
+            reconnected, fixture.contributor_api, "workspace_status", {}, 5
+        ).json()["result"]["structuredContent"]
+        assert reader_status["published_version"] == activated["native_candidate"]
+
+        activated_receipt_path = (
+            config.published_path
+            / ".lumio-publication"
+            / "receipts"
+            / f"{activated['native_candidate']}.json"
+        )
+        receipt_after_recovery = activated_receipt_path.read_bytes()
+        with fixture.state._connect() as connection:
+            task_count = connection.execute(
+                "SELECT COUNT(*) FROM operations WHERE action = 'prepare_contribution'"
+            ).fetchone()[0]
+        repeated = _call_tool(
+            reconnected,
+            fixture.contributor_api,
+            "get_task",
+            {"task_id": activated["task_id"]},
+            6,
+        ).json()["result"]["structuredContent"]
+        assert repeated["publication"] == recovered["publication"]
+        assert activated_receipt_path.read_bytes() == receipt_after_recovery
+        with fixture.state._connect() as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM operations WHERE action = 'prepare_contribution'"
+            ).fetchone()[0] == task_count
+
+        profile = load_private_profile(config.private_profile_path, kb_root=config.authoring_path)
+        native = resolve_private_profile(
+            profile, kb_root=config.authoring_path, needs=frozenset({"registry", "artifacts"})
+        )
+        unrelated_kb = config.operational_root / "worktrees" / unrelated["task_id"] / "kb"
+        unrelated_review = preview_publication(
+            unrelated_kb,
+            unrelated["native_candidate"],
+            config.published_path,
+            activated["native_candidate"],
+            source_registry=native.source_registry,
+            artifact_store=native.artifact_store,
+            retention_required=True,
+        )
+        assert unrelated_review.blocking_diagnostics == []
+        assert publish_revision(
+            unrelated_kb,
+            unrelated["native_candidate"],
+            config.published_path,
+            activated["native_candidate"],
+            unrelated_review.review_digest,
+            source_registry=native.source_registry,
+            artifact_store=native.artifact_store,
+            retention_required=True,
+        ).activated
+        historical = _call_tool(
+            reconnected,
+            fixture.contributor_api,
+            "get_task",
+            {"task_id": activated["task_id"]},
+            8,
+        ).json()["result"]["structuredContent"]
+        assert historical["status"] == "published"
+        assert historical["publication"]["version"] == activated["native_candidate"]
+        assert historical["citations"] == recovered["citations"]
+        reader_status = _call_tool(
+            reconnected, fixture.contributor_api, "workspace_status", {}, 9
+        ).json()["result"]["structuredContent"]
+        assert reader_status["published_version"] == unrelated["native_candidate"]

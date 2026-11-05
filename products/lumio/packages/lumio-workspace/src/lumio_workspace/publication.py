@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import msgspec
 from lumio_wiki.git_authoring import (
+    PRIVATE_OPERATIONS_DIR,
+    GitAuthoringError,
     PublicationReceipt,
     PublicationReview,
     preview_publication,
@@ -64,6 +67,52 @@ class PublicationService:
             self.destination,
             review.expected_current,
             review.review_digest,
+            source_registry=resources.source_registry,
+            artifact_store=resources.artifact_store,
+            retention_required=resources.retention_required,
+        )
+
+    def recover(
+        self,
+        task_kb: Path,
+        revision: str,
+        expected_current: str,
+        review_digest: str,
+        resources: ResolvedPrivateSources,
+    ) -> PublicationReceipt | None:
+        receipt_path = (
+            self.destination.resolve()
+            / PRIVATE_OPERATIONS_DIR
+            / "receipts"
+            / f"{revision}.json"
+        )
+        try:
+            raw = receipt_path.read_bytes()
+        except FileNotFoundError:
+            return None
+        try:
+            receipt = msgspec.json.decode(raw, type=PublicationReceipt)
+        except (OSError, msgspec.DecodeError) as exc:
+            raise GitAuthoringError(f"native admission receipt is unreadable: {exc}") from exc
+        if (
+            receipt.version != revision
+            or receipt.revision != revision
+            or receipt.review_digest != review_digest
+            or receipt.expected_current != expected_current
+        ):
+            raise GitAuthoringError(
+                "native admission receipt does not match the persisted browser approval"
+            )
+        # A prepared receipt alone is not activation. Only verify through the
+        # native retry when its activation is recorded or its pointer is visible.
+        if not receipt.activated and self.current_version() != revision:
+            return receipt
+        return publish_revision(
+            task_kb,
+            revision,
+            self.destination,
+            expected_current,
+            review_digest,
             source_registry=resources.source_registry,
             artifact_store=resources.artifact_store,
             retention_required=resources.retention_required,
