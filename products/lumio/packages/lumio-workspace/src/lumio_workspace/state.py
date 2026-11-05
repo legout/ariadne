@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 LOCAL_TENANT_ID = "local"
-CAPABILITIES = frozenset({"read", "setup", "contribute"})
+CAPABILITIES = frozenset({"read", "setup", "contribute", "review", "inspect_source"})
 
 
 class RetryConflict(ValueError):
@@ -132,6 +132,22 @@ class WorkspaceState:
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
                     PRIMARY KEY (workspace_id, tenant_id, object_id, action, retry_key)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS review_actions (
+                    action_digest TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL,
+                    object_id TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    binding_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
                 )
                 """
             )
@@ -329,7 +345,7 @@ class WorkspaceState:
 
     def grant(self, workspace_id: str, actor: Actor, capability: str = "read") -> None:
         if capability not in CAPABILITIES:
-            raise ValueError("capability must be read, setup, or contribute")
+            raise ValueError(f"capability must be one of: {', '.join(sorted(CAPABILITIES))}")
         with self._connect() as connection:
             if actor.tenant_id == LOCAL_TENANT_ID:
                 user = connection.execute(
@@ -346,7 +362,7 @@ class WorkspaceState:
         self, workspace_id: str, actor: Actor, capability: str = "read"
     ) -> None:
         if capability not in CAPABILITIES:
-            raise ValueError("capability must be read, setup, or contribute")
+            raise ValueError(f"capability must be one of: {', '.join(sorted(CAPABILITIES))}")
         with self._connect() as connection:
             connection.execute(
                 "DELETE FROM memberships WHERE workspace_id = ? "
@@ -475,6 +491,83 @@ class WorkspaceState:
             row[3],
             _stored_response(row[4]),
         )
+
+    def get_review_task(self, workspace_id: str, task_id: str) -> Operation | None:
+        """Locate a candidate only after the caller establishes reviewer authority."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT retry_key, input_digest, source_id, status, response_json "
+                "FROM operations WHERE workspace_id = ? AND action = 'prepare_contribution' "
+                "AND operation_id = ?",
+                (workspace_id, task_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return Operation(
+            task_id,
+            "prepare_contribution",
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            _stored_response(row[4]),
+        )
+
+    def finish_review_task(
+        self, workspace_id: str, task_id: str, status: str, response: dict
+    ) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE operations SET status = ?, response_json = ?, updated_at = ? "
+                "WHERE workspace_id = ? AND operation_id = ? "
+                "AND action = 'prepare_contribution' AND status = 'pending_review'",
+                (
+                    status,
+                    json.dumps(response, sort_keys=True),
+                    int(time.time()),
+                    workspace_id,
+                    task_id,
+                ),
+            )
+        if cursor.rowcount != 1:
+            raise ValueError("reviewed task changed before its outcome was recorded")
+
+    def start_review_action(
+        self,
+        workspace_id: str,
+        actor: Actor,
+        task_id: str,
+        decision: str,
+        action_digest: str,
+        binding: dict,
+    ) -> bool:
+        now = int(time.time())
+        with self._connect() as connection:
+            try:
+                connection.execute(
+                    "INSERT INTO review_actions VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                    (
+                        action_digest,
+                        workspace_id,
+                        task_id,
+                        actor.tenant_id,
+                        actor.object_id,
+                        decision,
+                        json.dumps(binding, sort_keys=True),
+                        now,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                return False
+        return True
+
+    def finish_review_action(self, action_digest: str, status: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE review_actions SET status = ?, updated_at = ? WHERE action_digest = ?",
+                (status, int(time.time()), action_digest),
+            )
 
     def record_setup(
         self,

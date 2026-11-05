@@ -32,6 +32,7 @@ from .auth import (
 )
 from .contributions import ContributionError, ContributionService
 from .intake import IntakeService, UploadError
+from .review import ReviewError, ReviewService, render_review, render_source
 from .setup import SetupError, apply_setup, preview_setup, render_setup
 from .state import Actor, RetryConflict, WorkspaceState
 
@@ -306,6 +307,18 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             profile_path=config.private_profile_path,
         )
 
+    def review_service() -> ReviewService:
+        if config.authoring_path is None or config.private_profile_path is None:
+            raise WorkspaceError("workspace review is not configured")
+        return ReviewService(
+            state,
+            workspace_id=config.workspace_id,
+            authoring_path=config.authoring_path,
+            profile_path=config.private_profile_path,
+            private_root=config.operational_root,
+            destination=config.published_path,
+        )
+
     @server.tool()
     def read_source_material(upload_id: str) -> dict[str, Any]:
         """Return permitted normalized text and conversion facts for one exact upload."""
@@ -454,6 +467,78 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             return JSONResponse({"error": str(exc), "code": exc.code}, status_code=409)
         setup_previews[preview.digest] = (actor, preview)
         return HTMLResponse(render_setup(preview))
+
+    @server.custom_route("/review/{task_id}", methods=["GET", "POST"], include_in_schema=False)
+    async def review(request: Request) -> Response:
+        task_id = request.path_params["task_id"]
+        actor = _browser_actor(request)
+        if actor is None:
+            if request.method == "GET":
+                return RedirectResponse("/auth/login", status_code=303)
+            return JSONResponse({"error": "browser authentication required"}, status_code=401)
+        if request.url.scheme != "https":
+            return JSONResponse({"error": "HTTPS required"}, status_code=403)
+        if not state.permits(config.workspace_id, actor, "review"):
+            return JSONResponse({"error": "workspace review is not available"}, status_code=403)
+        if request.method == "GET":
+            try:
+                context = review_service().get(actor, task_id)
+            except ReviewError as exc:
+                return JSONResponse(
+                    {"error": str(exc), "code": exc.code}, status_code=exc.status
+                )
+            return HTMLResponse(render_review(context, config.published_version))
+        if request.headers.get("origin") != config.external_url:
+            return JSONResponse({"error": "same-origin HTTPS POST required"}, status_code=403)
+        if request.headers.get("content-type", "").split(";", 1)[0] != (
+            "application/x-www-form-urlencoded"
+        ):
+            return JSONResponse({"error": "form POST required"}, status_code=415)
+        try:
+            body = await request.body()
+            if len(body) > 8192:
+                raise ValueError("review form too large")
+            fields = parse_qs(
+                body.decode(),
+                keep_blank_values=True,
+                strict_parsing=True,
+                max_num_fields=2,
+            )
+        except (UnicodeDecodeError, ValueError):
+            return JSONResponse({"error": "invalid review form"}, status_code=400)
+        digests = fields.get("digest", [])
+        decisions = fields.get("decision", [])
+        if len(fields) != 2 or len(digests) != 1 or len(decisions) != 1:
+            return JSONResponse({"error": "one digest and decision are required"}, status_code=400)
+        try:
+            result = review_service().decide(actor, task_id, digests[0], decisions[0])
+        except ReviewError as exc:
+            return JSONResponse({"error": str(exc), "code": exc.code}, status_code=exc.status)
+        return JSONResponse(result)
+
+    @server.custom_route(
+        "/review/{task_id}/source/{source_id}/{entity_id}",
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    async def review_source(request: Request) -> Response:
+        actor = _browser_actor(request)
+        if actor is None:
+            return RedirectResponse("/auth/login", status_code=303)
+        if request.url.scheme != "https":
+            return JSONResponse({"error": "HTTPS required"}, status_code=403)
+        if not state.permits(config.workspace_id, actor, "review"):
+            return JSONResponse({"error": "workspace review is not available"}, status_code=403)
+        try:
+            filename, text = review_service().inspect_source(
+                actor,
+                request.path_params["task_id"],
+                request.path_params["source_id"],
+                request.path_params["entity_id"],
+            )
+        except ReviewError as exc:
+            return JSONResponse({"error": str(exc), "code": exc.code}, status_code=exc.status)
+        return HTMLResponse(render_source(request.path_params["task_id"], filename, text))
 
     @server.custom_route("/auth/login", methods=["GET", "POST"], include_in_schema=False)
     async def login(request: Request) -> Response:

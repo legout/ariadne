@@ -8,7 +8,7 @@ import os
 import uvicorn
 
 from .app import WorkspaceConfig, create_app
-from .state import Actor, WorkspaceState, local_actor
+from .state import CAPABILITIES, Actor, WorkspaceState, local_actor
 
 
 def _state(*, entra: bool = False) -> tuple[str, WorkspaceState, str]:
@@ -35,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--object-id", required=True, help="Entra object ID, never an email")
         command.add_argument(
             "--capability",
-            choices=("read", "setup", "contribute"),
+            choices=tuple(sorted(CAPABILITIES)),
             default="read",
         )
 
@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--user-id", required=True)
         command.add_argument(
             "--capability",
-            choices=("read", "setup", "contribute"),
+            choices=tuple(sorted(CAPABILITIES)),
             default="read",
         )
 
