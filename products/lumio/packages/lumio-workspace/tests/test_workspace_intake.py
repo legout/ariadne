@@ -6,7 +6,7 @@ import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -870,3 +870,184 @@ def test_contributor_uses_server_base_and_opaque_continuation(
         published_page = published.json()["result"]["structuredContent"]
         assert published_page["markdown"].strip() == SENTINEL
         assert published_page["citation"]["published_version"] == fixture.published_revision
+
+
+def test_interrupted_prepare_recovers_exact_registered_task_ref(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fixture = _workspace_fixture(tmp_path, monkeypatch)
+    config = fixture.config
+    assert config.authoring_path is not None
+    repo = config.authoring_path.parent
+    with TestClient(create_app(config), base_url="https://workspace.test") as client:
+        _owner_setup(client, fixture)
+        uploaded = _upload(
+            client, fixture.contributor_api, ORIGINAL, retry_key="interrupted-upload"
+        )
+        assert uploaded.status_code == 200
+        upload_id = uploaded.json()["upload_id"]
+    base = _git(repo, "rev-parse", "HEAD")
+    manifest_before = (config.authoring_path / ".lumio-authoring.yaml").read_bytes()
+    _git(repo, "branch", "operator-keep", base)
+
+    real_ingest = contribution_module.ingest_candidate
+
+    def interrupted_ingest(*args, **kwargs):
+        raise RuntimeError("simulated interruption after native worktree creation")
+
+    monkeypatch.setattr(contribution_module, "ingest_candidate", interrupted_ingest)
+    with TestClient(create_app(config), base_url="https://workspace.test") as interrupted:
+        interrupted_response = _prepare(
+            interrupted,
+            fixture.contributor_api,
+            retry_key="interrupted-prepare",
+            base=base,
+            upload_id=upload_id,
+            intent="new",
+            request_id=401,
+        )
+        assert interrupted_response.json()["result"]["isError"] is True
+
+    task_paths = list((config.operational_root / "worktrees").iterdir())
+    assert len(task_paths) == 1
+    task_path = task_paths[0]
+    task_id = task_path.name
+    branch = f"lumio-workspace/{task_id}"
+    registered = _git(repo, "worktree", "list", "--porcelain")
+    assert f"worktree {task_path}" in registered
+    assert _git(repo, "rev-parse", f"refs/heads/{branch}") == base
+    monkeypatch.setattr(contribution_module, "ingest_candidate", real_ingest)
+
+    with TestClient(create_app(config), base_url="https://workspace.test") as reconnected:
+        pending = _call_tool(
+            reconnected,
+            fixture.contributor_api,
+            "get_task",
+            {"task_id": task_id},
+            402,
+        )
+        pending_task = pending.json()["result"]["structuredContent"]
+        assert pending_task["status"] == "pending"
+        assert pending_task["native_base"] == base
+
+        recovered = _prepare(
+            reconnected,
+            fixture.contributor_api,
+            retry_key="interrupted-prepare",
+            base=base,
+            upload_id=upload_id,
+            intent="new",
+            request_id=403,
+        )
+        recovered_result = recovered.json()["result"]
+        assert recovered_result["isError"] is False, recovered_result
+        recovered_task = recovered_result["structuredContent"]
+        assert recovered_task["task_id"] == task_id
+        assert recovered_task["status"] == "pending_review"
+        assert recovered_task["native_base"] == base
+        assert recovered_task["published"] is False
+
+        status = _call_tool(
+            reconnected,
+            fixture.contributor_api,
+            "get_task",
+            {"task_id": task_id},
+            404,
+        )
+        current = status.json()["result"]["structuredContent"]
+        assert current["native_candidate"] == recovered_task["native_candidate"]
+        assert current["native_review"] == recovered_task["native_review"]
+        reader = _call_tool(
+            reconnected,
+            fixture.contributor_api,
+            "read_knowledge",
+            {"title": "Published Runbook"},
+            405,
+        )
+        published = reader.json()["result"]["structuredContent"]
+        assert published["markdown"].strip() == SENTINEL
+
+    assert _git(repo, "rev-parse", "HEAD") == base
+    assert _git(repo, "rev-parse", "refs/heads/operator-keep") == base
+    assert _git(repo, "rev-parse", f"refs/heads/{branch}") == recovered_task["native_candidate"]
+    assert (config.authoring_path / ".lumio-authoring.yaml").read_bytes() == manifest_before
+    versions = SourceRegistry(fixture.registry_path).get("runbook-source").versions
+    assert [version.content_hash for version in versions] == [EXPECTED_SHA256]
+    store = LocalDirectoryArtifactStore(fixture.artifact_path)
+    assert store.get_artifact(source_id="runbook-source", content_hash=EXPECTED_SHA256) == ORIGINAL
+
+
+def test_moved_profile_requires_matching_owner_confirmation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fixture = _workspace_fixture(tmp_path, monkeypatch)
+    old_config = fixture.config
+    assert old_config.authoring_path is not None
+    assert old_config.private_profile_path is not None
+    base = _adopt_without_setup(fixture)
+    repo = old_config.authoring_path.parent
+    history_before = _git(repo, "log", "--format=%H")
+    manifest_before = (old_config.authoring_path / ".lumio-authoring.yaml").read_bytes()
+    control_before = (old_config.authoring_path / "lumio.yaml").read_bytes()
+
+    with TestClient(create_app(old_config), base_url="https://workspace.test") as client:
+        _owner_setup(client, fixture)
+        uploaded = _upload(
+            client, fixture.contributor_api, ORIGINAL, retry_key="moved-profile-upload"
+        )
+        assert uploaded.status_code == 200
+        upload_id = uploaded.json()["upload_id"]
+
+    old_profile = old_config.private_profile_path
+    moved_profile = old_profile.parent / "moved" / "profile.json"
+    moved_profile.parent.mkdir()
+    profile_bytes = old_profile.read_bytes()
+    old_profile.rename(moved_profile)
+    assert moved_profile.read_bytes() == profile_bytes
+    moved_config = replace(old_config, private_profile_path=moved_profile)
+
+    with TestClient(create_app(moved_config), base_url="https://workspace.test") as client:
+        refused = _prepare(
+            client,
+            fixture.contributor_api,
+            retry_key="moved-profile-prepare",
+            base=base,
+            upload_id=upload_id,
+            intent="new",
+            request_id=501,
+        )
+        refused_result = refused.json()["result"]
+        assert refused_result["isError"] is True
+        assert "owner must confirm setup" in refused_result["content"][0]["text"]
+
+        _login(client, fixture.owner_browser)
+        old_confirmation = client.post(
+            "/setup",
+            headers={"Origin": "https://workspace.test"},
+            data={"digest": _digest(client.get("/setup").text)},
+        )
+        assert old_confirmation.status_code == 200, old_confirmation.text
+        assert old_confirmation.json()["ready"] is True
+
+        approved = _prepare(
+            client,
+            fixture.contributor_api,
+            retry_key="moved-profile-prepare",
+            base=base,
+            upload_id=upload_id,
+            intent="new",
+            request_id=502,
+        )
+        approved_result = approved.json()["result"]
+        assert approved_result["isError"] is False, approved_result
+        approved_task = approved_result["structuredContent"]
+        assert approved_task["status"] == "pending_review"
+        assert approved_task["native_base"] == base
+        assert approved_task["published"] is False
+
+    assert _git(repo, "rev-parse", "HEAD") == base
+    assert _git(repo, "log", "--format=%H") == history_before
+    assert (old_config.authoring_path / ".lumio-authoring.yaml").read_bytes() == manifest_before
+    assert (old_config.authoring_path / "lumio.yaml").read_bytes() == control_before
+    versions = SourceRegistry(fixture.registry_path).get("runbook-source").versions
+    assert [version.content_hash for version in versions] == [EXPECTED_SHA256]

@@ -422,7 +422,15 @@ class ContributionService:
         _git(repo_root, "worktree", "remove", "--force", str(task_path))
         try:
             result = subprocess.run(
-                ["git", "-C", str(repo_root), "show-ref", "--verify", "--quiet", branch],
+                [
+                    "git",
+                    "-C",
+                    str(repo_root),
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    f"refs/heads/{branch}",
+                ],
                 check=False,
                 capture_output=True,
             )

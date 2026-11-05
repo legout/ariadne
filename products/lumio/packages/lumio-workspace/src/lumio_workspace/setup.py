@@ -197,6 +197,7 @@ def _adopted_preview(
             "subtree": facts.subtree,
             "current_commit": facts.current_commit,
             "namespace": namespace,
+            "profile_path": str(profile_path.resolve()),
             "private_binding": resolved.binding_digest,
             "actions": actions,
         }
