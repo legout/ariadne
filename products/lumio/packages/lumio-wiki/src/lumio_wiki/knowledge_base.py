@@ -4556,6 +4556,43 @@ def seeded_control_file() -> KnowledgeBaseControlFile:
     )
 
 
+def document_first_control_file(
+    control: KnowledgeBaseControlFile | None = None,
+) -> KnowledgeBaseControlFile:
+    """Return controls with the neutral document-first Entity Type, without writing.
+
+    A new Knowledge Base starts from the ordinary category seed. Supplied
+    controls retain every unrelated setting and ontology entry. An existing
+    ``knowledge-artifact`` definition must match exactly; a same-name local
+    definition with different meaning is a readable conflict, never a merge.
+    """
+    type_id = "knowledge-artifact"
+    definition = EntityTypeDefinition(
+        description=(
+            "A document, record, or other knowledge artifact. Its referent is the "
+            "artifact itself, not a person, organization, service, or business object "
+            "mentioned in it."
+        )
+    )
+    base = seeded_control_file() if control is None else control
+    ontology = base.ontology if base.ontology is not None else Ontology()
+    existing = ontology.entity_types.get(type_id)
+    if existing is not None:
+        if existing != definition:
+            raise ControlFileError(
+                f"document-first Entity Type {type_id!r} conflicts with the existing "
+                "parsed definition; resolve the local definition explicitly"
+            )
+        return base
+    return msgspec.structs.replace(
+        base,
+        ontology=msgspec.structs.replace(
+            ontology,
+            entity_types={**ontology.entity_types, type_id: definition},
+        ),
+    )
+
+
 def write_control_file(path: str | Path, control: KnowledgeBaseControlFile) -> Path:
     """Write a Control File deterministically as ``lumio.yaml`` at the KB root.
 
