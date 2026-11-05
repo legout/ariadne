@@ -718,6 +718,9 @@ def _retained_confirmations(
 
 
 def _resolve_private_sources(root: Path, private_profile: str | Path):
+    if not Path(private_profile).is_absolute():
+        raise ValueError("private profile path must be absolute")
+
     from lumio_wiki.private_profile import load_private_profile, resolve_private_profile
 
     kb_root = root / "knowledge"

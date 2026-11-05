@@ -11,6 +11,9 @@ import json
 import os
 
 import pytest
+from ariadne import admission, lumio_context
+from ariadne.admission import main as admission_main
+from ariadne.discovery import DiscoveryRuntime
 from lumio_wiki.artifact_store import LocalDirectoryArtifactStore, retain_artifact
 from lumio_wiki.location import PublishedFilesystemLocation
 from lumio_wiki.source_references import (
@@ -19,10 +22,8 @@ from lumio_wiki.source_references import (
     serialize_source_reference_manifest,
 )
 from lumio_wiki.source_registry import SourceRegistry
+from tests.test_git_authoring import worktree_of
 
-from ariadne import admission, lumio_context
-from ariadne.admission import main as admission_main
-from ariadne.discovery import DiscoveryRuntime
 from integration.tests.lumio_metric_mvp import (
     NAMESPACE,
     current_bytes,
@@ -31,7 +32,6 @@ from integration.tests.lumio_metric_mvp import (
     supported_candidate,
     write_page,
 )
-from tests.test_git_authoring import worktree_of
 
 BASELINE_SOURCE = "managed-baseline-source"
 NEW_SOURCE = "managed-addition-source"
@@ -173,7 +173,7 @@ def _python_admit(project, review, preview, profile):
     )
 
 
-def test_managed_admission_binds_profile_and_retention(tmp_path, capsys):
+def test_managed_admission_binds_profile_and_retention(tmp_path, capsys, monkeypatch):
     project, api, started, base_revision = supported_candidate(tmp_path / "project")
     proposal = started["proposal"]
     tree = worktree_of(project, proposal)
@@ -232,6 +232,38 @@ def test_managed_admission_binds_profile_and_retention(tmp_path, capsys):
         f"{BASELINE_ENTITY} -> {BASELINE_SOURCE}:{BASELINE_ORIGINAL_DIGEST}"
         in base_preview["publication_review"]["bindings"]
     )
+
+    # The same existing valid profile must not become cwd-dependent when selected
+    # through the CLI or either shared Python admission entry point.
+    monkeypatch.chdir(private)
+    relative_profile = profile.name
+    relative_cli_args = [relative_profile if arg == str(profile) else arg for arg in cli_args]
+    for confirm_args in (
+        [],
+        [
+            "--confirm",
+            "--by",
+            "human:synthetic-operator",
+            "--overall-digest",
+            base_preview["digest"],
+        ],
+    ):
+        assert admission_main([*relative_cli_args, *confirm_args]) == 1
+        cli_error = capsys.readouterr()
+        assert cli_error.out == ""
+        assert json.loads(cli_error.err) == {
+            "error": {
+                "type": "ValueError",
+                "message": "private profile path must be absolute",
+            }
+        }
+    with pytest.raises(ValueError, match="private profile path must be absolute"):
+        _python_preview(project, base_review, destination, relative_profile, "none")
+    with pytest.raises(ValueError, match="private profile path must be absolute"):
+        _python_admit(project, base_review, base_preview, relative_profile)
+    assert not (project / ".ariadne/current.json").exists()
+    assert PublishedFilesystemLocation(destination).read_pointer() is None
+
     assert admission_main(
         [
             *cli_args,
