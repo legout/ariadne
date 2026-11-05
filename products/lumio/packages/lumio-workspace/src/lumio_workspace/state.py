@@ -172,20 +172,13 @@ class WorkspaceState:
 
     def browser_session_was_rotated(self, session_id: str) -> bool:
         with self._connect() as connection:
+            # Obsolete responses can arrive after the old session's expiry.
             row = connection.execute(
-                "SELECT expires_at FROM browser_sessions "
+                "SELECT 1 FROM browser_sessions "
                 "WHERE session_id = ? AND rotated_at IS NOT NULL",
                 (session_id,),
             ).fetchone()
-            if row is None:
-                return False
-            if row[0] <= int(time.time()):
-                connection.execute(
-                    "DELETE FROM browser_sessions WHERE session_id = ? AND rotated_at IS NOT NULL",
-                    (session_id,),
-                )
-                return False
-            return True
+        return row is not None
 
     def delete_browser_session(self, session_id: str) -> None:
         with self._connect() as connection:

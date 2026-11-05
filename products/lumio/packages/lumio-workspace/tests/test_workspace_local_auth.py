@@ -263,7 +263,12 @@ def test_local_credential_and_browser_session_lifecycle(
         assert denied.json() == {"error": "workspace access is not available"}
 
 
-def test_delayed_local_login_cannot_replace_newer_browser_session(tmp_path: Path) -> None:
+def test_delayed_local_login_cannot_replace_newer_browser_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    clock = {"now": int(time.time())}
+    monkeypatch.setattr("lumio_workspace.state.time.time", lambda: clock["now"])
+    monkeypatch.setattr("lumio_workspace.app.time.time", lambda: clock["now"])
     config = WorkspaceConfig(
         workspace_id="workspace-fixture",
         external_url="https://workspace.test",
@@ -278,7 +283,7 @@ def test_delayed_local_login_cannot_replace_newer_browser_session(tmp_path: Path
     for user_id in ("alice", "bob", "carol"):
         state.create_local_user(user_id)
         credentials[user_id] = state.issue_local_credential(
-            user_id, "browser", expires_at=int(time.time()) + 3600
+            user_id, "browser", expires_at=clock["now"] + 7200
         )
     state.grant(config.workspace_id, Actor(tenant_id="local", object_id="bob"))
 
@@ -324,10 +329,16 @@ def test_delayed_local_login_cannot_replace_newer_browser_session(tmp_path: Path
             delay_arrival = True
             older_request = asyncio.create_task(login("carol"))
             await arrival_started.wait()
+            # Bob rotates A while it is still valid, giving B a fresh cookie lifetime.
+            clock["now"] += 3598
             newer_response = await login("bob")
             new_cookie = newer_response.cookies.get("lumio_workspace_session")
             assert newer_response.status_code == 303
             assert new_cookie and new_cookie != old_cookie
+            assert browser.cookies.get("lumio_workspace_session") == new_cookie
+
+            # Release Carol's older POST only after A expires; B remains valid.
+            clock["now"] += 3
             finish_arrival.set()
             older_response = await older_request
 
@@ -341,6 +352,29 @@ def test_delayed_local_login_cannot_replace_newer_browser_session(tmp_path: Path
             }
             # Only Bob has membership, so this independently proves the browser actor.
             assert (await browser.get("/workspace")).status_code == 200
+
+            # Ordinary expiry is not rotation: an expired unrotated cookie permits login.
+            expired_unrotated = "expired-unrotated-browser-session"
+            state.save_browser_session(
+                expired_unrotated,
+                {
+                    "actor": {"tenant_id": "local", "object_id": "alice"},
+                    "local_credential_id": credentials["alice"][0],
+                },
+                expires_at=clock["now"] - 1,
+            )
+            browser.cookies.set(
+                "lumio_workspace_session", expired_unrotated, domain="workspace.test"
+            )
+            recovered_response = await login("alice")
+            recovered_cookie = browser.cookies.get("lumio_workspace_session")
+            assert recovered_response.status_code == 303
+            assert recovered_cookie and recovered_cookie not in {new_cookie, expired_unrotated}
+            assert state.load_browser_session(expired_unrotated) is None
+            assert state.load_browser_session(recovered_cookie) == {
+                "actor": {"tenant_id": "local", "object_id": "alice"},
+                "local_credential_id": credentials["alice"][0],
+            }
 
     asyncio.run(scenario())
 
