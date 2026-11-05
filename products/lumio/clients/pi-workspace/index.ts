@@ -188,7 +188,9 @@ export default function (pi: ExtensionAPI) {
         pi.sendUserMessage(
           `Exact original uploaded as upload_id ${receipt.upload_id} for source ${receipt.source_id}. ` +
             "Use read_source_material to inspect its normalized text and conversion facts before " +
-            "preparing a pending candidate.",
+            "preparing a pending candidate. After reconnecting, call get_task with the returned " +
+            "task_id before retrying; persisted native state is authoritative, and old browser " +
+            "approvals must not be replayed.",
         );
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");

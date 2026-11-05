@@ -1,8 +1,8 @@
-# Shared workspace: local tokens, Entra, and Pi (W1)
+# Shared workspace: local tokens, Entra, and Pi (W1–W4)
 
 **Accepted interim limitation — 2026-11-05:** The owner explicitly accepted the current API-token exposure for continued development, then authorized commit/merge/push and cleanup in BB `thr_26ccqihn5b`. Pi's default shell inherits its process environment: a model-callable shell or equivalent local tool can expose `LUMIO_WORKSPACE_API_TOKEN` in tool output, session history and model requests. The placeholder header alone does not isolate that secret. Until supported host isolation is qualified, use synthetic credentials/data only; do not claim secret isolation or real-user/private-HTTPS qualification. Browser credentials remain forbidden in Pi. This is a documented accepted development risk, not a fixed defect, a production-use grant, or completion of the remaining live checks.
 
-This guide configures the local W1 read slice: authenticated identity, current workspace membership, and read/search of one existing Published Version through Streamable HTTP MCP. It does not configure upload, workspace setup, contribution, review, admission, or publication. Local-token is the interim mode; the existing Entra registration and OAuth path remains a deferred option. Neither mode is live-qualified by this document.
+This guide configures authenticated workspace access and the synthetic document contribution, review, and recovery path through W4. Local-token is the interim mode; the existing Entra registration and OAuth path remains a deferred option. Neither mode is live-qualified by this document.
 
 Live interoperability remains **blocked** until the owner supplies approved synthetic local users, private HTTPS, two human participants, and installed Pi. Live Entra additionally requires the approved tenant fixture. No tenant or local-token live leg has passed merely because the automated boundary checks pass.
 
@@ -139,17 +139,27 @@ export LUMIO_WORKSPACE_ALLOWED_MODELS='APPROVED_PROVIDER/APPROVED_MODEL'
 export LUMIO_WORKSPACE_CALLBACK_PORT='8765'
 ```
 
-Reload Pi and run `/workspace` to inspect configuration and model disclosure status, then `/mcp` to inspect `lumio-workspace`. Entra mode also uses `/mcp` for OAuth sign-in. The available read-only tools are `workspace_status`, `read_knowledge`, and `search_knowledge`.
+Reload Pi and run `/workspace` to inspect configuration and model disclosure status, then `/mcp` to inspect `lumio-workspace`. Entra mode also uses `/mcp` for OAuth sign-in. The read tools are `workspace_status`, `read_knowledge`, and `search_knowledge`; contribution uses `read_source_material`, `prepare_contribution`, and actor-scoped `get_task`. No MCP tool grants browser approval.
 
 The extension checks the exact provider/model before every workspace MCP call and rechecks after model changes; an empty or nonmatching allowlist blocks reads before content can be returned. After a successful workspace result, it also aborts any provider request that would carry retained workspace history to a nonallowed model, including after a model switch or session resume. Clean conversations without workspace results remain usable. This is trusted-client disclosure policy, not remote attestation.
 
-## 7. Sign in separately in the browser
+## 7. Contribute documents and recover after restart
+
+Use `/workspace-upload <source-id> <path> [retry=<key>]` for exact original bytes up to 25 MiB. Supported document inputs are UTF-8 `.txt`, `.md`, and `.markdown`, plus `.pdf` and `.docx`. Other formats, including legacy Word, are refused unless a separately approved task adds them. Upload retention is not extraction, review, admission, or publication.
+
+The service reuses the existing native processors: PDF uses LiteParse and retains only converter-supplied page numbers; DOCX uses AnyDoc and produces heading-based sections without invented page coordinates. Conversion retains the native 200,000-character, 200-section, 20-second, and archive bounds. Missing document extras, invalid input, conversion failure, and empty results are errors. `read_source_material` returns the actual processor and any `incomplete` truncation signal; the browser review shows the same conversion facts. Do not describe truncated output or coordinates the processor did not supply as complete or lossless.
+
+After preparing a candidate, keep its returned `task_id` as the handle for actor-scoped status. Following a client or service restart, call `get_task` before retrying upload, preparation, or approval. The service reads persisted SQLite identity plus native commits, admission receipts, and the current pointer. A completed native publication is reported even when later bookkeeping failed; a prepared receipt alone is not activation. A historical publication's version and citations remain distinct from the current reader pointer, which may have advanced to a newer activation.
+
+Retries must preserve the original retry keys and exact input. Recovery does not replay a browser decision: changed candidates or bases require a fresh review, and stale, expired, revoked, or currently unauthorized browser actions cannot activate content. This synthetic guidance does not qualify the actual PDF/DOCX binary upload-to-review journey, which remains W6, or any live human/client milestone.
+
+## 8. Sign in separately in the browser
 
 Local browser status is at `https://WORKSPACE_HOST/workspace`. Opening `/auth/login` displays an inert form; the person enters their separate browser sign-in token into that same-origin HTTPS form POST. The local `/auth/callback` is 404. Entra mode instead retains `/auth/login` OIDC initiation and `/auth/callback`.
 
 The browser receives only an opaque, Secure, HttpOnly, SameSite=Lax cookie; sign-in rotates that credential, and server-side deletion or the one-hour expiry refuses an old cookie. Browser sign-in and API access are independently checked against current membership. No browser action in W1 admits or publishes anything.
 
-## 8. Qualification recipe — blocked pending authorized live fixture
+## 9. Qualification recipe — blocked pending authorized live fixture
 
 This is a recipe, not evidence that the leg ran. The owner must separately authorize private HTTPS, a pinned synthetic publication, installed Pi, and two actual local human users with securely delivered purpose-separated credentials. One agent acting as both people does not prove human approval, and W3 retains exact human-admission proof.
 
