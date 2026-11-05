@@ -96,6 +96,36 @@ with TestClient(create_app(config), base_url="https://workspace.test") as client
     assert denied["isError"] is True, denied
     assert "publication" not in denied.get("structuredContent", {})
 
+    retry_upload = payload["upload_b"]
+    repeated_upload = client.post(
+        "/uploads",
+        headers={
+            "Authorization": f"Bearer {payload['contributor_api']}",
+            "Content-Type": "application/octet-stream",
+            "X-Lumio-Source-ID": retry_upload["source_id"],
+            "X-Lumio-Filename": retry_upload["filename"],
+            "X-Lumio-Retry-Key": retry_upload["retry_key"],
+        },
+        content=bytes.fromhex(retry_upload["raw_hex"]),
+    )
+    assert repeated_upload.status_code == 200, repeated_upload.text
+    repeated_prepare = call(
+        client,
+        payload["contributor_api"],
+        "prepare_contribution",
+        payload["prepare_b"],
+        20,
+    )
+    assert repeated_prepare["isError"] is False, repeated_prepare
+    current_b = call(
+        client,
+        payload["contributor_api"],
+        "get_task",
+        {"task_id": payload["task_b"]},
+        21,
+    )
+    assert current_b["isError"] is False, current_b
+
     first = call(
         client,
         payload["contributor_api"],
@@ -135,6 +165,9 @@ print(
     json.dumps(
         {
             "pid": os.getpid(),
+            "retried_upload": repeated_upload.json(),
+            "retried_b": repeated_prepare["structuredContent"],
+            "current_b": current_b["structuredContent"],
             "recovered_a": recovered_a,
             "prepared": prepared["structuredContent"],
             "status": status["structuredContent"],
@@ -221,27 +254,27 @@ def test_restart_reconciles_publication_without_replaying_stale_approval(
             RUNBOOK_SOURCE,
         )
         assert uploaded_b.status_code == 200, uploaded_b.text
+        upload_id_b = uploaded_b.json()["upload_id"]
+        prepare_b_arguments = {
+            "retry_key": "recovery-version-b",
+            "sources": [{"upload_id": upload_id_b, "intent": "update"}],
+            "pages": [
+                {
+                    "filename": "recovery-runbook.md",
+                    "markdown": _page(
+                        "Recovery Runbook",
+                        "Version B: verify the replacement before closing the runbook.",
+                        RUNBOOK_SOURCE,
+                    ),
+                }
+            ],
+            "continuation_task_id": task_a["task_id"],
+        }
         response_b = _call_tool(
             contributor,
             fixture.contributor_api,
             "prepare_contribution",
-            {
-                "retry_key": "recovery-version-b",
-                "sources": [
-                    {"upload_id": uploaded_b.json()["upload_id"], "intent": "update"}
-                ],
-                "pages": [
-                    {
-                        "filename": "recovery-runbook.md",
-                        "markdown": _page(
-                            "Recovery Runbook",
-                            "Version B: verify the replacement before closing the runbook.",
-                            RUNBOOK_SOURCE,
-                        ),
-                    }
-                ],
-                "continuation_task_id": task_a["task_id"],
-            },
+            prepare_b_arguments,
             3,
         )
         result_b = response_b.json()["result"]
@@ -266,6 +299,14 @@ def test_restart_reconciles_publication_without_replaying_stale_approval(
         "reviewer_api": fixture.reviewer_api,
         "task_a": task_a["task_id"],
         "task_prepared": prepared["task_id"],
+        "task_b": task_b["task_id"],
+        "upload_b": {
+            "raw_hex": EDITED_ORIGINAL.hex(),
+            "retry_key": "recovery-version-b",
+            "source_id": RUNBOOK_SOURCE,
+            "filename": "runbook.md",
+        },
+        "prepare_b": prepare_b_arguments,
     }
     receipts_path = config.published_path / ".lumio-publication" / "receipts"
     receipts_before = {path.name: path.read_bytes() for path in receipts_path.glob("*.json")}
@@ -285,6 +326,16 @@ def test_restart_reconciles_publication_without_replaying_stale_approval(
     assert restarted.returncode == 0, (restarted.stdout, restarted.stderr)
     observed = json.loads(restarted.stdout)
     assert observed["pid"] != os.getpid()
+
+    assert observed["retried_upload"]["upload_id"] == upload_id_b
+    assert observed["retried_upload"]["reused"] is True
+    assert observed["retried_b"]["task_id"] == task_b["task_id"]
+    assert observed["retried_b"]["native_candidate"] == version_b
+    recovered_b = observed["current_b"]
+    assert recovered_b["status"] == "published"
+    assert recovered_b["published"] is True
+    assert recovered_b["publication_outcome"] == "activated"
+    assert recovered_b["publication"]["version"] == version_b
 
     recovered_a = observed["recovered_a"]
     assert recovered_a["status"] == "published"

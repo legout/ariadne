@@ -16,7 +16,7 @@ Local users and Entra `(tid, oid)` identities are distinct. Credentials do not g
 
 Publish the Knowledge Base through native Lumio admission first, then point the service only at that publication destination. Optionally pin an exact immutable version; without a pin, each operation resolves the current pointer once.
 
-Common settings:
+Common read-only settings:
 
 ```sh
 export LUMIO_WORKSPACE_ID='WORKSPACE_ID'
@@ -25,6 +25,32 @@ export LUMIO_WORKSPACE_PUBLISHED_PATH='/private/published-kb'
 export LUMIO_WORKSPACE_PUBLISHED_VERSION='OPTIONAL_EXACT_VERSION'
 export LUMIO_WORKSPACE_STATE_PATH='/private/workspace/state.sqlite3'
 ```
+
+These settings alone do not enable setup, upload, contribution, or review. For that authoring-enabled path, also configure the service with the native authoring KB and private resources:
+
+```sh
+export LUMIO_WORKSPACE_AUTHORING_PATH='/private/authoring-repo/kb'
+export LUMIO_WORKSPACE_PRIVATE_PROFILE='/private/workspace/profile.json'
+export LUMIO_WORKSPACE_PRIVATE_ROOT='/private/workspace/operations'
+# Required for new-empty setup; optional for an adopted KB, where it must match its manifest:
+export LUMIO_WORKSPACE_NAMESPACE='urn:uuid:6c6e21ec-98a4-4c0b-9153-c2eb5d3c2210'
+```
+
+For this synthetic local configuration, the server-only private profile at the selected path contains:
+
+```json
+{
+  "schema_version": 1,
+  "namespace": "urn:uuid:6c6e21ec-98a4-4c0b-9153-c2eb5d3c2210",
+  "source_registry": "/private/workspace/registry",
+  "retention": "required",
+  "artifact_store": {"kind": "local", "root": "/private/workspace/artifacts"}
+}
+```
+
+Keep the profile, Source Registry, artifact store, operational directory, originals, and credentials outside the content repository and inaccessible to Pi. An existing adopted target must have a valid committed native Authoring Revision, `lumio.yaml`, `.lumio-authoring.yaml`, a matching namespace, and resolvable private registry/artifact resources. Its published destination must come from native admission of that actual history; setup does not invent ancestry or publish a baseline. New-empty setup requires the explicit namespace. A nonempty unadopted target is refused as `adoption_required` without mutation; this guide does not provide native adoption for it.
+
+After the users and capabilities below are provisioned, the designated owner opens `https://WORKSPACE_HOST/setup` with their separate browser session. The GET displays the exact setup preview and readiness facts; the owner checks them and submits the same-origin protected form POST to apply that preview. Neither Pi nor an API token can perform this owner confirmation.
 
 For local-token mode, explicitly set:
 
@@ -53,6 +79,16 @@ With `LUMIO_WORKSPACE_ID` and `LUMIO_WORKSPACE_STATE_PATH` set, the administrato
 ```sh
 lumio-workspace local-user create --user-id USER_ID
 lumio-workspace local-membership grant --user-id USER_ID
+```
+
+The membership command above grants only the default `read` capability. For the authoring-enabled path, provision each capability explicitly to the designated person; no first-login promotion or grant inferred from authentication, contribution, or review is supported:
+
+```sh
+lumio-workspace local-membership grant --user-id OWNER_ID --capability setup
+lumio-workspace local-membership grant --user-id CONTRIBUTOR_ID --capability contribute
+lumio-workspace local-membership grant --user-id REVIEWER_ID --capability review
+# Optional, and independent of review:
+lumio-workspace local-membership grant --user-id REVIEWER_ID --capability inspect_source
 ```
 
 Issue separate expiring API and browser credentials for each person:
@@ -147,11 +183,17 @@ The extension checks the exact provider/model before every workspace MCP call an
 
 Use `/workspace-upload <source-id> <path> [retry=<key>]` for exact original bytes up to 25 MiB. Supported document inputs are UTF-8 `.txt`, `.md`, and `.markdown`, plus `.pdf` and `.docx`. Other formats, including legacy Word, are refused unless a separately approved task adds them. Upload retention is not extraction, review, admission, or publication.
 
+From the **first upload attempt**, explicitly choose and retain `retry=<stable-key>` when interruption recovery matters, together with the exact bytes, source ID, and filename. If the option is omitted, the command generates an arbitrary key for that invocation; the immediate upload still works, but a key lost with an interrupted client cannot be reconstructed. A successful upload returns an **`upload_id`**, not a `task_id`.
+
+After an interrupted upload, repeat `/workspace-upload` with the same key and exact source ID, filename, and bytes to recover the same `upload_id`. Do not call `get_task` with an `upload_id` or invent a task ID. Recovery is not possible from a lost key or lost/changed input; a changed input under the same key conflicts rather than silently replacing the original.
+
 The service reuses the existing native processors: PDF uses LiteParse and retains only converter-supplied page numbers; DOCX uses AnyDoc and produces heading-based sections without invented page coordinates. Conversion retains the native 200,000-character, 200-section, 20-second, and archive bounds. Missing document extras, invalid input, conversion failure, and empty results are errors. `read_source_material` returns the actual processor and any `incomplete` truncation signal; the browser review shows the same conversion facts. Do not describe truncated output or coordinates the processor did not supply as complete or lossless.
 
-After preparing a candidate, keep its returned `task_id` as the handle for actor-scoped status. Following a client or service restart, call `get_task` before retrying upload, preparation, or approval. The service reads persisted SQLite identity plus native commits, admission receipts, and the current pointer. A completed native publication is reported even when later bookkeeping failed; a prepared receipt alone is not activation. A historical publication's version and citations remain distinct from the current reader pointer, which may have advanced to a newer activation.
+For `prepare_contribution`, explicitly choose and retain a separate stable preparation `retry_key` and the exact request, including its recovered `upload_id` values, source intents, pages, and any continuation task. Preparation returns the actual **`task_id`**; retain it for actor-scoped `get_task` status. If preparation was interrupted before that ID was learned, repeat the same preparation with the same key and exact request to recover the identified task, then call `get_task` once the task exists. If the actual `task_id` is already known, inspect it with `get_task` before any further preparation. A prepared receipt alone is not activation.
 
-Retries must preserve the original retry keys and exact input. Recovery does not replay a browser decision: changed candidates or bases require a fresh review, and stale, expired, revoked, or currently unauthorized browser actions cannot activate content. This synthetic guidance does not qualify the actual PDF/DOCX binary upload-to-review journey, which remains W6, or any live human/client milestone.
+The service reads persisted SQLite identity plus native commits, admission receipts, and the current pointer. A completed native publication is reported even when later bookkeeping failed. A historical publication's version and citations remain distinct from the current reader pointer, which may have advanced to a newer activation.
+
+Recovery never blindly replays browser approval: changed candidates or bases require a fresh review, and stale, expired, revoked, or currently unauthorized browser actions cannot activate content. This synthetic guidance does not qualify the actual PDF/DOCX binary upload-to-review journey, which remains W6, or any live human/client milestone.
 
 ## 8. Sign in separately in the browser
 
