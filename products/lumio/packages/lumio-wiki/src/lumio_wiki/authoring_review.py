@@ -673,7 +673,7 @@ def _render_profile(profile: Any | None) -> str:
     """One readable, native-key-preserving rendering of a typed Ariadne profile."""
     if profile is None:
         return "none"
-    return pprint.pformat(msgspec.to_builtins(profile), sort_dicts=True)
+    return pprint.pformat(msgspec.structs.asdict(profile), sort_dicts=True)
 
 
 #: Composite containers whose RECORDS have represented leaves: the container

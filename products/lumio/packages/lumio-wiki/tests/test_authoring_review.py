@@ -1542,7 +1542,7 @@ def test_review_preserves_native_verified_metadata(tmp_path, capsys):
     ):
         facts = (
             actor,
-            verified_on.isoformat(),
+            repr(verified_on),
             changed_value,
             "kept-string-key",
             "True:",
@@ -1554,7 +1554,7 @@ def test_review_preserves_native_verified_metadata(tmp_path, capsys):
     code = main(["authoring-review", str(kb), "--base", base])
     plain = capsys.readouterr().out
     assert code == 0
-    for fact in ("human:bob", "2026-10-02", "candidate-bool-key", "kept-string-key"):
+    for fact in ("human:bob", repr(date(2026, 10, 2)), "candidate-bool-key", "kept-string-key"):
         assert fact in plain
 
     report_path = tmp_path / "native-verified-review.json"
@@ -1565,6 +1565,87 @@ def test_review_preserves_native_verified_metadata(tmp_path, capsys):
     assert (roundtrip.before, roundtrip.after) == (profile["before"], profile["after"])
 
     _git(repo, "commit", "-q", "-m", "native verified metadata")
+    commit = _git(repo, "rev-parse", "HEAD")
+    checked = check_authoring_commit(kb, review, commit)
+    assert checked.matches_reviewed_candidate is True
+    assert checked.mismatches == []
+    assert checked.commit_tree == _git(repo, "rev-parse", f"{commit}^{{tree}}")
+    assert checked.reviewed_tree == expected_tree
+
+
+def test_review_distinguishes_native_verified_date_from_string(tmp_path, capsys):
+    """A native date and identical quoted text remain distinct review facts."""
+    from lumio_wiki.authoring_review import check_authoring_commit, load_authoring_review_report
+    from lumio_wiki.knowledge_base import load_knowledge_base
+
+    verified_date = date(2026, 10, 1)
+    verified_text = verified_date.isoformat()
+    base_profile = _PROFILE_BASE.replace(
+        '      - by: "alice"\n',
+        '      - by: "human:alice"\n'
+        "        on: 2026-10-01\n"
+        "        evidence:\n"
+        '          true: "kept-bool-key"\n'
+        '          "true": "kept-string-key"\n',
+    )
+    candidate_profile = base_profile.replace(
+        "        on: 2026-10-01\n", '        on: "2026-10-01"\n'
+    )
+    evidence = {True: "kept-bool-key", "true": "kept-string-key"}
+
+    def assert_native_valid(kb, expected_on, expected_type):
+        loaded, report = load_knowledge_base(kb)
+        assert report.is_valid, report
+        page = next(p for p in loaded.pages if p.path == "concepts/hydraulic-press.md")
+        entry, = page.ariadne_profile.native["verified"]
+        assert type(entry[True]) is expected_type
+        assert entry == {"by": "human:alice", True: expected_on, "evidence": evidence}
+
+    def base_mutate(repo, kb):
+        press = kb / "concepts" / "hydraulic-press.md"
+        press.write_text(_with_press_extra(base_profile))
+        assert_native_valid(kb, verified_date, date)
+
+    def candidate(repo, kb):
+        press = kb / "concepts" / "hydraulic-press.md"
+        press.write_text(_with_press_extra(candidate_profile))
+        assert_native_valid(kb, verified_text, str)
+
+    repo, kb, base = _staged_scenario(tmp_path, base_mutate, candidate)
+    expected_tree = _git(repo, "write-tree")
+    code, payload = _run_cli(["authoring-review", str(kb), "--base", base, "--json"], capsys)
+    assert code == 0, payload
+    assert payload["submitted_tree"] == expected_tree
+    profile = _semantic_entries(payload, "concepts/hydraulic-press.md")["ariadne_profile"]
+    assert profile["before"] != profile["after"]
+    assert repr(verified_date) in profile["before"]
+    assert repr(verified_text) in profile["after"]
+    assert repr(verified_date) not in profile["after"]
+    assert repr(verified_text) not in profile["before"]
+    for rendered in (profile["before"], profile["after"]):
+        for fact in ("human:alice", "kept-bool-key", "kept-string-key", "True:", "'true':"):
+            assert fact in rendered
+
+    code = main(["authoring-review", str(kb), "--base", base])
+    plain = capsys.readouterr().out
+    assert code == 0
+    for fact in (
+        "human:alice",
+        "kept-bool-key",
+        "kept-string-key",
+        repr(verified_date),
+        repr(verified_text),
+    ):
+        assert fact in plain
+
+    report_path = tmp_path / "native-date-vs-string-review.json"
+    report_path.write_text(json.dumps(payload))
+    review = load_authoring_review_report(report_path)
+    page = next(p for p in review.knowledge.pages if p.path == "concepts/hydraulic-press.md")
+    roundtrip = next(c for c in page.semantic_changes if c.field == "ariadne_profile")
+    assert (roundtrip.before, roundtrip.after) == (profile["before"], profile["after"])
+
+    _git(repo, "commit", "-q", "-m", "native date versus string metadata")
     commit = _git(repo, "rev-parse", "HEAD")
     checked = check_authoring_commit(kb, review, commit)
     assert checked.matches_reviewed_candidate is True
