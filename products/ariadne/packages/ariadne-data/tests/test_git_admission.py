@@ -853,6 +853,26 @@ def test_open_project_uses_exact_supplied_admission_record(tmp_path, monkeypatch
         runtime.con.close()
 
 
+def test_supplied_admission_record_revalidates_approval_before_open(tmp_path, monkeypatch):
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    review = _validated_ready(api, project, _policy_edit("Approval must remain current."))
+    assert admit(project, review) == 0
+    record = read_current(project)
+    registry_calls = []
+    real_registry = admission_module.approved_registry
+
+    def registry_spy(selected):
+        registry_calls.append(selected)
+        return real_registry(selected)
+
+    monkeypatch.setattr(admission_module, "approved_registry", registry_spy)
+    (project / STATE / "source-approvals.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="operator's approval"):
+        QueryRuntime.open_project(project, admission_record=record)
+    assert registry_calls == []
+
+
 def test_cli_project_flag_serves_the_managed_route_and_refuses_without_admission(tmp_path, capsys):
     """The local ``ariadne`` CLI reaches the managed factory through --project:
     the same pinned answers as QueryRuntime.open_project, and the explicit

@@ -1514,8 +1514,7 @@ class QueryRuntime:
                 )
             if Path(admission_record["project"]).resolve() != root:
                 raise ValueError("admission record does not pin this project")
-            record = admission_record
-            snapshot = root / record["snapshot"]
+            record, snapshot = admission.validate_admission_record(root, admission_record)
         elif discovery is None:
             record, snapshot = admission.resolve_admission(root)
         else:

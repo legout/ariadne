@@ -1322,22 +1322,14 @@ def reconcile(project: str | Path, proposal: str, expected_revision: str, revisi
 # ------------------------------------------------ pinned-snapshot resolution
 
 
-def resolve_admission(project: str | Path) -> tuple[dict, Path]:
-    """The managed project's pinned snapshot + admission record for
-    :meth:`ariadne.query.QueryRuntime.open_project` (plan §2): a Git-managed
-    project with no valid admission is an explicit error — never a silent
-    fallback to proposal worktrees or mutable project files — and an admitted
-    descriptor whose snapshot bytes or approved source identity no longer
-    match refuses the same way."""
+def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, Path]:
+    """Verify the supplied pinned record without consulting the current admission.
+
+    Snapshot bytes, current Source Approval and the effective storage binding
+    are checked exactly as in the ordinary resolution path. The record's
+    identity remains pinned throughout; no newer admission can replace it.
+    """
     project = Path(project).resolve()
-    record = load_current(project)
-    if record is None:
-        raise ValueError(
-            f"{project} has no valid admission ({project / CURRENT_REL} is absent) — the "
-            "managed Git route never falls back to proposal worktrees or mutable "
-            "project files; a human must review a validated candidate revision and run "
-            "ariadne-admit (display the review, then --confirm)"
-        )
     proposals._validate_revision(project, record["commit"])
     snapshot = project / _expected_snapshot(record["commit"])
     proposals._refuse_symlinked_component(project, _expected_snapshot(record["commit"]))
@@ -1404,6 +1396,20 @@ def resolve_admission(project: str | Path) -> tuple[dict, Path]:
 
     lumio_context.verify_release(record, snapshot)
     return record, snapshot
+
+
+def resolve_admission(project: str | Path) -> tuple[dict, Path]:
+    """Resolve and verify the current admission for the managed project."""
+    project = Path(project).resolve()
+    record = load_current(project)
+    if record is None:
+        raise ValueError(
+            f"{project} has no valid admission ({project / CURRENT_REL} is absent) — the "
+            "managed Git route never falls back to proposal worktrees or mutable "
+            "project files; a human must review a validated candidate revision and run "
+            "ariadne-admit (display the review, then --confirm)"
+        )
+    return validate_admission_record(project, record)
 
 
 def approval_present(project: str | Path, source_digest: str) -> bool:
