@@ -188,8 +188,8 @@ complete source-update candidate with `intent: "update"`. This registers a new
 immutable Source Version; it does not switch admitted page bindings or publish
 the update. The ordinary native review and admission path owns that decision.
 
-An enrichment review prepared against the earlier version now shows **Source
-refresh impact** to users with review permission. It lists the exact bound and
+A source-update or enrichment review prepared against the earlier version now
+shows **Source refresh impact** to users with review permission. It lists the exact bound and
 registry-latest hashes and the admitted pages and Claims/Evidence that may need
 review. This is conservative page-level dependence only: it cannot determine
 Claim-level or raw-passage impact, prove a Claim false, or retire missing

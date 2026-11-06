@@ -32,6 +32,10 @@ CORPUS = (
     b"Alex proposed retaining logs for 30 days.\n"
 )
 SOURCE_DIGEST = hashlib.sha256(CORPUS).hexdigest()
+HISTORICAL_CORPUS = CORPUS.replace(
+    b"Team A operates Service B.", b"Team Historical operates Service B."
+)
+HISTORICAL_DIGEST = hashlib.sha256(HISTORICAL_CORPUS).hexdigest()
 CONTROL = """version: 2
 mode: "categorized"
 categories:
@@ -166,6 +170,14 @@ BASE_RUNBOOK_CLAIMS = """  - id: "claim:runbook-note-one"
     evidence:
       - section: "Meeting notes"
 """
+RESTRICTED_CLAIM = """  - id: "claim:restricted-ownership"
+    predicate: "runbook-note"
+    value: "need-to-know"
+    value_type: "string"
+    status: "accepted"
+    evidence:
+      - section: "Restricted Evidence"
+"""
 
 
 def _call_tool(client: TestClient, token: str, name: str, arguments: dict, request_id: int):
@@ -217,7 +229,7 @@ def _decision(client: TestClient, task_id: str, digest: str, decision: str):
 
 
 def _fixture(
-    tmp_path: Path, *, destination_name: str = "published"
+    tmp_path: Path, *, destination_name: str = "published", source_refresh: bool = False
 ) -> tuple[WorkspaceConfig, WorkspaceState, dict[str, str], str]:
     authoring_repo = tmp_path / "authoring-repo"
     kb = authoring_repo / "kb"
@@ -235,6 +247,27 @@ def _fixture(
         "entities/service_b.md": _page("Service B", "entity:service-b", "service", source=True),
         "entities/team_c.md": _page("Team C", "entity:team-c", "team", source=True),
     }
+    if source_refresh:
+        pages["procedures/historical_runbook.md"] = _page(
+            "Historical Runbook",
+            "entity:historical-runbook",
+            "knowledge-artifact",
+            source=True,
+        ).replace("Team A operates Service B.", "Team Historical operates Service B.")
+        pages["procedures/restricted_runbook.md"] = (
+            _claim_page(
+                "Restricted Runbook",
+                "entity:restricted-runbook",
+                "knowledge-artifact",
+                source=True,
+                claim_block=RESTRICTED_CLAIM,
+            )
+            .replace('visibility: "internal"', 'visibility: "restricted"')
+            .replace(
+                "## Meeting notes",
+                "## Restricted Evidence\n\nNeed-to-know ownership details.\n\n## Meeting notes",
+            )
+        )
     for relative, markdown in pages.items():
         target = kb / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -248,6 +281,9 @@ def _fixture(
             "entity:team-c",
         )
     }
+    if source_refresh:
+        bindings["entity:historical-runbook"] = {"operations-notes": HISTORICAL_DIGEST}
+        bindings["entity:restricted-runbook"] = {"operations-notes": SOURCE_DIGEST}
     (kb / ".lumio-authoring.yaml").write_bytes(
         serialize_source_reference_manifest(
             SourceReferenceManifest(
@@ -268,11 +304,23 @@ def _fixture(
     private = tmp_path / "profile-private"
     private.mkdir()
     registry = SourceRegistry(private / "registry")
+    store = LocalDirectoryArtifactStore(private / "artifacts")
+    if source_refresh:
+        historical_version, _action = registry.register_version(
+            "operations-notes", HISTORICAL_CORPUS, filename="operations-notes.md"
+        )
+        assert historical_version.content_hash == HISTORICAL_DIGEST
+        store.put_artifact(
+            source_id="operations-notes",
+            content_hash=HISTORICAL_DIGEST,
+            raw_bytes=HISTORICAL_CORPUS,
+            content_type="text/markdown",
+            filename="operations-notes.md",
+        )
     version, _action = registry.register_version(
         "operations-notes", CORPUS, filename="operations-notes.md"
     )
     assert version.content_hash == SOURCE_DIGEST
-    store = LocalDirectoryArtifactStore(private / "artifacts")
     store.put_artifact(
         source_id="operations-notes",
         content_hash=SOURCE_DIGEST,
@@ -870,13 +918,15 @@ def test_enrichment_pending_recovery_precedes_correction(
 def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
     tmp_path: Path,
 ) -> None:
-    config, _state, tokens, base = _fixture(tmp_path)
+    config, _state, tokens, base = _fixture(tmp_path, source_refresh=True)
     assert config.authoring_path is not None
     assert config.private_profile_path is not None
     version_a_digest = hashlib.sha256(CORPUS).hexdigest()
     version_b = CORPUS.replace(b"Team A operates Service B.", b"Team C operates Service B.")
     version_b_digest = hashlib.sha256(version_b).hexdigest()
-    assert version_b_digest != version_a_digest
+    version_c = CORPUS.replace(b"Team A operates Service B.", b"Team D operates Service B.")
+    version_c_digest = hashlib.sha256(version_c).hexdigest()
+    assert len({version_a_digest, version_b_digest, version_c_digest}) == 3
 
     with (
         TestClient(create_app(config), base_url="https://workspace.test") as owner,
@@ -891,6 +941,61 @@ def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
         )
         assert setup.status_code == 200, setup.text
         _login(reviewer, tokens["reviewer_browser"])
+
+        def prepare_update(version: bytes, owner_name: str, key: str, request_id: int) -> dict:
+            uploaded = contributor.post(
+                "/uploads",
+                headers={
+                    "Authorization": f"Bearer {tokens['contributor_api']}",
+                    "Content-Type": "application/octet-stream",
+                    "X-Lumio-Source-Id": "operations-notes",
+                    "X-Lumio-Filename": "operations-notes.md",
+                    "X-Lumio-Retry-Key": f"{key}-upload",
+                },
+                content=version,
+            )
+            assert uploaded.status_code == 200, uploaded.text
+            updated_page = _claim_page(
+                "Operations Runbook",
+                "entity:operations-runbook",
+                "knowledge-artifact",
+                source=True,
+                claim_block=BASE_RUNBOOK_CLAIMS,
+            ).replace("Team A operates Service B.", f"{owner_name} operates Service B.")
+            result = _tool(
+                contributor,
+                tokens["contributor_api"],
+                "prepare_contribution",
+                {
+                    "retry_key": f"{key}-draft",
+                    "sources": [{"upload_id": uploaded.json()["upload_id"], "intent": "update"}],
+                    "pages": [{"filename": "operations-runbook.md", "markdown": updated_page}],
+                },
+                request_id,
+            )
+            assert result["status"] == "pending_review"
+            assert result["published"] is False
+            return result
+
+        standalone = prepare_update(version_b, "Team C", "source-refresh-standalone-b", 99)
+        standalone_response = reviewer.get(f"/review/{standalone['task_id']}")
+        assert standalone_response.status_code == 200, standalone_response.text
+        assert '<section id="source-refresh-impact">' in standalone_response.text
+        standalone_impact = standalone_response.text.split(
+            '<section id="source-refresh-impact">', 1
+        )[1].split("</section>", 1)[0]
+        assert version_a_digest in standalone_impact
+        assert version_b_digest in standalone_impact
+        assert HISTORICAL_DIGEST in standalone_impact
+        assert "entity:historical-runbook" in standalone_impact
+        assert "cannot determine Claim-level or raw-passage impact" in standalone_impact
+        for restricted in (
+            "entity:restricted-runbook",
+            "Restricted Runbook",
+            "claim:restricted-ownership",
+            "Restricted Evidence",
+        ):
+            assert restricted not in standalone_impact
 
         initial = _tool(
             contributor,
@@ -972,38 +1077,7 @@ def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
         )
         stale_action = _digest(reviewer.get(f"/review/{pending['task_id']}").text)
 
-        uploaded_b = contributor.post(
-            "/uploads",
-            headers={
-                "Authorization": f"Bearer {tokens['contributor_api']}",
-                "Content-Type": "application/octet-stream",
-                "X-Lumio-Source-Id": "operations-notes",
-                "X-Lumio-Filename": "operations-notes.md",
-                "X-Lumio-Retry-Key": "source-refresh-owner-b-upload",
-            },
-            content=version_b,
-        )
-        assert uploaded_b.status_code == 200, uploaded_b.text
-        refreshed_page = _claim_page(
-            "Operations Runbook",
-            "entity:operations-runbook",
-            "knowledge-artifact",
-            source=True,
-            claim_block=BASE_RUNBOOK_CLAIMS,
-        ).replace("Team A operates Service B.", "Team C operates Service B.")
-        refreshed = _tool(
-            contributor,
-            tokens["contributor_api"],
-            "prepare_contribution",
-            {
-                "retry_key": "source-refresh-owner-b-draft",
-                "sources": [{"upload_id": uploaded_b.json()["upload_id"], "intent": "update"}],
-                "pages": [{"filename": "operations-runbook.md", "markdown": refreshed_page}],
-            },
-            104,
-        )
-        assert refreshed["status"] == "pending_review"
-        assert refreshed["published"] is False
+        prepare_update(version_c, "Team D", "source-refresh-owner-c", 104)
 
         impact_response = reviewer.get(f"/review/{pending['task_id']}")
         assert impact_response.status_code == 200, impact_response.text
@@ -1013,14 +1087,23 @@ def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
         )[0]
         assert "Source refresh impact" in impact
         assert version_a_digest in impact
-        assert version_b_digest in impact
+        assert version_c_digest in impact
+        assert HISTORICAL_DIGEST in impact
         for entity_id in (
             "entity:operations-runbook",
             "entity:team-a",
             "entity:service-b",
             "entity:team-c",
+            "entity:historical-runbook",
         ):
             assert entity_id in impact
+        for restricted in (
+            "entity:restricted-runbook",
+            "Restricted Runbook",
+            "claim:restricted-ownership",
+            "Restricted Evidence",
+        ):
+            assert restricted not in impact
         assert "claim:team-a-operates-service-b" in impact
         assert "claim:runbook-note-one" in impact
         assert "claim:runbook-note-two" in impact
@@ -1053,4 +1136,8 @@ def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
         assert (
             store.get_artifact(source_id="operations-notes", content_hash=version_b_digest)
             == version_b
+        )
+        assert (
+            store.get_artifact(source_id="operations-notes", content_hash=version_c_digest)
+            == version_c
         )

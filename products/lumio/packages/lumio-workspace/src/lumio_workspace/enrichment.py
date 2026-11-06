@@ -16,32 +16,36 @@ LIMITS = {"pages": 20, "characters": 200_000, "proposed_claims": 40}
 
 
 def source_refresh_impact(
-    selection: dict, admitted: CapturedRevision, registry: SourceRegistry
+    task: dict, admitted: CapturedRevision, registry: SourceRegistry
 ) -> list[dict]:
     """Project exact source changes onto admitted pages without inferring Claim lineage."""
-    selected_bindings: set[tuple[str, str]] = set()
-    for item in selection.get("selected_sources", []):
+    updated_versions: dict[str, str] = {}
+    for item in task.get("conversion", []):
         if not isinstance(item, dict):
             continue
         source_id = item.get("source_id")
-        content_hash = item.get("content_hash")
+        content_hash = item.get("sha256")
         if isinstance(source_id, str) and isinstance(content_hash, str):
-            selected_bindings.add((source_id, content_hash))
+            updated_versions[source_id] = content_hash
+    source_ids = {
+        source_id for bindings in admitted.manifest.bindings.values() for source_id in bindings
+    }
     latest: dict[str, str] = {}
-    for source_id, _bound_hash in sorted(selected_bindings):
+    for source_id in sorted(source_ids):
+        if source_id in updated_versions:
+            latest[source_id] = updated_versions[source_id]
+            continue
         source = registry.get(source_id)
         if source.versions:
             latest[source_id] = source.versions[-1].content_hash
 
     impact = []
     for page in admitted.kb.pages:
+        if page.visibility not in {"public", "internal"}:
+            continue
         for source_id, bound_hash in admitted.manifest.bindings.get(page.id, {}).items():
             latest_hash = latest.get(source_id)
-            if (
-                (source_id, bound_hash) not in selected_bindings
-                or latest_hash is None
-                or latest_hash == bound_hash
-            ):
+            if latest_hash is None or latest_hash == bound_hash:
                 continue
             impact.append(
                 {

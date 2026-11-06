@@ -217,10 +217,12 @@ class ReviewService:
             publication = self.publication.preview(task_kb, candidate, admitted, resources)
             availability = self._source_availability(captured, resources)
             source_impact: list[dict] = []
-            if operation.response.get("kind") == "enrichment":
+            if operation.response.get("kind") == "enrichment" or operation.response.get(
+                "conversion"
+            ):
                 if resources.source_registry is None:
                     raise ReviewError(
-                        "native source registry is required for enrichment review",
+                        "native source registry is required for source review",
                         code="invalid_profile",
                     )
                 from .enrichment import source_refresh_impact
