@@ -21,7 +21,7 @@ from lumio_wiki.source_references import (
 from lumio_workspace import Actor, WorkspaceConfig, WorkspaceState
 from lumio_workspace.analytics import AnalyticsError, AnalyticsService
 from lumio_workspace.intake import IntakeService
-from lumio_workspace.review import ReviewService, render_review
+from lumio_workspace.review import ReviewError, ReviewService, render_review
 from lumio_workspace.setup import current_attachment_digest
 
 NAMESPACE = "urn:demo:retail"
@@ -462,6 +462,29 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         analytics.profile_data_source(contributor, source_task)
     assert opened == []
 
+    rejected = analytics.prepare_data_source(
+        contributor,
+        retry_key="request-rejected-sqlite",
+        project="retail",
+        source="orders_sqlite",
+        table="entries",
+        business_questions=["This declaration must not be approved by a rejected task."],
+    )
+    rejected_context = review.get(reviewer, rejected["task_id"])
+    rejected_result = review.decide(
+        reviewer, rejected["task_id"], rejected_context.action_digest, "reject"
+    )
+    assert rejected_result["status"] == "rejected"
+    with pytest.raises(ReviewError, match="pending review"):
+        review.get(reviewer, rejected["task_id"])
+    rejected_sources, rejected_digest = authoring_sources.candidate_sources(
+        project, rejected["native_candidate"]
+    )
+    assert not authoring_sources.approval_state(
+        project, rejected_sources, rejected_digest
+    ).get("approved")
+    assert opened == []
+
     approved = _decide(review, reviewer, source_task)
     assert approved["status"] == "pending_data_grant"
     with pytest.raises(AnalyticsError, match="data authorization"):
@@ -474,7 +497,10 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     sqlite_profile = next(
         source for source in profiled["profile"]["sources"] if source["name"] == "orders_sqlite"
     )
+    assert [source["name"] for source in profiled["profile"]["sources"]] == ["orders_sqlite"]
+    assert set(sqlite_profile["tables"]) == {"entries"}
     assert sqlite_profile["tables"]["entries"]["row_count"] == 2
+    assert sqlite_profile["tables"]["entries"]["sample_limit"] == 100
     assert opened
 
     original = b"# Cancelled Orders\n\nOnly completed orders enter EUR revenue.\n"
@@ -534,6 +560,16 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     assert published["status"] == "published"
     assert published["publication_outcome"] == "activated"
 
+    resolved_commits = []
+    real_resolve = admission.resolve_admission
+
+    def resolve_spy(project):
+        resolved, snapshot = real_resolve(project)
+        resolved_commits.append(resolved["commit"])
+        return resolved, snapshot
+
+    monkeypatch.setattr(admission, "resolve_admission", resolve_spy)
+    resolved_commits.clear()
     result = analytics.query_data(
         contributor,
         "retail",
@@ -553,7 +589,75 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     assert result["result"]["complete"] is True
     assert "data_signals" in result
     assert result["pinned"]["commit"] == published["native_candidate"]
+    assert len(resolved_commits) >= 3
+    assert set(resolved_commits) == {published["native_candidate"]}
     assert SENTINEL not in json.dumps(result)
+
+    reused = analytics.prepare_data_source(
+        contributor,
+        retry_key="request-sqlite-reuse",
+        project="retail",
+        source="orders_sqlite",
+        table="entries",
+        business_questions=["Reuse the identical admitted declaration and exact approval."],
+    )
+    reused_task = reused["task_id"]
+    assert reused["status"] == "pending_data_grant"
+    assert reused["reused_source_declaration"] is True
+    assert reused["native_candidate"] == published["native_candidate"]
+    assert _decide(review, reviewer, reused_task)["status"] == "data_granted"
+    reused_upload = intake.save(
+        config.workspace_id,
+        contributor,
+        "human-cancellation-rule",
+        "cancelled-orders.md",
+        "policy-upload-reuse",
+        original + b"Review exact declaration reuse.\n",
+    )
+    reused_candidate = analytics.prepare_contribution(
+        contributor,
+        retry_key="sqlite-policy-filter-reuse",
+        source_task_id=reused_task,
+        sources=[{"upload_id": reused_upload["upload_id"], "intent": "update"}],
+        pages=[
+            {
+                "filename": "cancelled-orders.md",
+                "markdown": WORKSPACE_POLICY.replace(
+                    "Cancelled orders are excluded.", POLICY_ADDITION + " Reuse the declaration."
+                ),
+            }
+        ],
+        core_edits=[{"kind": "model", "name": "retail_sales", "content": changed_model}],
+    )
+    reused_contribution_task = reused_candidate["task_id"]
+    reused_submitted = _decide(review, reviewer, reused_contribution_task)
+    assert reused_submitted["status"] == "pending_publication"
+    reused_context = review.get(reviewer, reused_contribution_task)
+    real_finish = state.finish_review_task
+    real_publish = analytics.publication.publish_overall
+    publish_calls = 0
+
+    def publish_spy(*args, **kwargs):
+        nonlocal publish_calls
+        publish_calls += 1
+        return real_publish(*args, **kwargs)
+
+    def fail_published(workspace_id, task_id, status, response, **kwargs):
+        if task_id == reused_contribution_task and status == "published":
+            raise RuntimeError("synthetic post-admission bookkeeping failure")
+        return real_finish(workspace_id, task_id, status, response, **kwargs)
+
+    monkeypatch.setattr(analytics.publication, "publish_overall", publish_spy)
+    monkeypatch.setattr(state, "finish_review_task", fail_published)
+    with pytest.raises(ReviewError, match="post-admission bookkeeping failure"):
+        review.decide(
+            reviewer, reused_contribution_task, reused_context.action_digest, "approve"
+        )
+    monkeypatch.setattr(state, "finish_review_task", real_finish)
+    recovered = review.reconcile_task(reused_contribution_task)
+    assert recovered is not None and recovered["status"] == "published"
+    assert recovered["publication_outcome"] == "activated"
+    assert publish_calls == 1
 
     # A second admitted source set contains the private SQLite catalog. The
     # requester is authorized for it; a different workspace reader is not.
@@ -591,6 +695,17 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         ],
         core_edits=[{"kind": "model", "name": "retail_sales", "content": changed_model}],
     )
+    current_before_revocation = admission.load_current(project)
+    assert current_before_revocation is not None
+    previous_commit = current_before_revocation["commit"]
+    state.revoke(config.workspace_id, contributor, "contribute")
+    with pytest.raises(ReviewError, match="submitter no longer has current"):
+        _decide(review, reviewer, combined["task_id"])
+    current_after_refusal = admission.load_current(project)
+    assert current_after_refusal is not None
+    assert current_after_refusal["commit"] == previous_commit
+    state.grant(config.workspace_id, contributor, "contribute")
+
     _decide(review, reviewer, combined["task_id"])
     combined_context = review.get(reviewer, combined["task_id"])
     combined_published = review.decide(

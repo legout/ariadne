@@ -172,6 +172,8 @@ class ReviewService:
         operation = self.state.get_review_task(self.workspace_id, task_id)
         if operation is None:
             raise ReviewError("review task is not available", code="task_not_found", status=404)
+        if operation.status != "pending_review":
+            raise ReviewError("the candidate is not pending review", code="review_not_pending")
         if _analytics_task(operation):
             if self.analytics is None:
                 raise ReviewError(
@@ -179,8 +181,6 @@ class ReviewService:
                     code="analytics_unavailable",
                 )
             return self.analytics.review_context(actor, operation)
-        if operation.status != "pending_review":
-            raise ReviewError("the candidate is not pending review", code="review_not_pending")
         submission_base = operation.response.get("native_base", "")
         candidate = operation.response.get("native_candidate", "")
         try:

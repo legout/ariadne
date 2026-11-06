@@ -142,6 +142,30 @@ def test_bounded_registry_profile_uses_only_sample_rows(tmp_path):
     assert table["columns"]["id"]["distinct_count"] == 3
 
 
+def _selector_registry(tmp_path: Path) -> Path:
+    path = tmp_path / "events.parquet"
+    duckdb.sql("SELECT i AS id, i % 2 AS category FROM range(20) t(i)").write_parquet(str(path))
+    registry = tmp_path / "selector.yaml"
+    registry.write_text(
+        yaml.safe_dump({"sources": [{"name": "events", "type": "parquet", "path": str(path)}]}),
+        encoding="utf-8",
+    )
+    return registry
+
+
+def test_selected_table_profile_refuses_unknown_or_unapproved_selector(tmp_path):
+    registry = _selector_registry(tmp_path)
+    with pytest.raises(ValueError, match="approved registry"):
+        profile(sources_path=registry, selector=("other", "events"))
+    with pytest.raises(ValueError, match="exactly one approved table"):
+        profile(sources_path=registry, selector=("events", "missing"))
+
+
+def test_profile_without_selector_keeps_full_behavior(tmp_path):
+    registry = _selector_registry(tmp_path)
+    assert profile(sources_path=registry) == profile(sources_path=registry, selector=None)
+
+
 def test_expected_columns_present(demo_db):
     tables = profile(demo_db)["tables"]
     assert set(tables) == set(EXPECTED_COLUMNS)

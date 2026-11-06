@@ -18,13 +18,18 @@ from lumio_wiki.authoring_journey import (
     CandidateSourceRecord,
     ingest_candidate,
 )
-from lumio_wiki.git_authoring import resolve_repository
+from lumio_wiki.git_authoring import (
+    PRIVATE_OPERATIONS_DIR,
+    PublicationReceipt,
+    resolve_repository,
+)
 from lumio_wiki.knowledge_base import (
+    KnowledgeBaseError,
     document_first_control_file,
     load_control_file,
     write_control_file,
 )
-from lumio_wiki.location import PublishedFilesystemLocation
+from lumio_wiki.location import PublishedFilesystemLocation, open_knowledge_base
 from lumio_wiki.mutation import atomic_write_bytes
 from lumio_wiki.private_profile import load_private_profile, resolve_private_profile
 
@@ -109,6 +114,15 @@ class AnalyticsService:
                 )
             entries.extend(selected)
         return entries
+
+    def _declarations_present(self, revision: str, entries: list[dict]) -> bool:
+        """Match exact declarations in an admitted Git registry without opening sources."""
+        try:
+            document = msgspec.yaml.decode(_git(self.project, "show", f"{revision}:ariadne.yaml"))
+        except (subprocess.CalledProcessError, msgspec.DecodeError):
+            return False
+        existing = document.get("sources") if isinstance(document, dict) else None
+        return isinstance(existing, list) and all(entry in existing for entry in entries)
 
     def _resources(self):
         profile = load_private_profile(self.profile_path, kb_root=self.authoring_path)
@@ -203,25 +217,55 @@ class AnalyticsService:
             if current.status != "pending":
                 return current.response
             try:
-                started = self.api.start_proposal()
-                proposed = self.api.propose_sources(
-                    started["proposal"], started["candidate_revision"], entries
-                )
+                if len(entries) != 1:
+                    raise AnalyticsError(
+                        "selected-table profiling requires one native source per source handle"
+                    )
+                record, _snapshot = admission.resolve_admission(self.project)
+                reused = self._declarations_present(record["commit"], entries)
+                approval = {}
+                if reused:
+                    started = {"proposal": record["proposal"], "base_revision": record["commit"]}
+                    proposed = {
+                        "revision": record["commit"],
+                        "source_digest": (
+                            record.get("source_declaration_digest") or record["source_digest"]
+                        ),
+                    }
+                    approval = authoring_sources.approval_state(
+                        self.project, record.get("sources") or [], proposed["source_digest"]
+                    )
+                    if not approval.get("approved"):
+                        raise AnalyticsError(
+                            "the admitted declaration needs current native Source Approval"
+                        )
+                else:
+                    started = self.api.start_proposal()
+                    proposed = self.api.propose_sources(
+                        started["proposal"], started["candidate_revision"], entries
+                    )
                 response = {
                     "task_id": current.operation_id,
-                    "status": "pending_source_approval",
-                    "stage": "source_approval",
+                    "status": "pending_data_grant" if reused else "pending_source_approval",
+                    "stage": "data_grant" if reused else "source_approval",
                     "project": project,
                     "source": source,
+                    "native_source": entries[0]["name"],
                     "table": table,
                     "business_questions": business_questions,
                     "native_proposal": started["proposal"],
                     "native_base": started["base_revision"],
                     "native_candidate": proposed["revision"],
                     "source_digest": proposed["source_digest"],
+                    "reused_source_declaration": reused,
                     "review_url": f"{self.external_url}/review/{current.operation_id}",
                     "review_generation": 0,
                     "published": False,
+                    **(
+                        {"approval_digest": approval["approval_digest"]}
+                        if reused
+                        else {}
+                    ),
                 }
             except ValueError as exc:
                 response = {
@@ -245,7 +289,11 @@ class AnalyticsService:
         )
         self._grant(actor, task_id, response["project"], resolved, digest)
         try:
-            measured = self.api.inputs(response["native_proposal"])
+            measured = self.api.inputs(
+                response["native_proposal"],
+                sample_rows=100,
+                selector=(response.get("native_source", response["source"]), response["table"]),
+            )
         except ValueError as exc:
             raise AnalyticsError(str(exc)) from exc
         return {
@@ -275,6 +323,14 @@ class AnalyticsService:
             record.get("sources") or [],
             record["source_digest"],
         )
+        current, _snapshot = admission.resolve_admission(self.project)
+        if (
+            current["commit"] != record["commit"]
+            or current["source_digest"] != record["source_digest"]
+        ):
+            raise AnalyticsError(
+                "the admission changed after the source-set grant check; retry the pinned query"
+            )
         runtime = QueryRuntime.open_project(self.project)
         try:
             if operation == "get_metric":
@@ -376,6 +432,39 @@ class AnalyticsService:
             response["native_review"],
             expected_current=self.publication.current_version() or "none",
         )
+
+    def _publication_recovery(self, response: dict) -> PublicationReceipt | None:
+        candidate = response["native_candidate"]
+        destination = self.config.published_path.resolve()
+        receipt_path = (
+            destination / PRIVATE_OPERATIONS_DIR / "receipts" / f"{candidate}.json"
+        )
+        try:
+            raw = receipt_path.read_bytes()
+        except FileNotFoundError:
+            return None
+        try:
+            receipt = msgspec.json.decode(raw, type=PublicationReceipt)
+            location = PublishedFilesystemLocation(destination, version=candidate)
+            manifest = location.read_manifest(candidate)
+            resolved = open_knowledge_base(location)
+        except (OSError, msgspec.DecodeError, KnowledgeBaseError) as exc:
+            raise AnalyticsError("the native publication evidence is unavailable") from exc
+        if not resolved.validation_report.is_valid:
+            raise AnalyticsError("the native publication does not validate during recovery")
+        if (
+            receipt.version != candidate
+            or receipt.revision != manifest.revision
+            or receipt.subtree != manifest.subtree
+            or receipt.fingerprint != manifest.fingerprint
+            or receipt.manifest_digest != manifest.source_reference_digest
+            or receipt.validator_contract != manifest.format_identity
+            or receipt.destination != str(destination)
+        ):
+            raise AnalyticsError(
+                "native publication receipt does not match its immutable published version"
+            )
+        return receipt
 
     def _contribution_context(self, actor: Actor, operation: Operation) -> AnalyticsReviewContext:
         response = operation.response
@@ -496,20 +585,25 @@ class AnalyticsService:
         if response["stage"] == "submission":
             review = self._contribution_review(response)
             tree = self.project / proposals.WORKTREES_REL / response["native_proposal"]
-            _git(
-                tree,
-                "-c",
-                "user.name=Lumio Workspace",
-                "-c",
-                "user.email=lumio-workspace@localhost",
-                "commit",
-                "-qm",
-                f"Prepare analytics contribution {operation.operation_id}",
-            )
             candidate = _git(tree, "rev-parse", "HEAD")
             checked = check_contribution_commit(
                 self.project, response["native_proposal"], review, candidate
             )
+            if not checked["matches_reviewed_candidate"]:
+                _git(
+                    tree,
+                    "-c",
+                    "user.name=Lumio Workspace",
+                    "-c",
+                    "user.email=lumio-workspace@localhost",
+                    "commit",
+                    "-qm",
+                    f"Prepare analytics contribution {operation.operation_id}",
+                )
+                candidate = _git(tree, "rev-parse", "HEAD")
+                checked = check_contribution_commit(
+                    self.project, response["native_proposal"], review, candidate
+                )
             if not checked["matches_reviewed_candidate"]:
                 raise AnalyticsError(
                     "committed analytics candidate differs from its review: "
@@ -520,6 +614,23 @@ class AnalyticsService:
                 response["native_proposal"],
                 review["head_revision"],
                 candidate,
+            )
+            submitter = self.state.review_task_submitter(
+                self.workspace_id, operation.operation_id
+            )
+            if submitter is None or not self.state.permits(
+                self.workspace_id, submitter, "contribute"
+            ):
+                raise AnalyticsError(
+                    "the submitter no longer has current workspace contribution permission"
+                )
+            resolved, source_digest = authoring_sources.candidate_sources(self.project, candidate)
+            self._grant(
+                submitter,
+                response["source_task_id"],
+                response["project"],
+                resolved,
+                source_digest,
             )
             validated = self.api.validate_proposal(response["native_proposal"], candidate)
             if not validated["ok"]:
@@ -640,7 +751,7 @@ class AnalyticsService:
                 started = self.api.start_proposal()
                 proposal = started["proposal"]
                 revision = started["candidate_revision"]
-                if entries:
+                if entries and not self._declarations_present(revision, entries):
                     revision = self.api.propose_sources(proposal, revision, entries)["revision"]
                 resolved, source_digest = authoring_sources.candidate_sources(
                     self.project, revision
@@ -747,7 +858,7 @@ class AnalyticsService:
         )
         if (
             approval is None
-            or approval.status != "completed"
+            or approval.status not in {"completed", "failed"}
             or approval.binding.get("stage") != response.get("stage")
         ):
             return None
@@ -786,7 +897,20 @@ class AnalyticsService:
             return None
         if response["stage"] == "publication":
             current = admission.load_current(self.project)
+            receipt = self._publication_recovery(response)
+            if receipt is None:
+                return None
             if current and current["commit"] == response["native_candidate"]:
+                if (
+                    (current.get("overall_confirmation") or {}).get("digest")
+                    != approval.binding.get("overall_digest")
+                    or (current.get("confirmed") or {}).get("review_digest")
+                    != response["native_review"]
+                    or current.get("native_publication") != msgspec.to_builtins(receipt)
+                ):
+                    raise AnalyticsError(
+                        "current admission does not match the persisted browser approval"
+                    )
                 updated = {
                     **response,
                     "status": "published",
@@ -794,6 +918,8 @@ class AnalyticsService:
                     "published": True,
                     "publication_outcome": "activated",
                     "bound_release": current["bound_release"]["digest"],
+                    "native_publication": msgspec.to_builtins(receipt),
+                    "citations": approval.binding.get("citations", []),
                 }
                 self.state.finish_review_task(
                     self.workspace_id,
@@ -808,6 +934,8 @@ class AnalyticsService:
                 return {
                     **response,
                     "publication_outcome": "native_published_core_pending",
+                    "native_publication": msgspec.to_builtins(receipt),
+                    "citations": approval.binding.get("citations", []),
                     "published": False,
                 }
         return None

@@ -343,6 +343,7 @@ class AuthoringProject:
         documents: Sequence[str] = (),
         part: int = 1,
         sample_rows: int | None = None,
+        selector: tuple[str, str] | None = None,
     ) -> dict:
         """The proposal's measured inputs: the profile of the APPROVED
         resolved registry identity (an unapproved or changed entry is an
@@ -351,7 +352,12 @@ class AuthoringProject:
         boundary, and the candidate's Seed Notes evidence — bounded, with
         stable digests, from the recorded candidate revision."""
         return authoring_sources.inputs(
-            self.project, proposal, documents=list(documents), part=part, sample_rows=sample_rows
+            self.project,
+            proposal,
+            documents=list(documents),
+            part=part,
+            sample_rows=sample_rows,
+            selector=selector,
         )
 
     # ----------------------- G4 (issue #36): validate and review the candidate

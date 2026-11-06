@@ -518,6 +518,7 @@ def inputs(
     documents: list[str] | tuple[str, ...] = (),
     part: int = 1,
     sample_rows: int | None = None,
+    selector: tuple[str, str] | None = None,
 ) -> dict:
     """The measured inputs of one proposal (plan §2 ``inputs``): the profile
     of the APPROVED resolved registry identity — compared with the operator's
@@ -547,6 +548,7 @@ def inputs(
         profile = profiler.profile(
             registry=identity_registry(approval["sources"], approval.get("storage_bindings")),
             sample_rows=sample_rows,
+            selector=selector,
         )
     seed_notes = None
     notes_blob = proposals._read_blob(project, revision, authoring_inputs.SEED_NOTES_REL.as_posix())

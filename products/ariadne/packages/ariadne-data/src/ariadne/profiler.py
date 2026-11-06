@@ -452,15 +452,23 @@ def profile(
     sources_path: str | Path | None = None,
     registry: Registry | None = None,
     sample_rows: int | None = None,
+    selector: tuple[str, str] | None = None,
 ) -> dict:
-    """Profile every table of every source (shapes documented in the module
-    docstring): the legacy single-sqlite call via ``db_path``, the full
-    registry via ``sources_path`` (ADR-0010, shared connection builder), or an
-    already-validated :class:`ariadne.sources.Registry` via ``registry`` (the
-    Git authoring route's APPROVED resolved identity, issue #35/G3 — no
-    registry file exists for a candidate commit). Exactly one of the three."""
+    """Profile every table of every source, or one exact ``(source, table)``
+    selector (shapes documented in the module docstring): the legacy
+    single-sqlite call via ``db_path``, the full registry via ``sources_path``
+    (ADR-0010, shared connection builder), or an already-validated
+    :class:`ariadne.sources.Registry` via ``registry`` (the Git authoring
+    route's APPROVED resolved identity, issue #35/G3 — no registry file exists
+    for a candidate commit). Exactly one of the three."""
     if sample_rows is not None and (not isinstance(sample_rows, int) or sample_rows < 1):
         raise ValueError("sample_rows must be a positive integer")
+    if selector is not None and (
+        not isinstance(selector, tuple)
+        or len(selector) != 2
+        or any(not isinstance(value, str) or not value for value in selector)
+    ):
+        raise ValueError("selector must be an exact (source, table) pair")
     if registry is not None:
         if sources_path is not None or db_path is not None:
             raise ValueError("profile takes one of db_path, sources_path or registry")
@@ -473,9 +481,23 @@ def profile(
             raise FileNotFoundError(f"database not found: {db_path}")
     else:
         raise ValueError("profile requires db_path, sources_path or registry")
+    if selector is not None and selector[0] not in {source.name for source in reg.sources}:
+        raise ValueError("selector source is not present in the approved registry")
     execution = DuckDBExecution(reg)
     con, catalog = execution.con, execution.catalog
     try:
+        if selector is not None:
+            matches = [
+                (entry, table)
+                for entry in catalog
+                if entry["name"] == selector[0]
+                for table in entry["tables"]
+                if table["name"] == selector[1]
+            ]
+            if len(matches) != 1:
+                raise ValueError("selector must identify exactly one approved table")
+            entry, table = matches[0]
+            catalog = [{**entry, "tables": [table]}]
         if sample_rows is not None:
             sample_index = 0
             for entry in catalog:

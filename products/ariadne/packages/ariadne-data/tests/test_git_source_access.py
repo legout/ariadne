@@ -464,6 +464,28 @@ def test_inputs_without_sources_and_operator_documents_remain_external(tmp_path,
     assert run_git(project, "status", "--porcelain", "--", "data/docs").strip().startswith("??")
 
 
+def test_inputs_selected_table_is_bounded_and_approved(tmp_path):
+    project = git_project(tmp_path)
+    write_parquet(project / "data" / "events.parquet", rows=3)
+    write_parquet(project / "data" / "other.parquet", rows=7)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    proposed = api.propose_sources(
+        started["proposal"],
+        started["candidate_revision"],
+        [EVENTS_ENTRY, {"name": "other", "type": "parquet", "path": "data/other.parquet"}],
+    )
+    api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
+
+    measured = api.inputs(started["proposal"], selector=("events", "events"), sample_rows=2)
+
+    (source,) = measured["profile"]["sources"]
+    assert source["name"] == "events"
+    assert set(source["tables"]) == {"events"}
+    assert source["tables"]["events"]["row_count"] == 2
+    assert source["tables"]["events"]["sample_limit"] == 2
+
+
 def test_cli_git_mode_propose_approve_and_inputs_roundtrip(tmp_path, capsys):
     """The Git-aware CLI surface: propose-sources commits into the candidate
     and returns the resolved digest; approve-sources records the permission;
