@@ -519,6 +519,7 @@ def inputs(
     part: int = 1,
     sample_rows: int | None = None,
     selector: tuple[str, str] | None = None,
+    expected_revision: str | None = None,
 ) -> dict:
     """The measured inputs of one proposal (plan §2 ``inputs``): the profile
     of the APPROVED resolved registry identity — compared with the operator's
@@ -533,6 +534,11 @@ def inputs(
     project = Path(project).resolve()
     record = proposals._load_record(project, proposal)
     revision = record["candidate_revision"]
+    if expected_revision is not None and revision != expected_revision:
+        raise ValueError(
+            f"stale revision: proposal {proposal} is at candidate {revision[:12]}, "
+            f"expected {expected_revision[:12]}"
+        )
     documents = list(documents)
     if len(documents) > authoring_inputs.MAX_DOCUMENTS_PER_CALL:
         raise ValueError(

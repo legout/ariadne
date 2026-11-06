@@ -344,6 +344,7 @@ class AuthoringProject:
         part: int = 1,
         sample_rows: int | None = None,
         selector: tuple[str, str] | None = None,
+        expected_revision: str | None = None,
     ) -> dict:
         """The proposal's measured inputs: the profile of the APPROVED
         resolved registry identity (an unapproved or changed entry is an
@@ -358,6 +359,7 @@ class AuthoringProject:
             part=part,
             sample_rows=sample_rows,
             selector=selector,
+            expected_revision=expected_revision,
         )
 
     # ----------------------- G4 (issue #36): validate and review the candidate

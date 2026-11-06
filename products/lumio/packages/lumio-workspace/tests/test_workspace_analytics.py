@@ -480,9 +480,9 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     rejected_sources, rejected_digest = authoring_sources.candidate_sources(
         project, rejected["native_candidate"]
     )
-    assert not authoring_sources.approval_state(
-        project, rejected_sources, rejected_digest
-    ).get("approved")
+    assert not authoring_sources.approval_state(project, rejected_sources, rejected_digest).get(
+        "approved"
+    )
     assert opened == []
 
     approved = _decide(review, reviewer, source_task)
@@ -490,6 +490,25 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     with pytest.raises(AnalyticsError, match="data authorization"):
         analytics.profile_data_source(contributor, source_task)
     assert opened == []
+
+    real_finish_grant = state.finish_review_task
+
+    def fail_data_grant(workspace_id, task_id, status, response, **kwargs):
+        if task_id == source_task and status == "data_granted":
+            raise RuntimeError("synthetic interrupted data grant")
+        return real_finish_grant(workspace_id, task_id, status, response, **kwargs)
+
+    monkeypatch.setattr(state, "finish_review_task", fail_data_grant)
+    with pytest.raises(ReviewError, match="interrupted data grant"):
+        _decide(review, reviewer, source_task)
+    monkeypatch.setattr(state, "finish_review_task", real_finish_grant)
+    assert review.reconcile_task(source_task) is None
+    pending_grant = state.get_operation(
+        config.workspace_id, contributor, "prepare_data_source", source_task
+    )
+    assert pending_grant is not None
+    assert pending_grant.status == "pending_review"
+    assert pending_grant.response["stage"] == "data_grant"
 
     granted = _decide(review, reviewer, source_task)
     assert granted["status"] == "data_granted"
@@ -589,7 +608,7 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     assert result["result"]["complete"] is True
     assert "data_signals" in result
     assert result["pinned"]["commit"] == published["native_candidate"]
-    assert len(resolved_commits) >= 3
+    assert len(resolved_commits) == 1
     assert set(resolved_commits) == {published["native_candidate"]}
     assert SENTINEL not in json.dumps(result)
 
@@ -650,9 +669,7 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     monkeypatch.setattr(analytics.publication, "publish_overall", publish_spy)
     monkeypatch.setattr(state, "finish_review_task", fail_published)
     with pytest.raises(ReviewError, match="post-admission bookkeeping failure"):
-        review.decide(
-            reviewer, reused_contribution_task, reused_context.action_digest, "approve"
-        )
+        review.decide(reviewer, reused_contribution_task, reused_context.action_digest, "approve")
     monkeypatch.setattr(state, "finish_review_task", real_finish)
     recovered = review.reconcile_task(reused_contribution_task)
     assert recovered is not None and recovered["status"] == "published"
@@ -724,3 +741,44 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         )
     assert opened == []
     assert SENTINEL not in json.dumps(combined_published)
+
+    mismatch = analytics.prepare_data_source(
+        contributor,
+        retry_key="request-revision-mismatch",
+        project="retail",
+        source="orders_sqlite",
+        table="entries",
+        business_questions=["The expected revision must be checked before profiling."],
+    )
+    mismatch_task = mismatch["task_id"]
+    assert _decide(review, reviewer, mismatch_task)["status"] == "data_granted"
+    moved = api.edit_proposal(
+        mismatch["native_proposal"],
+        mismatch["native_candidate"],
+        {"kind": "seed_notes", "content": "# Moved proposal\n"},
+    )
+    assert moved["revision"] != mismatch["native_candidate"]
+    opened.clear()
+    with pytest.raises(AnalyticsError, match="stale revision"):
+        analytics.profile_data_source(contributor, mismatch_task)
+    assert opened == []
+
+    _current, stale_snapshot = admission.resolve_admission(project)
+    stale_model = stale_snapshot / "semantic_layer/models/retail_sales.yml"
+    original_model = stale_model.read_bytes()
+    stale_model.write_bytes(original_model + b"# no longer the admitted bytes\n")
+    try:
+        fresh = analytics.prepare_data_source(
+            contributor,
+            retry_key="request-fresh-after-unresolvable-admission",
+            project="retail",
+            source="orders_sqlite",
+            table="entries",
+            business_questions=["Stage a fresh Source Approval without opening the old source."],
+        )
+    finally:
+        stale_model.write_bytes(original_model)
+    assert fresh["status"] == "pending_source_approval"
+    assert fresh["stage"] == "source_approval"
+    assert fresh["reused_source_declaration"] is False
+    assert opened == []

@@ -486,6 +486,38 @@ def test_inputs_selected_table_is_bounded_and_approved(tmp_path):
     assert source["tables"]["events"]["sample_limit"] == 2
 
 
+def test_inputs_expected_revision_preflights_and_default_is_unchanged(tmp_path, connection_spy):
+    project = git_project(tmp_path)
+    write_parquet(project / "data" / "events.parquet", rows=3)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    proposed = api.propose_sources(
+        started["proposal"], started["candidate_revision"], [EVENTS_ENTRY]
+    )
+    api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
+
+    baseline = api.inputs(started["proposal"])
+    pinned = api.inputs(started["proposal"], expected_revision=proposed["revision"])
+
+    def canonical_ties(document):
+        for source in document["profile"]["sources"]:
+            for table in source["tables"].values():
+                for column in table["columns"].values():
+                    if "top_values" in column:
+                        column["top_values"] = sorted(
+                            column["top_values"], key=lambda item: json.dumps(item, sort_keys=True)
+                        )
+        return document
+
+    # Equal-count top values have no native ordering contract;
+    # every other envelope fact compares exactly.
+    assert canonical_ties(pinned) == canonical_ties(baseline)
+    assert len(connection_spy) == 2
+    with pytest.raises(ValueError, match="stale revision"):
+        api.inputs(started["proposal"], expected_revision=started["candidate_revision"])
+    assert len(connection_spy) == 2
+
+
 def test_cli_git_mode_propose_approve_and_inputs_roundtrip(tmp_path, capsys):
     """The Git-aware CLI surface: propose-sources commits into the candidate
     and returns the resolved digest; approve-sources records the permission;

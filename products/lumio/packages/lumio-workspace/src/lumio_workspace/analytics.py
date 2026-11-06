@@ -221,10 +221,16 @@ class AnalyticsService:
                     raise AnalyticsError(
                         "selected-table profiling requires one native source per source handle"
                     )
-                record, _snapshot = admission.resolve_admission(self.project)
-                reused = self._declarations_present(record["commit"], entries)
+                try:
+                    record, _snapshot = admission.resolve_admission(self.project)
+                except ValueError:
+                    record = None
+                reused = record is not None and self._declarations_present(
+                    record["commit"], entries
+                )
                 approval = {}
                 if reused:
+                    assert record is not None
                     started = {"proposal": record["proposal"], "base_revision": record["commit"]}
                     proposed = {
                         "revision": record["commit"],
@@ -241,9 +247,19 @@ class AnalyticsService:
                         )
                 else:
                     started = self.api.start_proposal()
-                    proposed = self.api.propose_sources(
-                        started["proposal"], started["candidate_revision"], entries
-                    )
+                    if self._declarations_present(started["candidate_revision"], entries):
+                        _resolved, source_digest = authoring_sources.candidate_sources(
+                            self.project, started["candidate_revision"]
+                        )
+                        assert source_digest is not None
+                        proposed = {
+                            "revision": started["candidate_revision"],
+                            "source_digest": source_digest,
+                        }
+                    else:
+                        proposed = self.api.propose_sources(
+                            started["proposal"], started["candidate_revision"], entries
+                        )
                 response = {
                     "task_id": current.operation_id,
                     "status": "pending_data_grant" if reused else "pending_source_approval",
@@ -288,14 +304,30 @@ class AnalyticsService:
             self.project, response["native_candidate"]
         )
         self._grant(actor, task_id, response["project"], resolved, digest)
+        approval = authoring_sources.approval_state(self.project, resolved, digest)
+        if approval.get("approval_digest") != response["approval_digest"]:
+            raise AnalyticsError("the profile effective identity no longer matches its grant")
         try:
             measured = self.api.inputs(
                 response["native_proposal"],
                 sample_rows=100,
                 selector=(response.get("native_source", response["source"]), response["table"]),
+                expected_revision=response["native_candidate"],
             )
         except ValueError as exc:
             raise AnalyticsError(str(exc)) from exc
+        after, after_digest = authoring_sources.candidate_sources(
+            self.project, response["native_candidate"]
+        )
+        after_approval = authoring_sources.approval_state(self.project, after, after_digest)
+        if (
+            after != resolved
+            or after_digest != digest
+            or after_approval.get("approval_digest") != approval.get("approval_digest")
+            or measured["revision"] != response["native_candidate"]
+            or measured["sources_digest"] != digest
+        ):
+            raise AnalyticsError("the profiled revision or effective identity changed")
         return {
             "task_id": task_id,
             "project": response["project"],
@@ -323,15 +355,7 @@ class AnalyticsService:
             record.get("sources") or [],
             record["source_digest"],
         )
-        current, _snapshot = admission.resolve_admission(self.project)
-        if (
-            current["commit"] != record["commit"]
-            or current["source_digest"] != record["source_digest"]
-        ):
-            raise AnalyticsError(
-                "the admission changed after the source-set grant check; retry the pinned query"
-            )
-        runtime = QueryRuntime.open_project(self.project)
+        runtime = QueryRuntime.open_project(self.project, admission_record=record)
         try:
             if operation == "get_metric":
                 result = runtime.get_metric(
@@ -884,16 +908,8 @@ class AnalyticsService:
                     expected_response=response,
                 )
                 return updated
-            if response["stage"] == "data_grant":
-                updated = {**response, "status": "data_granted", "stage": "data_granted"}
-                self.state.finish_review_task(
-                    self.workspace_id,
-                    operation.operation_id,
-                    "data_granted",
-                    updated,
-                    expected_response=response,
-                )
-                return updated
+            # Native Source Approval alone is not a caller data-grant outcome.
+            # A failed action remains retryable until its grant is recorded.
             return None
         if response["stage"] == "publication":
             current = admission.load_current(self.project)

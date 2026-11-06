@@ -1504,9 +1504,19 @@ class QueryRuntime:
         *,
         deadline_budget: DeadlineBudget | None = None,
         discovery: _DiscoverySession | None = None,
+        admission_record: dict | None = None,
     ) -> _QueryRuntimeSession:
         root = Path(project).resolve()
-        if discovery is None:
+        if admission_record is not None:
+            if discovery is not None:
+                raise ValueError(
+                    "discovery and an explicit admission record are mutually exclusive"
+                )
+            if Path(admission_record["project"]).resolve() != root:
+                raise ValueError("admission record does not pin this project")
+            record = admission_record
+            snapshot = root / record["snapshot"]
+        elif discovery is None:
             record, snapshot = admission.resolve_admission(root)
         else:
             if discovery._project != root or discovery._managed is None:
