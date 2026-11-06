@@ -9,39 +9,30 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-import msgspec  # pyright: ignore[reportMissingImports]
-from ariadne import admission, authoring_sources, proposals  # pyright: ignore[reportMissingImports]
-from ariadne.authoring import AuthoringProject  # pyright: ignore[reportMissingImports]
-from ariadne.contribution_review import (  # pyright: ignore[reportMissingImports]
-    check_contribution_commit,
-    review_contribution,
-)
-from ariadne.query import QueryRuntime  # pyright: ignore[reportMissingImports]
-from lumio_wiki.authoring_journey import (  # pyright: ignore[reportMissingImports]
+import msgspec
+from ariadne import admission, authoring_sources, proposals
+from ariadne.authoring import AuthoringProject
+from ariadne.contribution_review import check_contribution_commit, review_contribution
+from ariadne.query import QueryRuntime
+from lumio_wiki.authoring_journey import (
     CandidateRequest,
     CandidateSourceRecord,
     ingest_candidate,
 )
-from lumio_wiki.git_authoring import (  # pyright: ignore[reportMissingImports]
+from lumio_wiki.git_authoring import (
     PRIVATE_OPERATIONS_DIR,
     PublicationReceipt,
     resolve_repository,
 )
-from lumio_wiki.knowledge_base import (  # pyright: ignore[reportMissingImports]
+from lumio_wiki.knowledge_base import (
     KnowledgeBaseError,
     document_first_control_file,
     load_control_file,
     write_control_file,
 )
-from lumio_wiki.location import (  # pyright: ignore[reportMissingImports]
-    PublishedFilesystemLocation,
-    open_knowledge_base,
-)
-from lumio_wiki.mutation import atomic_write_bytes  # pyright: ignore[reportMissingImports]
-from lumio_wiki.private_profile import (  # pyright: ignore[reportMissingImports]
-    load_private_profile,
-    resolve_private_profile,
-)
+from lumio_wiki.location import PublishedFilesystemLocation, open_knowledge_base
+from lumio_wiki.mutation import atomic_write_bytes
+from lumio_wiki.private_profile import load_private_profile, resolve_private_profile
 
 from .contributions import _digest, _git
 from .intake import IntakeService
@@ -199,9 +190,7 @@ class AnalyticsService:
         managed = self.project / ".ariadne" / "managed-sources" / identity
         source_type = facts["source_type"]
         if source_type == "xlsx":
-            from ariadne.spreadsheet_import import (  # pyright: ignore[reportMissingImports]
-                import_workbook,
-            )
+            from ariadne.spreadsheet_import import import_workbook
 
             imported = import_workbook(path, sheets=sheets or [], output=managed / "workbook")
             if imported["source_sha256"] != facts["sha256"]:
