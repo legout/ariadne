@@ -5,14 +5,68 @@ from __future__ import annotations
 from pathlib import Path
 
 from lumio_wiki.artifact_store import ArtifactAccessDenied, ArtifactStoreError
-from lumio_wiki.git_authoring import GitAuthoringError, capture_revision
+from lumio_wiki.git_authoring import CapturedRevision, GitAuthoringError, capture_revision
 from lumio_wiki.location import PublishedFilesystemLocation
-from lumio_wiki.source_registry import SourceRegistryError
+from lumio_wiki.source_registry import SourceRegistry, SourceRegistryError
 
 from .contributions import _FULL_COMMIT, ContributionError, ContributionService, _digest
 from .state import Actor
 
 LIMITS = {"pages": 20, "characters": 200_000, "proposed_claims": 40}
+
+
+def source_refresh_impact(
+    selection: dict, admitted: CapturedRevision, registry: SourceRegistry
+) -> list[dict]:
+    """Project exact source changes onto admitted pages without inferring Claim lineage."""
+    selected_bindings: set[tuple[str, str]] = set()
+    for item in selection.get("selected_sources", []):
+        if not isinstance(item, dict):
+            continue
+        source_id = item.get("source_id")
+        content_hash = item.get("content_hash")
+        if isinstance(source_id, str) and isinstance(content_hash, str):
+            selected_bindings.add((source_id, content_hash))
+    latest: dict[str, str] = {}
+    for source_id, _bound_hash in sorted(selected_bindings):
+        source = registry.get(source_id)
+        if source.versions:
+            latest[source_id] = source.versions[-1].content_hash
+
+    impact = []
+    for page in admitted.kb.pages:
+        for source_id, bound_hash in admitted.manifest.bindings.get(page.id, {}).items():
+            latest_hash = latest.get(source_id)
+            if (
+                (source_id, bound_hash) not in selected_bindings
+                or latest_hash is None
+                or latest_hash == bound_hash
+            ):
+                continue
+            impact.append(
+                {
+                    "source_id": source_id,
+                    "bound_hash": bound_hash,
+                    "latest_hash": latest_hash,
+                    "page_id": page.id,
+                    "page_title": page.title,
+                    "claims": [
+                        {
+                            "id": claim.id,
+                            "evidence": [
+                                {
+                                    "section": anchor.section,
+                                    "line_start": anchor.line_start,
+                                    "line_end": anchor.line_end,
+                                }
+                                for anchor in claim.evidence
+                            ],
+                        }
+                        for claim in page.claims
+                    ],
+                }
+            )
+    return impact
 
 
 class EnrichmentService:
@@ -219,4 +273,4 @@ class EnrichmentService:
         return persisted, disclosed
 
 
-__all__ = ["EnrichmentService", "LIMITS"]
+__all__ = ["EnrichmentService", "LIMITS", "source_refresh_impact"]

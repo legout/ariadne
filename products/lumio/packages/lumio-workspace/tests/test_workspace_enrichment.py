@@ -865,3 +865,192 @@ def test_enrichment_pending_recovery_precedes_correction(
             for claim in admitted.lookup_by_title("Team A")[0].claims
         ] == [("operates", "entity:service-b")]
         assert admitted.lookup_by_title("Service B")[0].claims == []
+
+
+def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
+    tmp_path: Path,
+) -> None:
+    config, _state, tokens, base = _fixture(tmp_path)
+    assert config.authoring_path is not None
+    assert config.private_profile_path is not None
+    version_a_digest = hashlib.sha256(CORPUS).hexdigest()
+    version_b = CORPUS.replace(b"Team A operates Service B.", b"Team C operates Service B.")
+    version_b_digest = hashlib.sha256(version_b).hexdigest()
+    assert version_b_digest != version_a_digest
+
+    with (
+        TestClient(create_app(config), base_url="https://workspace.test") as owner,
+        TestClient(create_app(config), base_url="https://workspace.test") as contributor,
+        TestClient(create_app(config), base_url="https://workspace.test") as reviewer,
+    ):
+        _login(owner, tokens["owner_browser"])
+        setup = owner.post(
+            "/setup",
+            headers={"Origin": "https://workspace.test"},
+            data={"digest": _digest(owner.get("/setup").text)},
+        )
+        assert setup.status_code == 200, setup.text
+        _login(reviewer, tokens["reviewer_browser"])
+
+        initial = _tool(
+            contributor,
+            tokens["contributor_api"],
+            "prepare_enrichment",
+            {
+                "workspace_id": config.workspace_id,
+                "page_ids": ["entity:team-a"],
+                "expected_version": base,
+                "request_key": "source-refresh-owner-a-selection",
+            },
+            100,
+        )
+        admitted_a = _tool(
+            contributor,
+            tokens["contributor_api"],
+            "prepare_contribution",
+            {
+                "retry_key": "source-refresh-owner-a-draft",
+                "enrichment_task_id": initial["task_id"],
+                "sources": [],
+                "pages": [
+                    {
+                        "filename": "team-a.md",
+                        "markdown": _claim_page(
+                            "Team A",
+                            "entity:team-a",
+                            "team",
+                            source=True,
+                            claim_block=OPERATES_CLAIM,
+                        ),
+                    }
+                ],
+            },
+            101,
+        )
+        initial_action = _digest(reviewer.get(f"/review/{initial['task_id']}").text)
+        approved_a = _decision(reviewer, initial["task_id"], initial_action, "approve")
+        assert approved_a.status_code == 200, approved_a.text
+        assert (
+            PublishedFilesystemLocation(config.published_path).read_pointer()
+            == admitted_a["native_candidate"]
+        )
+
+        bound = _tool(
+            contributor,
+            tokens["contributor_api"],
+            "prepare_enrichment",
+            {
+                "workspace_id": config.workspace_id,
+                "page_ids": ["entity:team-a", "entity:service-b"],
+                "expected_version": admitted_a["native_candidate"],
+                "request_key": "source-refresh-bound-selection",
+            },
+            102,
+        )
+        pending = _tool(
+            contributor,
+            tokens["contributor_api"],
+            "prepare_contribution",
+            {
+                "retry_key": "source-refresh-bound-draft",
+                "enrichment_task_id": bound["task_id"],
+                "sources": [],
+                "pages": [
+                    {
+                        "filename": "service-b.md",
+                        "markdown": _claim_page(
+                            "Service B",
+                            "entity:service-b",
+                            "service",
+                            source=True,
+                            claim_block=RETENTION_PROPOSAL_CLAIM,
+                        ),
+                    }
+                ],
+            },
+            103,
+        )
+        stale_action = _digest(reviewer.get(f"/review/{pending['task_id']}").text)
+
+        uploaded_b = contributor.post(
+            "/uploads",
+            headers={
+                "Authorization": f"Bearer {tokens['contributor_api']}",
+                "Content-Type": "application/octet-stream",
+                "X-Lumio-Source-Id": "operations-notes",
+                "X-Lumio-Filename": "operations-notes.md",
+                "X-Lumio-Retry-Key": "source-refresh-owner-b-upload",
+            },
+            content=version_b,
+        )
+        assert uploaded_b.status_code == 200, uploaded_b.text
+        refreshed_page = _claim_page(
+            "Operations Runbook",
+            "entity:operations-runbook",
+            "knowledge-artifact",
+            source=True,
+            claim_block=BASE_RUNBOOK_CLAIMS,
+        ).replace("Team A operates Service B.", "Team C operates Service B.")
+        refreshed = _tool(
+            contributor,
+            tokens["contributor_api"],
+            "prepare_contribution",
+            {
+                "retry_key": "source-refresh-owner-b-draft",
+                "sources": [{"upload_id": uploaded_b.json()["upload_id"], "intent": "update"}],
+                "pages": [{"filename": "operations-runbook.md", "markdown": refreshed_page}],
+            },
+            104,
+        )
+        assert refreshed["status"] == "pending_review"
+        assert refreshed["published"] is False
+
+        impact_response = reviewer.get(f"/review/{pending['task_id']}")
+        assert impact_response.status_code == 200, impact_response.text
+        assert '<section id="source-refresh-impact">' in impact_response.text
+        impact = impact_response.text.split('<section id="source-refresh-impact">', 1)[1].split(
+            "</section>", 1
+        )[0]
+        assert "Source refresh impact" in impact
+        assert version_a_digest in impact
+        assert version_b_digest in impact
+        for entity_id in (
+            "entity:operations-runbook",
+            "entity:team-a",
+            "entity:service-b",
+            "entity:team-c",
+        ):
+            assert entity_id in impact
+        assert "claim:team-a-operates-service-b" in impact
+        assert "claim:runbook-note-one" in impact
+        assert "claim:runbook-note-two" in impact
+        assert "claim:service-b-proposed-log-retention" not in impact
+        assert "cannot determine Claim-level or raw-passage impact" in impact
+        assert "does not classify a Claim as false or retire it" in impact
+
+        stale = _decision(reviewer, pending["task_id"], stale_action, "approve")
+        assert stale.status_code == 409, stale.text
+        assert (
+            PublishedFilesystemLocation(config.published_path).read_pointer()
+            == admitted_a["native_candidate"]
+        )
+        admitted = PublishedFilesystemLocation(config.published_path).resolve()
+        owner_a_claims = admitted.lookup_by_title("Team A")[0].claims
+        assert [(claim.predicate, claim.object, claim.status) for claim in owner_a_claims] == [
+            ("operates", "entity:service-b", "accepted")
+        ]
+        historical = native_authoring.capture_revision(
+            config.authoring_path, admitted_a["native_candidate"]
+        )
+        assert historical.manifest.bindings["entity:team-a"]["operations-notes"] == (
+            version_a_digest
+        )
+        store = LocalDirectoryArtifactStore(config.private_profile_path.parent / "artifacts")
+        assert (
+            store.get_artifact(source_id="operations-notes", content_hash=version_a_digest)
+            == CORPUS
+        )
+        assert (
+            store.get_artifact(source_id="operations-notes", content_hash=version_b_digest)
+            == version_b
+        )

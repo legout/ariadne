@@ -40,6 +40,7 @@ from lumio_wiki.source_inspection import (
     fetch_verified_artifact,
     resolve_source_reference_binding,
 )
+from lumio_wiki.source_registry import SourceRegistryError
 
 from .publication import PublicationService
 from .setup import SetupError, current_attachment_digest
@@ -62,6 +63,7 @@ class ReviewContext:
     publication: PublicationReview
     resources: ResolvedPrivateSources
     source_availability: dict[tuple[str, str], bool | None]
+    source_impact: list[dict]
     binding: dict
     source_inspection_permitted: bool
     action_digest: str
@@ -214,6 +216,20 @@ class ReviewService:
             captured = capture_revision(task_kb, candidate)
             publication = self.publication.preview(task_kb, candidate, admitted, resources)
             availability = self._source_availability(captured, resources)
+            source_impact: list[dict] = []
+            if operation.response.get("kind") == "enrichment":
+                if resources.source_registry is None:
+                    raise ReviewError(
+                        "native source registry is required for enrichment review",
+                        code="invalid_profile",
+                    )
+                from .enrichment import source_refresh_impact
+
+                source_impact = source_refresh_impact(
+                    operation.response,
+                    capture_revision(task_kb, base),
+                    resources.source_registry,
+                )
         except ReviewError:
             raise
         except (
@@ -223,6 +239,7 @@ class ReviewService:
             OSError,
             PrivateProfileError,
             SetupError,
+            SourceRegistryError,
         ) as exc:
             raise ReviewError(str(exc), code="stale_review") from exc
 
@@ -252,6 +269,7 @@ class ReviewService:
             "retention": publication.retention,
             "destination_identity": publication.destination_identity,
             "expected_current": publication.expected_current,
+            "source_refresh": source_impact,
         }
         return ReviewContext(
             operation,
@@ -261,6 +279,7 @@ class ReviewService:
             publication,
             resources,
             availability,
+            source_impact,
             binding,
             self.state.permits(self.workspace_id, actor, "inspect_source"),
             "",
@@ -611,9 +630,7 @@ def _claim_sources(context: ReviewContext, page: Any, quotes: list[str]) -> str:
                         + html.escape(passage)
                         + "</pre></blockquote>"
                     )
-        items.append(
-            f"<li>{html.escape('; '.join(facts))}{passage_html}</li>"
-        )
+        items.append(f"<li>{html.escape('; '.join(facts))}{passage_html}</li>")
     return "<ul>" + "".join(items) + "</ul>" if items else "<p>No source attribution.</p>"
 
 
@@ -717,9 +734,7 @@ def _render_enrichment_claims(
             if claim.object is not None
             else "literal Claim; no Entity merge implication"
         )
-        conflicts = _claim_conflicts(
-            base, context.captured, captured.id, claim, proposed_ids
-        )
+        conflicts = _claim_conflicts(base, context.captured, captured.id, claim, proposed_ids)
         conflict_html = (
             _items(conflicts)
             if conflicts
@@ -744,6 +759,57 @@ def _render_enrichment_claims(
             "</section>"
         )
     return "<h4>Proposed Claim review</h4>" + "".join(rendered)
+
+
+def _render_source_refresh(impact: list[dict]) -> str:
+    if not impact:
+        return ""
+    rendered = []
+    for item in impact:
+        claims = []
+        for claim in item["claims"]:
+            references = ", ".join(
+                f"{anchor['section'] or 'unspecified'} lines "
+                f"{anchor['line_start'] or 'unspecified'}-"
+                f"{anchor['line_end'] or 'unspecified'}"
+                for anchor in claim["evidence"]
+            )
+            claims.append(
+                f"<li><code>{html.escape(claim['id'])}</code>; admitted Evidence: "
+                f"{html.escape(references or 'none recorded')}</li>"
+            )
+        claim_html = (
+            f"<p>Admitted Claims on this page that may need review:</p><ul>{''.join(claims)}</ul>"
+            if claims
+            else (
+                "<p>No admitted Claims are recorded on this page; "
+                "page-level review still applies.</p>"
+            )
+        )
+        rendered.append(
+            "<li>Source <code>"
+            + html.escape(item["source_id"])
+            + "</code>: bound <code>"
+            + html.escape(item["bound_hash"])
+            + "</code>; registry-latest <code>"
+            + html.escape(item["latest_hash"])
+            + "</code>.<br>Page <code>"
+            + html.escape(item["page_id"])
+            + "</code> ("
+            + html.escape(item["page_title"])
+            + ") may need review."
+            + claim_html
+            + "</li>"
+        )
+    return (
+        '<section id="source-refresh-impact"><h3>Source refresh impact</h3>'
+        "<p>Exact source bindings and admitted page Evidence identify these conservative "
+        "review candidates. Page-level provenance cannot determine Claim-level or raw-passage "
+        "impact. A source change does not classify a Claim as false or retire it; historical "
+        "anchors remain bound to the displayed original version. Corrections require a fresh "
+        "reviewed change.</p>"
+        f"<ul>{''.join(rendered)}</ul></section>"
+    )
 
 
 def _items(values: list[str]) -> str:
@@ -871,6 +937,7 @@ def render_review(
             + "</pre>"
             "</section>"
         )
+    impact_html = _render_source_refresh(context.source_impact)
     pin = pinned_version or "current pointer"
     template = Template(
         package_resources.files("lumio_workspace")
@@ -901,7 +968,7 @@ def render_review(
                 for fact in context.operation.response.get("conversion", [])
             ]
         ),
-        pages="\n".join(pages),
+        pages=impact_html + "\n".join(pages),
         manifest_changes=_items(authoring.knowledge.manifest_changes),
         control_changes=f"<pre>{html.escape(_json(authoring.knowledge.control_changes))}</pre>",
         ontology_changes=f"<pre>{html.escape(_json(authoring.knowledge.ontology_changes))}</pre>",
