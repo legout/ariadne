@@ -233,10 +233,21 @@ def _xml_sheet_bounds(
     current_row = None
     previous_row = 0
     previous_column = 0
+    implicit_reference = False
+    reference = "unknown"
+    root = None
     try:
         with archive.open(sheet_path) as handle:
-            for _event, element in ET.iterparse(handle, events=("start",)):
+            events = ET.iterparse(handle, events=("start", "end"))
+            for event, element in events:
                 tag = element.tag.rsplit("}", 1)[-1]
+                if event == "end":
+                    element.clear()
+                    if tag == "row" and root is not None:
+                        root.clear()
+                    continue
+                if root is None:
+                    root = element
                 if tag == "dimension":
                     declared = _dimension_bounds(element.get("ref"))
                 elif tag == "row":
@@ -259,6 +270,7 @@ def _xml_sheet_bounds(
                     previous_column = 0
                 elif tag == "c":
                     reference = element.get("r")
+                    implicit_reference = reference is None
                     if reference is None:
                         if current_row is None:
                             raise SpreadsheetImportError(
@@ -280,6 +292,12 @@ def _xml_sheet_bounds(
                     actual[1] = row if actual[1] is None else min(actual[1], row)
                     actual[2] = column if actual[2] is None else max(actual[2], column)
                     actual[3] = row if actual[3] is None else max(actual[3], row)
+                elif tag == "f" and element.get("t") == "shared" and implicit_reference:
+                    raise SpreadsheetImportError(
+                        f"shared formula cell {reference} has no explicit r attribute; "
+                        "shared-formula translation with inferred coordinates is unsupported",
+                        code="shared_formula_implicit_reference",
+                    )
     except (ET.ParseError, KeyError) as exc:
         raise SpreadsheetImportError(
             f"selected worksheet XML is unavailable or malformed: {sheet_path}",

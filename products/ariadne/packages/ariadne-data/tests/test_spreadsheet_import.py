@@ -288,3 +288,32 @@ def test_workbook_stored_values_and_refresh_are_truthful(tmp_path: Path) -> None
         ).fetchall() == [(11, 12, 2)]
     finally:
         attribute_free_connection.close()
+
+    shared_follower_source = tmp_path / "shared-follower-implicit.xlsx"
+    shared_follower_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:A3"/><sheetData>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>amount</t></is></c></row>
+    <row r="2">
+      <c r="A2"><f t="shared" ref="A2:A3" si="0">10+20</f><v>30</v></c>
+    </row>
+    <row r="3"><c><f t="shared" si="0"/><v>30</v></c></row>
+  </sheetData>
+</worksheet>"""
+    _write_hand_ooxml(shared_follower_source, override_a=shared_follower_xml)
+    shared_follower_output = tmp_path / "shared-follower-output"
+    with pytest.raises(SpreadsheetImportError, match="explicit r") as shared_follower:
+        import_workbook(shared_follower_source, sheets=["A"], output=shared_follower_output)
+    assert shared_follower.value.code == "shared_formula_implicit_reference"
+    assert list(shared_follower_output.iterdir()) == []
+
+    shared_master_source = tmp_path / "shared-master-implicit.xlsx"
+    shared_master_xml = shared_follower_xml.replace(
+        '<c r="A2"><f t="shared"', '<c><f t="shared"'
+    )
+    _write_hand_ooxml(shared_master_source, override_a=shared_master_xml)
+    shared_master_output = tmp_path / "shared-master-output"
+    with pytest.raises(SpreadsheetImportError, match="explicit r") as shared_master:
+        import_workbook(shared_master_source, sheets=["A"], output=shared_master_output)
+    assert shared_master.value.code == "shared_formula_implicit_reference"
+    assert list(shared_master_output.iterdir()) == []
