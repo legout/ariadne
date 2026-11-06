@@ -30,6 +30,12 @@ Secret environment or file references, when applicable to a native source profil
 
 Call `prepare_data_source` with a stable `retry_key`, the configured `project` and `source` handles, a `table`, and the known `business_questions`. The service stages a native source proposal in its server-owned worktree and returns a `task_id` and `review_url`.
 
+For a structured upload, first use `/workspace-upload <source-id> <path> [retry=<key>]`, then pass the returned `upload_id` as well as the matching `source` handle. CSV, JSON, and Parquet use their existing native handlers; do not pass `sheets`. For XLSX, pass an explicit `sheets` list and select a normalized `table` from the conversion mapping. The upload receipt and `document_stored` outcome mean only that exact bytes are privately retained: `data_query_ready` remains false until the separate native approvals and admission complete. `read_source_material` is for document text, not structured data.
+
+The service binds the server-held upload digest/version and chooses the private retained path; contributors never supply a server path. XLSX conversion reports selected sheets, source rows/cells, actual stored types, header normalization, formula caches with unknown freshness, and limitations without recalculation or external-link fetching. Missing/error caches and conversion-limit violations refuse before activation. Ask the contributor about unresolved row meanings, dates, units/currencies, and joins rather than inferring them.
+
+Repeating identical source bytes and sheet selection reuses the derived identity. An explicit refresh uses a new upload/task and reviewed selection, producing a new immutable artifact rather than replacing active data. A failed conversion or refresh leaves prior data and knowledge active. Conversion alone grants neither source access nor business approval.
+
 This preparation creates an inert declaration. It does not open the source, return schema, or make the project query-ready. Repeating the same key with different identified input conflicts rather than replacing the original request.
 
 Two distinct browser reviews follow:

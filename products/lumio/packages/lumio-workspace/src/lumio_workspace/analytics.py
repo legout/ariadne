@@ -4,34 +4,44 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
 
-import msgspec
-from ariadne import admission, authoring_sources, proposals
-from ariadne.authoring import AuthoringProject
-from ariadne.contribution_review import check_contribution_commit, review_contribution
-from ariadne.query import QueryRuntime
-from lumio_wiki.authoring_journey import (
+import msgspec  # pyright: ignore[reportMissingImports]
+from ariadne import admission, authoring_sources, proposals  # pyright: ignore[reportMissingImports]
+from ariadne.authoring import AuthoringProject  # pyright: ignore[reportMissingImports]
+from ariadne.contribution_review import (  # pyright: ignore[reportMissingImports]
+    check_contribution_commit,
+    review_contribution,
+)
+from ariadne.query import QueryRuntime  # pyright: ignore[reportMissingImports]
+from lumio_wiki.authoring_journey import (  # pyright: ignore[reportMissingImports]
     CandidateRequest,
     CandidateSourceRecord,
     ingest_candidate,
 )
-from lumio_wiki.git_authoring import (
+from lumio_wiki.git_authoring import (  # pyright: ignore[reportMissingImports]
     PRIVATE_OPERATIONS_DIR,
     PublicationReceipt,
     resolve_repository,
 )
-from lumio_wiki.knowledge_base import (
+from lumio_wiki.knowledge_base import (  # pyright: ignore[reportMissingImports]
     KnowledgeBaseError,
     document_first_control_file,
     load_control_file,
     write_control_file,
 )
-from lumio_wiki.location import PublishedFilesystemLocation, open_knowledge_base
-from lumio_wiki.mutation import atomic_write_bytes
-from lumio_wiki.private_profile import load_private_profile, resolve_private_profile
+from lumio_wiki.location import (  # pyright: ignore[reportMissingImports]
+    PublishedFilesystemLocation,
+    open_knowledge_base,
+)
+from lumio_wiki.mutation import atomic_write_bytes  # pyright: ignore[reportMissingImports]
+from lumio_wiki.private_profile import (  # pyright: ignore[reportMissingImports]
+    load_private_profile,
+    resolve_private_profile,
+)
 
 from .contributions import _digest, _git
 from .intake import IntakeService
@@ -176,6 +186,104 @@ class AnalyticsService:
             )
         return operation
 
+    def _prepare_upload(
+        self,
+        *,
+        path: Path,
+        facts: dict,
+        table: str,
+        sheets: list[str] | None,
+        identity: str,
+    ) -> tuple[list[dict], list[dict]]:
+        native_source = f"upload_{identity[:24]}"
+        managed = self.project / ".ariadne" / "managed-sources" / identity
+        source_type = facts["source_type"]
+        if source_type == "xlsx":
+            from ariadne.spreadsheet_import import (  # pyright: ignore[reportMissingImports]
+                import_workbook,
+            )
+
+            imported = import_workbook(path, sheets=sheets or [], output=managed / "workbook")
+            if imported["source_sha256"] != facts["sha256"]:
+                raise AnalyticsError("the retained XLSX bytes changed after upload")
+            if table not in imported["derived_source"]["tables"]:
+                raise AnalyticsError(
+                    "table must name one normalized table from the explicitly imported sheets"
+                )
+            artifact = Path(imported["artifact_path"]).resolve()
+            try:
+                relative = artifact.relative_to(self.project)
+            except ValueError as exc:
+                raise AnalyticsError(
+                    "derived workbook artifact escaped its private destination"
+                ) from exc
+            entry = {
+                "name": native_source,
+                "type": "duckdb",
+                "path": relative.as_posix(),
+            }
+            conversion = {
+                **facts,
+                "conversion_status": "converted_pending_approval",
+                "selection_identity": imported["selection_identity"],
+                "derived_source": {
+                    "identity": imported["derived_source"]["identity"],
+                    "type": "duckdb",
+                    "tables": imported["derived_source"]["tables"],
+                    "registry_path": relative.as_posix(),
+                },
+                "artifact_sha256": imported["artifact_sha256"],
+                "sheets": imported["sheets"],
+                "limitations": imported["limitations"],
+                "cache_freshness": "unknown",
+                "formula_evaluation": False,
+                "recalculation": False,
+            }
+            return [entry], [conversion]
+
+        suffix = Path(facts["filename"]).suffix.lower()
+        relative = Path(".ariadne") / "managed-sources" / identity / f"source{suffix}"
+        retained = self.project / relative
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != facts["sha256"]:
+            raise AnalyticsError("the retained structured bytes changed after upload")
+        retained.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with retained.open("xb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except FileExistsError:
+            pass
+        if hashlib.sha256(retained.read_bytes()).hexdigest() != facts["sha256"]:
+            raise AnalyticsError(
+                "an existing managed source does not match its immutable identity; "
+                "preserve it for operator resolution"
+            )
+        retained.chmod(0o444)
+        entry = {
+            "name": native_source,
+            "type": source_type,
+            "path": relative.as_posix(),
+            "table": table,
+        }
+        conversion = {
+            **facts,
+            "conversion_status": "staged_pending_approval",
+            "native_handler": source_type,
+            "derived_source": {
+                "identity": identity,
+                "type": source_type,
+                "tables": [table],
+                "registry_path": relative.as_posix(),
+            },
+            "limitations": [
+                "The existing native handler interprets the file only after exact Source Approval "
+                "and caller data authorization; units and joins are not inferred."
+            ],
+        }
+        return [entry], [conversion]
+
     def prepare_data_source(
         self,
         actor: Actor,
@@ -185,21 +293,62 @@ class AnalyticsService:
         source: str,
         table: str,
         business_questions: list[str],
+        upload_id: str | None = None,
+        sheets: list[str] | None = None,
     ) -> dict:
         self._project(project)
         self._retry(retry_key)
         if not table or not isinstance(business_questions, list):
             raise AnalyticsError("a table and known business questions are required")
-        entries = self._entries([source])
-        input_digest = _digest(
-            {
-                "project": project,
-                "source": source,
-                "entries": entries,
-                "table": table,
-                "business_questions": business_questions,
-            }
-        )
+        if upload_id is None and sheets is not None:
+            raise AnalyticsError("sheet selection requires an XLSX upload_id")
+        upload_path = None
+        upload_facts = None
+        managed_identity = None
+        if upload_id is None:
+            entries = self._entries([source])
+            input_digest = _digest(
+                {
+                    "project": project,
+                    "source": source,
+                    "entries": entries,
+                    "table": table,
+                    "business_questions": business_questions,
+                }
+            )
+        else:
+            upload_operation, upload_path, upload_facts = self.intake.structured(
+                self.workspace_id, actor, upload_id
+            )
+            if upload_operation.source_id != source:
+                raise AnalyticsError("source must match the upload's identified source_id")
+            source_type = upload_facts["source_type"]
+            if source_type == "xlsx":
+                if not isinstance(sheets, list) or not sheets:
+                    raise AnalyticsError("XLSX requires an explicit nonempty sheet selection")
+            elif sheets is not None:
+                raise AnalyticsError("sheets are valid only for XLSX uploads")
+            managed_identity = _digest(
+                {
+                    "source_id": source,
+                    "sha256": upload_facts["sha256"],
+                    "sheets": sorted(sheets or []),
+                    "table": table if source_type != "xlsx" else None,
+                }
+            )
+            entries = []
+            input_digest = _digest(
+                {
+                    "project": project,
+                    "source": source,
+                    "upload_id": upload_id,
+                    "upload_sha256": upload_facts["sha256"],
+                    "managed_identity": managed_identity,
+                    "table": table,
+                    "business_questions": business_questions,
+                    "sheets": sorted(sheets or []),
+                }
+            )
         operation, _ = self.state.start_operation(
             self.workspace_id,
             actor,
@@ -217,6 +366,16 @@ class AnalyticsService:
             if current.status != "pending":
                 return current.response
             try:
+                conversion = []
+                if upload_facts is not None:
+                    assert upload_path is not None and managed_identity is not None
+                    entries, conversion = self._prepare_upload(
+                        path=upload_path,
+                        facts=upload_facts,
+                        table=table,
+                        sheets=sheets,
+                        identity=managed_identity,
+                    )
                 if len(entries) != 1:
                     raise AnalyticsError(
                         "selected-table profiling requires one native source per source handle"
@@ -274,12 +433,18 @@ class AnalyticsService:
                     "native_candidate": proposed["revision"],
                     "source_digest": proposed["source_digest"],
                     "reused_source_declaration": reused,
+                    "conversion": conversion,
                     "review_url": f"{self.external_url}/review/{current.operation_id}",
                     "review_generation": 0,
                     "published": False,
                     **(
                         {"approval_digest": approval["approval_digest"]}
                         if reused
+                        else {}
+                    ),
+                    **(
+                        {"upload_id": upload_id, "native_entries": entries}
+                        if upload_id is not None
                         else {}
                     ),
                 }
@@ -723,7 +888,7 @@ class AnalyticsService:
         if grant.status != "data_granted":
             raise AnalyticsError("the exact source-set data grant is required first")
         source_handles = [grant.response["source"]]
-        entries = self._entries(source_handles)
+        entries = grant.response.get("native_entries") or self._entries(source_handles)
         checked_pages = []
         for item in pages:
             filename = item["filename"]

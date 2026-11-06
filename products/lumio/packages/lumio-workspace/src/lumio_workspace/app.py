@@ -11,17 +11,32 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from lumio_wiki.location import PublishedFilesystemLocation, open_knowledge_base
-from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.auth.provider import TokenVerifier
-from mcp.server.auth.settings import AuthSettings
-from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
-from mcp.server.transport_security import TransportSecuritySettings
-from pydantic import AnyHttpUrl
-from starlette.datastructures import Headers, MutableHeaders
-from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from lumio_wiki.location import (  # pyright: ignore[reportMissingImports]
+    PublishedFilesystemLocation,
+    open_knowledge_base,
+)
+from mcp.server.auth.middleware.auth_context import (  # pyright: ignore
+    get_access_token,
+)
+from mcp.server.auth.provider import TokenVerifier  # pyright: ignore[reportMissingImports]
+from mcp.server.auth.settings import AuthSettings  # pyright: ignore[reportMissingImports]
+from mcp.server.mcpserver import MCPServer  # pyright: ignore[reportMissingImports]
+from mcp.server.mcpserver.exceptions import ToolError  # pyright: ignore[reportMissingImports]
+from mcp.server.transport_security import (  # pyright: ignore
+    TransportSecuritySettings,
+)
+from pydantic import AnyHttpUrl  # pyright: ignore[reportMissingImports]
+from starlette.datastructures import (  # pyright: ignore[reportMissingImports]
+    Headers,
+    MutableHeaders,
+)
+from starlette.requests import Request  # pyright: ignore[reportMissingImports]
+from starlette.responses import (  # pyright: ignore[reportMissingImports]
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 
 from .auth import (
     AuthenticationError,
@@ -382,8 +397,10 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         source: str,
         table: str,
         business_questions: list[str],
+        upload_id: str | None = None,
+        sheets: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Stage an operator-bound source without opening schema or data."""
+        """Stage an operator-bound or privately uploaded source without opening data."""
         actor = _actor()
         if not state.permits(config.workspace_id, actor, "contribute"):
             raise WorkspaceError("workspace contribution is not available")
@@ -395,6 +412,8 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
                 source=source,
                 table=table,
                 business_questions=business_questions,
+                upload_id=upload_id,
+                sheets=sheets,
             )
         except ValueError as exc:
             raise WorkspaceError(str(exc)) from exc

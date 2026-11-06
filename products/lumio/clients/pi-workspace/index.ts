@@ -193,7 +193,11 @@ export default function (pi: ExtensionAPI) {
             `Retain retry=${retryKey} plus the exact source ID, filename, and bytes. After an ` +
             "interrupted upload, repeat the same upload with that key and those exact inputs to " +
             "recover the same upload_id; do not call get_task(upload_id). Use read_source_material " +
-            "to inspect normalized text and conversion facts. For prepare_contribution, retain a " +
+            "only for document text. CSV/JSON/Parquet/XLSX upload is storage, not query readiness: " +
+            "call prepare_data_source with the upload_id, plus explicit sheets for XLSX, and use the " +
+            "returned normalized table mapping. Ask about unresolved dates, units, row meaning, or " +
+            "joins; never infer them. Refresh means a new upload/task and reviewed selection, never " +
+            "recalculation or silent replacement. For prepare_contribution, retain a " +
             "separate stable retry_key and the exact request. Repeat that preparation to recover " +
             "its task_id if interruption hid it, then call get_task with the actual task_id. " +
             "Analytics contributions also require the exact granted source_task_id. Old browser " +
@@ -231,7 +235,9 @@ export default function (pi: ExtensionAPI) {
       const guidance =
         connectionGuidance +
         " When analytics is enabled: prepare_data_source, complete its separate source/data " +
-        "browser decisions, then profile_data_source; prepare_contribution needs the granted " +
+        "browser decisions, then profile_data_source. Structured uploads pass upload_id; XLSX " +
+        "also requires explicit sheets and uses stored caches without recalculation. Document " +
+        "storage and query readiness are separate outcomes. prepare_contribution needs the granted " +
         "source_task_id, and query_data rechecks the caller's complete source-set grant. " +
         "For bounded enrichment, call prepare_enrichment with explicit page IDs, the current " +
         "admitted version, and a stable request_key. Author the complete returned selection " +
