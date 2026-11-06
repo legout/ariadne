@@ -657,6 +657,26 @@ def test_enrichment_stays_pending_and_subset_requires_fresh_review(
             )
             assert contended_identical["native_candidate"] == subset["native_candidate"]
             assert contended_identical["status"] == "pending_review"
+
+            contended_unbound = _tool(
+                contributor,
+                tokens["contributor_api"],
+                "prepare_contribution",
+                {
+                    "retry_key": "enrichment-never-prepared",
+                    "enrichment_task_id": task_id,
+                    "sources": [],
+                    "pages": whole_pages[:1],
+                },
+                56,
+            )
+            assert contended_unbound == {
+                "task_id": task_id,
+                "status": "not_prepared",
+                "prepared": False,
+                "published": False,
+            }
+            assert "native_candidate" not in contended_unbound
         finally:
             monkeypatch.setattr(WorkspaceState, "operation_lock", original_operation_lock)
 

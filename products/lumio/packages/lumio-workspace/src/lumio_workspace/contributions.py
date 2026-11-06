@@ -410,7 +410,16 @@ class ContributionService:
                 )
                 if current is None:
                     raise ContributionError("task is not available", code="task_not_found")
-                self._validate_draft_binding(current.response, retry_key, input_digest)
+                _drafts, _generation, binding = self._validate_draft_binding(
+                    current.response, retry_key, input_digest
+                )
+                if binding is None:
+                    return {
+                        "task_id": task_id,
+                        "status": "not_prepared",
+                        "prepared": False,
+                        "published": False,
+                    }
                 return current.response
             current = self.state.get_operation(
                 self.workspace_id, actor, "prepare_contribution", task_id
