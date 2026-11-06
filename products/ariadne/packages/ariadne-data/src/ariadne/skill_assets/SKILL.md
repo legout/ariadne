@@ -352,7 +352,7 @@ layers, proposal worktrees or `.ariadne/` state).
    `--context-private-profile FILE` when configured). The review binds the
    complete staged tree, all Core and knowledge changes, excluded
    unstaged/untracked work and truthful pending live validation; it never
-   opens sources, approves, admits or becomes an MCP operation. The human
+   opens sources, approves or admits. The human
    inspects it and makes any commit/submission decision explicitly. After the
    human commit, verify the ACTUAL post-hook commit with
    `ariadne-authoring contribution-check --project . --proposal ID --review
@@ -708,7 +708,8 @@ toolsets over one core — pick the registration at launch:
 checks and response contracts as the `ariadne-authoring` commands above. The
 answer-example tools ride the Analyst/Combined registrations with identical
 contracts to `ariadne save-example`/`search-examples` (same confirmation
-rules). In an integrated project, the `search_context`, `list_context_pages`
+rules). The external whole-contribution review never becomes an MCP operation.
+In an integrated project, the `search_context`, `list_context_pages`
 and `read_context_page` tools navigate the session's pinned Bound Release
 source-free (see Integrated Lumio context above). No registration exposes source approval, admission, reconciliation,
 or the operator-only `ariadne review` walkthrough. Stdio is local
