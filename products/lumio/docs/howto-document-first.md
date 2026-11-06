@@ -137,3 +137,46 @@ exact-revision preview and explicitly authorized confirmation flow in
 [`quickstart.md`](quickstart.md). A later enrichment may add separately
 reviewed business Entities and Claims; it must not silently retype this
 artifact Entity.
+
+## 3. Optional bounded enrichment in a managed workspace
+
+After the document is admitted, an explicit request can select its artifact
+page and relevant existing business-Entity pages for enrichment. The managed
+workspace exposes this MCP call:
+
+```text
+prepare_enrichment(
+  workspace_id=<configured workspace>,
+  page_ids=<1–20 exact admitted Entity IDs>,
+  expected_version=<current full admitted Git commit>,
+  request_key=<stable request key>,
+)
+```
+
+The result identifies the exact pages, Source Versions, retention availability,
+existing identities, and complete Control File. It also reports the disclosed
+character count and the limits: 20 pages, 200,000 characters, and 40 proposed
+Claims. An oversized selection fails with a request to narrow or split it; the
+service never truncates the corpus silently. Retrying the identical request
+resumes the same task. No original passages are added to the selection, and the
+service performs no external ontology lookup by default.
+
+The host agent authors a complete candidate through `prepare_contribution`,
+passing `enrichment_task_id`, `sources: []`, complete page Markdown, and a
+separate stable `retry_key`. Pass a complete modified `control` only when the
+candidate changes the ontology. Existing pages outside the selection and
+unselected Source IDs are refused. Native candidate ingestion still resolves
+identities and validates ontology, Claims, source bindings, and Evidence
+coordinates. Coordinate validation is not semantic verification: the browser
+review shows the exact quote, attribution, Source Version/availability,
+potential conflicts, identity implications, and complete diff for a human to
+judge.
+
+Rejection leaves the admitted document and graph unchanged. To correct a draft
+or accept only a subset, author another complete candidate with a new draft
+`retry_key`; the service creates a fresh exact review. The discarded candidate's
+browser action cannot admit the subset. Only the matching browser decision can
+publish the corrected candidate. Preserve attributed proposals as proposals,
+not adopted Policy, and do not infer a relationship from a mere co-mention.
+Enrichment grants no source access, automatic merge, external lookup, Ariadne
+join, metric, or publication authority.

@@ -56,7 +56,8 @@ export default function (pi: ExtensionAPI) {
   if (!missing && url && authMode === "local-token") {
     pi.registerMcpServer(SERVER, {
       url: `${url}/mcp`,
-      description: "Read admitted knowledge, query authorized pinned data, and prepare contributions",
+      description:
+        "Read admitted knowledge, query authorized pinned data, and prepare contributions/enrichment",
       exposure: "direct",
       headers: { Authorization: "Bearer ${LUMIO_WORKSPACE_API_TOKEN}" },
     });
@@ -69,7 +70,8 @@ export default function (pi: ExtensionAPI) {
     }
     pi.registerMcpServer(SERVER, {
       url: `${url}/mcp`,
-      description: "Read admitted knowledge, query authorized pinned data, and prepare contributions",
+      description:
+        "Read admitted knowledge, query authorized pinned data, and prepare contributions/enrichment",
       exposure: "direct",
       oauth: {
         clientId,
@@ -230,7 +232,13 @@ export default function (pi: ExtensionAPI) {
         connectionGuidance +
         " When analytics is enabled: prepare_data_source, complete its separate source/data " +
         "browser decisions, then profile_data_source; prepare_contribution needs the granted " +
-        "source_task_id, and query_data rechecks the caller's complete source-set grant.";
+        "source_task_id, and query_data rechecks the caller's complete source-set grant. " +
+        "For bounded enrichment, call prepare_enrichment with explicit page IDs, the current " +
+        "admitted version, and a stable request_key. Author the complete returned selection " +
+        "through prepare_contribution with enrichment_task_id, sources: [], and a separate stable " +
+        "retry_key. Repeat the identical selection/draft to resume after interruption. A correction " +
+        "or subset needs a new draft retry_key and its fresh exact browser review; never replay an " +
+        "old whole-batch action. External lookup is disabled by default.";
       ctx.ui.notify(
         `Workspace: ${url}/mcp\nModel ${modelName(ctx)}: ${policy}\n${guidance}`,
         modelAllowed ? "info" : "warning",

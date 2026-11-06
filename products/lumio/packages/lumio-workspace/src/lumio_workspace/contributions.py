@@ -20,23 +20,28 @@ from lumio_wiki.authoring_review import (
     check_authoring_commit,
     review_authoring_candidate,
 )
-from lumio_wiki.git_authoring import GitAuthoringError, resolve_repository
+from lumio_wiki.git_authoring import GitAuthoringError, capture_revision, resolve_repository
 from lumio_wiki.knowledge_base import (
     ControlFileError,
     document_first_control_file,
     load_control_file,
     write_control_file,
 )
-from lumio_wiki.mutation import atomic_write_bytes
+from lumio_wiki.mutation import atomic_write_bytes, mutation_lock
 from lumio_wiki.private_profile import (
     PrivateProfileError,
     load_private_profile,
     resolve_private_profile,
 )
+from lumio_wiki.source_inspection import (
+    SourceInspectionError,
+    fetch_verified_artifact,
+    resolve_source_reference_binding,
+)
 
 from .intake import IntakeService, UploadError
 from .setup import SetupError, current_attachment_digest
-from .state import Actor, Operation, WorkspaceState
+from .state import Actor, Operation, RetryConflict, WorkspaceState
 
 _FULL_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
@@ -68,7 +73,9 @@ def _digest(value: object) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _page(filename: str, markdown: str) -> tuple[str, dict]:
+def _page(
+    filename: str, markdown: str, *, require_artifact: bool = True
+) -> tuple[str, dict]:
     if (
         not filename
         or filename in {".", ".."}
@@ -95,7 +102,9 @@ def _page(filename: str, markdown: str) -> tuple[str, dict]:
             code="incompatible_audience",
         )
     entity_types = frontmatter.get("entity_types")
-    if not isinstance(entity_types, list) or "knowledge-artifact" not in entity_types:
+    if require_artifact and (
+        not isinstance(entity_types, list) or "knowledge-artifact" not in entity_types
+    ):
         raise ContributionError(
             "candidate page requires the knowledge-artifact Entity Type",
             code="invalid_page",
@@ -296,7 +305,15 @@ class ContributionService:
                     actor,
                     current,
                     base_revision=managed_base,
-                    sources=checked_sources,
+                    sources=[
+                        CandidateSourceRecord(
+                            source_id=source.source_id or "",
+                            original_path=str(path),
+                            expected_digest=source.response["sha256"],
+                            intent=intent,
+                        )
+                        for source, path, intent in checked_sources
+                    ],
                     pages=checked_pages,
                     conversion=conversion,
                 )
@@ -321,15 +338,250 @@ class ContributionService:
             )
             return response
 
+    def prepare_enrichment(
+        self,
+        actor: Actor,
+        *,
+        task_id: str,
+        retry_key: str,
+        pages: list[dict],
+        control: str | None = None,
+    ) -> dict:
+        """Author or correct a complete candidate for one persisted bounded selection."""
+        if not 1 <= len(retry_key) <= 200 or not retry_key.isprintable():
+            raise ContributionError("retry key must be printable and at most 200 characters")
+        if control is not None and len(control) > 200_000:
+            raise ContributionError(
+                "the candidate Control File exceeds the disclosed input bound",
+                code="batch_too_large",
+            )
+        if not pages:
+            raise ContributionError("a complete enrichment candidate requires at least one page")
+        checked_pages = []
+        for item in pages:
+            try:
+                filename = item["filename"]
+                markdown = item["markdown"]
+            except (KeyError, TypeError) as exc:
+                raise ContributionError("each page requires filename and markdown") from exc
+            if not isinstance(filename, str) or not isinstance(markdown, str):
+                raise ContributionError("page filename and markdown must be strings")
+            checked_pages.append(
+                (filename, *_page(filename, markdown, require_artifact=False))
+            )
+        input_digest = _digest(
+            {
+                "enrichment_task_id": task_id,
+                "pages": [
+                    {
+                        "filename": filename,
+                        "sha256": hashlib.sha256(markdown.encode()).hexdigest(),
+                    }
+                    for filename, markdown, _frontmatter in checked_pages
+                ],
+                "control": control,
+            }
+        )
+        operation = self.state.get_operation(
+            self.workspace_id, actor, "prepare_contribution", task_id
+        )
+        if operation is None or operation.response.get("kind") != "enrichment":
+            raise ContributionError(
+                "enrichment task is not available", code="invalid_enrichment_task"
+            )
+        recorded = operation.response.get("author_input_digest")
+        if recorded is not None and operation.response.get("author_retry_key") == retry_key:
+            if recorded != input_digest:
+                raise RetryConflict("retry key is already bound to different enrichment input")
+            if operation.status in {"pending_review", "rejected", "published"}:
+                return operation.response
+        if operation.status not in {"pending", "pending_review", "rejected", "failed"}:
+            raise ContributionError(
+                "a published enrichment cannot be replaced", code="invalid_enrichment_task"
+            )
+
+        with (
+            self.state.operation_lock(operation) as acquired,
+            mutation_lock(self.private_root / "activation"),
+        ):
+            if not acquired:
+                return {
+                    **operation.response,
+                    "task_id": task_id,
+                    "status": "pending",
+                    "published": False,
+                }
+            current = self.state.get_operation(
+                self.workspace_id, actor, "prepare_contribution", task_id
+            )
+            if current is None:
+                raise ContributionError("task is not available", code="task_not_found")
+            recorded = current.response.get("author_input_digest")
+            if recorded is not None and current.response.get("author_retry_key") == retry_key:
+                if recorded != input_digest:
+                    raise RetryConflict("retry key is already bound to different enrichment input")
+                if current.status in {"pending_review", "rejected", "published"}:
+                    return current.response
+            if current.status not in {"pending", "pending_review", "rejected", "failed"}:
+                raise ContributionError(
+                    "a published enrichment cannot be replaced", code="invalid_enrichment_task"
+                )
+            working = {
+                **current.response,
+                "task_id": task_id,
+                "status": "pending",
+                "author_retry_key": retry_key,
+                "author_input_digest": input_digest,
+                "published": False,
+            }
+            for stale_key in (
+                "error",
+                "code",
+                "publication",
+                "publication_outcome",
+                "review_decision",
+            ):
+                working.pop(stale_key, None)
+            self.state.finish_operation(self.workspace_id, actor, current, "pending", working)
+            try:
+                base = capture_revision(self.authoring_path, current.response["native_base"])
+                base_ids = {page.id for page in base.kb.pages}
+                selected_ids = set(current.response["selected_page_ids"])
+                selected_sources = {
+                    item["source_id"] for item in current.response["selected_sources"]
+                }
+                for _filename, _markdown, frontmatter in checked_pages:
+                    entity_id = frontmatter.get("id")
+                    if not isinstance(entity_id, str) or not entity_id:
+                        raise ContributionError(
+                            "each enrichment page requires a stable Entity ID",
+                            code="invalid_page",
+                        )
+                    if entity_id in base_ids and entity_id not in selected_ids:
+                        raise ContributionError(
+                            "an existing page outside the authorized selection cannot be edited",
+                            code="page_not_selected",
+                        )
+                    declared = frontmatter.get("sources", [])
+                    if not isinstance(declared, list) or any(
+                        not isinstance(source, dict) or source.get("id") not in selected_sources
+                        for source in declared
+                    ):
+                        raise ContributionError(
+                            "enrichment pages may declare only exact sources from the selection",
+                            code="source_not_selected",
+                        )
+                sources = self._enrichment_sources(current, checked_pages)
+                native = self._prepare_native(
+                    actor,
+                    current,
+                    base_revision=current.response["native_base"],
+                    sources=sources,
+                    pages=checked_pages,
+                    conversion=[],
+                    control_markdown=control,
+                    enrichment=True,
+                )
+                response = {**working, **native}
+            except (
+                ContributionError,
+                AuthoringJourneyError,
+                AuthoringReviewError,
+                GitAuthoringError,
+                SourceInspectionError,
+            ) as exc:
+                code = getattr(exc, "code", "invalid_contribution")
+                response = {
+                    **working,
+                    "status": "failed",
+                    "error": str(exc),
+                    "code": code,
+                }
+                self.state.finish_operation(self.workspace_id, actor, current, "failed", response)
+                raise ContributionError(str(exc), code=code) from exc
+            self.state.finish_operation(
+                self.workspace_id, actor, current, "pending_review", response
+            )
+            return response
+
+    def _enrichment_sources(
+        self, operation: Operation, pages: list[tuple[str, str, dict]]
+    ) -> list[CandidateSourceRecord]:
+        """Materialize only exact selected originals needed for new Entity bindings."""
+        resources = self._resources()
+        if resources.source_registry is None or resources.artifact_store is None:
+            raise ContributionError(
+                "native registry and artifact retention are required", code="invalid_profile"
+            )
+        captured = capture_revision(self.authoring_path, operation.response["native_base"])
+        selected = operation.response["selected_sources"]
+        records = []
+        seen = set()
+        for _filename, _markdown, frontmatter in pages:
+            entity_id = frontmatter["id"]
+            for source in frontmatter.get("sources", []):
+                source_id = source["id"]
+                if source_id in captured.manifest.bindings.get(entity_id, {}):
+                    continue
+                matches = [
+                    item
+                    for item in selected
+                    if item["source_id"] == source_id and item["content_hash"] is not None
+                ]
+                digests = {item["content_hash"] for item in matches}
+                if len(digests) != 1:
+                    raise ContributionError(
+                        "a new source binding needs exactly one selected Source Version; "
+                        "narrow the selection",
+                        code="ambiguous_source_version",
+                    )
+                item = matches[0]
+                key = (source_id, item["content_hash"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                if item["original_available"] is not True:
+                    raise ContributionError(
+                        "a new source binding requires the exact retained original",
+                        code="source_unavailable",
+                    )
+                binding = resolve_source_reference_binding(
+                    resources.source_registry,
+                    captured.manifest,
+                    source_id,
+                    entity_id=item["entity_id"],
+                    published_version=operation.response["native_base"],
+                )
+                raw = fetch_verified_artifact(resources.artifact_store, binding)
+                path = (
+                    self.private_root
+                    / "originals"
+                    / operation.operation_id
+                    / f"selected-{len(records)}"
+                )
+                path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_bytes(path, raw)
+                records.append(
+                    CandidateSourceRecord(
+                        source_id=source_id,
+                        original_path=str(path),
+                        expected_digest=item["content_hash"],
+                        intent="update",
+                    )
+                )
+        return records
+
     def _prepare_native(
         self,
         actor: Actor,
         operation: Operation,
         *,
         base_revision: str,
-        sources: list[tuple[Operation, Path, str]],
+        sources: list[CandidateSourceRecord],
         pages: list[tuple[str, str, dict]],
         conversion: list[dict],
+        control_markdown: str | None = None,
+        enrichment: bool = False,
     ) -> dict:
         del actor  # Native work is bound to the already-persisted actor-scoped operation.
         self._require_attachment()
@@ -355,25 +607,25 @@ class ContributionService:
             atomic_write_bytes(path, markdown.encode())
             page_paths.append(str(path))
         try:
-            control = document_first_control_file(load_control_file(task_kb))
-            control_path = write_control_file(
-                self.private_root / "controls" / operation.operation_id,
-                control,
-            )
+            control_path = None
+            if control_markdown is not None:
+                control_path = (
+                    self.private_root / "controls" / operation.operation_id / "lumio.yaml"
+                )
+                control_path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_bytes(control_path, control_markdown.encode())
+            elif not enrichment:
+                control = document_first_control_file(load_control_file(task_kb))
+                control_path = write_control_file(
+                    self.private_root / "controls" / operation.operation_id,
+                    control,
+                )
             request = CandidateRequest(
                 schema_version=1,
                 base_revision=base_revision,
-                sources=[
-                    CandidateSourceRecord(
-                        source_id=source.source_id or "",
-                        original_path=str(path),
-                        expected_digest=source.response["sha256"],
-                        intent=intent,
-                    )
-                    for source, path, intent in sources
-                ],
+                sources=sources,
                 pages=page_paths,
-                control=str(control_path),
+                control=str(control_path) if control_path is not None else None,
             )
             result = ingest_candidate(
                 task_kb,
@@ -387,6 +639,17 @@ class ContributionService:
                 base_revision,
                 source_registry=resources.source_registry,
             )
+            proposed_claims = sum(
+                1
+                for page in review.knowledge.pages
+                for claim in page.claims
+                if claim.change == "added"
+            )
+            if enrichment and proposed_claims > 40:
+                raise ContributionError(
+                    "the candidate proposes more than 40 Claims; narrow or split the batch",
+                    code="batch_too_large",
+                )
             _git(
                 task_kb,
                 "-c",
@@ -416,6 +679,7 @@ class ContributionService:
             "candidate": msgspec.to_builtins(result),
             "conversion": conversion,
             "published": False,
+            **({"proposed_claims": proposed_claims} if enrichment else {}),
         }
 
     def _remove_interrupted_worktree(self, repo_root: Path, task_path: Path, branch: str) -> None:

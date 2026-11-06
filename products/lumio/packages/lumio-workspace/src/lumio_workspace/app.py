@@ -31,6 +31,7 @@ from .auth import (
     LocalTokenVerifier,
 )
 from .contributions import ContributionError, ContributionService
+from .enrichment import EnrichmentService
 from .intake import IntakeService, UploadError
 from .review import ReviewError, ReviewService, render_review, render_source
 from .setup import SetupError, apply_setup, preview_setup, render_setup
@@ -343,6 +344,11 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             profile_path=config.private_profile_path,
         )
 
+    def enrichment_service() -> EnrichmentService:
+        return EnrichmentService(
+            contribution_service(), destination=config.published_path
+        )
+
     def review_service() -> ReviewService:
         if config.authoring_path is None or config.private_profile_path is None:
             raise WorkspaceError("workspace review is not configured")
@@ -422,6 +428,30 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             raise WorkspaceError(str(exc)) from exc
 
     @server.tool()
+    def prepare_enrichment(
+        workspace_id: str,
+        page_ids: list[str],
+        expected_version: str,
+        request_key: str,
+    ) -> dict[str, Any]:
+        """Select exact admitted input for bounded agent-authored enrichment."""
+        actor = _actor()
+        if not state.permits(config.workspace_id, actor) or not state.permits(
+            config.workspace_id, actor, "contribute"
+        ):
+            raise WorkspaceError("workspace enrichment is not available")
+        try:
+            return enrichment_service().prepare(
+                actor,
+                workspace_id=workspace_id,
+                page_ids=page_ids,
+                expected_version=expected_version,
+                request_key=request_key,
+            )
+        except (ContributionError, RetryConflict, ValueError) as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    @server.tool()
     def prepare_contribution(
         retry_key: str,
         sources: list[dict],
@@ -430,12 +460,34 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         continuation_task_id: str | None = None,
         source_task_id: str | None = None,
         core_edits: list[dict] | None = None,
+        enrichment_task_id: str | None = None,
+        control: str | None = None,
     ) -> dict[str, Any]:
         """Prepare a native candidate from a server-selected base or task continuation."""
         actor = _actor()
         if not state.permits(config.workspace_id, actor, "contribute"):
             raise WorkspaceError("workspace contribution is not available")
         try:
+            if enrichment_task_id is not None:
+                if (
+                    sources
+                    or base_revision is not None
+                    or continuation_task_id is not None
+                    or source_task_id is not None
+                    or core_edits
+                ):
+                    raise WorkspaceError(
+                        "enrichment uses only its persisted selection, complete pages, and control"
+                    )
+                return contribution_service().prepare_enrichment(
+                    actor,
+                    task_id=enrichment_task_id,
+                    retry_key=retry_key,
+                    pages=pages,
+                    control=control,
+                )
+            if control is not None:
+                raise WorkspaceError("a complete control candidate requires enrichment_task_id")
             analytics = analytics_service(required=False)
             if analytics is not None:
                 if source_task_id is None:

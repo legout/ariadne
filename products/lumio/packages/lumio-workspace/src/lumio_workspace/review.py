@@ -23,6 +23,7 @@ from lumio_wiki.authoring_review import (
     check_authoring_commit,
     review_knowledge_changes,
 )
+from lumio_wiki.evidence import body_sections
 from lumio_wiki.git_authoring import (
     CapturedRevision,
     GitAuthoringError,
@@ -533,6 +534,138 @@ class ReviewService:
         return response
 
 
+def _anchor_quote(page: Any, anchor: Any) -> str:
+    lines = page.body.splitlines()
+    if anchor.line_start is not None:
+        start = anchor.line_start
+        end = anchor.line_end or start
+        return "\n".join(lines[start - 1 : end]).strip()
+    if anchor.section is not None:
+        matches = [
+            text
+            for title, _start, _end, text in body_sections(page.body, page.body_start_line)
+            if title == anchor.section
+        ]
+        return matches[0] if matches else "Anchor text unavailable."
+    return "Anchor text unavailable."
+
+
+def _claim_sources(context: ReviewContext, page: Any) -> str:
+    items = []
+    registry = context.resources.source_registry
+    for source in page.sources:
+        digest = context.captured.manifest.bindings.get(page.id, {}).get(source.id)
+        version = registry.find_version(source.id, digest) if digest and registry else None
+        available = context.source_availability.get((page.id, source.id))
+        availability = {
+            None: "original unavailable or not retained",
+            True: "verified retained original",
+            False: "original unavailable",
+        }[available]
+        facts = [
+            f"attribution: {source.title or 'unknown'}",
+            f"source version: {digest or 'unbound'}",
+            f"registered at: {version.created_at if version else 'unknown'}",
+            f"filename: {version.filename if version and version.filename else 'unknown'}",
+            availability,
+        ]
+        items.append(f"<li>{html.escape('; '.join(facts))}</li>")
+    return "<ul>" + "".join(items) + "</ul>" if items else "<p>No source attribution.</p>"
+
+
+def _claim_conflicts(base: Any, subject_id: str, claim: Any) -> list[str]:
+    conflicts = []
+    for page in base.kb.pages:
+        for existing in page.claims:
+            if existing.id == claim.id:
+                continue
+            if (
+                claim.object is not None
+                and existing.predicate == claim.predicate
+                and existing.object == claim.object
+                and page.id != subject_id
+            ):
+                conflicts.append(
+                    f"potential conflict: {page.id} also has {existing.predicate} "
+                    f"{existing.object} in {existing.id}"
+                )
+            if (
+                page.id == subject_id
+                and existing.predicate == claim.predicate
+                and existing.object != claim.object
+            ):
+                conflicts.append(
+                    f"predicate-cardinality review: {existing.id} has a different object"
+                )
+    return conflicts
+
+
+def _render_enrichment_claims(
+    context: ReviewContext,
+    page_change: Any,
+    captured: Any,
+    base: Any,
+) -> str:
+    if context.operation.response.get("kind") != "enrichment":
+        return ""
+    base_pages = {page.id: page for page in base.kb.pages}
+    claims = {claim.id: claim for claim in captured.claims}
+    base_page = base_pages.get(captured.id)
+    removed_claims = {claim.id: claim for claim in base_page.claims} if base_page else {}
+    rendered = []
+    for change in page_change.claims:
+        claim = claims.get(change.claim_id) or removed_claims.get(change.claim_id)
+        if claim is None:
+            continue
+        anchors = "".join(
+            "<li>section "
+            + html.escape(str(anchor.section or "unspecified"))
+            + ", lines "
+            + html.escape(str(anchor.line_start or "unspecified"))
+            + "-"
+            + html.escape(str(anchor.line_end or "unspecified"))
+            + "<blockquote><pre>"
+            + html.escape(_anchor_quote(captured, anchor))
+            + "</pre></blockquote></li>"
+            for anchor in claim.evidence
+        )
+        subject_implication = (
+            "reuses the selected existing Entity"
+            if captured.id in base_pages
+            else "proposes a new Entity; no automatic merge or alias resolution occurred"
+        )
+        object_implication = (
+            f"object Entity ID: {claim.object}; no automatic merge occurred"
+            if claim.object is not None
+            else "literal Claim; no Entity merge implication"
+        )
+        conflicts = _claim_conflicts(base, captured.id, claim)
+        conflict_html = (
+            _items(conflicts)
+            if conflicts
+            else "<p>No exact Claim conflict detected; semantic conflicts still require review.</p>"
+        )
+        rendered.append(
+            "<section>"
+            f"<h5>{html.escape(change.claim_id)} — {html.escape(change.change)}</h5>"
+            f"<p>predicate {html.escape(change.predicate)}; status "
+            f"{html.escape(claim.status or 'unknown')}</p>"
+            "<h6>Exact published-page quote and anchor</h6>"
+            f"<ul>{anchors}</ul>"
+            "<h6>Attribution, source version and availability</h6>"
+            f"{_claim_sources(context, captured)}"
+            "<h6>Conflicts</h6>"
+            f"{conflict_html}"
+            "<h6>Identity and merge implications</h6>"
+            f"<p>{html.escape(subject_implication)}; {html.escape(object_implication)}; "
+            + "Claim ID "
+            + ("corrects an existing Claim" if change.claim_id in removed_claims else "is new")
+            + ".</p>"
+            "</section>"
+        )
+    return "<h4>Proposed Claim review</h4>" + "".join(rendered)
+
+
 def _items(values: list[str]) -> str:
     if not values:
         return "<p>None.</p>"
@@ -607,6 +740,11 @@ def render_review(
     publication = context.publication
     pages = []
     captured_by_path = {page.path: page for page in context.captured.kb.pages}
+    enrichment_base = (
+        capture_revision(context.task_kb, authoring.base_revision)
+        if context.operation.response.get("kind") == "enrichment"
+        else None
+    )
     for page in authoring.knowledge.pages:
         captured = captured_by_path.get(page.path)
         support = []
@@ -642,7 +780,12 @@ def render_review(
             f"{html.escape(page.visibility or 'none')}</p>"
             f"<h4>Source support</h4>{support_html}"
             f"<h4>Content diff</h4><pre>{html.escape(page.body_diff or 'No body change.')}</pre>"
-            "<h4>Semantic and Claim changes</h4>"
+            + (
+                _render_enrichment_claims(context, page, captured, enrichment_base)
+                if captured is not None and enrichment_base is not None
+                else ""
+            )
+            + "<h4>Semantic and Claim changes</h4>"
             "<pre>"
             + html.escape(_json({"semantic": page.semantic_changes, "claims": page.claims}))
             + "</pre>"
