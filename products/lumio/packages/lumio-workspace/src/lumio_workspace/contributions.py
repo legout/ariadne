@@ -392,17 +392,26 @@ class ContributionService:
                 "enrichment task is not available", code="invalid_enrichment_task"
             )
 
+        lock_resources: list[str | Path] = [self.private_root / "activation"]
+        if self.destination is not None:
+            lock_resources.append(self.destination)
+        native_resources = self._resources()
+        for adapter in (native_resources.source_registry, native_resources.artifact_store):
+            root = getattr(adapter, "root", None)
+            if root is not None:
+                lock_resources.append(root)
         with (
             self.state.operation_lock(operation) as acquired,
-            mutation_lock(self.private_root / "activation"),
+            mutation_lock(*lock_resources),
         ):
             if not acquired:
-                return {
-                    **operation.response,
-                    "task_id": task_id,
-                    "status": "pending",
-                    "published": False,
-                }
+                current = self.state.get_operation(
+                    self.workspace_id, actor, "prepare_contribution", task_id
+                )
+                if current is None:
+                    raise ContributionError("task is not available", code="task_not_found")
+                self._validate_draft_binding(current.response, retry_key, input_digest)
+                return current.response
             current = self.state.get_operation(
                 self.workspace_id, actor, "prepare_contribution", task_id
             )
@@ -415,20 +424,15 @@ class ContributionService:
             if current is None:
                 raise ContributionError("task is not available", code="task_not_found")
 
-            drafts = current.response.get("drafts", {})
-            generation = current.response.get("draft_generation", 0)
-            binding = drafts.get(retry_key)
-            if binding is not None:
-                if binding["input_digest"] != input_digest:
-                    raise RetryConflict("retry key is already bound to different enrichment input")
-                if binding["generation"] != generation:
-                    raise ContributionError(
-                        "this draft was superseded; retry the latest draft or author "
-                        "a new correction",
-                        code="obsolete_draft",
-                    )
-                if current.status in {"pending_review", "rejected", "published"}:
-                    return current.response
+            drafts, generation, binding = self._validate_draft_binding(
+                current.response, retry_key, input_digest
+            )
+            if binding is not None and current.status in {
+                "pending_review",
+                "rejected",
+                "published",
+            }:
+                return current.response
             elif current.status not in {"pending", "pending_review", "rejected", "failed"}:
                 raise ContributionError(
                     "a published enrichment cannot be replaced", code="invalid_enrichment_task"
@@ -519,6 +523,24 @@ class ContributionService:
                 self.workspace_id, actor, current, "pending_review", response
             )
             return response
+
+    @staticmethod
+    def _validate_draft_binding(
+        response: dict, retry_key: str, input_digest: str
+    ) -> tuple[dict, int, dict | None]:
+        """Validate retry identity against the latest serialized draft generation."""
+        drafts = response.get("drafts", {})
+        generation = response.get("draft_generation", 0)
+        binding = drafts.get(retry_key)
+        if binding is not None:
+            if binding["input_digest"] != input_digest:
+                raise RetryConflict("retry key is already bound to different enrichment input")
+            if binding["generation"] != generation:
+                raise ContributionError(
+                    "this draft was superseded; retry the latest draft or author a new correction",
+                    code="obsolete_draft",
+                )
+        return drafts, generation, binding
 
     def _reconcile_enrichment(self, operation: Operation) -> None:
         """Recover a prior native approval before any candidate/worktree replacement."""

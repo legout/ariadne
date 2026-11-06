@@ -653,6 +653,19 @@ def _claim_conflicts(
                     and existing.object != claim.object
                 ):
                     conflict = f"predicate-cardinality review: {existing.id} has a different object"
+                elif (
+                    page.id == subject_id
+                    and existing.predicate == claim.predicate
+                    and claim.object is None
+                    and existing.object is None
+                    and (existing.value, existing.value_type) != (claim.value, claim.value_type)
+                ):
+                    label = (
+                        "potential intra-candidate literal cardinality conflict"
+                        if origin == "candidate" and existing.id in proposed_ids
+                        else "potential literal cardinality conflict"
+                    )
+                    conflict = f"{label}: {existing.id} has a different literal value"
                 if conflict is not None:
                     seen.add((page.id, existing.id))
                     conflicts.append(conflict)

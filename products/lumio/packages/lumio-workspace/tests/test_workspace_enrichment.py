@@ -5,11 +5,15 @@ import json
 import re
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
+import lumio_wiki.git_authoring as native_authoring
+import pytest
 from lumio_wiki.artifact_store import LocalDirectoryArtifactStore
 from lumio_wiki.git_authoring import preview_publication, publish_revision
 from lumio_wiki.location import PublishedFilesystemLocation
+from lumio_wiki.mutation import resource_identity
 from lumio_wiki.source_references import (
     SourceReferenceManifest,
     serialize_source_reference_manifest,
@@ -132,6 +136,14 @@ RETENTION_PROPOSAL_CLAIM = """  - id: "claim:service-b-proposed-log-retention"
     evidence:
       - section: "Meeting notes"
 """
+RETENTION_CONFLICT_CLAIM = """  - id: "claim:service-b-conflicting-log-retention"
+    predicate: "proposed-log-retention-days"
+    value: 60
+    value_type: "number"
+    status: "disputed"
+    evidence:
+      - section: "Meeting notes"
+"""
 TEAM_C_OPERATES_DISPUTED_CLAIM = """  - id: "claim:team-c-operates-service-b"
     predicate: "operates"
     object: "entity:service-b"
@@ -204,7 +216,9 @@ def _decision(client: TestClient, task_id: str, digest: str, decision: str):
     )
 
 
-def _fixture(tmp_path: Path) -> tuple[WorkspaceConfig, WorkspaceState, dict[str, str], str]:
+def _fixture(
+    tmp_path: Path, *, destination_name: str = "published"
+) -> tuple[WorkspaceConfig, WorkspaceState, dict[str, str], str]:
     authoring_repo = tmp_path / "authoring-repo"
     kb = authoring_repo / "kb"
     kb.mkdir(parents=True)
@@ -266,7 +280,7 @@ def _fixture(tmp_path: Path) -> tuple[WorkspaceConfig, WorkspaceState, dict[str,
         content_type="text/markdown",
         filename="operations-notes.md",
     )
-    destination = tmp_path / "published"
+    destination = tmp_path / destination_name
     review = preview_publication(
         kb,
         revision,
@@ -337,7 +351,9 @@ def _fixture(tmp_path: Path) -> tuple[WorkspaceConfig, WorkspaceState, dict[str,
     return config, state, tokens, revision
 
 
-def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Path) -> None:
+def test_enrichment_stays_pending_and_subset_requires_fresh_review(
+    tmp_path: Path, monkeypatch
+) -> None:
     config, state, tokens, base = _fixture(tmp_path)
     selected_ids = [
         "entity:operations-runbook",
@@ -471,7 +487,7 @@ def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Pat
                     "entity:service-b",
                     "service",
                     source=True,
-                    claim_block=RETENTION_PROPOSAL_CLAIM,
+                    claim_block=RETENTION_PROPOSAL_CLAIM + RETENTION_CONFLICT_CLAIM,
                 ),
             },
             {
@@ -518,8 +534,10 @@ def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Pat
         assert "not semantic verification" in whole_review.text
         assert "claim:team-a-operates-service-b" in whole_review.text
         assert "claim:service-b-proposed-log-retention" in whole_review.text
+        assert "claim:service-b-conflicting-log-retention" in whole_review.text
         assert "claim:team-c-operates-service-b" in whole_review.text
         assert "potential intra-candidate conflict" in whole_review.text
+        assert "potential intra-candidate literal cardinality conflict" in whole_review.text
         assert "Source-backed passage (exact text match" in whole_review.text
         whole_action = _digest(whole_review.text)
 
@@ -586,6 +604,62 @@ def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Pat
         )
         assert current["native_candidate"] == subset["native_candidate"]
         assert current["status"] == "pending_review"
+
+        original_operation_lock = WorkspaceState.operation_lock
+
+        @contextmanager
+        def unavailable_operation_lock(_self, _operation):
+            yield False
+
+        monkeypatch.setattr(WorkspaceState, "operation_lock", unavailable_operation_lock)
+        try:
+            contended_change = _call_tool(
+                contributor,
+                tokens["contributor_api"],
+                "prepare_contribution",
+                {
+                    "retry_key": "enrichment-corrected-subset",
+                    "enrichment_task_id": task_id,
+                    "sources": [],
+                    "pages": whole_pages,
+                },
+                53,
+            ).json()["result"]
+            assert contended_change["isError"] is True, contended_change
+            assert "different enrichment input" in contended_change["content"][0]["text"]
+
+            contended_obsolete = _call_tool(
+                contributor,
+                tokens["contributor_api"],
+                "prepare_contribution",
+                {
+                    "retry_key": "enrichment-whole-draft",
+                    "enrichment_task_id": task_id,
+                    "sources": [],
+                    "pages": whole_pages,
+                },
+                54,
+            ).json()["result"]
+            assert contended_obsolete["isError"] is True, contended_obsolete
+            assert "superseded" in contended_obsolete["content"][0]["text"]
+
+            contended_identical = _tool(
+                contributor,
+                tokens["contributor_api"],
+                "prepare_contribution",
+                {
+                    "retry_key": "enrichment-corrected-subset",
+                    "enrichment_task_id": task_id,
+                    "sources": [],
+                    "pages": whole_pages[:1],
+                },
+                55,
+            )
+            assert contended_identical["native_candidate"] == subset["native_candidate"]
+            assert contended_identical["status"] == "pending_review"
+        finally:
+            monkeypatch.setattr(WorkspaceState, "operation_lock", original_operation_lock)
+
         stale_subset = _decision(reviewer, task_id, whole_action, "approve")
         assert stale_subset.status_code == 409, stale_subset.text
         assert PublishedFilesystemLocation(config.published_path).read_pointer() == base
@@ -643,8 +717,15 @@ def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Pat
         assert repeated_subset["status"] == "published"
 
 
-def test_enrichment_pending_recovery_precedes_correction(tmp_path: Path, monkeypatch) -> None:
-    config, _state, tokens, base = _fixture(tmp_path)
+@pytest.mark.parametrize("destination_name", ["published", "aaa-published"])
+def test_enrichment_pending_recovery_precedes_correction(
+    tmp_path: Path, monkeypatch, destination_name: str
+) -> None:
+    config, _state, tokens, base = _fixture(tmp_path, destination_name=destination_name)
+    if destination_name == "aaa-published":
+        assert resource_identity(config.published_path) < resource_identity(
+            config.operational_root / "activation"
+        )
     with (
         TestClient(create_app(config), base_url="https://workspace.test") as owner,
         TestClient(create_app(config), base_url="https://workspace.test") as contributor,
@@ -701,19 +782,28 @@ def test_enrichment_pending_recovery_precedes_correction(tmp_path: Path, monkeyp
         _login(reviewer, tokens["reviewer_browser"])
         action = _digest(reviewer.get(f"/review/{task_id}").text)
 
-        original_finish = WorkspaceState.finish_review_task
+        original_atomic_write = native_authoring.atomic_write_bytes
+        receipt_path = (
+            config.published_path
+            / ".lumio-publication"
+            / "receipts"
+            / f"{whole['native_candidate']}.json"
+        )
 
-        def fail_task_bookkeeping(*args, **kwargs):
-            raise RuntimeError("injected SQLite failure after native activation")
+        def fail_activated_receipt(path, data):
+            if Path(path) == receipt_path and json.loads(data).get("activated") is True:
+                raise OSError("injected interruption after pointer update")
+            return original_atomic_write(path, data)
 
-        monkeypatch.setattr(WorkspaceState, "finish_review_task", fail_task_bookkeeping)
+        monkeypatch.setattr(native_authoring, "atomic_write_bytes", fail_activated_receipt)
         interrupted = _decision(reviewer, task_id, action, "approve")
         assert interrupted.status_code == 409, interrupted.text
-        monkeypatch.setattr(WorkspaceState, "finish_review_task", original_finish)
+        monkeypatch.setattr(native_authoring, "atomic_write_bytes", original_atomic_write)
         assert (
             PublishedFilesystemLocation(config.published_path).read_pointer()
             == whole["native_candidate"]
         )
+        assert json.loads(receipt_path.read_text())["activated"] is False
 
         correction = _call_tool(
             contributor,
