@@ -240,13 +240,16 @@ def _xml_sheet_bounds(
                 if tag == "dimension":
                     declared = _dimension_bounds(element.get("ref"))
                 elif tag == "row":
-                    raw_row = element.get("r") or ""
-                    if not raw_row.isdigit() or int(raw_row) < 1:
-                        raise SpreadsheetImportError(
-                            "worksheet row is missing a valid explicit reference",
-                            code="invalid_sheet_xml",
-                        )
-                    current_row = int(raw_row)
+                    raw_row = element.get("r")
+                    if raw_row is None:
+                        current_row = previous_row + 1
+                    else:
+                        if not raw_row.isdigit() or int(raw_row) < 1:
+                            raise SpreadsheetImportError(
+                                "worksheet row has an invalid explicit reference",
+                                code="invalid_sheet_xml",
+                            )
+                        current_row = int(raw_row)
                     if current_row <= previous_row:
                         raise SpreadsheetImportError(
                             f"worksheet row {current_row} is out of order",
@@ -257,11 +260,16 @@ def _xml_sheet_bounds(
                 elif tag == "c":
                     reference = element.get("r")
                     if reference is None:
-                        raise SpreadsheetImportError(
-                            "worksheet cell is missing its explicit reference",
-                            code="invalid_sheet_xml",
-                        )
-                    row, column = _cell_position(reference)
+                        if current_row is None:
+                            raise SpreadsheetImportError(
+                                "worksheet cell appears outside a row",
+                                code="invalid_sheet_xml",
+                            )
+                        row = current_row
+                        column = previous_column + 1
+                        reference = _cell_reference(row, column)
+                    else:
+                        row, column = _cell_position(reference)
                     if current_row is None or row != current_row or column <= previous_column:
                         raise SpreadsheetImportError(
                             f"worksheet cell {reference} is out of row/column order",

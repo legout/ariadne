@@ -260,3 +260,31 @@ def test_workbook_stored_values_and_refresh_are_truthful(tmp_path: Path) -> None
         ).fetchall() == [(11, 12, 2)]
     finally:
         trailing_connection.close()
+
+    attribute_free_source = tmp_path / "attribute-free.xlsx"
+    attribute_free_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:B2"/><sheetData>
+    <row>
+      <c t="inlineStr"><is><t>amount</t></is></c>
+      <c t="inlineStr"><is><t>note</t></is></c>
+    </row>
+    <row><c><v>11</v></c><c><v>12</v></c></row>
+  </sheetData>
+</worksheet>"""
+    _write_hand_ooxml(attribute_free_source, override_a=attribute_free_xml)
+    attribute_free = import_workbook(
+        attribute_free_source, sheets=["A"], output=tmp_path / "attribute-free-output"
+    )
+    attribute_free_sheet = attribute_free["sheets"][0]
+    assert attribute_free_sheet["actual_dimension"] == "A1:B2"
+    assert attribute_free_sheet["source_rows"] == [2]
+    assert attribute_free_sheet["nonempty_cell_count"] == 4
+    assert [column["header_cell"] for column in attribute_free_sheet["columns"]] == ["A1", "B1"]
+    attribute_free_connection = duckdb.connect(attribute_free["artifact_path"], read_only=True)
+    try:
+        assert attribute_free_connection.execute(
+            "SELECT amount, note, __ariadne_source_row FROM a"
+        ).fetchall() == [(11, 12, 2)]
+    finally:
+        attribute_free_connection.close()
