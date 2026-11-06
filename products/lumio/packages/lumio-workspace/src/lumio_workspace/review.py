@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from importlib import resources as package_resources
 from pathlib import Path
 from string import Template
+from typing import Any
 from urllib.parse import quote
 
 import msgspec
@@ -64,6 +65,18 @@ class ReviewContext:
     action_digest: str
 
 
+@dataclass(frozen=True)
+class AnalyticsReviewContext:
+    operation: Operation
+    display: dict
+    binding: dict
+    action_digest: str
+
+
+def _analytics_task(operation: Operation) -> bool:
+    return operation.action == "prepare_data_source" or "native_proposal" in operation.response
+
+
 def _json(value: object) -> str:
     return json.dumps(msgspec.to_builtins(value), indent=2, ensure_ascii=False)
 
@@ -90,12 +103,14 @@ class ReviewService:
         profile_path: Path,
         private_root: Path,
         destination: Path,
+        analytics: Any = None,
     ) -> None:
         self.state = state
         self.workspace_id = workspace_id
         self.authoring_path = authoring_path
         self.private_root = private_root
         self.destination = destination
+        self.analytics = analytics
         self.publication = PublicationService(
             authoring_path=authoring_path,
             profile_path=profile_path,
@@ -149,7 +164,7 @@ class ReviewService:
             )
         return authoring
 
-    def _context(self, actor: Actor, task_id: str) -> ReviewContext:
+    def _context(self, actor: Actor, task_id: str) -> ReviewContext | AnalyticsReviewContext:
         if not self.state.permits(self.workspace_id, actor, "review"):
             raise ReviewError(
                 "workspace review is not available", code="review_forbidden", status=403
@@ -157,6 +172,13 @@ class ReviewService:
         operation = self.state.get_review_task(self.workspace_id, task_id)
         if operation is None:
             raise ReviewError("review task is not available", code="task_not_found", status=404)
+        if _analytics_task(operation):
+            if self.analytics is None:
+                raise ReviewError(
+                    "analytics is disabled or its compatible Core producer is unavailable",
+                    code="analytics_unavailable",
+                )
+            return self.analytics.review_context(actor, operation)
         if operation.status != "pending_review":
             raise ReviewError("the candidate is not pending review", code="review_not_pending")
         submission_base = operation.response.get("native_base", "")
@@ -261,16 +283,14 @@ class ReviewService:
                     available[(page.id, source.id)] = False
         return available
 
-    def get(self, actor: Actor, task_id: str) -> ReviewContext:
+    def get(self, actor: Actor, task_id: str) -> ReviewContext | AnalyticsReviewContext:
         if not self.state.permits(self.workspace_id, actor, "review"):
             raise ReviewError(
                 "workspace review is not available", code="review_forbidden", status=403
             )
         self.reconcile_task(task_id)
         context = self._context(actor, task_id)
-        action = self.state.issue_review_action(
-            self.workspace_id, actor, task_id, context.binding
-        )
+        action = self.state.issue_review_action(self.workspace_id, actor, task_id, context.binding)
         return replace(context, action_digest=action)
 
     def inspect_source(
@@ -283,6 +303,12 @@ class ReviewService:
                 status=403,
             )
         context = self._context(actor, task_id)
+        if isinstance(context, AnalyticsReviewContext):
+            raise ReviewError(
+                "analytics source inspection requires its own exact data grant",
+                code="source_inspection_forbidden",
+                status=403,
+            )
         registry = context.resources.source_registry
         artifact_store = context.resources.artifact_store
         if registry is None or artifact_store is None:
@@ -368,6 +394,13 @@ class ReviewService:
         operation = self.state.get_review_task(self.workspace_id, task_id)
         if operation is None or operation.status != "pending_review":
             return None
+        if _analytics_task(operation):
+            if self.analytics is None:
+                raise ReviewError(
+                    "analytics is disabled or its compatible Core producer is unavailable",
+                    code="analytics_unavailable",
+                )
+            return self.analytics.reconcile(operation)
         candidate = operation.response.get("native_candidate", "")
         approval = self.state.get_review_approval(self.workspace_id, task_id, candidate)
         if approval is None:
@@ -440,11 +473,20 @@ class ReviewService:
             self.state.finish_review_action(approval.action_digest, "completed")
         return response
 
-    def _apply_decision(self, actor: Actor, context: ReviewContext, decision: str) -> dict:
+    def _apply_decision(
+        self, actor: Actor, context: ReviewContext | AnalyticsReviewContext, decision: str
+    ) -> dict:
         if not self.state.permits(self.workspace_id, actor, "review"):
             raise ReviewError(
                 "workspace review is not available", code="review_forbidden", status=403
             )
+        if isinstance(context, AnalyticsReviewContext):
+            if self.analytics is None:
+                raise ReviewError(
+                    "analytics is disabled or its compatible Core producer is unavailable",
+                    code="analytics_unavailable",
+                )
+            return self.analytics.apply_decision(actor, context, decision)
         operation = context.operation
         review_generation = operation.response.get("review_generation", 0) + 1
         if decision == "approve":
@@ -497,7 +539,70 @@ def _items(values: list[str]) -> str:
     return "<ul>" + "".join(f"<li>{html.escape(value)}</li>" for value in values) + "</ul>"
 
 
-def render_review(context: ReviewContext, pinned_version: str | None) -> str:
+def _render_analytics_review(context: AnalyticsReviewContext, pinned_version: str | None) -> str:
+    display = context.display
+    review = display.get("review")
+    knowledge = review.get("knowledge") if review else None
+    overall = display.get("overall")
+    publication = overall["publication_review"] if overall else None
+    source = display.get("source") or (review.get("source") if review else {})
+    template = Template(
+        package_resources.files("lumio_workspace")
+        .joinpath("templates/review.html")
+        .read_text(encoding="utf-8")
+    )
+    analytics = {
+        "source": source,
+        "core_changes": review.get("core_changes") if review else None,
+        "unknown_paths": review.get("unknown_paths") if review else None,
+        "overall": overall,
+    }
+    retention = publication["retention"] if publication else "separate source/data grants"
+    excluded = (
+        review.get("excluded_unstaged", []) + review.get("excluded_untracked", []) if review else []
+    )
+    control = knowledge.get("control_changes") if knowledge else None
+    ontology = knowledge.get("ontology_changes") if knowledge else None
+    conversion = context.operation.response.get("conversion", [])
+    return template.substitute(
+        task=html.escape(context.operation.operation_id),
+        namespace=html.escape(display["namespace"]),
+        base=html.escape(display["base"]),
+        submission_base=html.escape(context.binding["submission_base"]),
+        submission_review=html.escape(context.binding["submission_review"]),
+        candidate=html.escape(display["candidate"]),
+        destination=html.escape(display["destination"]),
+        expected=html.escape(display["expected"]),
+        observed=html.escape(display["observed"] or "none"),
+        pin=html.escape(pinned_version or "current pointer"),
+        authoring_digest=html.escape(context.binding["submission_review"]),
+        publication_digest=html.escape(context.binding.get("overall_digest") or "pending"),
+        retention=html.escape(retention),
+        validation=_items(display["validation"]),
+        blocking=_items(display["blocking"]),
+        exclusions=_items(excluded),
+        pages=f"<pre>{html.escape(_json(knowledge.get('pages', []) if knowledge else []))}</pre>",
+        manifest_changes=_items(knowledge.get("manifest_changes", []) if knowledge else []),
+        control_changes=f"<pre>{html.escape(_json(control))}</pre>",
+        ontology_changes=f"<pre>{html.escape(_json(ontology))}</pre>",
+        analytics=f"<pre>{html.escape(_json(analytics))}</pre>",
+        publication_details=f"<pre>{html.escape(_json(overall or source))}</pre>",
+        conversion=f"<pre>{html.escape(_json(conversion))}</pre>",
+        decision_description=html.escape(
+            "Approve executes only the displayed exact operation. "
+            "Requesting changes or rejecting does not publish."
+        ),
+        decision_label=html.escape(display["decision_label"]),
+        action_digest=html.escape(context.action_digest, quote=True),
+        disabled="disabled" if display["blocking"] else "",
+    )
+
+
+def render_review(
+    context: ReviewContext | AnalyticsReviewContext, pinned_version: str | None
+) -> str:
+    if isinstance(context, AnalyticsReviewContext):
+        return _render_analytics_review(context, pinned_version)
     authoring = context.authoring
     publication = context.publication
     pages = []
@@ -518,8 +623,8 @@ def render_review(context: ReviewContext, pinned_version: str | None) -> str:
                 }[availability]
                 if availability is True:
                     link = (
-                        f'/review/{quote(context.operation.operation_id)}/source/'
-                        f'{quote(source_id)}/{quote(captured.id)}'
+                        f"/review/{quote(context.operation.operation_id)}/source/"
+                        f"{quote(source_id)}/{quote(captured.id)}"
                     )
                     support.append(f'<a href="{link}">{html.escape(source_id)}</a> ({label})')
                 else:
@@ -578,6 +683,12 @@ def render_review(context: ReviewContext, pinned_version: str | None) -> str:
         control_changes=f"<pre>{html.escape(_json(authoring.knowledge.control_changes))}</pre>",
         ontology_changes=f"<pre>{html.escape(_json(authoring.knowledge.ontology_changes))}</pre>",
         publication_details=f"<pre>{html.escape(_json(publication))}</pre>",
+        analytics="<p>Not an analytics candidate.</p>",
+        decision_description=html.escape(
+            "Approve activates only this exact candidate at the displayed destination and "
+            "expected active version. Requesting changes or rejecting does not publish."
+        ),
+        decision_label="Approve and publish exactly this candidate",
         conversion=(
             "<pre>"
             + html.escape(_json(context.operation.response.get("conversion", [])))
@@ -590,10 +701,10 @@ def render_review(context: ReviewContext, pinned_version: str | None) -> str:
 
 def render_source(task_id: str, filename: str, text: str) -> str:
     return (
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>Source: {html.escape(filename)}</title></head><body><main>"
-        f"<p><a href=\"/review/{quote(task_id)}\">Back to exact candidate review</a></p>"
+        f'<p><a href="/review/{quote(task_id)}">Back to exact candidate review</a></p>'
         f"<h1>{html.escape(filename)}</h1><pre>{html.escape(text)}</pre>"
         "</main></body></html>"
     )

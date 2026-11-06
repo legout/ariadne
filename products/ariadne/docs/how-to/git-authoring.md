@@ -29,6 +29,12 @@ The proposed file is registry-shaped: optional named `storages:` S3 profile decl
 
 **The second command is human-only.** Use the exact ID, revision, digest, and approval command reported for the proposal. Source approval happens before a declared source is opened for authoring inputs. For named profiles the approval additionally records the resolved effective endpoint binding (endpoint/region, never credentials): a changed endpoint needs its own approval and fresh evidence, while key rotation does not.
 
+### Managed shared-workspace exception
+
+An explicitly configured shared workspace may execute only the exact operation shown in its separately authenticated browser review. For a source task, Source Approval and the requester's data authorization are two distinct reviews. For an integrated contribution, submission review and overall admission are distinct stages; knowledge-only consent cannot approve a Core calculation change or activate the release.
+
+This exception does not make the local `approve-sources` or `ariadne-admit` commands agent-operated, and neither prompt assent nor an API token is publication authority. The managed adapter checks the caller's grant for the complete effective source set before catalog construction and keeps native admission and pinned query context authoritative. See [Shared workspace data](shared-workspace-data.md) for the configuration and request/profile/review/query sequence.
+
 ### Draft and validate artifacts
 
 The agent or operator reads approved inputs, makes typed artifact edits, validates the current revision, and reviews the result:

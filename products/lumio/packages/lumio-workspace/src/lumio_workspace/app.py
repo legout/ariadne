@@ -143,6 +143,9 @@ class WorkspaceConfig:
     private_profile_path: Path | None = None
     private_root: Path | None = None
     namespace: str | None = None
+    analytics_project_id: str | None = None
+    analytics_project_path: Path | None = None
+    analytics_source_bindings_path: Path | None = None
 
     @property
     def operational_root(self) -> Path:
@@ -163,6 +166,11 @@ class WorkspaceConfig:
             private_profile_path=_optional_path("LUMIO_WORKSPACE_PRIVATE_PROFILE"),
             private_root=_optional_path("LUMIO_WORKSPACE_PRIVATE_ROOT"),
             namespace=os.environ.get("LUMIO_WORKSPACE_NAMESPACE") or None,
+            analytics_project_id=os.environ.get("LUMIO_WORKSPACE_ANALYTICS_PROJECT_ID") or None,
+            analytics_project_path=_optional_path("LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH"),
+            analytics_source_bindings_path=_optional_path(
+                "LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS"
+            ),
         )
 
     def __post_init__(self) -> None:
@@ -292,11 +300,39 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             ],
         }
 
-    def contribution_service() -> ContributionService:
+    def analytics_service(*, required: bool = True) -> Any:
+        selected = (
+            config.analytics_project_id,
+            config.analytics_project_path,
+            config.analytics_source_bindings_path,
+        )
+        if not any(selected):
+            if required:
+                raise WorkspaceError(
+                    "analytics is not enabled; the owner must configure the exact project "
+                    "and operator source bindings"
+                )
+            return None
         if (
-            config.authoring_path is None
+            not all(selected)
+            or config.authoring_path is None
             or config.private_profile_path is None
         ):
+            raise WorkspaceError(
+                "analytics configuration is incomplete; the owner must set the project handle, "
+                "project path, source bindings, authoring path, and private profile"
+            )
+        try:
+            from .analytics import AnalyticsService
+        except ImportError as exc:
+            raise WorkspaceError(
+                "analytics Core is unavailable or incompatible; install the same-candidate "
+                "analytics producer rather than using the base service as a query fallback"
+            ) from exc
+        return AnalyticsService(config, state, intake)
+
+    def contribution_service() -> ContributionService:
+        if config.authoring_path is None or config.private_profile_path is None:
             raise WorkspaceError("workspace contribution is not configured")
         return ContributionService(
             state,
@@ -317,6 +353,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             profile_path=config.private_profile_path,
             private_root=config.operational_root,
             destination=config.published_path,
+            analytics=analytics_service(required=False),
         )
 
     @server.tool()
@@ -332,18 +369,91 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         return material
 
     @server.tool()
+    def prepare_data_source(
+        retry_key: str,
+        project: str,
+        source: str,
+        table: str,
+        business_questions: list[str],
+    ) -> dict[str, Any]:
+        """Stage an operator-bound source without opening schema or data."""
+        actor = _actor()
+        if not state.permits(config.workspace_id, actor, "contribute"):
+            raise WorkspaceError("workspace contribution is not available")
+        try:
+            return analytics_service().prepare_data_source(
+                actor,
+                retry_key=retry_key,
+                project=project,
+                source=source,
+                table=table,
+                business_questions=business_questions,
+            )
+        except ValueError as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    @server.tool()
+    def profile_data_source(task_id: str) -> dict[str, Any]:
+        """Profile only a currently source-approved and caller-authorized exact source set."""
+        actor = _actor()
+        if not state.permits(config.workspace_id, actor):
+            raise WorkspaceError("workspace access is not available")
+        try:
+            return analytics_service().profile_data_source(actor, task_id)
+        except ValueError as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    @server.tool()
+    def query_data(
+        project: str,
+        source_task_id: str,
+        operation: str,
+        request: dict,
+    ) -> dict[str, Any]:
+        """Query a pinned native release after checking the caller's complete source-set grant."""
+        actor = _actor()
+        if not state.permits(config.workspace_id, actor):
+            raise WorkspaceError("workspace access is not available")
+        try:
+            return analytics_service().query_data(
+                actor, project, source_task_id, operation, request
+            )
+        except ValueError as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    @server.tool()
     def prepare_contribution(
         retry_key: str,
         sources: list[dict],
         pages: list[dict],
         base_revision: str | None = None,
         continuation_task_id: str | None = None,
+        source_task_id: str | None = None,
+        core_edits: list[dict] | None = None,
     ) -> dict[str, Any]:
         """Prepare a native candidate from a server-selected base or task continuation."""
         actor = _actor()
         if not state.permits(config.workspace_id, actor, "contribute"):
             raise WorkspaceError("workspace contribution is not available")
         try:
+            analytics = analytics_service(required=False)
+            if analytics is not None:
+                if source_task_id is None:
+                    raise WorkspaceError(
+                        "integrated analytics contribution requires an exact source-task grant"
+                    )
+                return analytics.prepare_contribution(
+                    actor,
+                    retry_key=retry_key,
+                    source_task_id=source_task_id,
+                    sources=sources,
+                    pages=pages,
+                    core_edits=core_edits or [],
+                )
+            if source_task_id is not None or core_edits:
+                raise WorkspaceError(
+                    "analytics source tasks and Core edits require explicit analytics enablement"
+                )
             return contribution_service().prepare(
                 actor,
                 retry_key=retry_key,
@@ -352,7 +462,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
                 sources=sources,
                 pages=pages,
             )
-        except (ContributionError, RetryConflict) as exc:
+        except (ContributionError, RetryConflict, ValueError) as exc:
             raise WorkspaceError(str(exc)) from exc
 
     @server.tool()
@@ -362,6 +472,13 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         if not state.permits(config.workspace_id, actor, "contribute"):
             raise WorkspaceError("workspace contribution is not available")
         try:
+            source = state.get_operation(config.workspace_id, actor, "prepare_data_source", task_id)
+            if source is not None:
+                if source.status == "pending_review":
+                    recovered = review_service().reconcile_task(task_id)
+                    if recovered is not None:
+                        return {"task_id": task_id, **recovered}
+                return analytics_service().get(actor, task_id)
             current = contribution_service().get(actor, task_id)
             if current["status"] == "pending_review":
                 recovered = review_service().reconcile_task(task_id)
@@ -383,9 +500,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             return JSONResponse(
                 {"error": "workspace contribution is not available"}, status_code=403
             )
-        if request.headers.get("content-type", "").split(";", 1)[0] != (
-            "application/octet-stream"
-        ):
+        if request.headers.get("content-type", "").split(";", 1)[0] != ("application/octet-stream"):
             return JSONResponse({"error": "exact-byte stream required"}, status_code=415)
         try:
             raw = await intake.read_bounded(request.stream())
@@ -489,9 +604,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             try:
                 context = review_service().get(actor, task_id)
             except ReviewError as exc:
-                return JSONResponse(
-                    {"error": str(exc), "code": exc.code}, status_code=exc.status
-                )
+                return JSONResponse({"error": str(exc), "code": exc.code}, status_code=exc.status)
             return HTMLResponse(render_review(context, config.published_version))
         if request.headers.get("origin") != config.external_url:
             return JSONResponse({"error": "same-origin HTTPS POST required"}, status_code=403)

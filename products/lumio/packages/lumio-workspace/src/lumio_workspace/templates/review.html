@@ -40,6 +40,9 @@
       <h2>Ontology changes</h2>
       $ontology_changes
 
+      <h2>Analytics calculation and source changes</h2>
+      $analytics
+
       <h2>Conversion and exclusions</h2>
       $conversion
       <h3>Excluded paths and conversion exclusions</h3>
@@ -51,10 +54,10 @@
       </details>
 
       <h2>Decision</h2>
-      <p>Approve activates only this exact candidate at the displayed destination and expected active version. Requesting changes or rejecting does not publish.</p>
+      <p>$decision_description</p>
       <form method="post" action="/review/$task">
         <input type="hidden" name="digest" value="$action_digest">
-        <button type="submit" name="decision" value="approve" $disabled>Approve and publish exactly this candidate</button>
+        <button type="submit" name="decision" value="approve" $disabled>$decision_label</button>
         <button type="submit" name="decision" value="request_changes">Request changes without publishing</button>
         <button type="submit" name="decision" value="reject">Reject without publishing</button>
       </form>

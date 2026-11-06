@@ -56,7 +56,7 @@ export default function (pi: ExtensionAPI) {
   if (!missing && url && authMode === "local-token") {
     pi.registerMcpServer(SERVER, {
       url: `${url}/mcp`,
-      description: "Read admitted knowledge and prepare pending Lumio workspace contributions",
+      description: "Read admitted knowledge, query authorized pinned data, and prepare contributions",
       exposure: "direct",
       headers: { Authorization: "Bearer ${LUMIO_WORKSPACE_API_TOKEN}" },
     });
@@ -69,7 +69,7 @@ export default function (pi: ExtensionAPI) {
     }
     pi.registerMcpServer(SERVER, {
       url: `${url}/mcp`,
-      description: "Read admitted knowledge and prepare pending Lumio workspace contributions",
+      description: "Read admitted knowledge, query authorized pinned data, and prepare contributions",
       exposure: "direct",
       oauth: {
         clientId,
@@ -193,8 +193,9 @@ export default function (pi: ExtensionAPI) {
             "recover the same upload_id; do not call get_task(upload_id). Use read_source_material " +
             "to inspect normalized text and conversion facts. For prepare_contribution, retain a " +
             "separate stable retry_key and the exact request. Repeat that preparation to recover " +
-            "its task_id if interruption hid it, then call get_task with the actual task_id. Old " +
-            "browser approvals must not be replayed, and lost keys or inputs are not recoverable.",
+            "its task_id if interruption hid it, then call get_task with the actual task_id. " +
+            "Analytics contributions also require the exact granted source_task_id. Old browser " +
+            "approvals must not be replayed, and lost keys or inputs are not recoverable.",
         );
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
@@ -218,13 +219,18 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const policy = modelAllowed ? "allowed" : "blocked";
-      const guidance =
+      const connectionGuidance =
         authMode === "local-token"
           ? "Use /mcp to inspect the token-authenticated connection. " +
             "Use /workspace-upload <source-id> <path> [retry=<key>] for exact bytes. " +
             "Browser sign-in is separate."
           : "Use /mcp to inspect the connection and sign in with the pre-registered public client. " +
             "No client secret is configured in Pi.";
+      const guidance =
+        connectionGuidance +
+        " When analytics is enabled: prepare_data_source, complete its separate source/data " +
+        "browser decisions, then profile_data_source; prepare_contribution needs the granted " +
+        "source_task_id, and query_data rechecks the caller's complete source-set grant.";
       ctx.ui.notify(
         `Workspace: ${url}/mcp\nModel ${modelName(ctx)}: ${policy}\n${guidance}`,
         modelAllowed ? "info" : "warning",

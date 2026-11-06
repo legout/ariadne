@@ -977,9 +977,11 @@ dependencies = [
     { name = "starlette" },
     { name = "uvicorn" },
 ]
+optional-dependencies = { analytics = [{ name = "ariadne-data" }] }
 
 [package.metadata]
 requires-dist = [
+    { name = "ariadne-data", marker = "extra == 'analytics'", specifier = ">=0.7.0,<0.8.0", editable = "products/ariadne/packages/ariadne-data" },
     { name = "authlib", specifier = ">=1.6,<2" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "itsdangerous", specifier = ">=2.2,<3" },
@@ -988,6 +990,7 @@ requires-dist = [
     { name = "starlette", specifier = ">=1.7,<2" },
     { name = "uvicorn", specifier = ">=0.54,<1" },
 ]
+provides-extras = ["analytics"]
 
 [[package]]
 name = "lxml"
