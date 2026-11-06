@@ -1,6 +1,6 @@
 # How to request and query data through a shared workspace
 
-Use this guide when an owner has explicitly enabled the optional Lumio Workspace analytics adapter. It covers the D1 SQLite journey: request a source, approve its exact identity, profile it, review the combined knowledge/calculation change, and query the admitted revision. The ordinary [Git-backed authoring workflow](git-authoring.md) remains the default for local projects.
+Use this guide when an owner has explicitly enabled the optional Lumio Workspace analytics adapter. It covers the D1 SQLite journey and D3 existing database/named-S3 connections: request a source, approve its exact identity, profile it, review the combined knowledge/calculation change, and query the admitted revision. The ordinary [Git-backed authoring workflow](git-authoring.md) remains the default for local projects.
 
 The base workspace service does not require Ariadne Core. Analytics requires the `lumio-workspace[analytics]` extra and a compatible same-candidate Core installation. A same-version older published Core may not provide the required contribution/admission APIs; version text alone is not compatibility evidence.
 
@@ -18,13 +18,37 @@ These paths stay in the operator environment. Pi callers use only the opaque pro
 
 ```json
 {
+  "storages": {
+    "orders_object_store": {
+      "type": "s3",
+      "access_key_id_env": "OWNER_S3_ACCESS_KEY_ID",
+      "secret_access_key_env": "OWNER_S3_SECRET_ACCESS_KEY",
+      "endpoint_url_env": "OWNER_S3_ENDPOINT",
+      "region_env": "OWNER_S3_REGION",
+      "url_style": "path",
+      "scopes": ["s3://synthetic-bucket/orders/"]
+    }
+  },
   "orders_sqlite": [
     {"name": "orders_sqlite", "type": "sqlite", "path": "data/orders.sqlite"}
+  ],
+  "orders_s3": [
+    {
+      "name": "orders_s3",
+      "type": "parquet",
+      "storage": "orders_object_store",
+      "path": "s3://synthetic-bucket/orders/orders.parquet"
+    }
+  ],
+  "warehouse_pg": [
+    {"name": "warehouse_pg", "type": "postgres", "connection_env": "OWNER_PG_DSN"}
   ]
 }
 ```
 
-Secret environment or file references, when applicable to a native source profile, remain in this operator binding. Never place credentials, server paths, DSNs, approval records, or private profile contents in prompts, tracked source, tool arguments, or review URLs. The native DuckDB/SQLite backing is trusted operator infrastructure, not a sandbox for arbitrary caller SQL.
+The reserved top-level `storages` mapping contains credential-free native named-S3 profile declarations. Existing binding files without it remain valid. Supported existing connections use native SQLite, DuckDB, and PostgreSQL declarations, or named-S3 CSV, JSON, Parquet, Delta, Iceberg, and DuckLake declarations. Select the intended native table and literal S3 prefixes explicitly; the service does not discover a whole database or bucket by default. A local or remote DuckDB catalog and every remote-backed view remain separately trusted operator infrastructure, not an arbitrary safe upload or a sandbox for caller SQL.
+
+Secret environment or file references remain in this operator binding. Never place credentials, server paths, DSNs, approval records, or private profile contents in prompts, tracked source, tool arguments, or review URLs. Model suggestions, document paths, and matching identifiers never grant a source, catalog attachment, or join.
 
 ## 2. Request the source without opening it
 
@@ -43,7 +67,7 @@ Two distinct browser reviews follow:
 1. **Source Approval** binds the complete resolved native source identity, including its effective non-secret storage binding.
 2. **Data authorization** grants the requester that same complete source set. Workspace membership, an API bearer token, or Source Approval alone is not this grant.
 
-The browser GET only displays the exact operation. A separately authenticated reviewer must submit the one-use action. Changed endpoints, declarations, or source scope require a fresh matching review; an unchanged exact grant is reused without being widened.
+The browser GET only displays the exact operation, including the effective non-secret endpoint, region, URL style, and scopes for named S3 profiles. A separately authenticated reviewer must submit the one-use action. Changed endpoints, regions, URL styles, declarations, or scopes invalidate stale consent and evidence; make a fresh source request and matching review instead of replaying a completed grant. Same-target authorized credential rotation retains the native approval. An unchanged exact grant is reused without being widened, and a refused change leaves the prior admitted state untouched.
 
 ## 3. Profile only after both grants
 

@@ -11,6 +11,7 @@ from typing import Any
 
 import msgspec
 from ariadne import admission, authoring_sources, proposals
+from ariadne import sources as native_sources
 from ariadne.authoring import AuthoringProject
 from ariadne.contribution_review import check_contribution_commit, review_contribution
 from ariadne.query import QueryRuntime
@@ -97,7 +98,7 @@ class AnalyticsService:
         if not 1 <= len(value) <= 200 or not value.isprintable():
             raise AnalyticsError("retry key must be printable and at most 200 characters")
 
-    def _entries(self, handles: list[str]) -> list[dict]:
+    def _selection(self, handles: list[str]) -> tuple[list[dict], dict]:
         try:
             bindings = json.loads(self.bindings_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -114,16 +115,28 @@ class AnalyticsService:
                     "provision the exact source before retrying"
                 )
             entries.extend(selected)
-        return entries
+        storages = bindings.get("storages", {}) if isinstance(bindings, dict) else {}
+        if not isinstance(storages, dict):
+            raise AnalyticsError("operator source binding 'storages' must be a mapping")
+        return entries, storages
 
-    def _declarations_present(self, revision: str, entries: list[dict]) -> bool:
+    def _declarations_present(
+        self, revision: str, entries: list[dict], storages: dict | None = None
+    ) -> bool:
         """Match exact declarations in an admitted Git registry without opening sources."""
         try:
             document = msgspec.yaml.decode(_git(self.project, "show", f"{revision}:ariadne.yaml"))
         except (subprocess.CalledProcessError, msgspec.DecodeError):
             return False
         existing = document.get("sources") if isinstance(document, dict) else None
-        return isinstance(existing, list) and all(entry in existing for entry in entries)
+        declared = document.get("storages") or {} if isinstance(document, dict) else {}
+        profiles = native_sources.validate_storages(storages, "operator source bindings")
+        return (
+            isinstance(existing, list)
+            and all(entry in existing for entry in entries)
+            and isinstance(declared, dict)
+            and all(declared.get(name) == profile.identity() for name, profile in profiles.items())
+        )
 
     def _resources(self):
         profile = load_private_profile(self.profile_path, kb_root=self.authoring_path)
@@ -294,13 +307,15 @@ class AnalyticsService:
         upload_path = None
         upload_facts = None
         managed_identity = None
+        storages = {}
         if upload_id is None:
-            entries = self._entries([source])
+            entries, storages = self._selection([source])
             input_digest = _digest(
                 {
                     "project": project,
                     "source": source,
                     "entries": entries,
+                    "storages": storages,
                     "table": table,
                     "business_questions": business_questions,
                 }
@@ -374,7 +389,7 @@ class AnalyticsService:
                 except ValueError:
                     record = None
                 reused = record is not None and self._declarations_present(
-                    record["commit"], entries
+                    record["commit"], entries, storages
                 )
                 approval = {}
                 if reused:
@@ -395,7 +410,9 @@ class AnalyticsService:
                         )
                 else:
                     started = self.api.start_proposal()
-                    if self._declarations_present(started["candidate_revision"], entries):
+                    if self._declarations_present(
+                        started["candidate_revision"], entries, storages
+                    ):
                         _resolved, source_digest = authoring_sources.candidate_sources(
                             self.project, started["candidate_revision"]
                         )
@@ -406,7 +423,7 @@ class AnalyticsService:
                         }
                     else:
                         proposed = self.api.propose_sources(
-                            started["proposal"], started["candidate_revision"], entries
+                            started["proposal"], started["candidate_revision"], entries, storages
                         )
                 response = {
                     "task_id": current.operation_id,
@@ -507,7 +524,7 @@ class AnalyticsService:
             source_task_id,
             project,
             record.get("sources") or [],
-            record["source_digest"],
+            record.get("source_declaration_digest") or record["source_digest"],
         )
         runtime = QueryRuntime.open_project(self.project, admission_record=record)
         try:
@@ -877,7 +894,11 @@ class AnalyticsService:
         if grant.status != "data_granted":
             raise AnalyticsError("the exact source-set data grant is required first")
         source_handles = [grant.response["source"]]
-        entries = grant.response.get("native_entries") or self._entries(source_handles)
+        if grant.response.get("native_entries"):
+            entries = grant.response["native_entries"]
+            storages = {}
+        else:
+            entries, storages = self._selection(source_handles)
         checked_pages = []
         for item in pages:
             filename = item["filename"]
@@ -899,6 +920,7 @@ class AnalyticsService:
                 "source_task": source_task_id,
                 "source_digest": grant.response["source_digest"],
                 "entries": entries,
+                "storages": storages,
                 "core_edits": core_edits,
                 "sources": [
                     {
@@ -929,8 +951,10 @@ class AnalyticsService:
                 started = self.api.start_proposal()
                 proposal = started["proposal"]
                 revision = started["candidate_revision"]
-                if entries and not self._declarations_present(revision, entries):
-                    revision = self.api.propose_sources(proposal, revision, entries)["revision"]
+                if entries and not self._declarations_present(revision, entries, storages):
+                    revision = self.api.propose_sources(proposal, revision, entries, storages)[
+                        "revision"
+                    ]
                 resolved, source_digest = authoring_sources.candidate_sources(
                     self.project, revision
                 )

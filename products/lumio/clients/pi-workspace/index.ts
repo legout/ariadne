@@ -235,8 +235,13 @@ export default function (pi: ExtensionAPI) {
       const guidance =
         connectionGuidance +
         " When analytics is enabled: prepare_data_source, complete its separate source/data " +
-        "browser decisions, then profile_data_source. Structured uploads pass upload_id; XLSX " +
-        "also requires explicit sheets and uses stored caches without recalculation. Document " +
+        "browser decisions, then profile_data_source. Existing SQLite/DuckDB/PostgreSQL and " +
+        "named-S3 CSV/JSON/Parquet/Delta/Iceberg/DuckLake connections use owner-provisioned " +
+        "opaque handles with explicit tables/prefixes; changed endpoints/scopes need fresh " +
+        "review, while unchanged-target credential rotation keeps the native grant. Suggestions, " +
+        "paths, and identifier matches never grant a source, catalog, or join. Structured uploads " +
+        "pass upload_id; XLSX also requires explicit sheets and uses stored caches without " +
+        "recalculation. Document " +
         "storage and query readiness are separate outcomes. prepare_contribution needs the granted " +
         "source_task_id, and query_data rechecks the caller's complete source-set grant. " +
         "For bounded enrichment, call prepare_enrichment with explicit page IDs, the current " +
