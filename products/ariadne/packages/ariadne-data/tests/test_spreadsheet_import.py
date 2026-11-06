@@ -97,8 +97,7 @@ def _sheet_xml(source: Path, sheet_number: int) -> str:
 
 def _single_column_sheet(data_rows: int) -> str:
     rows = "".join(
-        f'<row r="{row}"><c r="A{row}"><v>1</v></c></row>'
-        for row in range(2, data_rows + 2)
+        f'<row r="{row}"><c r="A{row}"><v>1</v></c></row>' for row in range(2, data_rows + 2)
     )
     return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -217,3 +216,47 @@ def test_workbook_stored_values_and_refresh_are_truthful(tmp_path: Path) -> None
         import_workbook(combined, sheets=["A", "B"], output=combined_output)
     assert combined_refusal.value.code == "selected_cells_too_large"
     assert list(combined_output.iterdir()) == []
+
+    out_of_order_source = tmp_path / "out-of-order.xlsx"
+    out_of_order_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:B2"/><sheetData>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>amount</t></is></c></row>
+    <row r="2">
+      <c r="A2"><v>10</v></c>
+      <c r="C2"><f>10+20</f></c>
+      <c r="B2"><v>20</v></c>
+    </row>
+  </sheetData>
+</worksheet>"""
+    _write_hand_ooxml(out_of_order_source, override_a=out_of_order_xml)
+    out_of_order_output = tmp_path / "out-of-order-output"
+    with pytest.raises(SpreadsheetImportError, match="B2") as out_of_order:
+        import_workbook(out_of_order_source, sheets=["A"], output=out_of_order_output)
+    assert out_of_order.value.code == "out_of_order_cells"
+    assert list(out_of_order_output.iterdir()) == []
+
+    trailing_source = tmp_path / "trailing-blank-header.xlsx"
+    trailing_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:B2"/><sheetData>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>amount</t></is></c></row>
+    <row r="2"><c r="A2"><v>11</v></c><c r="B2"><v>12</v></c></row>
+  </sheetData>
+</worksheet>"""
+    _write_hand_ooxml(trailing_source, override_a=trailing_xml)
+    trailing = import_workbook(trailing_source, sheets=["A"], output=tmp_path / "trailing-output")
+    trailing_sheet = trailing["sheets"][0]
+    assert trailing_sheet["actual_dimension"] == "A1:B2"
+    assert trailing_sheet["source_rows"] == [2]
+    assert trailing_sheet["nonempty_cell_count"] == 3
+    assert [column["header_cell"] for column in trailing_sheet["columns"]] == ["A1", "B1"]
+    assert trailing_sheet["columns"][1]["source_header"] is None
+    assert trailing_sheet["columns"][1]["name"] == "column_2"
+    trailing_connection = duckdb.connect(trailing["artifact_path"], read_only=True)
+    try:
+        assert trailing_connection.execute(
+            "SELECT amount, column_2, __ariadne_source_row FROM a"
+        ).fetchall() == [(11, 12, 2)]
+    finally:
+        trailing_connection.close()

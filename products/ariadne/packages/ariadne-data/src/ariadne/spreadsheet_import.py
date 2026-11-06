@@ -10,6 +10,7 @@ import re
 import shutil
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
@@ -180,12 +181,37 @@ def _cell_reference(row: int, column: int) -> str:
     return f"{_column_letter(column)}{row}"
 
 
-def _declared_bounds(sheet: Any) -> tuple[int, int, int, int] | None:
-    try:
-        sheet.calculate_dimension()
-    except ValueError:
+def _column_index(letters: str) -> int:
+    column = 0
+    for letter in letters.upper():
+        column = column * 26 + ord(letter) - 64
+    return column
+
+
+def _cell_position(reference: str) -> tuple[int, int]:
+    match = re.fullmatch(r"\$?([A-Za-z]+)\$?([1-9][0-9]*)", reference)
+    if match is None:
+        raise SpreadsheetImportError(
+            f"invalid worksheet cell reference {reference!r}", code="invalid_sheet_xml"
+        )
+    return int(match.group(2)), _column_index(match.group(1))
+
+
+def _dimension_bounds(reference: str | None) -> tuple[int, int, int, int] | None:
+    if reference is None:
         return None
-    return sheet.min_column, sheet.min_row, sheet.max_column, sheet.max_row
+    first, separator, second = reference.partition(":")
+    if separator and not second:
+        raise SpreadsheetImportError(
+            f"invalid worksheet dimension {reference!r}", code="invalid_sheet_xml"
+        )
+    min_row, min_column = _cell_position(first)
+    max_row, max_column = _cell_position(second) if separator else (min_row, min_column)
+    if max_row < min_row or max_column < min_column:
+        raise SpreadsheetImportError(
+            f"invalid worksheet dimension {reference!r}", code="invalid_sheet_xml"
+        )
+    return min_column, min_row, max_column, max_row
 
 
 def _bounds_text(bounds: tuple[int | None, int | None, int | None, int | None] | None) -> str:
@@ -193,42 +219,94 @@ def _bounds_text(bounds: tuple[int | None, int | None, int | None, int | None] |
         return "unsized"
     min_column, min_row, max_column, max_row = bounds
     assert min_column is not None and max_column is not None
-    return (
-        f"{_column_letter(min_column)}{min_row}:"
-        f"{_column_letter(max_column)}{max_row}"
-    )
+    return f"{_column_letter(min_column)}{min_row}:{_column_letter(max_column)}{max_row}"
 
 
-def _include_actual_cell(bounds: list[int | None], cell: Any) -> None:
-    row = getattr(cell, "row", None)
-    column = getattr(cell, "column", None)
-    if row is None or column is None:
-        return
-    bounds[0] = column if bounds[0] is None else min(bounds[0], column)
-    bounds[1] = row if bounds[1] is None else min(bounds[1], row)
-    bounds[2] = column if bounds[2] is None else max(bounds[2], column)
-    bounds[3] = row if bounds[3] is None else max(bounds[3], row)
+def _xml_sheet_bounds(
+    archive: zipfile.ZipFile, sheet_path: str
+) -> tuple[
+    tuple[int | None, int | None, int | None, int | None],
+    tuple[int, int, int, int] | None,
+]:
+    declared = None
+    actual: list[int | None] = [None, None, None, None]
+    current_row = None
+    previous_row = 0
+    previous_column = 0
+    try:
+        with archive.open(sheet_path) as handle:
+            for _event, element in ET.iterparse(handle, events=("start",)):
+                tag = element.tag.rsplit("}", 1)[-1]
+                if tag == "dimension":
+                    declared = _dimension_bounds(element.get("ref"))
+                elif tag == "row":
+                    raw_row = element.get("r") or ""
+                    if not raw_row.isdigit() or int(raw_row) < 1:
+                        raise SpreadsheetImportError(
+                            "worksheet row is missing a valid explicit reference",
+                            code="invalid_sheet_xml",
+                        )
+                    current_row = int(raw_row)
+                    if current_row <= previous_row:
+                        raise SpreadsheetImportError(
+                            f"worksheet row {current_row} is out of order",
+                            code="out_of_order_rows",
+                        )
+                    previous_row = current_row
+                    previous_column = 0
+                elif tag == "c":
+                    reference = element.get("r")
+                    if reference is None:
+                        raise SpreadsheetImportError(
+                            "worksheet cell is missing its explicit reference",
+                            code="invalid_sheet_xml",
+                        )
+                    row, column = _cell_position(reference)
+                    if current_row is None or row != current_row or column <= previous_column:
+                        raise SpreadsheetImportError(
+                            f"worksheet cell {reference} is out of row/column order",
+                            code="out_of_order_cells",
+                        )
+                    previous_column = column
+                    actual[0] = column if actual[0] is None else min(actual[0], column)
+                    actual[1] = row if actual[1] is None else min(actual[1], row)
+                    actual[2] = column if actual[2] is None else max(actual[2], column)
+                    actual[3] = row if actual[3] is None else max(actual[3], row)
+    except (ET.ParseError, KeyError) as exc:
+        raise SpreadsheetImportError(
+            f"selected worksheet XML is unavailable or malformed: {sheet_path}",
+            code="invalid_sheet_xml",
+        ) from exc
+    return (actual[0], actual[1], actual[2], actual[3]), declared
 
 
 def _convert_sheet(
     formula_sheet: Any,
     cached_sheet: Any,
     *,
+    archive: zipfile.ZipFile,
     table: str,
     deadline: float,
     counter: list[int],
 ) -> tuple[dict, list[list[object]], list[str]]:
-    declared = _declared_bounds(formula_sheet)
-    if declared != _declared_bounds(cached_sheet):
+    # Validate the raw XML before openpyxl can reorder or discard malformed cells.
+    actual, declared = _xml_sheet_bounds(archive, formula_sheet._worksheet_path.lstrip("/"))
+    if declared is not None and actual != declared:
         raise SpreadsheetImportError(
-            f"sheet {formula_sheet.title!r} formula and cached-value dimensions disagree",
+            f"sheet {formula_sheet.title!r} declared dimension {_bounds_text(declared)} "
+            f"does not match actual worksheet extent {_bounds_text(actual)}",
             code="inconsistent_dimensions",
         )
-    # Declared dimensions are metadata, not a truncation boundary. Iterate the
-    # actual XML cells and validate the declaration only after reaching the end.
+    if any(value is None for value in actual):
+        raise SpreadsheetImportError(
+            f"selected sheet {formula_sheet.title!r} has no cells",
+            code="empty_selection",
+        )
+    min_column, min_row, max_column, max_row = actual
+    assert min_column is not None and min_row is not None
+    assert max_column is not None and max_row is not None
     formula_sheet.reset_dimensions()
     cached_sheet.reset_dimensions()
-    actual_bounds: list[int | None] = [None, None, None, None]
     header_row: int | None = None
     headers: list[object] = []
     header_cells: list[str] = []
@@ -237,9 +315,15 @@ def _convert_sheet(
     date_cells: list[dict] = []
     nonempty = 0
 
-    formula_rows = formula_sheet.iter_rows()
-    cached_rows = cached_sheet.iter_rows()
-    rows_by_number = enumerate(zip_longest(formula_rows, cached_rows), start=1)
+    bounds = {
+        "min_col": min_column,
+        "min_row": min_row,
+        "max_col": max_column,
+        "max_row": max_row,
+    }
+    formula_rows = formula_sheet.iter_rows(**bounds)
+    cached_rows = cached_sheet.iter_rows(**bounds)
+    rows_by_number = enumerate(zip_longest(formula_rows, cached_rows), start=min_row)
     for row_number, (formula_row, cached_row) in rows_by_number:
         _check_deadline(deadline)
         if formula_row is None or cached_row is None or len(formula_row) != len(cached_row):
@@ -248,10 +332,8 @@ def _convert_sheet(
                 code="incomplete_conversion",
             )
         values: list[object] = []
-        cells = enumerate(zip(formula_row, cached_row, strict=True), start=1)
+        cells = enumerate(zip(formula_row, cached_row, strict=True), start=min_column)
         for column_number, (formula_cell, cached_cell) in cells:
-            _include_actual_cell(actual_bounds, formula_cell)
-            _include_actual_cell(actual_bounds, cached_cell)
             coordinate = _cell_reference(row_number, column_number)
             formula_coordinate = getattr(formula_cell, "coordinate", None) or coordinate
             cached_coordinate = getattr(cached_cell, "coordinate", None) or coordinate
@@ -301,8 +383,7 @@ def _convert_sheet(
                 )
             if formula_cell.data_type == "e" or cached_cell.data_type == "e":
                 raise SpreadsheetImportError(
-                    f"stored error cell {formula_sheet.title}!{coordinate} "
-                    "is not queryable data",
+                    f"stored error cell {formula_sheet.title}!{coordinate} is not queryable data",
                     code="unsupported_stored_type",
                 )
             if cached_value is not None and not isinstance(
@@ -338,7 +419,8 @@ def _convert_sheet(
             header_row = row_number
             headers = values
             header_cells = [
-                _cell_reference(row_number, column) for column in range(1, len(formula_row) + 1)
+                _cell_reference(row_number, column)
+                for column in range(min_column, min_column + len(formula_row))
             ]
             continue
 
@@ -358,14 +440,6 @@ def _convert_sheet(
             f"selected sheet {formula_sheet.title!r} has no header row",
             code="empty_selection",
         )
-    actual = (actual_bounds[0], actual_bounds[1], actual_bounds[2], actual_bounds[3])
-    if declared is not None and actual != declared:
-        raise SpreadsheetImportError(
-            f"sheet {formula_sheet.title!r} declared dimension {_bounds_text(declared)} "
-            f"does not match actual worksheet extent {_bounds_text(actual)}",
-            code="inconsistent_dimensions",
-        )
-
     used: set[str] = set()
     columns = []
     for index, header in enumerate(headers, start=1):
@@ -435,16 +509,18 @@ def _convert_stage(
         table_names: set[str] = set()
         converted = []
         counter = [0]
-        for name in selected:
-            table = _unique_name(name, "sheet", table_names)
-            record, rows, columns = _convert_sheet(
-                formula_book[name],
-                cached_book[name],
-                table=table,
-                deadline=deadline,
-                counter=counter,
-            )
-            converted.append((record, rows, columns))
+        with zipfile.ZipFile(source) as archive:
+            for name in selected:
+                table = _unique_name(name, "sheet", table_names)
+                record, rows, columns = _convert_sheet(
+                    formula_book[name],
+                    cached_book[name],
+                    archive=archive,
+                    table=table,
+                    deadline=deadline,
+                    counter=counter,
+                )
+                converted.append((record, rows, columns))
     finally:
         if formula_book is not None:
             formula_book.close()
