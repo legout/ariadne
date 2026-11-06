@@ -973,6 +973,7 @@ def prepare_release(
     scope,
     mapping_selections=(),
     storage_profile=None,
+    source_context=None,
 ):
     """Stateless composite preview; future receipts never enter its consent digest."""
     import msgspec
@@ -1003,6 +1004,24 @@ def prepare_release(
     selected = selector(root)
     if selected is None:
         raise ValueError("overall admission requires an integrated selector")
+    source_kwargs = (
+        {}
+        if source_context is None
+        else {
+            "source_registry": source_context.source_registry,
+            "artifact_store": source_context.artifact_store,
+            "retention_required": source_context.retention_required,
+        }
+    )
+    source_marker = (
+        None
+        if source_context is None
+        else {
+            "schema_version": 1,
+            "binding_digest": source_context.binding_digest,
+            "retention": "required" if source_context.retention_required else "disabled",
+        }
+    )
     # A2 (spec0029 §1.3): the Bound Release advertises the scoped navigation
     # operations, so admitting one requires an SDK that actually provides
     # them — an older installed SDK refuses admission instead of being
@@ -1034,11 +1053,16 @@ def prepare_release(
     assert captured is not None
     if s3_destination:
         publication = native.preview_publication(
-            root / "knowledge", revision, destination, expected_current, s3_location=s3_location
+            root / "knowledge",
+            revision,
+            destination,
+            expected_current,
+            s3_location=s3_location,
+            **source_kwargs,
         )
     else:
         publication = native.preview_publication(
-            root / "knowledge", revision, destination, expected_current
+            root / "knowledge", revision, destination, expected_current, **source_kwargs
         )
     if publication.blocking_diagnostics:
         raise ValueError("; ".join(publication.blocking_diagnostics))
@@ -1083,6 +1107,7 @@ def prepare_release(
         "visibility_scope": scope,
         "destination": (str(destination) if s3_destination else str(Path(destination).resolve())),
         **storage_fields,
+        **({"source_admission": source_marker} if source_marker is not None else {}),
         "knowledge": {
             "namespace": captured.manifest.namespace,
             "profile_version": 1,
@@ -1114,6 +1139,17 @@ def prepare_release(
         "mapping_selections": sorted(mapping_selections),
         "publication_review": msgspec.to_builtins(publication),
         "expected_core_digest": digest(admission.load_current(project)),
+        **(
+            {
+                "source_configuration": {
+                    "schema_version": 1,
+                    "binding": source_context.binding,
+                    "binding_digest": source_context.binding_digest,
+                }
+            }
+            if source_context is not None
+            else {}
+        ),
         "side_effects": [
             "native Lumio publication, receipt and standalone current pointer may complete",
             "immutable Core snapshot preparation; atomic Core current descriptor last",
@@ -1148,12 +1184,21 @@ def _s3_navigation_capability() -> None:
             )
 
 
-def publish_and_verify(preview):
+def publish_and_verify(preview, *, source_context=None):
     import msgspec
     from lumio_wiki.git_authoring import S3PublicationRecord, publish_revision
 
     review = preview["publication_review"]
     manifest = preview["manifest"]
+    source_kwargs = (
+        {}
+        if source_context is None
+        else {
+            "source_registry": source_context.source_registry,
+            "artifact_store": source_context.artifact_store,
+            "retention_required": source_context.retention_required,
+        }
+    )
     s3_destination = str(review["destination"]).startswith("s3://")
     try:
         if s3_destination:
@@ -1168,6 +1213,7 @@ def publish_and_verify(preview):
                 review["review_digest"],
                 s3_location=location,
                 metadata_store=metadata_store,
+                **source_kwargs,
             )
         else:
             receipt = publish_revision(
@@ -1176,6 +1222,7 @@ def publish_and_verify(preview):
                 review["destination"],
                 review["expected_current"],
                 review["review_digest"],
+                **source_kwargs,
             )
     except Exception as exc:
         outcome = {"integrated_activated": False, "publication_completion": "unverified"}
@@ -1249,6 +1296,20 @@ def verify_release(record, snapshot):
         != manifest["digest"]
     ):
         raise ValueError("Bound Release manifest integrity failure")
+    source_admission = manifest.get("source_admission")
+    if source_admission is not None:
+        if not isinstance(source_admission, dict):
+            raise ValueError("Bound Release source admission marker integrity failure")
+        binding_digest = source_admission.get("binding_digest")
+        if (
+            set(source_admission) != {"schema_version", "binding_digest", "retention"}
+            or source_admission["schema_version"] != 1
+            or not isinstance(binding_digest, str)
+            or len(binding_digest) != 64
+            or any(character not in "0123456789abcdef" for character in binding_digest)
+            or source_admission["retention"] not in {"required", "disabled"}
+        ):
+            raise ValueError("Bound Release source admission marker integrity failure")
     evidence = proposals.load_validation(
         Path(record["project"]), record["proposal"], record["commit"]
     )
@@ -1335,6 +1396,11 @@ def verify_release(record, snapshot):
             == manifest["knowledge"]["source_reference_digest"]
             and record["native_publication"]["version"] == record["commit"]
             and record["native_publication"]["destination"] == manifest["destination"]
+            and (
+                source_admission is None
+                or record["native_publication"]["retention"]
+                == source_admission["retention"]
+            )
             and manifest["knowledge"]["namespace"] == selected["namespace"]
             and manifest["knowledge"]["subtree"] == selected["subtree"]
             and manifest["knowledge"]["published_version"] == record["commit"]

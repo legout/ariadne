@@ -186,9 +186,15 @@ export default function (pi: ExtensionAPI) {
           "info",
         );
         pi.sendUserMessage(
-          `Exact original uploaded as upload_id ${receipt.upload_id} for source ${receipt.source_id}. ` +
-            "Use read_source_material to inspect its normalized text and conversion facts before " +
-            "preparing a pending candidate.",
+          `Exact original uploaded as upload_id ${receipt.upload_id} for source ${receipt.source_id}; ` +
+            "this is not a task_id. " +
+            `Retain retry=${retryKey} plus the exact source ID, filename, and bytes. After an ` +
+            "interrupted upload, repeat the same upload with that key and those exact inputs to " +
+            "recover the same upload_id; do not call get_task(upload_id). Use read_source_material " +
+            "to inspect normalized text and conversion facts. For prepare_contribution, retain a " +
+            "separate stable retry_key and the exact request. Repeat that preparation to recover " +
+            "its task_id if interruption hid it, then call get_task with the actual task_id. Old " +
+            "browser approvals must not be replayed, and lost keys or inputs are not recoverable.",
         );
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");

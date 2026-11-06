@@ -1,4 +1,4 @@
-"""Bounded exact-byte intake and native text/Markdown extraction."""
+"""Bounded exact-byte intake and native text, PDF, and DOCX extraction."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from lumio_wiki.source_registry import SourceRegistryError, _validate_source_id
 
 from .state import Actor, Operation, WorkspaceState
 
-_SUPPORTED_EXTENSIONS = frozenset({".md", ".markdown", ".txt"})
+_SUPPORTED_EXTENSIONS = frozenset({".docx", ".md", ".markdown", ".pdf", ".txt"})
 
 
 class UploadError(ValueError):
@@ -48,7 +48,7 @@ def validate_upload_metadata(source_id: str, filename: str, retry_key: str) -> N
         raise UploadError("filename must be a safe basename", code="unsafe_path")
     if Path(filename).suffix.lower() not in _SUPPORTED_EXTENSIONS:
         raise UploadError(
-            "unsupported original; W2 accepts only .txt, .md, and .markdown",
+            "unsupported original; supported inputs are .txt, .md, .markdown, .pdf, and .docx",
             code="unsupported_original",
         )
     if not 1 <= len(retry_key) <= 200 or not retry_key.isprintable():

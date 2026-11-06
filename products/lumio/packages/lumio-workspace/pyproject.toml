@@ -24,4 +24,4 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lumio_workspace"]
-force-include = { "src/lumio_workspace/templates/setup.html" = "lumio_workspace/templates/setup.html" }
+force-include = { "src/lumio_workspace/templates/setup.html" = "lumio_workspace/templates/setup.html", "src/lumio_workspace/templates/review.html" = "lumio_workspace/templates/review.html" }

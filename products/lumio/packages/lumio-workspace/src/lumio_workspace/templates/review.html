@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Exact workspace review</title>
+  </head>
+  <body>
+    <main>
+      <h1>Exact workspace review</h1>
+      <p>Review every displayed change and consequential action. This page alone authorizes nothing.</p>
+      <dl>
+        <dt>Task</dt><dd><code>$task</code></dd>
+        <dt>Knowledge Base Namespace</dt><dd>$namespace</dd>
+        <dt>Exact admitted review base</dt><dd><code>$base</code></dd>
+        <dt>Native submission base</dt><dd><code>$submission_base</code></dd>
+        <dt>Native submission review</dt><dd><code>$submission_review</code></dd>
+        <dt>Exact candidate</dt><dd><code>$candidate</code></dd>
+        <dt>Publication destination</dt><dd>$destination</dd>
+        <dt>Expected active version</dt><dd><code>$expected</code></dd>
+        <dt>Observed active version</dt><dd><code>$observed</code></dd>
+        <dt>Reader selection</dt><dd>$pin</dd>
+        <dt>Retention</dt><dd>$retention</dd>
+        <dt>Native authoring review</dt><dd><code>$authoring_digest</code></dd>
+        <dt>Native publication review</dt><dd><code>$publication_digest</code></dd>
+      </dl>
+
+      <h2>Validation</h2>
+      $validation
+      <h2>Blocking publication diagnostics</h2>
+      $blocking
+
+      <h2>Content and source support</h2>
+      $pages
+
+      <h2>Source bindings and lifecycle</h2>
+      $manifest_changes
+      <h2>Control changes</h2>
+      $control_changes
+      <h2>Ontology changes</h2>
+      $ontology_changes
+
+      <h2>Conversion and exclusions</h2>
+      $conversion
+      <h3>Excluded paths and conversion exclusions</h3>
+      $exclusions
+
+      <details>
+        <summary>Complete native publication facts</summary>
+        $publication_details
+      </details>
+
+      <h2>Decision</h2>
+      <p>Approve activates only this exact candidate at the displayed destination and expected active version. Requesting changes or rejecting does not publish.</p>
+      <form method="post" action="/review/$task">
+        <input type="hidden" name="digest" value="$action_digest">
+        <button type="submit" name="decision" value="approve" $disabled>Approve and publish exactly this candidate</button>
+        <button type="submit" name="decision" value="request_changes">Request changes without publishing</button>
+        <button type="submit" name="decision" value="reject">Reject without publishing</button>
+      </form>
+    </main>
+  </body>
+</html>

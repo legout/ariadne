@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 LOCAL_TENANT_ID = "local"
-CAPABILITIES = frozenset({"read", "setup", "contribute"})
+CAPABILITIES = frozenset({"read", "setup", "contribute", "review", "inspect_source"})
 
 
 class RetryConflict(ValueError):
@@ -25,6 +25,14 @@ class RetryConflict(ValueError):
 class Actor:
     tenant_id: str
     object_id: str
+
+
+@dataclass(frozen=True)
+class ReviewAction:
+    action_digest: str
+    decision: str
+    binding: dict
+    status: str
 
 
 @dataclass(frozen=True)
@@ -132,6 +140,22 @@ class WorkspaceState:
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
                     PRIMARY KEY (workspace_id, tenant_id, object_id, action, retry_key)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS review_actions (
+                    action_digest TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL,
+                    object_id TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    binding_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
                 )
                 """
             )
@@ -329,7 +353,7 @@ class WorkspaceState:
 
     def grant(self, workspace_id: str, actor: Actor, capability: str = "read") -> None:
         if capability not in CAPABILITIES:
-            raise ValueError("capability must be read, setup, or contribute")
+            raise ValueError(f"capability must be one of: {', '.join(sorted(CAPABILITIES))}")
         with self._connect() as connection:
             if actor.tenant_id == LOCAL_TENANT_ID:
                 user = connection.execute(
@@ -346,7 +370,7 @@ class WorkspaceState:
         self, workspace_id: str, actor: Actor, capability: str = "read"
     ) -> None:
         if capability not in CAPABILITIES:
-            raise ValueError("capability must be read, setup, or contribute")
+            raise ValueError(f"capability must be one of: {', '.join(sorted(CAPABILITIES))}")
         with self._connect() as connection:
             connection.execute(
                 "DELETE FROM memberships WHERE workspace_id = ? "
@@ -475,6 +499,154 @@ class WorkspaceState:
             row[3],
             _stored_response(row[4]),
         )
+
+    def get_review_task(self, workspace_id: str, task_id: str) -> Operation | None:
+        """Locate a candidate only after the caller establishes reviewer authority."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT retry_key, input_digest, source_id, status, response_json "
+                "FROM operations WHERE workspace_id = ? AND action = 'prepare_contribution' "
+                "AND operation_id = ?",
+                (workspace_id, task_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return Operation(
+            task_id,
+            "prepare_contribution",
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            _stored_response(row[4]),
+        )
+
+    def finish_review_task(
+        self,
+        workspace_id: str,
+        task_id: str,
+        status: str,
+        response: dict,
+        *,
+        expected_response: dict | None = None,
+    ) -> bool:
+        parameters = (
+            status,
+            json.dumps(response, sort_keys=True),
+            int(time.time()),
+            workspace_id,
+            task_id,
+        )
+        expected = ""
+        if expected_response is not None:
+            expected = " AND response_json = ?"
+            parameters += (json.dumps(expected_response, sort_keys=True),)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE operations SET status = ?, response_json = ?, updated_at = ? "
+                "WHERE workspace_id = ? AND operation_id = ? "
+                "AND action = 'prepare_contribution' AND status = 'pending_review'" + expected,
+                parameters,
+            )
+        if cursor.rowcount != 1:
+            if expected_response is not None:
+                return False
+            raise ValueError("reviewed task changed before its outcome was recorded")
+        return True
+
+    def issue_review_action(
+        self,
+        workspace_id: str,
+        actor: Actor,
+        task_id: str,
+        binding: dict,
+    ) -> str:
+        action_digest = secrets.token_hex(32)
+        now = int(time.time())
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO review_actions VALUES (?, ?, ?, ?, ?, '', ?, 'issued', ?, ?)",
+                (
+                    action_digest,
+                    workspace_id,
+                    task_id,
+                    actor.tenant_id,
+                    actor.object_id,
+                    json.dumps(binding, sort_keys=True),
+                    now,
+                    now,
+                ),
+            )
+        return action_digest
+
+    def start_review_action(
+        self,
+        workspace_id: str,
+        actor: Actor,
+        task_id: str,
+        decision: str,
+        action_digest: str,
+        binding: dict,
+    ) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE review_actions SET decision = ?, status = 'pending', updated_at = ? "
+                "WHERE action_digest = ? AND workspace_id = ? AND task_id = ? "
+                "AND tenant_id = ? AND object_id = ? AND binding_json = ? "
+                "AND decision = '' AND status = 'issued'",
+                (
+                    decision,
+                    int(time.time()),
+                    action_digest,
+                    workspace_id,
+                    task_id,
+                    actor.tenant_id,
+                    actor.object_id,
+                    json.dumps(binding, sort_keys=True),
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def get_review_approval(
+        self, workspace_id: str, task_id: str, candidate: str
+    ) -> ReviewAction | None:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT action_digest, binding_json, status FROM review_actions "
+                "WHERE workspace_id = ? AND task_id = ? AND decision = 'approve' "
+                "ORDER BY updated_at DESC, created_at DESC",
+                (workspace_id, task_id),
+            ).fetchall()
+        for action_digest, raw_binding, status in rows:
+            binding = json.loads(raw_binding)
+            if binding.get("candidate") == candidate:
+                return ReviewAction(action_digest, "approve", binding, status)
+        return None
+
+    def review_task_submitter(self, workspace_id: str, task_id: str) -> Actor | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT tenant_id, object_id FROM operations "
+                "WHERE workspace_id = ? AND operation_id = ? "
+                "AND action = 'prepare_contribution'",
+                (workspace_id, task_id),
+            ).fetchone()
+        return Actor(row[0], row[1]) if row is not None else None
+
+    def is_single_person_workspace(self, workspace_id: str, actor: Actor) -> bool:
+        with self._connect() as connection:
+            members = connection.execute(
+                "SELECT DISTINCT tenant_id, object_id FROM memberships WHERE workspace_id = ?",
+                (workspace_id,),
+            ).fetchall()
+        return len(members) == 1 and members[0] == (actor.tenant_id, actor.object_id)
+
+    def finish_review_action(self, action_digest: str, status: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE review_actions SET status = ?, updated_at = ? WHERE action_digest = ?",
+                (status, int(time.time()), action_digest),
+            )
 
     def record_setup(
         self,

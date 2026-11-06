@@ -342,6 +342,27 @@ layers, proposal worktrees or `.ariadne/` state).
    their rebase/merge with `ariadne-authoring reconcile`; never merge or
    reset anything yourself.
 
+9. **Optional external whole-contribution review — only within an
+   operator-configured submission workflow.** After native Authoring review,
+   stage the intended paths in the proposal worktree with native `git add`;
+   this is the ONLY direct-Git exception in this skill, and it grants no edit,
+   commit, branch, merge, export or push authority. Run
+   `ariadne-authoring contribution-review --project . --proposal ID --base
+   FULL-BASE-COMMIT` (plus the operator's absolute
+   `--context-private-profile FILE` when configured). The review binds the
+   complete staged tree, all Core and knowledge changes, excluded
+   unstaged/untracked work and truthful pending live validation; it never
+   opens sources, approves or admits. The human
+   inspects it and makes any commit/submission decision explicitly. After the
+   human commit, verify the ACTUAL post-hook commit with
+   `ariadne-authoring contribution-check --project . --proposal ID --review
+   PRIVATE-REVIEW.json --revision FULL-COMMIT`: only the reviewed full tree,
+   selected base ancestry and captured-HEAD parent match. A later staged
+   addition, hook mutation, rebase or other tree/parent change requires a new
+   review before any separately authorized export or push. Reconcile through
+   the existing human-only route before later native validation/admission;
+   pending live checks never mean admission readiness.
+
 This workflow is scoped to new Git-managed projects. Core does not import
 legacy staged artifacts, pending review state, or original documents. If
 existing content should be used, preserve the source project and explicitly
@@ -642,8 +663,11 @@ separate store, never inside the Context Routing Map or table measurements.
   the typed `ariadne-authoring` seams — never run `git commit`, `git branch`,
   `git checkout`, `git merge`, `git rebase`, `git push` or arbitrary shell
   commands against the data project yourself, and never edit served layers,
-  proposal worktrees or `.ariadne/` state by hand. The ariadne commands are the
-  only route.
+  proposal worktrees or `.ariadne/` state by hand. The sole exception is
+  native `git add` of intended paths inside the explicit external
+  whole-contribution workflow above; its commit, export and push decisions
+  remain human and separately authorized. Every other ariadne command route
+  stays unchanged.
 
 ## Optional: MCP integration
 
@@ -684,7 +708,8 @@ toolsets over one core — pick the registration at launch:
 checks and response contracts as the `ariadne-authoring` commands above. The
 answer-example tools ride the Analyst/Combined registrations with identical
 contracts to `ariadne save-example`/`search-examples` (same confirmation
-rules). In an integrated project, the `search_context`, `list_context_pages`
+rules). The external whole-contribution review never becomes an MCP operation.
+In an integrated project, the `search_context`, `list_context_pages`
 and `read_context_page` tools navigate the session's pinned Bound Release
 source-free (see Integrated Lumio context above). No registration exposes source approval, admission, reconciliation,
 or the operator-only `ariadne review` walkthrough. Stdio is local
