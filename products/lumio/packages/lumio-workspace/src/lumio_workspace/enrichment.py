@@ -15,18 +15,31 @@ from .state import Actor
 LIMITS = {"pages": 20, "characters": 200_000, "proposed_claims": 40}
 
 
-def source_refresh_impact(
-    task: dict, base: CapturedRevision, registry: SourceRegistry
-) -> list[dict]:
-    """Project exact source changes onto pages without inferring Claim lineage."""
-    proposed_versions: dict[str, str] = {}
+def _proposed_versions(task: dict) -> dict[str, str]:
+    proposed: dict[str, str] = {}
     for item in task.get("conversion", []):
         if not isinstance(item, dict):
             continue
         source_id = item.get("source_id")
         content_hash = item.get("sha256")
         if isinstance(source_id, str) and isinstance(content_hash, str):
-            proposed_versions[source_id] = content_hash
+            proposed[source_id] = content_hash
+    return proposed
+
+
+def source_refresh_binding(task: dict, registry: SourceRegistry) -> dict[str, str]:
+    """Bind every proposed source to actual registry-latest, without page metadata."""
+    return {
+        source_id: registry.get(source_id).versions[-1].content_hash
+        for source_id in sorted(_proposed_versions(task))
+    }
+
+
+def source_refresh_impact(
+    task: dict, base: CapturedRevision, registry: SourceRegistry
+) -> list[dict]:
+    """Project exact source changes onto pages without inferring Claim lineage."""
+    proposed_versions = _proposed_versions(task)
     source_ids = {
         source_id for bindings in base.manifest.bindings.values() for source_id in bindings
     }
@@ -275,4 +288,4 @@ class EnrichmentService:
         return persisted, disclosed
 
 
-__all__ = ["EnrichmentService", "LIMITS", "source_refresh_impact"]
+__all__ = ["EnrichmentService", "LIMITS", "source_refresh_binding", "source_refresh_impact"]

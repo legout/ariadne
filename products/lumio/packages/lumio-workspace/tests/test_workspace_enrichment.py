@@ -988,6 +988,79 @@ def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
             assert result["published"] is False
             return result
 
+        introduced_page = _page(
+            "Introduced Runbook",
+            "entity:introduced-runbook",
+            "knowledge-artifact",
+            source=True,
+        ).replace('id: "operations-notes"', 'id: "introduced-source"')
+        introduced_b = b"# Introduced notes\n\nService B ownership is discussed in version B.\n"
+        uploaded_introduced_b = contributor.post(
+            "/uploads",
+            headers={
+                "Authorization": f"Bearer {tokens['contributor_api']}",
+                "Content-Type": "application/octet-stream",
+                "X-Lumio-Source-Id": "introduced-source",
+                "X-Lumio-Filename": "introduced.md",
+                "X-Lumio-Retry-Key": "source-refresh-introduced-b-upload",
+            },
+            content=introduced_b,
+        )
+        assert uploaded_introduced_b.status_code == 200, uploaded_introduced_b.text
+        introduced = _tool(
+            contributor,
+            tokens["contributor_api"],
+            "prepare_contribution",
+            {
+                "retry_key": "source-refresh-introduced-b-draft",
+                "sources": [
+                    {"upload_id": uploaded_introduced_b.json()["upload_id"], "intent": "new"}
+                ],
+                "pages": [{"filename": "introduced-runbook.md", "markdown": introduced_page}],
+            },
+            97,
+        )
+        introduced_response = reviewer.get(f"/review/{introduced['task_id']}")
+        assert introduced_response.status_code == 200, introduced_response.text
+        introduced_action = _digest(introduced_response.text)
+        assert '<section id="source-refresh-impact">' in introduced_response.text
+        introduced_impact = introduced_response.text.split(
+            '<section id="source-refresh-impact">', 1
+        )[1].split("</section>", 1)[0]
+        assert "introduced-source" not in introduced_impact
+        introduced_c = b"# Introduced notes\n\nService B ownership is discussed in version C.\n"
+        uploaded_introduced_c = contributor.post(
+            "/uploads",
+            headers={
+                "Authorization": f"Bearer {tokens['contributor_api']}",
+                "Content-Type": "application/octet-stream",
+                "X-Lumio-Source-Id": "introduced-source",
+                "X-Lumio-Filename": "introduced.md",
+                "X-Lumio-Retry-Key": "source-refresh-introduced-c-upload",
+            },
+            content=introduced_c,
+        )
+        assert uploaded_introduced_c.status_code == 200, uploaded_introduced_c.text
+        introduced_update = _tool(
+            contributor,
+            tokens["contributor_api"],
+            "prepare_contribution",
+            {
+                "retry_key": "source-refresh-introduced-c-draft",
+                "continuation_task_id": introduced["task_id"],
+                "sources": [
+                    {"upload_id": uploaded_introduced_c.json()["upload_id"], "intent": "update"}
+                ],
+                "pages": [{"filename": "introduced-runbook.md", "markdown": introduced_page}],
+            },
+            98,
+        )
+        assert introduced_update["status"] == "pending_review"
+        assert introduced_update["published"] is False
+        stale_introduced = _decision(reviewer, introduced["task_id"], introduced_action, "approve")
+        assert stale_introduced.status_code == 409, stale_introduced.text
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() == base
+
         standalone = prepare_update(version_b, "Team C", "source-refresh-standalone-b", 99)
         standalone_response = reviewer.get(f"/review/{standalone['task_id']}")
         assert standalone_response.status_code == 200, standalone_response.text
@@ -1028,9 +1101,9 @@ def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
         refreshed_response = reviewer.get(f"/review/{refreshed['task_id']}")
         assert refreshed_response.status_code == 200, refreshed_response.text
         assert '<section id="source-refresh-impact">' in refreshed_response.text
-        refreshed_impact = refreshed_response.text.split(
-            '<section id="source-refresh-impact">', 1
-        )[1].split("</section>", 1)[0]
+        refreshed_impact = refreshed_response.text.split('<section id="source-refresh-impact">', 1)[
+            1
+        ].split("</section>", 1)[0]
         assert "entity:operations-runbook" in refreshed_impact
         assert (
             f"bound <code>{version_b_digest}</code>; "

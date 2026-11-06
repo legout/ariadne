@@ -217,6 +217,7 @@ class ReviewService:
             publication = self.publication.preview(task_kb, candidate, admitted, resources)
             availability = self._source_availability(captured, resources)
             source_impact: list[dict] = []
+            proposed_sources: dict[str, str] = {}
             if operation.response.get("kind") == "enrichment" or operation.response.get(
                 "conversion"
             ):
@@ -225,7 +226,7 @@ class ReviewService:
                         "native source registry is required for source review",
                         code="invalid_profile",
                     )
-                from .enrichment import source_refresh_impact
+                from .enrichment import source_refresh_binding, source_refresh_impact
 
                 impact_base = (
                     submission_base
@@ -237,6 +238,9 @@ class ReviewService:
                     operation.response,
                     capture_revision(task_kb, impact_base),
                     resources.source_registry,
+                )
+                proposed_sources = source_refresh_binding(
+                    operation.response, resources.source_registry
                 )
         except ReviewError:
             raise
@@ -278,6 +282,7 @@ class ReviewService:
             "destination_identity": publication.destination_identity,
             "expected_current": publication.expected_current,
             "source_refresh": source_impact,
+            "task_proposed_sources": proposed_sources,
         }
         return ReviewContext(
             operation,
