@@ -926,7 +926,9 @@ def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
     version_b_digest = hashlib.sha256(version_b).hexdigest()
     version_c = CORPUS.replace(b"Team A operates Service B.", b"Team D operates Service B.")
     version_c_digest = hashlib.sha256(version_c).hexdigest()
-    assert len({version_a_digest, version_b_digest, version_c_digest}) == 3
+    version_d = CORPUS.replace(b"Team A operates Service B.", b"Team E operates Service B.")
+    version_d_digest = hashlib.sha256(version_d).hexdigest()
+    assert len({version_a_digest, version_b_digest, version_c_digest, version_d_digest}) == 4
 
     with (
         TestClient(create_app(config), base_url="https://workspace.test") as owner,
@@ -942,7 +944,13 @@ def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
         assert setup.status_code == 200, setup.text
         _login(reviewer, tokens["reviewer_browser"])
 
-        def prepare_update(version: bytes, owner_name: str, key: str, request_id: int) -> dict:
+        def prepare_update(
+            version: bytes,
+            owner_name: str,
+            key: str,
+            request_id: int,
+            continuation_task_id: str | None = None,
+        ) -> dict:
             uploaded = contributor.post(
                 "/uploads",
                 headers={
@@ -962,15 +970,18 @@ def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
                 source=True,
                 claim_block=BASE_RUNBOOK_CLAIMS,
             ).replace("Team A operates Service B.", f"{owner_name} operates Service B.")
+            arguments = {
+                "retry_key": f"{key}-draft",
+                "sources": [{"upload_id": uploaded.json()["upload_id"], "intent": "update"}],
+                "pages": [{"filename": "operations-runbook.md", "markdown": updated_page}],
+            }
+            if continuation_task_id is not None:
+                arguments["continuation_task_id"] = continuation_task_id
             result = _tool(
                 contributor,
                 tokens["contributor_api"],
                 "prepare_contribution",
-                {
-                    "retry_key": f"{key}-draft",
-                    "sources": [{"upload_id": uploaded.json()["upload_id"], "intent": "update"}],
-                    "pages": [{"filename": "operations-runbook.md", "markdown": updated_page}],
-                },
+                arguments,
                 request_id,
             )
             assert result["status"] == "pending_review"
@@ -980,6 +991,7 @@ def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
         standalone = prepare_update(version_b, "Team C", "source-refresh-standalone-b", 99)
         standalone_response = reviewer.get(f"/review/{standalone['task_id']}")
         assert standalone_response.status_code == 200, standalone_response.text
+        standalone_action = _digest(standalone_response.text)
         assert '<section id="source-refresh-impact">' in standalone_response.text
         standalone_impact = standalone_response.text.split(
             '<section id="source-refresh-impact">', 1
@@ -996,6 +1008,35 @@ def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
             "Restricted Evidence",
         ):
             assert restricted not in standalone_impact
+
+        refreshed = prepare_update(
+            version_c,
+            "Team D",
+            "source-refresh-owner-c",
+            104,
+            continuation_task_id=standalone["task_id"],
+        )
+        updated_b_response = reviewer.get(f"/review/{standalone['task_id']}")
+        assert updated_b_response.status_code == 200, updated_b_response.text
+        assert (
+            f"task-proposed <code>{version_b_digest}</code>; "
+            f"registry-latest <code>{version_c_digest}</code>"
+        ) in updated_b_response.text
+        stale_update = _decision(reviewer, standalone["task_id"], standalone_action, "approve")
+        assert stale_update.status_code == 409, stale_update.text
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() == base
+        refreshed_response = reviewer.get(f"/review/{refreshed['task_id']}")
+        assert refreshed_response.status_code == 200, refreshed_response.text
+        assert '<section id="source-refresh-impact">' in refreshed_response.text
+        refreshed_impact = refreshed_response.text.split(
+            '<section id="source-refresh-impact">', 1
+        )[1].split("</section>", 1)[0]
+        assert "entity:operations-runbook" in refreshed_impact
+        assert (
+            f"bound <code>{version_b_digest}</code>; "
+            f"task-proposed <code>{version_c_digest}</code>; "
+            f"registry-latest <code>{version_c_digest}</code>"
+        ) in refreshed_impact
 
         initial = _tool(
             contributor,
@@ -1077,7 +1118,13 @@ def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
         )
         stale_action = _digest(reviewer.get(f"/review/{pending['task_id']}").text)
 
-        prepare_update(version_c, "Team D", "source-refresh-owner-c", 104)
+        prepare_update(
+            version_d,
+            "Team E",
+            "source-refresh-owner-d",
+            105,
+            continuation_task_id=refreshed["task_id"],
+        )
 
         impact_response = reviewer.get(f"/review/{pending['task_id']}")
         assert impact_response.status_code == 200, impact_response.text
@@ -1087,7 +1134,7 @@ def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
         )[0]
         assert "Source refresh impact" in impact
         assert version_a_digest in impact
-        assert version_c_digest in impact
+        assert version_d_digest in impact
         assert HISTORICAL_DIGEST in impact
         for entity_id in (
             "entity:operations-runbook",
@@ -1140,4 +1187,8 @@ def test_source_refresh_preserves_history_and_invalidates_bound_enrichment(
         assert (
             store.get_artifact(source_id="operations-notes", content_hash=version_c_digest)
             == version_c
+        )
+        assert (
+            store.get_artifact(source_id="operations-notes", content_hash=version_d_digest)
+            == version_d
         )

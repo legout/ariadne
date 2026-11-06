@@ -16,34 +16,31 @@ LIMITS = {"pages": 20, "characters": 200_000, "proposed_claims": 40}
 
 
 def source_refresh_impact(
-    task: dict, admitted: CapturedRevision, registry: SourceRegistry
+    task: dict, base: CapturedRevision, registry: SourceRegistry
 ) -> list[dict]:
-    """Project exact source changes onto admitted pages without inferring Claim lineage."""
-    updated_versions: dict[str, str] = {}
+    """Project exact source changes onto pages without inferring Claim lineage."""
+    proposed_versions: dict[str, str] = {}
     for item in task.get("conversion", []):
         if not isinstance(item, dict):
             continue
         source_id = item.get("source_id")
         content_hash = item.get("sha256")
         if isinstance(source_id, str) and isinstance(content_hash, str):
-            updated_versions[source_id] = content_hash
+            proposed_versions[source_id] = content_hash
     source_ids = {
-        source_id for bindings in admitted.manifest.bindings.values() for source_id in bindings
+        source_id for bindings in base.manifest.bindings.values() for source_id in bindings
     }
     latest: dict[str, str] = {}
     for source_id in sorted(source_ids):
-        if source_id in updated_versions:
-            latest[source_id] = updated_versions[source_id]
-            continue
         source = registry.get(source_id)
         if source.versions:
             latest[source_id] = source.versions[-1].content_hash
 
     impact = []
-    for page in admitted.kb.pages:
+    for page in base.kb.pages:
         if page.visibility not in {"public", "internal"}:
             continue
-        for source_id, bound_hash in admitted.manifest.bindings.get(page.id, {}).items():
+        for source_id, bound_hash in base.manifest.bindings.get(page.id, {}).items():
             latest_hash = latest.get(source_id)
             if latest_hash is None or latest_hash == bound_hash:
                 continue
@@ -51,6 +48,7 @@ def source_refresh_impact(
                 {
                     "source_id": source_id,
                     "bound_hash": bound_hash,
+                    "proposed_hash": proposed_versions.get(source_id),
                     "latest_hash": latest_hash,
                     "page_id": page.id,
                     "page_title": page.title,

@@ -227,9 +227,15 @@ class ReviewService:
                     )
                 from .enrichment import source_refresh_impact
 
+                impact_base = (
+                    submission_base
+                    if operation.response.get("kind") != "enrichment"
+                    and operation.response.get("conversion")
+                    else base
+                )
                 source_impact = source_refresh_impact(
                     operation.response,
-                    capture_revision(task_kb, base),
+                    capture_revision(task_kb, impact_base),
                     resources.source_registry,
                 )
         except ReviewError:
@@ -777,23 +783,26 @@ def _render_source_refresh(impact: list[dict]) -> str:
                 for anchor in claim["evidence"]
             )
             claims.append(
-                f"<li><code>{html.escape(claim['id'])}</code>; admitted Evidence: "
+                f"<li><code>{html.escape(claim['id'])}</code>; Evidence: "
                 f"{html.escape(references or 'none recorded')}</li>"
             )
         claim_html = (
-            f"<p>Admitted Claims on this page that may need review:</p><ul>{''.join(claims)}</ul>"
+            f"<p>Claims on this page that may need review:</p><ul>{''.join(claims)}</ul>"
             if claims
-            else (
-                "<p>No admitted Claims are recorded on this page; "
-                "page-level review still applies.</p>"
-            )
+            else ("<p>No Claims are recorded on this page; page-level review still applies.</p>")
         )
         rendered.append(
             "<li>Source <code>"
             + html.escape(item["source_id"])
             + "</code>: bound <code>"
             + html.escape(item["bound_hash"])
-            + "</code>; registry-latest <code>"
+            + "</code>; "
+            + (
+                "task-proposed <code>" + html.escape(item["proposed_hash"]) + "</code>; "
+                if item["proposed_hash"] is not None
+                else ""
+            )
+            + "registry-latest <code>"
             + html.escape(item["latest_hash"])
             + "</code>.<br>Page <code>"
             + html.escape(item["page_id"])
@@ -805,7 +814,7 @@ def _render_source_refresh(impact: list[dict]) -> str:
         )
     return (
         '<section id="source-refresh-impact"><h3>Source refresh impact</h3>'
-        "<p>Exact source bindings and admitted page Evidence identify these conservative "
+        "<p>Exact source bindings and page Evidence identify these conservative "
         "review candidates. Page-level provenance cannot determine Claim-level or raw-passage "
         "impact. A source change does not classify a Claim as false or retire it; historical "
         "anchors remain bound to the displayed original version. Corrections require a fresh "
