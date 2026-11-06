@@ -145,9 +145,7 @@ def _duckdb_type(values: list[object], where: str) -> str:
         return "BOOLEAN"
     if all(isinstance(value, int) and not isinstance(value, bool) for value in present):
         return "BIGINT"
-    if all(
-        isinstance(value, (int, float)) and not isinstance(value, bool) for value in present
-    ):
+    if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in present):
         return "DOUBLE"
     if all(isinstance(value, datetime) for value in present):
         return "TIMESTAMP"
@@ -170,13 +168,67 @@ def _quote(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def _column_letter(column: int) -> str:
+    letters = ""
+    while column:
+        column, remainder = divmod(column - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def _cell_reference(row: int, column: int) -> str:
+    return f"{_column_letter(column)}{row}"
+
+
+def _declared_bounds(sheet: Any) -> tuple[int, int, int, int] | None:
+    try:
+        sheet.calculate_dimension()
+    except ValueError:
+        return None
+    return sheet.min_column, sheet.min_row, sheet.max_column, sheet.max_row
+
+
+def _bounds_text(bounds: tuple[int | None, int | None, int | None, int | None] | None) -> str:
+    if bounds is None or any(value is None for value in bounds):
+        return "unsized"
+    min_column, min_row, max_column, max_row = bounds
+    assert min_column is not None and max_column is not None
+    return (
+        f"{_column_letter(min_column)}{min_row}:"
+        f"{_column_letter(max_column)}{max_row}"
+    )
+
+
+def _include_actual_cell(bounds: list[int | None], cell: Any) -> None:
+    row = getattr(cell, "row", None)
+    column = getattr(cell, "column", None)
+    if row is None or column is None:
+        return
+    bounds[0] = column if bounds[0] is None else min(bounds[0], column)
+    bounds[1] = row if bounds[1] is None else min(bounds[1], row)
+    bounds[2] = column if bounds[2] is None else max(bounds[2], column)
+    bounds[3] = row if bounds[3] is None else max(bounds[3], row)
+
+
 def _convert_sheet(
     formula_sheet: Any,
     cached_sheet: Any,
     *,
     table: str,
     deadline: float,
+    counter: list[int],
 ) -> tuple[dict, list[list[object]], list[str]]:
+    declared = _declared_bounds(formula_sheet)
+    if declared != _declared_bounds(cached_sheet):
+        raise SpreadsheetImportError(
+            f"sheet {formula_sheet.title!r} formula and cached-value dimensions disagree",
+            code="inconsistent_dimensions",
+        )
+    # Declared dimensions are metadata, not a truncation boundary. Iterate the
+    # actual XML cells and validate the declaration only after reaching the end.
+    formula_sheet.reset_dimensions()
+    cached_sheet.reset_dimensions()
+    actual_bounds: list[int | None] = [None, None, None, None]
     header_row: int | None = None
     headers: list[object] = []
     header_cells: list[str] = []
@@ -187,48 +239,54 @@ def _convert_sheet(
 
     formula_rows = formula_sheet.iter_rows()
     cached_rows = cached_sheet.iter_rows()
-    for formula_row, cached_row in zip_longest(formula_rows, cached_rows):
+    rows_by_number = enumerate(zip_longest(formula_rows, cached_rows), start=1)
+    for row_number, (formula_row, cached_row) in rows_by_number:
         _check_deadline(deadline)
         if formula_row is None or cached_row is None or len(formula_row) != len(cached_row):
             raise SpreadsheetImportError(
                 f"sheet {formula_sheet.title!r} formula and cached-value views are incomplete",
                 code="incomplete_conversion",
             )
-        row_number = formula_row[0].row if formula_row else cached_row[0].row
         values: list[object] = []
-        for formula_cell, cached_cell in zip(formula_row, cached_row, strict=True):
-            if formula_cell.coordinate != cached_cell.coordinate:
+        cells = enumerate(zip(formula_row, cached_row, strict=True), start=1)
+        for column_number, (formula_cell, cached_cell) in cells:
+            _include_actual_cell(actual_bounds, formula_cell)
+            _include_actual_cell(actual_bounds, cached_cell)
+            coordinate = _cell_reference(row_number, column_number)
+            formula_coordinate = getattr(formula_cell, "coordinate", None) or coordinate
+            cached_coordinate = getattr(cached_cell, "coordinate", None) or coordinate
+            if formula_coordinate != cached_coordinate:
                 raise SpreadsheetImportError(
-                    f"sheet {formula_sheet.title!r} cell views disagree at row {row_number}",
+                    f"sheet {formula_sheet.title!r} cell views disagree at {coordinate}",
                     code="incomplete_conversion",
                 )
             formula_value = formula_cell.value
             cached_value = cached_cell.value
             if formula_value is not None or cached_value is not None:
                 nonempty += 1
-                if nonempty > MAX_SELECTED_NONEMPTY_CELLS:
+                counter[0] += 1
+                if counter[0] > MAX_SELECTED_NONEMPTY_CELLS:
                     raise SpreadsheetImportError(
-                        "selected sheets exceed 200,000 nonempty cells",
+                        "selected sheets exceed 200,000 nonempty cells across the whole conversion",
                         code="selected_cells_too_large",
                     )
             if formula_cell.data_type == "f":
                 if cached_value is None:
                     raise SpreadsheetImportError(
-                        f"selected formula cell {formula_sheet.title}!{formula_cell.coordinate} "
+                        f"selected formula cell {formula_sheet.title}!{coordinate} "
                         "has no stored cached value; correct it or explicitly exclude the "
-                        "cell/sheet "
-                        "through a new reviewed selection",
+                        "cell/sheet through a new reviewed selection",
                         code="missing_formula_cache",
                     )
                 if cached_cell.data_type == "e" or cached_value in _ERROR_VALUES:
                     raise SpreadsheetImportError(
-                        f"selected formula cell {formula_sheet.title}!{formula_cell.coordinate} "
+                        f"selected formula cell {formula_sheet.title}!{coordinate} "
                         f"has an error cached value ({cached_value})",
                         code="error_formula_cache",
                     )
                 formula_cells.append(
                     {
-                        "cell": formula_cell.coordinate,
+                        "cell": coordinate,
                         "formula": str(formula_value).removeprefix("="),
                         "cached_value": _json_value(cached_value),
                         "cached_type": cached_cell.data_type,
@@ -237,13 +295,13 @@ def _convert_sheet(
                 )
             elif formula_value != cached_value:
                 raise SpreadsheetImportError(
-                    f"sheet {formula_sheet.title}!{formula_cell.coordinate} has inconsistent "
+                    f"sheet {formula_sheet.title}!{coordinate} has inconsistent "
                     "formula and stored-value views",
                     code="incomplete_conversion",
                 )
             if formula_cell.data_type == "e" or cached_cell.data_type == "e":
                 raise SpreadsheetImportError(
-                    f"stored error cell {formula_sheet.title}!{formula_cell.coordinate} "
+                    f"stored error cell {formula_sheet.title}!{coordinate} "
                     "is not queryable data",
                     code="unsupported_stored_type",
                 )
@@ -252,7 +310,7 @@ def _convert_sheet(
                 (str, bool, int, float, datetime, date, datetime_time, timedelta),
             ):
                 raise SpreadsheetImportError(
-                    f"stored cell {formula_sheet.title}!{formula_cell.coordinate} has unsupported "
+                    f"stored cell {formula_sheet.title}!{coordinate} has unsupported "
                     f"type {type(cached_value).__name__}",
                     code="unsupported_stored_type",
                 )
@@ -261,7 +319,7 @@ def _convert_sheet(
             ):
                 date_cells.append(
                     {
-                        "cell": cached_cell.coordinate,
+                        "cell": coordinate,
                         "stored_type": cached_cell.data_type,
                         "number_format": cached_cell.number_format,
                         "interpreted_value": _json_value(cached_value),
@@ -279,7 +337,9 @@ def _convert_sheet(
                 )
             header_row = row_number
             headers = values
-            header_cells = [cell.coordinate for cell in formula_row]
+            header_cells = [
+                _cell_reference(row_number, column) for column in range(1, len(formula_row) + 1)
+            ]
             continue
 
         if len(values) > len(headers) and any(
@@ -297,6 +357,13 @@ def _convert_sheet(
         raise SpreadsheetImportError(
             f"selected sheet {formula_sheet.title!r} has no header row",
             code="empty_selection",
+        )
+    actual = (actual_bounds[0], actual_bounds[1], actual_bounds[2], actual_bounds[3])
+    if declared is not None and actual != declared:
+        raise SpreadsheetImportError(
+            f"sheet {formula_sheet.title!r} declared dimension {_bounds_text(declared)} "
+            f"does not match actual worksheet extent {_bounds_text(actual)}",
+            code="inconsistent_dimensions",
         )
 
     used: set[str] = set()
@@ -316,6 +383,8 @@ def _convert_sheet(
     record = {
         "name": formula_sheet.title,
         "table": table,
+        "declared_dimension": _bounds_text(declared),
+        "actual_dimension": _bounds_text(actual),
         "header_row": header_row,
         "source_rows": [row_number for row_number, _values in rows],
         "row_count": len(rows),
@@ -365,10 +434,15 @@ def _convert_stage(
             )
         table_names: set[str] = set()
         converted = []
+        counter = [0]
         for name in selected:
             table = _unique_name(name, "sheet", table_names)
             record, rows, columns = _convert_sheet(
-                formula_book[name], cached_book[name], table=table, deadline=deadline
+                formula_book[name],
+                cached_book[name],
+                table=table,
+                deadline=deadline,
+                counter=counter,
             )
             converted.append((record, rows, columns))
     finally:

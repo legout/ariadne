@@ -12,7 +12,14 @@ import pytest
 from ariadne.spreadsheet_import import SpreadsheetImportError, import_workbook
 
 
-def _write_hand_ooxml(path: Path, *, cached: bool = True, oversized: bool = False) -> None:
+def _write_hand_ooxml(
+    path: Path,
+    *,
+    cached: bool = True,
+    oversized: bool = False,
+    override_a: str | None = None,
+    override_b: str | None = None,
+) -> None:
     """Write the fixture XML directly; openpyxl is deliberately not a fixture oracle."""
     formula_cache = "<v>7</v>" if cached else ""
     sheet_a = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -31,6 +38,10 @@ def _write_hand_ooxml(path: Path, *, cached: bool = True, oversized: bool = Fals
     <row r="2"><c r="A2"><v>999</v></c></row>
   </sheetData>
 </worksheet>"""
+    if override_a is not None:
+        sheet_a = override_a
+    if override_b is not None:
+        sheet_b = override_b
     entries = {
         "[Content_Types].xml": """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -79,6 +90,25 @@ def _write_hand_ooxml(path: Path, *, cached: bool = True, oversized: bool = Fals
             )
 
 
+def _sheet_xml(source: Path, sheet_number: int) -> str:
+    with zipfile.ZipFile(source) as archive:
+        return archive.read(f"xl/worksheets/sheet{sheet_number}.xml").decode()
+
+
+def _single_column_sheet(data_rows: int) -> str:
+    rows = "".join(
+        f'<row r="{row}"><c r="A{row}"><v>1</v></c></row>'
+        for row in range(2, data_rows + 2)
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:A{data_rows + 1}"/><sheetData>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>amount</t></is></c></row>
+    {rows}
+  </sheetData>
+</worksheet>"""
+
+
 def test_workbook_stored_values_and_refresh_are_truthful(tmp_path: Path) -> None:
     source = tmp_path / "known.xlsx"
     _write_hand_ooxml(source)
@@ -103,7 +133,7 @@ def test_workbook_stored_values_and_refresh_are_truthful(tmp_path: Path) -> None
     connection = duckdb.connect(str(artifact), read_only=True)
     try:
         assert connection.execute(
-            'SELECT amount, __ariadne_source_row FROM a ORDER BY __ariadne_source_row'
+            "SELECT amount, __ariadne_source_row FROM a ORDER BY __ariadne_source_row"
         ).fetchall() == [(10, 2), (20, 3), (7, 4)]
         assert connection.execute("SELECT SUM(amount) FROM a").fetchone() == (37,)
         assert connection.execute(
@@ -138,3 +168,52 @@ def test_workbook_stored_values_and_refresh_are_truthful(tmp_path: Path) -> None
         import_workbook(oversized, sheets=["A"], output=oversized_output)
     assert too_large.value.code == "input_too_large"
     assert list(oversized_output.iterdir()) == []
+
+    mismatched = tmp_path / "mismatched-dimension.xlsx"
+    _write_hand_ooxml(
+        mismatched,
+        override_a=_sheet_xml(source, 1).replace('dimension ref="A1:A4"', 'dimension ref="A1:A2"'),
+    )
+    mismatch_output = tmp_path / "mismatch-output"
+    with pytest.raises(SpreadsheetImportError, match="actual worksheet extent") as mismatch:
+        import_workbook(mismatched, sheets=["A"], output=mismatch_output)
+    assert mismatch.value.code == "inconsistent_dimensions"
+    assert list(mismatch_output.iterdir()) == []
+
+    sparse_source = tmp_path / "sparse.xlsx"
+    sparse_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:C2"/><sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>amount</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>note</t></is></c>
+    </row>
+    <row r="2"><c r="A2"><v>11</v></c><c r="C2"><v>12</v></c></row>
+  </sheetData>
+</worksheet>"""
+    _write_hand_ooxml(sparse_source, override_a=sparse_xml)
+    sparse = import_workbook(sparse_source, sheets=["A"], output=tmp_path / "sparse-output")
+    sparse_sheet = sparse["sheets"][0]
+    assert sparse_sheet["actual_dimension"] == "A1:C2"
+    assert sparse_sheet["source_rows"] == [2]
+    assert sparse_sheet["nonempty_cell_count"] == 4
+    assert [column["header_cell"] for column in sparse_sheet["columns"]] == ["A1", "B1", "C1"]
+    assert sparse_sheet["columns"][1]["source_header"] is None
+    assert sparse_sheet["columns"][1]["name"] == "column_2"
+    assert sparse_sheet["columns"][1]["interpreted_type"] == "VARCHAR"
+    sparse_connection = duckdb.connect(sparse["artifact_path"], read_only=True)
+    try:
+        assert sparse_connection.execute(
+            "SELECT amount, column_2, note, __ariadne_source_row FROM a"
+        ).fetchall() == [(11, None, 12, 2)]
+    finally:
+        sparse_connection.close()
+
+    combined = tmp_path / "combined-over-limit.xlsx"
+    many_rows = _single_column_sheet(100_000)
+    _write_hand_ooxml(combined, override_a=many_rows, override_b=many_rows)
+    combined_output = tmp_path / "combined-output"
+    with pytest.raises(SpreadsheetImportError, match="whole conversion") as combined_refusal:
+        import_workbook(combined, sheets=["A", "B"], output=combined_output)
+    assert combined_refusal.value.code == "selected_cells_too_large"
+    assert list(combined_output.iterdir()) == []
