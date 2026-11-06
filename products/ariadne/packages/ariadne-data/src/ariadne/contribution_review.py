@@ -14,13 +14,13 @@ import re
 import tempfile
 from pathlib import Path
 
-from ariadne import (  # pyright: ignore[reportMissingImports] — external qualified env
+from ariadne import (
     answer_examples,
     authoring,
     authoring_sources,
     proposals,
 )
-from ariadne.validate import validate, validator_identity  # pyright: ignore[reportMissingImports]
+from ariadne.validate import validate, validator_identity
 
 _SCHEMA_VERSION = 1
 _CONTRACT = "ariadne/contribution-review/1"
@@ -113,6 +113,29 @@ def _text_diff(path: str, before: bytes | None, after: bytes | None) -> str:
     return "".join(difflib.unified_diff(old, new, fromfile=f"a/{path}", tofile=f"b/{path}"))
 
 
+def _core_consequence(path: str) -> str:
+    if path.startswith("semantic_layer/"):
+        return (
+            "Metric expressions or mappings changed; row eligibility and calculation meaning "
+            "can change. Static review cannot determine business correctness or numerical effects."
+        )
+    if path.startswith("contracts/") or path == "contract_bindings.yaml":
+        return (
+            "Data contracts or Policy bindings changed; validation and governed eligibility "
+            "can change. Static review cannot determine live-data compliance or business outcomes."
+        )
+    if path in {"ariadne.yaml", "context_integration.yaml"}:
+        return (
+            "Source declarations or integration settings changed; source identity and validation "
+            "scope can change. Static review cannot determine live-source behavior or data "
+            "correctness."
+        )
+    return (
+        "Core Policy, mapping, or validation inputs changed; governed interpretation and "
+        "eligibility can change. Static review cannot determine live business results."
+    )
+
+
 def _core_changes(
     project: Path,
     base_tree: str,
@@ -134,6 +157,7 @@ def _core_changes(
             {
                 "path": path,
                 "change": entry["change"],
+                "consequence": _core_consequence(path),
                 "body_diff": _text_diff(
                     path,
                     proposals._read_blob(project, base_tree, path)
@@ -153,7 +177,7 @@ def _private_registry(private_profile, worktree: Path):
         return None, None
     if not Path(private_profile).is_absolute():
         raise ValueError("private profile path must be absolute")
-    from lumio_wiki.private_profile import (  # pyright: ignore[reportMissingImports]
+    from lumio_wiki.private_profile import (
         load_private_profile,
         resolve_private_profile,
     )
@@ -218,7 +242,7 @@ def review_contribution(
         tree = Path(tmp) / "bundle"
         tree.mkdir()
         authoring._materialize(project, proposal, candidate_tree, tree)
-        from ariadne import lumio_context  # pyright: ignore[reportMissingImports]
+        from ariadne import lumio_context
 
         selected = lumio_context.selector(tree)
         core_changes, unknown_paths = _core_changes(
@@ -232,8 +256,8 @@ def review_contribution(
         profile_binding_digest = None
         if selected is not None:
             resolved, profile_namespace = _private_registry(private_profile, worktree)
-            import msgspec  # pyright: ignore[reportMissingImports]
-            from lumio_wiki.authoring_review import (  # pyright: ignore[reportMissingImports]
+            import msgspec
+            from lumio_wiki.authoring_review import (
                 review_knowledge_changes,
             )
 
@@ -331,6 +355,12 @@ def check_contribution_commit(project, proposal, review, revision):
     if commit_tree != review["candidate_tree"]:
         mismatches.append(
             f"commit tree {commit_tree} differs from reviewed tree {review['candidate_tree']}"
+        )
+    current_tree = proposals._git(["write-tree"], worktree).stdout.strip()
+    if current_tree != review["candidate_tree"]:
+        mismatches.append(
+            f"current staged tree {current_tree} differs from reviewed tree "
+            f"{review['candidate_tree']}"
         )
 
     parent = None

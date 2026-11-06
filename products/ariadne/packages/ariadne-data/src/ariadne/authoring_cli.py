@@ -21,9 +21,9 @@ from typing import Any, NoReturn
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne.admission import reconcile  # pyright: ignore[reportMissingImports]
-from ariadne.authoring import AuthoringProject  # pyright: ignore[reportMissingImports]
-from ariadne.contribution_review import (  # pyright: ignore[reportMissingImports]
+from ariadne.admission import reconcile
+from ariadne.authoring import AuthoringProject
+from ariadne.contribution_review import (
     check_contribution_commit,
     review_contribution,
 )

@@ -6,22 +6,23 @@ validation is deliberately unavailable; expected disclosures are hand-authored.
 
 import json
 import os
+from datetime import date
 from pathlib import Path
 
-import pytest  # pyright: ignore[reportMissingImports] — qualified test env is external
-from ariadne import (  # pyright: ignore[reportMissingImports]
+import pytest
+from ariadne import (
     admission,
     context,
     execution,
     query,
     sources,
 )
-from ariadne.authoring_cli import main as authoring_cli  # pyright: ignore[reportMissingImports]
-from ariadne.contribution_review import (  # pyright: ignore[reportMissingImports]
+from ariadne.authoring_cli import main as authoring_cli
+from ariadne.contribution_review import (
     check_contribution_commit,
     review_contribution,
 )
-from tests.test_git_authoring import run_git, worktree_of  # pyright: ignore[reportMissingImports]
+from tests.test_git_authoring import run_git, worktree_of
 
 from integration.tests.lumio_metric_mvp import page_parts, supported_candidate, write_page
 
@@ -93,13 +94,6 @@ def _staged_contribution(tmp_path):
     finalized = run_git(tree, "rev-parse", "HEAD").strip()
     admission.reconcile(project, proposal, revision, finalized)
 
-    # The added synthetic source page predates J2's readable profile renderer;
-    # omit its optional verification receipt rather than changing producer code.
-    cancellation = tree / "knowledge/policies/cancelled-orders.md"
-    cancellation_meta, cancellation_body = page_parts(cancellation)
-    cancellation_meta["ariadne_profile"]["native"].pop("verified")
-    write_page(cancellation, cancellation_meta, cancellation_body)
-
     order_reference = tree / "knowledge/references/order-number.md"
     metadata, body = page_parts(order_reference)
     assert metadata["summary"] == ORIGINAL_SUMMARY
@@ -150,9 +144,20 @@ def _commit_after_review(case, tree):
     return run_git(tree, "rev-parse", "HEAD").strip()
 
 
-@pytest.mark.parametrize("case", ["matching_commit", "added_staged_file", "modifying_commit_hook"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "matching_commit",
+        "added_staged_file",
+        "modifying_commit_hook",
+        "existing_candidate_staged_addition",
+    ],
+)
 def test_contribution_review_covers_document_and_metric(case, tmp_path, monkeypatch, capsys):
     project, proposal, tree, base = _staged_contribution(tmp_path)
+
+    if case == "existing_candidate_staged_addition":
+        run_git(tree, "commit", "-q", "-m", "human: existing reviewed candidate")
 
     def forbidden(*args, **kwargs):
         pytest.fail("static contribution review/check opened a live source or runtime")
@@ -195,10 +200,37 @@ def test_contribution_review_covers_document_and_metric(case, tmp_path, monkeypa
             assert entry["base_blob"] and entry["base_mode"] == "100644"
 
     core = {entry["path"]: entry for entry in review["core_changes"]}
-    assert FILTER_EXPRESSION in core["semantic_layer/models/retail_sales.yml"]["body_diff"]
-    assert "mustBe" in core["contracts/orders-contract.yaml"]["body_diff"]
+    model_change = core["semantic_layer/models/retail_sales.yml"]
+    assert FILTER_EXPRESSION in model_change["body_diff"]
+    assert "row eligibility and calculation meaning can change" in model_change["consequence"]
+    assert (
+        "Static review cannot determine business correctness or numerical effects."
+        in model_change["consequence"]
+    )
+    contract_change = core["contracts/orders-contract.yaml"]
+    assert "mustBe" in contract_change["body_diff"]
+    assert "validation and governed eligibility can change" in contract_change["consequence"]
+    assert "Static review cannot determine live-data compliance" in contract_change["consequence"]
     assert "model: retail_sales" in core["contract_bindings.yaml"]["body_diff"]
     pages = {entry["path"]: entry for entry in review["knowledge"]["pages"]}
+    from lumio_wiki.knowledge_base import load_knowledge_base
+
+    loaded, load_report = load_knowledge_base(tree / "knowledge")
+    assert load_report.is_valid
+    cancellation = next(
+        page for page in loaded.pages if page.path == "policies/cancelled-orders.md"
+    )
+    expected_verified = [{"by": "human:synthetic-owner", True: date(2020, 1, 1)}]
+    assert cancellation.ariadne_profile.native["verified"] == expected_verified
+    cancellation_review = next(
+        change
+        for change in pages["policies/cancelled-orders.md"]["semantic_changes"]
+        if change["field"] == "ariadne_profile"
+    )
+    assert cancellation_review["before"] == "none"
+    for fact in ("verified", "human:synthetic-owner", repr(date(2020, 1, 1)), "True:"):
+        assert fact in cancellation_review["after"]
+
     policy = pages["policies/contribution-policy.md"]
     assert policy["body_changed"] is True
     assert POLICY_BODY_ADDITION.strip() in policy["body_diff"]
@@ -234,10 +266,23 @@ def test_contribution_review_covers_document_and_metric(case, tmp_path, monkeypa
         ) == 0
         assert json.loads(capsys.readouterr().out) == review
 
-    revision = _commit_after_review(case, tree)
+    if case == "existing_candidate_staged_addition":
+        revision = run_git(tree, "rev-parse", "HEAD").strip()
+        before_staging = check_contribution_commit(project, proposal, review, revision)
+        assert before_staging["matches_reviewed_candidate"] is True
+        assert before_staging["mismatches"] == []
+        seed = tree / "data/seed_notes.md"
+        seed.write_text(seed.read_text() + "\nStaged after reviewing an existing commit.\n")
+        run_git(tree, "add", "-f", "--", "data/seed_notes.md")
+    else:
+        revision = _commit_after_review(case, tree)
+
     checked = check_contribution_commit(project, proposal, review, revision)
     assert checked["commit"] == revision
-    assert checked["parent"] == review["head_revision"]
+    expected_parent = (
+        None if case == "existing_candidate_staged_addition" else review["head_revision"]
+    )
+    assert checked["parent"] == expected_parent
     assert checked["matches_reviewed_candidate"] is (case == "matching_commit")
     if case == "matching_commit":
         assert checked["mismatches"] == []
