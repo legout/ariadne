@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 import httpx
+import pytest
 from authlib.jose import JsonWebKey
 from lumio_wiki.git_authoring import preview_publication, publish_revision
 from lumio_wiki.source_references import (
@@ -155,6 +158,47 @@ def _membership_refusal(response) -> None:
     assert result["isError"] is True
     assert result["content"][0]["text"].endswith(": workspace access is not available")
     assert SENTINEL not in response.text
+
+
+@pytest.mark.parametrize("use_sys_argv", [False, True], ids=["explicit", "sys-argv"])
+def test_revoke_legacy_leading_minus_credential_id(
+    tmp_path: Path, monkeypatch, use_sys_argv: bool
+) -> None:
+    now = 1_800_000_000
+    state_path = tmp_path / "state.sqlite3"
+    monkeypatch.setenv("LUMIO_WORKSPACE_ID", "workspace-fixture")
+    monkeypatch.setenv("LUMIO_WORKSPACE_STATE_PATH", str(state_path))
+    monkeypatch.setattr("lumio_workspace.state.time.time", lambda: now)
+    monkeypatch.setattr(
+        "lumio_workspace.state.secrets.token_bytes", lambda size: b"\xfb" + bytes(size - 1)
+    )
+    state = WorkspaceState(state_path)
+    state.create_local_user("alice")
+    credential_id, token = state.issue_local_credential(
+        "alice", "browser", expires_at=now + 3600
+    )
+    expected_id = (
+        base64.urlsafe_b64encode(b"\xfb" + bytes(11)).rstrip(b"=").decode("ascii")
+    )
+    assert expected_id.startswith("-")
+    assert credential_id == expected_id
+    assert state.authenticate_local_credential(token, purpose="browser") is not None
+
+    arguments = ["local-token", "revoke", "--credential-id", credential_id]
+    if use_sys_argv:
+        monkeypatch.setattr(sys, "argv", ["lumio-workspace", *arguments])
+        assert main(None) == 0
+    else:
+        assert main(arguments) == 0
+    assert arguments == ["local-token", "revoke", "--credential-id", credential_id]
+
+    with state._connect() as connection:
+        revoked_at = connection.execute(
+            "SELECT revoked_at FROM local_credentials WHERE credential_id = ?",
+            (credential_id,),
+        ).fetchone()[0]
+    assert revoked_at == now
+    assert state.authenticate_local_credential(token, purpose="browser") is None
 
 
 def test_local_credential_and_browser_session_lifecycle(

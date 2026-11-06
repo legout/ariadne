@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 
 import uvicorn
 
@@ -25,6 +26,16 @@ def _state(*, entra: bool = False) -> tuple[str, WorkspaceState, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if (
+        len(arguments) == 4
+        and arguments[:3] == ["local-token", "revoke", "--credential-id"]
+        and arguments[3].startswith("-")
+        and arguments[3] not in {"-h", "--help"}
+    ):
+        # Argparse otherwise treats an issued leading-minus ID as another option.
+        arguments[2:] = [f"--credential-id={arguments[3]}"]
+
     parser = argparse.ArgumentParser(prog="lumio-workspace")
     commands = parser.add_subparsers(dest="command", required=True)
     serve = commands.add_parser("serve", help="run behind the configured private HTTPS boundary")
@@ -71,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     revoke_credential = local_token_commands.add_parser("revoke")
     revoke_credential.add_argument("--credential-id", required=True)
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(arguments)
     if args.command == "serve":
         uvicorn.run(create_app(WorkspaceConfig.from_env()), host=args.host, port=args.port)
         return 0
